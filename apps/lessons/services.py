@@ -93,17 +93,22 @@ def create_connections(lesson: Lesson) -> int:
         similar = find_similar_lessons(lesson)
         current_peer_ids = {peer.pk for peer, _ in similar}
 
-        # Drop the lesson's stale auto-similarity edges — peers that are no
-        # longer similar under the current embedding (e.g. after a rewrite) —
-        # so they can't draw spurious links or mask the correct affinity edge.
-        # Only ``similar`` edges are touched, so user-curated edge types
-        # (user_linked/builds_on/contradicts) are preserved. We never delete an
-        # edge to a peer that is still similar, so the recreate count stays 0
-        # when the similar set is unchanged.
-        LessonConnection.objects.filter(connection_type="similar").filter(
-            Q(from_lesson=lesson) & ~Q(to_lesson_id__in=current_peer_ids)
-            | Q(to_lesson=lesson) & ~Q(from_lesson_id__in=current_peer_ids)
-        ).delete()
+        # Drop only the OUTBOUND stale auto-similarity edges this lesson
+        # authored (from_lesson=lesson) — peers no longer similar under the
+        # current embedding (e.g. after a rewrite). We deliberately do NOT prune
+        # inbound edges (to_lesson=lesson): top-5 *membership* is asymmetric even
+        # though similarity *value* is symmetric (peer Y may still rank this
+        # lesson in its own top-5 while this lesson dropped Y), so deleting Y→this
+        # here would destroy Y's still-valid assessment. Each lesson is
+        # authoritative only over the edges it created; peers prune their own
+        # outbound stale edges when they next reprocess. Only ``similar`` edges
+        # are touched, so user-curated types (user_linked/builds_on/contradicts)
+        # are preserved, and a still-similar peer is never dropped, so the
+        # recreate count stays 0 when the similar set is unchanged.
+        LessonConnection.objects.filter(
+            connection_type="similar",
+            from_lesson=lesson,
+        ).exclude(to_lesson_id__in=current_peer_ids).delete()
 
         for similar_lesson, similarity in similar:
             # Key on the unique (from, to) pair; if a user-curated edge already

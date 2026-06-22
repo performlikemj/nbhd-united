@@ -66,7 +66,7 @@ class CreateConnectionsRebuildTests(TestCase):
             source_ref="ref-c",
         )
 
-    def test_rewrite_drops_stale_similar_edges(self):
+    def test_rewrite_drops_stale_outbound_edge_keeps_peer_inbound(self):
         from .services import create_connections
 
         # First pass: source is similar to old_peer.
@@ -74,18 +74,21 @@ class CreateConnectionsRebuildTests(TestCase):
             create_connections(self.source)
         self.assertTrue(LessonConnection.objects.filter(from_lesson=self.source, to_lesson=self.old_peer).exists())
 
-        # Rewrite: source is now similar to new_peer only. The stale old_peer
-        # edges (both directions) must be gone, not merely supplemented.
+        # Rewrite: source is now similar to new_peer only. The source's OWN
+        # outbound stale edge (source→old_peer) must be gone. The inbound edge
+        # (old_peer→source) is deliberately LEFT for old_peer's own reconcile to
+        # prune — top-5 membership is asymmetric, so the source must not delete a
+        # peer-owned assessment (it may still rank the source in its top-5).
         with patch("apps.lessons.services.find_similar_lessons", return_value=[(self.new_peer, 0.88)]):
             create_connections(self.source)
 
         self.assertFalse(
             LessonConnection.objects.filter(from_lesson=self.source, to_lesson=self.old_peer).exists(),
-            "stale forward edge survived rewrite",
+            "stale outbound edge (source→old_peer) survived rewrite",
         )
-        self.assertFalse(
+        self.assertTrue(
             LessonConnection.objects.filter(from_lesson=self.old_peer, to_lesson=self.source).exists(),
-            "stale reverse edge survived rewrite",
+            "inbound edge (old_peer→source) must be left for old_peer's own reconcile (outbound-only pruning)",
         )
         self.assertTrue(LessonConnection.objects.filter(from_lesson=self.source, to_lesson=self.new_peer).exists())
         self.assertTrue(LessonConnection.objects.filter(from_lesson=self.new_peer, to_lesson=self.source).exists())

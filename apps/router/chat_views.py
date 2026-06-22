@@ -600,15 +600,40 @@ class ChatProgressEventView(APIView):
         if client_msg_id:
             qs = base.filter(client_msg_id=client_msg_id)
         else:
-            # client_msg_id. Per-tenant turns are serialized (one container) and
-            # only app/Siri turns create AppChatMessage rows, so the tenant's
-            # most-recent PENDING turn IS the in-flight one to narrate. (A
-            # Telegram/LINE turn creates no row → this no-ops, which is correct.)
-            # NOTE: an adversarial-review change to narrate the OLDEST PENDING
-            # row (FIFO head) was reverted — it broke test_updates_latest_pending
-            # and the oldest-vs-newest choice is ambiguous under per-thread
-            # serialization. Deferred for a product decision (router-chat#2).
-            latest_pk = base.order_by("-created_at").values_list("pk", flat=True).first()
-            qs = base.filter(pk=latest_pk) if latest_pk is not None else base.none()
+            # The runtime tool-call hook didn't say which turn it is narrating
+            # (no client_msg_id). Narrate the turn that is ACTUALLY in flight —
+            # one whose thread currently holds a live drain lease
+            # (PendingMessage.delivery_in_flight_until > now) — NOT merely the
+            # newest PENDING row. iOS/Siri serialization is per-THREAD (one
+            # OpenClaw session per ChatThread; PendingMessage.channel_user_id =
+            # str(thread.id)), so several threads can have PENDING rows at once
+            # while only the leased ones are being processed; a freshly-queued
+            # turn on another thread is NOT in flight and must not steal the
+            # spinner. The lease is held for the whole /v1/chat/completions turn
+            # (lease = timeout × 1.5), exactly the window progress events fire in.
+            # Among in-flight threads, narrate the oldest-started one's PENDING
+            # rows (FIFO). Telegram/LINE create no AppChatMessage row → no-op.
+            now = timezone.now()
+            in_flight_thread_ids = list(
+                PendingMessage.objects.filter(
+                    tenant_id=tenant_id,
+                    channel=PendingMessage.Channel.IOS,
+                    delivery_status=PendingMessage.Status.PENDING,
+                    delivery_in_flight_until__gt=now,
+                ).values_list("channel_user_id", flat=True)
+            )
+            in_flight_oldest = (
+                base.filter(thread_id__in=in_flight_thread_ids).order_by("created_at").first()
+                if in_flight_thread_ids
+                else None
+            )
+            if in_flight_oldest is not None:
+                qs = base.filter(thread_id=in_flight_oldest.thread_id)
+            else:
+                # No live lease matched (lease expired / narrow race) — fall back
+                # to the newest PENDING row so a real progress event is never
+                # silently dropped.
+                latest_pk = base.order_by("-created_at").values_list("pk", flat=True).first()
+                qs = base.filter(pk=latest_pk) if latest_pk is not None else base.none()
         updated = qs.update(phase=phase, phase_detail=detail)
         return Response({"updated": bool(updated)}, status=status.HTTP_200_OK)

@@ -306,9 +306,10 @@ class ChatProgressEventTest(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
-    def test_updates_latest_pending_when_no_client_msg_id(self):
-        # The runtime hook only knows the run, not the client_msg_id → it omits it
-        # and the control plane narrates the tenant's most-recent PENDING turn.
+    def test_no_client_msg_id_fallback_narrates_newest_when_no_lease(self):
+        # FALLBACK path: when no thread holds a live drain lease (e.g. the lease
+        # raced/expired), the control plane narrates the most-recent PENDING turn
+        # so a real progress event is never dropped.
         older = self._pending("old")
         AppChatMessage.objects.filter(pk=older.pk).update(created_at=timezone.now() - timedelta(minutes=5))
         newer = self._pending("new")
@@ -325,4 +326,57 @@ class ChatProgressEventTest(TestCase):
         older.refresh_from_db()
         self.assertEqual(newer.phase, "tool")
         self.assertEqual(newer.phase_detail, "checking your journal")
-        self.assertEqual(older.phase, "")  # only the in-flight (newest) turn is narrated
+        self.assertEqual(older.phase, "")  # no lease → fallback narrates newest
+
+    def test_no_client_msg_id_narrates_in_flight_thread_not_newest(self):
+        # router-chat#2: with no client_msg_id, narrate the IN-FLIGHT thread (one
+        # holding a live drain lease), NOT merely the newest PENDING turn. Here an
+        # OLDER thread A is in flight while a NEWER thread B is only queued — A
+        # must win even though B is newer, so B's spinner doesn't show premature
+        # progress for a turn that hasn't started.
+        from apps.router.models import ChatThread
+
+        # Thread A (older) — actually in flight (leased PendingMessage).
+        msg_a = self._pending("a")
+        AppChatMessage.objects.filter(pk=msg_a.pk).update(created_at=timezone.now() - timedelta(minutes=5))
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(self.thread.id),
+            payload={"message_text": "hi a"},
+            delivery_status=PendingMessage.Status.PENDING,
+            delivery_in_flight_until=timezone.now() + timedelta(seconds=120),
+        )
+
+        # Thread B (newer) — only queued, no live lease.
+        thread_b = ChatThread.objects.create(tenant=self.tenant, user=self.user, title="B")
+        msg_b = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=thread_b,
+            client_msg_id="b",
+            user_text="hi b",
+            status=AppChatMessage.Status.PENDING,
+        )
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(thread_b.id),
+            payload={"message_text": "hi b"},
+            delivery_status=PendingMessage.Status.PENDING,
+            delivery_in_flight_until=None,  # queued, not yet claimed
+        )
+
+        resp = self.client.post(
+            self._url(),
+            {"phase": "tool", "detail": "searching your journal"},  # no client_msg_id
+            format="json",
+            HTTP_X_NBHD_INTERNAL_KEY="test-key",
+            HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.data["updated"])
+        msg_a.refresh_from_db()
+        msg_b.refresh_from_db()
+        self.assertEqual(msg_a.phase, "tool")  # in-flight thread narrated (despite being older)
+        self.assertEqual(msg_b.phase, "")  # newer-but-queued thread NOT narrated
