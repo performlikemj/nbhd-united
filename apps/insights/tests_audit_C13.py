@@ -70,18 +70,22 @@ class ResolveTopicRaceTest(TestCase):
 
     def test_canonical_topic_returned_without_create(self):
         """Exact slug match on a canonical topic short-circuits before any create."""
+        # Use a test-unique slug so the row doesn't collide with the seeded
+        # canonical topics that the seed_topics migration creates in a fresh DB
+        # (e.g. gravity/debt) — that collision only surfaces in CI, not under a
+        # reused --keepdb local DB.
         TopicRegistry.objects.create(
             pillar="gravity",
-            slug="debt",
-            display_name="Debt",
+            slug="c13probe",
+            display_name="C13 Probe",
             status=TopicRegistry.Status.CANONICAL,
             source=TopicRegistry.Source.SEED,
         )
-        result = resolve_topic("gravity", "debt")
-        self.assertEqual(result.slug, "debt")
+        result = resolve_topic("gravity", "c13probe")
+        self.assertEqual(result.slug, "c13probe")
         self.assertEqual(result.status, TopicRegistry.Status.CANONICAL)
         # Only one row should exist (no spurious proposed row created).
-        self.assertEqual(TopicRegistry.objects.filter(pillar="gravity", slug="debt").count(), 1)
+        self.assertEqual(TopicRegistry.objects.filter(pillar="gravity", slug="c13probe").count(), 1)
 
 
 class RecordInsightImplAtomicTest(TestCase):
