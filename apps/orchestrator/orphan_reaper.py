@@ -157,8 +157,7 @@ def reap_orphaned_containers(*, hibernate: bool = True, apply: bool = False, ale
 
     if orphans:
         logger.warning(
-            "orphan_reaper: %d orphaned container(s) with no Tenant row: %s "
-            "(awake=%d, hibernated=%d, apply=%s)",
+            "orphan_reaper: %d orphaned container(s) with no Tenant row: %s (awake=%d, hibernated=%d, apply=%s)",
             len(orphans),
             ", ".join(orphans),
             len(summary["awake"]),

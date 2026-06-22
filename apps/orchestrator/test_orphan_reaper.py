@@ -120,8 +120,7 @@ class ReapOrphanedContainersTest(TestCase):
 
     def test_apply_classifies_lock_block(self):
         lock_exc = Exception(
-            "(ScopeLocked) The scope '...' cannot perform delete operation because "
-            "following scope(s) are locked"
+            "(ScopeLocked) The scope '...' cannot perform delete operation because following scope(s) are locked"
         )
         with (
             patch(f"{AZ}.container_app_has_active_revision", return_value=False),
