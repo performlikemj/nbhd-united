@@ -1,0 +1,21 @@
+[
+ {
+  "ref": "FA-0229",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "The claim is technically accurate and the scenario is reachable. The shipped fix (page.tsx:564-577) only widens kindFilter/relFilter when positions[id] is missing; it never lifts cluster isolation, so a neighbour hidden by isolation (not by kind/rel) still does not appear on canvas and the camera does not move.\n\nRepro: tap a Cluster (line 516 -> setIsolated(cluster)+setSelectedId), then tap a member Lesson (line 517 -> selectedId=lesson). The Inspector's neighbors useMemo (line 580) and `selected` (line 562) both read UNFILTERED graphData.edges/nodes, so a cross-cluster SIMILAR_TO neighbour renders as a clickable Relationships button. Clicking it calls focusNode(crossClusterLessonId). That node is dropped from visibleNodes by isolation at line 417 (cluster_id !== isoCid), NOT by kindFilter, so it has no position entry -> focusNode takes the `if (!p)` branch. target.kind='Lesson' is already in kindFilter and its rels (SIMILAR_TO/IN_CLUSTER) already in relFilter, so setKindFilter (line 572) and setRelFilter (lines 573-574) are no-ops. `isolated` is never cleared, so visibleNodes still excludes the target -> positions still lacks it -> the node render early-returns null at line 690, and the pan/zoom branch (line 578) is skipped. No node appears, no camera move.\n\nImportant nuance that justifies LOW (vs the original MEDIUM): the fix is NOT a full no-op here. setSelectedId(id) runs, and because `selected`/`neighbors` read unfiltered data, the Inspector side panel re-renders for the clicked cross-cluster lesson (its title, body, relationships). So the user DOES get visible feedback (the panel switches) -- unlike the original 'absolutely nothing' grievance. The residual gap is purely the canvas: the node stays off-screen and the camera doesn't fly to it while isolation persists. So the original 'zero feedback' is genuinely narrowed, but a real residual UX rough edge remains (the camera/pan promised by focusNode's happy path still doesn't fire for isolation-hidden neighbours). Verified no other code path clears isolation on a neighbour-button click (only background tap at line 512, the isolation chip at line 649, Reset view at line 642, and toggleKind('Cluster') at line 560 do).",
+  "suggested_fix": "In focusNode's `if (!p)` branch, also lift isolation when the target lies outside the isolated cluster: e.g. `if (isolated) setIsolated(null);` before (or alongside) the filter widening, so the next layout pass includes the target and the subsequent pan/zoom can run. Optionally, after lifting isolation the function could fall through to compute the position and pan/zoom on the next render, or the Inspector neighbors useMemo could annotate cross-isolation neighbours (visibleIds.has(other.id)===false) and dim/label them so the user knows the click will leave the isolated view.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "frontend/app/constellation/page.tsx:580 neighbors useMemo reads unfiltered graphData.edges/nodes -> renders cross-cluster SIMILAR_TO neighbour buttons even while isolated",
+   "frontend/app/constellation/page.tsx:413-421 visibleNodes drops isolation-hidden nodes via cluster_id check (line 417), independent of kindFilter",
+   "frontend/app/constellation/page.tsx:564-577 focusNode reveal branch only widens kindFilter (line 572) + relFilter (573-574); never clears `isolated`",
+   "frontend/app/constellation/page.tsx:572-574 setKindFilter/setRelFilter are no-ops when target kind=Lesson + rels SIMILAR_TO/IN_CLUSTER are already enabled (the default)",
+   "frontend/app/constellation/page.tsx:690 node render returns null when positions[id] missing -> isolation-hidden target stays invisible after 'reveal'",
+   "frontend/app/constellation/page.tsx:578 pan/zoom only runs in the else (position exists) branch -> no camera move for isolation-hidden target",
+   "frontend/app/constellation/page.tsx:562 `selected` reads unfiltered graphData.nodes -> Inspector panel DOES re-render for the clicked node, so the user gets partial (panel-only) feedback, narrowing the original 'zero feedback'",
+   "frontend/app/constellation/page.tsx:516-517 isolation entered by tapping a Cluster; member lessons remain selectable while isolated"
+  ]
+ }
+]

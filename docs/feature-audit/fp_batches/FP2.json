@@ -1,0 +1,218 @@
+[
+ {
+  "id": "FA-0261",
+  "area": "fe-constellation",
+  "feature": "Galaxy Play — Minimap",
+  "expected_behaviour": "A minimap is built as a Phaser Container in the top-left corner (scrollFactor 0). It shows each star as a coloured dot proportional to its world position, sized relative to the minimap. The current ship position is shown as a distinct marker. During map mode, the current camera view rectangle is drawn on the minimap. The minimap updates every frame. If a waypoint is set, the waypoint target appears on the minimap.",
+  "entry_points": "frontend/lib/constellation-game/galaxy-scene.ts:GalaxyScene",
+  "original_claim": "The expected behavior specifies the minimap in the top-left corner but the implementation places it in the bottom-right corner. The comment at line 2057 explicitly reads 'Fixed bottom-right minimap' and positionMinimap() at lines 2121-2127 computes position as (scale.width - mapWidth - margin, scale.height - mapHeight - margin). Functionally the minimap is correct (star dots, ship marker, view rect, waypoint, per-frame updates) but the documented location mismatches reality, which may cause confusion if a user follows any help text pointing them to the top-left.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Not a real defect. The factual code claim is accurate: the minimap is positioned bottom-right (comment at galaxy-scene.ts:2057 \"Fixed bottom-right minimap\"; positionMinimap() at 2120-2127 sets x = scale.width - miniW - margin, y = scale.height - miniH - margin), while the audit record's expected_behaviour for FA-0261 says \"top-left corner.\" But the \"top-left\" expectation is the QA tool's own auto-generated description (a misread of the code), not an authoritative product spec or any user-facing text. There is NO help text, tooltip, tutorial, or documentation anywhere in the frontend pointing users to a top-left minimap: grepping the entire frontend (excluding node_modules) for \"top-left\"/\"top left\"/\"minimap\"/\"bottom-right\" returns ONLY galaxy-scene.ts itself. The hypothesized harm (\"may cause confusion if a user follows any help text pointing them to the top-left\") therefore cannot occur because no such text exists. The minimap is self-evident, display-only, and functionally correct (star dots, ship marker, view rect, waypoint, per-frame updates per lines 2089-2095 and 2129-2157), and the code comment and implementation agree with each other. A real user simply sees the minimap in the corner where it is and is not misdirected. This is an internal spec-vs-implementation discrepancy in the audit record with zero user impact.",
+  "refutation_evidence": [
+   "frontend/lib/constellation-game/galaxy-scene.ts:2057 (comment 'Fixed bottom-right minimap')",
+   "frontend/lib/constellation-game/galaxy-scene.ts:2120-2127 (positionMinimap computes scale.width/height - size - margin = bottom-right)",
+   "frontend/lib/constellation-game/galaxy-scene.ts:2089-2095,2129-2157 (functionally correct dots/marker/view-rect/waypoint)",
+   "grep across frontend/ excluding node_modules for corner/minimap terms returns only galaxy-scene.ts — no user-facing help text references top-left"
+  ]
+ },
+ {
+  "id": "FA-0323",
+  "area": "fe-fuel",
+  "feature": "Workout Detail — Delete Workout",
+  "expected_behaviour": "A 'Delete' button in rose text is always visible in the action bar regardless of edit mode. Clicking shows window.confirm('Delete this workout?'). On confirm: calls DELETE /api/v1/fuel/workouts/{id}/, clears the autosave draft, and closes the drawer. No pending/loading state on the button (the mutation is fire-and-forget from the drawer's perspective since it closes immediately).",
+  "entry_points": "frontend/components/fuel/workout-detail.tsx:WorkoutDetailInner ; DELETE /api/v1/fuel/workouts/{id}/",
+  "original_claim": "The expected behaviour states the Delete button has 'rose text' in the action bar, but the code renders it as text-ink-muted (gray) by default; only on hover does it become rose. The button is visually indistinguishable from other neutral actions until hovered, reducing the destructive affordance. This is a design/spec discrepancy but low user-impact since the confirm dialog still guards the action.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Not a real defect. The code at workout-detail.tsx:826 does render the Delete button as `text-ink-muted hover:text-rose-text` (gray by default, rose on hover), exactly as cited — but this is intended, design-system-consistent behaviour, not a violation of any actual spec. The \"rose text always visible\" expectation comes solely from the audit record's self-authored expected_behaviour, not from any documented design rule: DESIGN.md has no destructive-action/rose token requirement, and git blame shows the button has rendered this exact way since it was first written (2026-04-22) — it was never rose-by-default. The muted-until-hover pattern is the established convention across the codebase for secondary/inline delete affordances: every comparable delete control in the fuel area (sleep.tsx:97, body-weight.tsx:121, resting-heart-rate.tsx:96, and the inline delete buttons within workout-detail.tsx itself at 993/1018/1356/1388) uses `text-ink-faint/muted hover:text-rose-text`. Persistent always-rose styling is reserved for error states, status badges, and primary destructive-confirm buttons (dynamic-list.tsx:32, pending-reminders-section.tsx:201). The workout-detail Delete sits among neutral siblings (Edit workout, Duplicate, Save as template) and correctly follows the secondary pattern — it turns rose on hover/focus, providing the destructive affordance at the moment of interaction. The action is additionally fully guarded by window.confirm('Delete this workout?'), so there is no accidental-deletion risk. A real user experiences a reasonable, conventional destructive control, not a defect; the only \"discrepancy\" is against the auditor's own assumed spec.",
+  "refutation_evidence": [
+   "frontend/components/fuel/workout-detail.tsx:826 (Delete button: border border-border hover:border-rose-border text-ink-muted hover:text-rose-text — muted default, rose on hover)",
+   "frontend/components/fuel/workout-detail.tsx:993,1018,1356,1388 (sibling inline delete controls use the same text-ink-faint hover:text-rose-text pattern)",
+   "frontend/components/fuel/sleep.tsx:97 and body-weight.tsx:121 and resting-heart-rate.tsx:96 (same muted-until-hover delete convention across fuel area)",
+   "frontend/components/dynamic-list.tsx:32 / pending-reminders-section.tsx:201 (always-rose reserved for primary destructive-confirm buttons)",
+   "git blame workout-detail.tsx:826 → 7643a0be MJ 2026-04-22 (styling unchanged since inception; never rose-by-default)"
+  ]
+ },
+ {
+  "id": "FA-0345",
+  "area": "fe-insights-horizons",
+  "feature": "Pending goal extraction — accept as goal or task",
+  "expected_behaviour": "The 'Suggestions from your journal' section is only rendered when `data.pending_extractions.length > 0`. Each `HorizonsPendingExtraction` renders a `PendingGoal` card with either an 'AI Extraction' badge (accent colours, for kind='goal') or 'Pattern Found' badge (signal colours, for kind='task'), showing the extracted quote, confidence level, and source date. Clicking 'Accept Goal' or 'Accept Task' fires `useApproveExtractionMutation` → `POST /api/v1/journal/extractions/<id>/approve/`. While pending the button text changes to 'Saving...' and both buttons are disabled. On success, local `resolved` state is set to 'approved' and the card body is replaced with 'Added to your goals!' or 'Added to your tasks!' (signal green). The ['horizons'] query is also invalidated. Clicking 'Dismiss' fires `useDismissExtractionMutation` → `POST /api/v1/journal/extractions/<id>/dismiss/`. On success, `resolved` is set to 'dismissed' and the card unmounts entirely (returns null).",
+  "entry_points": "frontend/app/horizons/page.tsx:HorizonsPage ; frontend/components/pending-goal.tsx:PendingGoal ; frontend/lib/queries.ts:useApproveExtractionMutation ; frontend/lib/queries.ts:useDismissExtractionMutation ; frontend/lib/api.ts:approveExtraction ; frontend/lib/api.ts:dismissExtraction ; POST /api/v1/journal/extractions/{id}/approve/ ; POST /api/v1/journal/extractions/{id}/dismiss/",
+  "original_claim": "When approveExtraction or dismissExtraction returns an API error, no error state is surfaced to the user: `onError` is never passed to either mutate call, so the card silently returns to its idle state with buttons re-enabled. The user receives no feedback that their action failed and may not know to retry.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive -- error feedback IS surfaced, just not where the reviewer looked. The QueryClient is constructed with a global mutation default onError handler (frontend/app/providers.tsx:25-36) that fires for EVERY mutation unless it opts out via meta.skipErrorToast. On failure it calls emitToast(getErrorMessage(err), \"error\"), rendered by GlobalToastHost mounted in the providers tree. The only skipped case is HTTP 401, which is intentionally silent because apiFetch redirects to /login. Neither useApproveExtractionMutation nor useDismissExtractionMutation (frontend/lib/queries.ts:267-285) sets meta.skipErrorToast, so a failed approve/dismiss DOES produce a visible error toast. The card correctly returns to its idle state with buttons re-enabled so the user can retry -- that is desired behavior, not a silent failure. The claim (and the feature record's own inventory note 'error states from the mutations are not shown to the user') is a misread that assumed error handling only lives in the per-mutation onSuccess/onError callbacks and never examined the QueryClient default-options layer.",
+  "refutation_evidence": [
+   "frontend/app/providers.tsx:13-43 (QueryClient defaultOptions.mutations.onError -> emitToast for all non-401 errors unless meta.skipErrorToast)",
+   "frontend/lib/queries.ts:267-285 (approve/dismiss mutations do NOT set meta.skipErrorToast, so covered by the global toast)",
+   "frontend/components/toast.tsx:22,111 (emitToast emitter + GlobalToastHost renderer)",
+   "frontend/components/pending-goal.tsx:65-92 (card re-enables buttons on idle, allowing retry after a failure)"
+  ]
+ },
+ {
+  "id": "FA-0353",
+  "area": "fe-integrations",
+  "feature": "Telegram connect — generate QR / deep-link",
+  "expected_behaviour": "TelegramCard shows a StatusPill('pending') and a 'Connect' button when status.linked is false. Clicking calls generateTelegramLink() → POST /api/v1/tenants/telegram/generate-link/. While pending the button label changes to 'Generating...' and is disabled. On success the response (qr_code data-URL and deep_link) is stored in local state; a QR image and an 'Open in Telegram' link (target=_blank) are shown. The useTelegramStatusQuery polls at 3 s (pairingActive=true) while the QR is visible and at 15 s otherwise; it stops polling once linked=true. Errors from the mutation are silently suppressed (caught, no UI).",
+  "entry_points": "frontend/app/settings/integrations/page.tsx:TelegramCard ; POST /api/v1/tenants/telegram/generate-link/ ; GET /api/v1/tenants/telegram/status/ (polled)",
+  "original_claim": "When POST /api/v1/tenants/telegram/generate-link/ fails (network error, server 5xx, etc.), the catch block at line 57 silently suppresses the error with no UI feedback. The user sees the unchanged 'Connect' button without any indication that link generation failed.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive. The claim asserts the catch block at lines 57-58 silently suppresses the error with no UI feedback, but it overlooks the GLOBAL mutation error handler. The app's QueryClient (frontend/app/providers.tsx:25-36) sets defaultOptions.mutations.onError to emit a toast for every failed mutation: `emitToast(getErrorMessage(err), \"error\")`, skipping only 401 (handled by apiFetch redirect) or mutations that opt out via meta.skipErrorToast. useGenerateTelegramLinkMutation (frontend/lib/queries.ts:491-495) is a bare useMutation with NO skipErrorToast meta and NO custom onError, so it falls through to the global handler. For the cited failure modes (network error, server 5xx) the status is not 401, so an error toast IS shown via the GlobalToastHost mounted in providers.tsx:52. The component's empty catch with the comment `// handled by mutation` (line 58) is therefore accurate — it deliberately defers feedback to the global mutation handler, and the button correctly reverts from \"Generating...\" to \"Connect\" because generateLink.isPending returns to false. The user does get UI feedback (a toast). No defect.",
+  "refutation_evidence": [
+   "frontend/app/settings/integrations/page.tsx:53-60 (handleConnect catch with '// handled by mutation')",
+   "frontend/lib/queries.ts:491-495 (useGenerateTelegramLinkMutation: bare useMutation, no skipErrorToast meta, no custom onError)",
+   "frontend/app/providers.tsx:25-36 (global defaultOptions.mutations.onError -> emitToast for all non-401 mutation failures unless meta.skipErrorToast)",
+   "frontend/app/providers.tsx:52 (GlobalToastHost mounted in provider tree)"
+  ]
+ },
+ {
+  "id": "FA-0356",
+  "area": "fe-integrations",
+  "feature": "LINE connect — generate QR / deep-link",
+  "expected_behaviour": "LineCard shows a 'Connect LINE' button (LINE-green border) when status.linked is false. Clicking calls generateLineLink() → POST /api/v1/tenants/line/generate-link/. While pending the button is disabled with label 'Generating...'. On success a QR image, a step-by-step instruction box, an 'Open in LINE' link, and a '15 minutes' expiry note are shown. The useLineStatusQuery polls at 3 s while QR is visible, 15 s otherwise, stops once linked=true. Errors are silently suppressed.",
+  "entry_points": "frontend/app/settings/integrations/page.tsx:LineCard ; POST /api/v1/tenants/line/generate-link/ ; GET /api/v1/tenants/line/status/ (polled)",
+  "original_claim": "When POST /api/v1/tenants/line/generate-link/ fails, the catch block at line 145 suppresses the error silently. The user sees no indication that link generation failed and the Connect LINE button remains in its original state with no feedback.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive. The reviewer read the empty `catch {}` at page.tsx:145-147 in isolation and missed the global React Query error handler. The app's QueryClient defines a `MutationCache`-level `mutations.onError` in app/providers.tsx:30-35 that calls `emitToast(getErrorMessage(err), \"error\")` for EVERY failed mutation unless the mutation opts out via `meta.skipErrorToast`. `useGenerateLineLinkMutation` (lib/queries.ts:537-541) sets no `meta`, so a failed POST /tenants/line/generate-link/ DOES surface a visible error toast to the user. The empty `catch {}` in `handleConnect` only swallows the awaited promise rejection to prevent an unhandled rejection — the actual user-facing feedback is the global toast, which is what the \"handled by mutation\" comment refers to. The button correctly returns from \"Generating...\" to \"Connect LINE\" (generateLink.isPending → false) on failure, which is the desired end state, and the user is informed via toast. emitToast/getErrorMessage/GlobalToastHost are all wired and mounted (providers.tsx:7,9,52). The claim that \"the user sees no indication that link generation failed\" is contradicted by the code.",
+  "refutation_evidence": [
+   "frontend/app/settings/integrations/page.tsx:141-148 (empty catch, handleConnect)",
+   "frontend/app/settings/integrations/page.tsx:179-191 (only consumes isPending, no isError needed)",
+   "frontend/lib/queries.ts:537-541 (useGenerateLineLinkMutation has no meta.skipErrorToast)",
+   "frontend/app/providers.tsx:25-36 (global MutationCache onError → emitToast for all non-opted-out mutations)",
+   "frontend/components/toast.tsx:22,111 (emitToast + GlobalToastHost exist)",
+   "frontend/lib/errors.ts:32 (getErrorMessage exists)"
+  ]
+ },
+ {
+  "id": "FA-0374",
+  "area": "fe-integrations",
+  "feature": "Revoke token — confirmation modal",
+  "expected_behaviour": "Clicking 'Revoke' on a TokenRow opens RevokeConfirmModal with the token name shown ('X will stop working immediately. Any app using it will need a new token.'). A 'Revoke' button calls revokePAT(pat.id) → DELETE /api/v1/auth/tokens/<id>/revoke/ (via the revokePAT function). An optimistic update removes the token from the ['pats'] cache immediately. The button shows 'Revoking...' and is disabled while pending. On success, the modal closes and the cache is invalidated. On error, the previous state is restored and a rose error message is shown inside the modal. Cancel closes without action. Escape key also closes.",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:RevokeConfirmModal ; DELETE /api/v1/auth/tokens/<id>/revoke/ (via revokePAT)",
+  "original_claim": "The feature inventory describes the revoke endpoint as DELETE /api/v1/auth/tokens/<id>/revoke/ (with a /revoke/ suffix). The actual backend URL is tokens/<uuid:token_id>/ (no /revoke/ suffix) and the frontend calls DELETE /api/v1/auth/tokens/${id}/ to match. The code is internally consistent and works correctly, but if any external caller (e.g., documentation, a third-party integration) relies on the /revoke/ path described in the inventory, it will get a 404. No user-visible breakage in the current UI flow.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive. The \"/revoke/\" suffix exists ONLY in the feature-audit inventory's own prose (the FA-0374 JSON record), not in any product code. The actual code is fully consistent: the backend registers path(\"tokens/<uuid:token_id>/\", PATRevokeView.as_view()) whose delete() method revokes the token (auth_urls.py:34, pat_views.py:99-116), and the frontend revokePAT(id) calls DELETE /api/v1/auth/tokens/${id}/ (api.ts:1522-1524), wired through useRevokePATMutation (queries.ts:1713). A grep for any \"revoke/\" path across pat_views.py, frontend/lib, and the connected-apps page returns no matches. The PAT endpoints form a private subscriber-console / YardTalk-PAT API; there is no published external REST contract or third-party integration that consumes a \"/revoke/\" path, so the inventory's hypothetical \"external caller gets a 404\" cannot occur. The discrepancy is an error in the audit document describing the feature, not a defect in the running product — no user or operator experiences any breakage. Any correction belongs to the inventory text, not the codebase.",
+  "refutation_evidence": [
+   "apps/tenants/auth_urls.py:34 — tokens/<uuid:token_id>/ -> PATRevokeView, no /revoke/ suffix",
+   "apps/tenants/pat_views.py:99-116 — PATRevokeView.delete handles revocation at that exact path",
+   "frontend/lib/api.ts:1522-1524 — revokePAT calls DELETE /api/v1/auth/tokens/${id}/, matching backend",
+   "frontend/lib/queries.ts:1713-1729 — useRevokePATMutation wires revokePAT",
+   "docs/feature-audit/areas/fe-integrations__2.json:93-95 — the /revoke/ suffix appears only in the inventory prose",
+   "grep for 'revoke/' across pat_views.py + frontend/lib + connected-apps returned no matches"
+  ]
+ },
+ {
+  "id": "FA-0384",
+  "area": "fe-journal",
+  "feature": "Create new goal or project document",
+  "expected_behaviour": "Addable kinds (goal, project) show a + button next to the section header. Clicking it reveals an inline text input (auto-focused) and an Add button. The user types a name; Enter or clicking Add calls createMutation.mutate({kind, slug: slugify(name), title: name, markdown: ''}), which POSTs to POST /api/v1/journal/documents/. While pending, the Add button shows '…' and is disabled. On success, the sidebar tree is invalidated, the form is cleared, and onNavigate is called with the new document's kind and slug. Pressing Escape cancels. Empty or whitespace-only names are rejected client-side (button disabled, Enter guard). The slug is auto-computed by lowercasing, collapsing spaces to hyphens, and stripping non-alphanumeric characters.",
+  "entry_points": "frontend/components/journal/sidebar.tsx:Sidebar ; frontend/lib/queries.ts:useCreateDocumentMutation ; POST /api/v1/journal/documents/",
+  "original_claim": "When createMutation fails (e.g., duplicate slug violates the unique_together constraint on tenant+kind+slug), the sidebar shows no error message — createMutation.isError is never rendered. The inline form stays open until a blur fires the 150ms cancel timer, silently discarding the failure. Users have no indication that their document was not created.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive — the defect's core premise is factually wrong. It claims a duplicate slug \"violates the unique_together constraint on tenant+kind+slug\" and causes createMutation to fail silently. But the server-side create handler (apps/journal/document_views.py:180-197, DocumentListCreateView.post) uses Document.objects.get_or_create(tenant, kind, slug, ...), which queries before inserting. A colliding slug therefore returns HTTP 200 with the EXISTING document — it never reaches the INSERT, so the unique_together constraint at models.py:199 is never triggered and no IntegrityError is raised. The DocumentCreateSerializer (document_serializers.py:31-35) is a plain Serializer with no UniqueTogetherValidator or validate(), so it also never 400s on duplicates. As a result createMutation resolves successfully: onSuccess (sidebar.tsx:178-182) closes the inline form and navigates the user to the (existing) document via onNavigate — a reasonable, non-error outcome. The createMutation.isError path the finding worries about is simply not reached for the described duplicate-slug scenario. While it is true the sidebar has no onError/isError handling for genuinely unexpected failures (network drop, 401, 500), that generic concern is not the data-integrity scenario claimed, and the specific user-facing defect described does not occur.",
+  "refutation_evidence": [
+   "apps/journal/document_views.py:180-197 (post uses get_or_create → 200/201, no IntegrityError on duplicate)",
+   "apps/journal/document_serializers.py:31-35 (plain Serializer, no UniqueTogetherValidator/validate)",
+   "apps/journal/models.py:199 (unique_together exists but is never hit due to get_or_create)",
+   "frontend/components/journal/sidebar.tsx:171-185 (confirmAdd → onSuccess closes form and navigates; duplicate resolves as success)",
+   "frontend/lib/queries.ts:928-937 (useCreateDocumentMutation has no onError, but failure path described does not occur)",
+   "frontend/lib/api.ts:958-963 (createDocument POSTs to documents endpoint backed by get_or_create handler)"
+  ]
+ },
+ {
+  "id": "FA-0399",
+  "area": "fe-journal",
+  "feature": "Current status card — obligations, tasks, goals",
+  "expected_behaviour": "CurrentStatusCard is rendered above the document content only when kind === 'daily' and not editing. It calls useJournalStatusQuery (GET /api/v1/journal/status/, staleTime 60s). While loading or if data is undefined, it renders null. If data has no obligations, no open_tasks, and no active_goals, it renders null (completely hidden). Otherwise it shows a card with 'Current status · as of now'. Obligations render nickname, minimum_payment (formatted as $X.XX), due_date (short format), and a status pill (green for paid, amber for partial, rose for unpaid/overdue with 'Overdue' label override). Open tasks show a checkbox button; clicking it calls completeTaskMutation (POST /api/v1/journal/tasks/{id}/complete/) which invalidates journal-status on success. Tasks may show a due_date. Active goals show title and optional target_date.",
+  "entry_points": "frontend/components/journal/current-status-card.tsx:CurrentStatusCard ; frontend/lib/queries.ts:useJournalStatusQuery ; frontend/lib/queries.ts:useCompleteTaskMutation ; GET /api/v1/journal/status/ ; POST /api/v1/journal/tasks/{id}/complete/",
+  "original_claim": "A single shared completeTaskMutation instance is used for all open tasks in CurrentStatusCard. When any one task is being completed, completeTaskMutation.isPending is true and all task checkboxes are disabled simultaneously (line 86). A user with multiple open tasks cannot queue a second completion until the first network round-trip finishes, and there is no per-row loading indicator — just the blanket disabled state. This is visible but not broken; however, it diverges from the expected behaviour which implies per-item interactivity.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "The code matches the claim exactly — a single shared completeTaskMutation (current-status-card.tsx:45) drives every open-task checkbox, and each button is disabled via completeTaskMutation.isPending (line 86), so during any one completion all checkboxes are momentarily disabled with no per-row spinner. But this is NOT a real defect: (1) The feature's expected_behaviour only requires that clicking a checkbox calls completeTaskMutation and invalidates journal-status on success — it never mandates per-item interactivity or per-row loading indicators. The audit's own inventory_notes explicitly document the blanket-disabled/no-spinner state as known existing design (\"disabled while isPending but shows no loading indicator beyond the disabled state\"), i.e. intended, not a divergence. (2) The disabled window is a single sub-second network round-trip; on success the mutation invalidates the journal-status query (queries.ts:251-253) and the completed task drops off the refetched list, so state clears on re-render. (3) The blanket disable is a benign guard against double-submits and racing the invalidation refetch. There is no correctness, data-integrity, accessibility, or functional break — a user can complete every task, just not fire two in the same brief in-flight window. At most an optional polish nicety, below the bar for a reportable UX defect.",
+  "refutation_evidence": [
+   "frontend/components/journal/current-status-card.tsx:45 (single shared useCompleteTaskMutation instance)",
+   "frontend/components/journal/current-status-card.tsx:83-90 (checkbox button, disabled={completeTaskMutation.isPending}, onClick mutate(t.id))",
+   "frontend/lib/queries.ts:247-255 (mutation invalidates journal-status onSuccess; completed task drops from refetched list)",
+   "docs/feature-audit/areas/fe-journal__2.json FA-0399 expected_behaviour + inventory_notes (no per-item requirement; disabled-no-spinner documented as known design)"
+  ]
+ },
+ {
+  "id": "FA-0435",
+  "area": "fe-legal",
+  "feature": "Scroll-triggered header border on legal pages",
+  "expected_behaviour": "AppShell attaches a passive `scroll` event listener to the `#main-content` element. When `scrollTop > 8px`, the `headerBorder` state is set to `true`, which adds a visible bottom border to the sticky header. On legal pages the header is rendered (AppShell wraps all pages), so this behaviour applies. Scrolling back to the top removes the border. No API call; no legal-page-specific code — inherited from AppShell.",
+  "entry_points": "frontend/components/app-shell.tsx:AppShell (lines 267-275)",
+  "original_claim": "The scroll-triggered header border does not function on legal pages. The `isPublicPage` branch renders a plain (non-sticky) header with no `headerBorder` state binding, so even if the listener fired it would have no visible effect. Additionally, the `#main-content` element in the public-page branch has no height constraint or `overflow-y-auto`, so page scrolling happens at the window/document level — the `scroll` event listener attached to that element never receives events and `main.scrollTop` stays 0 permanently. The expected behaviour (visible bottom border when scrolled) is absent for all anonymous users on legal pages.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive. The two technical observations are correct (the public/legal layout header is non-sticky with a static border and no headerBorder binding; the public #main-content is not a scroll container so its scroll listener never fires for this layout), but the conclusion that this is a defect is a misread of intended design. Legal pages route through the isPublicPage branch (lines 318-332), which is a deliberately DIFFERENT layout from the authenticated sticky-header layout (lines 343-349). On legal pages the header is intentionally non-sticky: it scrolls up and away with the page content, and it carries a permanent always-on separator (border-b border-white/[0.04], line 323). The scroll-reactive headerBorder border belongs only to the authenticated layout's sticky header, where it matters because that header stays pinned and needs a separator once content slides under it. On a non-sticky header a scroll-triggered border would be pointless (you cannot see the header once scrolled past). The user story's actual goal — a visible header separator and a sense of having scrolled — is fully satisfied on legal pages: the static border is always visible, and the header physically scrolling out of view is itself the scroll cue. The 'expected behaviour' in the feature record was fabricated by projecting the authenticated layout's mechanism onto the public layout. No anonymous user experiences a missing or broken separator; nothing is broken.",
+  "refutation_evidence": [
+   "frontend/components/app-shell.tsx:27-38 (publicPages includes /legal/* paths)",
+   "frontend/components/app-shell.tsx:262 (isPublicPage is true for legal pages)",
+   "frontend/components/app-shell.tsx:318-332 (public/legal layout: non-sticky header with permanent static border-b, no headerBorder binding; main lacks overflow/height constraint)",
+   "frontend/components/app-shell.tsx:343-349 (separate authenticated sticky header where scroll-reactive headerBorder is the intended design)",
+   "frontend/app/globals.css:113-117 (no global rule making #main-content a scroll container or the public header sticky)"
+  ]
+ },
+ {
+  "id": "FA-0453",
+  "area": "fe-settings",
+  "feature": "Integrations — Telegram connect via QR code / deep link",
+  "expected_behaviour": "The TelegramCard renders a pending StatusPill and a \"Connect\" button when `status.linked` is false. Clicking Connect calls `POST /api/v1/tenants/telegram/generate-link/`, which returns `{ qr_code, deep_link }`. A QR code image and an \"Open in Telegram\" button then appear. The component polls `GET /api/v1/tenants/telegram/status/` every 3 s while the link is visible (15 s otherwise). When `status.linked` becomes true, the card switches to the connected state showing `@username`. The pending link is not automatically expired client-side.",
+  "entry_points": "frontend/app/settings/integrations/page.tsx:TelegramCard ; POST /api/v1/tenants/telegram/generate-link/ ; GET /api/v1/tenants/telegram/status/",
+  "original_claim": "After `POST /api/v1/tenants/telegram/generate-link/` returns a link with an `expires_at` timestamp, the `TelegramCard` stores the result in `linkData` state but never clears it or shows a countdown when the server-side token expires. A user who leaves the pairing screen open past the expiry window will still see the QR code and \"Open in Telegram\" button; scanning or tapping at that point silently fails in Telegram with no feedback in the UI. No countdown or expiry indicator is rendered.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Not a defect — the absence of a client-side countdown / auto-clear / on-expiry feedback is documented intended behavior. The FA-0453 feature record's own expected_behaviour states verbatim: \"The pending link is not automatically expired client-side.\"\n\nCode confirms the mechanics: TelegramCard (integrations/page.tsx:43-130) stores linkData (which carries expires_at, defined in api.ts:449-453) but never reads expires_at, renders no countdown, and never auto-clears the QR/deep-link. However, the \"silently fails with no feedback\" framing is overstated and the real flow is self-correcting: (1) pairing is an immediate action — the user generates the link and scans/taps it right then, not 15 minutes later; (2) the card polls GET .../telegram/status/ every 3s while the link is visible (page.tsx:47) and flips to the connected \"@username\" state the moment pairing succeeds; (3) the card never falsely claims success — it stays in the \"pending\" state until status.linked becomes true, so an expired-link attempt simply leaves the user where they started, and Telegram itself surfaces the failed pairing on its side; (4) the expiry-then-retry scenario is an edge case outside the normal flow.\n\nThe only genuine (and minor/cosmetic) observation is an inconsistency, NOT the claimed defect: the LINE card shows a static \"Link expires in 15 minutes\" hint (page.tsx:219) while the Telegram card shows no expiry hint. That is a small copy-parity gap, not a silent-failure logic bug, and the specifically claimed \"missing countdown / auto-clear on expiry\" behavior is exactly what the spec intends.",
+  "refutation_evidence": [
+   "frontend/app/settings/integrations/page.tsx:43-130 (TelegramCard: linkData stored, expires_at never read, no countdown/auto-clear)",
+   "frontend/app/settings/integrations/page.tsx:47 (status polling 3s while link visible, flips card to connected on success)",
+   "frontend/app/settings/integrations/page.tsx:219 (LINE card shows static 'Link expires in 15 minutes' hint that Telegram lacks — cosmetic parity gap only)",
+   "frontend/lib/api.ts:449-453 (TelegramLinkResponse includes expires_at)",
+   "docs/feature-audit/areas/fe-settings__1.json FA-0453 expected_behaviour: 'The pending link is not automatically expired client-side.'"
+  ]
+ },
+ {
+  "id": "FA-0461",
+  "area": "fe-settings",
+  "feature": "Integrations — Google OAuth disconnect",
+  "expected_behaviour": "When `integration.status === 'active'` or the integration record exists, a \"Disconnect\" button appears. Clicking calls `useDisconnectIntegrationMutation` with `integration.id`. Button shows \"Disconnecting...\" while pending. No confirmation dialog. On success the integrations query is invalidated and the card reverts to pending state.",
+  "entry_points": "frontend/app/settings/integrations/page.tsx:IntegrationsContent ; DELETE /api/v1/tenants/integrations/<id>/ (inferred from useDisconnectIntegrationMutation)",
+  "original_claim": "When both an active integration and a revoked integration exist for the same provider, the single shared `disconnect` mutation means clicking Disconnect for one provider disables the Disconnect button for all providers while the request is in flight. Additionally, no confirmation dialog is shown before disconnecting, which matches the spec but could cause accidental disconnection.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Not a defect. The claim has two parts, both of which fail to confirm:\n\n1) \"Two Disconnect buttons for the same provider (one active + one revoked) all get disabled together\" — this is a misread of the rendering. The card grid iterates the STATIC `providers` array (only `google` and `reddit`, page.tsx:30-41) and resolves each provider to a SINGLE integration via `data?.find((item) => item.provider === provider.key)` (page.tsx:585). At most one card and one Disconnect button is rendered per provider; two buttons for the same provider can never coexist, even if multiple integration records existed server-side. The shared `disconnect.isPending` (page.tsx:638) is shared across the two DISTINCT provider cards (google vs reddit), not across \"active vs revoked of the same provider.\" So clicking Disconnect on Google momentarily disables the Disconnect button on Reddit. This is a minor cosmetic edge: the optimistic `onMutate` (queries.ts:445-451) immediately removes the disconnected row so its card flips out of the `isConnected` branch right away, the in-flight window is a single brief request, and disconnecting two different providers in the same instant is a rare action with no data-integrity or broken-state consequence.\n\n2) \"No confirmation dialog could cause accidental disconnection\" — the feature spec (expected_behaviour in fe-settings__2.json FA-0461) explicitly states \"No confirmation dialog.\" This is documented intended behaviour, not a defect.\n\nNet: the described user-facing failure does not exist as framed, and the no-confirm behaviour matches spec.",
+  "refutation_evidence": [
+   "frontend/app/settings/integrations/page.tsx:30-41 (static providers array: only google + reddit)",
+   "frontend/app/settings/integrations/page.tsx:584-588 (per-provider .find resolves a single integration; one card per provider)",
+   "frontend/app/settings/integrations/page.tsx:634-642 (single Disconnect button per card, disabled by shared disconnect.isPending)",
+   "frontend/lib/queries.ts:441-451 (single shared mutation with optimistic onMutate row removal)",
+   "frontend/lib/api.ts:531-535 (disconnect by integration id)",
+   "docs/feature-audit/areas/fe-settings__2.json FA-0461 expected_behaviour: 'No confirmation dialog'"
+  ]
+ },
+ {
+  "id": "FA-0470",
+  "area": "fe-settings",
+  "feature": "Scheduled Tasks — timezone selector (in cron forms)",
+  "expected_behaviour": "The `<TimezoneSelector>` renders two controls: a text search input and a grouped `<select>`. It queries `Intl.supportedValuesOf('timeZone')` client-side for the full IANA list (falls back to `['UTC']`). Typing in the search filters by timezone name or UTC offset label. When the filter hides the currently-selected timezone, the component auto-selects the first visible option and fires `onChange`. Groups are derived from the IANA prefix (e.g. \"America\", \"Europe\", \"Asia\"). No API call.",
+  "entry_points": "frontend/components/timezone-selector.tsx:TimezoneSelector",
+  "original_claim": "When the search filter hides the currently-selected timezone, the component silently auto-selects and fires `onChange` with the first visible option, updating the parent form without any user action. A user who types a search to verify their timezone selection may inadvertently change it to an unintended value before they realise what happened.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Not a real defect. The auto-select effect (timezone-selector.tsx:121-125) fires onChange(filteredTimezones[0]) only when the search filter excludes the currently-selected timezone — and it is a deliberate consistency mechanism, documented in the inline comment, to keep the visible <select> value (which renders currentValue at lines 144/115-117) in sync with what would actually be saved. Without it, the displayed dropdown value could silently diverge from the form's stored value, which is the worse bug.\n\nThree reasons the hypothesized harm does not materialize: (1) In all three call sites (cron-jobs/page.tsx:594, 968, 1033) onChange only mutates LOCAL form state (createForm.tz / editForm.tz). Nothing is persisted to the backend — the value is only saved on an explicit form submit (handleCreate / handleUpdate). (2) The change is fully visible: the <select> immediately re-renders showing the newly auto-selected timezone, so the user reviews it in the dropdown before submitting. (3) There is no distinct \"verify my timezone\" mode the QA scenario assumes — the search box exists solely to narrow the list for picking a timezone while building/editing a cron schedule; a user typing into it is in the act of selecting, not passively inspecting. The combination of visible reflection + no auto-save + an explicit-submit gate means a user would not inadvertently persist an unintended timezone. Intended behavior, adequately guarded.",
+  "refutation_evidence": [
+   "frontend/components/timezone-selector.tsx:101-125",
+   "frontend/components/timezone-selector.tsx:142-160",
+   "frontend/app/settings/cron-jobs/page.tsx:594-598",
+   "frontend/app/settings/cron-jobs/page.tsx:968-972",
+   "frontend/app/settings/cron-jobs/page.tsx:1033-1037"
+  ]
+ }
+]

@@ -1,0 +1,68 @@
+{
+ "tenants-auth": [
+  "FA-1054 User Signup",
+  "FA-1071 Bulk Password Force-Rotation (Management Command)"
+ ],
+ "tenants-core": [
+  "FA-1095 User signup",
+  "FA-1112 Preferred primary model selection",
+  "FA-1114 Per-task model preferences",
+  "FA-1136 Tenant suspension / resume (billing-driven)",
+  "FA-1140 Fleet password rotation",
+  "FA-1148 Runtime preferred model read/switch"
+ ],
+ "billing": [
+  "FA-0029 Stripe webhook handler",
+  "FA-0046 Free-model offer health check cron",
+  "FA-0053 Global budget cap management command",
+  "FA-0059 UsageRecord and MonthlyBudget admin"
+ ],
+ "byo_models": [
+  "FA-0074 Runtime preferred model switch (internal API)",
+  "FA-0081 BYO-aware allowed models set for tier gating"
+ ],
+ "pii": [
+  "FA-0913 Inbound user message redaction (redact_user_message)",
+  "FA-0914 Telegram update redaction (redact_telegram_update)",
+  "FA-0920 Entity registry CRUD API - Patch entry",
+  "FA-0929 Span deduplication and adjacent merge in detection pipeline"
+ ],
+ "actions": [
+  "FA-0006 Confirmation message dispatch \u2014 send gate prompt to user's platform",
+  "FA-0007 Stale action expiry sweep (Celery task)"
+ ],
+ "finance": [
+  "FA-0531 Runtime Payoff Plan Calculation & Save (OpenClaw Plugin)",
+  "FA-0533 Runtime Finance Parameterized Query (OpenClaw Plugin)",
+  "FA-0536 Monthly Finance Snapshot Creation (System Cron)"
+ ],
+ "journal-core": [
+  "FA-0690 Weekly review detail (get/patch/delete)",
+  "FA-0692 Note template detail (get/patch/delete)",
+  "FA-0700 Sidebar tree endpoint"
+ ],
+ "router-chat": [
+  "FA-0951 Cron/proactive delivery via CronDeliveryView (container\u2192user)"
+ ],
+ "integrations": [
+  "FA-0628 Integration token refresh cron",
+  "FA-0653 Runtime lesson semantic search",
+  "FA-0656 Runtime full-text journal/document search",
+  "FA-0657 Runtime document get/put (generic)",
+  "FA-0662 Runtime profile update (agent-initiated)"
+ ],
+ "orchestrator-provisioning": [
+  "FA-0846 Pending Config Apply Task (Version-Gated)",
+  "FA-0866 Fuel Cron Regeneration (Per-Tenant + Fleet)",
+  "FA-0876 Gateway Chain Diagnostic"
+ ],
+ "fuel": [
+  "FA-0555 Workout Duplicate",
+  "FA-0567 Resting Heart Rate Log CRUD",
+  "FA-0568 Sleep Log CRUD",
+  "FA-0570 Workout Plan CRUD (Consumer)",
+  "FA-0582 Workout Plan Create + Expansion (Runtime/OpenClaw)",
+  "FA-0584 Workout Plan Detail + Update + Delete (Runtime/OpenClaw)",
+  "FA-0586 Per-Session Fuel Cron Derivation and Regeneration"
+ ]
+}

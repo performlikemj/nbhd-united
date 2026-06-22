@@ -1,0 +1,19 @@
+[
+ {
+  "ref": "FA-0995",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "Verified genuine but low-impact. The early audio gate (line_webhook.py:937-940) rejects voice before the paid Whisper call only when `not _audio_tenant.onboarding_complete or _audio_tenant.onboarding_step == 0`. The downstream gate (lines 1114-1125) additionally runs needs_reintroduction(tenant) (onboarding.py:571-587), which returns True for onboarding_complete=True users whose profile is mostly defaults (>=3 of: display_name in {Friend, empty}, timezone in {UTC, empty}, language in {en, empty}, no onboarding_interests), then RESETS onboarding_step to 0 and rejects any non-text message. Confirmed a completed-onboarding user ends at onboarding_step=5 (onboarding.py:487-488), and the module docstring (onboarding.py:9-10) explicitly notes backfilled users sit at onboarding_complete=True with onboarding_step=4 and no real data. For such a re-introduction-eligible user sending voice: the early gate evaluates `not True (False) or step==0 (False, step is 4/5)` => False => NOT rejected early => _show_loading + _transcribe_line_audio (paid OpenAI whisper-1 call, line 53/146-150) run => then the downstream needs_reintroduction branch resets step=0 and rejects with 'please type your answer.' That is the exact waste (long loading animation + discarded paid transcript before an outright rejection) the early gate was added to eliminate. The fix's own comment ('needs_reintroduction reset still runs below for non-onboarding users') glosses over the fact that those users are ALSO re-onboarded and rejected, so the early gate is genuinely incomplete. Scope is bounded: LINE-only, only the backfilled/default-profile cohort, only when they send VOICE specifically, and behavior stays CORRECT (they are still rejected) -- only the cost optimization (one Whisper call plus a loading animation per such voice message) leaks. No correctness, data, or security impact. Memory notes ~17/27 tenants on UTC default, so the cohort is non-trivial, but only the LINE-voice subset is hit -- hence low severity.",
+  "suggested_fix": "Make the early gate mirror the downstream condition by also checking needs_reintroduction. E.g. replace the condition at line_webhook.py:938-940 with `if _audio_tenant is not None and (not _audio_tenant.onboarding_complete or _audio_tenant.onboarding_step == 0 or needs_reintroduction(_audio_tenant)):` (importing needs_reintroduction at the top of the audio branch). This pre-empts the paid Whisper call + loading animation for the re-introduction cohort exactly as it does for in-flight onboarding users. The downstream reset/rejection can stay as the authoritative path.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/router/line_webhook.py:937-940 early gate omits needs_reintroduction (only checks onboarding_complete / step==0)",
+   "apps/router/line_webhook.py:950-951 _show_loading + _transcribe_line_audio paid whisper-1 call run when early gate not taken",
+   "apps/router/line_webhook.py:53,146-150 _transcribe_line_audio posts to OpenAI whisper-1 (paid)",
+   "apps/router/line_webhook.py:1114-1125 downstream gate calls needs_reintroduction -> resets onboarding_step=0 -> rejects msg_type != 'text'",
+   "apps/router/onboarding.py:571-587 needs_reintroduction returns True for onboarding_complete users with >=3 default profile fields",
+   "apps/router/onboarding.py:487-488 completed onboarding sets onboarding_step=5; docstring lines 9-10 note backfilled users at step=4 with no real data (both non-zero, so they slip the early gate)"
+  ]
+ }
+]

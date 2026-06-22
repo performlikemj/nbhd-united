@@ -1,0 +1,19 @@
+[
+ {
+  "ref": "actions#2",
+  "source": "missed",
+  "severity": "low",
+  "category": "data-integrity",
+  "detail": "Verified. All status-mutating paths do an unguarded read-check-write with no select_for_update / transaction.atomic, and no ATOMIC_REQUESTS in config/ (grep empty): Telegram poller (apps/router/poller.py:1586-1614), LINE postback (apps/router/line_webhook.py:1411-1432), GateRespondView (apps/actions/views.py:279-318), the GatePollView poll path itself (apps/actions/views.py:204-223), and the 60s sweep (apps/actions/tasks.py:25-33). Each reads the row, checks is_expired (models.py:81), then save(update_fields=[...]) with last-writer-wins. The agent container does NOT act on the APPROVED row directly -- it learns the resolution by polling GatePollView (views.py:191-242), which returns action.status. So if a user taps Approve at the deadline boundary (handler reads row PENDING and not-expired, writes APPROVED) while the sweep tick reads the same row PENDING and now>expires_at and its EXPIRED write lands last, the container's next poll returns EXPIRED and the destructive action the user explicitly approved silently never runs; two ActionAuditLog rows (APPROVED + EXPIRED) and a stomped gate message also result. The window is genuinely sub-second around the 5-minute deadline on a coinciding sweep tick, and the failure is fail-safe (the approved action simply does not run; nothing denied/expired is ever executed), so 'low' severity is correct. The claim is accurate and not over-stated.",
+  "suggested_fix": "Make each resolution atomic and conditional so the button handler and the sweep serialize on the row instead of clobbering. Wrap each read-check-write (poller, line_webhook, GateRespondView, and the sweep loop in tasks.py) in transaction.atomic() with PendingAction.objects.select_for_update().get(...), re-checking status==PENDING and is_expired under the lock. Or use a single conditional UPDATE -- PendingAction.objects.filter(id=..., status=PENDING).update(status=APPROVED) -- and proceed only when rowcount==1, so an approve cannot overwrite an EXPIRED row and the sweep cannot overwrite an APPROVED one.",
+  "fix_complexity": "small",
+  "evidence": [
+   "apps/actions/tasks.py:25-33 sweep flips PENDING+expired->EXPIRED with bare save(update_fields=['status']), no lock or atomic",
+   "apps/actions/views.py:279-318 GateRespondView reads then save() without select_for_update or transaction.atomic",
+   "apps/router/poller.py:1586-1614 Telegram gate callback: same unguarded read-check-write",
+   "apps/router/line_webhook.py:1411-1432 LINE postback: same pattern",
+   "apps/actions/views.py:191-242 GatePollView returns action.status to the container, so execution depends on this read; it also itself flips expired rows",
+   "grep for ATOMIC_REQUESTS / select_for_update / transaction.atomic in config/ and apps/actions/ returned nothing"
+  ]
+ }
+]

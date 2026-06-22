@@ -225,7 +225,14 @@ class SignupView(APIView):
             display_name=display_name,
         )
 
-        refresh = RefreshToken.for_user(user)
+        # Mint via the serializer's ``get_token`` so the token carries the
+        # ``pw_iat`` claim. ``create_user`` → the overridden ``set_password``
+        # stamps ``password_last_changed_at``, and ``RefreshToken.for_user``
+        # omits ``pw_iat``, so JWTAuthenticationWithRLS would otherwise reject
+        # the brand-new signup token on its very first authenticated request
+        # ("issued before the last password change"). Same fix as
+        # PasswordResetConfirmView and the OAuth exchange.
+        refresh = EmailTokenObtainPairSerializer.get_token(user)
         return Response(
             {
                 "access": str(refresh.access_token),

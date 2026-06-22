@@ -1,0 +1,218 @@
+[
+ {
+  "id": "FA-0712",
+  "area": "journal-core",
+  "feature": "Reconciliation undo (PendingTaskAction revert)",
+  "expected_behaviour": "Called via Telegram/LINE callback router when the user taps an 'Undo' button (callback_data='task_action:undo:<id>'). undo_task_action(pending) restores the task/goal's status and timestamps from before_state. For SUBTASK_CREATE, deletes the created subtask and clears the FK before deleting to avoid CASCADE corruption. Sets PendingTaskAction.status=UNDONE and resolved_at=now. Returns True on success, False if the referenced object no longer exists.",
+  "entry_points": "apps/journal/reconciliation.py:undo_task_action",
+  "original_claim": "For TASK_COMPLETE/PROGRESS/SKIP/DEFER and GOAL_ACHIEVE/ABANDON action kinds, undo_task_action() reverts the referenced Task/Goal row and returns True, but never sets pending.status=UNDONE or pending.resolved_at on the PendingTaskAction itself. The callers (handle_task_action_callback and handle_task_action_postback_line) do this after undo_task_action returns True, so the end result is correct. However, the SUBTASK_CREATE path sets status/resolved_at inside undo_task_action before returning (for CASCADE safety), creating an asymmetry: if a future caller fails to set UNDONE after a True return, task/goal undo PendingTaskActions will remain permanently APPLIED in the database with no resolved_at, allowing the user to tap Undo a second time (the callbacks check status==APPLIED before calling undo_task_action, so the second tap just re-reverts a row that is already reverted). The current callers handle this correctly, but the contract is not enforced by the function itself.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "Not a defect. The verdict describes a hypothetical future-caller risk, not behavior any user/operator experiences. The asymmetry is real but intentional and documented: undo_task_action() sets pending.status=UNDONE/resolved_at internally only for SUBTASK_CREATE (reconciliation.py:333-341) because PendingTaskAction.task is on_delete=CASCADE, so the cascade would wipe the audit row and break the caller's subsequent save(update_fields=...) — explained in the comment at reconciliation.py:328-332. The TASK_COMPLETE/PROGRESS/SKIP/DEFER (344-362) and GOAL_ACHIEVE/ABANDON (364-380) paths have no such FK-ordering constraint, so resolving the PendingTaskAction is deliberately left to the caller. Both — and the only — production callers set status=UNDONE + resolved_at after a True return (task_action_callbacks.py:106-108 and 150-152). Both also guard against double-undo: they short-circuit on status==UNDONE (lines 86-87 / 130-131) and refuse unless status==APPLIED (89-90 / 133-134), so a second tap on a real Telegram/LINE button never re-reverts an already-reverted row. grep confirms no other callers exist (only these two plus tests). The double-revert scenario requires a future caller to violate the contract, which no current code does. No user-facing or data-integrity impact today.",
+  "refutation_evidence": [
+   "apps/journal/reconciliation.py:319-382 (undo_task_action; SUBTASK_CREATE resolves internally per CASCADE comment 328-332; other kinds return True without resolving)",
+   "apps/router/task_action_callbacks.py:86-108 (Telegram handler: UNDONE short-circuit + APPLIED guard + sets UNDONE/resolved_at after True)",
+   "apps/router/task_action_callbacks.py:130-152 (LINE handler: same guards and resolution)",
+   "grep: only task_action_callbacks.py (2 sites) and test_reconciliation.py call undo_task_action — no unguarded caller"
+  ]
+ },
+ {
+  "id": "FA-0720",
+  "area": "journal-core",
+  "feature": "USER.md envelope: goals, tasks, conversation digest, recent journal sections",
+  "expected_behaviour": "Four sections are registered via @register_section in envelope.py. render_goals_summary emits a one-line count + retrieval pointer (not inline content) to stay within the 12KB USER.md budget; falls back to legacy Document pointer for stale tenants. render_open_tasks_summary similarly emits count + due-this-week count + retrieval pointer. render_conversation_digest delegates to build_conversation_digest (router app). render_recent_journal renders up to 3 recent non-today daily note previews (250 chars each). Document saves trigger goals+tasks section refresh via refresh_on=(Document,); conversation digest is NOT refresh_on=() to avoid per-message storm.",
+  "entry_points": "apps/journal/envelope.py:render_goals_summary ; apps/journal/envelope.py:render_open_tasks_summary ; apps/journal/envelope.py:render_conversation_digest ; apps/journal/envelope.py:render_recent_journal ; apps/journal/envelope.py:render_goals ; apps/journal/envelope.py:render_open_tasks",
+  "original_claim": "render_open_tasks (the full-content variant used by session-start injection and nbhd_journal_context) only queries Task.Status.OPEN tasks, but render_open_tasks_summary counts and reports both open and in_progress tasks. A user with in_progress tasks will see them mentioned in the USER.md summary count but they will be absent from the inline task list the agent reads at session-start or via the journal-context tool.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "The factual observation is correct — render_open_tasks (apps/journal/envelope.py:108-109) filters strictly on status=Task.Status.OPEN, while render_open_tasks_summary (envelope.py:214-233) counts both OPEN and IN_PROGRESS — but this is intended behaviour, not a user-visible defect. (1) The always-loaded USER.md summary explicitly reports the in-progress count AND gives the agent a direct retrieval pointer: \"Call nbhd_task_list({status: 'in_progress'}) for what's underway.\" (envelope.py:230-233). So the agent is never blind to in-progress tasks; it knows they exist and knows exactly how to fetch them. (2) The architecture is deliberately tools-first / fetch-on-demand: the full inline renderers are documented as paid-once session-start/backbone injection paths (envelope.py:99-105, 151-170), and the FA-0720 record's expected_behaviour describes this summary-vs-full split as the design. (3) render_open_tasks is named/documented as \"Open tasks,\" not \"all active tasks\" — it makes no promise to render IN_PROGRESS rows. No surface contradicts another in a way a real user would notice; worst case the agent makes one extra, explicitly-signposted tool call, which is the intended pattern. False positive.",
+  "refutation_evidence": [
+   "apps/journal/envelope.py:99-140 (render_open_tasks: OPEN-only, documented as paid-once full render)",
+   "apps/journal/envelope.py:206-233 (render_open_tasks_summary counts OPEN+IN_PROGRESS and emits explicit nbhd_task_list status:in_progress retrieval pointer)",
+   "apps/router/poller.py:992-1000 (session-start injection uses render_open_tasks)",
+   "apps/integrations/runtime_views.py:1406-1424 (nbhd_journal_context backbone uses render_open_tasks)",
+   "apps/journal/models.py:363-368 (Task.Status enum includes IN_PROGRESS)",
+   "docs/feature-audit/areas/journal-core__3.json FA-0720 (expected_behaviour documents the summary/full split as intended)"
+  ]
+ },
+ {
+  "id": "FA-0722",
+  "area": "journal-core",
+  "feature": "Workspace list and create",
+  "expected_behaviour": "GET /api/v1/workspaces/ returns all workspaces ordered by -is_default, -last_used_at, name, plus active_workspace_id and limit (4). POST /api/v1/workspaces/ validates name (required, <= 60 chars, not a reserved prefix), auto-creates a default workspace if this is the first, enforces 4-workspace limit (409 on overflow), generates a unique slug, creates the workspace with description_embedding (pgvector via OpenAI), sets it as the tenant's active workspace, returns 201. Requires IsAuthenticated.",
+  "entry_points": "apps/journal/workspace_views.py:WorkspaceListCreateView ; GET /api/v1/workspaces/ ; POST /api/v1/workspaces/",
+  "original_claim": "The first-create flow (is_first_create check → ensure_default_workspace → count check → workspace.create) is not wrapped in a transaction with select_for_update. Two concurrent POST requests for the same tenant that both arrive when no workspaces exist will both call ensure_default_workspace, which has no DB-level unique constraint on is_default=True, resulting in two default workspaces being created. In practice the single-user-per-tenant model makes this unlikely, but the invariant is not enforced at the DB layer.",
+  "original_category": "data-integrity",
+  "original_severity": "low",
+  "refutation": "False positive. The claimed data-integrity defect (two concurrent first-create POSTs producing two default workspaces because there is no DB-level constraint on is_default=True) cannot occur. The default workspace is always created with a FIXED slug \"general\" (DEFAULT_WORKSPACE_SLUG, workspace_services.py:22, used at :111), and the Workspace model enforces unique_together = [(\"tenant\", \"slug\")] (models.py:570). In the race the QA describes, both threads pass the ensure_default_workspace guard and both attempt Workspace.objects.create(slug=\"general\", is_default=True); the first commits and the second is rejected by Postgres with an IntegrityError on the (tenant, \"general\") unique constraint. So the uniqueness invariant IS enforced at the DB layer, via the slug rather than the is_default flag. Duplicate default workspaces are impossible. The only theoretical residue is an uncaught IntegrityError to HTTP 500 on the losing thread of a genuinely simultaneous first-create, but (a) that is a different bug from the one claimed and is not a data-integrity issue, and (b) it is effectively untriggerable: this is a single-user-per-tenant, JWT-authed console (user.tenant, workspace_views.py:37), so one user firing two perfectly concurrent first-create requests is not realistic. A user-created workspace also cannot collide because generate_unique_slug appends -2/-3 on any slug collision (workspace_services.py:70-72). No real user or operator would experience the described defect.",
+  "refutation_evidence": [
+   "apps/journal/workspace_views.py:90-117 (first-create flow + non-default create)",
+   "apps/journal/workspace_services.py:22 (DEFAULT_WORKSPACE_SLUG = 'general')",
+   "apps/journal/workspace_services.py:95-115 (ensure_default_workspace creates slug='general', is_default=True)",
+   "apps/journal/workspace_services.py:58-73 (generate_unique_slug appends -N on slug collision)",
+   "apps/journal/models.py:561-570 (is_default field; unique_together [('tenant','slug')])",
+   "apps/journal/workspace_views.py:35-39 (single-user-per-tenant via user.tenant)"
+  ]
+ },
+ {
+  "id": "FA-0747",
+  "area": "journal-workspace-sessions",
+  "feature": "Journal Full-Text Search (OpenClaw runtime)",
+  "expected_behaviour": "GET /api/v1/integrations/runtime/<tenant_id>/journal/search/ uses internal-key auth. Query params: q (required, websearch-mode), kind (optional, filters Document.kind), limit (int, default 20, max 50). Returns 400 if q is empty. Uses Postgres full-text search with SearchVector('title', weight='A') + SearchVector('markdown', weight='B') and SearchQuery(search_type='websearch'). Returns documents ranked by SearchRank, filtered to rank > 0.0. Each result includes kind, slug, title, snippet (300-char extract around first match term), updated_at, rank. Returns {query, count, results} with 200.",
+  "entry_points": "apps/integrations/runtime_views.py:RuntimeJournalSearchView.get ; GET /api/v1/integrations/runtime/<tenant_id>/journal/search/",
+  "original_claim": "In `RuntimeJournalSearchView.get`, the `limit` parameter is parsed with a bare `int()` call on line 1995 with no try/except guard. Passing a non-integer value such as `?limit=abc` raises an uncaught `ValueError` that DRF's default exception handler does not convert to a 400 response, producing a 500 instead. The expected behaviour states a 400 should be returned on invalid limit. Every comparable view in the same file (`RuntimeSessionsPendingView`) uses the `_parse_positive_int` helper which includes proper error handling.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "The code observation is accurate: RuntimeJournalSearchView.get parses limit with a bare int(request.query_params.get('limit', '20')) at runtime_views.py:1995 with no try/except, and DRF's default exception handler only converts APIException/Http404/PermissionDenied, so a ?limit=abc ValueError would surface as a 500 rather than a 400. But this is NOT a real user/operator-facing defect for three reasons. (1) The endpoint is internal-only: permission_classes=[AllowAny] but gated by _internal_auth_or_401 (line 1985), so only OpenClaw containers holding the internal key can reach it; it is not publicly exposed. (2) The sole caller, the nbhd_journal_search plugin tool (runtime/openclaw/plugins/nbhd-journal-tools/index.js:632), always normalizes the value via parseInteger(input.limit, {defaultValue:10, min:1, max:50}) before sending it, so a non-integer limit can never reach the endpoint in practice. (3) The recorded expected_behaviour for FA-0747 only mandates a 400 when q is empty (which IS handled, lines 1997-2001); it does not require a 400 for a malformed limit. The QA claim that 'the expected behaviour states a 400 should be returned on invalid limit' overstates the spec. This is at most a code-hygiene inconsistency (the file already has _parse_positive_int and uses it in the sibling view), not a live bug any real actor would hit.",
+  "refutation_evidence": [
+   "apps/integrations/runtime_views.py:1984-2001 (RuntimeJournalSearchView.get; bare int() at 1995; internal-auth gate at 1985; only q-empty 400 handled at 1997-2001)",
+   "apps/integrations/runtime_views.py:70-87 (_parse_positive_int helper, the established pattern)",
+   "apps/integrations/runtime_views.py:1504-1514 (sibling RuntimeSessionsPendingView guarded limit parse)",
+   "runtime/openclaw/plugins/nbhd-journal-tools/index.js:622-636 (sole caller normalizes limit via parseInteger before request)",
+   "docs/feature-audit/areas/journal-workspace-sessions__1.json:213 (expected_behaviour mandates 400 only for empty q, not malformed limit)"
+  ]
+ },
+ {
+  "id": "FA-0749",
+  "area": "journal-workspace-sessions",
+  "feature": "Mint Personal Access Token (PAT)",
+  "expected_behaviour": "POST /api/v1/auth/tokens/create/ requires JWT authentication. Throttled at 10/hour per user (UserPATMintHourThrottle). Body: {name (max 255, required), scopes (list, optional, defaults to ['sessions:write','sessions:read']), expires_in_days (int, optional, 1-365)}. Validates scopes against ALLOWED_PAT_SCOPES = {'sessions:write', 'sessions:read'} — unknown scopes return 400. Generates a raw token (pat_<43-char base64url>), stores SHA-256 hash only (raw token never stored). Returns 201 with {id, name, token (raw, shown once), token_prefix, scopes, expires_at, created_at, warning}.",
+  "entry_points": "apps/tenants/pat_views.py:PATCreateView.post ; apps/tenants/pat_models.py:generate_pat ; POST /api/v1/auth/tokens/create/",
+  "original_claim": "Passing `scopes=[]` (an explicit empty list) silently applies the default full scopes instead of creating a zero-scope token or returning 400. At pat_views.py:73, `data.get('scopes') or list(DEFAULT_PAT_SCOPES)` treats `[]` as falsy and substitutes the defaults. A caller who deliberately wants to create a restricted no-scope token — or who passes `[]` expecting a validation error — gets a silently expanded token with both default scopes. The spec documents the default-when-omitted behaviour but does not address the empty-list case.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Not a real defect. Three independent reasons confirm the `data.get('scopes') or list(DEFAULT_PAT_SCOPES)` substitution at pat_views.py:73 is intended and harmless. (1) The serializer field `scopes = ListField(..., required=False, default=list)` (pat_views.py:18) makes an OMITTED field and an explicit `[]` indistinguishable in validated_data — both arrive as `[]`. The spec's documented contract (\"scopes optional, defaults to ['sessions:write','sessions:read']\") is implemented precisely BY this `or` substitution; there is no downstream way to separate the two cases, and that is by design. (2) A zero-scope PAT is functionally useless: scope enforcement at permissions.py:31 does `self.required_scope in (pat.scopes or [])`, so a `scopes=[]` token would fail BOTH scoped endpoints. No caller has a legitimate reason to deliberately create a token that authorizes nothing — the PAT's entire purpose is to authorize an external app (e.g. YardTalk) to read/write session data. (3) No \"silent expansion\" risk exists: ALLOWED_PAT_SCOPES == DEFAULT_PAT_SCOPES == {'sessions:write','sessions:read'} (permissions.py:13, pat_views.py:13), so defaulting grants exactly the only two scopes that exist, not a broader privilege. The \"caller passes [] expecting a 400\" premise is also unsupported: the spec only promises 400 for UNKNOWN scopes (validate_scopes, pat_views.py:21-25), and `[]` contains none. No real subscriber or external-app integrator would experience this as a defect.",
+  "refutation_evidence": [
+   "apps/tenants/pat_views.py:13",
+   "apps/tenants/pat_views.py:16-25",
+   "apps/tenants/pat_views.py:73",
+   "apps/tenants/permissions.py:13",
+   "apps/tenants/permissions.py:31",
+   "apps/tenants/pat_models.py:55-59",
+   "docs/feature-audit/areas/journal-workspace-sessions__2.json (FA-0749 expected_behaviour)"
+  ]
+ },
+ {
+  "id": "FA-0759",
+  "area": "lessons",
+  "feature": "Pending lessons list — dashboard",
+  "expected_behaviour": "GET /api/v1/lessons/pending/ — IsAuthenticated required. Returns all tenant lessons with status='pending'. No pagination. Returns 200 with LessonSerializer array. Same result as GET /api/v1/lessons/?status=pending but via explicit action endpoint.",
+  "entry_points": "apps/lessons/views.py:LessonViewSet.pending ; GET /api/v1/lessons/pending/",
+  "original_claim": "The `pending()` action applies `.filter(status='pending')` on the result of `get_queryset()`, which already filters `status='pending'` when `self.action == 'pending'`. The redundant double-filter is harmless but indicates the action branch in `get_queryset` is dead code for this path.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "Not a defect. The observation is factually accurate but has zero functional impact. In `get_queryset` (apps/lessons/views.py:49-63), status filtering applies only for actions `list`, `pending`, and `galaxy`. When the `pending` endpoint is hit, DRF sets `self.action == \"pending\"` (the @action method name), so the `elif self.action == \"pending\": qs = qs.filter(status=\"pending\")` branch at line 58-59 DOES execute — it is not dead code. The `pending()` action at line 132 then applies a second `.filter(status=\"pending\")`. This produces SQL like `WHERE status='pending' AND status='pending'`, which is logically identical to a single filter — no wrong results, no extra rows, no measurable performance cost, no user- or operator-visible behavior change. The QA's secondary characterization (\"the action branch in get_queryset is dead code for this path\") is itself a misread: that branch is exactly what fires for this path. The only thing present is a harmless cosmetic redundancy (the explicit re-filter in the action method), which the QA itself concedes is \"harmless.\" A real user or operator experiences nothing — correct pending lessons are returned. This does not rise to a logic defect.",
+  "refutation_evidence": [
+   "apps/lessons/views.py:49-63 (get_queryset: status filter fires for action=='pending')",
+   "apps/lessons/views.py:58-59 (elif self.action == 'pending': qs.filter(status='pending') — live, not dead)",
+   "apps/lessons/views.py:130-134 (pending action: self.get_queryset().filter(status='pending') — redundant but identical SQL)"
+  ]
+ },
+ {
+  "id": "FA-0768",
+  "area": "lessons",
+  "feature": "Tutoring session — continue",
+  "expected_behaviour": "POST /api/v1/lessons/{pk}/tutor/message/ — IsAuthenticated required. Body: {message (1-5000 chars, required), action: 'continue'|'skip'|'end'}. If action='end', delegates to end_tutoring. If action='skip' or message matches skip phrases (skip/let's move on/next/move on), advances phase locally. Calls LLM with full message history. LLM response (JSON) captures honest signals: restated_accurately, found_edge_cases, connections_found (validated against real neighbor ids only — hallucinated PKs dropped), connection_text, topic_shifted. Advances phase on phase_complete=true. If mastery_achieved or last phase complete, fires end_tutoring and returns merged result under session_close. Returns {session_id, message, current_phase, phase_index, total_phases, phase_complete, mastery_achieved}. 404 on session_not_found.",
+  "entry_points": "apps/lessons/views.py:LessonViewSet.tutor_message ; apps/lessons/tutoring.py:continue_tutoring ; POST /api/v1/lessons/{pk}/tutor/message/",
+  "original_claim": "`TutoringMessageSerializer` has no `session_id` field, yet `tutor_message` does `serializer.validated_data.get('session_id', request.data.get('session_id'))`. The serializer lookup always returns `None`, so `session_id` is unconditionally read from raw `request.data` and is never validated by the serializer (no length check, no format check). The subsequent `if not session_id` guard still protects against a missing key, but any value passes unvalidated.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "The mechanical observation is accurate: TutoringMessageSerializer (serializers.py:177-184) declares only `message` and `action`, so `serializer.validated_data.get(\"session_id\", request.data.get(\"session_id\"))` (views.py:462) always falls through to raw request.data and the serializer never validates session_id. But this is not a defect any user or operator would experience. session_id is a server-generated uuid.uuid4() string (tutoring.py:275) used solely as a Django cache lookup key (_cache_key -> cache.get, tutoring.py:223-229). Every concrete bad input is already handled cleanly: missing/empty -> 400 via the `if not session_id` guard (views.py:463-467); malformed, foreign, or oversized -> _load_state returns None -> continue_tutoring returns error session_not_found -> endpoint returns 404 (views.py:480-481), and end_tutoring degrades gracefully. The absent length/format check adds no protection: a UUID regex would not stop a session-not-found anyway, the value is only ever an f-string key into a namespaced cache (no injection/crash surface), and no security or tenant boundary is crossed. The only real artifact is dead fallback code -- the serializer.validated_data.get prefix is vestigial and could be reduced to request.data.get(session_id). That is a tidiness nit, not a logic/security/data-integrity defect with user impact.",
+  "refutation_evidence": [
+   "apps/lessons/views.py:456-488",
+   "apps/lessons/serializers.py:177-184",
+   "apps/lessons/tutoring.py:223-229",
+   "apps/lessons/tutoring.py:275",
+   "apps/lessons/tutoring.py:316-324",
+   "apps/lessons/tutoring.py:406-413"
+  ]
+ },
+ {
+  "id": "FA-0773",
+  "area": "lessons",
+  "feature": "Star pin note",
+  "expected_behaviour": "POST or PATCH /api/v1/lessons/{pk}/pin-note/ — IsAuthenticated required. Body: {note (required, max 1000 chars)}. Sets star.galaxy_note and saves. Returns 200 with StarDetailSerializer. No embedding or growth triggered.",
+  "entry_points": "apps/lessons/views.py:LessonViewSet.pin_note ; POST /api/v1/lessons/{pk}/pin-note/",
+  "original_claim": "The StarNoteSerializer.note field is `CharField(required=True, max_length=1000)` with no `allow_blank=True`. DRF CharField defaults allow_blank=False, so submitting an empty string to clear a pinned note returns 400 'This field may not be blank.' The model field is `galaxy_note = TextField(blank=True)`, so the intent is to allow clearing, but the serializer blocks it. Subscribers can never remove a galaxy note once pinned.",
+  "original_category": "ux",
+  "original_severity": "medium",
+  "refutation": "The code-level observation is accurate but does not constitute a real user-facing defect. StarNoteSerializer.note IS CharField(required=True, max_length=1000) with no allow_blank=True (serializers.py:219), so an empty-string body to /lessons/{pk}/pin-note/ would return 400 \"may not be blank\", while the model field galaxy_note = TextField(blank=True) (models.py:79) would accept it - a narrower API contract than the model intent. However, the claimed impact (\"subscribers can never remove a galaxy note once pinned\") is unreachable: (1) The pin-note endpoint has ZERO callers anywhere in the repo - a full grep of frontend/, apps/, and runtime/ found only the view definition (views.py:559-568) and its tests (test_game.py:347,419). No frontend, iOS, or OpenClaw runtime code ever calls it. (2) The visible \"notes\" composer in the constellation game (fetchStarNotes/createStarNote in api.ts:862-867) maps to the SEPARATE journal/ StarJournalEntry endpoints, not pin-note/galaxy_note. (3) The ONLY writer of galaxy_note across the entire backend is pin-note (views.py:566); everything else (compose.py, copilot.py, agent_context.py) only reads it. Since no product surface lets a subscriber pin a galaxy_note in the first place, the inability to clear one with an empty string is dormant API-contract narrowness on an unwired endpoint, not a defect any real user or operator would experience. The tested/intended usage only ever sends a non-empty note. The QA verdict overstates a reachable UX problem that does not exist.",
+  "refutation_evidence": [
+   "apps/lessons/serializers.py:216-219 (StarNoteSerializer note=CharField required=True, no allow_blank)",
+   "apps/lessons/models.py:79-82 (galaxy_note TextField blank=True)",
+   "apps/lessons/views.py:559-568 (pin_note action - sole writer of galaxy_note)",
+   "apps/lessons/test_game.py:347-358,419 (only callers of pin-note are tests, both send non-empty note)",
+   "frontend/lib/api.ts:851-868 (StarNote composer maps to journal/ endpoints, not pin-note)",
+   "grep across frontend/ apps/ runtime/ for pin-note/pin_note: only view + tests, zero client callers"
+  ]
+ },
+ {
+  "id": "FA-0793",
+  "area": "lessons",
+  "feature": "Sample lessons seed — management command",
+  "expected_behaviour": "python manage.py seed_sample_lessons --tenant UUID [--clear] — Creates 25 lessons across 6 clusters (Creative Discipline, Deep Relationships, Body & Energy, Leadership & Teams, Money & Time, Self-Knowledge) with hardcoded positions and tags. Creates 28 LessonConnection edges (within-cluster and cross-cluster bridges). All created as status='approved'. No embeddings generated (no OpenAI call). --clear deletes existing lessons first.",
+  "entry_points": "apps/lessons/management/commands/seed_sample_lessons.py:Command",
+  "original_claim": "The expected behaviour states 28 LessonConnection edges, but the CONNECTIONS list in the source file contains 29 tuples. The seed will actually create 29 connections. This is a minor inventory/doc mismatch; the code is self-consistent and functional, but callers relying on the documented count (e.g. test assertions) will get 29, not 28.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "The count claim is factually accurate (CONNECTIONS holds 29 tuples and the seed creates 29 LessonConnection edges, verified via AST: LESSONS=25, CONNECTIONS=29; the handle() loop at lines 316-329 creates one connection per tuple with no dedup, and every index is <25 so all 29 pass the bounds guard at line 319). However this is NOT a real defect. The only thing it contradicts is the audit's OWN expected_behaviour string (\"Creates 28 LessonConnection edges\"), not any code contract. seed_sample_lessons is a developer-only local-UI-testing command (requires --tenant; help text \"Create sample lessons + connections for local UI testing\"); it is never run by end users or in production. No test or caller in the codebase references it or asserts a count of 28 (grep found zero references outside the file itself). A real user or operator experiences nothing — the seed simply produces 29 fixture edges, which is harmless. The \"documented count\" the QA cites as a caller dependency does not exist; it is the auditor's own transcription, not a published contract. Pure self-referential doc/inventory mismatch with no user/operator impact.",
+  "refutation_evidence": [
+   "apps/lessons/management/commands/seed_sample_lessons.py:240-272 (CONNECTIONS list = 29 tuples)",
+   "apps/lessons/management/commands/seed_sample_lessons.py:316-331 (loop creates one edge per tuple, no dedup; bounds guard at 319 never trips since max index 24 < 25 lessons)",
+   "AST count: LESSONS=25, CONNECTIONS=29",
+   "grep: zero test/caller references to seed_sample_lessons anywhere in apps/",
+   "docs/feature-audit/areas/lessons__3.json:33 (expected_behaviour claims '28 LessonConnection edges')"
+  ]
+ },
+ {
+  "id": "FA-0795",
+  "area": "lessons",
+  "feature": "Star growth engine",
+  "expected_behaviour": "apply_star_growth(star) computes stage from persisted counts: score = tutoring_sessions_count*3 + journal_entries.count()*1.5 + connections_out.count(). Stage ladder: proto (score=0, no engagement), ignited (>=1 of any), radiant (sessions>=3 or notes>=3 or connections>=5 or score>=5), supernova (sessions>=8 or notes>=8 or score>=14). Only promotes (STAGE_RANK check). Saves star_stage field if promoted. Called by: end_tutoring, star_journal_create, star connect action.",
+  "entry_points": "apps/lessons/growth.py:apply_star_growth ; apps/lessons/growth.py:compute_star_stage",
+  "original_claim": "In `end_tutoring`, `tutoring_sessions_count` is incremented with a non-atomic read-modify-write pattern (`star.tutoring_sessions_count += 1; star.save(update_fields=[...])`). If two tutoring sessions for the same star complete concurrently, both reads see the same pre-increment value and one increment is lost, stalling star promotion. The correct fix is `F('tutoring_sessions_count') + 1`. In practice concurrent same-star tutoring is unlikely, but the race window exists.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "The read-modify-write at apps/lessons/tutoring.py:430-433 (star.tutoring_sessions_count += 1; star.save(update_fields=[...])) is technically non-atomic, but no real user/operator would experience this as a defect. end_tutoring is only ever invoked from three interactive DRF view actions (apps/lessons/views.py:473, :485, :500), each keyed to a per-session UUID and driven by a single human one request at a time. Tutoring is an inherently serial, single-user, message-by-message flow; there is no cron, automation, or batch path that fires end_tutoring (confirmed by grep — only callers are the views and the mastery auto-end inside tutor_message). For an increment to be lost, the same person would need two distinct active tutoring sessions on the SAME star ending in the same instant — practically impossible in this UX. Even then the impact is negligible: growth.py's promotion engine is monotonic (never demotes) and threshold-based on a BLENDED score (sessions*3 + notes*1.5 + connections) with sessions>=1/3/8 gates, so the session count is not the sole driver. A single lost increment would at most delay a stage promotion by one session and self-heals on the next tutoring session, note, or connection. No data loss, no incorrect persisted state, no user-visible stall — this is a defense-in-depth code-quality nit, not a defect.",
+  "refutation_evidence": [
+   "apps/lessons/tutoring.py:430-433 (non-atomic increment, confirmed)",
+   "apps/lessons/tutoring.py:406-457 (single-session, per-UUID serial flow)",
+   "apps/lessons/views.py:440-504 (only interactive callers; no batch/cron path)",
+   "apps/lessons/growth.py:26-57 (monotonic, multi-signal threshold promotion; count not sole driver, never demotes)"
+  ]
+ },
+ {
+  "id": "FA-0798",
+  "area": "orchestrator-config-fleet",
+  "feature": "Tenant Provisioning",
+  "expected_behaviour": "Triggered by `provision_tenant(tenant_id)` (called from `provision_tenant_task` via QStash). Requires tenant in PENDING or PROVISIONING status, otherwise logs and returns. Executes an ordered pipeline: (1) generates openclaw.json via `generate_openclaw_config`, runs `audit_config_security` — warnings log to PlatformIssueLog, errors raise and reset tenant to PENDING; (2) creates Azure Managed Identity (`mi-nbhd-<uuid>`); (3) generates a 48-byte `secrets.token_urlsafe` internal API key, writes it to Key Vault as `tenant-<uuid>-internal-key`, stores hash on Tenant; (4) optionally creates a per-tenant OpenRouter sub-key via `create_sub_key` if `OPENROUTER_PER_TENANT_KEYS_ENABLED` — failure here is non-fatal (falls back to shared key); (5) assigns KV + ACR pull roles to the managed identity; (6) creates Azure File Share `ws-<uuid[:20]>` and registers environment storage; (7) uploads openclaw.json to file share; (8) renders persona workspace files via `render_workspace_files`; (9) creates Container App `oc-<uuid[:20]>` via Azure ARM; (10) updates Tenant row (container_id, container_fqdn, managed_identity_id, container_image_tag, status=ACTIVE, provisioned_at). On any exception in steps 1-10 tenant is reset to PENDING and the exception re-raises. Post-provision (non-critical, do not reset status): sends Telegram welcome if chat_id present; sends Day-0 welcome email; seeds USER.md via `push_user_md(force=True)`; enqueues `seed_cron_jobs` via QStash with 60s delay.",
+  "entry_points": "apps/orchestrator/services.py:provision_tenant ; apps/orchestrator/tasks.py:provision_tenant_task ; apps/orchestrator/management/commands/provision_tenant.py:Command",
+  "original_claim": "The delayed cron seeding step in `provision_tenant` (step 5 / post-provision) always fails silently. It attempts `from apps.cron.views import _schedule_qstash_task` but that function does not exist in `apps/cron/views.py` (zero occurrences confirmed), so the import always raises `ImportError`. The except block then immediately calls `seed_cron_jobs(tenant)` without the intended 60-second delay, which also fails because the newly-created container is not yet ready. Both failures are swallowed as warnings, so newly-provisioned tenants have no cron jobs seeded at provision time. Jobs are only restored later via fleet reconcilers if/when the tenant becomes active.",
+  "original_category": "logic",
+  "original_severity": "medium",
+  "refutation": "False positive on the claimed user impact. TRUE facts: _schedule_qstash_task does not exist in apps/cron/views.py (grep = zero definitions), so the import at services.py:428 always raises ImportError in production, and the except block always runs the fallback seed_cron_jobs(tenant) immediately with no 60s delay. BUT the claimed user impact (\"newly-provisioned tenants have no cron jobs seeded at provision time\") is wrong. The fallback seed_cron_jobs (services.py:990) branches on tenant.postgres_cron_canonical, whose model default is True (models.py:531-532) and was made universal by migration 0058 (legacy gateway path removed). The postgres-canonical branch (services.py:1016-1050) just upserts CronJob rows into Postgres with ZERO container/gateway interaction — it does NOT require a warm/ready container. So the secondary premise (\"also fails because the container is not yet ready\") is false: cron rows ARE seeded into Postgres at provision time, and the signal-driven reconciler syncs them to the container SQLite on boot/wake. The 60s delay only ever mattered for the now-dead legacy gateway path. Net functional outcome: cron jobs are correctly seeded at provision time. Residual is code-quality only: the try/import block is dead (always throws), emits a spurious WARNING per provision (cosmetic noise), and the \"# TODO: schedule with delay\" was never implemented — none of which produces the claimed failure. Tests corroborate the function never existed: every patch uses create=True to force-create the missing attribute (test_services.py:36,97,178).",
+  "refutation_evidence": [
+   "apps/orchestrator/services.py:426-445 — try-imports non-existent _schedule_qstash_task, always falls back to immediate seed_cron_jobs",
+   "apps/cron/views.py — grep confirms no _schedule_qstash_task definition (claim's import target absent)",
+   "apps/cron/publish.py:57 — publish_task is the actual QStash helper",
+   "apps/orchestrator/services.py:990-1050 — seed_cron_jobs postgres-canonical branch writes CronJob rows to Postgres with no container/gateway call",
+   "apps/tenants/models.py:531-532 — postgres_cron_canonical default=True",
+   "apps/tenants/migrations/0058_postgres_cron_canonical_universal.py — flips flag universally, legacy gateway path removed",
+   "apps/orchestrator/test_services.py:36,97,178 — patches use create=True, confirming the function does not exist"
+  ]
+ },
+ {
+  "id": "FA-0853",
+  "area": "orchestrator-provisioning",
+  "feature": "Hibernate Suspended Tenants",
+  "expected_behaviour": "`hibernate_suspended_task()`: queries all tenants with `status=SUSPENDED` and non-empty `container_id`. For each, calls `hibernate_container_app(tenant.container_id)` which deactivates all revisions to 0 replicas. Returns `{hibernated, failed, total}`. Does NOT set `hibernated_at` (that field tracks idle hibernation of ACTIVE tenants; suspended tenants have a separate billing-status path). Management command `hibernate_suspended` supports `--dry-run`.",
+  "entry_points": "apps/orchestrator/tasks.py:hibernate_suspended_task ; apps/orchestrator/management/commands/hibernate_suspended.py:Command",
+  "original_claim": "`tenants.count()` at line 91 of tasks.py runs a second database query after the iteration loop has already completed. Because the queryset is re-evaluated, the returned `total` can differ from the number of rows actually iterated if tenants are added or deleted concurrently, making the `total` field in the returned dict potentially misleading to log monitors and callers. No operational failure occurs, but the stats surface is unreliable.",
+  "original_category": "data-integrity",
+  "original_severity": "low",
+  "refutation": "False positive — the premise that `tenants.count()` issues a second database query is incorrect. The `for tenant in tenants:` loop at line 84 fully evaluates the queryset, populating its `_result_cache`. Django's `QuerySet.count()` short-circuits to `len(self._result_cache)` when the cache is already populated, so the `.count()` at line 91 issues NO SQL and simply returns the count of the already-iterated rows. There is no re-evaluation, no second query, and therefore no concurrency window in which `total` could diverge from the number of rows iterated. `total` is guaranteed to equal `hibernated + failed`. Additionally this is a control-plane hibernation sweep task, not a user-facing surface, further limiting any theoretical impact.",
+  "refutation_evidence": [
+   "apps/orchestrator/tasks.py:78-91"
+  ]
+ }
+]

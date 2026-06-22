@@ -1,0 +1,20 @@
+[
+ {
+  "ref": "fuel#1",
+  "source": "missed",
+  "severity": "low",
+  "category": "data-integrity",
+  "detail": "Confirmed real gap. In ingest_healthkit_payload (apps/fuel/healthkit.py:582-666), the local tombstones set is loaded from the profile at line 589, updated with ALL deleted_external_ids at line 602 (tombstones.update(deleted_ids)), and used for in-batch dedup at line 627 -- but it is NEVER written back to FuelProfile.healthkit_tombstones. The only persistence path is the post_delete signal workout_deleted_record_healthkit_tombstone (apps/fuel/signals.py:132-158), which fires ONLY when row.delete() actually deletes a row. The delete loop (lines 599-601) only deletes rows with source=HEALTHKIT and a matching external_id. So when a deleted_external_ids entry has no matching deletable row, no row is deleted, no signal fires, and the tombstone is not persisted across requests. Trigger set (narrow but real): the HK sample was deleted in Apple Health before it ever synced; a double-delete (row already removed on a prior sync); or the row was otherwise already gone. In those cases the tombstone is lost, and a later anchor reset / app reinstall / 30-day re-backfill re-imports the same external_id, because neither the existing set (the row is gone) nor the lost tombstone blocks it. This contradicts the module's own invariant (docstring lines 9-13: deleted imports are tombstoned so a client anchor reset cannot resurrect them) and is the PR #847 resurrection class. Two scoping corrections that NARROW the reviewer's framing: (1) The adopted-row case is NOT actually vulnerable -- when an HK sample was adopted into a planned/manual session (line 312/431 stamps the HK external_id, source stays user/assistant), the delete loop skips it, but on re-import the existing query at lines 610-615 filters external_id WITHOUT source, finds the stamped row, and returns duplicate at line 627. So adopted rows are protected by existing, not the tombstone; the only true resurrection is when NO row of any source survives. (2) It needs a two-step sequence (delete-without-deletable-row, THEN anchor reset/reinstall), so it is an edge case. Hence severity low rather than medium. User impact when hit: a workout the user deleted in Apple Health silently reappears in their workout history/calendar and re-inflates volume/frequency/adherence aggregates. The existing test (tests.py:4095) only covers the row-exists delete path, so this gap is uncovered.",
+  "suggested_fix": "In ingest_healthkit_payload, after the delete loop, persist the full tombstone set whenever deleted_ids is non-empty, independent of whether rows were actually deleted. E.g. after line 602, if profile is not None: keep the last _TOMBSTONE_CAP entries and profile.save(update_fields=[\"healthkit_tombstones\",\"updated_at\"]). Reuse the _TOMBSTONE_CAP cap from signals.py to stay consistent. Add a regression test covering a deleted_external_ids entry with no matching DB row, then a re-import of that external_id asserting status==duplicate after an anchor reset. (The post_delete signal can remain as the NBHD-side-delete path.)",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/fuel/healthkit.py:589 tombstones = set(profile.healthkit_tombstones or []) if profile else set()",
+   "apps/fuel/healthkit.py:599-602 delete loop filters source=HEALTHKIT then tombstones.update(deleted_ids) with no profile.save()",
+   "apps/fuel/healthkit.py:627 in-batch dedup uses local tombstones set (covers only this request)",
+   "apps/fuel/signals.py:132-158 tombstone persisted only via post_delete on an actually-deleted row",
+   "apps/fuel/healthkit.py:610-615 existing query filters external_id WITHOUT source -> adopted rows ARE protected on re-import, narrowing the gap",
+   "apps/fuel/healthkit.py:9-13 module invariant claims deleted imports are tombstoned so anchor reset cannot resurrect them",
+   "apps/fuel/tests.py:4095-4105 only the row-exists delete path is tested; the no-matching-row path is uncovered"
+  ]
+ }
+]

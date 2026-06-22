@@ -183,9 +183,15 @@ def mark_credential_error(
     cleaned = (last_error or "").strip()
     if len(cleaned) > _LAST_ERROR_MAX_LEN:
         cleaned = cleaned[: _LAST_ERROR_MAX_LEN - 1].rstrip() + "…"
+    # Flip whatever live credential exists into ERROR. We must NOT exclude
+    # PENDING: in Phase 1 there is no background verifier, so a real working
+    # credential stays PENDING forever (the container applies it regardless),
+    # and excluding PENDING made this never match a live cred — the entire
+    # error-surfacing loop was dead in prod. Exclude only ERROR so repeated
+    # runtime reports are idempotent no-ops.
     cred = (
         BYOCredential.objects.filter(tenant=tenant, provider=provider)
-        .exclude(status=BYOCredential.Status.PENDING)
+        .exclude(status=BYOCredential.Status.ERROR)
         .first()
     )
     if cred is None:

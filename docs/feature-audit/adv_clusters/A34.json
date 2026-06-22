@@ -1,0 +1,19 @@
+[
+ {
+  "ref": "fuel#3",
+  "source": "missed",
+  "severity": "low",
+  "category": "security",
+  "detail": "Confirmed at the code level. In apps/fuel/serializers.py, original_workout is in WorkoutSerializer.fields (line 83) but NOT in read_only_fields (lines 101-111). The model field (apps/fuel/models.py:212-219) is a ForeignKey('self', related_name='reschedules'); the Workout model has no custom manager (no objects= override), so DRF auto-generates a writable PrimaryKeyRelatedField backed by the global Workout._default_manager.all() queryset, which spans all tenants with no per-request scoping. Both write paths bind raw request.data through this serializer with no field filtering: WorkoutListView.post (views.py:307) and WorkoutDetailView.patch (views.py:342-347). The serializer validate()/create() only stamp tenant on the row itself; they never check that original_workout.tenant == request.user.tenant. RLS is not a backstop here -- per project memory the Django connection role bypasses RLS in prod (relock is effectively a no-op). So an authenticated tenant CAN (a) persist a cross-tenant FK (their own workout's original_workout pointing at another tenant's workout) and (b) use the endpoint as an existence oracle: a valid other-tenant workout UUID validates (201/200) while a non-existent UUID returns 400. This is a real tenant-isolation boundary violation, so the finding is genuine.\n\nBut the real-world impact is genuinely minimal, matching low severity. A grep across apps/ (excluding tests) shows original_workout/reschedules referenced ONLY in the model definition, its migration, and the serializer fields list -- it is never read back, never traversed cross-tenant, never used in any business logic, and nothing (not even server-side reschedule code) ever WRITES it. It is currently an inert, write-but-never-consumed field, so there is no data exfiltration beyond the API echoing back the bare UUID the caller already supplied. The oracle is also weak: workout PKs are 122-bit random UUIDv4 (models.py:169 default=uuid.uuid4), so they cannot be enumerated or guessed -- the oracle only confirms that a UUID the attacker already possesses belongs to some workout. No cross-tenant content leaks. Net: a legitimate latent isolation gap worth closing, but not an exploitable data-disclosure path today.",
+  "suggested_fix": "Add \"original_workout\" to WorkoutSerializer.read_only_fields (apps/fuel/serializers.py:101-111). Nothing in the codebase sets this field via the API, so making it read-only breaks no current behavior and removes both the cross-tenant write and the existence-oracle. If reschedule linkage is ever needed via API later, replace the auto-generated field with an explicit PrimaryKeyRelatedField whose get_queryset() filters Workout.objects.filter(tenant=self.context[\"tenant\"]).",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/fuel/serializers.py:83 'original_workout' present in WorkoutSerializer.fields",
+   "apps/fuel/serializers.py:101-111 read_only_fields omits 'original_workout'",
+   "apps/fuel/models.py:212-219 original_workout = ForeignKey('self', related_name='reschedules'); no custom Workout manager -> default global queryset",
+   "apps/fuel/views.py:307 WorkoutListView.post binds raw request.data writable; views.py:342-347 PATCH same",
+   "grep apps/ (non-test): original_workout/reschedules only in model def + migration + serializer fields -- never read back, never written by logic, no cross-tenant traversal",
+   "apps/fuel/models.py:169 id = UUIDField(default=uuid.uuid4) -> 122-bit random PKs, not enumerable -> oracle is weak"
+  ]
+ }
+]

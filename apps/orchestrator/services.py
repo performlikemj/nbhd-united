@@ -262,7 +262,14 @@ def provision_tenant(tenant_id: str) -> None:
         # Failure here MUST NOT block provisioning — fall back to the
         # shared key with a warning.
         openrouter_kv_secret_name: str | None = None
-        if getattr(settings, "OPENROUTER_PER_TENANT_KEYS_ENABLED", False) and secret_backend == "keyvault":
+        if tenant.openrouter_key_secret_name:
+            # Idempotent re-entry guard: provision_tenant is re-runnable and
+            # QStash retries it up to 3x. If the tenant is already keyed, reuse
+            # the existing sub-key — re-minting would orphan the prior key (its
+            # own monthly OpenRouter spend ceiling) and overwrite the hash so
+            # deprovision can never reap it. Mirrors backfill_openrouter_keys.
+            openrouter_kv_secret_name = tenant.openrouter_key_secret_name
+        elif getattr(settings, "OPENROUTER_PER_TENANT_KEYS_ENABLED", False) and secret_backend == "keyvault":
             try:
                 from apps.billing.constants import TIER_COST_BUDGETS
                 from apps.billing.openrouter_admin import (

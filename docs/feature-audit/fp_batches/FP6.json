@@ -1,0 +1,163 @@
+[
+ {
+  "id": "FA-1046",
+  "area": "router-telegram",
+  "feature": "Dropped/stale message apology",
+  "expected_behaviour": "_send_apology_for_dropped_pending_message is called when a PendingMessage reaches _MAX_DELIVERY_ATTEMPTS=3. _send_apology_for_stale_pending_message is called when the head row is older than _STALE_MESSAGE_AGE_SECONDS=600s. Both use localized error_msg templates (dropped_message/dropped_message_with_excerpt or stale_message/stale_message_with_excerpt). For Telegram, sends via httpx POST to sendMessage. user_text is sanitized by strip_internal_framing to remove [System:...]/[Now:...]/[chat:...] framing before excerpting (max 50 chars). Age is formatted as Nm or ~Nh. iOS turns instead flip AppChatMessage status to ERROR and fire notify_app_reply_error APNs push.",
+  "entry_points": "apps/router/pending_queue.py:_send_apology_for_dropped_pending_message ; apps/router/pending_queue.py:_send_apology_for_stale_pending_message",
+  "original_claim": "_send_apology_for_stale_pending_message (line 1026) builds the excerpt directly from msg.user_text without calling strip_internal_framing, unlike _send_apology_for_dropped_pending_message (line 1110) which does. If user_text ever contains [System: …], [Now: …], or [chat: …] framing (e.g. forwarded from the container-update or restart context-wrapping paths), those markers would be visible to the user in the stale apology excerpt.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "The code asymmetry is factually accurate but is NOT a user-facing defect. Line 1026 (_send_apology_for_stale_pending_message) builds the excerpt directly from msg.user_text, while line 1110 (_send_apology_for_dropped_pending_message) runs it through strip_internal_framing. However, PendingMessage.user_text is clean by construction at EVERY call site, so the strip is unreachable-in-practice belt-and-suspenders — the dropped variant's own comment (lines 1106-1109) explicitly labels its strip as \"Defense in depth: even though every call site is supposed to pass raw_user_text so PendingMessage.user_text is clean.\"\n\nThe claim hypothesizes that framing leaks in \"from the container-update or restart context-wrapping paths.\" Those are exactly the paths the code already handles: poller.py:795-797 (container update), :1269-1273 (restart), and :831-835 (button tap) build a framed context_msg (`[System: just updated…]`, `[System: assistant was restarting…]`, `[User tapped button: …]`) but pass an EXPLICIT clean raw_user_text= argument, with comments stating this is so \"the dropped-message apology quotes the user's actual words instead of the framing.\" The framed text goes into payload.message_text (sent to the agent), never into user_text.\n\nFor all other paths, _forward_to_container (poller.py:1314) and the LINE equivalent (line_webhook.py:1210) capture raw_user_text = message_text BEFORE the [Now:]/[chat:] datetime/chat markers are prepended (poller.py:1351), so the stored user_text never carries those markers. The iOS chat_views path (chat_views.py:230) also passes clean text, and the stale function returns early for iOS (line 1020-1022) before ever reaching the excerpt code. No call site stores [System:]/[Now:]/[chat:] framing into user_text. Therefore a real LINE/Telegram user would never see framing markers in the stale apology excerpt.\n\nThis is a latent code-cleanliness/consistency gap (a future call site that forgot to pass clean raw_user_text would leak only in the stale path, not the dropped path), but it is not a defect any current user experiences.",
+  "refutation_evidence": [
+   "apps/router/pending_queue.py:1026 (stale excerpt — no strip_internal_framing)",
+   "apps/router/pending_queue.py:1104-1112 (dropped excerpt — strip_internal_framing, comment self-labels it 'Defense in depth' / 'every call site is supposed to pass raw_user_text so user_text is clean')",
+   "apps/router/pending_queue.py:368-373 (user_text populated from user_text_excerpt at enqueue)",
+   "apps/router/poller.py:795-797 & 1269-1273 & 831-835 (framed context_msg paths pass explicit clean raw_user_text=)",
+   "apps/router/poller.py:1314,1351 (raw_user_text captured before [Now:]/[chat:] markers appended)",
+   "apps/router/line_webhook.py:1210,1267 (same clean-capture pattern for LINE)",
+   "apps/router/chat_views.py:217,230 (iOS passes clean text; and stale func returns early for iOS at pending_queue.py:1020-1022)",
+   "apps/router/error_messages.py:972-986 (strip_internal_framing definition)"
+  ]
+ },
+ {
+  "id": "FA-1060",
+  "area": "tenants-auth",
+  "feature": "Password Reset Request",
+  "expected_behaviour": "POST /api/v1/auth/password-reset/request/ is AllowAny. Accepts {email}. Applies dual rate-limiting: per-email (3 req/hr) and per-IP (5 req/hr) using Django cache; cache unavailability fails open. Regardless of whether the user exists, always returns 200 with a constant message to prevent account enumeration. If user exists and is_active, generates a uid (base64-encoded PK) and Django's default_token_generator token, builds a reset URL pointing to FRONTEND_URL/reset-password?uid=&token=, and sends a multipart HTML+text email via Mailgun. Email failures are swallowed (logged only). Returns 429 if rate limit exceeded.",
+  "entry_points": "apps/tenants/auth_views.py:PasswordResetRequestView ; POST /api/v1/auth/password-reset/request/",
+  "original_claim": "The per-IP rate limit counter is only incremented when the per-email check passes (line 101 is not reached when line 99 returns 429). An attacker who cycles through more than 3 email addresses can keep hitting the email rate-limit for each without accumulating IP counts, effectively bypassing the per-IP cap for those excess attempts. Additionally, the `cache.get + cache.set` sequence is non-atomic (lines 50-51); under concurrent requests, multiple threads can read the same count and both write count+1, allowing up to 2× the intended burst through. Both issues are low-severity given the small window and fail-open design intent.",
+  "original_category": "security",
+  "original_severity": "low",
+  "refutation": "Not a meaningful defect; both mechanical observations are accurate but neither produces the claimed per-IP bypass.\n\nClaim 1 (per-IP cap bypass): True that _rate_limited increments-and-checks, and that when the per-email check (line 99) returns 429 the per-IP increment (line 101) is skipped. But the ONLY requests that skip the IP increment are ones already blocked by the per-email limit -- the 4th+ request for the same email, which sends no reset email and accomplishes nothing for the attacker. Every request that actually does work (the first 3 per email, passing at email counts 1/2/3 <= 3) reaches line 101 and increments the IP counter normally. Trace: 3 effective sends for email A bring IP to 3, then 1 each for emails B and C bring IP to 5, and the next effective request trips the per-IP 429. So the per-IP cap of 5 still fully bounds the number of effective (email-sending) requests per IP per hour. The 'excess' requests that escape IP counting are exactly the no-op 429'd ones, so there is no real amplification, enumeration, or DoS benefit, and the ordering matches the in-code comment's stated intent (both buckets checked to stop email- and IP-pivoting).\n\nClaim 2 (non-atomic get+set race): Genuinely a read-modify-write race that could let a few extra requests slip through under exact concurrency, but this is a well-known low-consequence property of cache-based counters, bounded to a handful of requests per 1-hour window, and the limiter is explicitly fail-open by design (lines 52-56) -- leniency under contention is consistent with intent, not a regression.\n\nNet: the headline per-IP bypass does not hold (skipped IP increments only occur on already-blocked no-op requests), and the residual race is an accepted low-impact fail-open pattern. False positive.",
+  "refutation_evidence": [
+   "apps/tenants/auth_views.py:47-57 (_rate_limited increments then checks; fail-open on cache error)",
+   "apps/tenants/auth_views.py:92-102 (email bucket checked before IP bucket; email 429 short-circuits before IP increment)",
+   "apps/tenants/auth_views.py:34-36 (per-IP=5, per-email=3, 1h window constants)"
+  ]
+ },
+ {
+  "id": "FA-1064",
+  "area": "tenants-auth",
+  "feature": "PAT Create",
+  "expected_behaviour": "POST /api/v1/auth/tokens/create/ requires IsAuthenticated (JWT). Rate-limited by UserPATMintHourThrottle (10/hour per user). Accepts {name, scopes (optional, defaults to ['sessions:write','sessions:read']), expires_in_days (optional, 1-365)}. Validates scopes against ALLOWED_PAT_SCOPES — invalid scopes return 400. Generates a cryptographically random token (secrets.token_urlsafe(32) prefixed with 'pat_'), stores only the SHA-256 hash and first-8-char prefix. Returns {id, name, token (raw, shown ONCE), token_prefix, scopes, expires_at, created_at, warning} with 201. Raw token is never stored.",
+  "entry_points": "apps/tenants/pat_views.py:PATCreateView ; apps/tenants/pat_models.py:generate_pat ; POST /api/v1/auth/tokens/create/",
+  "original_claim": "When a client explicitly passes `scopes: []` (an empty list), `PATCreateView.post` evaluates `data.get('scopes') or list(DEFAULT_PAT_SCOPES)` at line 73 — an empty list is falsy, so the default scopes are silently applied instead of honoring the caller's explicit empty-scope intent. The client receives a token with broader scopes than requested without any error or warning. The serializer's `validate_scopes` accepts an empty list as valid (no invalid entries), making the silent override inconsistent.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Mechanically the claim is accurate: `scopes = data.get('scopes') or list(DEFAULT_PAT_SCOPES)` (pat_views.py:73) treats an explicit `[]` the same as an omitted field and applies the default scopes. But this is not a real user-facing defect. (1) The serializer declares `scopes` as `required=False, default=list` (pat_views.py:18), so by line 73 there is no way to distinguish \"field omitted\" from \"explicit empty list\" — both arrive as `[]`. The documented contract (FA-1064 expected_behaviour) states scopes is \"optional, defaults to ['sessions:write','sessions:read']\", i.e. absence -> defaults is intended, and the data model cannot tell the two cases apart. (2) ALLOWED_PAT_SCOPES contains exactly the two DEFAULT_PAT_SCOPES (permissions.py:12), so there is no narrower scope a caller could legitimately intend; honoring `[]` would only yield a functionally inert zero-privilege token (permissions.py:31 returns False for any required scope when scopes is empty), which no client or UI requests. (3) It is not an escalation/security issue: the caller is the authenticated owner and the grant is bounded to that user's own two scopes. No client, UI, or documented path sends `[]` deliberately, so no real subscriber experiences a deviation. This is intended/acceptable behavior driven by the serializer's `default=list`, not an exploitable or user-visible defect.",
+  "refutation_evidence": [
+   "apps/tenants/pat_views.py:18",
+   "apps/tenants/pat_views.py:21-25",
+   "apps/tenants/pat_views.py:73",
+   "apps/tenants/permissions.py:12",
+   "apps/tenants/permissions.py:31"
+  ]
+ },
+ {
+  "id": "FA-1080",
+  "area": "tenants-comms",
+  "feature": "welcomes_sent → AgendaEngagement mirror signal",
+  "expected_behaviour": "Wired via pre_save + @receiver(post_save) on Tenant in apps/tenants/agenda_signals.py. pre_save captures the prior welcomes_sent dict from DB into _PRE_SAVE_WELCOMES keyed by tenant PK. post_save diffs current vs prior: for each key that transitioned from absent/null to a timestamp, schedules mark_surfaced (kind=FEATURE_INTRO, item_id=feature, signal='welcome_delivered') + mark_state (state=COMPLETED) via transaction.on_commit. Idempotent: only transitions (null → timestamp) trigger the mirror; stable non-null values on subsequent saves are no-ops. Does not fire inside TestCase (on_commit deferred).",
+  "entry_points": "apps/tenants/agenda_signals.py:_snapshot_welcomes_sent ; apps/tenants/agenda_signals.py:_mirror_welcomes_to_engagement ; apps/tenants/apps.py:TenantsConfig.ready (connects signals)",
+  "original_claim": "In `_snapshot_welcomes_sent`, the `if not instance.pk:` branch stores the pre-save snapshot under the key `\"\"` (empty string). However, for `post_save`, `pk = str(instance.pk)` is the real UUID string, so `_PRE_SAVE_WELCOMES.pop(pk, {})` misses the stored snapshot and falls back to `{}`. In practice this is harmless because a brand-new Tenant row always has `welcomes_sent = {}` (the field default), so `current == prior == {}` and no spurious transitions fire. But the dead-code path in `_snapshot_welcomes_sent` would cause agenda mirrors to fire incorrectly for any new tenant whose `welcomes_sent` was non-empty at creation, if that ever happens. With Django UUID PKs (`default=uuid.uuid4`), `instance.pk` is never None in pre_save anyway, making the branch permanently dead.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "False positive. The QA correctly identifies that the `if not instance.pk:` branch (agenda_signals.py:44-47) stores its empty snapshot under key str(instance.pk or \"\") (i.e. \"\"), while post_save reads _PRE_SAVE_WELCOMES.pop(str(instance.pk), {}) -- a key mismatch. But this is harmless dead code with zero behavioral impact, for three independent reasons. (1) The branch is permanently dead: Tenant.id = UUIDField(primary_key=True, default=uuid.uuid4) (models.py:141). Django evaluates field defaults at instance __init__, so instance.pk is always populated before save() runs; `not instance.pk` is never True for a normally-constructed Tenant. (2) Even if it fired, the fallback is identical: the branch caches {} (\"new tenant -- treat all keys as newly set\") and the post_save miss falls back to exactly {}. Same value either way, so prior == {} regardless, and the intended semantics (every welcomes_sent key on a brand-new row counts as a fresh transition) are preserved by the fallback. (3) No creation path sets welcomes_sent non-empty: the field is default=dict and grep found no Tenant.objects.create(welcomes_sent=...) or Tenant(welcomes_sent=...); it is only mutated via later .save(update_fields=[\"welcomes_sent\", ...]) (runtime_views.py:85, plus fuel/core/finance views). So at creation current == {}, the transition loop (lines 78-84) yields zero transitions and post_save returns early -- no mirror fires. The QA's hypothesized harm (mirrors firing incorrectly for a new tenant with non-empty welcomes_sent) is both backwards (mirroring fresh keys on a genuinely new tenant is the intended behavior) and unreachable in practice. No user or operator can observe a wrong or missing AgendaEngagement mirror from this. At most it is a cosmetic dead-code cleanup, not a defect.",
+  "refutation_evidence": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/tenants/agenda_signals.py:42-52 (pre_save snapshot; empty-string key on the dead branch)",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/tenants/agenda_signals.py:55-87 (post_save: pop(str(pk), {}) and transition loop that early-returns when no fresh transitions)",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/tenants/models.py:141 (Tenant.id UUIDField default=uuid.uuid4 -> pk never None pre-save)",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/tenants/models.py:612-616 (welcomes_sent JSONField default=dict)",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/tenants/runtime_views.py:83-86 (welcomes_sent only mutated via later save, never at create)"
+  ]
+ },
+ {
+  "id": "FA-1084",
+  "area": "tenants-comms",
+  "feature": "Email preview (preview_email management command)",
+  "expected_behaviour": "management command: python manage.py preview_email --kind <1|2> --to <email> [--display-name <name>]. kind=1 renders email/privacy_rotation_2026/email_1_{subject,body}.{txt,html} with sample reset_url 'https://neighborhoodunited.org/reset-password?uid=PREVIEW&token=PREVIEW'; kind=2 renders email/privacy_rotation_2026/email_2_{subject,body}.{txt,html} with sample promo_url and valid_until=2026-06-24. Prepends '[PREVIEW]' to subject. Sends via send_mail to the --to address. Invalid kind raises CommandError (only 1 and 2 accepted). Also available as a QStash task (preview_email_task) callable with kind, to, display_name kwargs — allows operator to trigger a preview remotely without container exec.",
+  "entry_points": "apps/tenants/management/commands/preview_email.py:Command ; apps/tenants/tasks.py:preview_email_task ; apps/cron/views.py TASK_MAP key 'preview_email'",
+  "original_claim": "The `preview_email` kind=2 sample `promo_url` hardcodes the domain as `hoodunited.org` (line 47: `\"https://hoodunited.org/promo/redeem?code=preview&token=PREVIEW\"`) instead of `neighborhoodunited.org` or `{FRONTEND_URL}`. A preview recipient clicking this link would land on the wrong domain. The kind=1 preview correctly uses `neighborhoodunited.org`. The `preview_email_task` wrapper correctly validates `kind in (1, 2)` before dispatching.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive. The hardcoded `hoodunited.org` in the kind=2 preview sample is NOT a wrong domain — it is a legitimate, live NBHD United domain. The domain-migration plan explicitly provisions `hoodunited.org` as a redirect to NBHD United (domain-migration-plan.md:163 \"Set up hoodunited.org redirect\"; mcp-directive-domain-migration.md:362 \"hoodunited.org ... Free (for NBHD United redirect)\"), and the iOS app already uses https://hoodunited.org/app/authorize in its production auth handoff (frontend/lib/app-authorize.ts:3). The line's own comment (preview_email.py:45-46) calls it an intentional \"On-brand link (bounces through the live redeem flow).\" Critically, this is operator-only preview tooling: preview_email / preview_email_task exist so the operator can render-and-send to their OWN inbox before a blast. The real customer-facing campaign builds promo_url from FRONTEND_URL (send_promo_campaign.py:146-151, default neighborhoodunited.org), entirely independent of this hardcoded sample — no real promo recipient ever receives this URL. The code=preview&token=PREVIEW is a throwaway that redeems nothing. The kind=1 vs kind=2 domain difference is cosmetic inconsistency between two valid NBHD United domains, with zero user impact.",
+  "refutation_evidence": [
+   "apps/tenants/management/commands/preview_email.py:39,45-47",
+   "apps/tenants/tasks.py:49-74",
+   "apps/tenants/management/commands/send_promo_campaign.py:146-154",
+   "config/settings/base.py:495",
+   "docs/infrastructure/domain-migration-plan.md:163",
+   "docs/infrastructure/mcp-directive-domain-migration.md:362",
+   "frontend/lib/app-authorize.ts:3"
+  ]
+ },
+ {
+  "id": "FA-1088",
+  "area": "tenants-comms",
+  "feature": "Self-service password reset request",
+  "expected_behaviour": "POST /api/v1/auth/password-reset/request/ with body {email}. AllowAny. Rate-limited: 3 requests per email per hour (key pwd_reset_email:<email>) AND 5 requests per IP per hour (key pwd_reset_ip:<IP>, from X-Forwarded-For or REMOTE_ADDR). Both buckets checked before any DB work; returns HTTP 429 on either limit breach. Timing-safe: always returns 200 {detail: '...'} regardless of whether the email exists, is active, or fails — account enumeration is prevented. If user exists and is_active: generates uid=urlsafe_base64_encode(user.pk) + token=default_token_generator.make_token(user), calls _send_password_reset_email which renders email/password_reset_{subject,body}.txt + password_reset_body.html with context {user, reset_url, display_name} and sends via Django send_mail. Email send failures are caught and logged; the 200 response is still returned. Cache unavailability fails-open on rate limiting (logs warning, proceeds).",
+  "entry_points": "apps/tenants/auth_views.py:PasswordResetRequestView ; POST /api/v1/auth/password-reset/request/",
+  "original_claim": "The rate-limit check increments both buckets before either 429 can fire. At lines 99-102, if the email bucket check passes (incrementing the email counter), the code proceeds to check the IP bucket. If the IP bucket triggers a 429, the email counter has already been spent. A legitimate user whose IP is momentarily shared (e.g. NAT) would consume one of their 3 per-email tokens without receiving a reset email, leaving them with only 2 remaining attempts before being rate-limited on the email dimension as well. This is low severity because 3 per-hour is still ample for legitimate use.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "Not a real defect — intended, documented behaviour. The ordering observation is technically accurate: _rate_limited (auth_views.py:47-57) unconditionally increments its bucket on every call (count = cache.get(key,0)+1; cache.set(...)), so the per-email counter at line 99 is incremented before the per-IP 429 at line 101 can fire. But this is by design and matches the feature spec (\"Both buckets checked before any DB work; returns HTTP 429 on either limit breach\"). The inline comment (lines 96-98) states the intent: increment both dimensions so an attacker cannot pivot between IPs/emails. The claimed user harm requires a narrow compound scenario: a legitimate user behind a saturated shared NAT (IP bucket already >=5), who retries 3+ times while IP-blocked (burning all email tokens), AND whose IP congestion clears within the same 1-hour window — only then would the spent email tokens matter. While IP-blocked the user cannot receive an email regardless of the email counter, so there is no functional harm in the common case. Counting one reset request as one email-token is correct accounting (the user genuinely made a request). 3/hour per email is ample (the claim concedes this). This is fail-safe rate-limiter design, not a correctness bug.",
+  "refutation_evidence": [
+   "apps/tenants/auth_views.py:47-57 (_rate_limited always increments before returning, regardless of outcome)",
+   "apps/tenants/auth_views.py:96-102 (both-bucket check with intent comment; email at 99, IP at 101)",
+   "docs/feature-audit/areas/tenants-comms.json FA-1088 expected_behaviour (both buckets checked before any DB work, 429 on either breach — documented intent)"
+  ]
+ },
+ {
+  "id": "FA-1102",
+  "area": "tenants-core",
+  "feature": "Tenant onboarding / initial provisioning",
+  "expected_behaviour": "POST /api/v1/tenants/onboard/ requires IsAuthenticated. Accepts {display_name, language, timezone, agent_persona}; all optional with defaults. Timezone is validated against IANA database. agent_persona must be in PERSONAS dict. If user already has a tenant in PENDING/PROVISIONING status, returns 409. If tenant exists in any other state, also 409. On success: saves display_name/language/timezone/agent_persona to User; creates Tenant with is_trial=True, trial_started_at=now, trial_ends_at=max(now+7d, 2026-03-31T23:59:59Z), status=PROVISIONING, model_tier=STARTER; calls seed_default_templates_for_tenant; publishes 'provision_tenant' QStash task. If QStash publish fails, status reverts to PENDING and 503 is returned. Returns TenantSerializer(tenant).data with 201.",
+  "entry_points": "apps/tenants/views.py:OnboardTenantView ; POST /api/v1/tenants/onboard/",
+  "original_claim": "The trial_end floor of datetime(2026, 3, 31, 23, 59, 59, tzinfo=UTC) is dead code as of June 2026 — max(now + timedelta(days=7), trial_end) always resolves to the timedelta branch, so every new trial correctly lasts 7 days. The TODO comment says to revert after the March 2026 promotion ends, but the revert has not been done. The dead code is harmless today but misleads future readers and constitutes stale promotional logic.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "Verified the code at apps/tenants/views.py:84-95. The logic is exactly as described: now = timezone.now() (~2026-06-22 at audit time), trial_end = datetime(2026, 3, 31, 23, 59, 59, UTC), and trial_ends_at = max(now + timedelta(days=7), trial_end). Since now + 7 days (~2026-06-29) is always later than the fixed March 31 2026 floor, max() always resolves to the timedelta branch and every new trial correctly lasts exactly 7 days. The trial_end floor is genuinely dead/inert as of June 2026 and the TODO to revert to plain timedelta(days=7) is unactioned. However, this is NOT a defect a user or operator would experience: the runtime behavior is already correct (7-day trials), there is no incorrect trial length, no data-integrity issue, and no observable wrong outcome. The claim itself concedes it is 'harmless today.' This is a pure code-cleanliness / stale-promotional-comment matter, not a functional bug — the standing TODO is already serving its purpose of flagging the cleanup. It does not meet the bar of a real defect a user/operator actually experiences.",
+  "refutation_evidence": [
+   "apps/tenants/views.py:84-95 — TODO comment, trial_end floor datetime(2026,3,31,...), and trial_ends_at=max(now+timedelta(days=7), trial_end)"
+  ]
+ },
+ {
+  "id": "FA-1109",
+  "area": "tenants-core",
+  "feature": "Heartbeat window configuration",
+  "expected_behaviour": "GET /api/v1/tenants/heartbeat/ returns {enabled, start_hour, window_hours, feature_tips}. PATCH /api/v1/tenants/heartbeat/ accepts {enabled (bool), start_hour (0-23), window_hours (1-6, max 6), feature_tips (bool)}; all optional. Saves changed fields, runs full_clean() (validates heartbeat_window_hours <= 6). If tenant is ACTIVE: bumps pending_config_version, calls apply_or_defer_gateway_call(update_tenant_config). If enabled or start_hour changed: also calls apply_or_defer_gateway_call(sync_heartbeat_cron). Returns {enabled, start_hour, window_hours, feature_tips, applied: 'ok'|'pending'}.",
+  "entry_points": "apps/tenants/views.py:HeartbeatConfigView ; GET /api/v1/tenants/heartbeat/ ; PATCH /api/v1/tenants/heartbeat/",
+  "original_claim": "PATCH /api/v1/tenants/heartbeat/ accepts and validates a window_hours field (HeartbeatConfigSerializer lines 196-205 with min/max/custom validator), but the view handler never writes it to the tenant — the if-blocks at lines 382-391 only process enabled, start_hour, and feature_tips. A client that sends {\"window_hours\": 3} receives 200 OK with applied:\"ok\" but the response still shows window_hours: 6 (unchanged). The design intent documented in inventory_notes is that window_hours is read-only here, but accepting the field without applying or rejecting it creates a silent no-op that will confuse API consumers.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "The code behaves as described: HeartbeatConfigSerializer (serializers.py:196-206) declares and validates window_hours (required=False, min 1/max 6 plus validate_window_hours), but the PATCH handler (views.py:383-391) only writes enabled, start_hour, and feature_tips. So a request with window_hours:3 validates, produces no update_fields entry, returns 200 with applied:\"ok\" and an unchanged echoed window_hours:6 — a genuine silent no-op at the serializer/view contract level. But it is NOT a real defect a user/operator experiences: (1) It is explicitly documented as intended in the feature record's inventory_notes (\"Not writing window_hours via PATCH is intentional — only enabled, start_hour, and feature_tips are settable here\"). (2) The only consumer, the Next.js frontend, never PATCHes window_hours — it appears solely as a read-only field in lib/types.ts:365; no settings form sends it. (3) There is no public/third-party API surface that independently relies on setting it. The residual is poor API hygiene (accepting-and-dropping a field rather than not declaring it or rejecting it) — a cosmetic robustness nit, not a behavioral bug. With documented intent and zero real callers sending the field, this is a false positive.",
+  "refutation_evidence": [
+   "apps/tenants/views.py:369-452 (PATCH handler writes only enabled/start_hour/feature_tips; window_hours only echoed at 364 and 448, never assigned)",
+   "apps/tenants/serializers.py:191-206 (window_hours declared and validated but never applied by the view)",
+   "frontend/lib/types.ts:365 (window_hours is read-only in the type; no frontend code PATCHes it)",
+   "docs/feature-audit/areas/tenants-core__1.json FA-1109 inventory_notes (window_hours read-only via PATCH is intentional)"
+  ]
+ },
+ {
+  "id": "FA-1119",
+  "area": "tenants-core",
+  "feature": "LINE account unlink",
+  "expected_behaviour": "POST /api/v1/tenants/line/unlink/ requires IsAuthenticated. Returns 400 if not linked. Delegates to apps/router/line_service.unlink_line(). Returns {success: True}.",
+  "entry_points": "apps/tenants/line_views.py:line_unlink ; POST /api/v1/tenants/line/unlink/",
+  "original_claim": "unlink_line() in line_service.py (line 163-165) unconditionally flips preferred_channel to 'telegram' when unlinking LINE, even if the user has no Telegram account linked. This leaves preferred_channel='telegram' with user.telegram_chat_id=None, so any proactive message routed by preferred_channel (cron output, alerts) would silently fail to deliver with no channel available. By contrast, unlink_telegram() in telegram_service.py correctly checks user.line_user_id before switching to 'line'.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "False positive. The asymmetry is real but benign. unlink_line() (line_service.py:163-165) flips preferred_channel to 'telegram' unconditionally, whereas unlink_telegram() (telegram_service.py:159-161) guards with 'and user.line_user_id' before flipping to 'line'. However, the claimed user impact -- that proactive messages routed by preferred_channel silently fail to deliver when preferred_channel='telegram' but telegram_chat_id=None -- does NOT occur, because no delivery path trusts preferred_channel blindly. Every proactive router verifies the preferred channel is actually linked before using it, then falls back: resolve_user_channel (cron_delivery.py:48-83) and _resolve_channel (system_notify.py:40-55) honor preferred only when that channel is linked, then fall back to whichever channel IS linked, then to the iOS app (DeviceToken), then return None -> 422/skip; _resolve_delivery_channel (extraction.py:546-568) has the identical chain. The one direct-routing site (actions/messaging.py:313) still guards inside the sender: _send_telegram_confirmation checks 'if not chat_id' and logs a warning + returns None (messaging.py:37-39), not a silent drop or crash. The unconditional flip to 'telegram' is also intentional and consistent -- it matches the model default (models.py:56, default='telegram') and the LINE-unfollow handler (line_webhook.py:898-899), which both reset to 'telegram' as the canonical value. Worst-case observable effect is a cosmetic stale value in the settings UI/envelope that self-corrects on the next delivery fallback. No real user/operator experiences message loss.",
+  "refutation_evidence": [
+   "apps/router/line_service.py:153-168 (unconditional flip to telegram on unlink)",
+   "apps/tenants/telegram_service.py:148-166 (guarded flip to line)",
+   "apps/tenants/models.py:53-58 (preferred_channel default='telegram')",
+   "apps/router/cron_delivery.py:48-83 (resolve_user_channel verifies channel is linked, then falls back to line/app/None)",
+   "apps/router/system_notify.py:40-55 (_resolve_channel same fallback chain)",
+   "apps/journal/extraction.py:546-568 (_resolve_delivery_channel same fallback chain)",
+   "apps/actions/messaging.py:37-39 (_send_telegram_confirmation guards if not chat_id, logs warning, returns None)",
+   "apps/router/line_webhook.py:898-900 (LINE unfollow handler also resets to telegram unconditionally)"
+  ]
+ }
+]

@@ -526,11 +526,15 @@ export default function register(api) {
         },
         required: ["resource"],
       },
-      async execute(args) {
+      async execute(_id, params) {
+        // OpenClaw's execute signature is (toolCallId, params, ...): the
+        // params object is the SECOND arg. Reading the first arg shipped the
+        // toolCallId string as the request body → backend `**str` → 500 on
+        // every gravity_query. Match the sibling tools (asObject(params)).
         const payload = await callRuntime(api, {
           path: financePath(api, "/query/"),
           method: "POST",
-          body: args,
+          body: asObject(params),
         });
         return renderPayload(payload);
       },

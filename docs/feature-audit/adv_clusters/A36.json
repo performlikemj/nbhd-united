@@ -1,0 +1,19 @@
+[
+ {
+  "ref": "journal-core#1",
+  "source": "missed",
+  "severity": "low",
+  "category": "data-integrity",
+  "detail": "The code-level claim is ACCURATE but the impact is OVERSTATED: this is a latent inconsistency/footgun, not a live data-integrity bug any current user can hit.\n\nAccurate part: In ExtractionApproveView.post (apps/journal/views.py:570-579), the LESSON branch calls _approve_lesson(pending) and discards the returned lesson_id; the save() omits 'lesson_id', so pending.lesson_id stays NULL. The three sibling approve paths all persist it: Telegram (apps/router/extraction_callbacks.py:304-306), LINE (apps/router/line_webhook.py:1531-1533), cron (apps/journal/extraction.py:674-677). _undo_lesson (extraction_callbacks.py:176-179) is a no-op when lesson_id is NULL, and _approve_goal/_approve_task self-persist their FK internally so their undo links survive the same discard. So the web path is genuinely the odd one out.\n\nWhy impact is overstated (the orphaned-lesson scenario is unreachable today): (1) The web approve UI cannot receive a LESSON. Its only data source is the dashboard/horizons pending_extractions list (apps/dashboard/views.py:252-256) which filters kind__in=[GOAL, TASK]; lessons are excluded, and the frontend (frontend/components/pending-goal.tsx on the horizons page) only POSTs approve for goal/task ids surfaced there. (2) No production path creates a PENDING-status LESSON: all three PendingExtraction creation sites in extraction.py (663/690/713) create status=APPROVED rows directly (auto-add immediately), and the auto-resolve signals in signals.py only handle GOAL/TASK; ExtractionApproveView only acts on status=PENDING rows, so its lesson branch has no real rows to act on. (3) There is no web/HTTP undo endpoint at all; _undo_lesson is reachable only from Telegram (extraction_callbacks.py:255) and LINE postback handlers (an inline button on a chat message), which a web-approved row would never have.\n\nNet: a real, isolated one-line omission that is inconsistent with three sibling paths and would immediately bite if lessons were ever exposed to web approval, but it causes no user-visible harm in the current code. Worth fixing for consistency/defense, hence genuine at low severity.",
+  "suggested_fix": "Mirror the sibling paths: capture and persist the return value in ExtractionApproveView's lesson branch. e.g. `lesson_id = None; ... elif pending.kind == LESSON: _, lesson_id = _approve_lesson(pending)`, then after setting status/resolved_at, `if pending.kind == LESSON and lesson_id: pending.lesson_id = lesson_id; pending.save(update_fields=[\"status\",\"resolved_at\",\"lesson_id\"]) else: pending.save(update_fields=[\"status\",\"resolved_at\"])`. Optionally also drop the LESSON branch from ExtractionApproveView entirely if web lesson-approval is never intended (it is currently dead for real data).",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/journal/views.py:570-579 — _approve_lesson(pending) return value discarded; save omits lesson_id",
+   "apps/router/extraction_callbacks.py:61-95,176-179,304-306 — _approve_lesson returns (msg, lesson_id); _undo_lesson no-op on NULL; Telegram path persists lesson_id",
+   "apps/router/line_webhook.py:1520-1535 — LINE path persists lesson_id; apps/journal/extraction.py:674-677 cron path persists lesson_id",
+   "apps/dashboard/views.py:252-256,379-389 — web pending_extractions list filters kind__in=[GOAL, TASK], lessons excluded",
+   "apps/journal/extraction.py:663,690,713 — all PendingExtraction creation sites use status=APPROVED (no PENDING lessons created in prod); apps/journal/signals.py only handles GOAL/TASK",
+   "frontend/components/pending-goal.tsx + frontend/app/horizons/page.tsx:135-148 — web approve UI only renders goal/task extractions; no web undo endpoint exists (_undo_lesson reachable only via Telegram/LINE postbacks)"
+  ]
+ }
+]

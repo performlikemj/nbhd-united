@@ -387,15 +387,20 @@ def _redact_user_message(
         replacements.append((result.start, result.end, placeholder))
         new_map_entries[placeholder] = _entry_storage(original)
         # Telemetry — capture score on every mint so future threshold
-        # tuning can be data-driven instead of vibes-driven. Span text
-        # truncated; tenant id and score are the load-bearing fields.
+        # tuning can be data-driven instead of vibes-driven. NEVER log the
+        # raw span: this is the PII redactor, and its logs ship to Azure Log
+        # Analytics in cleartext — emitting the detected value (card numbers,
+        # passwords, IBANs, emails) would defeat the module's whole purpose
+        # and is a PCI-DSS violation. tenant id, type and score are sufficient
+        # for tuning; log only the span length as a coarse, non-reversible
+        # shape signal.
         logger.info(
-            "pii_mint tenant=%s type=%s placeholder=%s score=%.3f span=%r",
+            "pii_mint tenant=%s type=%s placeholder=%s score=%.3f span_len=%d",
             getattr(tenant, "id", "?"),
             etype,
             placeholder,
             result.score,
-            original[:32],
+            len(original),
         )
         # Register the mint in the case-insensitive view so later spans
         # in the SAME message ("Sautai meets sautai") collapse onto it.

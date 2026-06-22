@@ -1,0 +1,17 @@
+[
+ {
+  "ref": "FA-0173-P1",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "Confirmed as a low-severity test-coverage gap, not a functional defect. The new receiver _bump_on_pending_extraction (apps/dashboard/receivers.py:96-103) is correct and complete: it delegates to the same _bump_for(instance) helper the four pre-existing receivers use, and the underlying fix (bumping the dashboard cache tag when ExtractionDismissView / typed-task-approve write only PendingExtraction.status) genuinely resolves the original FA-0173 stale-cache defect. However, apps/dashboard/test_receivers.py adds dedicated save/delete/status-change tests for all four pre-existing receivers (AssistantInsight, UserVoicePref, Goal, Document) and NONE for PendingExtraction: no PendingExtraction import and no test_pending_extraction_* method exist in that file. The fix_dispositions entry for FA-0173 lists only receivers.py in files_changed, corroborating that no test was added. PendingExtraction is exercised in apps/journal/test_extraction.py and test_phase_integration.py, but never for the cache-tag-bump behavior. User impact today is nil (the receiver works); the real cost is future-regression risk: a rename of _bump_for, a broken import, or a refactor could silently disable this receiver with zero CI signal, re-introducing the exact stale-cache bug FA-0173 fixed. This is a genuine completeness/test-hygiene gap consistent with the reviewer's own low/incomplete framing. It does not undermine the functional fix; it leaves the new behavior the only uncovered receiver in an otherwise fully-tested file.",
+  "suggested_fix": "Add tests to DashboardCacheInvalidationTests in apps/dashboard/test_receivers.py mirroring the existing pattern: import PendingExtraction from apps.journal.models, then add (1) test_pending_extraction_save_bumps_tag - create a PendingExtraction (tenant=self.tenant, kind=PendingExtraction.Kind.TASK/GOAL with required text fields) and assert self._v() > self.baseline; (2) test_pending_extraction_status_change_bumps_tag - create one, capture before=self._v(), set status=PendingExtraction.Status.DISMISSED, save(), assert self._v() > before (this mirrors the real ExtractionDismissView write path); and optionally (3) a delete test. This closes the only untested receiver and gives CI a signal if a future refactor breaks the bump.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/dashboard/receivers.py:96-103 - new _bump_on_pending_extraction receiver delegating to _bump_for(instance)",
+   "apps/dashboard/test_receivers.py:1-156 - no PendingExtraction import; dedicated tests exist only for AssistantInsight/UserVoicePref/Goal/Document",
+   "grep PendingExtraction across apps/ - hits only in journal tests (test_extraction.py, test_phase_integration.py) and dashboard views/receivers, none testing the cache bump",
+   "fix_dispositions.json FA-0173: files_changed lists only apps/dashboard/receivers.py, confirming no test file was added"
+  ]
+ }
+]

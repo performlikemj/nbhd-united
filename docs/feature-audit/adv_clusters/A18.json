@@ -1,0 +1,22 @@
+[
+ {
+  "ref": "FA-0536",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "Two-part finding, both halves verified against committed code. HALF 1 (count semantics) is FIXED, contradicting the stale disposition: apps/finance/snapshot.py:32-44 increments created_count only when _create_snapshot_for_tenant returns non-None (it returns None on the duplicate-skip and no-accounts-skip paths), and tests at apps/finance/tests.py:1437 and :1447 assert count==0. So fix_dispositions.json (action=partial, files_changed=[], 'reverted it to avoid a worse regression') is stale/wrong; the fix WAS applied. HALF 2 (automatic scheduling) is STILL genuinely unfixed: create_monthly_snapshots is the only writer of FinanceSnapshot (FinanceSnapshot.objects.create appears only at snapshot.py:80) and has NO production caller. There is no wrapper in apps/finance/tasks.py (only schedule_finance_welcome_task lives there), no TASK_MAP entry in apps/cron/views.py, and no entry in apps/cron/management/commands/register_system_crons.py. Grep for create_monthly_snapshots / finance.snapshot imports across apps/ (excluding tests) returns nothing. DISAMBIGUATION: a 'snapshot-gravity-weekly' system cron DOES exist (register_system_crons.py:78, TASK_MAP snapshot_gravity_weekly at views.py:193) but it writes a DIFFERENT model, PillarSnapshot, via apps.insights.tasks.snapshot_gravity_weekly_task (apps/insights/tasks.py:70). It does NOT cover FinanceSnapshot, so this feature stays dormant. IMPACT: low/latent. The /api/v1/finance/snapshots/ endpoint (FinanceSnapshotListView, finance/urls.py:37) is wired and works, but will always return an empty list in production because no FinanceSnapshot row is ever written; no crash, it degrades gracefully to empty. But the module's documented core promise ('Create a FinanceSnapshot for each finance-enabled tenant ... on the 1st of each month via QStash') is never fulfilled, so monthly debt/savings/net-worth history never accumulates.",
+  "suggested_fix": "Wire create_monthly_snapshots into the cron pipeline, mirroring the existing weekly Gravity snapshot. (1) Add a thin task wrapper in apps/finance/tasks.py (e.g. create_monthly_snapshots_task) that imports and calls apps.finance.snapshot.create_monthly_snapshots(). (2) Register it in TASK_MAP in apps/cron/views.py (e.g. 'snapshot_finance_monthly': 'apps.finance.tasks.create_monthly_snapshots_task'). (3) Add a monthly schedule entry in apps/cron/management/commands/register_system_crons.py (cron '0 6 1 * *' -> /api/cron/trigger/snapshot_finance_monthly/). The function is already idempotent per (tenant, date) via the duplicate-skip in _create_snapshot_for_tenant, so re-fires are safe. Alternatively, if FinanceSnapshot is intended to be superseded by PillarSnapshot, delete the dead snapshot.py module, FinanceSnapshot model/migration, and FinanceSnapshotListView/url to avoid a permanently-empty endpoint.",
+  "fix_complexity": "small",
+  "evidence": [
+   "apps/finance/snapshot.py:32-44 - created_count increments only when _create_snapshot_for_tenant(...) is not None (count fix present, contradicting disposition 'reverted')",
+   "apps/finance/snapshot.py:80 - sole FinanceSnapshot.objects.create call site; no other writer exists in apps/ (verified by grep)",
+   "apps/finance/tests.py:1437,1447 - existing tests assert count==0 on duplicate/no-account skip paths (fix WAS applied)",
+   "apps/finance/tasks.py - contains only schedule_finance_welcome_task; no create_monthly_snapshots wrapper",
+   "apps/cron/views.py TASK_MAP - finance entries are schedule_finance_welcome (153) and snapshot_gravity_weekly (193, writes PillarSnapshot not FinanceSnapshot); no monthly finance snapshot task",
+   "apps/cron/management/commands/register_system_crons.py:78 - only snapshot-gravity-weekly registered (PillarSnapshot); no monthly FinanceSnapshot cron",
+   "grep create_monthly_snapshots / from apps.finance.snapshot across apps/ excluding tests returns empty - function is orphaned",
+   "apps/insights/tasks.py:70 - weekly Gravity snapshot writes PillarSnapshot, a distinct model, so it does not cover FinanceSnapshot",
+   "apps/finance/urls.py:37 - /snapshots/ endpoint wired but reads a table nothing populates -> always empty in prod"
+  ]
+ }
+]
