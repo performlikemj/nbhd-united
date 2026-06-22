@@ -126,6 +126,13 @@ SYSTEM_CRONS = [
     # GatePollView expiry for actions the container abandons (never polls again).
     # See apps/actions/tasks.py:expire_stale_pending_actions.
     ("expire-stale-actions", "*/5 * * * *", "/api/cron/trigger/expire_stale_actions/"),
+    # Daily at 08:20 UTC — reap orphaned tenant containers (oc-* apps with no
+    # Tenant row, e.g. a User account deletion whose Azure teardown was blocked
+    # by the prod resource-group lock). Hibernates awake orphans (lock-safe;
+    # stops cost + internal-auth log spam) and alerts the operator. Does not
+    # delete — run `manage.py reap_orphaned_containers --apply` after lifting
+    # the lock. Offset from the other crons. See apps/orchestrator/orphan_reaper.py.
+    ("reap-orphaned-containers", "20 8 * * *", "/api/cron/trigger/reap_orphaned_containers/"),
 ]
 
 
