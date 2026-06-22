@@ -1,0 +1,19 @@
+[
+ {
+  "ref": "FA-0341",
+  "source": "fix-attack:incomplete",
+  "severity": "medium",
+  "category": "incomplete",
+  "detail": "The reviewer is correct. The fix's own disposition states \"the Horizons response carries the goal's full markdown in `preview`\" — that premise is factually false. apps/dashboard/views.py:373 serializes goals[].preview as `(g[\"markdown\"] or \"\")[:200]`, a hard 200-char truncation. The new detail page (frontend/app/journal/goal/[slug]/goal-detail-client.tsx:121) renders exactly that field via `<MarkdownRenderer content={goal.preview} />`. The HorizonsGoal type (frontend/lib/types.ts:581-588) exposes only id/title/slug/preview/created_at/updated_at — no full-content field — and the response (views.py:368-378) never emits the underlying `markdown` (typed goals: g.description; legacy: Document.markdown). The page's only data source is useHorizonsQuery → GET /api/v1/dashboard/horizons/; there is no separate goal-detail endpoint. The 200-char limit truncates real goals: the goal template (apps/journal/templates_md.py:97-101) is `### 🎯 [Goal Name]` + Target/Why/Status/Next-milestone labels — roughly 190 chars of scaffolding before any user content — so any fully-populated goal exceeds 200 chars and the detail page shows a mid-sentence stub. User impact: the routing dead-end (the original high defect) IS fixed — the in-app click now lands on a real page showing the title and a partial body — but the \"View in Journal\" CTA does not deliver the full goal; users see the same truncated snippet the card already shows, with no way to read the rest. It is an incomplete fix, not a broken one (title + ~200 chars still render), which is why I rate it medium rather than high.",
+  "suggested_fix": "Expose the full goal markdown to the detail view rather than reusing the 200-char preview. Minimal change: add a `markdown` (full body) field to the goals[] serialization in apps/dashboard/views.py:368-378 (the full text is already in scope as g[\"markdown\"]), add it to the HorizonsGoal type, and have goal-detail-client.tsx render `goal.markdown` (falling back to goal.preview). The list cards continue using the truncated `preview`; only the detail page needs the full field. Adding ~a few hundred chars per goal (capped at 20 goals) to the existing Horizons payload is negligible.",
+  "fix_complexity": "small",
+  "evidence": [
+   "apps/dashboard/views.py:373 — \"preview\": (g[\"markdown\"] or \"\")[:200] is the only goal-body field emitted; full markdown never sent",
+   "frontend/app/journal/goal/[slug]/goal-detail-client.tsx:121 — <MarkdownRenderer content={goal.preview} /> renders the truncated preview as the full goal body",
+   "frontend/lib/types.ts:581-588 — HorizonsGoal has no full-content field, only preview",
+   "apps/journal/templates_md.py:97-101 — goal template scaffolding (### 🎯 [Goal Name] + Target/Why/Status/Next-milestone) is ~190 chars before user content, so real goals exceed the 200-char cap",
+   "frontend/lib/api.ts:269 + queries.ts:229 — detail page's only data source is useHorizonsQuery → /api/v1/dashboard/horizons/; no separate goal-detail endpoint exists",
+   "fix_dispositions FA-0341 — claims 'the Horizons response carries the goal's full markdown in preview', contradicted by views.py:373"
+  ]
+ }
+]

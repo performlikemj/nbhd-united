@@ -1,0 +1,50 @@
+[
+ {
+  "id": "FA-0931",
+  "area": "platform_logs",
+  "layer": "backend",
+  "feature": "Agent Platform Issue Reporting",
+  "user_role": "container runtime",
+  "user_story": "As an OpenClaw container runtime, I want to report platform issues (tool errors, missing capabilities, config problems, rate limits, auth errors) to the Django control plane so that operators can see per-tenant operational failures and resolve them.",
+  "expected_behaviour": "POST /api/v1/integrations/runtime/<tenant_id>/platform-issue/report/ — auth via `X-NBHD-Internal-Key` + `X-NBHD-Tenant-Id` headers, validated by `validate_internal_runtime_request` (dual per-tenant key / legacy global key with constant-time compare). Returns 401 on auth failure or tenant_id mismatch. Returns 404 if the tenant UUID is not found in the DB. Validates request body via `ReportIssueSerializer`: `summary` (required, max 500 chars), `category` (choice from: missing_capability, tool_error, config_issue, rate_limit, auth_error, other; default=other), `severity` (choice from: low, medium, high, critical; default=low), `tool_name` (optional, max 100 chars), `detail` (optional, max 2000 chars, must not contain PII). Returns 400 on serializer validation failure. Enforces a per-tenant rate limit of 10 reports per rolling hour window (counts existing `PlatformIssueLog` rows for that tenant in the past 60 minutes); returns 429 with message 'Rate limit exceeded. Max 10 reports per hour.' if exceeded. If `tool_name` is present, performs dedup: if a `PlatformIssueLog` for the same tenant + category + tool_name exists within the past 60 minutes, returns 200 with `{deduplicated: true}` and does NOT create a new row. If dedup does not apply (no tool_name, or no matching recent row), creates a `PlatformIssueLog` row and returns 201 with `{id: <uuid>, status: 'logged'}`. No dedup occurs when `tool_name` is absent — multiple identical reports without tool_name each create a separate row. Sets RLS context (`set_rls_context(tenant_id, service_role=True)`) after successful auth. Side effect: logs via Django logger at INFO with tenant_id, category, tool_name, and first 100 chars of summary.",
+  "entry_points": "apps/platform_logs/views.py:PlatformIssueReportView ; apps/platform_logs/views.py:ReportIssueSerializer ; apps/platform_logs/models.py:PlatformIssueLog ; apps/integrations/urls.py (line 248-252) ; POST /api/v1/integrations/runtime/<uuid:tenant_id>/platform-issue/report/",
+  "dependencies": "apps/integrations/internal_auth.py:validate_internal_runtime_request, apps/tenants/middleware.py:set_rls_context, Supabase/Postgres (PlatformIssueLog table: platform_issue_logs)",
+  "inventory_notes": "The platform_logs/urls.py defines a second URL pattern (<tenant_id>/report/) that is NOT mounted in config/urls.py — only the re-registration in apps/integrations/urls.py is live. Dedup is only active when tool_name is non-empty; omitting tool_name bypasses dedup entirely (both the first and subsequent identical reports create rows). The resolved and resolved_at fields on PlatformIssueLog have no write endpoint — they are only settable via Django admin. The rate limit counts ALL categories/severities together per tenant, not per category. `detail` field has a model-level max of TextField (no char limit) but serializer enforces max_length=2000."
+ },
+ {
+  "id": "FA-0932",
+  "area": "platform_logs",
+  "layer": "backend",
+  "feature": "Platform Issue Admin Console",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to view, filter, search, and resolve platform issue logs in the Django admin so that I can track and triage operational problems across all tenants.",
+  "expected_behaviour": "Registered at /admin/platform_logs/platformissuelog/ via `PlatformIssueLogAdmin`. List view displays columns: tenant, category, severity, tool_name, summary_short (first 80 chars), resolved, created_at. List is filterable by category, severity, resolved, and created_at (date hierarchy). Search runs across summary, detail, and tool_name fields. The `resolved` boolean column is editable inline in the list view (`list_editable`). Fields `id` and `created_at` are read-only. The `resolved_at` field is writable in the detail form but not auto-populated on resolve — operator must set it manually. Ordering is always by `-created_at` (newest first, from model Meta). No custom actions or bulk-resolution logic beyond Django admin defaults. Access requires Django admin session auth with staff/superuser privileges.",
+  "entry_points": "apps/platform_logs/admin.py:PlatformIssueLogAdmin ; GET/POST /admin/platform_logs/platformissuelog/",
+  "dependencies": "Django admin framework, Supabase/Postgres (platform_issue_logs table)",
+  "inventory_notes": "resolved_at is nullable and not automatically set when resolved is flipped to True — operators must manually fill it in the detail form. There is no signal or hook that triggers on resolution. The summary_short method truncates to 80 chars for the list column but the full 500-char summary is visible in the detail view."
+ },
+ {
+  "id": "FA-0933",
+  "area": "platform_logs",
+  "layer": "backend",
+  "feature": "Internal Auth Audit Logging",
+  "user_role": "system/cron",
+  "user_story": "As the platform, I want every internal runtime authentication attempt to be audit-logged with key_provenance and outcome so that operators can observe the fleet migration from legacy global keys to per-tenant keys and detect auth anomalies.",
+  "expected_behaviour": "Every call to `validate_internal_runtime_request` (the chokepoint used by PlatformIssueReportView and all other runtime endpoints) emits an INFO-level log via the `nbhd.internal_auth` logger with structured fields: event, provided_tenant_id, expected_tenant_id, key_provenance (per_tenant | legacy_global | none), and outcome (success | bad_key | tenant_mismatch | missing_key | missing_tenant | no_key_configured). The fields are baked into the log MESSAGE string (not only in `extra`) so Azure Log Analytics plain-text formatter captures them. Both successes and failures are logged. The per-tenant key is resolved via a DB query (`Tenant.objects.only('internal_api_key').get(id=tenant_id)`) and compared via `secrets.compare_digest` (constant-time). If per-tenant key is absent or empty, falls back to `settings.NBHD_INTERNAL_API_KEY` global key. If neither matches, raises `InternalAuthError` which the calling view converts to HTTP 401.",
+  "entry_points": "apps/integrations/internal_auth.py:validate_internal_runtime_request ; apps/integrations/internal_auth.py:_emit_audit ; apps/integrations/internal_auth.py:_lookup_tenant_key",
+  "dependencies": "apps/tenants/models.py:Tenant (internal_api_key field), Django settings (NBHD_INTERNAL_API_KEY), Azure Log Analytics (log destination)",
+  "inventory_notes": "This is not a platform_logs model write — it writes to the Django logger, not PlatformIssueLog. The Phase 1d migration gate requires observing zero key_provenance=legacy_global hits for 48h before removing the global key fallback. Non-UUID tenant_ids (e.g. test strings) return None from _lookup_tenant_key (ValidationError caught), causing fallback to global key without crashing."
+ },
+ {
+  "id": "FA-0934",
+  "area": "platform_logs",
+  "layer": "backend",
+  "feature": "PlatformIssueLog Data Model",
+  "user_role": "system/cron",
+  "user_story": "As the platform, I want platform issue events persisted in Postgres with tenant FK, category, severity, tool_name, summary, detail, and resolution state so that the full history of operational issues is queryable and retainable.",
+  "expected_behaviour": "Table `platform_issue_logs` in Postgres. Primary key is UUID (auto-generated). FK to Tenant with CASCADE delete — deleting a tenant purges all its issue logs. Fields: category (TextChoices: missing_capability, tool_error, config_issue, rate_limit, auth_error, other; default=other), severity (TextChoices: low, medium, high, critical; default=low), tool_name (varchar 100, blank allowed), summary (varchar 500, required), detail (TextField, blank allowed, intended to be PII-free), resolved (boolean, default=False), resolved_at (nullable datetime, not auto-set), created_at (auto_now_add). Default ordering is -created_at. Two DB indexes: composite (tenant, -created_at) for per-tenant time-ordered queries; composite (category, resolved) for admin filtering by category+resolution state.",
+  "entry_points": "apps/platform_logs/models.py:PlatformIssueLog ; apps/platform_logs/migrations/0001_initial.py",
+  "dependencies": "Supabase/Postgres, apps/tenants/models.py:Tenant",
+  "inventory_notes": "resolved_at has no auto-population logic — it remains NULL even after resolved=True is set. The detail field has no DB length constraint (TextField) but the API serializer caps it at 2000 chars. No signals are connected to PlatformIssueLog. No scheduled cleanup/purge job exists for old records."
+ }
+]

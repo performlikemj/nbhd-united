@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny
@@ -166,10 +167,43 @@ class GateRequestView(APIView):
             display_summary=display_summary,
         )
 
-        # Send confirmation message via user's platform
+        # Send confirmation message via user's platform.
+        # delivered=False means no Telegram/LINE channel exists (iOS-only user);
+        # in that case we immediately mark the action EXPIRED and return a clear
+        # "undeliverable" response so the container can surface a real error to
+        # the user instead of polling for 5 minutes only to get "expired".
         from .messaging import send_gate_confirmation
 
-        send_gate_confirmation(tenant, action)
+        delivered = send_gate_confirmation(tenant, action)
+
+        if not delivered:
+            action.status = ActionStatus.EXPIRED
+            action.save(update_fields=["status"])
+            ActionAuditLog.objects.create(
+                tenant=tenant,
+                action_type=action_type,
+                action_payload=payload,
+                display_summary=display_summary,
+                result=ActionStatus.EXPIRED,
+            )
+            logger.warning(
+                "Gate request undeliverable (no channel): %s | %s",
+                tenant.id,
+                action_type,
+            )
+            return Response(
+                {
+                    "action_id": str(action.id),
+                    "status": "undeliverable",
+                    "reason": "no_channel",
+                    "message": (
+                        "This action requires confirmation via Telegram or LINE, "
+                        "but no messaging channel is linked to your account. "
+                        "Please connect Telegram or LINE to perform this action."
+                    ),
+                },
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
 
         logger.info(
             "Gate request created: %s | %s | %s",
@@ -209,18 +243,38 @@ class GatePollView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Check for expiry
+        # Check for expiry — use conditional UPDATE so we don't clobber a
+        # concurrent APPROVED/DENIED write from the user's button tap.
         if action.is_expired:
-            action.status = ActionStatus.EXPIRED
-            action.save(update_fields=["status"])
-            # Log it
-            ActionAuditLog.objects.create(
-                tenant_id=tenant_id,
-                action_type=action.action_type,
-                action_payload=action.action_payload,
-                display_summary=action.display_summary,
-                result=ActionStatus.EXPIRED,
-            )
+            updated = PendingAction.objects.filter(
+                id=action.id,
+                status=ActionStatus.PENDING,
+            ).update(status=ActionStatus.EXPIRED)
+            if updated:
+                action.status = ActionStatus.EXPIRED
+                # Log it
+                ActionAuditLog.objects.create(
+                    tenant_id=tenant_id,
+                    action_type=action.action_type,
+                    action_payload=action.action_payload,
+                    display_summary=action.display_summary,
+                    result=ActionStatus.EXPIRED,
+                )
+                # Clear the stale Approve/Deny buttons on the platform confirmation
+                # message, exactly as the user-response paths do. Without this the
+                # buttons linger indefinitely on timeout-expiry and a later tap is a
+                # confusing no-op (GateRespondView returns 410). Never let a
+                # messaging hiccup break the poll response the container needs.
+                try:
+                    from .messaging import update_gate_message
+
+                    update_gate_message(action)
+                except Exception:
+                    logger.warning("Failed to refresh gate message on expiry for action %s", action.id, exc_info=True)
+            else:
+                # Another writer already resolved the row; re-read so the
+                # response below reflects the actual final status.
+                action.refresh_from_db(fields=["status"])
 
         return Response(
             {
@@ -264,57 +318,62 @@ class GateRespondView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        try:
-            action = PendingAction.objects.get(id=action_id)
-        except PendingAction.DoesNotExist:
-            return Response(
-                {"error": "Action not found"},
-                status=status.HTTP_404_NOT_FOUND,
-            )
+        # Wrap the read-check-write in a single atomic block so select_for_update
+        # holds the row lock from fetch through final save, preventing the sweep
+        # from clobbering an in-flight Approve and vice-versa.
+        with transaction.atomic():
+            try:
+                action = PendingAction.objects.select_for_update().get(id=action_id)
+            except PendingAction.DoesNotExist:
+                return Response(
+                    {"error": "Action not found"},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
 
-        if action.status != ActionStatus.PENDING:
-            return Response(
-                {
-                    "error": f"Action already resolved: {action.status}",
-                    "status": action.status,
-                },
-                status=status.HTTP_409_CONFLICT,
-            )
+            if action.status != ActionStatus.PENDING:
+                return Response(
+                    {
+                        "error": f"Action already resolved: {action.status}",
+                        "status": action.status,
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
 
-        # Check expiry
-        if action.is_expired:
-            action.status = ActionStatus.EXPIRED
-            action.save(update_fields=["status"])
+            # Check expiry — re-evaluated under the row lock so the sweep cannot
+            # write EXPIRED between our status==PENDING check and our own write.
+            if action.is_expired:
+                action.status = ActionStatus.EXPIRED
+                action.save(update_fields=["status"])
+                ActionAuditLog.objects.create(
+                    tenant=action.tenant,
+                    action_type=action.action_type,
+                    action_payload=action.action_payload,
+                    display_summary=action.display_summary,
+                    result=ActionStatus.EXPIRED,
+                )
+                return Response(
+                    {"error": "Action expired", "status": "expired"},
+                    status=status.HTTP_410_GONE,
+                )
+
+            # Apply response (still under the row lock)
+            now = timezone.now()
+            if response_action == "approve":
+                action.status = ActionStatus.APPROVED
+            else:
+                action.status = ActionStatus.DENIED
+            action.responded_at = now
+            action.save(update_fields=["status", "responded_at"])
+
+            # Audit log
             ActionAuditLog.objects.create(
                 tenant=action.tenant,
                 action_type=action.action_type,
                 action_payload=action.action_payload,
                 display_summary=action.display_summary,
-                result=ActionStatus.EXPIRED,
+                result=action.status,
+                responded_at=now,
             )
-            return Response(
-                {"error": "Action expired", "status": "expired"},
-                status=status.HTTP_410_GONE,
-            )
-
-        # Apply response
-        now = timezone.now()
-        if response_action == "approve":
-            action.status = ActionStatus.APPROVED
-        else:
-            action.status = ActionStatus.DENIED
-        action.responded_at = now
-        action.save(update_fields=["status", "responded_at"])
-
-        # Audit log
-        ActionAuditLog.objects.create(
-            tenant=action.tenant,
-            action_type=action.action_type,
-            action_payload=action.action_payload,
-            display_summary=action.display_summary,
-            result=action.status,
-            responded_at=now,
-        )
 
         logger.info(
             "Gate response: %s | %s | %s | %s",
@@ -324,7 +383,8 @@ class GateRespondView(APIView):
             action.display_summary[:60],
         )
 
-        # Edit the confirmation message to show result
+        # Edit the confirmation message to show result (outside the atomic block
+        # so a messaging hiccup cannot roll back the committed status change).
         from .messaging import update_gate_message
 
         update_gate_message(action)

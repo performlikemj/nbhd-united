@@ -36,6 +36,7 @@ class WorkoutSpec:
     activity: str
     duration_minutes: int | None
     detail_json: dict
+    rpe: int | None = None
 
 
 @dataclass
@@ -93,7 +94,44 @@ def _parse_schedule_template(schedule_json: dict | None) -> dict[int, dict]:
     return out
 
 
-def reconcile_plan_state(plan, schedule_json: dict, weeks: int, *, today: _date | None = None) -> PlanReconciliation:
+def _effective_template_for_week(
+    base_by_weekday: dict[int, dict],
+    week_overrides: dict | None,
+    week_index: int,
+) -> dict[int, dict]:
+    """Resolve the per-week ``{weekday_int: template}`` for ``week_index``.
+
+    Mirrors the POST path (:func:`_expand_plan_workouts`): the override for
+    this week (keyed by the stringified week index) is merged over the base
+    template, with a weekday mapped to ``None`` dropped (rest day). When no
+    override applies, the base template is returned unchanged.
+    """
+    override = (week_overrides or {}).get(str(week_index))
+    if not isinstance(override, dict):
+        return base_by_weekday
+    effective = dict(base_by_weekday)
+    for day_key, day_val in override.items():
+        try:
+            day_int = int(day_key)
+        except (TypeError, ValueError):
+            continue
+        if not (0 <= day_int <= 6):
+            continue
+        if day_val is None:
+            effective.pop(day_int, None)
+        elif isinstance(day_val, dict):
+            effective[day_int] = day_val
+    return effective
+
+
+def reconcile_plan_state(
+    plan,
+    schedule_json: dict,
+    weeks: int,
+    *,
+    today: _date | None = None,
+    week_overrides: dict | None = None,
+) -> PlanReconciliation:
     """Diff a plan's current slot/workout state against the desired schedule.
 
     Pure relative to the DB *in the sense that* it does NOT issue any
@@ -124,9 +162,20 @@ def reconcile_plan_state(plan, schedule_json: dict, weeks: int, *, today: _date 
 
     today = today or _date.today()
     weeks = max(1, min(52, int(weeks or 1)))
-    template_by_weekday = _parse_schedule_template(schedule_json)
+    base_by_weekday = _parse_schedule_template(schedule_json)
     start_date = plan.start_date
     plan_monday = start_date - timedelta(days=start_date.weekday())
+
+    # Resolve the effective per-week template once. With week_overrides a
+    # given weekday's template (or its very presence, for rest-day drops)
+    # varies by week, so the schedule has a week dimension here — matching
+    # the POST/create path in _expand_plan_workouts.
+    template_by_week: dict[int, dict[int, dict]] = {
+        w: _effective_template_for_week(base_by_weekday, week_overrides, w) for w in range(weeks)
+    }
+
+    def template_for(week_idx: int, weekday: int) -> dict:
+        return template_by_week.get(week_idx, base_by_weekday).get(weekday) or {}
 
     def slot_date(week_idx: int, weekday: int) -> _date:
         return plan_monday + timedelta(days=week_idx * 7 + weekday)
@@ -136,7 +185,7 @@ def reconcile_plan_state(plan, schedule_json: dict, weeks: int, *, today: _date 
         return d >= today and d >= start_date
 
     desired_keys: set[SlotKey] = {
-        SlotKey(week_index=w, weekday=d) for w in range(weeks) for d in template_by_weekday.keys() if in_scope(w, d)
+        SlotKey(week_index=w, weekday=d) for w in range(weeks) for d in template_by_week[w].keys() if in_scope(w, d)
     }
 
     current_slots = list(PlanSlot.objects.filter(plan=plan, archived_at__isnull=True))
@@ -194,13 +243,24 @@ def reconcile_plan_state(plan, schedule_json: dict, weeks: int, *, today: _date 
         if "detail_json" in template and isinstance(template["detail_json"], dict):
             if workout.detail_json != template["detail_json"]:
                 patch["detail_json"] = template["detail_json"]
+        # The create path maps the template's ``target_rpe`` (or ``rpe``) onto
+        # Workout.rpe; mirror that here so a per-week deload that lowers the
+        # target RPE actually re-prescribes a kept workout.
+        if "target_rpe" in template or "rpe" in template:
+            raw_rpe = template.get("target_rpe", template.get("rpe"))
+            try:
+                new_rpe = max(1, min(10, int(raw_rpe))) if raw_rpe is not None else None
+            except (TypeError, ValueError):
+                new_rpe = workout.rpe
+            if new_rpe != workout.rpe:
+                patch["rpe"] = new_rpe
         return patch
 
     workouts_to_create: list[WorkoutSpec] = []
     workouts_to_adopt: list[tuple[Any, SlotKey, dict]] = []
     for key in new_keys:
         d = slot_date(key.week_index, key.weekday)
-        template = template_by_weekday.get(key.weekday) or {}
+        template = template_for(key.week_index, key.weekday)
         existing = slotless_by_date.pop(d, None)
         if existing is not None:
             workouts_to_adopt.append((existing, key, _template_patch_for(existing, template)))
@@ -217,6 +277,11 @@ def reconcile_plan_state(plan, schedule_json: dict, weeks: int, *, today: _date 
         detail = template.get("detail_json")
         if not isinstance(detail, dict):
             detail = {}
+        raw_rpe = template.get("target_rpe", template.get("rpe"))
+        try:
+            rpe = max(1, min(10, int(raw_rpe))) if raw_rpe is not None else None
+        except (TypeError, ValueError):
+            rpe = None
         workouts_to_create.append(
             WorkoutSpec(
                 slot_key=key,
@@ -225,6 +290,7 @@ def reconcile_plan_state(plan, schedule_json: dict, weeks: int, *, today: _date 
                 activity=activity,
                 duration_minutes=duration,
                 detail_json=detail,
+                rpe=rpe,
             )
         )
 
@@ -247,7 +313,7 @@ def reconcile_plan_state(plan, schedule_json: dict, weeks: int, *, today: _date 
             w = kept_by_slot_id.get(slot.id)
             if w is None:
                 continue
-            template = template_by_weekday.get(slot.weekday) or {}
+            template = template_for(slot.week_index, slot.weekday)
             patch = _template_patch_for(w, template)
             if patch:
                 workouts_to_retemplate.append((w, patch))
@@ -374,6 +440,7 @@ def apply_reconciliation(
                 activity=spec.activity,
                 duration_minutes=spec.duration_minutes,
                 detail_json=spec.detail_json,
+                rpe=spec.rpe,
             )
             counts["workouts_created"] += 1
 

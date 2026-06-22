@@ -151,6 +151,13 @@ def repair_stale_tenant_provisioning(
                 user_id=user_id_str,
                 stage="repair_start",
             )
+            # An ACTIVE tenant with empty container fields is a corrupted state
+            # (e.g. from reactivation of a never-fully-provisioned tenant).
+            # provision_tenant guards against status != PENDING/PROVISIONING, so
+            # demote to PROVISIONING here so the repair path can proceed.
+            if tenant.status == Tenant.Status.ACTIVE:
+                tenant.status = Tenant.Status.PROVISIONING
+                tenant.save(update_fields=["status", "updated_at"])
             provision_tenant(tenant_id_str)
             tenant.refresh_from_db()
 
@@ -262,7 +269,14 @@ def provision_tenant(tenant_id: str) -> None:
         # Failure here MUST NOT block provisioning — fall back to the
         # shared key with a warning.
         openrouter_kv_secret_name: str | None = None
-        if getattr(settings, "OPENROUTER_PER_TENANT_KEYS_ENABLED", False) and secret_backend == "keyvault":
+        if tenant.openrouter_key_secret_name:
+            # Idempotent re-entry guard: provision_tenant is re-runnable and
+            # QStash retries it up to 3x. If the tenant is already keyed, reuse
+            # the existing sub-key — re-minting would orphan the prior key (its
+            # own monthly OpenRouter spend ceiling) and overwrite the hash so
+            # deprovision can never reap it. Mirrors backfill_openrouter_keys.
+            openrouter_kv_secret_name = tenant.openrouter_key_secret_name
+        elif getattr(settings, "OPENROUTER_PER_TENANT_KEYS_ENABLED", False) and secret_backend == "keyvault":
             try:
                 from apps.billing.constants import TIER_COST_BUDGETS
                 from apps.billing.openrouter_admin import (
@@ -607,6 +621,13 @@ def update_tenant_config(tenant_id: str) -> None:
             "NBHD_DOC_CRON_MANAGEMENT": "workspace/docs/cron-management.md",
             "NBHD_DOC_ERROR_HANDLING": "workspace/docs/error-handling.md",
             "NBHD_DOC_PRIVACY_REDACTION": "workspace/docs/privacy-redaction.md",
+            # Daily-journal skill templates.md — the canonical slug source the
+            # prompt points the agent at. Re-uploaded on config refresh so a
+            # post-provision default-template edit (which fires
+            # update_tenant_config_task) actually reaches the running container
+            # instead of leaving the boot-time env-var copy stale. Destination
+            # must match entrypoint.sh's SKILL_TEMPLATES_DST.
+            "NBHD_SKILL_TEMPLATES_MD": "workspace/skills/nbhd-managed/daily-journal/references/templates.md",
         }
 
         # Deploy full or silent platform guide based on feature_tips_enabled
@@ -759,7 +780,21 @@ def deprovision_tenant(tenant_id: str) -> None:
     except Exception:
         logger.exception("Failed to deprovision tenant %s", tenant_id)
         tenant.status = Tenant.Status.SUSPENDED
-        tenant.save(update_fields=["status", "updated_at"])
+        # The OR sub-key + KV secret deletes run before any code that can raise
+        # (each wrapped in its own swallowing try/except), so by the time we
+        # reach this handler those resources are already gone.  Clear the stale
+        # references so a later reactivation/resubscribe doesn't try to use a
+        # deleted sub-key or a KV secret that no longer exists.
+        tenant.openrouter_key_hash = ""
+        tenant.openrouter_key_secret_name = ""
+        tenant.save(
+            update_fields=[
+                "status",
+                "openrouter_key_hash",
+                "openrouter_key_secret_name",
+                "updated_at",
+            ]
+        )
         raise
 
 

@@ -1,0 +1,50 @@
+[
+ {
+  "id": "FA-0170",
+  "area": "dashboard",
+  "layer": "backend",
+  "feature": "Main Dashboard Aggregation",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want a single endpoint that shows my tenant status, cumulative token usage, and connected integrations so that I can see my account health at a glance.",
+  "expected_behaviour": "GET /api/v1/dashboard/ requires IsAuthenticated (JWT). Looks up request.user.tenant; returns HTTP 404 {\"detail\": \"No tenant found.\"} if no tenant exists. On success (HTTP 200) returns a JSON object with three top-level keys: \"tenant\" (id, status, model_tier, provisioned_at), \"usage\" (messages_today, messages_this_month, tokens_this_month, estimated_cost_this_month, monthly_token_budget from Tenant fields; plus all-time total_input_tokens/total_output_tokens/total_cost aggregated via SUM over UsageRecord), and \"connections\" (list of active Integration rows with provider, provider_email, connected_at). Response is cached per-tenant with a 30-second TTL under the \"dashboard\" cache tag; cache is bypassed when Redis is unhealthy (tag_v == 0) and an X-Cache: BYPASS header is set. Cached responses return X-Cache: HIT; misses set the cache and return X-Cache: MISS. Only 200 responses are stored in cache; 404s are never cached.",
+  "entry_points": "apps/dashboard/views.py:DashboardView ; GET /api/v1/dashboard/",
+  "dependencies": "Supabase/Postgres (UsageRecord, Integration, Tenant models), Upstash Redis (tenant_cache tag versioning via apps/common/cache.py)",
+  "inventory_notes": "cost_estimate and total_cost are returned as strings (str(Decimal)); missing UsageRecord rows produce 0 totals via `or 0` guard. Connected integrations filter only Integration.Status.ACTIVE rows."
+ },
+ {
+  "id": "FA-0171",
+  "area": "dashboard",
+  "layer": "backend",
+  "feature": "Usage History List",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see my 50 most recent usage records so that I can audit which AI interactions consumed tokens and cost.",
+  "expected_behaviour": "GET /api/v1/dashboard/usage/ requires IsAuthenticated. Returns HTTP 404 if no tenant. On success (HTTP 200) returns {\"results\": [...]} with up to 50 UsageRecord rows ordered by -created_at. Each row includes: id (str UUID), event_type, input_tokens, output_tokens, model_used, cost_estimate (str Decimal), created_at. No pagination beyond the hard 50-row cap. This endpoint does NOT use the @tenant_cache decorator — it is uncached and always hits Postgres directly.",
+  "entry_points": "apps/dashboard/views.py:UsageHistoryView ; GET /api/v1/dashboard/usage/",
+  "dependencies": "Supabase/Postgres (UsageRecord model via apps/billing/models.py)",
+  "inventory_notes": "Hard-capped at 50 records; no cursor/offset pagination. No cache layer, so high-frequency polling would hit Postgres each time."
+ },
+ {
+  "id": "FA-0172",
+  "area": "dashboard",
+  "layer": "backend",
+  "feature": "Horizons Aggregation (Goals + Mood + Momentum + Insights + Topic Signals)",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want a single \"Horizons\" endpoint that aggregates my goals, pending extractions, weekly pulse, mood trend, 30-day momentum streak, assistant insights, and topic signal metadata so that the frontend can render a rich goal-and-wellbeing dashboard.",
+  "expected_behaviour": "GET /api/v1/dashboard/horizons/ requires IsAuthenticated. Returns HTTP 404 if no tenant. On success (HTTP 200) returns a JSON object with seven sections: (1) \"goals\" — union of typed Goal (status=ACTIVE) and legacy Document(kind=GOAL) rows, deduplicated via Goal.migrated_from_document; returns up to 20 items sorted by -updated_at, each with id, title, slug (\"typed:<uuid>\" for typed Goals), preview (first 200 chars of markdown), created_at, updated_at; inactive typed goals (ACHIEVED/ABANDONED) are excluded. (2) \"pending_extractions\" — up to 10 non-expired PendingExtraction rows of kind GOAL or TASK with status PENDING, ordered by -created_at. (3) \"weekly_pulse\" — up to 4 WeeklyReview rows (legacy model), ordered by -week_start, each with week_start, week_end, week_rating, top_win (first element of top_wins or null). (4) \"weekly_documents\" — up to 4 Document(kind=WEEKLY) rows, serialized via _serialize_weekly_document() which derives week_start/week_end from YYYY-MM-DD slug, strips markdown to a 180-char plain text preview, and includes full markdown. (5) \"mood_trend\" — all JournalEntry rows in the last 30 days with date, mood, energy fields. (6) \"momentum\" — 30-day array (today - 29d to today) where each entry has date, message_count (UsageRecord count for that date), has_journal (True if JournalEntry OR Document(kind=DAILY) exists for that date); plus \"current_streak\" (consecutive days with activity counting backwards from today). (7) \"assistant_insights\" — up to 20 AssistantInsight rows with status OPEN or CONFIRMED (REFUTED excluded), ordered by -created_at, with id, pillar, topic_slug, topic_display_name, statement, status, confidence, created_at, last_confirmed_at. (8) \"topic_signals\" — per-topic meta-state from apps/insights/signals.summarize_topic_signals(), covering topics with any engagement (snapshots, insights, goals, or voice prefs), returning sample_size, confirmed/refuted counts, has_goal flag, register_offset/register_scope. Response is cached per-tenant with a 60-second TTL under the \"dashboard\" cache tag; cache bypassed if Redis tag_v == 0.",
+  "entry_points": "apps/dashboard/views.py:HorizonsView ; apps/insights/signals.py:summarize_topic_signals ; apps/dashboard/views.py:_serialize_weekly_document ; apps/dashboard/views.py:_clean_markdown_preview ; apps/dashboard/views.py:_derive_week_bounds ; GET /api/v1/dashboard/horizons/",
+  "dependencies": "Supabase/Postgres (Goal, Document, PendingExtraction, WeeklyReview, JournalEntry, UsageRecord, AssistantInsight, TopicRegistry, PillarSnapshot, UserVoicePref models), Upstash Redis (tenant_cache), apps/insights/signals.summarize_topic_signals, apps/insights/baselines.TOPIC_EXTRACTORS",
+  "inventory_notes": "Dual-read goal logic: typed Goals with migrated_from_document skip the legacy Document row to prevent duplication. The _derive_week_bounds fallback uses the Document's updated_at date to compute Monday of that week if the slug is not a parseable YYYY-MM-DD date. topic_signals does two passes: (1) FK-touched topics from insights/goals/prefs tables, (2) extractor-supported topics from PillarSnapshot payloads. REFUTED insights are intentionally excluded from \"assistant_insights\" in the user view but kept in DB for the assistant."
+ },
+ {
+  "id": "FA-0173",
+  "area": "dashboard",
+  "layer": "backend",
+  "feature": "Dashboard Cache Invalidation via Signal Receivers",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want the per-tenant dashboard cache tag to be bumped immediately whenever a relevant model changes so that the frontend's optimistic UI mutations reflect in the next refetch instead of reverting.",
+  "expected_behaviour": "Django post_save and post_delete signals on AssistantInsight, UserVoicePref, Goal, and Document all fire _bump_for(instance), which calls apps.common.cache.bump_tag(tenant_id, \"dashboard\"). This invalidates the cached responses for both DashboardView (TTL 30s) and HorizonsView (TTL 60s). The receiver swallows all exceptions so a Redis failure never propagates into the model save path. bump_tag already logs and returns 0 on Redis failures; the receiver adds a second try/except with logger.exception as belt-and-suspenders. Task model saves do NOT bump the tag (HorizonsView does not surface Task state). Receivers are registered in DashboardConfig.ready() via import of apps.dashboard.receivers.",
+  "entry_points": "apps/dashboard/receivers.py:_bump_on_assistant_insight ; apps/dashboard/receivers.py:_bump_on_user_voice_pref ; apps/dashboard/receivers.py:_bump_on_goal ; apps/dashboard/receivers.py:_bump_on_document ; apps/dashboard/apps.py:DashboardConfig.ready ; apps/common/cache.py:bump_tag",
+  "dependencies": "Upstash Redis (bump_tag via Django cache backend), apps/insights/models.AssistantInsight, apps/insights/models.UserVoicePref, apps/journal/models.Goal, apps/journal/models.Document",
+  "inventory_notes": "bump_tag is a Redis INCR on a key like nbhd:tag:<tenant_id>:dashboard. Tag version 0 means Redis is unhealthy — the view bypasses cache entirely in that state. Document saves of ANY kind bump the tag (not just GOAL kind) because DashboardView also reads daily notes for the momentum streak."
+ }
+]

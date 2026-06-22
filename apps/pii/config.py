@@ -91,7 +91,10 @@ TIER_POLICIES = {
             "CREDIT_CARD",
             "IBAN_CODE",
             "LOCATION",
-            "DATE_OF_BIRTH",
+            # DATE_OF_BIRTH intentionally omitted: no detector can emit it (the
+            # model's DATE label is deliberately dropped above to avoid firing on
+            # every yyyy-mm-dd journal heading), so listing it only advertised
+            # coverage that never happened. See DEBERTA_LABEL_MAP notes.
             "PASSWORD",
             "IP_ADDRESS",
             "ID_DOCUMENT",

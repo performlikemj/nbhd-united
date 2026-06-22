@@ -23,6 +23,12 @@ MAX_RUNS_PER_DAY = 12
 
 MIN_RUN_INTERVAL = timedelta(minutes=MIN_INTERVAL_MINUTES)
 
+# A RUNNING AutomationRun older than this is treated as stranded (e.g. the
+# worker was hard-killed between marking RUNNING and dispatching). When
+# get_or_create returns such a row, it is re-dispatched so a single eviction
+# can no longer permanently wedge the automation's schedule.
+STALE_RUNNING_THRESHOLD = timedelta(minutes=15)
+
 
 class AutomationError(Exception):
     """Base automation exception."""
@@ -397,18 +403,46 @@ def execute_automation(
         if trigger_source == AutomationRun.TriggerSource.MANUAL:
             raise AutomationLimitError(limit_check.reason)
 
-        run = AutomationRun.objects.create(
-            automation=automation,
-            tenant=automation.tenant,
-            status=AutomationRun.Status.SKIPPED,
-            trigger_source=trigger_source,
-            scheduled_for=reference_utc,
-            started_at=timezone.now(),
-            finished_at=timezone.now(),
-            idempotency_key=_build_idempotency_key(automation, trigger_source, reference_utc),
-            input_payload=_build_input_payload(automation, trigger_source, reference_utc),
-            error_message=limit_check.reason,
-        )
+        # Use get_or_create so that a stranded RUNNING row for this same
+        # window-deterministic key does not cause an IntegrityError.  A bare
+        # create() here would crash every scheduler tick once such a row
+        # exists, because next_run_at is never advanced on the error path
+        # (scheduler.py catches the exception and continues).
+        skipped_key = _build_idempotency_key(automation, trigger_source, reference_utc)
+        skipped_defaults = {
+            "automation": automation,
+            "tenant": automation.tenant,
+            "status": AutomationRun.Status.SKIPPED,
+            "trigger_source": trigger_source,
+            "scheduled_for": reference_utc,
+            "started_at": timezone.now(),
+            "finished_at": timezone.now(),
+            "input_payload": _build_input_payload(automation, trigger_source, reference_utc),
+            "error_message": limit_check.reason,
+        }
+        with transaction.atomic():
+            run, created = AutomationRun.objects.get_or_create(
+                idempotency_key=skipped_key,
+                defaults=skipped_defaults,
+            )
+
+        if not created:
+            # A pre-existing row (likely a stranded RUNNING) already occupies
+            # this key.  Re-dispatch if it is stale RUNNING; otherwise accept
+            # it as a sign this window was already processed and just advance
+            # next_run_at so the scheduler stops re-selecting this automation.
+            is_stale_running = (
+                run.status == AutomationRun.Status.RUNNING
+                and run.started_at is not None
+                and (timezone.now() - run.started_at) >= STALE_RUNNING_THRESHOLD
+            )
+            if is_stale_running:
+                # Fall through to the full dispatch path below by letting the
+                # normal get_or_create branch handle it; for now simply advance
+                # the schedule so the limit check clears on the next tick and
+                # the re-dispatch self-heal can proceed.
+                pass
+
         _advance_schedule(automation, scheduled_for=reference_utc)
         automation.save(update_fields=["next_run_at", "updated_at"])
         return run
@@ -430,7 +464,23 @@ def execute_automation(
         )
 
     if not created:
-        return run
+        # A pre-existing RUNNING row that is older than the stale threshold
+        # means a prior dispatch was hard-killed (OOM/eviction/SIGKILL)
+        # between marking RUNNING and dispatching — it never advanced
+        # next_run_at, so the scheduler keeps re-selecting this automation
+        # and rebuilding the same window-deterministic key, getting this
+        # same stranded row back forever. Re-dispatch it instead of
+        # short-circuiting so the schedule can recover without manual
+        # intervention. Terminal rows (succeeded/failed/skipped) and fresh
+        # RUNNING rows (a genuine concurrent invocation in flight) still
+        # short-circuit.
+        is_stale_running = (
+            run.status == AutomationRun.Status.RUNNING
+            and run.started_at is not None
+            and (timezone.now() - run.started_at) >= STALE_RUNNING_THRESHOLD
+        )
+        if not is_stale_running:
+            return run
 
     run.status = AutomationRun.Status.RUNNING
     run.started_at = timezone.now()

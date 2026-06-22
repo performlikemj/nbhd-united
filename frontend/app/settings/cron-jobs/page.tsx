@@ -300,16 +300,6 @@ export default function SettingsCronJobsPage() {
   }, []);
 
   /* ── Feedback helpers ── */
-  const setSuccess = (
-    setState: (state: ActionFeedback) => void,
-    timeoutRef: { current: ReturnType<typeof setTimeout> | null },
-  ) => {
-    setState({ status: "success", text: "" });
-    timeoutRef.current = setTimeout(() => {
-      setState({ status: "idle", text: "" });
-    }, SAVE_CLEAR_DELAY_MS);
-  };
-
   const setError = (
     setState: (state: ActionFeedback) => void,
     timeoutRef: { current: ReturnType<typeof setTimeout> | null },
@@ -356,7 +346,7 @@ export default function SettingsCronJobsPage() {
 
       setCreateForm(defaultCreateForm(me?.timezone));
       setShowCreate(false);
-      setSuccess(setCreateFeedback, createTimeoutRef);
+      showToast("Task created", "success");
     } catch (err) {
       if (createTimeoutRef.current) clearTimeout(createTimeoutRef.current);
       setError(setCreateFeedback, createTimeoutRef, getErrorMessage(err));
@@ -394,7 +384,7 @@ export default function SettingsCronJobsPage() {
         },
       });
       setEditingName(null);
-      setSuccess(setEditFeedback, editTimeoutRef);
+      showToast("Task saved", "success");
     } catch (err) {
       if (editTimeoutRef.current) clearTimeout(editTimeoutRef.current);
       setError(setEditFeedback, editTimeoutRef, getErrorMessage(err));
@@ -679,11 +669,7 @@ export default function SettingsCronJobsPage() {
                   disabled={createMutation.isPending}
                   className={`${getSaveButtonClass(createFeedback.status)} w-full sm:w-auto min-h-[48px]`}
                 >
-                  {createMutation.isPending
-                    ? "Creating..."
-                    : createFeedback.status === "success"
-                      ? "✓ Created"
-                      : "Create"}
+                  {createMutation.isPending ? "Creating..." : "Create"}
                 </button>
                 {createFeedback.status === "error" ? (
                   <p className="text-xs text-rose-500">{createFeedback.text}</p>
@@ -714,7 +700,7 @@ export default function SettingsCronJobsPage() {
             {error instanceof Error ? ` ${error.message}` : ""}
           </p>
           <p className="mt-2 text-xs text-ink-faint">
-            If this persists, run: python manage.py check_gateway_health
+            If this keeps happening, please contact support.
           </p>
         </SectionCard>
       ) : cronJobs && cronJobs.length > 0 ? (
@@ -881,7 +867,7 @@ export default function SettingsCronJobsPage() {
                           onClick={() =>
                             toggleMutation.mutate({ name: jobIdentifier, enabled: !job.enabled })
                           }
-                          disabled={toggleMutation.isPending}
+                          disabled={toggleMutation.isPending && toggleMutation.variables?.name === jobIdentifier}
                           className="rounded-full border border-border-strong px-3.5 py-2 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45 min-h-[44px]"
                         >
                           {job.enabled ? "Disable" : "Enable"}

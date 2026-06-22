@@ -429,6 +429,13 @@ class TelegramPoller:
                         self._send_message(chat_id, chunk, parse_mode="HTML")
             else:
                 self._send_markdown(chat_id, clean_text)
+        elif reply_markup:
+            # Buttons-only reply: agent emitted [[button:...]] markers with no prose.
+            # clean_text is empty after stripping but we still need to deliver the
+            # keyboard. Telegram's sendMessage requires non-empty text; use a
+            # middle-dot placeholder (printable, survives strip()) so reply_markup
+            # is not silently dropped.
+            self._send_message(chat_id, "·", reply_markup=reply_markup)
 
     def _send_typing(self, chat_id: int) -> None:
         """Send 'typing' chat action to Telegram."""
@@ -747,6 +754,12 @@ class TelegramPoller:
                 self._handle_extraction_callback(update, tenant)
                 return
 
+            # Reconciliation undo callbacks (Remove/Undo button on the
+            # morning extraction summary — callback_data ``task_action:undo:<id>``)
+            if callback_data.startswith("task_action:"):
+                self._handle_task_action_callback(update, tenant)
+                return
+
             # Action gate callbacks (approve/deny destructive actions)
             if callback_data.startswith("gate_approve:") or callback_data.startswith("gate_deny:"):
                 self._handle_gate_callback(update, tenant, callback_data, callback_id, chat_id)
@@ -824,6 +837,34 @@ class TelegramPoller:
                 orig_msg_id = update["callback_query"].get("message", {}).get("message_id")
                 if orig_msg_id:
                     self._edit_message_reply_markup(chat_id, orig_msg_id, None)
+                # A tapped agent button spawns a real AI turn, so it must clear
+                # the same suspended + budget pre-flight gate as a typed message;
+                # otherwise a button tap lands a billable turn on a suspended or
+                # over-budget tenant. Mirrors the typed-message gate below and the
+                # LINE _handle_postback gate. See FA-0974.
+                if tenant is None:
+                    response_data = send_onboarding_link(chat_id)
+                    self._execute_telegram_response(response_data)
+                    return
+                frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
+                if (
+                    tenant.status == Tenant.Status.SUSPENDED
+                    and not tenant.is_trial
+                    and not bool(tenant.stripe_subscription_id)
+                ):
+                    lang = getattr(tenant.user, "language", None) or "en"
+                    self._send_message(
+                        chat_id,
+                        error_msg(lang, "suspended", billing_url=f"{frontend_url}/settings/billing"),
+                    )
+                    return
+                budget_reason = check_budget(tenant)
+                if budget_reason:
+                    from apps.router.views import _hibernate_for_quota
+
+                    _hibernate_for_quota(tenant)
+                    self._send_budget_exhausted(chat_id, tenant, budget_reason)
+                    return
                 # Forward the button tap to the agent. ``raw_user_text=button_value``
                 # so the dropped-message apology quotes the button label rather than
                 # the ``[User tapped button: …]`` framing if delivery fails.
@@ -845,22 +886,17 @@ class TelegramPoller:
 
         # Provisioning tenant — assistant is still waking up
         if tenant.status in (Tenant.Status.PENDING, Tenant.Status.PROVISIONING):
-            self._send_message(
-                chat_id,
-                "Your assistant is waking up! 🌅 This usually takes about a minute. "
-                "I'll be ready to chat shortly — just send your message again in a moment!",
-            )
+            lang = getattr(tenant.user, "language", None) or "en"
+            self._send_message(chat_id, error_msg(lang, "waking_up"))
             return
 
         # Paused tenant — trial ended or payment lapsed
         frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
         if tenant.status == Tenant.Status.SUSPENDED and not tenant.is_trial and not bool(tenant.stripe_subscription_id):
+            lang = getattr(tenant.user, "language", None) or "en"
             self._send_message(
                 chat_id,
-                "Your assistant is paused. Running an AI agent costs real money "
-                "— cloud servers, model tokens (every reply costs us), and storage. "
-                "We keep things transparent so you know exactly where your money goes.\n\n"
-                f"Ready to pick up where you left off? {frontend_url}/settings/billing",
+                error_msg(lang, "suspended", billing_url=f"{frontend_url}/settings/billing"),
             )
             return
 
@@ -938,7 +974,8 @@ class TelegramPoller:
         # Upload photo to tenant workspace if present
         image_path = None
         msg_data = update.get("message") or update.get("edited_message") or {}
-        if msg_data.get("photo"):
+        had_photo = bool(msg_data.get("photo"))
+        if had_photo:
             self._send_typing(chat_id)
             image_path = self._upload_photo_to_workspace(tenant, msg_data)
 
@@ -946,6 +983,12 @@ class TelegramPoller:
         if image_path:
             # Tell agent where the image is so it can use the image tool
             message_text = f"[Photo attached: {image_path}]\n{message_text}"
+        elif had_photo:
+            # The photo couldn't be downloaded/uploaded (e.g. >5MB cap in
+            # ``_download_photo``). Tell the agent so it can tell the user
+            # instead of confidently replying to an image it never saw —
+            # mirrors the document/voice "couldn't process" markers.
+            message_text = f"[Photo too large to process — please send a smaller image under 5 MB]\n{message_text}"
 
         # Contextual recall: inject goals/tasks + relevant history on session start
         if self._is_new_session(tenant):
@@ -1311,12 +1354,36 @@ class TelegramPoller:
         # below, all of which are agent-only metadata. If we let it stand in
         # for the excerpt, the apology shows "It started with: '[Now: …'"
         # which is useless for jogging the user's memory.
+        # Track whether raw_user_text aliases message_text so we can avoid a
+        # redundant NER inference pass below (FA-1015).
+        _raw_aliases_message = raw_user_text is None
         raw_user_text = raw_user_text if raw_user_text is not None else message_text
 
         lang = getattr(tenant.user, "language", None) or "en"
         if not tenant.container_fqdn or tenant.status == "provisioning":
             self._send_message(chat_id, error_msg(lang, "provisioning_setup"))
             return
+
+        # Redact PII from the user's text BEFORE the agent-only markers are
+        # prepended below — so the third-party LLM provider never sees the
+        # raw name/email/phone the subscriber typed. We redact the bare
+        # ``message_text`` (photo prefix + session-recall context, if any)
+        # and the apology excerpt, but NOT the proactive/datetime/chat
+        # markers added afterwards (running the NER detector over those
+        # structural markers makes it misfire). ``redact_user_message``
+        # mints/reuses ``[PERSON_N]`` placeholders against the tenant's
+        # ``pii_entity_map``; outbound rehydration is already wired in the
+        # relay path so the user still sees the real values. Fail-open:
+        # ``redact_user_message`` swallows its own errors and returns the
+        # original text, so redaction never blocks delivery.
+        from apps.pii.redactor import redact_user_message
+
+        message_text = redact_user_message(message_text, tenant)
+        # When raw_user_text was not provided by the caller it was aliased to
+        # the same string as message_text (above). In that case reuse the
+        # already-redacted message_text rather than running a second identical
+        # DeBERTa NER pass over the same content.
+        raw_user_text = message_text if _raw_aliases_message else redact_user_message(raw_user_text, tenant)
 
         user_tz = tenant.user.timezone or "UTC"
 
@@ -1480,6 +1547,30 @@ class TelegramPoller:
                 lang = getattr(tenant.user, "language", None) or "en"
                 self._answer_callback_query(callback_id, error_msg(lang, "forwarding_error"))
 
+    def _handle_task_action_callback(self, update: dict, tenant: Tenant) -> None:
+        """Handle reconciliation ``PendingTaskAction`` undo callbacks.
+
+        Bridges the webhook-style handler into the poller path the same way
+        ``_handle_extraction_callback`` does: the handler performs the undo +
+        edits the channel message itself, and returns an ``answerCallbackQuery``
+        response dict which we execute so the tapped button stops spinning.
+        """
+        from .task_action_callbacks import handle_task_action_callback
+
+        try:
+            import json as _json
+
+            json_response = handle_task_action_callback(update, tenant)
+            response_data = _json.loads(json_response.content)
+            if response_data:
+                self._execute_telegram_response(response_data)
+        except Exception:
+            logger.exception("Error handling task_action callback")
+            callback_id = update["callback_query"].get("id")
+            if callback_id:
+                lang = getattr(tenant.user, "language", None) or "en"
+                self._answer_callback_query(callback_id, error_msg(lang, "forwarding_error"))
+
     def _handle_gate_callback(
         self,
         update: dict,
@@ -1510,28 +1601,43 @@ class TelegramPoller:
                 self._answer_callback_query(callback_id, f"Already {action.status}")
                 return
 
-            # Expired?
+            # Expired? Use conditional UPDATE so the sweep cannot have already
+            # flipped the row between our is_expired check and the write.
             if action.is_expired:
-                action.status = ActionStatus.EXPIRED
-                action.save(update_fields=["status"])
-                ActionAuditLog.objects.create(
-                    tenant=tenant,
-                    action_type=action.action_type,
-                    action_payload=action.action_payload,
-                    display_summary=action.display_summary,
-                    result=ActionStatus.EXPIRED,
-                )
-                update_gate_message(action)
+                updated = PendingAction.objects.filter(
+                    id=action.id,
+                    status=ActionStatus.PENDING,
+                ).update(status=ActionStatus.EXPIRED)
+                if updated:
+                    action.status = ActionStatus.EXPIRED
+                    ActionAuditLog.objects.create(
+                        tenant=tenant,
+                        action_type=action.action_type,
+                        action_payload=action.action_payload,
+                        display_summary=action.display_summary,
+                        result=ActionStatus.EXPIRED,
+                    )
+                    update_gate_message(action)
                 self._answer_callback_query(callback_id, "⏰ Expired")
                 return
 
-            # Apply response
+            # Apply response using a conditional UPDATE so the sweep cannot
+            # clobber an approve that lands at the deadline boundary.
             from django.utils import timezone
 
             now = timezone.now()
-            action.status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
+            new_status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
+            updated = PendingAction.objects.filter(
+                id=action.id,
+                status=ActionStatus.PENDING,
+            ).update(status=new_status, responded_at=now)
+            if not updated:
+                # Sweep flipped EXPIRED between our read and write; treat as expired.
+                action.refresh_from_db(fields=["status"])
+                self._answer_callback_query(callback_id, f"Already {action.status}")
+                return
+            action.status = new_status
             action.responded_at = now
-            action.save(update_fields=["status", "responded_at"])
 
             ActionAuditLog.objects.create(
                 tenant=tenant,

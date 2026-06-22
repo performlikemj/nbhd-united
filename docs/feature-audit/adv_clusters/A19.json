@@ -1,0 +1,18 @@
+[
+ {
+  "ref": "FA-0596-incomplete",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "The claim is structurally accurate and represents a genuine, narrow incompleteness — the same orphaned-proposed-topic class that FA-0596 fixed survives unfixed in the sibling call site. Verified in source: (1) `_record_insight_impl` (views.py:355-371) was correctly wrapped in `with _tx.atomic():` so resolve_topic's proposed-topic INSERT and the AssistantInsight.create commit or roll back together. (2) `_upsert_voice_pref_impl` (views.py:629-658) is NOT wrapped: it calls `resolve_topic` at line 644 — which is `@transaction.atomic` (topic_resolver.py:47) and, with no enclosing atomic block and no ATOMIC_REQUESTS in config, COMMITS the PROPOSED TopicRegistry row when it returns — then calls `UserVoicePref.objects.update_or_create` at line 652. If that downstream write fails, the proposed topic is already committed and orphaned (no voice pref references it), with no reaping cron. (3) FA-0617's fix touched only topic_resolver.py and addressed a DIFFERENT failure class — the concurrent-INSERT TOCTOU race (savepoint + IntegrityError catch-and-requery), not the orphan-on-downstream-failure pattern; its own summary lists `_upsert_voice_pref_impl` as a call site that \"benefits without modification,\" but that benefit is only for the race, not for atomicity across resolve_topic+update_or_create. So FA-0596's disposition summary (\"preventing orphaned proposed-topic rows\") is true only for the record-insight path. Real-world impact is LOW and matches FA-0596's own rating: the trigger window is narrow (update_or_create itself upserts, so the unique_together IntegrityError is largely self-handled; the realistic trigger is a generic DB error like a connection drop in the inter-statement window), and the orphan is benign — proposed topics are expected registry churn and the orphan dangles harmlessly with no referencing row. Not a user-visible bug; a defense-in-depth / data-tidiness gap left asymmetric by the fix.",
+  "suggested_fix": "Wrap the body of `_upsert_voice_pref_impl` (resolve_topic call through update_or_create) in `transaction.atomic()`, mirroring the FA-0596 fix in `_record_insight_impl`. resolve_topic's existing `@transaction.atomic` then degrades to a savepoint that rolls back the proposed-topic INSERT if update_or_create raises. Use the same function-local lazy `from django.db import transaction as _tx` import pattern used at views.py:358 to avoid the lint hook stripping an unused module-level import.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/insights/views.py:355-371 — _record_insight_impl wrapped in _tx.atomic() (the FA-0596 fix)",
+   "apps/insights/views.py:629-658 — _upsert_voice_pref_impl has NO atomic wrapper around resolve_topic(644)+update_or_create(652)",
+   "apps/insights/topic_resolver.py:47 — resolve_topic is @transaction.atomic, commits the PROPOSED row on normal exit when no outer atomic block exists",
+   "docs/feature-audit/fix_dispositions.json FA-0617 — fix touched only topic_resolver.py (TOCTOU race), did not add an atomic wrapper to _upsert_voice_pref_impl",
+   "docs/feature-audit/DEFECTS.json FA-0596 — confirms no ATOMIC_REQUESTS in config and rates the identical orphan pattern as low/benign"
+  ]
+ }
+]

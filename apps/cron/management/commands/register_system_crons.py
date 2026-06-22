@@ -76,6 +76,11 @@ SYSTEM_CRONS = [
     # to PillarSnapshot. Feeds the assistant's history/drill/compare tools.
     # Skips hibernated tenants; idempotent per ISO week.
     ("snapshot-gravity-weekly", "0 5 * * 0", "/api/cron/trigger/snapshot_gravity_weekly/"),
+    # Monthly on 1st at 06:00 UTC — write FinanceSnapshot for every
+    # finance-enabled active tenant. Idempotent per (tenant, date).
+    # Powers the /api/v1/finance/snapshots/ endpoint (monthly debt/savings
+    # history); without this cron that endpoint always returns an empty list.
+    ("snapshot-finance-monthly", "0 6 1 * *", "/api/cron/trigger/snapshot_finance_monthly/"),
     # Hourly dispatcher for Phase 4 weekly reflection. Fires for each tenant
     # whose local time is Sunday 09:00 (timezone-aware). Synthesis runs
     # Django-side via LiteLLM — no OpenClaw container wake, no user-quota cost.
@@ -108,6 +113,19 @@ SYSTEM_CRONS = [
     # + a 1-token reachability ping) and flip it on transitions. See
     # apps/billing/model_health.py.
     ("model-health-check", "*/30 * * * *", "/api/cron/trigger/model_health_check/"),
+    # Every minute — global dispatcher for user-defined scheduled automations.
+    # run_due_automations selects ACTIVE Automation rows whose next_run_at has
+    # passed and executes them. Without this schedule the automations CRUD
+    # surface is manual-run only and never fires on its configured cadence.
+    # Minute granularity matches compute_next_run_at; it is a single global
+    # query, so the every-minute tick is cheap (mirrors reap-stuck-inbound).
+    # See apps/automations/scheduler.py:run_due_automations.
+    ("run-due-automations", "* * * * *", "/api/cron/trigger/run_due_automations/"),
+    # Every 5 min — sweep expired action-gate rows (flip to EXPIRED + clear the
+    # stale Approve/Deny buttons on the platform message). Backstops the lazy
+    # GatePollView expiry for actions the container abandons (never polls again).
+    # See apps/actions/tasks.py:expire_stale_pending_actions.
+    ("expire-stale-actions", "*/5 * * * *", "/api/cron/trigger/expire_stale_actions/"),
 ]
 
 
@@ -202,6 +220,7 @@ class Command(BaseCommand):
 
             if dry_run:
                 self.stdout.write(f"  [dry-run] would register: {name} → {cron_expr} → {destination}")
+                registered += 1
                 continue
 
             create_resp = httpx.post(

@@ -1,0 +1,17 @@
+[
+ {
+  "ref": "byo_models#3",
+  "source": "missed",
+  "severity": "low",
+  "category": "data-integrity",
+  "detail": "The code description is accurate. apps/byo_models/services.py:143-145 does a non-atomic read-modify-write: it reads cred.seed_version (the in-memory value from update_or_create -- no row lock / select_for_update) and writes cred.seed_version + 1. Two concurrent transactions for the same tenant/provider could both read N and write N+1, losing one bump. The atomic form is .update(seed_version=F('seed_version') + 1); since the row is already loaded inside the same transaction.atomic() block, switching to F() is a one-line, zero-risk hardening. That said, the user/operator impact is effectively nil and the reviewer was honest (severity low, 'Low today'): (1) This is a single-user, IsAuthenticated, tenant-scoped POST (BYOCredentialListView.post, views.py:74-98) -- only the tenant's own session pastes their own credential, so a same-tenant/same-provider concurrent double-write requires one human firing two paste requests in the same millisecond; not attacker-reachable or multi-actor. (2) seed_version is unused today: both the model help_text (models.py:52-60) and the inline comment (services.py:141-142) say a Phase 2 Codex entrypoint WILL compare it against an on-disk marker (future tense), and 'Phase 1 (Anthropic env-var) ignores this field.' So today a lost increment has zero functional consequence. (3) Even in the speculative Phase 2 the harm self-heals: every re-paste also rewrites the KV secret (_write_secret_to_kv runs before the row update) and resets status to PENDING, and the next paste bumps again. Net: a genuine but trivial non-atomic-increment nit worth fixing prophylactically before Phase 2 ships, not a defect a user/operator would realistically hit.</final_detail>\n<parameter name=\"suggested_fix\">Use an atomic DB-side increment instead of read-modify-write: BYOCredential.objects.filter(pk=cred.pk).update(seed_version=F(\"seed_version\") + 1), importing F from django.db.models. After that, drop the cred.refresh_from_db() only if seed_version isn't needed on the returned object (it currently is, so keep refresh_from_db). This removes the lost-update window entirely with no behavioral change.",
+  "suggested_fix": "",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/byo_models/services.py:143-145 -- BYOCredential.objects.filter(pk=cred.pk).update(seed_version=cred.seed_version + 1): cred.seed_version is read from the update_or_create return (no select_for_update), so the increment is a non-atomic read-modify-write vulnerable to a lost update under concurrency",
+   "apps/byo_models/models.py:52-60 -- seed_version help_text: 'Bumped on every paste/re-paste. Phase 2 Codex entrypoint WILL compare this against an on-disk marker... Phase 1 (Anthropic env-var) ignores this field.' (future tense; unused today)",
+   "apps/byo_models/views.py:74-98 -- the only caller is BYOCredentialListView.post, an IsAuthenticated tenant-scoped endpoint where a user pastes their own credential; no multi-actor / attacker concurrency surface",
+   "apps/byo_models/services.py:127 -- _write_secret_to_kv runs before the row update on every paste, so the actual token in Key Vault is always current regardless of seed_version; a lost bump is self-healing on the next paste"
+  ]
+ }
+]

@@ -1,0 +1,21 @@
+[
+ {
+  "ref": "router-chat#2",
+  "source": "missed",
+  "severity": "low",
+  "category": "logic",
+  "detail": "Confirmed real, but cosmetic and edge-case-bounded. When the container tool-call hook reports progress without a client_msg_id, ChatProgressEventView (chat_views.py:608-609) narrates the tenant's newest PENDING AppChatMessage via order_by('-created_at'). The comment at chat_views.py:603-607 justifies this by claiming \"Per-tenant turns are serialized (one container)\" so the newest PENDING IS the in-flight one. That justification is wrong about scope: the pending queue serializes per (tenant, channel, channel_user_id), and for iOS channel_user_id = thread.id (chat_views.py:234). The per-key single-turn lease (pending_queue.py:481-489) and the FIFO claim (pending_queue.py:491-506: order_by('created_at'), head=rows[0]) are BOTH per-thread, not per-tenant. Decisively, pending_queue.py:1384 states \"thread:<id> so each ChatThread is its own OpenClaw session\", so two different threads route to two different sessions and can genuinely be in-flight concurrently in the same container (they do NOT trigger the \"live session already handling a turn\" rejection, which is per-session). Siri-escalated turns use _get_or_create_main_thread (siri_views.py:217), so they share the main-thread key and coalesce safely; the real exposure is cross-thread. Concrete failure: thread A's turn is the older PENDING row and is actually in flight; the user sends on thread B, creating a newer PENDING row; the container's client_msg_id-less progress event lands on thread B. A user polling thread A sees a dead spinner while thread B shows premature 'thinking/searching your journal', and the iOS Live Activity can map to the wrong activity. No data corruption: phase/phase_detail is cosmetic, gets overwritten when thread B's turn actually starts, and self-corrects once the tenant drains to one PENDING turn. Reachability is narrow (single human user must have 2+ threads PENDING at once AND the runtime must emit a client_msg_id-less progress event), which is why severity is low, but the defect is genuine and the in-code comment actively asserts the inverse of the FIFO drain it relies on.",
+  "suggested_fix": "Make the no-client_msg_id fallback pick the actually-in-flight turn instead of the newest. The in-flight turn corresponds to the OLDEST PENDING AppChatMessage whose thread currently holds a live PendingMessage in-flight lease. Simplest correct change: order by created_at ascending (oldest first) to match the FIFO drain, OR (better) join through PendingMessage: select the PENDING AppChatMessage(s) for thread ids that have a PendingMessage with delivery_in_flight_until > now, and narrate the oldest of those. Update the comment at chat_views.py:603-607 to state serialization is per-thread/session (not per-tenant) and that the in-flight turn is the oldest leased one. Update the test test_updates_latest_pending_when_no_client_msg_id (test_siri_views.py:309-328) accordingly. Cleanest long-term fix is to have the runtime hook carry the thread/session id so narration targets the correct thread directly.",
+  "fix_complexity": "small",
+  "evidence": [
+   "chat_views.py:608-609 narration picks newest PENDING via order_by('-created_at')",
+   "chat_views.py:603-607 comment claims per-tenant serialization (incorrect scope)",
+   "chat_views.py:234 iOS channel_user_id = str(thread.id)",
+   "pending_queue.py:481-489 in-flight lease is per (tenant, channel, channel_user_id)",
+   "pending_queue.py:491-506 drain FIFO order_by('created_at'), head=rows[0] = oldest",
+   "pending_queue.py:1384 each ChatThread is its own OpenClaw session (concurrent cross-thread turns possible)",
+   "siri_views.py:217 Siri uses main thread so coalesces safely; exposure is cross-thread",
+   "test_siri_views.py:309-328 codifies newest-PENDING == in-flight assumption"
+  ]
+ }
+]

@@ -31,7 +31,6 @@ from apps.billing.constants import (
     DEEPSEEK_FLASH_MODEL,
     DEEPSEEK_MODEL,
     GEMMA_MODEL,
-    NEMOTRON_FREE_DISPLAY,
     NEMOTRON_FREE_MODEL,
     display_name_for_model,
 )
@@ -212,12 +211,29 @@ def _apply_to_tenants(offer, *, new_active: bool, reason: str) -> None:
     """Re-render + notify every tenant whose effective model changes: those on
     the rolling default (preferred_model == "") and those who explicitly picked
     the offer model. On deactivation, an explicit pick of the now-dead offer
-    model is reset to the rolling default so the user isn't stranded on it."""
+    model is reset to the rolling default so the user isn't stranded on it.
+
+    On deactivation we also reset SUSPENDED/hibernated tenants that have an
+    explicit preferred_model matching the offer model — they don't run inference
+    now, but we clear the stranded slug so they won't be stuck on a retired
+    model when they reactivate.  Config bumps and notifications are limited to
+    ACTIVE non-hibernated tenants (who are currently running containers)."""
     from apps.cron.publish import publish_task
     from apps.router.system_notify import send_system_notification
     from apps.tenants.models import Tenant
 
     model = offer.model_id
+
+    # On deactivation: also clear the offer model from tenants that are
+    # SUSPENDED or hibernated so they are not stranded on a retired slug at
+    # reactivation.  We do this as a bulk update — no config bump or
+    # notification needed for non-running tenants.
+    if not new_active:
+        Tenant.objects.filter(preferred_model=model).exclude(
+            status=Tenant.Status.ACTIVE, hibernated_at__isnull=True
+        ).update(preferred_model="")
+
+    # Config bumps + notifications go only to currently-active containers.
     affected = list(
         Tenant.objects.filter(status=Tenant.Status.ACTIVE, hibernated_at__isnull=True).filter(
             Q(preferred_model="") | Q(preferred_model=model)
@@ -255,24 +271,25 @@ def _apply_to_tenants(offer, *, new_active: bool, reason: str) -> None:
 
 
 def _transition_message(offer, *, new_active: bool, reason: str) -> str:
+    offer_name = display_name_for_model(offer.model_id)
     fallback = display_name_for_model(offer.fallback_model_id)
     if new_active:
         return (
             f"✨ Good news — for a limited time, your assistant now runs on "
-            f"{NEMOTRON_FREE_DISPLAY}, free of charge. It's a frontier model with a "
+            f"{offer_name}, free of charge. It's a frontier model with a "
             f"1M-token memory. If it ever becomes unavailable we'll switch you back to "
             f"{fallback} automatically — nothing for you to do. Prefer a different model? "
             f"Settings → AI Provider."
         )
     if reason == "no_longer_free":
         return (
-            f"The free {NEMOTRON_FREE_DISPLAY} promotion has ended, so your assistant has "
+            f"The free {offer_name} promotion has ended, so your assistant has "
             f"been switched back to {fallback}. You can change models anytime in "
             f"Settings → AI Provider."
         )
     # unreachable / disabled
     return (
-        f"{NEMOTRON_FREE_DISPLAY} is temporarily unavailable, so your assistant has been "
+        f"{offer_name} is temporarily unavailable, so your assistant has been "
         f"switched to {fallback} to stay responsive. We'll move you back automatically if "
         f"it returns. You can also choose a model in Settings → AI Provider."
     )

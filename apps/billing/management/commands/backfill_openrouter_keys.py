@@ -46,7 +46,10 @@ def _eligible_tenants(tenant_id: str | None) -> list[Tenant]:
     )
     if tenant_id:
         qs = qs.filter(id=tenant_id)
-    return list(qs.select_related("user"))
+    # Deterministic order so the backfill processes tenants the same way every
+    # run (stable logs / reproducible behaviour); an unordered queryset returns
+    # rows in arbitrary Postgres heap order.
+    return list(qs.select_related("user").order_by("created_at", "id"))
 
 
 def _backfill_one(tenant: Tenant, dry_run: bool, stdout) -> bool:

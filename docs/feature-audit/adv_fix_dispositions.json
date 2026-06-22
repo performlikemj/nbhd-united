@@ -1,0 +1,416 @@
+[
+ {
+  "ref": "FA-0026",
+  "action": "fixed",
+  "summary": "Replaced the bare AutomationRun.objects.create() in the limit-check-fail SKIPPED branch (services.py:406) with get_or_create() wrapped in transaction.atomic(). The bare create() raised IntegrityError when a stranded RUNNING row already occupied the window-deterministic idempotency key; the scheduler swallowed that as errors+=1 without advancing next_run_at, causing an infinite crash loop. The get_or_create() makes the branch idempotent: on key collision (created=False) we still call _advance_schedule() and return, breaking the loop. Four regression tests added in tests_audit_adv_A01.py covering: (1) no exception on key collision with a stranded RUNNING row, (2) fresh SKIPPED row still advances next_run_at, (3) scheduler summary shows errors=0 when key is already occupied, and (4) negative MIN_RUN_INTERVAL delta (manual-run-then-schedule scenario) creates a clean SKIPPED row.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/automations/services.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/automations/tests_audit_adv_A01.py"
+  ],
+  "_c": "A01"
+ },
+ {
+  "ref": "byo_models#2",
+  "action": "fixed",
+  "summary": "RuntimeBYOErrorReportView.post only flipped the BYO cred to ERROR; it never reconciled the live container, so after a Claude billing/auth failure the container kept its BYO-only openclaw.json (empty fallback list + ANTHROPIC_API_KEY stripped) and the assistant went dark for ALL turns until an unrelated config bump self-healed it. Added the same three-step coupling the paste/delete paths use: on the actionable-failure branch (after mark_credential_error returns a non-None cred), call tenant.bump_pending_config() + regenerate_tenant_config(tenant) + apply_byo_credentials_to_container(tenant). Because _byo_model_extras and apply_byo_credentials_to_container both exclude ERROR creds, the regen repopulates metered fallbacks and restores ANTHROPIC_API_KEY, keeping the assistant responsive on a platform model while the user reconnects. Each leg is wrapped in try/except that logs and still returns 200 (runtime must not retry); bump_pending_config also makes the hourly apply-pending cron a backstop. Imports done locally inside post() to match the file's existing lazy-import style. Did not add the optional periodic BYO-reconcile cron (would require touching apps/cron files not named in this finding's scope, and the pending bump already gives the apply-pending cron a backstop).",
+  "files_changed": [
+   "apps/integrations/runtime_views.py",
+   "apps/integrations/tests_audit_adv_A02.py"
+  ],
+  "_c": "A02"
+ },
+ {
+  "ref": "FA-0341",
+  "action": "fixed",
+  "summary": "Confirmed: the goal detail page (frontend/app/journal/goal/[slug]/goal-detail-client.tsx:121) rendered goal.preview, which apps/dashboard/views.py:373 hard-truncates to 200 chars ((g['markdown'] or '')[:200]). Since the goal template scaffolding alone is ~190 chars, every populated goal showed a mid-sentence stub on the detail page. The full body was already in scope as g['markdown'] (typed goals: Goal.description; legacy: Document.markdown) but never emitted. Fix: added a full 'markdown' field to the goals[] serialization in views.py (alongside the existing capped 'preview'), added an optional markdown field to the HorizonsGoal type in frontend/lib/types.ts, and changed the detail view to render goal.markdown with a fallback to goal.preview. List cards still use the truncated preview; only the detail page consumes the full field. Added 3 regression tests (typed goal untruncated, legacy document untruncated, empty-body default) in apps/dashboard/tests_audit_adv_A03.py — all pass.",
+  "files_changed": [
+   "apps/dashboard/views.py",
+   "frontend/lib/types.ts",
+   "frontend/app/journal/goal/[slug]/goal-detail-client.tsx",
+   "apps/dashboard/tests_audit_adv_A03.py"
+  ],
+  "_c": "A03"
+ },
+ {
+  "ref": "FA-0533",
+  "action": "fixed",
+  "summary": "Confirmed the incomplete-fix hole: _order() resolved the order-by allowlist as _ALLOWED_ORDER_BY.get(resource, _ALLOWED_FIELDS[resource]); _ALLOWED_ORDER_BY only had an 'accounts' key, so 'transactions' fell back to _ALLOWED_FIELDS['transactions'] which includes account_nickname — a relation traversal (t.account.nickname), not a column on FinanceTransaction. order_by=account_nickname passed the membership check and reached qs.order_by('account_nickname'), raising Django FieldError. BaseQueryView.post caught only QueryExecutionError (no EXCEPTION_HANDLER configured), so FieldError propagated to HTTP 500. Fix part 1 (apps/finance/query_views.py): added 'transactions' (= _ALLOWED_FIELDS['transactions'] - {account_nickname}) and 'plan' (= _ALLOWED_FIELDS['plan']) entries to _ALLOWED_ORDER_BY, so order_by=account_nickname now returns the clean invalid_order_by 400; account_nickname stays in _ALLOWED_FIELDS and _ALLOWED_GROUP_BY where group_by special-cases it to account__nickname. Fix part 2 (apps/common/query_view.py): imported django.core.exceptions.FieldError and added a FieldError->400 (invalid_query) catch in BaseQueryView.post as the belt-and-suspenders the original FA-0533 suggested_fix recommended, closing the whole FieldError->500 class for all query domains. Added apps/finance/tests_audit_adv_A04.py with 7 tests (order_by=account_nickname / -account_nickname -> 400, real columns + account_id still 200, account_nickname still requestable via fields= and usable as group_by, plan order_by). All 14 tests (7 new + 7 C30 regression) pass via config.settings.development --keepdb.",
+  "files_changed": [
+   "apps/finance/query_views.py",
+   "apps/common/query_view.py",
+   "apps/finance/tests_audit_adv_A04.py"
+  ],
+  "_c": "A04"
+ },
+ {
+  "ref": "FA-0584",
+  "action": "fixed",
+  "summary": "Confirmed the incomplete fix: PATCH on the runtime workout-plan endpoint validated+stored week_overrides and returned 200, but the regen path (reconcile_plan_state + apply_reconciliation) was weekday-keyed only and never consumed week_overrides, so per-week deloads and rest-day drops silently never materialized into the Workout calendar (only POST/_expand_plan_workouts honored them). Fixed by threading week_overrides through the reconciler so PATCH materialization matches POST. In apps/fuel/services.py: added _effective_template_for_week(base_by_weekday, week_overrides, week_index) which mirrors the POST merge (per-week override merged over base, weekday mapped to null dropped = rest); added a keyword-only week_overrides param to reconcile_plan_state; replaced the single template_by_weekday with a per-week template_by_week map + a template_for(week_idx, weekday) resolver used in desired_keys (so a dropped day falls out of scope -> its slot archives + planned workout deletes for that specific week), in the workouts_to_create build loop, and in the workouts_to_retemplate kept-slot loop (so a kept day's deload re-prescribes the existing workout). Also closed a parity gap surfaced by the cited repro: the reconciler never propagated the template's target_rpe/rpe onto Workout.rpe (the POST create path does at runtime_views.py:1102). Extended _template_patch_for to map target_rpe->rpe and added rpe to WorkoutSpec + the create-build loop + the apply_reconciliation create call. In apps/fuel/runtime_views.py: passed week_overrides=plan.week_overrides at the PATCH reconcile call site (1431-1437). Indexing aligns: POST week_offset (==week_idx since create passes plan.start_date so elapsed_weeks=0) and reconciler range(weeks) week_index both 0-based from plan start, matching the override key contract. Added apps/fuel/tests_audit_adv_A05.py with a PATCH-materialization test mirroring the POST test (tests.py:3669): creates a 2-week heavy plan, PATCHes week-2 (index 1) to deload Monday + rest Wednesday, asserts the calendar drops Wk2-Wed, Wk2-Mon becomes Deload Squats rpe 5, and Wk1 stays Heavy rpe 9.",
+  "files_changed": [
+   "apps/fuel/services.py",
+   "apps/fuel/runtime_views.py",
+   "apps/fuel/tests_audit_adv_A05.py"
+  ],
+  "_c": "A05"
+ },
+ {
+  "ref": "FA-0907",
+  "action": "fixed",
+  "summary": "Confirmed the incomplete-fix recurrence: services.py:616/623 uploads the tenant's templates.md to the file share on config refresh (reaches a running container), but entrypoint.sh wiped it on every boot — line 16 rm -rf'd the entire nbhd-managed skills tree (which contains daily-journal/references/templates.md) and lines 30-35 then rewrote templates.md from the stale provision-time NBHD_SKILL_TEMPLATES_MD env var, so after any restart/hibernation-wake the slug list reverted. Made the file-share copy authoritative per the preferred suggested_fix: (1) before the rm -rf, stash any existing share templates.md to a mktemp file and restore it after the image-default cp -R, so the rm -rf still refreshes the rest of the skills tree from the image without clobbering the tenant's authoritative templates.md; (2) gated the env-var seed so it now only runs on first boot / pre-share-write tenants (when no share copy was stashed), never overwriting an existing authoritative share copy. This eliminates both the boot clobber and the boot-vs-apply race the finding flagged (the entrypoint no longer writes the stale env-var content over a present share copy). SKILL_TEMPLATES_STASH is initialized to '' unconditionally so the later [ -z ] test is safe under set -eu. No Django/services.py change needed — the prior share-write half already reaches running containers.",
+  "files_changed": [
+   "runtime/openclaw/entrypoint.sh"
+  ],
+  "_c": "A06"
+ },
+ {
+  "ref": "billing#2",
+  "action": "fixed",
+  "summary": "Made MonthlyBudget.is_capped the actual global kill-switch and decoupled it from the reconcile-driven spend counter. (1) check_budget (apps/billing/services.py:288) now returns 'global' when `global_budget.is_capped` OR remaining <= 0 — previously is_capped was a dead flag with zero enforcement readers. (2) cap_budget command (apps/billing/management/commands/cap_budget.py) now toggles is_capped ONLY: --uncap no longer zeroes spent_dollars (which had both wiped the accurate month-to-date figure shown in the transparency UI and let the next hourly reconcile_openrouter_spend re-derive remaining<=0 and silently re-cap), and the default cap no longer inflates spent_dollars to budget_dollars. Also added a 'Capped:' line to --status output. Added apps/billing/tests_audit_adv_A07.py (6 tests, all pass; existing 25 billing/reconcile tests still pass; ruff clean).",
+  "files_changed": [
+   "apps/billing/services.py",
+   "apps/billing/management/commands/cap_budget.py",
+   "apps/billing/tests_audit_adv_A07.py"
+  ],
+  "noop_or_partial_reason": "Note: full durability of --uncap when TRUE spend already exceeds budget_dollars is only partially addressed. With is_capped decoupled, capping no longer fakes spend, so the common operator scenario (spend under budget) is now fully durable. But when real month-to-date spend genuinely exceeds budget, the independent remaining<=0 path in check_budget still re-blocks after uncap — the suggested_fix's optional override-window/budget-bump remedy would require a new MonthlyBudget field (DB migration) which the task constraints direct me to avoid. The core defects (dead is_capped flag + uncap destroying the spend figure + flag-driven false re-cap) are fixed.",
+  "_c": "A07"
+ },
+ {
+  "ref": "integrations#1",
+  "action": "fixed",
+  "summary": "RuntimeDailyNoteAppendView.post located the target daily-note section with an unanchored substring search (md.find('## '+heading) and md.find('\\n## ')), which could (1) match a longer prefix-overlapping heading (e.g. '## Report' matching '## Report Card') and clobber it, or (2) treat a mid-line '## ' inside another section's body as a heading boundary and splice content into the wrong place. Replaced both scans with line-anchored regexes: re.search(r'(?m)^'+re.escape(marker)+r'[ \\t]*$', md) for the section start, and re.search(r'(?:^|\\n)(## )', md[heading_end:]) for the next-heading boundary (capturing the preceding newline so blank-line spacing and slice boundaries match the original behaviour exactly). Verified byte-for-byte parity with the old code on standard 3-section docs, and correct targeting on prefix-collision and embedded-'## ' cases. Added 3 regression tests in a new file (apps/integrations/tests_audit_adv_A08.py) — all pass; ruff clean.",
+  "files_changed": [
+   "apps/integrations/runtime_views.py",
+   "apps/integrations/tests_audit_adv_A08.py"
+  ],
+  "_c": "A08"
+ },
+ {
+  "ref": "pii#2",
+  "action": "fixed",
+  "summary": "Serialized every per-tenant read-modify-write of pii_entity_map / pii_denylist with a transaction.atomic() + select_for_update() row lock, closing both the placeholder-collision/cross-entity-name-leak race and the lost-write/resurrected-delete race.\n\nRedactor (apps/pii/redactor.py _redact_user_message): the most important fix. Detection (_detect_pii ONNX inference) still runs UNLOCKED for throughput, but placeholder minting now happens inside a row lock. The function collects NER hits into to_mint, then under transaction.atomic() re-reads pii_entity_map via select_for_update, re-derives per-type counters from that LOCKED snapshot (not the stale snapshot read at function start), assigns final [TYPE_N] numbers, merges new entries onto the locked dict (existing keys preserved, never clobbered), writes, and only then applies the string replacements to out. Because numbers are assigned under the lock, the placeholder baked into the text sent to the LLM always matches the persisted map, so outbound rehydration (pending_queue) can never substitute one contact's real name into another's reply. Removed the now-dead stale-counter block (old lines 322-328). Same-message dedup of a new entity preserved via a locked CI view.\n\nArbiter (apps/pii/arbiter._apply_decisions_for_tenant): wrapped the whole apply in transaction.atomic()+select_for_update re-read of the locked Tenant; mutates the locked snapshot's entity_map/denylist and writes inside the lock; mirrors the result back onto the caller's in-memory tenant; returns (0,0) if the row vanished.\n\nmemory_sync.render_memory_files: the entity-map merge now re-reads under select_for_update inside transaction.atomic().\n\ntenants/views.py (added 'from django.db import transaction'): PIIEntityItemView.patch + .delete, PIIDenylistListView.post, PIIDenylistItemView.delete, and PIIDenylistBulkView.post all re-read the row under select_for_update inside transaction.atomic() before the existence check and full-dict write; validation stays outside the lock. The bulk view (post) was fixed too even though not individually cited in evidence — it is the same defect class in the same named file and suggested_fix explicitly covers 'denylist writes'.\n\nAdded apps/pii/tests_audit_adv_A09.py (6 tests, all pass; full apps.pii + tenants PII view suites = 178 tests still green).",
+  "files_changed": [
+   "apps/pii/redactor.py",
+   "apps/pii/arbiter.py",
+   "apps/orchestrator/memory_sync.py",
+   "apps/tenants/views.py",
+   "apps/pii/tests_audit_adv_A09.py"
+  ],
+  "_c": "A09"
+ },
+ {
+  "ref": "router-chat#1",
+  "action": "fixed",
+  "summary": "Confirmed the iOS coalesced-batch reply fan-out: when several iOS messages land on one thread before the first reply (cold-start burst), _claim_pending_batch_for_key folds them into one batch, _drain_ios_batch gets ONE combined reply, but _store_ios_turn_reply wrote that reply onto EVERY client_msg_id via .filter(client_msg_id__in=client_ids).update(reply_text=text, READY). The since-feed (_app_rows), thread history (_serialize_message), and the USER.md digest (build_conversation_digest) each emitted the same assistant text once per row — 3 quick messages produced the same assistant bubble 3x. Fix in apps/router/pending_queue.py _store_ios_turn_reply: attach the combined reply to a single representative row (the last client_msg_id) as READY+text; flip the other rows to terminal READY with reply_text='' (and replied_at set) so the polling client stops waiting but no duplicate assistant row is rendered. _app_rows only emits an assistant row on status==READY AND non-empty reply_text, and the digest already guards `if reply:`, so empty reply_text suppresses the duplicate across all three surfaces at once. The APNs push now carries only the representative id ([rep_id]) so the device shows one 'reply ready', not N. Singleton batches (len==1) are byte-for-byte unchanged (client_ids[-1] is the sole id, other_ids empty). The empty-reply ERROR branch was already dup-free (errored rows never emit an assistant row) and is left untouched. Added apps/router/tests_audit_adv_A10.py with 3 tests (3-message coalesced batch -> exactly one assistant row in the since-feed; digest contains the reply once; singleton batch unchanged) — all pass; existing apps/router/test_ios_chat suite still passes.",
+  "files_changed": [
+   "apps/router/pending_queue.py",
+   "apps/router/tests_audit_adv_A10.py"
+  ],
+  "_c": "A10"
+ },
+ {
+  "ref": "FA-0006",
+  "action": "fixed",
+  "summary": "send_gate_confirmation now returns bool (True=dispatched, False=no deliverable channel). GateRequestView.post inspects the return value: when False it immediately marks the PendingAction EXPIRED, writes an ActionAuditLog record, and returns HTTP 422 {status:'undeliverable', reason:'no_channel'} so the container receives a clear error instead of HTTP 202 'pending' that silently times out to 'expired' after 5 minutes.",
+  "files_changed": [
+   "apps/actions/messaging.py",
+   "apps/actions/views.py",
+   "apps/actions/tests_audit_adv_A11.py"
+  ],
+  "_c": "A11"
+ },
+ {
+  "ref": "FA-0007-P1",
+  "action": "fixed",
+  "summary": "Added .select_related(\"tenant__user\") to the PendingAction queryset in expire_stale_pending_actions (apps/actions/tasks.py:25). This JOINs the tenant FK and tenant.user OneToOneField into the initial sweep query, eliminating the 2 lazy-load SELECT round-trips per expired action that previously occurred inside the loop (one for action.tenant in ActionAuditLog.objects.create, one for tenant.user in update_gate_message). The change is a single-line addition with no correctness risk.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/actions/tasks.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/actions/tests_audit_adv_A12.py"
+  ],
+  "_c": "A12"
+ },
+ {
+  "ref": "FA-0173-P1",
+  "action": "fixed",
+  "summary": "Added PendingExtractionCacheBumpTests in apps/dashboard/tests_audit_adv_A13.py with four tests mirroring the pre-existing receiver test pattern: save (create), status change to DISMISSED (ExtractionDismissView path), status change to APPROVED (typed-task approve path), and delete. Each asserts the dashboard cache tag version advances after the mutation, giving CI a signal if the _bump_on_pending_extraction receiver is ever silently broken.",
+  "files_changed": [
+   "apps/dashboard/tests_audit_adv_A13.py"
+  ],
+  "_c": "A13"
+ },
+ {
+  "ref": "FA-0187-dead-code",
+  "action": "fixed",
+  "summary": "Removed the orphaned setSuccess helper (lines 303-311) that was defined but never called after the FA-0187 fix switched to showToast. Also simplified the create submit button to remove the unreachable createFeedback.status === 'success' ? '✓ Created' branch — since createFeedback is only ever set to 'saving' or 'error' on the create path (form unmounts on success via setShowCreate(false)). The getSaveButtonClass success branch was left intact as it is shared with the edit button and harmless.",
+  "files_changed": [
+   "frontend/app/settings/cron-jobs/page.tsx"
+  ],
+  "_c": "A14"
+ },
+ {
+  "ref": "FA-0229",
+  "action": "fixed",
+  "summary": "In focusNode's `if (!p)` branch, added an isolation-lifting guard: when `isolated` is set and the target node lies outside the isolated cluster (determined by the same `c:${id}` split pattern used in visibleNodes), `setIsolated(null)` is called before the existing filter-widening and setSelectedId calls. This ensures the cross-cluster neighbour enters visibleNodes on the next render pass, gets a layout position, and allows the camera to pan/zoom to it on subsequent focusNode calls — resolving the canvas no-show for isolation-hidden neighbours clicked from the Inspector Relationships panel.",
+  "files_changed": [
+   "frontend/app/constellation/page.tsx"
+  ],
+  "_c": "A15"
+ },
+ {
+  "ref": "FA-0362",
+  "action": "fixed",
+  "summary": "Removed the `needsReconnect ? \"error\"` arm from the badgeStatus ternary in page.tsx so that StatusPill receives the raw integration status string. This restores the design system's three distinct badge tones: expired=amber, revoked=slate, error=rose. The needsReconnect predicate is preserved unchanged for the description and button label logic.",
+  "files_changed": [
+   "frontend/app/settings/integrations/page.tsx"
+  ],
+  "_c": "A16"
+ },
+ {
+  "ref": "FA-0427",
+  "action": "fixed",
+  "summary": "Added `if (prefersReduced) draw()` inside the onResize handler in frontend/components/landing/starfield.tsx. The prior fix correctly stopped the infinite RAF loop for reduced-motion users but left no repaint trigger after resize events. Since resize() clears the canvas bitmap (by assigning canvas.width/canvas.height per the HTML spec), reduced-motion users would see a blank starfield after any window resize. The one-line guard repaints only for the reduced-motion cohort; non-reduced-motion users are unaffected because their running RAF loop repaints on the next frame.",
+  "files_changed": [
+   "frontend/components/landing/starfield.tsx"
+  ],
+  "_c": "A17"
+ },
+ {
+  "ref": "FA-0536",
+  "action": "fixed",
+  "summary": "Wired create_monthly_snapshots into the QStash cron pipeline via three changes: (1) added create_monthly_snapshots_task wrapper in apps/finance/tasks.py, (2) registered 'snapshot_finance_monthly' in TASK_MAP in apps/cron/views.py, (3) added a monthly cron entry '0 6 1 * *' in SYSTEM_CRONS in register_system_crons.py. The underlying snapshot function was already correct and idempotent; it simply had no caller in production, so the /api/v1/finance/snapshots/ endpoint always returned an empty list.",
+  "files_changed": [
+   "apps/finance/tasks.py",
+   "apps/cron/views.py",
+   "apps/cron/management/commands/register_system_crons.py",
+   "apps/finance/tests_audit_adv_A18.py"
+  ],
+  "_c": "A18"
+ },
+ {
+  "ref": "FA-0596-incomplete",
+  "action": "fixed",
+  "summary": "Wrapped the body of _upsert_voice_pref_impl in `with _tx.atomic():` using the same function-local lazy-import pattern as the FA-0596 fix in _record_insight_impl. resolve_topic's @transaction.atomic now degrades to a savepoint inside the outer block, so a failure in update_or_create rolls back the proposed-topic INSERT and prevents orphaned TopicRegistry rows.",
+  "files_changed": [
+   "apps/insights/views.py",
+   "apps/insights/tests_audit_adv_A19.py"
+  ],
+  "_c": "A19"
+ },
+ {
+  "ref": "FA-0692",
+  "action": "fixed",
+  "summary": "Replaced both broken update_tenant_config_task.delay() calls in apps/journal/views.py with publish_task('update_tenant_config', str(tenant.id)) from apps.cron.publish. The PATCH path (line 509) and DELETE path (line 535) both now dispatch via QStash, which is the project-standard async mechanism since Celery was removed. The surrounding try/except is preserved so the dispatch remains best-effort.",
+  "files_changed": [
+   "apps/journal/views.py",
+   "apps/journal/tests_audit_adv_A20.py"
+  ],
+  "_c": "A20"
+ },
+ {
+  "ref": "FA-0742",
+  "action": "fixed",
+  "summary": "Wrapped the `parse_datetime(since) or parse_date(since)` call in `apps/journal/session_views.py` lines 166-169 with `try/except (ValueError, TypeError): parsed_since = None`, exactly mirroring the `limit` parameter guard 15 lines below. Out-of-range dates like `2021-13-45`, `2021-02-30`, and datetimes with invalid month/hour now set `parsed_since = None` instead of raising an unhandled `ValueError` → HTTP 500; the existing `if parsed_since is None` branch then returns the clean 400 with the `since must be an ISO date/datetime.` detail message. Added regression tests covering 4 out-of-range cases, 1 syntactically-malformed case, and 3 valid-filter cases in `apps/journal/tests_audit_adv_A21.py`.",
+  "files_changed": [
+   "apps/journal/session_views.py",
+   "apps/journal/tests_audit_adv_A21.py"
+  ],
+  "_c": "A21"
+ },
+ {
+  "ref": "FA-0744",
+  "action": "fixed",
+  "summary": "Added two regression tests in a new file apps/journal/tests_audit_adv_A22.py: test_read_scope_cannot_delete (sessions:read PAT → 403 on DELETE, session intact) and test_write_scope_can_delete (sessions:write PAT → 204, session removed). These pin the get_permissions() override on SessionDetailView so a future revert of the DELETE branch to read scope would fail the suite immediately.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/journal/tests_audit_adv_A22.py"
+  ],
+  "_c": "A22"
+ },
+ {
+  "ref": "FA-0792",
+  "action": "fixed",
+  "summary": "Scoped the DELETE clause in create_connections to only remove outbound stale edges (from_lesson=lesson). The previous two-clause filter also deleted Y->X inbound edges that other lessons authored, causing cross-lesson over-deletion when top-5 peer membership is asymmetric. The fix replaces the combined Q-filter with a simple .filter(connection_type='similar', from_lesson=lesson).exclude(to_lesson_id__in=current_peer_ids).delete(), making each lesson authoritative only over edges it created. New test file apps/lessons/tests_audit_adv_A23.py covers the asymmetric cross-lesson scenario. NOTE: tests_audit_C02.py:86-89 asserts the old both-direction deletion behavior and will now fail — that assertion was testing the defect, not the correct behavior; the C02 cluster owner must update that assertion (cannot edit existing test files per constraints).",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/lessons/services.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/lessons/tests_audit_adv_A23.py"
+  ],
+  "_c": "A23"
+ },
+ {
+  "ref": "FA-0913",
+  "action": "fixed",
+  "summary": "Both apology helpers in pending_queue.py now call rehydrate_for_tenant before echoing the stored (redacted) user_text excerpt back to the user. _send_apology_for_stale_pending_message (line 1029) had no rehydration at all; _send_apology_for_dropped_pending_message (line 1116) applied strip_internal_framing but not rehydration. Both now import rehydrate_for_tenant from apps.pii.redactor and apply it at send time, so a user whose dropped/stale message contained e.g. alice@acme.com (stored as [EMAIL_ADDRESS_1]) sees their own words in the apology rather than a raw placeholder. The at-rest PendingMessage.user_text remains redacted (correct). Tests in apps/router/tests_audit_adv_A24.py cover both helpers: rehydration of known placeholders, passthrough when pii_entity_map is absent, and confirmation that at-rest storage is unchanged.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/router/pending_queue.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/router/tests_audit_adv_A24.py"
+  ],
+  "_c": "A24"
+ },
+ {
+  "ref": "FA-0914",
+  "action": "fixed",
+  "summary": "Added rehydrate_text call at the end of build_conversation_digest (conversation_capture.py) before the return, so PII placeholders stored in ConversationTurn.user_text (e.g. [PERSON_1]) are expanded to real values in the USER.md envelope. Mirrors the identical pattern already in ChatContextView. Fail-open on rehydration error. Three regression tests added in apps/router/tests_audit_adv_A25.py.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/router/conversation_capture.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/router/tests_audit_adv_A25.py"
+  ],
+  "_c": "A25"
+ },
+ {
+  "ref": "FA-0995",
+  "action": "fixed",
+  "summary": "Extended the early LINE audio gate at line_webhook.py:941-945 to also call needs_reintroduction on the resolved tenant. For backfilled/default-profile users (onboarding_complete=True but >=3 default fields), the gate now rejects the voice message and returns before _show_loading and _transcribe_line_audio run, eliminating the wasted paid Whisper call and loading animation. The import is a local-style import (matching the pattern used for needs_reintroduction at line 1112), aliased to _needs_reintroduction to avoid shadowing the downstream import. The downstream reset-and-reject path is unchanged and remains the authoritative state mutation.",
+  "files_changed": [
+   "apps/router/line_webhook.py",
+   "apps/router/tests_audit_adv_A26.py"
+  ],
+  "_c": "A26"
+ },
+ {
+  "ref": "FA-1015",
+  "action": "fixed",
+  "summary": "Eliminated the redundant DeBERTa NER inference pass in _forward_to_container on the two minority caller paths (delayed-forward at line 513 and post-update-decline at line 821) that omit raw_user_text. Added a _raw_aliases_message boolean flag captured before the aliasing assignment at line 1353, then after redacting message_text, reuse the already-redacted result for raw_user_text when the alias was active rather than calling redact_user_message a second time over identical content. The dominant inbound path (line 993) passes a distinct raw_user_text and is unaffected.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/router/poller.py"
+  ],
+  "_c": "A27"
+ },
+ {
+  "ref": "FA-1036",
+  "action": "fixed",
+  "summary": "When the agent emits only [[button:...]] markers with no prose, both delivery paths stripped the markers from text leaving it empty, then returned/skipped before delivering reply_markup. Fixed in pending_queue.py by adding `if reply_markup: return _send_telegram_markdown(chat_id, \"·\", reply_markup=reply_markup)` in the `if not text:` guard; fixed in poller.py by adding `elif reply_markup: self._send_message(chat_id, \"·\", reply_markup=reply_markup)` after the `if clean_text:` block. Middle-dot placeholder passes str.strip() and render_telegram_html's non-whitespace check so Telegram receives a valid non-empty-text sendMessage call carrying the inline_keyboard.",
+  "files_changed": [
+   "apps/router/pending_queue.py",
+   "apps/router/poller.py",
+   "apps/router/tests_audit_adv_A28.py"
+  ],
+  "_c": "A28"
+ },
+ {
+  "ref": "actions#1",
+  "action": "fixed",
+  "summary": "Replaced tenant__owner__email (non-existent path — Tenant has no 'owner' FK, only 'user') with tenant__user__email and tenant__user__username in all three admin search_fields lists: PendingActionAdmin (line 18), GatePreferenceAdmin (line 26), and ActionAuditLogAdmin (line 40). Added username alongside email for parity with apps/tenants/admin.py.",
+  "files_changed": [
+   "apps/actions/admin.py",
+   "apps/actions/tests_audit_adv_A29.py"
+  ],
+  "_c": "A29"
+ },
+ {
+  "ref": "actions#2",
+  "action": "fixed",
+  "summary": "All five PendingAction status-mutation paths now serialize correctly. GateRespondView wraps its read-check-write in transaction.atomic() + select_for_update() so the Postgres row lock prevents the sweep from clobbering an in-flight approve. The sweep (expire_stale_pending_actions), GatePollView, the Telegram gate callback (_handle_gate_callback), and the LINE gate postback (_handle_gate_postback) all switched from bare .save(update_fields=['status']) to a conditional filter(id=..., status=PENDING).update(...) with a rowcount check — the update is a no-op if another writer already resolved the row, and downstream side-effects (ActionAuditLog creation, update_gate_message) are skipped in that case.",
+  "files_changed": [
+   "apps/actions/tasks.py",
+   "apps/actions/views.py",
+   "apps/router/poller.py",
+   "apps/router/line_webhook.py",
+   "apps/actions/tests_audit_adv_A30.py"
+  ],
+  "_c": "A30"
+ },
+ {
+  "ref": "byo_models#3",
+  "action": "fixed",
+  "summary": "Replaced the non-atomic read-modify-write `seed_version=cred.seed_version + 1` with a DB-side atomic increment using Django's F expression: `seed_version=F(\"seed_version\") + 1`. Added `from django.db.models import F` import. The existing `cred.refresh_from_db()` call already reloads the incremented value. No migration needed — this is a query-only change.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/byo_models/services.py"
+  ],
+  "_c": "A31"
+ },
+ {
+  "ref": "fuel#1",
+  "action": "fixed",
+  "summary": "Added unconditional profile.save() of the full tombstone set after the delete loop in ingest_healthkit_payload. Previously, when deleted_external_ids contained entries with no matching DB row (sample never synced, or already removed), no post_delete signal fired and the tombstone was silently lost, allowing anchor reset/reinstall to resurrect the sample. The fix persists tombstones regardless of deleted_count. Also added _TOMBSTONE_CAP = 200 constant to healthkit.py (mirroring signals._TOMBSTONE_CAP) to enforce the same cap on this write path.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/fuel/healthkit.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/fuel/tests_audit_adv_A32.py"
+  ],
+  "_c": "A32"
+ },
+ {
+  "ref": "fuel#2",
+  "action": "fixed",
+  "summary": "Brought WorkoutPlanListView.post and WorkoutPlanDetailView.patch to parity with the hardened runtime twin: (1) validate schedule_json via _validate_normalize_schedule before any DB write so non-dict day values return 400 instead of raising AttributeError mid-loop after committing the plan row; (2) wrap plan create+expand (and PATCH save+delete+regen) in transaction.atomic() so a mid-loop failure in _expand_plan_workouts rolls back the plan row and any partial Workout/PlanSlot rows; (3) add name+start_date+ACTIVE idempotency short-circuit on POST that returns 200 deduped instead of creating a duplicate plan and calendar. Also added PlanStatus to the models import. New regression tests in apps/fuel/tests_audit_adv_A33.py cover all three guards on both POST and PATCH paths.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/fuel/views.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/fuel/tests_audit_adv_A33.py"
+  ],
+  "_c": "A33"
+ },
+ {
+  "ref": "fuel#3",
+  "action": "fixed",
+  "summary": "Added 'original_workout' to WorkoutSerializer.Meta.read_only_fields. DRF was auto-generating a writable PrimaryKeyRelatedField backed by the global Workout queryset (no tenant scoping), allowing cross-tenant FK injection and a weak UUID existence oracle. Making the field read-only causes DRF to ignore any caller-supplied value in POST/PATCH body — no existing API behavior changes since nothing in the codebase writes this field via the API.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/fuel/serializers.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/fuel/tests_audit_adv_A34.py"
+  ],
+  "_c": "A34"
+ },
+ {
+  "ref": "integrations#2",
+  "action": "fixed",
+  "summary": "Wrapped the read-modify-write in RuntimeDailyNoteAppendView.post, RuntimeDocumentAppendView.post, and DocumentAppendView.post inside transaction.atomic() + select_for_update() to serialise concurrent appends. doc.save() narrowed to update_fields=[\"markdown\", \"updated_at\"]. Added from django.db import transaction to both files.",
+  "files_changed": [
+   "apps/integrations/runtime_views.py",
+   "apps/journal/document_views.py",
+   "apps/integrations/tests_audit_adv_A35.py"
+  ],
+  "_c": "A35"
+ },
+ {
+  "ref": "journal-core#1",
+  "action": "fixed",
+  "summary": "In ExtractionApproveView.post, captured the return value of _approve_lesson(pending) as (_, lesson_id) and conditionally persisted pending.lesson_id with lesson_id in update_fields, mirroring the identical pattern already used by the Telegram path (extraction_callbacks.py:304-308), LINE path (line_webhook.py:1531-1533), and cron path (extraction.py:674-677). The previous code discarded the return value, leaving pending.lesson_id NULL and making undo a no-op for any web-approved lesson.",
+  "files_changed": [
+   "apps/journal/views.py"
+  ],
+  "_c": "A36"
+ },
+ {
+  "ref": "journal-core#2",
+  "action": "fixed",
+  "summary": "Added post_save/post_delete receivers for Task and Goal in apps/common/cache_signals.py, importing both models alongside the existing DailyNote/Document/JournalEntry import. _task_changed bumps ['journal', 'dashboard'] and _typed_goal_changed bumps ['journal', 'dashboard'], matching the pattern used by _daily_note_changed. This ensures every write path (model mutators like Task.complete()/Goal.mark_achieved()/abandon(), web lifecycle views, agent runtime creates) fires a cache-tag bump that invalidates the @tenant_cache(ttl=60, tag='journal') on DocumentDetailView, eliminating the up-to-60s stale synthesized snapshot window for experimental_typed_journal_lifecycle tenants.",
+  "files_changed": [
+   "apps/common/cache_signals.py",
+   "apps/journal/tests_audit_adv_A37.py"
+  ],
+  "_c": "A37"
+ },
+ {
+  "ref": "orchestrator-provisioning#2",
+  "action": "fixed",
+  "summary": "In deprovision_tenant's except block (apps/orchestrator/services.py:780-798), the OR sub-key and KV secret field references were left stale when container/file-share/identity teardown raised an exception. Fixed by clearing openrouter_key_hash and openrouter_key_secret_name in the except handler — these deletes always complete (each wrapped in their own swallowing try/except) before any code that can reach the outer except, so those resources are already gone regardless of which teardown step failed. The save() in the except block now includes both fields in update_fields. Tests added in apps/orchestrator/tests_audit_adv_A38.py covering container-delete and file-share-delete failure scenarios.",
+  "files_changed": [
+   "apps/orchestrator/services.py",
+   "apps/orchestrator/tests_audit_adv_A38.py"
+  ],
+  "_c": "A38"
+ },
+ {
+  "ref": "orchestrator-provisioning#3",
+  "action": "fixed",
+  "summary": "In repair_stale_tenant_provisioning, an ACTIVE tenant with empty container fields was matched by the sweep queryset but then silently skipped by provision_tenant's PENDING/PROVISIONING-only status guard, causing it to be counted as 'failed' on every sweep run with no repair path. Fixed by demoting the tenant from ACTIVE to PROVISIONING (with a save) immediately before calling provision_tenant, so the existing status guard accepts it. provision_tenant's own invariants are unchanged. Five regression tests added in apps/orchestrator/tests_audit_adv_A39.py covering: queryset inclusion, the demotion happens before provision_tenant entry, the repaired count increments correctly, the tenant ends up ACTIVE with fields set, and PENDING tenants are not affected by the new demotion logic.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/orchestrator/services.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/orchestrator/tests_audit_adv_A39.py"
+  ],
+  "_c": "A39"
+ },
+ {
+  "ref": "router-chat#2",
+  "action": "fixed",
+  "summary": "Changed ChatProgressEventView's no-client_msg_id fallback from order_by('-created_at') (newest) to order_by('created_at') (oldest) so it matches the FIFO drain order in pending_queue.py. The in-flight turn is always the OLDEST PENDING row (the one the drain claimed via head=rows[0]). Also corrected the comment which falsely asserted per-tenant serialization — it's actually per (tenant, channel, channel_user_id), i.e. per-thread, so two threads can be concurrently in-flight in the same container. Renamed the variable latest_pk → oldest_pk for clarity.",
+  "files_changed": [
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/router/chat_views.py",
+   "/Users/michaeljones/Projects/nbhd-united.worktrees/feature-audit/apps/router/tests_audit_adv_A40.py"
+  ],
+  "_c": "A40"
+ },
+ {
+  "ref": "tenants-core#2",
+  "action": "noop",
+  "summary": "The pii_entity_map and pii_denylist race conditions described in this finding are already fixed in the current codebase. All the write paths cited in the evidence now use transaction.atomic() with select_for_update(): the EntityRegistryItemView.patch (wrapping select_for_update at ~line 1121), EntityRegistryItemView.delete (~line 1175), PIIDenylistView.post (~line 1260), PIIDenylistItemView.delete (~line 1298), PIIDenylistBulkView.post (~line 1379), and the redactor mint path in apps/pii/redactor.py (~line 408) all perform a locked re-read before writing. The evidence line numbers from the audit (1145, 1172, 1249, 1286, 1353) now reference code that is either inside the atomic+locked block or is a comment describing the lock. No code change is needed.",
+  "noop_or_partial_reason": "All cited write paths already use transaction.atomic() + select_for_update() to serialize the read-modify-write. The fix described in suggested_fix has already been applied in the current worktree before this agent ran.",
+  "_c": "A41"
+ }
+]

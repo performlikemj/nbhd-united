@@ -78,7 +78,16 @@ def reset_monthly_counters() -> int:
     # NOTE: do NOT reset ``purchased_credit`` here — prepaid credit persists
     # across months by design (the included allowance resets; bought credit
     # doesn't). See apps/billing/credits.py + test_credits.MonthlyResetTest.
-    count = Tenant.objects.filter(messages_this_month__gt=0).update(
+    # Reset any tenant with a non-zero counter, not just those who sent
+    # messages: estimated_cost_this_month accrues on every billable event
+    # (e.g. the hourly OpenRouter-spend reconcile cron) regardless of message
+    # count, so a cost>0 / messages==0 tenant would otherwise carry last
+    # month's cost forward. exclude(all three == 0) == "at least one > 0".
+    count = Tenant.objects.exclude(
+        messages_this_month=0,
+        tokens_this_month=0,
+        estimated_cost_this_month=0,
+    ).update(
         messages_this_month=0,
         tokens_this_month=0,
         estimated_cost_this_month=0,

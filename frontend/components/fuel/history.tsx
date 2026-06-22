@@ -3,9 +3,10 @@
 import { useMemo, useState } from "react";
 
 import { useWorkoutsQuery } from "@/lib/queries";
-import type { FuelWorkout, WorkoutCategory } from "@/lib/types";
+import type { DistanceUnit, FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { SkelBar } from "@/components/ui/skeleton";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
+import { kmToDisplay, useDistanceUnit } from "./use-distance-unit";
 
 interface HistoryProps {
   onOpenWorkout: (id: string) => void;
@@ -101,7 +102,7 @@ export function History({ onOpenWorkout }: HistoryProps) {
   );
 }
 
-function summaryChips(w: FuelWorkout): string[] {
+function summaryChips(w: FuelWorkout, unit: DistanceUnit): string[] {
   const d = w.detail_json || {};
   if (w.category === "strength") {
     const exercises = (d.exercises as { sets: unknown[] }[]) || [];
@@ -110,8 +111,8 @@ function summaryChips(w: FuelWorkout): string[] {
   }
   if (w.category === "cardio") {
     return [
-      d.distance_km && `${d.distance_km} km`,
-      d.pace && `${d.pace}/km`,
+      d.distance_km && `${kmToDisplay(d.distance_km as number, unit)} ${unit}`,
+      d.pace && `${d.pace}/${unit}`,
       d.avg_hr && `${d.avg_hr} bpm`,
     ].filter(Boolean) as string[];
   }
@@ -125,6 +126,7 @@ function summaryChips(w: FuelWorkout): string[] {
 }
 
 function WorkoutRow({ w, onClick }: { w: FuelWorkout; onClick: () => void }) {
+  const { unit } = useDistanceUnit();
   const meta = CATEGORIES[w.category as WorkoutCategory];
   return (
     <button
@@ -147,7 +149,7 @@ function WorkoutRow({ w, onClick }: { w: FuelWorkout; onClick: () => void }) {
         <div className="mt-0.5 text-[11px] text-ink-faint flex flex-wrap gap-x-2">
           {w.duration_minutes != null && <span>{w.duration_minutes} min</span>}
           {w.rpe != null && <span>&middot; RPE {w.rpe}</span>}
-          {summaryChips(w).map((s, i) => <span key={i}>&middot; {s}</span>)}
+          {summaryChips(w, unit).map((s, i) => <span key={i}>&middot; {s}</span>)}
         </div>
       </div>
       <svg viewBox="0 0 24 24" className="h-3.5 w-3.5 text-ink-faint shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="m9 18 6-6-6-6" /></svg>

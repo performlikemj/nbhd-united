@@ -45,7 +45,7 @@ from datetime import timedelta as _timedelta
 
 from apps.finance.models import PayoffPlan
 from apps.fuel.models import FuelGoal, Workout, WorkoutStatus
-from apps.journal.models import Document
+from apps.journal.models import Document, Goal
 from apps.orchestrator.envelope_registry import register_section
 from apps.tenants.agenda_models import AgendaEngagement
 from apps.tenants.agenda_service import is_eligible_now
@@ -89,7 +89,7 @@ _HEADER_GUIDANCE = (
     # are rare; the next save on Document/Workout/FuelGoal/PayoffPlan,
     # or the hourly apply-pending-configs cron, will refresh USER.md
     # within the freshness window the agent cares about.
-    refresh_on=(Document, Workout, FuelGoal, PayoffPlan),
+    refresh_on=(Document, Goal, Workout, FuelGoal, PayoffPlan),
     order=15,  # right after profile (10), before goals (20)
 )
 def render_agenda(tenant: Tenant) -> str:
@@ -276,7 +276,6 @@ def _count_active_goals(tenant: Tenant) -> int:
     # Dual-read: prefer typed Goal rows when present (post-migration tenants),
     # else fall back to the legacy Document(kind=goal, slug=goals) markdown.
     # Local import — see feedback_local_reimport_pattern memory.
-    from apps.journal.models import Goal
 
     count = 0
 

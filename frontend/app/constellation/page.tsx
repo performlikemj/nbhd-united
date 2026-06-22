@@ -325,7 +325,7 @@ function Inspector({ node, neighbors, onClose, onJump, onDelete, deleting }: { n
       <div className="mt-6 rounded-lg border border-white/[0.08] bg-black/40">
         <div className="flex items-center justify-between px-3 py-2 border-b border-white/[0.06]">
           <span className="text-[9px] uppercase tracking-[0.22em] text-[#7C6BF0] font-headline">Cypher</span>
-          <button type="button" onClick={() => { navigator.clipboard?.writeText(cypher); setCopied(true); setTimeout(() => setCopied(false), 1400); }} className="text-[10px] text-[#94A3B8] hover:text-white">{copied ? "copied \u2713" : "copy"}</button>
+          <button type="button" onClick={() => { const c = navigator.clipboard; if (!c) return; c.writeText(cypher).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1400); }).catch(() => {}); }} className="text-[10px] text-[#94A3B8] hover:text-white">{copied ? "copied \u2713" : "copy"}</button>
         </div>
         <pre className="p-3 text-[11px] leading-relaxed overflow-x-auto" style={{ fontFamily: "var(--font-mono, monospace)", color: "#CBD5E1" }}>{cypher}</pre>
       </div>
@@ -557,11 +557,39 @@ export default function ConstellationPage() {
     if (pinchRef.current && e.touches.length < 2) { pinchRef.current = null; return; }
     if (e.touches.length === 0) pointerUp();
   }
-  function toggleKind(k: GraphNodeKind) { setKindFilter((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; }); setSelectedId(null); }
+  function toggleKind(k: GraphNodeKind) { setKindFilter((s) => { const n = new Set(s); n.has(k) ? n.delete(k) : n.add(k); return n; }); setSelectedId(null); if (k === "Cluster" && kindFilter.has(k)) setIsolated(null); }
   function toggleRel(r: GraphRelType) { setRelFilter((s) => { const n = new Set(s); n.has(r) ? n.delete(r) : n.add(r); return n; }); }
   const selected = selectedId ? graphData.nodes.find((n) => String(n.id) === String(selectedId)) ?? null : null;
   const results = useMemo(() => { if (!query.trim()) return []; const q = query.toLowerCase(); return visibleNodes.filter((n) => nodeLabel(n).toLowerCase().includes(q) || (n.text || "").toLowerCase().includes(q) || String(n.id).includes(q)).slice(0, 8); }, [query, visibleNodes]);
-  function focusNode(id: string | number) { const p = positions[String(id)]; if (!p) return; setPan({ x: -(p.x - VW / 2) * baseScale * 1.4, y: -(p.y - VH / 2) * baseScale * 1.4 }); setZoom(1.4); setSelectedId(id); }
+  function focusNode(id: string | number) {
+    const p = positions[String(id)];
+    if (!p) {
+      // Target is hidden by the current kind/rel filters (e.g. an Evidence/Tag
+      // neighbour shown in the Inspector), or by cluster isolation (a cross-cluster
+      // neighbour clicked from the Relationships panel). Reveal it so the next layout
+      // pass gives it a position, then select it — instead of silently no-op'ing.
+      const target = graphData.nodes.find((n) => String(n.id) === String(id));
+      if (!target) return;
+      // If isolation is active and the target lives outside the isolated cluster,
+      // lift isolation so visibleNodes will include it after the next render.
+      if (isolated) {
+        const isoCid = parseInt(String(isolated).split(":")[1], 10);
+        const inCluster =
+          target.kind === "Cluster"
+            ? String(target.id) === String(isolated)
+            : target.kind === "Lesson"
+            ? target.cluster_id === isoCid
+            : false;
+        if (!inCluster) setIsolated(null);
+      }
+      setKindFilter((s) => (s.has(target.kind) ? s : new Set([...s, target.kind])));
+      const rels = graphData.edges.filter((e) => String(e.source) === String(id) || String(e.target) === String(id)).map((e) => e.type);
+      if (rels.length) setRelFilter((s) => { const n = new Set(s); rels.forEach((r) => n.add(r)); return n; });
+      setSelectedId(id);
+      return;
+    }
+    setPan({ x: -(p.x - VW / 2) * baseScale * 1.4, y: -(p.y - VH / 2) * baseScale * 1.4 }); setZoom(1.4); setSelectedId(id);
+  }
   const neighbors = useMemo(() => { if (!selected) return []; return graphData.edges.filter((e) => String(e.source) === String(selected.id) || String(e.target) === String(selected.id)).map((e) => { const oid = String(e.source) === String(selected.id) ? e.target : e.source; const dir: "in" | "out" = String(e.source) === String(selected.id) ? "out" : "in"; const other = graphData.nodes.find((n) => String(n.id) === String(oid)); return other ? { other, type: e.type, dir, similarity: e.similarity } : null; }).filter((x): x is NonNullable<typeof x> => x != null); }, [selected, graphData]);
 
   if (error) return <div className="rounded-panel border border-rose-border bg-rose-bg px-3 py-2 text-sm text-rose-text">{error}</div>;

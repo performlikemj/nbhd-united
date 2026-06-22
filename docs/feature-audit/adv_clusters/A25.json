@@ -1,0 +1,22 @@
+[
+ {
+  "ref": "FA-0914",
+  "source": "fix-attack:regression",
+  "severity": "low",
+  "category": "regression",
+  "detail": "The claim is factually accurate end-to-end and is a real side effect introduced by the FA-0913/0914 fix. Verified chain: (1) the audit fix (commit c1124d28) added redact_user_message(raw_user_text, tenant) at poller.py:1375, and raw_user_text flows as user_text_excerpt (poller.py:1435) into PendingMessage.user_text (pending_queue.py:375), which join_user_texts(batch) reads redacted (pending_queue.py:1314). So Telegram ConversationTurn.user_text is now stored in placeholder space (e.g. '[PERSON_1] emailed me at [EMAIL_ADDRESS_1]'); pre-fix it was real text. (2) clean_reply_for_capture (conversation_capture.py:88-92) DOES rehydrate the reply to real names, stored in reply_text (pending_queue.py:1315). (3) build_conversation_digest renders both user and reply verbatim with no rehydration (conversation_capture.py:297-302). (4) That digest is injected into USER.md via apps/journal/envelope.py:274-276, auto-loaded into the container every agent turn and cron. (5) iOS AppChatMessage.user_text is stored raw (chat_views.py:190/205; comment 218-219 keeps the user's own text raw), so the digest mixes redacted Telegram user-lines + rehydrated Telegram reply-lines + raw iOS lines. The asymmetric history is real and a behavior change vs pre-fix. I rate it LOW (not the claimed medium): impact is minor because (a) it fails SAFE - the regression makes the digest LESS revealing (placeholders), never a PII leak; (b) the per-tenant container already operates in [PERSON_1] placeholder space for live Telegram inbound, so a placeholder user-line is consistent with what the agent already sees - it is the rehydrated reply-line and raw iOS line that are the odd ones out, not the user-line; (c) the digest is a soft proactive-grounding hint, not a correctness-critical surface, so partial placeholdering slightly hurts readability/grounding but breaks no behavior. Note the parallel iOS context endpoint (ChatContextView, chat_views.py:430-437) already rehydrates the whole digest at render time before serving - the USER.md envelope path simply does not, which is the gap.",
+  "suggested_fix": "Make the digest symmetric. Cleanest option mirrors what chat_views.py:430-437 already does for the iOS context endpoint: in build_conversation_digest (conversation_capture.py), rehydrate the final assembled digest string via apps.pii.redactor.rehydrate_text(text, tenant.pii_entity_map) before returning (fail-open on error), so user-lines, reply-lines, and iOS lines all render in real-value space consistently. Alternatively, stop redacting the at-rest user_text_excerpt (revert poller.py:1375 for the persisted excerpt only) - but that re-introduces raw PII at rest, so the render-time rehydrate is preferable. Either way add a small test asserting a Telegram ConversationTurn with a placeholder user_text renders the real name in the digest.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/router/poller.py:1374-1375 redact_user_message applied to message_text and raw_user_text (added by audit commit c1124d28)",
+   "apps/router/poller.py:1435 user_text_excerpt=raw_user_text (redacted) passed to enqueue",
+   "apps/router/pending_queue.py:375 PendingMessage.user_text=user_text_excerpt",
+   "apps/router/pending_queue.py:1314-1315 user_text=join_user_texts(batch) [redacted] vs reply_text=clean_reply_for_capture [rehydrated]",
+   "apps/router/conversation_capture.py:88-92 reply rehydrated via rehydrate_text",
+   "apps/router/conversation_capture.py:297-302 digest renders user/reply verbatim, no rehydration",
+   "apps/journal/envelope.py:274-276 build_conversation_digest injected into USER.md envelope (container reads every turn)",
+   "apps/router/chat_views.py:190,205 AppChatMessage.user_text=text stored raw (iOS); 218-219 comment keeps user's own text raw",
+   "apps/router/chat_views.py:430-437 ChatContextView already rehydrates the digest at render time - the envelope path does not"
+  ]
+ }
+]

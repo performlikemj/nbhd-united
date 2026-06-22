@@ -1,0 +1,19 @@
+[
+ {
+  "ref": "FA-0427",
+  "source": "fix-attack:regression",
+  "severity": "low",
+  "category": "regression",
+  "detail": "Genuine fix-introduced regression, confirmed by reading the patched file and the fix disposition. The FA-0427 fix changed ONLY line 79 to `if (!prefersReduced) rafRef.current = requestAnimationFrame(draw);` (correctly stopping the infinite RAF loop for reduced-motion users) and left the `onResize` handler (lines 88-91) untouched. That handler calls `resize()` then `initStars()` but never `draw()`. `resize()` (lines 39-40) assigns `canvas.width`/`canvas.height`, which per the HTML canvas spec resets the drawing surface to transparent black on every assignment. Post-fix, reduced-motion users have no RAF loop and no other repaint trigger, so after any window-resize event the decorative starfield canvas goes permanently blank. The original buggy code masked this because its always-running RAF loop repainted on the next frame after `initStars()`. The component renders on the public landing page (app/page.tsx, twice) and the onboarding shell, so the affected surfaces are user-facing.\n\nSeverity is genuinely low, not higher: the canvas is purely decorative (aria-hidden, pointer-events-none) — no functional breakage, no broken interaction, no data loss; only the reduced-motion cohort is affected; and only after a resize event (desktop window resize, orientation change, or even mobile URL-bar show/hide firing `resize`). Visible effect is the background star field disappearing for those users. The original infinite-loop fix was correct in isolation but incomplete: it broke the draw-once-on-resize contract that the old loop implicitly satisfied.",
+  "suggested_fix": "In the `onResize` handler (lines 88-91), repaint after re-initialising stars for the reduced-motion path. Change it to: `const onResize = () => { resize(); initStars(); if (prefersReduced) draw(); };`. For non-reduced-motion users the running RAF loop already repaints, so the guard limits the extra call to exactly the cohort that needs it. Cleanup (cancelAnimationFrame at line 95) remains correct.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "frontend/components/landing/starfield.tsx:88-91 — onResize calls resize() then initStars() but never draw()",
+   "frontend/components/landing/starfield.tsx:39-40 — resize() assigns canvas.width/height, which clears the canvas bitmap per the HTML canvas spec",
+   "frontend/components/landing/starfield.tsx:79 — fix added `if (!prefersReduced)` guard, so no RAF loop repaints for reduced-motion users",
+   "frontend/components/landing/starfield.tsx:82-86 — reduced-motion users get exactly one draw() at mount; no subsequent trigger exists",
+   "docs/feature-audit/fix_dispositions.json FA-0427 — fix changed only line 79; onResize was not modified",
+   "frontend/app/page.tsx:102,188 and frontend/components/onboarding/onboarding-shell.tsx:10 — Starfield is rendered on user-facing landing/onboarding surfaces"
+  ]
+ }
+]

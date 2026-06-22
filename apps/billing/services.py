@@ -285,7 +285,10 @@ def check_budget(tenant: Tenant) -> str:
     first_of_month = today.replace(day=1)
     try:
         global_budget = MonthlyBudget.objects.get(month=first_of_month)
-        if global_budget.remaining is not None and global_budget.remaining <= 0:
+        # is_capped is the operator-controlled kill-switch (cap_budget command),
+        # independent of the reconcile-driven spend counter. Either the explicit
+        # cap OR exhausting the budget engages the global breaker.
+        if global_budget.is_capped or (global_budget.remaining is not None and global_budget.remaining <= 0):
             return "global"
     except MonthlyBudget.DoesNotExist:
         pass

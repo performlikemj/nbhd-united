@@ -3,8 +3,10 @@
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { memo, useMemo } from "react";
+import { Children, cloneElement, isValidElement, memo, useMemo } from "react";
+import type { ReactElement, ReactNode } from "react";
 import type { Components } from "react-markdown";
+import type { Element } from "hast";
 
 interface MarkdownRendererProps {
   content: string;
@@ -24,40 +26,52 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
 }: MarkdownRendererProps) {
   const components = useMemo<Components>(
     () => ({
-      input: (props: React.InputHTMLAttributes<HTMLInputElement>) => {
-        if (props.type !== "checkbox") return <input {...props} />;
-
-        const handleChange = () => {
-          if (!onCheckboxToggle) return;
-          // Find which checkbox this is by counting checkboxes in the markdown
-          const lines = content.split("\n");
-          const checked = props.checked ?? false;
-
-          // Count through lines to find matching checkbox
-          for (let i = 0; i < lines.length; i++) {
-            const line = lines[i];
-            const match = line.match(/^(\s*[-*+]\s*)\[([ xX])\]/);
-            if (match) {
-              const isChecked = match[2] !== " ";
-              if (isChecked === checked) {
-                onCheckboxToggle(i, !checked);
-                return;
-              }
-            }
+      // Wire interactive task-list checkboxes by overriding the <li>, NOT the
+      // <input>. remark-gfm emits a SYNTHETIC checkbox <input> node that has no
+      // source position, so neither node.position nor a regex/ordinal scan can
+      // reliably map a checkbox back to its markdown line. The enclosing <li>
+      // node, however, DOES carry position.start.line — which is exactly the
+      // line DocumentView.handleCheckboxToggle rewrites ([ ] <-> [x]). We read
+      // the line from the li and clone its checkbox child to attach the toggle,
+      // so clicking checkbox B always toggles B regardless of empty tasks,
+      // blockquoted tasks, indented text, or same-state runs.
+      li: ({
+        node,
+        children,
+        ...props
+      }: {
+        node?: Element;
+        children?: ReactNode;
+      } & React.LiHTMLAttributes<HTMLLIElement>) => {
+        const line = node?.position?.start?.line;
+        if (!onCheckboxToggle || line == null) {
+          return <li {...props}>{children}</li>;
+        }
+        // markdown lines are 1-based; handleCheckboxToggle expects 0-based.
+        const sourceLine = line - 1;
+        const kids = Children.map(children, (child) => {
+          if (
+            isValidElement(child) &&
+            (child.props as React.InputHTMLAttributes<HTMLInputElement>).type ===
+              "checkbox"
+          ) {
+            const cb = child as ReactElement<
+              React.InputHTMLAttributes<HTMLInputElement>
+            >;
+            const checked = cb.props.checked ?? false;
+            return cloneElement(cb, {
+              disabled: false,
+              onChange: () => onCheckboxToggle(sourceLine, !checked),
+              className:
+                "mr-2 h-4 w-4 cursor-pointer rounded border-border accent-accent",
+            });
           }
-        };
-
-        return (
-          <input
-            {...props}
-            disabled={!onCheckboxToggle}
-            onChange={handleChange}
-            className="mr-2 h-4 w-4 cursor-pointer rounded border-border accent-accent"
-          />
-        );
+          return child;
+        });
+        return <li {...props}>{kids}</li>;
       },
     }),
-    [content, onCheckboxToggle],
+    [onCheckboxToggle],
   );
 
   return (

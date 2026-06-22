@@ -583,6 +583,7 @@ export interface HorizonsGoal {
   title: string;
   slug: string;
   preview: string;
+  markdown?: string;
   created_at: string;
   updated_at: string;
 }

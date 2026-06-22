@@ -1,0 +1,98 @@
+[
+ {
+  "id": "FA-0953",
+  "area": "router-chat",
+  "layer": "backend",
+  "feature": "Inbound event idempotency gate (dedup)",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to deduplicate inbound provider events so that Telegram/LINE at-least-once redelivery never produces duplicate assistant replies.",
+  "expected_behaviour": "claim_inbound_event(event_key) called before any side effect by the Telegram webhook (key='tg:<update_id>') and the LINE webhook (key='line:<webhookEventId>'). Uses get_or_create on ProcessedInboundEvent.event_key (UNIQUE constraint). Returns True (process) on first claim, False (skip) on duplicate. Concurrent races resolved by the unique constraint — loser gets IntegrityError → returns False. Any unexpected error (DB outage) returns True (fail-open: risk duplicate > risk lost message). Probabilistically prunes expired rows (>3 days, 1% chance, batch 500).",
+  "entry_points": "apps/router/inbound_dedup.py:claim_inbound_event ; apps/router/models.py:ProcessedInboundEvent",
+  "dependencies": "Postgres (ProcessedInboundEvent)",
+  "inventory_notes": "Retention is 3 days — comfortably longer than any provider redelivery window. Telegram poller replays only the unacked tail on restart; LINE retries for minutes. Blank/missing event key always returns True (process, conservative)."
+ },
+ {
+  "id": "FA-0954",
+  "area": "router-chat",
+  "layer": "backend",
+  "feature": "Telegram webhook message routing",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want messages sent to the shared Telegram bot to be routed to my personal OpenClaw instance so that I get personalised AI responses.",
+  "expected_behaviour": "POST /api/v1/telegram/webhook/ — CSRF-exempt, require_POST. Verified via X-Telegram-Bot-Api-Secret-Token HMAC against TELEGRAM_WEBHOOK_SECRET; mismatch→403. Duplicate update_id deduped via claim_inbound_event (200 ack on duplicate). /start TOKEN command handled for account linking. chat_id extracted; unknown→onboarding link; rate limited→429. Tenant looked up by chat_id. Suspended/inactive tenant→error message. Budget check before wake: over-budget→hibernate + budget-exhausted message. Hibernated tenant→handle_hibernated_message: buffers in PendingMessage, wakes container, ACK_FRESH/ACK_RECONNECT/SILENT responses. Active tenant: msg text decorated with proactive context + datetime context + chat marker, forwarded to container via forward_to_openclaw (async, 30s/120s reasoning timeout). On response: usage recorded, turn captured to ConversationTurn. Timeout→silent 200 ack (agent replies async via bot token). Inline button callbacks (lesson:, extract:, task_action:) handled before routing.",
+  "entry_points": "apps/router/views.py:telegram_webhook ; POST /api/v1/telegram/webhook/",
+  "dependencies": "Postgres (Tenant, ConversationTurn, PendingMessage), Telegram Bot API, OpenClaw container HTTP, apps/router/proactive_context, apps/router/services:forward_to_openclaw",
+  "inventory_notes": "In production the single-revision Telegram poller is the live path; this webhook is a latency-sensitive fallback. set_rls_context(service_role=True) required because Telegram webhooks are unauthenticated and need RLS bypass."
+ },
+ {
+  "id": "FA-0955",
+  "area": "router-chat",
+  "layer": "backend",
+  "feature": "Siri quick status snapshot",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber using Siri, I want a deterministic no-LLM personal data snapshot so that Siri can read out my current status instantly.",
+  "expected_behaviour": "GET /api/v1/siri/status/ — JWT auth, per-minute rate throttle (SiriStatusMinuteThrottle). Returns a compact markdown snapshot of the user's personal data (same render_context_digest as ChatContextView) with PII placeholders rehydrated. Response: {snapshot_md, generated_at}. Cache-Control: no-store. No model call — purely deterministic data retrieval.",
+  "entry_points": "apps/router/siri_views.py:SiriQuickStatusView ; GET /api/v1/siri/status/",
+  "dependencies": "Postgres/Supabase (journal, tasks, fuel, finance models), apps/pii/redactor",
+  "inventory_notes": "Distinct from ChatContextView only in throttle class and typical max_chars default; both call the same render_context_digest."
+ },
+ {
+  "id": "FA-0956",
+  "area": "router-chat",
+  "layer": "backend",
+  "feature": "Siri respond — fast model with escalation to full agent",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber using Siri, I want spoken intents answered by a fast model or escalated to the full agent so that simple queries are instant and complex ones get the full assistant.",
+  "expected_behaviour": "POST /api/v1/siri/respond/ — JWT auth, per-minute throttle (SiriRespondMinuteThrottle). Body: {intent (required, max 2048 chars), client_msg_id (optional)}. Empty intent→400. Renders context snapshot (rehydrated). Calls a fast model (chat_completion, 8s timeout, max 300 tokens) with the intent + snapshot. If model returns [[ESCALATE]] sentinel → escalates to full agent via enqueue_tenant_turn (same path as ChatMessageView POST). Returns {answered:true, text:...} or {answered:false, escalated:true, client_msg_id:..., turn:{...}}. Model failure → silently escalates. Escalated turn client polls GET /api/v1/chat/messages/<client_msg_id>/ for the reply.",
+  "entry_points": "apps/router/siri_views.py:SiriRespondView ; apps/router/chat_views.py:enqueue_tenant_turn ; POST /api/v1/siri/respond/",
+  "dependencies": "apps/common/openrouter:chat_completion (fast model), Postgres (AppChatMessage, ChatThread, PendingMessage), QStash",
+  "inventory_notes": "Any model failure falls through to escalation (never errors the user). Escalation uses the shared main thread. The fast-model path does NOT create any AppChatMessage or ConversationTurn — it is a stateless read."
+ },
+ {
+  "id": "FA-0957",
+  "area": "router-chat",
+  "layer": "backend",
+  "feature": "OpenRouter credit-limit circuit breaker",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to detect OpenRouter spending-limit rejections during message drain and hibernate the tenant so that overspend is halted and the user is informed.",
+  "expected_behaviour": "_looks_like_openrouter_credit_limit() checks for HTTP 402, or 4xx/5xx body containing 'insufficient credit', 'credit_limit', 'quota exceeded' etc. (case-insensitive). _handle_openrouter_credit_limit(): if tenant is budget-exempt OR has purchased_credit > 0 → raises the OR key ceiling via sync_or_key_limit() and returns (no hibernation). Otherwise: bumps estimated_cost_this_month to effective_cost_budget cap so check_budget fires on next inbound, hibernates container via _hibernate_for_quota, sends branded cap-exhausted email (idempotent sent-at marker), sends channel-native budget-exhausted message to user (localized). For iOS turns: AppChatMessage flipped to ERROR. Returns False (not a liveness signal) from the drain helper.",
+  "entry_points": "apps/router/pending_queue.py:_looks_like_openrouter_credit_limit ; apps/router/pending_queue.py:_handle_openrouter_credit_limit ; apps/router/views.py:_hibernate_for_quota",
+  "dependencies": "Postgres (Tenant), apps/billing/credits:sync_or_key_limit, apps/router/billing_quota_handlers:send_cost_exhausted_email, Telegram Bot API / LINE API (error message send)",
+  "inventory_notes": "Budget-exempt and credit-holding tenants are NOT hibernated on OR 402 — their key ceiling is raised instead. The reconcile path (cleared hibernated_at) does NOT fire when gateway_responded=False (budget hibernation must not be undone)."
+ },
+ {
+  "id": "FA-0958",
+  "area": "router-chat",
+  "layer": "backend",
+  "feature": "Daily inbound media cleanup (Azure File Share)",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to delete inbound media files older than 24 hours from all tenant file shares so that storage costs are bounded.",
+  "expected_behaviour": "cleanup_inbound_media_task() called via QStash daily cron. Iterates all ACTIVE tenants with a container_id. For each: opens ShareDirectoryClient at workspace/media/inbound on the tenant's file share (ws-<first20 of tenant.id>). Lists files; for each non-directory item, checks last_modified against 24h cutoff; deletes if stale. Skips tenants with no media directory. No-op in mock mode. Logs total deleted count.",
+  "entry_points": "apps/router/tasks.py:cleanup_inbound_media_task",
+  "dependencies": "Azure File Share (azure-storage-file-share), Postgres (Tenant)",
+  "inventory_notes": "Requires AZURE_STORAGE_ACCOUNT_NAME and AZURE_RESOURCE_GROUP settings. ShareDirectoryClient list failure for a tenant (directory not yet created) is silently skipped."
+ },
+ {
+  "id": "FA-0959",
+  "area": "router-chat",
+  "layer": "backend",
+  "feature": "Buffered message model (hibernation queue)",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to buffer webhook payloads for hibernated tenant containers so that messages are not lost while the container wakes.",
+  "expected_behaviour": "BufferedMessage rows are created by the Telegram/LINE wake-on-message path (handle_hibernated_message) when a message arrives for a hibernated container. Stores the raw webhook payload (channel, tenant FK, user_text excerpt, delivery_status=pending). After the container wakes (~45s), a QStash task (deliver_buffered_messages in apps/orchestrator/hibernation.py) replays buffered messages in order via /v1/chat/completions, marking each delivered or failed. Soft lease (delivery_in_flight_until) prevents concurrent replay. Per-row attempt cap prevents permanent wedge. Distinct from PendingMessage (which serializes warm-tenant rapid-fire messages).",
+  "entry_points": "apps/router/models.py:BufferedMessage ; apps/router/wake_on_message.py:handle_hibernated_message",
+  "dependencies": "QStash (deliver_buffered_messages task), Postgres (BufferedMessage), Azure Container Apps (wake)",
+  "inventory_notes": "BufferedMessage is for cold/hibernated containers; PendingMessage is for warm-but-busy containers. The PendingMessage drain also handles the hibernated-container case (404 detection + wake) for the Telegram poller path which bypasses wake_on_message."
+ },
+ {
+  "id": "FA-0960",
+  "area": "router-chat",
+  "layer": "backend",
+  "feature": "Telegram reply relay with HTML formatting and chart/photo delivery",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to relay the OpenClaw reply to Telegram with proper formatting so that users see rich output (headings, tables, images) rather than raw markdown.",
+  "expected_behaviour": "relay_ai_response_to_telegram() called from _drain_telegram_batch(). Steps: (1) PII rehydration, (2) ASCII chart leak logging, (3) [[insight:slug]] markers extracted → AssistantInsight records written + stripped, (4) [[chart:type|params]] markers rendered to PNG via render_chart, uploaded to Azure File Share, replaced with MEDIA: paths, (5) MEDIA:/workspace/ image paths sent via sendPhoto (downloads from file share, sends as multipart), (6) remaining text rendered to Telegram HTML via render_telegram_html (bold headings, aligned monospace tables, anchors), (7) long messages split on paragraph/line/word boundaries (max 4096 chars per chunk), (8) each chunk sent with parse_mode=HTML; 400 fallback to plain text (strip_telegram_html). Brief 0.3s delay between chunks.",
+  "entry_points": "apps/router/pending_queue.py:relay_ai_response_to_telegram ; apps/router/telegram_format.py:render_telegram_html",
+  "dependencies": "Telegram Bot API, Azure File Share (photo download), apps/router/charts:render_chart, apps/insights/markers, apps/pii/redactor",
+  "inventory_notes": "The Telegram poller also has its own _send_rich_response for the synchronous live path; this relay covers the queue drain path. Voice rows are always singletons (never coalesced)."
+ }
+]

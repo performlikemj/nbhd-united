@@ -1,0 +1,210 @@
+[
+ {
+  "id": "FA-0537",
+  "area": "finance",
+  "feature": "Finance USER.md Envelope Section (Gravity Context Injection)",
+  "expected_behaviour": "apps/finance/envelope.py:render_finance is registered as a USER.md section with key='finance', heading='## Gravity — finance state', order=50. Enabled gate: tenant.finance_active (folds in GRAVITY_ENABLED platform pause). refresh_on=(FinanceAccount, FinanceTransaction, PayoffPlan) — section is regenerated whenever any of these models change for the tenant. Renders: active account count and total debt, the active payoff plan summary (strategy/months/payoff date/budget), top-priority debt by strategy (avalanche: highest APR; else snowball: lowest balance), upcoming due dates within 7 days (modular 31-day arithmetic), and last 3 transactions from the past 14 days. Truncates at max_chars=1000 with a note directing the agent to call nbhd_finance_summary for full state.",
+  "entry_points": "apps/finance/envelope.py:render_finance ; apps/orchestrator/envelope_registry.py:register_section",
+  "original_claim": "The upcoming-due-date filter `0 <= ((a.due_day - today.day) % 31) <= 7` produces false positives near month-end. For example on the 28th with due_day=3, the result is (3-28)%31=6 which falls in range 0-7, incorrectly reporting the 3rd of next month (~5-6 days away) as upcoming this week. The modulus 31 is not the actual number of days remaining in the month, so any due date in the first week of next month appears due within 7 days when today is in the final week. The user sees phantom urgent reminders in their AI context.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "The claimed defect — phantom/false-positive \"upcoming due\" reminders near month-end — does NOT occur. I verified the filter 0 <= ((a.due_day - today.day) % 31) <= 7 (apps/finance/envelope.py:77) by enumerating every (month, day, due_day) pair across a full year against the real number of days until the next actual due date: there are ZERO false positives. The formula never flags a payment that isn't genuinely due within 7 days.\n\nThe QA's own cited example actually disproves the claim: on the 28th with due_day=3, (3-28)%31 = 6, and the 3rd of next month is genuinely 6 days away — so flagging it is CORRECT, not a phantom reminder. The user would not see fake urgency.\n\nThere IS a real bug in this line, but it is the OPPOSITE of what was claimed: the %31 arithmetic produces false NEGATIVES (56 cases/year, concentrated in February and 30-day months). e.g. on Feb 22, due_day=1 (March 1) is genuinely 7 days away, but (1-22)%31 = 10 > 7, so it is NOT flagged — the user MISSES a real upcoming reminder near short-month boundaries; it does not invent extra ones. Because the claimed defect (phantom urgent reminders / false positives / user-visible fake urgency) is factually wrong, this verdict is a false positive. The genuine inverse issue is low-severity (a missed nudge in non-authoritative AI context that also surfaces nbhd_finance_summary for full state) and is not the defect under review.",
+  "refutation_evidence": [
+   "apps/finance/envelope.py:76-82 (filter + 7-day window)",
+   "apps/finance/models.py:66 (due_day IntegerField 1-31)",
+   "Full-year enumeration of all (date,due_day) pairs: 0 false positives, 56 false negatives in Feb/30-day month boundaries — claim of phantom reminders is inverted"
+  ]
+ },
+ {
+  "id": "FA-0554",
+  "area": "fuel",
+  "feature": "Workout Edit Lock",
+  "expected_behaviour": "POST /api/v1/fuel/workouts/{workout_id}/edit-lock/ acquires a lock for FUEL_EDIT_LOCK_TTL_SECONDS (default 60s), sets edit_lock_owner='user' and edit_lock_until. Returns `{workout_id, edit_lock_until, edit_lock_owner, ttl_seconds, version}`. The browser heartbeats this at half the TTL. DELETE /api/v1/fuel/workouts/{workout_id}/edit-lock/ releases the lock (idempotent — returns 204 even if already released). Runtime PATCH/DELETE/skip/complete paths check `_edit_locked_response`: if lock is in the future they return 409 with `{error: edit_locked, lock_owner, retry_after_s, edit_lock_until, workout_id}` plus a Retry-After header. JWT auth required for both lock endpoints.",
+  "entry_points": "apps/fuel/views.py:WorkoutEditLockView ; POST /api/v1/fuel/workouts/{workout_id}/edit-lock/ ; DELETE /api/v1/fuel/workouts/{workout_id}/edit-lock/ ; apps/fuel/runtime_views.py:_edit_locked_response",
+  "original_claim": "The `Workout.version` field returned by the edit-lock POST response (and described in the model help_text as 'Bumped on every save') is never actually incremented by consumer PATCH, complete, or skip paths — there is no pre_save signal and no manual bump in those handlers. Only the HealthKit ingest path manually increments it. A frontend relying on version for optimistic-concurrency (If-Match) will always see a stale counter (default 0 for most rows), making the locking guarantee illusory for non-HealthKit workouts.",
+  "original_category": "logic",
+  "original_severity": "medium",
+  "refutation": "The factual code observation is accurate but the claimed user impact is fabricated, so this is a false positive. Confirmed facts: Workout.version is incremented only in the HealthKit ingest path (healthkit.py:314, 434); there is no pre_save signal, and the consumer PATCH (views.py:335-364), complete (views.py:771-794), skip (views.py:751-762), and all runtime handlers (runtime_views.py patch/complete/skip) call .save() without bumping it. The post_save signals (signals.py:109-126) bump tenant.fuel_version, a SEPARATE tenant-level polling counter, NOT Workout.version. The model help_text (models.py:254-258) overstates that version is 'Bumped on every save' and 'Used by clients for optimistic-concurrency If-Match checks.' However, the claimed defect (a frontend relying on version for If-Match always seeing a stale counter, making the locking guarantee illusory) describes a consumer that does not exist: there is NO If-Match / HTTP_IF_MATCH handler anywhere in the backend, and no frontend or iOS code reads workout.version or sends If-Match. The real, functioning concurrency mechanism is edit_lock_until, which makes runtime PATCH/complete/skip return 409 during the lock window (runtime_views.py:377, 414), entirely independent of version. version is merely exposed read-only in the serializer (serializers.py:94/105) and echoed in the edit-lock POST response (views.py:418); it is effectively dead/unused metadata. No user or operator experiences any failure since there is no version-based locking guarantee in production to be illusory. At most this is a stale/over-promising docstring on an unused field, not a logic defect with user impact.",
+  "refutation_evidence": [
+   "apps/fuel/models.py:254-258 (help_text claims bump-on-every-save + If-Match for an effectively unused field)",
+   "apps/fuel/healthkit.py:314,434 (the ONLY version increments in the entire codebase)",
+   "apps/fuel/views.py:335-364,751-762,771-794 (consumer PATCH/skip/complete save without bumping version)",
+   "apps/fuel/runtime_views.py:380-382,416-434 (runtime skip/complete save without bumping version)",
+   "apps/fuel/views.py:418 (edit-lock POST echoes version) and serializers.py:94,105 (version exposed read-only)",
+   "apps/fuel/signals.py:109-126 (signals bump tenant.fuel_version, not Workout.version)",
+   "grep across apps/ and frontend/: zero If-Match / HTTP_IF_MATCH handlers and zero frontend consumers of workout.version"
+  ]
+ },
+ {
+  "id": "FA-0593",
+  "area": "insights",
+  "feature": "Pillar Snapshot Compare (user-facing)",
+  "expected_behaviour": "GET /api/v1/insights/compare/?pillar=gravity&period_a=<uuid>&period_b=<uuid> requires JWT authentication. Both period_a and period_b UUIDs are mandatory; missing either returns 400 {error: missing_param}. Both snapshots must belong to the authenticated tenant and the requested pillar; otherwise 404. Returns both serialized snapshots plus a totals_delta dict with signed string deltas for debt, savings, and minimum_payments (period_b minus period_a). For gravity the _gravity_totals_delta function computes Decimal deltas with explicit sign prefix.",
+  "entry_points": "apps/insights/views.py:PillarCompareView ; GET /api/v1/insights/compare/",
+  "original_claim": "When period_a and period_b are the same UUID, the DB query deduplicates them via id__in and returns one row. Both keys map to the same snapshot object, so the 404 guard passes and the diff is computed against itself — producing all-zero deltas with no error or warning. The assistant receives a misleading zero-change result instead of a 400 rejecting the no-op comparison.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "The described mechanics are accurate: with period_a == period_b, id__in=[a_id, b_id] queries one row, the dict comprehension {str(s.id): s for s in ...} yields a single entry, both a_id/b_id resolve to the same key so the 404 guard passes, and diff = b - a computes all-zero deltas (views.py:200-206, mirrored at runtime_views.py:193-199). However this is NOT a defect. (1) The expected_behaviour spec only mandates both UUIDs be present (400 if missing) and belong to the tenant+pillar (404 otherwise); it does NOT require rejecting identical IDs. (2) The result is mathematically truthful, not misleading: the change between a snapshot and itself genuinely is zero across debt/savings/minimum_payments. (3) The response returns both serialized snapshots, which are byte-for-byte identical, self-evidently signaling the no-op to any consumer (assistant or frontend). (4) It is a read-only diff endpoint with no data-integrity, security, or error-state impact; nothing breaks, loops, or corrupts. Rejecting self-comparison with a 400 would be a minor input-validation nicety, not a fix for a real harm. No real user or operator experiences this as a bug.",
+  "refutation_evidence": [
+   "apps/insights/views.py:200-206 (id__in dedup + dict-keyed 404 guard + diff against the same object)",
+   "apps/insights/views.py:156-170 (_gravity_totals_delta b-minus-a yields zeros for identical payload)",
+   "apps/insights/runtime_views.py:193-199 (identical pattern in runtime compare view)",
+   "docs/feature-audit/areas/insights__1.json FA-0593 expected_behaviour (no requirement to reject identical UUIDs)"
+  ]
+ },
+ {
+  "id": "FA-0600",
+  "area": "insights",
+  "feature": "Voice Preference Set (user-facing)",
+  "expected_behaviour": "POST /api/v1/insights/voice-prefs/set/ requires JWT authentication. Body must include pillar (in ALLOWED_PILLARS) and register_offset (-1, 0, or +1). Optional fields: tone (gentle|direct), volume (silent|weekly|live), topic (slug string). If topic is provided and not found in TopicRegistry, resolve_topic auto-creates a proposed entry. Performs update_or_create keyed on (tenant, pillar, topic) so the operation is idempotent. Returns the serialized voice pref. Invalid register_offset or enum values return 400.",
+  "entry_points": "apps/insights/views.py:VoicePrefSetView ; apps/insights/views.py:_upsert_voice_pref_impl ; POST /api/v1/insights/voice-prefs/set/",
+  "original_claim": "_validate_voice_pref_body returns 404 when the pillar field is absent or empty. An empty string '' is not in ALLOWED_PILLARS, so a completely missing pillar field returns 404 {error: pillar_not_available} rather than a 400 indicating a missing required field. Clients that omit pillar receive a confusing 404 rather than a validation error.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "Not a real defect. _validate_voice_pref_body normalizes pillar via (data.get(\"pillar\") or \"\").strip().lower() and rejects anything not in ALLOWED_PILLARS with a 404 pillar_not_available, so a missing/empty pillar yields the same 404. That is consistent with the documented contract — FA-0600 expected_behaviour states \"Body must include pillar (in ALLOWED_PILLARS)\" — and it is the deliberate, repeated convention across ~9 call sites in apps/insights/views.py and runtime_views.py for the single-pillar gate (ALLOWED_PILLARS is currently {GRAVITY}). The 404 response is self-describing: it returns \"pillar\": \"\" and \"allowed\": [...], so the caller can immediately see they sent an empty/missing pillar and what is permitted — it is not \"confusing.\" Crucially, the only real consumer is the assistant tool nbhd_insights_voice_pref_set(pillar, topic, register_offset) (documented in apps/insights/envelope.py), which always supplies pillar; there is no frontend/TS or other client that omits it, so the \"client forgets pillar -> confusing 404\" scenario does not occur in practice. The complaint is pure HTTP-status purism (404 vs 400) with no user/operator-facing impact.",
+  "refutation_evidence": [
+   "apps/insights/views.py:570-579 (pillar normalize + 404 on not-in-ALLOWED_PILLARS)",
+   "apps/insights/views.py:42 (ALLOWED_PILLARS = {Pillar.GRAVITY.value})",
+   "apps/insights/views.py:580-620 (register_offset/tone/volume return documented 400s)",
+   "apps/insights/runtime_views.py:89-91,227-229,401-403 (same 404 pillar_not_available convention repeated)",
+   "apps/insights/envelope.py:115 (only caller is assistant tool that always passes pillar)",
+   "docs/feature-audit/areas/insights__1.json FA-0600 expected_behaviour states pillar must be in ALLOWED_PILLARS"
+  ]
+ },
+ {
+  "id": "FA-0604",
+  "area": "insights",
+  "feature": "Runtime Snapshot Compare (OpenClaw internal)",
+  "expected_behaviour": "GET /api/v1/insights/runtime/<tenant_uuid>/compare/?pillar=gravity&period_a=<uuid>&period_b=<uuid> authenticates via internal key headers. Requires both period_a and period_b query params (400 if either is missing). Both snapshots must belong to the tenant and the specified pillar; otherwise 404. Returns both serialized snapshots plus totals_delta (signed string deltas for debt/savings/minimum_payments for gravity).",
+  "entry_points": "apps/insights/runtime_views.py:RuntimePillarCompareView ; GET /api/v1/insights/runtime/<uuid:tenant_id>/compare/",
+  "original_claim": "Same as FA-0593: when period_a and period_b are the same UUID, the id__in query deduplicates to one row, both guard checks pass, and the assistant receives all-zero deltas with no error. The runtime path is called by OpenClaw during conversations and would silently mislead the assistant into reporting no change between two periods.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "Not a real defect. When period_a == period_b, the id__in=[a_id, b_id] filter does dedup to a single PillarSnapshot row, and both 'a_id not in snaps' / 'b_id not in snaps' guards pass because both query params are the same string and that key exists in the dict (runtime_views.py:193-197). The endpoint then computes _gravity_totals_delta(a.payload, a.payload) = debt-debt, savings-savings, minimum_payments-minimum_payments = all zeros (views.py:156-170). But this output is ARITHMETICALLY CORRECT, not misleading: comparing a snapshot to itself genuinely has zero change. The response also serializes BOTH period_a and period_b as the (identical) snapshot, so the consumer receives complete, truthful information — two identical snapshots with zero deltas. The claim of 'silently mislead into reporting no change' is unsupported: there genuinely is no change between a period and itself. No data corruption, no fabricated values, no user-facing harm. This is the OpenClaw runtime endpoint; passing the same UUID twice would be a degenerate caller choice, and the honest zero-delta answer is the correct response. Rejecting X-vs-X would be a gratuitous validation, not a correctness fix; many compare APIs legitimately allow self-comparison.",
+  "refutation_evidence": [
+   "apps/insights/runtime_views.py:193-208",
+   "apps/insights/views.py:156-175"
+  ]
+ },
+ {
+  "id": "FA-0616",
+  "area": "insights",
+  "feature": "Insight Marker Extraction from Outbound Replies",
+  "expected_behaviour": "extract_and_record_insights(text, tenant, pillar) is called at every outbound message path (Telegram poller, Telegram webhook drain, LINE webhook). It scans text with a regex for [[insight:slug]]...[/insight]] markers (case-sensitive, DOTALL). For each match: slug is passed to resolve_topic; statement is truncated to 1000 chars; an AssistantInsight row is created with status=open. Marker tokens are stripped from the text (only the statement stays in the user-facing reply). Per-marker failures are logged and do not block the reply from going out. Returns cleaned text.",
+  "entry_points": "apps/insights/markers.py:extract_and_record_insights ; apps/insights/markers.py:INSIGHT_MARKER_RE",
+  "original_claim": "All outbound message call sites (poller, Telegram drain, LINE webhook, iOS drain) invoke extract_and_record_insights without a pillar= override, so the function defaults to pillar='gravity'. A fuel-related marker emitted by the assistant (e.g. [[insight:exercise]]...) will be resolved against the gravity topic registry, creating a spurious proposed gravity topic and recording the insight under the wrong pillar. The reply still goes out cleanly and no crash occurs, but accumulated fuel insights are miscategorised until call sites pass the correct pillar when Fuel marker rules ship.",
+  "original_category": "data-integrity",
+  "original_severity": "low",
+  "refutation": "False positive. The factual half of the claim is correct: all four outbound call sites call extract_and_record_insights(text, tenant=tenant) with no pillar= override, so it defaults to pillar='gravity' (markers.py:53). But the impact half is unfounded. The marker rules actually shipped to the assistant (templates/openclaw/rules/reply-markers.md:41-77) scope [[insight:...]] markers exclusively to Gravity: line 43 says \"When a Gravity reply raises a pattern observation\", and line 49 says \"topic_slug should be a canonical Gravity topic — dining, debt, savings, subscriptions, discretionary, fixed_expenses, income, large_purchases\". The assistant is never instructed to emit a Fuel marker such as [[insight:exercise]], so the claimed triggering input does not occur in practice. The function's own docstring (markers.py:57-60) documents that pillar='gravity' is the deliberate default \"because Phase 2 / Phase 3 only target that pillar today\" and that call sites \"will need a pillar= override at the call site once Fuel / Core extend the rules\" — i.e. the override is explicitly gated on a not-yet-shipped feature. The FA-0616 inventory note (line 96) restates this as known intended behaviour. So no real user/operator gets a miscategorised insight today: the only markers the assistant produces are Gravity markers, which the gravity default categorises correctly. This is intended, documented behaviour with a forward-looking TODO, not a present defect.",
+  "refutation_evidence": [
+   "apps/insights/markers.py:49-66 (pillar default + docstring rationale gating override on future Fuel/Core rules)",
+   "templates/openclaw/rules/reply-markers.md:41-49 (insight markers explicitly scoped to Gravity-only topics; no Fuel marker instructed)",
+   "apps/router/pending_queue.py:1523-1528 and 1580-1585 (iOS + Telegram drain call sites, no pillar override)",
+   "apps/router/line_webhook.py:671-676 (LINE webhook call site, no pillar override)",
+   "apps/router/poller.py:341-346 (Telegram poller call site, no pillar override)",
+   "apps/insights/topic_resolver.py:78-85 (proposed-topic creation path that would mis-bucket only if a non-Gravity slug were ever emitted)"
+  ]
+ },
+ {
+  "id": "FA-0624",
+  "area": "integrations",
+  "feature": "OAuth authorize — initiate OAuth flow",
+  "expected_behaviour": "GET /api/v1/integrations/authorize/<provider>/ — IsAuthenticated required. For non-Composio providers (google, sautai): validates that client_id and client_secret are configured in settings; builds a signed+HMAC Django state token (user_id, provider, nonce) stored in cache with 600s TTL and also in a process-local fallback dict; returns JSON {url: <authorization_url>} with full OAuth params including offline access_type and prompt=consent. For Composio providers: calls initiate_composio_connection, caches connection_request_id keyed by state, returns {url: <composio_redirect_url>}. Returns 400 for unknown providers or missing credentials.",
+  "entry_points": "apps/integrations/views.py:OAuthAuthorizeView ; GET /api/v1/integrations/authorize/{provider}/",
+  "original_claim": "In _consume_state_nonce, when cache.get succeeds but cache.delete throws, the function still returns True (nonce accepted) while leaving the cache key intact. A second callback request with the same signed state would again find the cache key present and return True, enabling OAuth state nonce replay. The fallback dict is consumed correctly but the cache entry survives the delete failure.",
+  "original_category": "security",
+  "original_severity": "low",
+  "refutation": "The code path is literally as described: in _consume_state_nonce (apps/integrations/views.py:88-94), on a cache hit, if cache.delete throws, the key is left intact, the fallback-consume return value at line 93 is discarded, and line 94 returns True unconditionally, so a replay could be accepted IF delete persistently throws. But a real operator/user cannot trigger this. (1) Production uses django-redis with IGNORE_EXCEPTIONS=True (config/settings/base.py:213-232): cache.get/cache.delete swallow Redis errors and return None instead of raising. The realistic failure mode (Redis unavailable) therefore makes cache_hit=False (never enters the cache-hit branch) rather than producing 'get succeeds but delete throws.' The try/except around delete guards a path the production backend will not exercise. (2) The defect would require the near-impossible transient where Redis serves a read but raises only on the delete, with the same signed state replayed inside the 600s TTL. (3) Defense-in-depth: the state is an HMAC-signed token loaded via signing.loads(max_age=600) (lines 119, 109), so even absent the nonce, replay is bounded to 10 minutes and the attacker must already hold a valid signed state that is only ever delivered to the legitimate user's browser. Net real-world exposure is negligible; this is a defensive-branch code imperfection, not a defect users/operators experience.",
+  "refutation_evidence": [
+   "apps/integrations/views.py:79-102 (_consume_state_nonce cache-hit branch returns True even when cache.delete raises; fallback return value ignored)",
+   "apps/integrations/views.py:105-125 (_build_oauth_state records fallback then cache.set; _load_oauth_state uses signing.loads max_age=600)",
+   "apps/integrations/views.py:34-36 (OAUTH_STATE_MAX_AGE_SECONDS=600, process-local fallback dict)",
+   "config/settings/base.py:213-237 (production Redis cache OPTIONS IGNORE_EXCEPTIONS=True so get/delete swallow errors and do not raise)"
+  ]
+ },
+ {
+  "id": "FA-0675",
+  "area": "integrations",
+  "feature": "Reddit OAuth complete — agent-initiated",
+  "expected_behaviour": "POST /api/v1/integrations/runtime/<tenant_id>/reddit/complete/ — internal auth. Body: {connection_request_id (required)}. Calls complete_composio_connection which polls Composio for up to 30 seconds for status=ACTIVE, then upserts Integration row. Returns {connected: true, provider_email} HTTP 200. 400 on missing connection_request_id. 409/503 on specific integration errors. 500 on unexpected error.",
+  "entry_points": "apps/integrations/runtime_views.py:RedditCompleteView ; apps/integrations/services.py:complete_composio_connection ; POST /api/v1/integrations/runtime/{tenant_id}/reddit/complete/",
+  "original_claim": "When the Composio 30-second poll times out or returns a non-ACTIVE status, complete_composio_connection raises IntegrationAccessError (the base class, line 115) or a Composio SDK timeout exception. RedditCompleteView only catches IntegrationProviderConfigError and IntegrationInactiveError explicitly; all other failures fall to the broad except Exception handler and return HTTP 500. The most common real-world failure — user takes longer than 30 seconds to authorize on Reddit — returns a generic 500 instead of a client-actionable 409, breaking the agent's ability to retry or prompt the user to try again.",
+  "original_category": "ux",
+  "original_severity": "medium",
+  "refutation": "The code mechanic is accurately described, but the asserted UX defect does not manifest for any real user/operator, so it is a false positive as framed (medium/ux).\n\nCode-level facts confirmed: complete_composio_connection raises the bare base IntegrationAccessError on non-ACTIVE status (services.py:115); a 30s wait_for_connection timeout raises a Composio SDK exception. RedditCompleteView (runtime_views.py:3370) catches only (IntegrationProviderConfigError, IntegrationInactiveError), which per services.py:241-266 are SUBCLASSES of IntegrationAccessError, not superclasses. So the bare base error and the SDK timeout fall through to except Exception (3372-3377) -> HTTP 500. _integration_error_response would map IntegrationInactiveError to 409 (lines 305-309) but that branch is never reached for the timeout/non-active path. So a 500 is indeed returned where a 409 would be more semantically apt.\n\nWhy it is NOT a real defect: (1) The /reddit/complete/ runtime endpoint is orphaned -- nothing in the repo calls it. The agent reddit plugin exposes only connect/status/digest/disconnect/tool (no complete tool); the frontend only lists reddit as a capability chip and never calls complete. The claimed impact (breaking the agent ability to retry or prompt the user) therefore cannot occur -- there is no caller, and no consumer branches on 409 vs 500. (2) The distinction is non-actionable: both 409 and 500 would surface as a generic error message; no retry/prompt logic keys off the HTTP status. (3) The auditors own expected_behaviour explicitly permits 500 on unexpected error, and a poll timeout/non-active result is reasonably unexpected. The only residue is a low code-quality inconsistency (line 115 could raise IntegrationInactiveError), not a UX defect a user experiences.",
+  "refutation_evidence": [
+   "apps/integrations/services.py:101-139 (complete_composio_connection; line 115 raises bare IntegrationAccessError on non-ACTIVE; 30s wait_for_connection raises SDK exception on timeout)",
+   "apps/integrations/services.py:241-266 (class hierarchy: IntegrationInactiveError/IntegrationProviderConfigError are SUBCLASSES of IntegrationAccessError, not superclasses)",
+   "apps/integrations/runtime_views.py:3368-3377 (RedditCompleteView catches only those two subclasses; bare base + timeout fall to except Exception -> HTTP 500)",
+   "apps/integrations/runtime_views.py:299-334 (_integration_error_response maps IntegrationInactiveError->409, never reached for this path)",
+   "runtime/openclaw/plugins/nbhd-reddit-tools/index.js:174-210 (agent plugin exposes only connect/status/digest/disconnect/tool; NO complete tool)",
+   "frontend/app/settings/integrations/page.tsx:37 (reddit listed only as a capability chip; never calls /reddit/complete/)"
+  ]
+ },
+ {
+  "id": "FA-0678",
+  "area": "integrations",
+  "feature": "Reddit tool execution via Composio",
+  "expected_behaviour": "POST /api/v1/integrations/runtime/<tenant_id>/reddit/tool/ — internal auth. Body: {action (required), ...params}. Maps action to Composio tool slug via _REDDIT_ACTION_MAP: digest→REDDIT_GET_R_TOP, search→REDDIT_SEARCH_ACROSS_SUBREDDITS, my_activity→REDDIT_GET_REDDIT_USER_ABOUT, comments→REDDIT_RETRIEVE_POST_COMMENTS, post→REDDIT_CREATE_REDDIT_POST, reply→REDDIT_POST_REDDIT_COMMENT, edit→REDDIT_EDIT_REDDIT_COMMENT_OR_POST, delete_post→REDDIT_DELETE_REDDIT_POST, delete_comment→REDDIT_DELETE_REDDIT_COMMENT, new→REDDIT_GET_NEW, controversial→REDDIT_GET_CONTROVERSIAL. Calls Composio tools.execute. PII-redacts result. Returns result HTTP 200. 400 on unknown action, missing required params, or Composio unsuccessful result. 503 on provider config error. 500 on unexpected error.",
+  "entry_points": "apps/integrations/runtime_views.py:RedditToolView ; apps/integrations/services.py:execute_reddit_tool ; POST /api/v1/integrations/runtime/{tenant_id}/reddit/tool/",
+  "original_claim": "When the Reddit integration is not connected (no Integration row or missing composio_connected_account_id), execute_reddit_tool raises ValueError('Reddit integration not found or not fully connected for this tenant.'). RedditToolView catches all ValueError as {\"error\": \"invalid_action\"} HTTP 400. The error key \"invalid_action\" conflates a connection-state problem with a bad action name; an AI agent reading this key may retry with corrected parameters rather than prompting the user to reconnect Reddit in Settings. The detail string is readable but the discriminator key is wrong for this error class.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "The code facts are accurate but the impact assessment is a false positive. execute_reddit_tool raises ValueError for the not-connected case (services.py:603-604), and RedditToolView maps ALL ValueError to error=\"invalid_action\" HTTP 400 (runtime_views.py:3471-3475), conflating three conditions: unknown action (services.py:593-594), not-connected (603-604), and Composio-side invalid-connection (623-624). This is a discriminator-naming imprecision with no real user/agent impact, not a behavioral defect, for three reasons. (1) Unreachable in practice: the agent-facing Reddit tools live in a plugin that config_generator.py:1886-1899 only ships to the container when the tenant has an ACTIVE Reddit integration, so with no Integration row (the QA's primary scenario) the tool is absent from that container and the agent cannot call it or receive this error. (2) The ACTIVE-but-missing-composio_connected_account_id half-state is rare/transient because status ACTIVE and composio_connected_account_id are written together atomically (services.py:124-125). (3) Every branch carries an explicit, human-readable detail string the agent actually reads and relays: \"Reddit integration not found or not fully connected for this tenant.\" and, for a broken connection, \"Reddit connection is no longer valid. Please reconnect in Settings -> Integrations.\" A modern LLM agent keys off this actionable detail, not the machine \"invalid_action\" key, so the QA's hypothesized failure mode (agent retries with corrected params instead of prompting reconnect) is speculative and directly contradicted by the detail strings. The \"invalid_action\" key is a minor code smell at most; no user or operator would experience a defect.",
+  "refutation_evidence": [
+   "apps/integrations/services.py:583-634",
+   "apps/integrations/runtime_views.py:3445-3496",
+   "apps/orchestrator/config_generator.py:1883-1899",
+   "apps/integrations/services.py:124-125"
+  ]
+ },
+ {
+  "id": "FA-0681",
+  "area": "journal-core",
+  "feature": "Legacy journal entry list and create",
+  "expected_behaviour": "GET /api/v1/journal/ returns a paginated list of JournalEntry rows scoped to the authenticated user's tenant, ordered by -date/-created_at, with optional ISO date filters via ?date_from= and ?date_to= (silently ignores bad formats). POST /api/v1/journal/ creates a new entry; requires IsAuthenticated; 400 on validation failure; 201 on success. Response carries Deprecation+Warning headers. Cached via @tenant_cache(ttl=60, tag='journal') on GET.",
+  "entry_points": "apps/journal/views.py:JournalEntryListCreateView ; GET /api/v1/journal/ ; POST /api/v1/journal/",
+  "original_claim": "POST /api/v1/journal/ never emits the Deprecation+Warning headers that the expected behaviour documents. Only WeeklyReview views carry them in this codebase. Clients relying on these headers to detect the deprecated endpoint will not see them on the create path.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Not a real defect. It is true that JournalEntryListCreateView (apps/journal/views.py:92-123) does not attach DEPRECATION_HEADERS (defined at lines 62-65) to its GET or POST responses. But this has no user- or operator-facing impact: (1) The headers are purely advisory metadata and no consumer reads them. A repo-wide search of frontend (.ts/.tsx), iOS (.swift), JS, and the journal test suite found ZERO references to Deprecation/Warning/299 header consumption; the 'clients relying on these headers to detect the deprecated endpoint' do not exist. A subscriber creating an entry sees no behavioral difference: POST still returns 201 on success, 400 on validation failure, enforces IsAuthenticated, and is tenant-scoped. (2) The feature record's own inventory_notes already concede this is aspirational doc text, not actual behavior. (3) The QA's cited evidence is itself inaccurate: 'Only WeeklyReview views carry them' is wrong, the headers are also emitted on the DailyNoteEntry POST/PATCH/DELETE paths (lines 208, 246, 267). JournalEntryListCreateView is a separate, OLDER legacy view explicitly annotated '# Legacy JournalEntry views (untouched)' (line 88); DEPRECATION_HEADERS was introduced later by the sections-refactor commit and was never wired into this untouched legacy view. Cosmetic spec-vs-implementation discrepancy with no real-world consequence.",
+  "refutation_evidence": [
+   "apps/journal/views.py:62-65 (DEPRECATION_HEADERS definition)",
+   "apps/journal/views.py:88 (comment: Legacy JournalEntry views untouched)",
+   "apps/journal/views.py:92-123 (JournalEntryListCreateView GET/POST emit no headers)",
+   "apps/journal/views.py:208,246,267 (DailyNoteEntry views DO carry the headers, contradicting the QA evidence that only WeeklyReview does)",
+   "apps/journal/urls.py:60 + config/urls.py:27 (POST /api/v1/journal/ route mapping)",
+   "repo-wide grep across frontend/iOS/JS/tests found no consumer reading Deprecation/Warning headers"
+  ]
+ },
+ {
+  "id": "FA-0687",
+  "area": "journal-core",
+  "feature": "Legacy daily note entry patch/delete by index",
+  "expected_behaviour": "PATCH /api/v1/journal/daily/<date>/entries/<index>/ updates content/mood/energy on the entry at that index and re-serializes. DELETE removes it. Both return 404 if the note or index is out of range; Deprecated headers emitted. Requires IsAuthenticated.",
+  "entry_points": "apps/journal/views.py:DailyNoteEntryDetailView ; PATCH /api/v1/journal/daily/<str:date>/entries/<int:index>/ ; DELETE /api/v1/journal/daily/<str:date>/entries/<int:index>/",
+  "original_claim": "When the entry index is out of range, the view returns Response({\"error\": ...}, status=404) rather than raise Http404. DRF's exception handler is bypassed, so exception middleware and any 404 interceptors see a plain 200-class JSON response with status=404 set at the transport level. This is a deprecated path, but the inconsistency could confuse clients that check for a DRF-formatted 404 error shape.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive resting on a misreading of DRF response semantics. At apps/journal/views.py:233 and :261 the view returns Response({\"error\": \"Entry index out of range.\"}, status=404). In Django/DRF, the status argument to Response() IS the transport-level HTTP status — the response goes out as HTTP/1.1 404 Not Found. There is no \"200-class response with status=404\" as the claim asserts; clients and middleware see a genuine 404. Returning a custom JSON error body with a 404 status is a standard, intended DRF pattern, functionally equivalent (from the client's perspective) to raise Http404. The only real difference is the error-body shape ({\"error\": ...} vs Django/DRF's default {\"detail\": ...}), a minor cosmetic/stylistic inconsistency, not a behavioral defect. No real user or operator experiences any malfunction: an out-of-range index correctly yields a 404 with an informative body. The endpoint is additionally explicitly deprecated (docstring: \"Use DailyNoteSectionView instead\"). The same view already mixes raise Http404 (lines 229, 257) and Response(status=404) (233, 261) with no functional consequence.",
+  "refutation_evidence": [
+   "apps/journal/views.py:233 (cited Response(...,status=404) in patch handler)",
+   "apps/journal/views.py:261 (cited Response(...,status=404) in delete handler)",
+   "apps/journal/views.py:229,257 (coexisting raise Http404 in same handlers)",
+   "apps/journal/views.py:11,14 (DRF status + Response imports)",
+   "apps/journal/views.py:215 (docstring marking endpoint deprecated)"
+  ]
+ },
+ {
+  "id": "FA-0693",
+  "area": "journal-core",
+  "feature": "Pending extraction web approve",
+  "expected_behaviour": "POST /api/v1/journal/extractions/<uuid>/approve/ looks up a PendingExtraction in status=PENDING scoped to the tenant. Routes to the appropriate approval callback (_approve_goal, _approve_task, _approve_lesson). Sets status=APPROVED and resolved_at=now. Returns {id, status: 'approved'} on 200; 404 if not found or already processed; 500 if the approval callback raises. Requires IsAuthenticated.",
+  "entry_points": "apps/journal/views.py:ExtractionApproveView ; POST /api/v1/journal/extractions/<uuid:extraction_id>/approve/",
+  "original_claim": "When a LESSON extraction is approved via the web endpoint, the returned lesson_id from _approve_lesson() is discarded (line 561 ignores the return value). The subsequent pending.save(update_fields=[\"status\", \"resolved_at\"]) does not include lesson_id, so pending.lesson_id remains NULL. The undo path in _undo_lesson() checks \"if pending.lesson_id:\" and silently does nothing when it is NULL, meaning any lesson approved through the web UI cannot be undone via the Telegram undo button.",
+  "original_category": "data-integrity",
+  "original_severity": "medium",
+  "refutation": "The code asymmetry the QA flagged is real but UNREACHABLE as a user-experienced defect, so the claimed impact does not occur. Verified facts: (1) extraction_callbacks.py:61-95 — _approve_lesson() returns (message, lesson.id) but, unlike _approve_goal/_approve_task which set pending.goal/pending.task FK inside the helper, it does NOT persist lesson_id itself; it relies on the caller to do so. (2) views.py:561 — ExtractionApproveView (web) discards the return value and saves only [\"status\",\"resolved_at\"], leaving pending.lesson_id NULL. The Telegram (extraction_callbacks.py:304-306), LINE (line_webhook.py:1453-1455), and auto-add (extraction.py:674-677) callers all correctly capture and persist lesson_id. So the web handler IS the lone outlier — that part of the claim is accurate. BUT the user-impact premise (\"any lesson approved through the web UI cannot be undone\") is false, because a lesson can never be approved through the web UI by a real user: the only web surface for pending extractions is the horizons page, whose backend (dashboard/views.py:253-255) filters kind__in=[GOAL, TASK] and excludes LESSON entirely, and the frontend card (frontend/components/pending-goal.tsx) only renders/approves Goal/Task (\"Accept Goal\"/\"Accept Task\"). Lessons are auto-approved at extraction time via the extraction.py path (which persists lesson_id correctly), and the Telegram/LINE undo buttons only attach to those already-correct rows. There is no product path where a lesson reaches ExtractionApproveView and then is presented a live undo button, so no operator/user experiences the silent no-op undo. It is a latent, unreachable code inconsistency — defensible to harden, but not a live data-integrity defect.</confirmed_detail>\n<suggested_fix\">Optional defensive hardening only (no current user impact): make ExtractionApproveView symmetric with the other three callers — capture the return, e.g. _, lesson_id = _approve_lesson(pending); if lesson_id: pending.lesson_id = lesson_id; and add \"lesson_id\" to update_fields. Better still, move the lesson_id persistence inside _approve_lesson() itself (mirroring how _approve_goal/_approve_task self-persist their FK) so no caller can ever drop it again.</suggested_fix>\n<fix_complexity\"></fix_complexity>\n<evidence\">apps/journal/views.py:558-568</evidence>\n<evidence\">apps/router/extraction_callbacks.py:61-95</evidence>\n<evidence\">apps/router/extraction_callbacks.py:176-179,302-308</evidence>\n<evidence\">apps/router/line_webhook.py:1443-1455</evidence>\n<evidence\">apps/journal/extraction.py:674-677</evidence>\n<evidence\">apps/dashboard/views.py:251-259</evidence>\n<evidence\">apps/journal/models.py:238</evidence>\n<evidence\">frontend/components/pending-goal.tsx:25-79</evidence>\n</invoke>\n",
+  "refutation_evidence": []
+ }
+]

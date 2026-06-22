@@ -235,7 +235,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
           <button
             type="button"
             onClick={onToggle}
-            className="rounded-xl p-1.5 text-ink-faint hover:bg-white/[0.04] hover:text-ink min-h-[36px] min-w-[36px] flex items-center justify-center transition"
+            className="rounded-xl p-1.5 text-ink-faint hover:bg-white/[0.04] hover:text-ink min-h-[44px] min-w-[44px] flex items-center justify-center transition"
             aria-label="Collapse sidebar"
           >
             <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>

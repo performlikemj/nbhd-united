@@ -1261,28 +1261,35 @@ class RuntimeWorkoutPlanListCreateView(APIView):
             result["deduped"] = True
             return Response(result, status=status.HTTP_200_OK)
 
+        # Persist the plan row and expand its full calendar of planned workouts
+        # in a SINGLE transaction. A mid-loop failure in _expand_plan_workouts
+        # must roll back the plan row too — otherwise the retry hits the
+        # idempotency short-circuit above (return 200 deduped) before any
+        # re-expansion, silently locking in a structurally-incomplete plan.
+        from django.db import transaction
+
         try:
-            plan = WorkoutPlan.objects.create(
-                tenant=tenant,
-                name=name,
-                start_date=plan_start,
-                weeks=weeks,
-                days_per_week=days_per_week,
-                schedule_json=normalized_schedule,
-                week_overrides=normalized_overrides,
-                objective=str(data.get("objective", "")).strip()[:200],
-                notes=str(data.get("notes", "")).strip(),
-            )
+            with transaction.atomic():
+                plan = WorkoutPlan.objects.create(
+                    tenant=tenant,
+                    name=name,
+                    start_date=plan_start,
+                    weeks=weeks,
+                    days_per_week=days_per_week,
+                    schedule_json=normalized_schedule,
+                    week_overrides=normalized_overrides,
+                    objective=str(data.get("objective", "")).strip()[:200],
+                    notes=str(data.get("notes", "")).strip(),
+                )
+                workouts_created = _expand_plan_workouts(
+                    plan, tenant, normalized_schedule, plan_start, weeks, week_overrides=normalized_overrides
+                )
         except Exception as exc:
             logger.exception("WorkoutPlan creation failed for tenant %s", tenant_id)
             return Response(
                 {"error": "create_failed", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-
-        workouts_created = _expand_plan_workouts(
-            plan, tenant, normalized_schedule, plan_start, weeks, week_overrides=normalized_overrides
-        )
 
         # Create background fuel cron (best-effort)
         _manage_fuel_cron(tenant, plan, action="create")
@@ -1356,8 +1363,35 @@ class RuntimeWorkoutPlanDetailView(APIView):
                 pass
 
         if "schedule_json" in data and isinstance(data["schedule_json"], dict):
-            plan.schedule_json = data["schedule_json"]
+            # Mirror the POST path: validate + normalize every prescription
+            # BEFORE persisting, so a malformed strength/calisthenics set is
+            # rejected with the self-correcting LLMValidationError envelope (400)
+            # rather than landing unvalidated in future Workout.detail_json via
+            # reconcile/apply (which does no detail validation).
+            raw_schedule = data["schedule_json"]
+            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule)
+            if sched_err is not None:
+                return sched_err
+            # _validate_normalize_schedule injects a ``detail_json`` key on every
+            # day (empty when none was supplied). On the PATCH/reconcile path the
+            # reconciler treats a present-but-empty ``detail_json`` as an explicit
+            # "clear it" instruction, which would wipe a workout's existing
+            # prescription. Preserve the "silence = leave alone" contract by
+            # stripping the injected key for days that supplied no detail_json.
+            for day_str, day_def in normalized_schedule.items():
+                src = raw_schedule.get(day_str, {})
+                if isinstance(day_def, dict) and "detail_json" not in (src if isinstance(src, dict) else {}):
+                    day_def.pop("detail_json", None)
+            plan.schedule_json = normalized_schedule
             updated_fields.append("schedule_json")
+            needs_regeneration = True
+
+        if "week_overrides" in data:
+            normalized_overrides, ov_err = _validate_normalize_week_overrides(data["week_overrides"])
+            if ov_err is not None:
+                return ov_err
+            plan.week_overrides = normalized_overrides
+            updated_fields.append("week_overrides")
             needs_regeneration = True
 
         if "days_per_week" in data:
@@ -1394,7 +1428,13 @@ class RuntimeWorkoutPlanDetailView(APIView):
                     return False
                 return workout.edit_lock_until > timezone.now()
 
-            rec = reconcile_plan_state(plan, plan.schedule_json, plan.weeks)
+            rec = reconcile_plan_state(
+                plan,
+                plan.schedule_json,
+                plan.weeks,
+                today=today_in_tenant_tz(tenant),
+                week_overrides=plan.week_overrides,
+            )
             try:
                 counts = apply_reconciliation(
                     rec,
@@ -1507,7 +1547,10 @@ class RuntimeFuelAuditView(APIView):
         tenant = tenant_or_resp
 
         now = datetime.now(tz=UTC)
-        today = date.today()
+        # Tenant-local "today". Bare ``date.today()`` is computed in UTC, so a
+        # tenant west of UTC in their evening (or east past midnight) would get
+        # the wrong day's plan window and daily-note slug. See line ~1248.
+        today = today_in_tenant_tz(tenant)
         horizon_14d_end = today + timedelta(days=14)
         horizon_48h_end = now + timedelta(hours=48)
 

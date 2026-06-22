@@ -1,0 +1,19 @@
+[
+ {
+  "ref": "FA-1036",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "The code reads exactly as claimed. In relay_ai_response_to_telegram (pending_queue.py): line 1647 strips [[button:...]] markers from text, lines 1650-1652 build reply_markup, then lines 1654-1655 'if not text: return True' execute BEFORE the only send call at line 1657 (_send_telegram_markdown(chat_id, text, reply_markup=...)). So when the agent emits a buttons-ONLY reply (e.g. just [[button:Yes|confirm]][[button:No|deny]] with no prose), text becomes empty after stripping, the function returns True, and reply_markup is silently dropped — no buttons are ever sent. This is a real, reachable gap.\n\nTwo qualifiers bound the impact. (1) It is NOT a regression. The poller's pre-existing _send_rich_response has the byte-identical gate (poller.py:416 'if clean_text:' wraps its only send and likewise discards reply_markup when clean_text is empty), so the FA-1036 fix faithfully reproduced long-standing production behavior and reached parity with the poller — exactly what the fix set out to do. (2) Buttons-only replies are an edge case the agent is steered away from: telegram-formatting.md says buttons appear 'directly under your message', and cron-management.md plus the formatting docs all show prose/a question FOLLOWED by buttons. In the normal prose+buttons case the fix works correctly (markers stripped, buttons tappable via the existing agent:-prefixed callback receiver), so the fix's primary goals (stop literal marker leakage; make buttons tappable) ARE delivered for the common case. Even in the buttons-only case the markers no longer leak as literal text (text is empty, not the raw markers); the net effect of the gap is silence (nothing sent) on a rare output shape, not garbage. Genuine but low-severity, and a faithful pre-existing-parity gap rather than a new break.",
+  "suggested_fix": "In relay_ai_response_to_telegram, deliver the keyboard even when text is empty. Change lines 1654-1657 so that when buttons exist but text is empty, a message still goes out carrying reply_markup — e.g. `if not text: \\n    if reply_markup: \\n        return _send_telegram_markdown(chat_id, \"​\", reply_markup=reply_markup)  # zero-width or a minimal prompt \\n    return True`. For full coverage, apply the same fix to the mirrored poller path (poller.py:416 `if clean_text:`) so both delivery routes send a buttons-only reply. Verify the send helper / Telegram accepts a message whose text is a single zero-width/placeholder char with reply_markup (Telegram requires non-empty text on sendMessage, so a minimal placeholder is needed rather than an empty string).",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/router/pending_queue.py:1647 text=button_pattern.sub(\"\", text).strip()",
+   "apps/router/pending_queue.py:1650-1652 builds reply_markup from buttons",
+   "apps/router/pending_queue.py:1654-1655 'if not text: return True' returns before the send",
+   "apps/router/pending_queue.py:1657 _send_telegram_markdown(chat_id, text, reply_markup=reply_markup) is the only send and is unreachable when text is empty",
+   "apps/router/poller.py:404-413 + 416 identical pre-existing gate ('if clean_text:') in _send_rich_response — confirms faithful parity, not a regression",
+   "templates/openclaw/docs/telegram-formatting.md:41 'Buttons appear ... directly under your message' and cron-management.md:88-90 show prose-then-buttons, so buttons-only is an edge case the agent is steered away from"
+  ]
+ }
+]

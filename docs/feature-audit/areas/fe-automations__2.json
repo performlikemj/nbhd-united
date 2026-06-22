@@ -1,0 +1,110 @@
+[
+ {
+  "id": "FA-0192",
+  "area": "fe-automations",
+  "layer": "frontend",
+  "feature": "Cron job — single delete with inline confirmation",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want a safety confirmation before deleting a scheduled task so that I don't accidentally remove it.",
+  "expected_behaviour": "Clicking the 'Delete' button on a job row calls startSingleDeleteConfirm(jobId), which sets singleDeleteConfirm[jobId]=true and starts a 3-second auto-cancel timer (SINGLE_DELETE_TIMEOUT_MS). The row changes to a rose-tinted background. A 'Delete?' label and two 44px circular buttons appear: a ✓ confirm button and a ✕ cancel button. Clicking ✓ calls confirmSingleDelete(jobId) which fires DELETE /api/v1/cron-jobs/{nameOrId}/. While pending, the ✓ shows '…'. On success: the job disappears from the list (query invalidated) and is removed from selectedIds. On error: a rose error message appears below the buttons for 4 seconds, then resets. Clicking ✕ or the auto-3s timeout cancels and restores the normal Delete button.",
+  "entry_points": "frontend/app/settings/cron-jobs/page.tsx:SettingsCronJobsPage (startSingleDeleteConfirm, confirmSingleDelete, cancelSingleDelete) ; DELETE /api/v1/cron-jobs/{nameOrId}/",
+  "dependencies": "DELETE /api/v1/cron-jobs/{nameOrId}/",
+  "inventory_notes": "Per-row state is tracked in three separate Record<string, …> maps (singleDeleteConfirm, singleDeleteError, singleDeletePending) and a ref map of timers. On both success and error the ['cron-jobs'] query is invalidated."
+ },
+ {
+  "id": "FA-0193",
+  "area": "fe-automations",
+  "layer": "frontend",
+  "feature": "Cron job — multi-select checkboxes",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to select multiple scheduled tasks at once so that I can bulk-delete or bulk-update them.",
+  "expected_behaviour": "When there is more than one job, a 'Select all / Deselect all' checkbox row appears above the list. Each job row has its own 44px-target checkbox. Selecting one or more jobs reveals the bulk action bar (animated max-height transition). toggleSelectAll selects or deselects all jobs. toggleSelectOne adds/removes a single jobIdentifier from the selectedIds Set. The Clear button empties the set. Selection state is purely client-side.",
+  "entry_points": "frontend/app/settings/cron-jobs/page.tsx:SettingsCronJobsPage (selectedIds, toggleSelectAll, toggleSelectOne)",
+  "dependencies": "",
+  "inventory_notes": "The 'select all' header row only appears when selectableJobs.length > 1. Selected rows get a different background (bg-surface-hover). The bulk bar is hidden when someSelected is false via max-h-0 CSS transition."
+ },
+ {
+  "id": "FA-0194",
+  "area": "fe-automations",
+  "layer": "frontend",
+  "feature": "Cron job — bulk delete",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to delete multiple scheduled tasks at once so that I can clean up my automations efficiently.",
+  "expected_behaviour": "With one or more jobs selected, the bulk bar shows 'Delete selected' (rose button). Clicking it sets bulkBarState to 'confirming', showing a red warning 'Delete N tasks? This cannot be undone.' with Confirm and Cancel buttons. Clicking Confirm fires bulkDeleteMutation.mutateAsync(ids) which calls POST /api/v1/cron-jobs/bulk-delete/ with { ids: string[] }. On success, selectedIds is cleared, bulkBarState returns to 'idle', and a Toast notification shows 'N tasks deleted' in green. On error, a rose error message appears in the bar and bulkBarState resets to 'idle'. Cancel resets to idle without deleting.",
+  "entry_points": "frontend/app/settings/cron-jobs/page.tsx:SettingsCronJobsPage (handleBulkDeleteClick, handleBulkDeleteConfirm, handleBulkDeleteCancel) ; POST /api/v1/cron-jobs/bulk-delete/",
+  "dependencies": "POST /api/v1/cron-jobs/bulk-delete/",
+  "inventory_notes": "The response body { deleted: number } is used for the toast. The bulk bar is aria-live='polite'. Confirm/Cancel buttons are disabled while bulkDeleteMutation.isPending."
+ },
+ {
+  "id": "FA-0195",
+  "area": "fe-automations",
+  "layer": "frontend",
+  "feature": "Cron job — bulk set foreground / background",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to change the session mode of multiple tasks at once so that I can quickly configure whether they report back to the assistant.",
+  "expected_behaviour": "With jobs selected and bulkBarState='idle', the bulk bar shows 'Set foreground' and 'Set background' buttons. Clicking either fires bulkForegroundMutation.mutateAsync({ ids, foreground: true/false }) which calls POST /api/v1/cron-jobs/bulk-update-foreground/ with { ids, foreground }. While pending, both buttons show 'Updating…' and are disabled. On success, selectedIds is cleared and a Toast shows 'N tasks set to foreground/background'. On error, a Toast with the error message is shown. The ['cron-jobs'] query is invalidated on both success and error.",
+  "entry_points": "frontend/app/settings/cron-jobs/page.tsx:SettingsCronJobsPage (handleBulkSetForeground) ; POST /api/v1/cron-jobs/bulk-update-foreground/",
+  "dependencies": "POST /api/v1/cron-jobs/bulk-update-foreground/",
+  "inventory_notes": "No confirmation step before bulk foreground update — unlike bulk delete."
+ },
+ {
+  "id": "FA-0196",
+  "area": "fe-automations",
+  "layer": "frontend",
+  "feature": "Pending Reminders — list and display",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see my pending one-off reminders so that I know which scheduled reminders are queued up.",
+  "expected_behaviour": "PendingRemindersSection fires GET /api/v1/cron-jobs/pending-at/ (staleTime 30s, refetchOnWindowFocus). While loading and no data is available, the component renders nothing (returns null). On error, an error card is shown. When jobs exist, each reminder shows: name, absolute fire time ('Today at 4:00 PM' / 'Tomorrow at…' / 'Wed, May 14 at 9:00 AM' in user's TZ), and a relative label ('in 20 min', 'in 3 hours', etc., refreshed every 30s via setInterval). A badge shows 'N of softCap' in neutral/amber/rose depending on proximity to the cap. A stale banner appears if the container was asleep when the fetch ran.",
+  "entry_points": "frontend/components/pending-reminders-section.tsx:PendingRemindersSection ; GET /api/v1/cron-jobs/pending-at/",
+  "dependencies": "GET /api/v1/cron-jobs/pending-at/",
+  "inventory_notes": "The component is silent (null) on initial loading — no skeleton. Relative times auto-update client-side every 30s without re-fetching the server. Timezone falls back to browser Intl if userTz prop is undefined."
+ },
+ {
+  "id": "FA-0197",
+  "area": "fe-automations",
+  "layer": "frontend",
+  "feature": "Pending Reminders — cancel with confirmation",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to cancel a pending one-off reminder so that it doesn't fire unexpectedly.",
+  "expected_behaviour": "Each reminder row has a 'Cancel' button. Clicking it shows an inline confirmation: 'Confirm cancel' (rose) and 'Keep' buttons. A 3-second auto-timeout (CANCEL_CONFIRM_TIMEOUT_MS) reverts to the initial Cancel button if no action is taken. Clicking 'Confirm cancel' fires cancelMutation.mutate(job.name), calling DELETE /api/v1/cron-jobs/pending-at/{name}/. While pending, the button shows 'Cancelling…' and is disabled. On success, the ['pending-reminders'] query is invalidated and the reminder disappears. On error, a rose error message appears inline under the reminder name.",
+  "entry_points": "frontend/components/pending-reminders-section.tsx:PendingRemindersSection (handleCancelClick, handleCancelConfirm) ; DELETE /api/v1/cron-jobs/pending-at/{name}/",
+  "dependencies": "DELETE /api/v1/cron-jobs/pending-at/{name}/",
+  "inventory_notes": "The cancel confirmation timeout uses a single shared ref (cancelTimer), so only one reminder can be in confirming state at a time. The empty state shows a hint: 'Ask your assistant anytime — e.g. \"remind me in 20 minutes\" or \"ping me at 4pm.\"'"
+ },
+ {
+  "id": "FA-0198",
+  "area": "fe-automations",
+  "layer": "frontend",
+  "feature": "TimezoneSelector — timezone picker in create/edit forms",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to set the timezone for a scheduled task so that it fires at the correct local time in my location.",
+  "expected_behaviour": "TimezoneSelector renders as a labelled select in the create and both edit forms. The value is initialised to the user's me.timezone (from useMeQuery) or the browser Intl TZ when the form opens. The subscriber can change the timezone via the select; the value is stored in form state (createForm.tz / editForm.tz) and sent as schedule.tz in the POST/PATCH body. No separate API call.",
+  "entry_points": "frontend/components/timezone-selector.tsx:TimezoneSelector",
+  "dependencies": "GET /api/v1/tenants/me/ (for default timezone)",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0199",
+  "area": "fe-automations",
+  "layer": "frontend",
+  "feature": "Settings navigation — Scheduled Tasks tab prefetch",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want the Scheduled Tasks page to load quickly when I hover over the menu item so that navigation feels instant.",
+  "expected_behaviour": "In SettingsLayout, hovering over the 'Scheduled Tasks' link (/settings/cron-jobs) on desktop triggers prefetchTabData which calls queryClient.prefetchQuery({ queryKey: ['cron-jobs'], queryFn: fetchCronJobs }). On mobile, the same prefetch fires on touchStart of the list item. This pre-warms the React Query cache before the route renders.",
+  "entry_points": "frontend/app/settings/layout.tsx:SettingsLayout (prefetchTabData) ; GET /api/v1/cron-jobs/",
+  "dependencies": "GET /api/v1/cron-jobs/",
+  "inventory_notes": "Prefetch is fire-and-forget (void). The tab label in the sidebar is 'Scheduled Tasks' with a ClockIcon."
+ },
+ {
+  "id": "FA-0200",
+  "area": "fe-automations",
+  "layer": "frontend",
+  "feature": "Toast notification system",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see a transient success or error toast after bulk operations so that I receive feedback without blocking the UI.",
+  "expected_behaviour": "The useToast hook provides a [toast, showToast] pair. showToast(message, type) creates a toast with a unique id. The Toast component renders conditionally when toast is non-null at the top of the page. Toasts are used for: bulk delete success ('N tasks deleted', 'success'), bulk foreground update success, and error toasts from bulk foreground mutation errors. The toast auto-dismisses via the hook's internal mechanism. Per the component signature, the onDismiss callback is a no-op in the page (the hook manages state).",
+  "entry_points": "frontend/components/toast.tsx:Toast ; frontend/components/toast.tsx:useToast ; frontend/app/settings/cron-jobs/page.tsx:SettingsCronJobsPage",
+  "dependencies": "",
+  "inventory_notes": "Single-job delete and inline edit success/error do NOT use the Toast — they use inline button colour feedback instead."
+ }
+]

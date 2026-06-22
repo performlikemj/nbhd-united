@@ -1,0 +1,110 @@
+[
+ {
+  "id": "FA-0428",
+  "area": "fe-legal",
+  "layer": "frontend",
+  "feature": "Legal page shared shell render",
+  "user_role": "anonymous user",
+  "user_story": "As an anonymous user, I want to view legal documents without logging in so that I can review policies before subscribing.",
+  "expected_behaviour": "All four legal pages (/legal/terms, /legal/privacy, /legal/refund, /legal/commerce-disclosure) are listed in AppShell's `publicPages` array and also caught by the `pathname.startsWith('/legal/')` fallback, so the auth-redirect guard (`router.replace('/login')`) never fires for any /legal/* route. Pages render entirely as static HTML — no API calls, no loading states, no error states. The `LegalPage` wrapper renders immediately with a panel card containing the page title, a 'Last updated' date, a prose body, a divider, and a cross-links footer. No skeleton, spinner, or suspense boundary is present.",
+  "entry_points": "frontend/components/app-shell.tsx:AppShell (publicPages array, line 35-37 + startsWith guard line 262) ; frontend/components/legal-page.tsx:LegalPage",
+  "dependencies": "",
+  "inventory_notes": "/legal/commerce-disclosure is NOT in the explicit publicPages array (only terms/privacy/refund are listed by name) but IS covered by the `pathname.startsWith('/legal/')` catch-all on line 262. Any future legal page under /legal/* is automatically public by that catch-all."
+ },
+ {
+  "id": "FA-0429",
+  "area": "fe-legal",
+  "layer": "frontend",
+  "feature": "Brand home navigation link",
+  "user_role": "anonymous user",
+  "user_story": "As an anonymous user on any legal page, I want to click the brand name so that I can navigate back to the homepage.",
+  "expected_behaviour": "The `LegalPage` component renders a Next.js `<Link href='/'>` with the text 'Neighborhood United' styled as a small mono uppercase label in `text-ink-muted`. Hovering transitions it to `text-ink`. Clicking navigates to `/` via client-side routing. No API call is made.",
+  "entry_points": "frontend/components/legal-page.tsx:LegalPage (line 25-27) ; route: GET /",
+  "dependencies": "",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0430",
+  "area": "fe-legal",
+  "layer": "frontend",
+  "feature": "Cross-legal-page footer navigation",
+  "user_role": "anonymous user",
+  "user_story": "As an anonymous user reading one legal document, I want footer links to all other legal pages so that I can quickly navigate between them.",
+  "expected_behaviour": "Each `LegalPage` instance renders a `flex flex-wrap gap-4` row of four `<Link>` elements below a divider: Terms of Service (/legal/terms), Privacy Policy (/legal/privacy), Refund Policy (/legal/refund), and Commerce Disclosure (/legal/commerce-disclosure). All four links appear on all four pages (including the page the user is currently on — there is no active/current-page suppression). Hover transitions text from `text-ink-faint` to `text-ink-muted`. Navigation is client-side, no API call.",
+  "entry_points": "frontend/components/legal-page.tsx:LegalPage (lines 6-11, 36-44) ; routes: /legal/terms, /legal/privacy, /legal/refund, /legal/commerce-disclosure",
+  "dependencies": "",
+  "inventory_notes": "The current page's own link is always rendered, meaning a user on /legal/terms sees a 'Terms of Service' link in the footer that does nothing useful (navigates to the same page). No `aria-current` attribute is applied."
+ },
+ {
+  "id": "FA-0431",
+  "area": "fe-legal",
+  "layer": "frontend",
+  "feature": "Terms of Service page",
+  "user_role": "anonymous user",
+  "user_story": "As an anonymous user, I want to read the Terms of Service so that I understand the rules and obligations of using the platform.",
+  "expected_behaviour": "GET /legal/terms renders a static prose document titled 'Terms of Service', last updated February 13, 2026. Eleven numbered sections cover: service description, account eligibility (18+), subscription/billing (monthly via Stripe, auto-renew, cancel via Stripe portal), acceptable use, intellectual property, third-party services (Telegram, LINE, Stripe, AI providers), limitation of liability (12-month cap), disclaimers (no warranty), termination/suspension, changes to terms (email notification), and contact email `mj@bywayofmj.com` rendered as a `mailto:` link. No API calls, no form, no interactive state beyond the shared navigation links.",
+  "entry_points": "frontend/app/legal/terms/page.tsx:TermsPage ; frontend/components/legal-page.tsx:LegalPage ; route: GET /legal/terms",
+  "dependencies": "",
+  "inventory_notes": "Contact email `mj@bywayofmj.com` is hardcoded as a `mailto:` anchor. Clicking opens the user's mail client."
+ },
+ {
+  "id": "FA-0432",
+  "area": "fe-legal",
+  "layer": "frontend",
+  "feature": "Privacy Policy page",
+  "user_role": "anonymous user",
+  "user_story": "As an anonymous user, I want to read the Privacy Policy so that I understand how my personal data is collected, used, and protected.",
+  "expected_behaviour": "GET /legal/privacy renders a static prose document titled 'Privacy Policy', last updated May 4, 2026. Twelve sections cover: commitment to privacy, data collected (email, display name, Telegram/LINE IDs, usage metrics, Stripe payment info), data use, third-party sharing (Stripe, Telegram/LINE, AI model providers, Azure), PII redaction pipeline (ML model + deterministic checks on workspace context; direct messages unredacted; placeholder rehydration), data retention (30 days post-cancellation), cookies/local storage (JWT in localStorage, no tracking cookies), user rights (access/correct/delete via email), security (HTTPS/TLS), children's privacy (no under-13), policy change notification, and contact email. A single external link to the open-source PII model on HuggingFace (`target='_blank' rel='noopener noreferrer'`) is present in Section 5. No API calls.",
+  "entry_points": "frontend/app/legal/privacy/page.tsx:PrivacyPage ; frontend/components/legal-page.tsx:LegalPage ; route: GET /legal/privacy",
+  "dependencies": "",
+  "inventory_notes": "External link to https://huggingface.co/onbekend/nbhd-pii-model opens in a new tab with noopener noreferrer. `<code>` elements render inline placeholders like [PERSON_1] and [EMAIL_2] as examples inside the prose block."
+ },
+ {
+  "id": "FA-0433",
+  "area": "fe-legal",
+  "layer": "frontend",
+  "feature": "Refund and Cancellation Policy page",
+  "user_role": "anonymous user",
+  "user_story": "As an anonymous user or subscriber, I want to read the Refund and Cancellation Policy so that I know my options if I want to stop using the service.",
+  "expected_behaviour": "GET /legal/refund renders a static prose document titled 'Refund & Cancellation Policy', last updated February 13, 2026. Six sections describe: cancellation (access continues to end of billing period), two cancellation methods (Stripe Portal link on Billing page, or email to `mj@bywayofmj.com`), no-refund default policy, 48-hour full-refund exception (no messages sent, email request, 5-business-day processing), billing dispute escalation (email before bank dispute), and contact. Three `mailto:mj@bywayofmj.com` anchor links are present. No API calls.",
+  "entry_points": "frontend/app/legal/refund/page.tsx:RefundPage ; frontend/components/legal-page.tsx:LegalPage ; route: GET /legal/refund",
+  "dependencies": "",
+  "inventory_notes": "The 'Open Stripe Portal' reference in Section 2 is plain text only — no actual link to the Billing page is rendered in the legal doc itself."
+ },
+ {
+  "id": "FA-0434",
+  "area": "fe-legal",
+  "layer": "frontend",
+  "feature": "Commerce Disclosure page (特定商取引法)",
+  "user_role": "anonymous user",
+  "user_story": "As an anonymous user (particularly in Japan), I want to read the statutory commerce disclosure so that I can verify the seller's legally required disclosures before purchasing.",
+  "expected_behaviour": "GET /legal/commerce-disclosure renders a static prose document titled 'Commerce Disclosure', last updated February 20, 2026, with a Japanese subtitle '特定商取引法に基づく表記'. Sections disclose: legal name (withheld, disclosed on request), head of operations (withheld), address (withheld), phone number (withheld, hours 10:00–18:00 JST weekdays), email `mj@bywayofmj.com`, pricing (Starter $12/mo, Premium $40/mo, BYOK $8/mo USD, taxes included), no additional fees, payment method (Stripe credit card), payment timing (immediate + recurring), service delivery (immediate on payment), cancellation and refund policy (no prorated refund; defect-based refund at discretion), and operating environment (modern browsers + Telegram/LINE). One `mailto:` link present. No API calls.",
+  "entry_points": "frontend/app/legal/commerce-disclosure/page.tsx:CommerceDisclosurePage ; frontend/components/legal-page.tsx:LegalPage ; route: GET /legal/commerce-disclosure",
+  "dependencies": "",
+  "inventory_notes": "This page is NOT in the explicit `publicPages` array in app-shell.tsx — it relies solely on the `pathname.startsWith('/legal/')` guard. If that guard were ever removed, /legal/commerce-disclosure would start redirecting unauthenticated users to /login while /legal/terms, /legal/privacy, and /legal/refund would remain public. The page intentionally withholds the operator's legal name, address, and phone number and states they will be disclosed on request — this may be insufficient under the Japanese 特定商取引法 (Act on Specified Commercial Transactions)."
+ },
+ {
+  "id": "FA-0435",
+  "area": "fe-legal",
+  "layer": "frontend",
+  "feature": "Scroll-triggered header border on legal pages",
+  "user_role": "anonymous user",
+  "user_story": "As a user scrolling through a long legal document, I want a visible header separator so that I can tell I have scrolled past the top of the page.",
+  "expected_behaviour": "AppShell attaches a passive `scroll` event listener to the `#main-content` element. When `scrollTop > 8px`, the `headerBorder` state is set to `true`, which adds a visible bottom border to the sticky header. On legal pages the header is rendered (AppShell wraps all pages), so this behaviour applies. Scrolling back to the top removes the border. No API call; no legal-page-specific code — inherited from AppShell.",
+  "entry_points": "frontend/components/app-shell.tsx:AppShell (lines 267-275)",
+  "dependencies": "",
+  "inventory_notes": "Legal pages do not suppress the global nav header — authenticated users on legal pages see the full nav bar with their user menu and nav items."
+ },
+ {
+  "id": "FA-0436",
+  "area": "fe-legal",
+  "layer": "frontend",
+  "feature": "Animated entrance reveal on legal page load",
+  "user_role": "anonymous user",
+  "user_story": "As a user navigating to a legal page, I want a smooth entrance animation so that the page feels polished rather than abrupt.",
+  "expected_behaviour": "The `LegalPage` wrapper applies `animate-reveal` (a CSS keyframe class defined in globals.css) to the outermost content card. This triggers once on initial mount/navigation. There is no user interaction required; no state or API dependency.",
+  "entry_points": "frontend/components/legal-page.tsx:LegalPage (line 24, className includes animate-reveal)",
+  "dependencies": "",
+  "inventory_notes": "The animation is applied via a Tailwind utility class. There is no explicit `prefers-reduced-motion` guard inside the legal component itself — whether it is suppressed depends on whether globals.css or tailwind.config.ts applies a motion media query to `animate-reveal`."
+ }
+]

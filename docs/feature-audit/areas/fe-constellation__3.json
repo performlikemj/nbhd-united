@@ -1,0 +1,50 @@
+[
+ {
+  "id": "FA-0260",
+  "area": "fe-constellation",
+  "layer": "frontend",
+  "feature": "Galaxy Play — Star Stage Visual Growth",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see a star grow visually when I deepen my understanding of it so I feel rewarded for engaging with my knowledge.",
+  "expected_behaviour": "applyStarStage() is called when a note-save response or a tutor turn response returns a new star_stage that is a promotion from the current stage. promoteStar() tweens the star's core scale and glow scale to the new stage's values (Back.Out ease, 650ms). A one-shot white flash bloom fades over 700ms. For radiant+ stages, a continuous pulse tween is added to the glow. The star colour is updated to the cluster's colour tint. Stage only ever moves forward (no demotion). The visual change is permanent for the session but not re-fetched from the server until the galaxy is refetched.",
+  "entry_points": "frontend/lib/constellation-game/galaxy-scene.ts:GalaxyScene",
+  "dependencies": "POST /api/v1/lessons/{id}/journal/create/ (star_stage in response), POST /api/v1/lessons/{id}/tutor/message/ (new_star_stage), POST /api/v1/lessons/{id}/tutor/end/ (new_star_stage)",
+  "inventory_notes": "promoteStar() guards against a destroyed scene (this.destroyed check). Stage promotion is optimistic (applied immediately on the client from the API response)."
+ },
+ {
+  "id": "FA-0261",
+  "area": "fe-constellation",
+  "layer": "frontend",
+  "feature": "Galaxy Play — Minimap",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber flying the galaxy, I want a minimap so I always know where I am relative to the full galaxy.",
+  "expected_behaviour": "A minimap is built as a Phaser Container in the top-left corner (scrollFactor 0). It shows each star as a coloured dot proportional to its world position, sized relative to the minimap. The current ship position is shown as a distinct marker. During map mode, the current camera view rectangle is drawn on the minimap. The minimap updates every frame. If a waypoint is set, the waypoint target appears on the minimap.",
+  "entry_points": "frontend/lib/constellation-game/galaxy-scene.ts:GalaxyScene",
+  "dependencies": "",
+  "inventory_notes": "The minimap container's size adapts to the scale.width and scale.height of the Phaser game. No interaction on the minimap; it is display-only."
+ },
+ {
+  "id": "FA-0262",
+  "area": "fe-constellation",
+  "layer": "frontend",
+  "feature": "Galaxy Play — Runtime Error Banner",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see an error message if the galaxy game encounters a runtime error so I know something went wrong and can reload.",
+  "expected_behaviour": "useCapturedError listens to window 'error' and 'unhandledrejection' events (capturing only the first). If an error is captured (e.g. Phaser throwing in its render loop, which React's GameBoundary cannot catch), an ErrorBanner renders fixed at the bottom of the screen: a rose panel with the error message, a 'Reload' button (calls window.location.reload()), and a 'Dismiss' button (hides the banner). The banner overlays whatever is currently rendered (game, loading screen, etc.).",
+  "entry_points": "frontend/app/constellation/play/page.tsx:ConstellationPlayPage ; frontend/app/constellation/play/page.tsx:ErrorBanner",
+  "dependencies": "",
+  "inventory_notes": "Only the first uncaught error is captured. The useCapturedError listeners are removed on unmount."
+ },
+ {
+  "id": "FA-0263",
+  "area": "fe-constellation",
+  "layer": "frontend",
+  "feature": "Galaxy Play — Neighbourhood Proximity Ambience",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber flying near a constellation, I want the cluster's nebula and stars to brighten as I approach so the galaxy feels spatially alive.",
+  "expected_behaviour": "Each frame, updateNeighborhoods() computes the distance from the ship to each neighbourhood centroid. The cluster name text alpha transitions from 0.16 (far) to 0.62 (inside the neighbourhood). Each puff image in the nebula cloud brightens proportionally (up to 2.1x its base alpha). Stars within the neighbourhood have their glow alpha increased (up to 1.0) and core scale increased (up to 1.55x) as the ship approaches. This is pure visual/per-frame, no API calls.",
+  "entry_points": "frontend/lib/constellation-game/galaxy-scene.ts:GalaxyScene",
+  "dependencies": "",
+  "inventory_notes": "Proximity brightness is applied in addition to any pulsing/twinkling tweens on those objects (different properties). No reduced-motion guard on proximity; it is non-distracting brightness rather than animation."
+ }
+]

@@ -1,0 +1,20 @@
+[
+ {
+  "ref": "FA-0007-P1",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "The claim is technically accurate. apps/actions/tasks.py:25 builds PendingAction.objects.filter(status=PENDING, expires_at__lt=now()) with no select_related. PendingAction.tenant is a ForeignKey (actions/models.py:32) and Tenant.user is a OneToOneField (tenants/models.py:142), so both lazy-load on access. Per expired action the loop incurs two extra DB round-trips: (1) action.tenant at tasks.py:36 inside ActionAuditLog.objects.create(tenant=action.tenant,...) triggers a tenant fetch; (2) update_gate_message then calls editor(action.tenant, action) which reads tenant.user.telegram_chat_id (messaging.py:37) or tenant.user.line_user_id (messaging.py:161), triggering a user fetch. The action.tenant access inside update_gate_message reuses the instance cached by step 1, so it is ~2 extra queries per action when a platform channel is set, and only 1 when platform_channel is empty (update_gate_message returns early at messaging.py:355 before touching tenant.user). The sweep IS now live in production: TASK_MAP wires expire_stale_actions to expire_stale_pending_actions (apps/cron/views.py:91) on an every-5-minute QStash schedule (expire-stale-actions, */5 * * * * in register_system_crons.py), so unlike the old dead Celery code these queries actually execute. So the N+1 pattern is real. BUT severity is genuinely low and the reviewer rates it correctly: the queryset only contains pending gate actions that expired within the last few minutes (5-min default TTL via default_expires_at, models.py:25), so it is empty on most ticks and at most a handful of rows even when populated. A single tenant rarely has many gate actions expiring simultaneously. No correctness impact, just a few avoidable queries on a low-frequency sweep.",
+  "suggested_fix": "Add .select_related(\"tenant__user\") to the queryset at apps/actions/tasks.py:25. This JOINs the FK and OneToOne into the initial fetch, collapsing both per-action lazy loads into the single sweep query. The path tenant__user is valid (tenant is FK to tenants.Tenant; Tenant.user is a OneToOne). One-line change.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/actions/tasks.py:25-28 — PendingAction.objects.filter(...) has no select_related",
+   "apps/actions/tasks.py:36 — ActionAuditLog.objects.create(tenant=action.tenant, ...) lazy-loads tenant (FK, actions/models.py:32)",
+   "apps/actions/messaging.py:37 / :161 — tenant.user.telegram_chat_id / .line_user_id lazy-loads user (OneToOne, tenants/models.py:142)",
+   "apps/actions/messaging.py:353-360 — update_gate_message returns early when action.platform_channel is empty, so tenant.user is only touched when a channel was set",
+   "apps/cron/views.py:91 — TASK_MAP['expire_stale_actions'] = 'apps.actions.tasks.expire_stale_pending_actions' (sweep is wired and runs)",
+   "apps/cron/management/commands/register_system_crons.py — ('expire-stale-actions', '*/5 * * * *', ...) confirms the live every-5-minute schedule",
+   "apps/actions/models.py:25 — default_expires_at = now()+5min, so the sweep queryset is normally near-empty (low blast radius)"
+  ]
+ }
+]

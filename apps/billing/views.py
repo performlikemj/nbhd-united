@@ -166,10 +166,15 @@ def stripe_webhook(request):
             meta = data.get("metadata") or {}
             if data.get("mode") == "payment" and meta.get("kind") == "credit_topup":
                 handle_credit_topup_completed(event_id, data)
-            elif event_type == "checkout.session.completed":
-                handle_checkout_completed(data)
             else:
-                logger.info("async_payment_succeeded for non-credit session %s", data.get("id"))
+                # Route both checkout.session.completed AND
+                # checkout.session.async_payment_succeeded for subscription
+                # sessions to handle_checkout_completed so that tenants whose
+                # payment clears asynchronously (ACH, SEPA, etc.) are still
+                # provisioned/reactivated.  handle_checkout_completed is already
+                # idempotent (short-circuits on already-active tenants) and
+                # guards against payment-mode mis-routes internally.
+                handle_checkout_completed(data)
         case "charge.refunded":
             handle_credit_refund(event_id, data)
         case "charge.dispute.created":

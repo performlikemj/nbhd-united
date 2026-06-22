@@ -1,0 +1,110 @@
+[
+ {
+  "id": "FA-0582",
+  "area": "fuel",
+  "layer": "backend",
+  "feature": "Workout Plan Create + Expansion (Runtime/OpenClaw)",
+  "user_role": "container runtime",
+  "user_story": "As the OpenClaw assistant, I want to create a structured multi-week workout plan with a detailed schedule so that planned workout sessions are materialized in the user's calendar.",
+  "expected_behaviour": "POST /api/v1/fuel/runtime/{tenant_id}/plans/ authenticates with internal headers. Requires name, schedule_json (non-empty dict keyed by weekday 0-6), weeks (1-52), days_per_week (1-7). Optionally accepts start_date (resolved via resolve_relative_date; defaults to next Monday in tenant tz), objective (max 200 chars), notes, week_overrides (dict of per-week schedule overrides, null values = rest day). Validates and normalizes the entire schedule atomically via _validate_normalize_schedule and _validate_normalize_week_overrides before persisting anything. Idempotent on (tenant, name, start_date, status=active): returns 200 with deduped=true if a duplicate exists. On success, expands schedule into Workout rows + PlanSlot rows via _expand_plan_workouts; creates a background fuel cron (best-effort). Returns 201 with {plan fields, workouts_created}.",
+  "entry_points": "apps/fuel/runtime_views.py:RuntimeWorkoutPlanListCreateView.post ; POST /api/v1/fuel/runtime/{tenant_id}/plans/ ; apps/fuel/runtime_views.py:_expand_plan_workouts ; apps/fuel/runtime_views.py:_validate_normalize_schedule",
+  "dependencies": "Postgres, OpenClaw container gateway (cron.add — best-effort), apps/orchestrator/config_generator.py:build_fuel_workout_cron",
+  "inventory_notes": "Idempotency dedup keys on (name, start_date, status=active) — a retried or double-fired create returns the existing plan. week_overrides per-week null day values designate rest days (that day is dropped from the week's schedule). Validation failure returns LLMValidationError envelope so the assistant self-corrects. _expand_plan_workouts creates PlanSlot rows for stable UUID identity across plan regens."
+ },
+ {
+  "id": "FA-0583",
+  "area": "fuel",
+  "layer": "backend",
+  "feature": "Workout Plan List (Runtime/OpenClaw)",
+  "user_role": "container runtime",
+  "user_story": "As the OpenClaw assistant, I want to list a tenant's workout plans so that I can reference plan state and workout counts when coaching.",
+  "expected_behaviour": "GET /api/v1/fuel/runtime/{tenant_id}/plans/?status=<status> authenticates with internal headers. Optional status filter (PlanStatus values). Returns up to 10 plans sorted: active plans first, then by -created_at. Returns {plans: [serialized plan dicts with workout_count + completed_count]}.",
+  "entry_points": "apps/fuel/runtime_views.py:RuntimeWorkoutPlanListCreateView.get ; GET /api/v1/fuel/runtime/{tenant_id}/plans/",
+  "dependencies": "Postgres",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0584",
+  "area": "fuel",
+  "layer": "backend",
+  "feature": "Workout Plan Detail + Update + Delete (Runtime/OpenClaw)",
+  "user_role": "container runtime",
+  "user_story": "As the OpenClaw assistant, I want to read, update, or delete a workout plan so that I can adjust or replace a program in response to user feedback.",
+  "expected_behaviour": "GET /api/v1/fuel/runtime/{tenant_id}/plans/{plan_id}/ returns full plan serialization including all workout rows (include_workouts=True). PATCH partially updates name, status, notes, weeks, schedule_json, days_per_week. If schedule_json or weeks change, triggers plan reconciliation via reconcile_plan_state + apply_reconciliation (not DELETE+INSERT regen — preserves workout UUIDs). Locked workouts are skipped in reconciliation (workouts_locked_skip count). Manages fuel cron: active plan → cron.update; paused/completed/archived → cron.remove. DELETE removes planned workouts, orphans completed ones (plan=null), removes cron (best-effort), returns 204. 404 on plan not found.",
+  "entry_points": "apps/fuel/runtime_views.py:RuntimeWorkoutPlanDetailView ; GET /api/v1/fuel/runtime/{tenant_id}/plans/{plan_id}/ ; PATCH /api/v1/fuel/runtime/{tenant_id}/plans/{plan_id}/ ; DELETE /api/v1/fuel/runtime/{tenant_id}/plans/{plan_id}/ ; apps/fuel/services.py:reconcile_plan_state ; apps/fuel/services.py:apply_reconciliation",
+  "dependencies": "Postgres, OpenClaw container gateway (cron.list, cron.remove, cron.add — best-effort)",
+  "inventory_notes": "The reconciler (not the consumer PATCH's DELETE+regen approach) is used here — it preserves slot identity so workout UUIDs remain valid while a browser drawer is open. PATCH returns 500 with {error: regen_failed} if reconciliation throws. objective and week_overrides are not patchable via the runtime PATCH (only through the initial create)."
+ },
+ {
+  "id": "FA-0585",
+  "area": "fuel",
+  "layer": "backend",
+  "feature": "Plan Slot — Stable Workout Identity",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want plan slots to provide stable identity for planned workouts across plan regenerations so that a workout UUID a user's browser is viewing is not invalidated by an assistant plan update.",
+  "expected_behaviour": "PlanSlot rows are created with (plan, week_index, weekday) natural key. When _expand_plan_workouts or apply_reconciliation creates a Workout, it sets Workout.slot FK to the slot. On plan regen (reconcile_plan_state + apply_reconciliation), slots in the desired schedule are kept (matching by week_index+weekday), removed slots are soft-archived (archived_at set, not deleted) if a workout still references them. Slotless planned workouts are adopted into new slots instead of creating duplicates. Kept slots apply template-driven field patches (category, duration_minutes, detail_json) to existing workouts but skip activity rename. The unique_active_plan_slot constraint enforces at most one active slot per (plan, week_index, weekday).",
+  "entry_points": "apps/fuel/models.py:PlanSlot ; apps/fuel/services.py:reconcile_plan_state ; apps/fuel/services.py:apply_reconciliation ; apps/fuel/runtime_views.py:_expand_plan_workouts",
+  "dependencies": "Postgres",
+  "inventory_notes": "The migration 0013 (backfill_plan_slots) materialized PlanSlot rows for pre-existing plans. Archived slots linger so historical workouts keep their FK; only future workouts on archived slots stop being generated."
+ },
+ {
+  "id": "FA-0586",
+  "area": "fuel",
+  "layer": "backend",
+  "feature": "Per-Session Fuel Cron Derivation and Regeneration",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to derive and reconcile per-session workout reminder crons from Postgres Workout.scheduled_at rows so that the OpenClaw container's cron registry stays in sync with the planned schedule.",
+  "expected_behaviour": "derive_fuel_cron_jobs() is a pure function that reads planned Workout rows with scheduled_at in the next 48h and returns one cron-job dict per session named '_fuel:{short_id}' (8-hex UUID prefix), using date-specific cron expressions (M H D MON *) in the user's timezone. regenerate_fuel_crons() diffs the desired set against the container's current _fuel:* crons (via cron.list), adds missing, removes stale. Only fires for tenants with FuelProfile.use_session_scheduling=True. Gated on tenant not hibernated/suspended. Called via QStash on Workout post_save/post_delete (30s debounce, idempotency_key='regen-fuel-{tenant_id}') and by the hourly fleet reconcile (reconcile_fuel_crons_task).",
+  "entry_points": "apps/orchestrator/fuel_cron.py:derive_fuel_cron_jobs ; apps/orchestrator/fuel_cron.py:regenerate_fuel_crons ; apps/orchestrator/tasks.py:regenerate_fuel_crons_task ; apps/orchestrator/tasks.py:reconcile_fuel_crons_task ; apps/fuel/signals.py:workout_saved_regen_fuel_crons",
+  "dependencies": "QStash (debounced task dispatch), OpenClaw container gateway (cron.list, cron.add, cron.remove), Postgres (Workout, FuelProfile)",
+  "inventory_notes": "_FUEL_SESSION_PREFIX='_fuel:' with 8-hex short-id distinguishes derived per-session jobs from legacy _fuel:{plan_name} plan-level jobs. Hibernated/suspended tenants are skipped (gateway calls would fail). The hourly reconcile catches drift (e.g. container restart)."
+ },
+ {
+  "id": "FA-0587",
+  "area": "fuel",
+  "layer": "backend",
+  "feature": "Fuel USER.md Envelope Section",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to render a Fuel fitness state section in the tenant's USER.md so that the OpenClaw assistant always has current fitness context without requiring an explicit tool call.",
+  "expected_behaviour": "The `render_fuel` function is registered via @register_section (key='fuel', order=40, enabled when tenant.fuel_enabled=True, refresh_on=(Workout, BodyWeightLog, SleepLog, RestingHeartRateLog)). Renders: today's planned workout (with local time and duration), 4-week trends digest (weekly_trends_digest), last done session within 14 days (with RPE, duration, distance, avg HR, Apple Health provenance flag), last body weight with 7-day delta, last sleep entry, resting HR from past 3 days. Truncated to max_chars=1200 with a '_(truncated — call nbhd_fuel_summary)_' note. Returns '' if nothing to show.",
+  "entry_points": "apps/fuel/envelope.py:render_fuel ; apps/fuel/services.py:weekly_trends_digest",
+  "dependencies": "Postgres (Workout, BodyWeightLog, SleepLog, RestingHeartRateLog), apps/orchestrator/envelope_registry.py",
+  "inventory_notes": "Refresh is triggered by post_save/post_delete on any of the four registered models. The 1200-char cap covers the typical day's data; the truncation message tells the assistant to call nbhd_fuel_summary for the full state."
+ },
+ {
+  "id": "FA-0588",
+  "area": "fuel",
+  "layer": "backend",
+  "feature": "Welcome Watchdog — Daily Fleet Reconcile",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want a daily cron to detect fuel-enabled tenants whose welcome was never delivered and retry scheduling so that no subscriber is silently left without a Fuel onboarding message.",
+  "expected_behaviour": "The `reconcile_welcomes_task` QStash task (daily) iterates all tenants where fuel_enabled=True. For each, calls _schedule_fuel_welcome which calls schedule_welcome (checks welcomes_sent.fuel; if not delivered, schedules a one-shot _fuel:welcome cron). Results are tallied by status (fresh, replaced, pending, already_delivered). Failures per tenant are caught and counted (never abort the batch). Returns per-feature counters.",
+  "entry_points": "apps/orchestrator/tasks.py:reconcile_welcomes_task ; apps/fuel/views.py:_schedule_fuel_welcome",
+  "dependencies": "QStash (task scheduling), OpenClaw container gateway (cron.add), Postgres (Tenant, FuelProfile)",
+  "inventory_notes": "Also run by management command `backfill_welcomes`. Only re-fires if welcomes_sent.fuel is not set. The welcome cron itself runs inside the OpenClaw container and marks delivery via POST /api/v1/tenants/runtime/{tenant_id}/welcomes/fuel/."
+ },
+ {
+  "id": "FA-0589",
+  "area": "fuel",
+  "layer": "backend",
+  "feature": "Set Contract Normalization and Validation",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want all workout detail_json to be normalized and validated before persistence so that strength/calisthenics sets always have a correct typed shape and cannot be stored in an ambiguous form.",
+  "expected_behaviour": "normalize_detail() is a pure function that deterministically corrects set `type` fields using the exercise registry (normalize_exercise from apps.common.llm_lookups) and can flip a workout's category between strength/calisthenics when all exercises point to the same category. Returns (new_detail, new_category, overrides). validate_detail() then coerces every set to a typed shape (WeightedRepsSet, BodyweightRepsSet, HoldTimeSet via Pydantic discriminated union) and validates; on failure returns a LLMValidationError that the runtime/serializer surfaces as a 400 with a self-correcting envelope. Both are called on every write path: RuntimeLogWorkoutView, RuntimeWorkoutDetailView.patch, WorkoutSerializer.validate, RuntimeWorkoutPlanListCreateView.post, _validate_normalize_schedule.",
+  "entry_points": "apps/fuel/set_contract.py:normalize_detail ; apps/fuel/set_contract.py:validate_detail ; apps/fuel/set_contract.py:set_metric ; apps/fuel/set_contract.py:coerce_set",
+  "dependencies": "apps/common/llm_lookups.py (normalize_exercise, METRIC_* constants), Pydantic",
+  "inventory_notes": "Only strength and calisthenics are validated against the typed contract; cardio/HIIT/mobility/etc. keep their flat by-category shape. The _normalized key in detail_json records corrections for debugging. Management command fuel_set_type_dryrun runs this as a read-only audit against production data."
+ },
+ {
+  "id": "FA-0590",
+  "area": "fuel",
+  "layer": "backend",
+  "feature": "Set Type Dry-Run Management Command",
+  "user_role": "admin/operator",
+  "user_story": "As an operator, I want to audit what migration 0010's set-type stamp would change before running it so that I can assess blast radius without any writes.",
+  "expected_behaviour": "python manage.py fuel_set_type_dryrun reads all Workout, WorkoutTemplate, and WorkoutPlan rows and reports: rows/sets affected and resulting type distribution. Writes nothing. Output per model: rows=N, rows_to_update=M, sets=K, sets_restamped=J, resulting_types={...}. Also surveys WorkoutPlan.schedule_json for set-bearing definitions (needed if any >0, since migration 0010 did not transform them).",
+  "entry_points": "apps/fuel/management/commands/fuel_set_type_dryrun.py:Command",
+  "dependencies": "Postgres (Workout, WorkoutTemplate, WorkoutPlan)",
+  "inventory_notes": "Read-only / safe to run in production. Intended to be run before migration 0010 but is idempotent and can be run at any time."
+ }
+]

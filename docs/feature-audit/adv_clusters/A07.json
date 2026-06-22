@@ -1,0 +1,21 @@
+[
+ {
+  "ref": "billing#2",
+  "source": "missed",
+  "severity": "medium",
+  "category": "logic",
+  "detail": "Confirmed against the code. The global platform kill-switch is implemented entirely via the MonthlyBudget.spent_dollars side-effect, NOT the is_capped boolean. Enforcement at apps/billing/services.py:288 reads `global_budget.remaining <= 0` (remaining = budget_dollars - spent_dollars, models.py:142-143); it never consults is_capped. is_capped has zero enforcement readers (writers are only cap_budget.py lines 51-52/57-58; not even read by __str__, which prints spent/budget). So is_capped is a dead flag.\n\ncap_budget --uncap (cap_budget.py:50) sets spent_dollars = 0. But _reconcile_platform_total (reconcile_openrouter_spend.py:120-123) runs hourly ('10 * * * *' per register_system_crons.py:43) and ratchets spent_dollars upward toward provider truth: `if platform_truth > current_spent: spent_dollars += delta`. It only ever increases spent_dollars.\n\nTwo verified consequences: (a) NON-DURABLE UNCAP: after --uncap, if true month-to-date platform spend already exceeds budget_dollars, the next hourly reconcile re-derives spent_dollars >= budget_dollars, so remaining <= 0 re-engages and check_budget returns 'global' again — every tenant silently re-blocked within the hour despite the operator's explicit uncap. (b) LOST SPEND FIGURE: --uncap zeroes spent_dollars, which _get_budget_info (usage_services.py:91) surfaces as global_spent in the transparency/usage UI; the platform month-to-date spend reads $0 until reconcile re-fills it, then jumps back to truth.\n\nOperator impact: someone following the documented cap_budget --uncap path to 'resume service' is misled — the resume is non-durable if real spend is over budget, and the uncap meanwhile wipes the accurate month-to-date spend number. is_capped advertises an independent kill-switch that enforcement never honors.\n\nMinor non-material claim inaccuracies: there is no '--cap' flag (capping is the default no-arg path), and is_capped is not read by __str__ either (the claim said it was). Neither weakens the substance.",
+  "suggested_fix": "Make is_capped the actual enforcement signal so cap/uncap is an independent, durable switch decoupled from the reconcile-driven spend counter: (1) in check_budget (services.py:~287) return 'global' when `global_budget.is_capped` OR remaining <= 0; (2) stop overloading spent_dollars in cap_budget.py — set/clear is_capped only, and do NOT zero/raise spent_dollars (preserving the true month-to-date figure for the transparency UI); (3) optionally have _reconcile_platform_total set is_capped=True when platform_truth crosses budget so the breaker still auto-engages, but leave operator --uncap authoritative (e.g. uncap also bumps budget_dollars or sets an override window so reconcile doesn't immediately re-flip it). At minimum, decouple the displayed spend (spent_dollars) from the enforcement toggle (is_capped) so --uncap no longer destroys the spend figure and no longer silently re-caps within the hour.",
+  "fix_complexity": "small",
+  "evidence": [
+   "apps/billing/management/commands/cap_budget.py:50,52 — --uncap sets budget.spent_dollars = 0 and is_capped = False",
+   "apps/billing/management/commands/cap_budget.py:56,57 — default (no flag) cap sets spent_dollars = budget_dollars and is_capped = True (note: no '--cap' flag exists)",
+   "apps/billing/services.py:288 — enforcement: if global_budget.remaining is not None and global_budget.remaining <= 0: return 'global' (no is_capped read)",
+   "apps/billing/models.py:142-147 — remaining = budget_dollars - spent_dollars; is_over_budget = spent_dollars >= budget_dollars; is_capped field unused in any property",
+   "apps/billing/management/commands/reconcile_openrouter_spend.py:120-123 — if platform_truth > current_spent: spent_dollars += delta (hourly upward ratchet to provider truth)",
+   "apps/cron/management/commands/register_system_crons.py:43 — ('reconcile-openrouter-spend', '10 * * * *', ...) hourly",
+   "apps/billing/usage_services.py:91 — global_spent = float(budget.spent_dollars) surfaced in transparency/_get_budget_info, so --uncap zeroing destroys the displayed month-to-date spend",
+   "grep is_capped across apps/ — only writers in cap_budget.py; zero enforcement readers (dead flag)"
+  ]
+ }
+]

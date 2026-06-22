@@ -15,7 +15,7 @@ class PendingActionAdmin(admin.ModelAdmin):
         "expires_at",
     ]
     list_filter = ["status", "action_type", "platform_channel"]
-    search_fields = ["display_summary", "tenant__owner__email"]
+    search_fields = ["display_summary", "tenant__user__email", "tenant__user__username"]
     readonly_fields = ["created_at", "responded_at"]
 
 
@@ -23,7 +23,7 @@ class PendingActionAdmin(admin.ModelAdmin):
 class GatePreferenceAdmin(admin.ModelAdmin):
     list_display = ["tenant", "action_type", "require_confirmation"]
     list_filter = ["action_type", "require_confirmation"]
-    search_fields = ["tenant__owner__email"]
+    search_fields = ["tenant__user__email", "tenant__user__username"]
 
 
 @admin.register(ActionAuditLog)
@@ -37,5 +37,5 @@ class ActionAuditLogAdmin(admin.ModelAdmin):
         "created_at",
     ]
     list_filter = ["result", "action_type"]
-    search_fields = ["display_summary", "tenant__owner__email"]
+    search_fields = ["display_summary", "tenant__user__email", "tenant__user__username"]
     readonly_fields = ["created_at", "responded_at"]

@@ -1,0 +1,50 @@
+[
+ {
+  "id": "FA-0927",
+  "area": "pii",
+  "layer": "backend",
+  "feature": "Entity registry data model and storage (Tenant.pii_entity_map)",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want a per-tenant JSONField to store PII placeholder mappings so that redaction and rehydration are consistent across sessions.",
+  "expected_behaviour": "Tenant.pii_entity_map is a JSONField (default=dict, blank=True) on the Tenant model. Shape: {[TYPE_N]: entry} where entry is either the legacy string shape (e.g. 'Alice') or the new dict shape ({name, relationship?, notes?, updated_at?, arbiter_judged_at?}). Reads are coerced on-the-fly by entity_registry.coerce(). Writes always use the new dict shape going forward (to_storage_value). The entity_registry module provides: coerce(), get_name(), get_metadata(), to_storage_value(), iter_normalized(), inverted_names(), inverted_names_ci() (case-insensitive lookup, lowest-numbered placeholder wins on duplicates), canonical_key() (casefold+strip), is_denied() (checks pii_denylist). Migration: 0034_pii_entity_map (tenants app).",
+  "entry_points": "apps/tenants/models.py:Tenant.pii_entity_map ; apps/pii/entity_registry.py ; apps/tenants/migrations/0034_pii_entity_map.py",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "Legacy string entries coerce opportunistically as redaction fires; no explicit bulk migration needed. The inverted_names_ci() function resolves the 2026-05-21 canary bug where a 826-entry map had 'sautai' stored 59 times under different placeholders due to case-sensitive merge. Lowest-numbered placeholder wins ties in CI lookup."
+ },
+ {
+  "id": "FA-0928",
+  "area": "pii",
+  "layer": "backend",
+  "feature": "PII denylist data model (Tenant.pii_denylist)",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want a per-tenant JSONField for canonical-keyed false-positive suppressions so that the redactor can skip user-flagged non-PII words.",
+  "expected_behaviour": "Tenant.pii_denylist is a JSONField (default=dict, blank=True) on the Tenant model. Shape: {canonical_key: {reason?: 'manual'|'arbiter', decided_at?: ISO_string}}. Lookup is via entity_registry.is_denied(denylist, name) which calls canonical_key(name) and checks membership; case/whitespace variants all match the same key. Used by: redact_user_message Step 1 (skips regex replacement for denylisted entity_map entries), _filter_results (drops NER detections whose text maps to a denylisted key), RedactionSession (seeds _denylist from tenant). The denylist does NOT affect rehydrate_text; historical placeholders still restore. Migration: 0068_pii_denylist (tenants app).",
+  "entry_points": "apps/tenants/models.py:Tenant.pii_denylist ; apps/pii/entity_registry.py:is_denied ; apps/pii/entity_registry.py:normalize_denylist_key ; apps/tenants/migrations/0068_pii_denylist.py",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "The pii_denylist is consulted by both RedactionSession (workspace sync) and redact_user_message (inbound messages) so the same suppression fires on all code paths. Arbiter writes use reason='arbiter'; manual UI writes use reason='manual'."
+ },
+ {
+  "id": "FA-0929",
+  "area": "pii",
+  "layer": "backend",
+  "feature": "Span deduplication and adjacent merge in detection pipeline",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want adjacent same-type NER spans merged and overlapping spans deduplicated so that 'Sarah Chen' becomes one [PERSON_1] instead of two placeholders.",
+  "expected_behaviour": "_merge_adjacent_spans() sorts results by start position and merges consecutive spans of the same entity_type if they are separated by 0 or 1 characters (a space). The merged span uses the minimum score of its components. This handles GIVENNAME + LASTNAME both mapping to PERSON. _deduplicate_overlapping() then removes overlapping spans: keeps higher-score match; on score tie, keeps shorter (more specific) span. Applied before filtering in _detect_pii. The DeBERTa model's span boundaries may include trailing/leading whitespace from aggregation_strategy='simple'; these are trimmed before recording the span. Spans where start >= end after trimming are discarded.",
+  "entry_points": "apps/pii/redactor.py:_merge_adjacent_spans ; apps/pii/redactor.py:_deduplicate_overlapping ; apps/pii/redactor.py:_detect_pii",
+  "dependencies": "",
+  "inventory_notes": "The overlap deduplication prevents PERSON 'Email bob@test.com' (longer, lower score) from competing with EMAIL_ADDRESS 'bob@test.com' (shorter, higher score from Presidio). Shorter/higher-score wins."
+ },
+ {
+  "id": "FA-0930",
+  "area": "pii",
+  "layer": "backend",
+  "feature": "Placeholder corruption guard (NER hits inside existing placeholders)",
+  "user_role": "system/cron",
+  "user_story": "As a system, I want NER hits that overlap existing placeholder tokens to be dropped so that [EMAIL_ADDRESS_1] is never corrupted into [[PERSON_1]] by a second pass.",
+  "expected_behaviour": "_hit_inside_placeholder(hit, ranges) returns True when a detected span overlaps any existing placeholder's character range. In redact_user_message (the two-pass path), after Step 1 places placeholders in the text, Step 2 runs NER on the partially-redacted string. Before applying new replacements, placeholder ranges are extracted via regex _PLACEHOLDER_RE.finditer() and any hit whose [start,end) overlaps a placeholder range is discarded. This prevents the DeBERTa model from classifying tokens inside '[EMAIL_ADDRESS_1]' as PERSON and nesting them into '[[PERSON_2]]'.",
+  "entry_points": "apps/pii/redactor.py:_hit_inside_placeholder ; apps/pii/redactor.py:_redact_user_message (placeholder_ranges guard)",
+  "dependencies": "",
+  "inventory_notes": "Only needed in the two-pass redact_user_message path (Step 1 partially redacts, Step 2 runs NER on partially-redacted output). The one-pass RedactionSession path does not have this issue since it does not inject placeholders before running NER."
+ }
+]

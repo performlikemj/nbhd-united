@@ -1,0 +1,18 @@
+[
+ {
+  "ref": "FA-0742",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "GENUINE incomplete fix. The FA-0742 fix in apps/journal/session_views.py:162-172 replaced the raw `since` filter with `parsed_since = parse_datetime(since) or parse_date(since)` and only handles the `parsed_since is None` branch (400). The disposition's explicit premise — that parse_datetime/parse_date 'both return None on bad input, never raise' — is FALSE. Verified directly against this repo's Django 5.1.15 (/Users/michaeljones/Projects/nbhd-united/.venv): parse_date('2021-13-45'/'2021-02-30'/'2021-04-31'/'9999-99-99') and parse_datetime('2021-13-45T10:00:00'/'2021-01-01T25:61:00'/'2021-02-30T10:00:00') all RAISE ValueError (only purely syntactically-malformed strings like 'not-a-date' return None). I also ran the exact line-166 expression `parse_datetime(s) or parse_date(s)` for s in '2021-13-45','2021-02-30','9999-99-99','2021-02-30T10:00:00' — every one raised ValueError, escaping line 166 with no try/except around it. config/settings/base.py:130 REST_FRAMEWORK has no EXCEPTION_HANDLER, so DRF's default handler (only converts Http404/PermissionDenied/APIException) does NOT catch ValueError → it propagates as HTTP 500. So the fix DID close the common `?since=not-a-date` case (now a clean 400), but an out-of-range family — `?since=2021-13-45`, `?since=2021-02-30`, `?since=9999-99-99`, `?since=<bad>T<bad>` — still returns the exact opaque 500 + noisy server error FA-0742 was meant to eliminate. No `since` test was added (apps/journal/tests_sessions.py has only test_list_invalid_limit_returns_400 at line 297), so the gap is unguarded against regression. User impact matches the original low severity: an authenticated API caller passing a plausible-but-out-of-range date still gets a 500 instead of an actionable 400; no data-integrity or security impact.",
+  "suggested_fix": "Wrap the parse in try/except, mirroring the `limit` block 13 lines below (session_views.py:178-184). Replace lines 166-172 with: `try: parsed_since = parse_datetime(since) or parse_date(since)` / `except (ValueError, TypeError): parsed_since = None`, then keep the existing `if parsed_since is None: return Response({'detail': 'since must be an ISO date/datetime.'}, status=400)` and the filter. Add a test for `?since=2021-13-45` (and an in-range valid case) to tests_sessions.py to guard the regression.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/journal/session_views.py:166 — `parsed_since = parse_datetime(since) or parse_date(since)` with NO try/except; only the `parsed_since is None` branch (167-171) is handled",
+   "Verified on repo Django 5.1.15: parse_date('2021-13-45'/'2021-02-30'/'2021-04-31'/'9999-99-99') and parse_datetime('2021-13-45T10:00:00'/'2021-01-01T25:61:00'/'2021-02-30T10:00:00') RAISE ValueError; the exact `parse_datetime(s) or parse_date(s)` expression raised for all four out-of-range cases",
+   "fix_dispositions.json FA-0742 summary states parsers 'both return None on bad input, never raise' — empirically false",
+   "config/settings/base.py:130-138 REST_FRAMEWORK has no EXCEPTION_HANDLER → DRF default does not convert ValueError → HTTP 500",
+   "apps/journal/tests_sessions.py:297 is the only invalid-input test (limit); no `since` test added by the fix"
+  ]
+ }
+]

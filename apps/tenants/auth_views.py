@@ -185,7 +185,7 @@ class SignupView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = request.data.get("email")
+        email = (request.data.get("email") or "").strip().lower()
         password = request.data.get("password")
         display_name = request.data.get("display_name", "Friend")
 
@@ -204,10 +204,18 @@ class SignupView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
 
-        if User.objects.filter(email=email).exists():
+        if User.objects.filter(email__iexact=email).exists():
             return Response(
                 {"detail": "A user with this email already exists."},
                 status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            validate_password(password)
+        except DjangoValidationError as exc:
+            return Response(
+                {"detail": " ".join(exc.messages)},
+                status=status.HTTP_400_BAD_REQUEST,
             )
 
         user = User.objects.create_user(
@@ -217,7 +225,14 @@ class SignupView(APIView):
             display_name=display_name,
         )
 
-        refresh = RefreshToken.for_user(user)
+        # Mint via the serializer's ``get_token`` so the token carries the
+        # ``pw_iat`` claim. ``create_user`` → the overridden ``set_password``
+        # stamps ``password_last_changed_at``, and ``RefreshToken.for_user``
+        # omits ``pw_iat``, so JWTAuthenticationWithRLS would otherwise reject
+        # the brand-new signup token on its very first authenticated request
+        # ("issued before the last password change"). Same fix as
+        # PasswordResetConfirmView and the OAuth exchange.
+        refresh = EmailTokenObtainPairSerializer.get_token(user)
         return Response(
             {
                 "access": str(refresh.access_token),

@@ -11,6 +11,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from django.db import transaction
 from django.utils import timezone as tz
 from pydantic import ValidationError as PydanticValidationError
 from rest_framework import status
@@ -1244,6 +1245,9 @@ class RuntimeDailyNoteAppendView(APIView):
             )
 
         slug = str(d)
+        # get_or_create outside the lock is fine — it only races on the very
+        # first write to a brand-new row (extremely rare); the select_for_update
+        # inside the atomic block serialises all concurrent appends after that.
         doc, _created = Document.objects.get_or_create(
             tenant=tenant,
             kind="daily",
@@ -1257,36 +1261,48 @@ class RuntimeDailyNoteAppendView(APIView):
         section_slug = request.data.get("section_slug")
         section_slug_str = str(section_slug).strip() if section_slug else ""
 
-        if section_slug_str:
-            # Derive heading from slug (e.g. "morning-report" → "Morning Report")
-            heading = section_slug_str.replace("-", " ").title()
-            marker = f"## {heading}"
+        with transaction.atomic():
+            # Re-read under a row lock so concurrent appends are serialised
+            # and neither writer loses its entry (lost-update prevention).
+            doc = Document.objects.select_for_update().get(pk=doc.pk)
             md = doc.markdown or ""
-            idx = md.find(marker)
-            if idx != -1:
-                # Replace section content (everything between this heading and the next)
-                heading_end = md.find("\n", idx)
-                if heading_end == -1:
-                    heading_end = len(md)
-                else:
-                    heading_end += 1  # include the newline
-                next_heading = md.find("\n## ", heading_end)
-                if next_heading == -1:
-                    doc.markdown = md[:heading_end] + content + "\n"
-                else:
-                    doc.markdown = md[:heading_end] + content + "\n" + md[next_heading:]
-            else:
-                # Section heading doesn't exist yet — append it
-                doc.markdown = md.rstrip() + f"\n\n{marker}\n{content}\n"
-        else:
-            # Quick-log append with timestamp
-            now = _tenant_now(tenant)
-            timestamp = now.strftime("%H:%M")
-            persona_name = _get_persona_name(tenant)
-            entry = f"- **{timestamp}** ({persona_name}) — {content}"
-            doc.markdown = (doc.markdown or "").rstrip() + "\n\n" + entry + "\n"
 
-        doc.save()
+            if section_slug_str:
+                # Derive heading from slug (e.g. "morning-report" → "Morning Report")
+                heading = section_slug_str.replace("-", " ").title()
+                marker = f"## {heading}"
+                # Anchor the heading match to a full line so "## Report" does not
+                # match "## Report Card", and so a "## " embedded mid-line inside
+                # another section's body cannot shift the slice boundaries.
+                head_match = re.search(r"(?m)^" + re.escape(marker) + r"[ \t]*$", md)
+                if head_match is not None:
+                    # Replace section content (everything between this heading and the next)
+                    heading_end = md.find("\n", head_match.end())
+                    if heading_end == -1:
+                        heading_end = len(md)
+                    else:
+                        heading_end += 1  # include the newline
+                    # Match the next "## " heading on its own line; capture the
+                    # preceding newline (if any) so the slice boundary matches the
+                    # original "\n## " behaviour and blank-line spacing is preserved.
+                    next_match = re.search(r"(?:^|\n)(## )", md[heading_end:])
+                    if next_match is None:
+                        doc.markdown = md[:heading_end] + content + "\n"
+                    else:
+                        next_heading = heading_end + next_match.start(1) - 1
+                        doc.markdown = md[:heading_end] + content + "\n" + md[next_heading:]
+                else:
+                    # Section heading doesn't exist yet — append it
+                    doc.markdown = md.rstrip() + f"\n\n{marker}\n{content}\n"
+            else:
+                # Quick-log append with timestamp
+                now = _tenant_now(tenant)
+                timestamp = now.strftime("%H:%M")
+                persona_name = _get_persona_name(tenant)
+                entry = f"- **{timestamp}** ({persona_name}) — {content}"
+                doc.markdown = md.rstrip() + "\n\n" + entry + "\n"
+
+            doc.save(update_fields=["markdown", "updated_at"])
 
         return Response(
             {
@@ -1722,7 +1738,11 @@ class RuntimeLessonSearchView(APIView):
             )
 
         try:
-            lessons = search_lessons(tenant=tenant, query=query, limit=limit)
+            # Materialize the QuerySet inside the guard so DB-execution
+            # failures (OperationalError, pgvector unavailable, network drop)
+            # are mapped to the search_failed envelope rather than raised
+            # during the later, unguarded iteration.
+            lessons = list(search_lessons(tenant=tenant, query=query, limit=limit))
         except ValueError as exc:
             return Response(
                 {"error": "search_failed", "detail": str(exc)},
@@ -1992,7 +2012,13 @@ class RuntimeJournalSearchView(APIView):
 
         query = request.query_params.get("q", "").strip()
         kind = request.query_params.get("kind", "").strip()
-        limit = min(int(request.query_params.get("limit", "20")), 50)
+        try:
+            limit = _parse_positive_int(request.query_params.get("limit"), default=20, max_value=50)
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if not query:
             return Response(
@@ -2217,6 +2243,41 @@ class RuntimeBYOErrorReportView(APIView):
             )
             return Response({"status": "no_credential"}, status=status.HTTP_200_OK)
 
+        # The cred just flipped to ERROR. At paste time the container was
+        # forced into a BYO-only state: openclaw.json pins the Claude primary
+        # with an intentionally empty fallback list and the env strips
+        # ANTHROPIC_API_KEY in favour of CLAUDE_CODE_OAUTH_TOKEN. With the
+        # cred now in ERROR, both _byo_model_extras and
+        # apply_byo_credentials_to_container exclude it, so a regen restores
+        # metered fallbacks AND ANTHROPIC_API_KEY — keeping the assistant
+        # responsive on a platform model while the user reconnects. The
+        # paste/delete paths do this same coupling; the error path must too,
+        # otherwise the running container keeps the stale BYO-only config and
+        # the assistant goes dark for ALL turns (the hourly apply-pending
+        # cron skips this tenant because the error path never bumped pending).
+        # Each step is best-effort: log on failure but still ack 200 so the
+        # runtime does not retry.
+        from apps.byo_models.services import regenerate_tenant_config
+        from apps.orchestrator.azure_client import apply_byo_credentials_to_container
+
+        try:
+            tenant.bump_pending_config()
+            regenerate_tenant_config(tenant)
+        except Exception:
+            logger.exception(
+                "regenerate_tenant_config failed for tenant=%s after BYO error report — "
+                "openclaw.json may stay BYO-only until the next config bump",
+                tenant.id,
+            )
+
+        try:
+            apply_byo_credentials_to_container(tenant)
+        except Exception:
+            logger.exception(
+                "apply_byo_credentials_to_container failed for tenant=%s after BYO error report",
+                tenant.id,
+            )
+
         return Response({"status": "ok", "credential_id": str(cred.id)}, status=status.HTTP_200_OK)
 
 
@@ -2306,11 +2367,15 @@ class RuntimeDocumentAppendView(APIView):
             },
         )
 
-        time_str = _tenant_now(tenant).strftime("%H:%M")
-        persona_name = _get_persona_name(tenant)
-        entry_block = f"\n\n### {time_str} — {persona_name}\n{content}\n"
-        doc.markdown = (doc.markdown or "").rstrip() + entry_block
-        doc.save()
+        with transaction.atomic():
+            # Re-read under a row lock to serialise concurrent appends and
+            # prevent a lost-update when two writers hit the same document.
+            doc = Document.objects.select_for_update().get(pk=doc.pk)
+            time_str = _tenant_now(tenant).strftime("%H:%M")
+            persona_name = _get_persona_name(tenant)
+            entry_block = f"\n\n### {time_str} — {persona_name}\n{content}\n"
+            doc.markdown = (doc.markdown or "").rstrip() + entry_block
+            doc.save(update_fields=["markdown", "updated_at"])
 
         return Response(
             {
@@ -2375,21 +2440,48 @@ class RuntimeProfileUpdateView(APIView):
 
         if "display_name" in data:
             name = (data["display_name"] or "").strip()
-            if name and len(name) <= 100:
-                user.display_name = name
-                updated_fields.append("display_name")
+            if not name:
+                return Response(
+                    {"error": "invalid_display_name", "detail": "display_name must not be empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(name) > 100:
+                return Response(
+                    {"error": "invalid_display_name", "detail": "display_name must be 100 characters or fewer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.display_name = name
+            updated_fields.append("display_name")
 
         if "language" in data:
             lang = (data["language"] or "").strip()
-            if lang and len(lang) <= 10:
-                user.language = lang
-                updated_fields.append("language")
+            if not lang:
+                return Response(
+                    {"error": "invalid_language", "detail": "language must not be empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(lang) > 10:
+                return Response(
+                    {"error": "invalid_language", "detail": "language must be 10 characters or fewer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.language = lang
+            updated_fields.append("language")
 
         if "location_city" in data:
             city = (data["location_city"] or "").strip()
-            if city and len(city) <= 255:
-                user.location_city = city
-                updated_fields.append("location_city")
+            if not city:
+                return Response(
+                    {"error": "invalid_location_city", "detail": "location_city must not be empty."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if len(city) > 255:
+                return Response(
+                    {"error": "invalid_location_city", "detail": "location_city must be 255 characters or fewer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            user.location_city = city
+            updated_fields.append("location_city")
 
         if "location_lat" in data and "location_lon" in data:
             try:

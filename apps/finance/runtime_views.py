@@ -382,6 +382,13 @@ class RuntimeFinancePayoffView(APIView):
 
         strategy = body.get("strategy")  # None = compare all
 
+        _VALID_STRATEGIES = ("snowball", "avalanche", "hybrid")
+        if strategy is not None and strategy not in _VALID_STRATEGIES:
+            return Response(
+                {"error": f"Unknown strategy: {strategy!r}. Must be one of: snowball, avalanche, hybrid"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Gather active debt accounts
         debt_accounts = FinanceAccount.objects.filter(
             tenant=tenant,

@@ -1,0 +1,86 @@
+[
+ {
+  "id": "FA-0748",
+  "area": "journal-workspace-sessions",
+  "layer": "backend",
+  "feature": "Parameterized Journal Query (OpenClaw runtime)",
+  "user_role": "container runtime",
+  "user_story": "As an OpenClaw container, I want to run structured queries against journal entries, tasks, and goals with filters, windows, aggregates and field projection so that I can answer complex questions about the user's data.",
+  "expected_behaviour": "POST /api/v1/journal/runtime/<tenant_id>/query/ uses internal-key auth via BaseQueryView. Request body (schema_version=1): {resource: 'entries'|'tasks'|'goals', window (optional), window_field (optional, resource-specific defaults), filter (dict), fields (list, optional), aggregate ('sum'|'count'|'avg'|'min'|'max', optional), aggregate_field (optional), group_by (optional), order_by (optional), limit (1-500, default 50)}. Strict extra='forbid' Pydantic schema — unknown keys return 400. Filter keys are whitelisted per resource (entries: mood/energy; tasks: status/pillar/parent_goal_id/has_due_date/overdue; goals: status/pillar/parent_goal_id/has_target_date). The 'overdue' filter resolves against tenant timezone. group_by requires aggregate. aggregate_field required for non-count aggregations. Returns {data, meta} envelope. Window resolution and hash-based caching handled by BaseQueryView base class.",
+  "entry_points": "apps/journal/query_views.py:JournalQueryView ; apps/journal/query_views.py:JournalQueryRequest ; POST /api/v1/journal/runtime/<tenant_id>/query/",
+  "dependencies": "Supabase/Postgres, apps/common/query_view.py:BaseQueryView, apps/common/windows.py:Window",
+  "inventory_notes": "Only count aggregation is currently meaningful — all NUMERIC_AGGREGATE_FIELDS sets are empty, so sum/avg/min/max on any journal resource will raise 400 invalid_aggregate_field. The overdue filter uses tenant_tz() for accurate local date comparison."
+ },
+ {
+  "id": "FA-0749",
+  "area": "journal-workspace-sessions",
+  "layer": "backend",
+  "feature": "Mint Personal Access Token (PAT)",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to create a personal access token so that I can authorize an external app (e.g. YardTalk) to push session data to my NU account.",
+  "expected_behaviour": "POST /api/v1/auth/tokens/create/ requires JWT authentication. Throttled at 10/hour per user (UserPATMintHourThrottle). Body: {name (max 255, required), scopes (list, optional, defaults to ['sessions:write','sessions:read']), expires_in_days (int, optional, 1-365)}. Validates scopes against ALLOWED_PAT_SCOPES = {'sessions:write', 'sessions:read'} — unknown scopes return 400. Generates a raw token (pat_<43-char base64url>), stores SHA-256 hash only (raw token never stored). Returns 201 with {id, name, token (raw, shown once), token_prefix, scopes, expires_at, created_at, warning}.",
+  "entry_points": "apps/tenants/pat_views.py:PATCreateView.post ; apps/tenants/pat_models.py:generate_pat ; POST /api/v1/auth/tokens/create/",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "Raw token is returned exactly once at creation — not stored. Token hash is SHA-256. Default scopes if none provided: ['sessions:write', 'sessions:read']. Token prefix (first 8 chars) is stored for display."
+ },
+ {
+  "id": "FA-0750",
+  "area": "journal-workspace-sessions",
+  "layer": "backend",
+  "feature": "List Personal Access Tokens",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to list my active PATs so that I can see which apps have access and identify tokens to revoke.",
+  "expected_behaviour": "GET /api/v1/auth/tokens/ requires JWT authentication. Returns all non-revoked PATs for the user (revoked_at__isnull=True). Fields: id, name, token_prefix, scopes, last_used_at, expires_at, revoked_at, created_at. Ordered by -created_at (model Meta). Raw token is never returned here.",
+  "entry_points": "apps/tenants/pat_views.py:PATListView.get ; GET /api/v1/auth/tokens/",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "Only non-revoked tokens are listed. Expired (expires_at <= now) tokens ARE included in the list — the is_valid property is not applied as a filter here."
+ },
+ {
+  "id": "FA-0751",
+  "area": "journal-workspace-sessions",
+  "layer": "backend",
+  "feature": "Revoke Personal Access Token",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to revoke a PAT so that an external app can no longer push data to my account.",
+  "expected_behaviour": "DELETE /api/v1/auth/tokens/<token_id>/ requires JWT authentication. Looks up PAT by id AND user (ownership check). Returns 404 if not found. Returns 400 if already revoked. Sets revoked_at=now() and saves. Returns 204 No Content.",
+  "entry_points": "apps/tenants/pat_views.py:PATRevokeView.delete ; DELETE /api/v1/auth/tokens/<uuid:token_id>/",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "Revocation is soft-delete (revoked_at timestamp). Authentication backend (apps/tenants/authentication.py) checks pat.is_valid which checks revoked_at is None before allowing subsequent requests with this PAT."
+ },
+ {
+  "id": "FA-0752",
+  "area": "journal-workspace-sessions",
+  "layer": "backend",
+  "feature": "Workspace Description Embedding Generation",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to generate a pgvector embedding of workspace descriptions so that incoming messages can be routed to the most semantically relevant workspace.",
+  "expected_behaviour": "Called synchronously on workspace create and PATCH (description field). Calls apps/lessons/services.py:generate_embedding(description) to produce a 1536-dimension vector, stored in Workspace.description_embedding (VectorField). Empty/blank descriptions store None (NULL). Exceptions are caught and logged — workspace creation never fails due to embedding errors. Workspaces with NULL embeddings are skipped in routing classification but remain usable as fallback.",
+  "entry_points": "apps/journal/workspace_services.py:embed_workspace_description",
+  "dependencies": "OpenAI embeddings API (via apps/lessons/services.py)",
+  "inventory_notes": "The embedding is used downstream by the router's workspace classification logic. It is not exposed directly as an API endpoint."
+ },
+ {
+  "id": "FA-0753",
+  "area": "journal-workspace-sessions",
+  "layer": "backend",
+  "feature": "Auto-create Project Document on Session Ingest",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to auto-create a project Document when a new session is pushed so that the project is reflected in the journal document tree.",
+  "expected_behaviour": "Called as a side-effect within SessionCreateView.post after a successful Session.objects.create(). Uses Document.objects.get_or_create(tenant, kind='project', slug=slugify(project_name)[:128], defaults={'title': project_name}). If project name slugifies to an empty string, the call is skipped silently. Idempotent — second push for the same project is a no-op.",
+  "entry_points": "apps/journal/session_views.py:_ensure_project_document",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "Only creates the document stub (title + slug); does not populate markdown content. slug is limited to 128 chars after slugify."
+ },
+ {
+  "id": "FA-0754",
+  "area": "journal-workspace-sessions",
+  "layer": "backend",
+  "feature": "Session Distillation Tracking (processed_at / processed_summary)",
+  "user_role": "container runtime",
+  "user_story": "As an OpenClaw container, I want to track which sessions have been distilled into journal primitives so that the heartbeat cron can find sessions still needing processing.",
+  "expected_behaviour": "The Session model carries processed_at (DateTimeField, nullable, db_indexed) and processed_summary (JSONField). NULL processed_at means pending distillation. The runtime pending endpoint queries processed_at__isnull=True. The mark-processed endpoint sets both fields atomically. processed_summary is a free-form dict recording what the assistant created (task ids, journal doc ids, skip reason, etc.).",
+  "entry_points": "apps/journal/session_models.py:Session.processed_at ; apps/journal/session_models.py:Session.processed_summary ; apps/integrations/runtime_views.py:RuntimeSessionsPendingView ; apps/integrations/runtime_views.py:RuntimeSessionMarkProcessedView",
+  "dependencies": "Supabase/Postgres",
+  "inventory_notes": "No automatic expiry or TTL on unprocessed sessions. test_mode=True sessions are excluded from the pending queue."
+ }
+]

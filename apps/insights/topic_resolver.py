@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-from django.db import transaction
+from django.db import IntegrityError, transaction
 
 from .models import TopicAlias, TopicRegistry
 
@@ -75,11 +75,28 @@ def resolve_topic(
     if alias:
         return alias.topic
 
-    return TopicRegistry.objects.create(
-        pillar=pillar,
-        slug=_make_unique_slug(pillar, slug_candidate),
-        display_name=candidate_norm or candidate,
-        status=TopicRegistry.Status.PROPOSED,
-        source=TopicRegistry.Source.PROPOSED_BY_MODEL,
-        proposed_by_model_version=model_version,
-    )
+    # Guard against a TOCTOU race: two concurrent requests for the same novel
+    # (pillar, slug) both pass the existence check above and both attempt the
+    # INSERT. The second hits the unique_together constraint. Catch the error
+    # in a savepoint so the outer atomic block remains usable, then re-query
+    # for the row the winning transaction committed.
+    unique_slug = _make_unique_slug(pillar, slug_candidate)
+    try:
+        with transaction.atomic():
+            return TopicRegistry.objects.create(
+                pillar=pillar,
+                slug=unique_slug,
+                display_name=candidate_norm or candidate,
+                status=TopicRegistry.Status.PROPOSED,
+                source=TopicRegistry.Source.PROPOSED_BY_MODEL,
+                proposed_by_model_version=model_version,
+            )
+    except IntegrityError:
+        # The concurrent winner already inserted (pillar, unique_slug); return it.
+        existing = TopicRegistry.objects.filter(pillar=pillar, slug=unique_slug).first()
+        if existing:
+            return existing
+        # Extremely unlikely: the slug itself changed between the two reads
+        # (e.g. the winner used a different suffix). Fall back to a fresh resolution
+        # pass against the now-populated DB.
+        return resolve_topic(pillar, candidate, model_version=model_version)

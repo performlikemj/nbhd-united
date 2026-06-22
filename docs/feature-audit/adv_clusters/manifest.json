@@ -1,0 +1,372 @@
+[
+ {
+  "cid": "A01",
+  "refs": [
+   "FA-0026",
+   "FA-0026"
+  ],
+  "n": 2,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A02",
+  "refs": [
+   "byo_models#2"
+  ],
+  "n": 1,
+  "top": "high",
+  "model": "opus"
+ },
+ {
+  "cid": "A03",
+  "refs": [
+   "FA-0341"
+  ],
+  "n": 1,
+  "top": "medium",
+  "model": "opus"
+ },
+ {
+  "cid": "A04",
+  "refs": [
+   "FA-0533"
+  ],
+  "n": 1,
+  "top": "medium",
+  "model": "opus"
+ },
+ {
+  "cid": "A05",
+  "refs": [
+   "FA-0584"
+  ],
+  "n": 1,
+  "top": "medium",
+  "model": "opus"
+ },
+ {
+  "cid": "A06",
+  "refs": [
+   "FA-0907"
+  ],
+  "n": 1,
+  "top": "medium",
+  "model": "opus"
+ },
+ {
+  "cid": "A07",
+  "refs": [
+   "billing#2"
+  ],
+  "n": 1,
+  "top": "medium",
+  "model": "opus"
+ },
+ {
+  "cid": "A08",
+  "refs": [
+   "integrations#1"
+  ],
+  "n": 1,
+  "top": "medium",
+  "model": "opus"
+ },
+ {
+  "cid": "A09",
+  "refs": [
+   "pii#2"
+  ],
+  "n": 1,
+  "top": "medium",
+  "model": "opus"
+ },
+ {
+  "cid": "A10",
+  "refs": [
+   "router-chat#1"
+  ],
+  "n": 1,
+  "top": "medium",
+  "model": "opus"
+ },
+ {
+  "cid": "A11",
+  "refs": [
+   "FA-0006"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A12",
+  "refs": [
+   "FA-0007-P1"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A13",
+  "refs": [
+   "FA-0173-P1"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A14",
+  "refs": [
+   "FA-0187-dead-code"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A15",
+  "refs": [
+   "FA-0229"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A16",
+  "refs": [
+   "FA-0362"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A17",
+  "refs": [
+   "FA-0427"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A18",
+  "refs": [
+   "FA-0536"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A19",
+  "refs": [
+   "FA-0596-incomplete"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A20",
+  "refs": [
+   "FA-0692"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A21",
+  "refs": [
+   "FA-0742"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A22",
+  "refs": [
+   "FA-0744"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A23",
+  "refs": [
+   "FA-0792"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A24",
+  "refs": [
+   "FA-0913"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A25",
+  "refs": [
+   "FA-0914"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A26",
+  "refs": [
+   "FA-0995"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A27",
+  "refs": [
+   "FA-1015"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A28",
+  "refs": [
+   "FA-1036"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A29",
+  "refs": [
+   "actions#1"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A30",
+  "refs": [
+   "actions#2"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A31",
+  "refs": [
+   "byo_models#3"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A32",
+  "refs": [
+   "fuel#1"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A33",
+  "refs": [
+   "fuel#2"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A34",
+  "refs": [
+   "fuel#3"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A35",
+  "refs": [
+   "integrations#2"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A36",
+  "refs": [
+   "journal-core#1"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A37",
+  "refs": [
+   "journal-core#2"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A38",
+  "refs": [
+   "orchestrator-provisioning#2"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A39",
+  "refs": [
+   "orchestrator-provisioning#3"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A40",
+  "refs": [
+   "router-chat#2"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ },
+ {
+  "cid": "A41",
+  "refs": [
+   "tenants-core#2"
+  ],
+  "n": 1,
+  "top": "low",
+  "model": "sonnet"
+ }
+]

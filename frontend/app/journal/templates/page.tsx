@@ -80,6 +80,7 @@ export default function TemplatesPage() {
   const deleteMutation = useDeleteNoteTemplateMutation();
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [validationError, setValidationError] = useState<string | null>(null);
   const [formState, setFormState] = useState<TemplateFormState>({
     name: "",
     slug: "",
@@ -89,6 +90,7 @@ export default function TemplatesPage() {
 
   const handleStartCreate = () => {
     setEditingId(null);
+    setValidationError(null);
     setFormState({
       name: "",
       slug: "",
@@ -99,6 +101,7 @@ export default function TemplatesPage() {
 
   const handleStartEdit = (template: NoteTemplate) => {
     setEditingId(template.id);
+    setValidationError(null);
     setFormState({
       name: template.name,
       slug: template.slug,
@@ -122,9 +125,19 @@ export default function TemplatesPage() {
         }))
         .filter((section) => section.slug && section.title),
     };
-    if (!payload.slug || !payload.name || !payload.sections.length) {
+    if (!payload.name) {
+      setValidationError("Add a template name.");
       return;
     }
+    if (!payload.slug) {
+      setValidationError("Add a slug for the template.");
+      return;
+    }
+    if (!payload.sections.length) {
+      setValidationError("Add at least one section with both a slug and a title.");
+      return;
+    }
+    setValidationError(null);
 
     if (editingId) {
       await updateMutation.mutateAsync({ id: editingId, data: payload });
@@ -179,9 +192,10 @@ export default function TemplatesPage() {
               <input
                 className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                 value={formState.name}
-                onChange={(event) =>
-                  setFormState((prev) => ({ ...prev, name: event.target.value }))
-                }
+                onChange={(event) => {
+                  setValidationError(null);
+                  setFormState((prev) => ({ ...prev, name: event.target.value }));
+                }}
                 placeholder="Template name"
               />
             </label>
@@ -190,12 +204,13 @@ export default function TemplatesPage() {
               <input
                 className="mt-1 w-full rounded-panel border border-border bg-surface px-3 py-2 text-sm"
                 value={formState.slug}
-                onChange={(event) =>
+                onChange={(event) => {
+                  setValidationError(null);
                   setFormState((prev) => ({
                     ...prev,
                     slug: normalizeSlug(event.target.value),
-                  }))
-                }
+                  }));
+                }}
                 placeholder="e.g. workday"
               />
             </label>
@@ -290,6 +305,11 @@ export default function TemplatesPage() {
           </div>
         </form>
 
+        {validationError ? (
+          <p className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
+            {validationError}
+          </p>
+        ) : null}
         {createMutation.isError ? (
           <p className="mt-3 rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
             {getErrorMessage(createMutation.error)}

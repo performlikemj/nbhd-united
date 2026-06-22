@@ -1,0 +1,26 @@
+[
+ {
+  "id": "FA-0335",
+  "area": "fe-fuel",
+  "layer": "frontend",
+  "feature": "Weight Unit Toggle (Strength Stats & Body Weight)",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to switch between kg and lbs so that my weight inputs and body weight entries show in my preferred unit.",
+  "expected_behaviour": "A kg/lbs UnitToggle appears in the BodyWeight component header and is also used in StrengthEditor for weight fields. Selecting a unit in BodyWeight updates the display immediately (local state via useWeightUnit hook). In StrengthEditor the unit is read from the profile. Weight values are always stored as kg; conversion happens at the display/commit boundary. The toggle in BodyWeight is a styled button group; changing unit in the strength editor requires accessing the profile preference.",
+  "entry_points": "frontend/components/fuel/use-weight-unit.ts:useWeightUnit ; frontend/components/fuel/body-weight.tsx:UnitToggle",
+  "dependencies": "useFuelProfileQuery",
+  "inventory_notes": "In BodyWeight the UnitToggle is visual-only local state; it does not persist to profile (unlike distance unit). In StrengthEditor weight unit comes from the profile."
+ },
+ {
+  "id": "FA-0336",
+  "area": "fe-fuel",
+  "layer": "frontend",
+  "feature": "New Workout Draft Autosave & Restore (New Workout Dialog)",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want my in-progress new-workout form to be saved locally so that if I navigate away mid-wizard my work isn't lost.",
+  "expected_behaviour": "Once the user selects a category (step 0→1), the wizard state is autosaved to localStorage under key NEW_WORKOUT_KEY (debounced 800ms). A flush runs on pagehide / visibilitychange / dialog unmount. On next 'Log workout' open (no presetDate), if a draft exists and cat is set, a 'Unfinished workout from X ago' banner renders with 'Resume' (restores all fields to the saved step/category/date/status/activity/template state) and 'Start fresh' (clears the draft) buttons. On successful create the draft is cleared. Draft is keyed by tenantId.",
+  "entry_points": "frontend/components/fuel/new-workout-dialog.tsx:NewWorkoutDialogInner ; lib/fuel-draft-autosave:saveDraft ; lib/fuel-draft-autosave:loadDraft ; lib/fuel-draft-autosave:clearDraft",
+  "dependencies": "lib/fuel-draft-autosave (localStorage), useMeQuery",
+  "inventory_notes": "Draft restore only offered on generic 'Log workout' open; opens via a calendar day (presetDate) always start fresh. createdRef prevents the unmount flush from re-writing a draft after successful creation."
+ }
+]

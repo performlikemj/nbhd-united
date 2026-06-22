@@ -36,6 +36,11 @@ VALID_KINDS: frozenset[str] = frozenset(c.value for c in Document.Kind)
 # ``.`` — defense against absolute paths, option flags, and hidden files.
 RUNTIME_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/-]*$")
 
+# Daily notes are keyed by ISO calendar date; a non-date slug corrupts the
+# date-cutoff filter in the journal context bundle (slug__gte text compare),
+# so enforce it on every write path, not just GET.
+DAILY_SLUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 MAX_SLUG_LEN = 128  # matches Document.slug max_length
 
 
@@ -61,4 +66,11 @@ def validate_kind_slug(kind: str, slug: str) -> tuple[str, str] | None:
         )
     if ".." in slug.split("/"):
         return ("invalid_slug", "slug may not contain '..' segments")
+    # Daily notes must be keyed by an ISO date so the date-cutoff filter in the
+    # journal context bundle stays correct. Enforce on every write path.
+    if kind == "daily" and not DAILY_SLUG_RE.match(slug):
+        return (
+            "invalid_slug",
+            f"Daily note slug must be a date (YYYY-MM-DD), got: {slug!r}",
+        )
     return None

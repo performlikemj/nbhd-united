@@ -203,6 +203,13 @@ class CronDeliveryView(APIView):
                 parse_mode=parse_mode,
             )
 
+        # Count every successful send against the per-tenant hourly cap. Done
+        # here (not per-branch) so the runaway-loop throttle covers ALL channels
+        # uniformly — including the app channel, whose inline 2xx Response never
+        # passes through _send_via_telegram/_send_via_line.
+        if 200 <= resp.status_code < 300:
+            _record_send(tid)
+
         # Record the outbound for thread-continuity on the next inbound.
         # This is the deterministic replacement for the LLM-mediated
         # ``_phase2_sync_block`` path — see apps.router.proactive_context.
@@ -298,7 +305,6 @@ class CronDeliveryView(APIView):
                 status=http_status.HTTP_502_BAD_GATEWAY,
             )
 
-        _record_send(tenant_id)
         logger.info(
             "Cron delivery (telegram): tenant=%s chat_id=%s chunks=%d",
             tenant_id,
@@ -402,7 +408,6 @@ class CronDeliveryView(APIView):
                 status=http_status.HTTP_502_BAD_GATEWAY,
             )
 
-        _record_send(tenant_id)
         logger.info(
             "Cron delivery (line): tenant=%s line_user=%s chunks=%d",
             tenant_id,

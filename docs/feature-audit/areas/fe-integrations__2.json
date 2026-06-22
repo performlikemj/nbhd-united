@@ -1,0 +1,122 @@
+[
+ {
+  "id": "FA-0367",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "Connected Apps page skeleton / loading state",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want the Connected Apps page to show a loading skeleton so that the layout does not jump when tokens load.",
+  "expected_behaviour": "While usePATsQuery is loading (GET /api/v1/auth/tokens/), ConnectedAppsContent renders SectionCardSkeleton with lines=4. The outer Suspense boundary also shows the same skeleton. An ErrorBoundary wraps the content; if an unrecoverable error occurs, a rose-tinted message is shown.",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:ConnectedAppsPage ; frontend/app/settings/connected-apps/page.tsx:ConnectedAppsContent ; GET /api/v1/auth/tokens/",
+  "dependencies": "GET /api/v1/auth/tokens/",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0368",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "Connected Apps empty state",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber with no connected apps, I want to see an explanation and a prompt to connect so that I know what this section is for.",
+  "expected_behaviour": "When usePATsQuery returns an empty array, an EmptyState component is rendered with a dashed-border card. It explains that apps like YardTalk can push work-session context and includes a 'Connect an app' button. Clicking that button opens the ConnectAppModal.",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:EmptyState ; frontend/app/settings/connected-apps/page.tsx:ConnectedAppsContent",
+  "dependencies": "",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0369",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "Personal Access Token list",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see all my active tokens so that I can audit which apps have access to my account.",
+  "expected_behaviour": "When tokens exist, ConnectedAppsContent renders a count line ('N token(s)'), a 'Connect an app' button in the header, and a list of TokenRow cards sorted most-recently-created first. Each TokenRow shows: token name, expired StatusPill if expires_at is past, truncated token prefix (pat_<prefix>…), scope chips, last-used / expires / created relative timestamps, and a 'Revoke' button. If a token has never been used and is more than 5 minutes old, a warning banner reads 'Not used yet. If you didn't save the token, revoke this one and create a new one.'",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:ConnectedAppsContent ; frontend/app/settings/connected-apps/page.tsx:TokenRow ; GET /api/v1/auth/tokens/",
+  "dependencies": "GET /api/v1/auth/tokens/",
+  "inventory_notes": "The 'likely lost' warning fires after 5 min of non-use since creation — a heuristic that may false-positive for users who copy the token but haven't yet configured the app."
+ },
+ {
+  "id": "FA-0370",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "Scope chips on token row",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see which permissions each token grants so that I can understand what the connected app can do.",
+  "expected_behaviour": "Each token's scopes array is rendered as colored chip badges. 'sessions:write' is shown with an emerald chip; 'sessions:read' with a sky-blue chip. Chips are displayed inline below the token name and prefix.",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:ScopeChip ; frontend/app/settings/connected-apps/page.tsx:TokenRow",
+  "dependencies": "",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0371",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "Connect app modal — preset selection step",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to choose whether I am connecting YardTalk or a custom app so that the token is pre-configured with the right defaults.",
+  "expected_behaviour": "Opening ConnectAppModal (via 'Connect an app' button) shows step='preset' with two option cards: 'YardTalk' (macOS app, sessions:write scope pre-selected) and 'Custom' (any app/script). Clicking either card advances to step='form' and sets the label/scope defaults accordingly. A Cancel button closes the modal. Escape key also closes it. On open, focus is moved to the first interactive element in the modal.",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:ConnectAppModal ; frontend/app/settings/connected-apps/page.tsx:Modal",
+  "dependencies": "",
+  "inventory_notes": "Modal closes on Escape or backdrop click. State is reset 150 ms after close (deferred so close animation can use the prior state)."
+ },
+ {
+  "id": "FA-0372",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "Connect app modal — token configuration form step",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to configure a token label, scopes, and expiry before creating it so that I have control over what the token can do.",
+  "expected_behaviour": "Step='form' shows a label input (maxLength=255, pre-filled with 'YardTalk' for that preset or empty for custom), a scope checkboxes section only for the custom preset (sessions:write / sessions:read), and an expiry dropdown (Never / 30 days / 90 days / 1 year). The 'Create token' button is disabled while mint.isPending, while the label is empty, or while custom preset has zero scopes selected. Clicking 'Create token' calls mintPAT() → POST /api/v1/auth/tokens/create/ with {name, scopes, expires_in_days?}. On success, step advances to 'reveal'. On 429 a rate-limit message is shown; on 400 a validation message is shown; otherwise a generic error is shown. A 'Back' button returns to the preset step.",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:ConnectAppModal ; POST /api/v1/auth/tokens/create/",
+  "dependencies": "POST /api/v1/auth/tokens/create/",
+  "inventory_notes": "YardTalk preset locks scopes to sessions:write only (no scope checkboxes shown). The name fallback when empty is the preset string ('yardtalk' or 'custom') — not a user-visible label."
+ },
+ {
+  "id": "FA-0373",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "Connect app modal — token reveal step",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see and copy the raw token immediately after creation so that I can paste it into my app before it is hidden forever.",
+  "expected_behaviour": "Step='reveal' shows a read-only input with the full token value, a 'Copy' button, and setup instructions. The input auto-selects on focus. Clicking 'Copy' calls navigator.clipboard.writeText(). On clipboard success, the button label changes to 'Copied ✓' with an emerald style for 2.5 s, then resets. On clipboard failure, a rose error message explains how to copy manually. For the YardTalk preset, numbered instructions are shown (Preferences → NU → paste token). For custom, a curl example is shown. An 'I've saved it' button closes the modal. The token is not stored client-side after close.",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:ConnectAppModal ; frontend/app/settings/connected-apps/page.tsx:SetupInstructions",
+  "dependencies": "",
+  "inventory_notes": "The PATCreateResponse.warning field is returned from the API but not displayed in the UI. The token can only be read from this reveal step — it is never shown again."
+ },
+ {
+  "id": "FA-0374",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "Revoke token — confirmation modal",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want a confirmation step before revoking a token so that I do not accidentally disconnect an app.",
+  "expected_behaviour": "Clicking 'Revoke' on a TokenRow opens RevokeConfirmModal with the token name shown ('X will stop working immediately. Any app using it will need a new token.'). A 'Revoke' button calls revokePAT(pat.id) → DELETE /api/v1/auth/tokens/<id>/revoke/ (via the revokePAT function). An optimistic update removes the token from the ['pats'] cache immediately. The button shows 'Revoking...' and is disabled while pending. On success, the modal closes and the cache is invalidated. On error, the previous state is restored and a rose error message is shown inside the modal. Cancel closes without action. Escape key also closes.",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:RevokeConfirmModal ; DELETE /api/v1/auth/tokens/<id>/revoke/ (via revokePAT)",
+  "dependencies": "DELETE /api/v1/auth/tokens/<id>/revoke/",
+  "inventory_notes": "The modal is keyed by revoking?.id so it fully resets if a different token is chosen without closing."
+ },
+ {
+  "id": "FA-0375",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "Connected Apps fetch error state",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber, I want to see an error message if my tokens fail to load so that I know to try refreshing.",
+  "expected_behaviour": "If usePATsQuery returns an error, a rose-tinted message 'Could not fetch tokens. Please refresh and try again.' is shown above the empty-state or token list. The outer ErrorBoundary also catches React rendering errors and shows 'Could not load Connected Apps. Please refresh and try again.' as a fallback.",
+  "entry_points": "frontend/app/settings/connected-apps/page.tsx:ConnectedAppsContent ; frontend/components/error-boundary.tsx:ErrorBoundary",
+  "dependencies": "",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-0376",
+  "area": "fe-integrations",
+  "layer": "frontend",
+  "feature": "iOS app PKCE authorize handoff",
+  "user_role": "subscriber",
+  "user_story": "As a subscriber opening the iOS app for the first time, I want the web sign-in to hand back an auth code to the app so that the app can log me in without a separate password flow.",
+  "expected_behaviour": "The iOS app opens /app/authorize?response_type=code&client=ios&code_challenge=<S256>&state=<nonce>&redirect_uri=nbhd://auth/callback&intent=register|signin in an ASWebAuthenticationSession. AppAuthorizePage validates params (must be response_type=code, client=ios, method=S256, redirect_uri in ALLOWED_REDIRECT_URIS); invalid params immediately redirect to nbhd://auth/callback?error=invalid_request. Valid params are stashed in sessionStorage. If already logged in, the page POSTs to /api/v1/auth/authorize/ with the PKCE challenge and redirects to nbhd://auth/callback?code=<code>&state=<state>. If not logged in, it routes to /signup (intent=register) or /login (intent=signin) and the auth UI completes the flow before bouncing back. On any server error the app receives nbhd://auth/callback?error=server_error. The page displays a status message ('Connecting your account…', 'Finishing sign-in…', or 'Redirecting you to sign in…') as aria-live text.",
+  "entry_points": "frontend/app/app/authorize/page.tsx:AppAuthorizePage ; frontend/lib/app-authorize.ts ; route: /app/authorize ; POST /api/v1/auth/authorize/",
+  "dependencies": "POST /api/v1/auth/authorize/ (backend PKCE code mint)",
+  "inventory_notes": "sessionStorage is used to carry params across the login/signup round-trip; private mode or quota failure breaks the handoff silently (the authorize page will fail to read the stash). The StrictMode double-invoke guard (ran.current) prevents the effect from firing twice in dev."
+ }
+]

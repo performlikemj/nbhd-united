@@ -1074,7 +1074,7 @@ function StrengthEditor({ detail, editing, onChange }: { detail: Record<string, 
               );
               })}
               {editing && (
-                <button onClick={() => updateEx(i, { ...ex, sets: [...ex.sets, { reps: 8, weight: ex.sets.at(-1)?.weight || (unit === "lbs" ? 27 : 60) }] })} className="text-[9px] font-bold uppercase tracking-wider text-ink-faint hover:text-ink transition">
+                <button onClick={() => updateEx(i, { ...ex, sets: [...ex.sets, { reps: 8, weight: ex.sets.at(-1)?.weight || (unit === "lbs" ? 60 : 27) }] })} className="text-[9px] font-bold uppercase tracking-wider text-ink-faint hover:text-ink transition">
                   + SET
                 </button>
               )}
@@ -1179,6 +1179,7 @@ function CardioStatsEditor({ detail, editing, onChange }: {
           hint={`Total distance covered, in ${unit === "mi" ? "miles" : "kilometers"}.`}
         >
           <NumericInput
+            key={`distance-${unit}`}
             value={distanceDisplay}
             onCommit={(v) =>
               onChange({ distance_km: v != null ? displayToKm(v, unit) : null })
@@ -1240,6 +1241,7 @@ function CardioStatsEditor({ detail, editing, onChange }: {
           hint={`Total elevation gain (sum of all climbs) in ${elevUnit === "ft" ? "feet" : "meters"}.`}
         >
           <NumericInput
+            key={`elevation-${unit}`}
             value={elevationDisplay}
             onCommit={(v) =>
               onChange({ elevation: v != null ? displayToMeters(v, unit) : null })

@@ -7,6 +7,22 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def create_monthly_snapshots_task() -> int:
+    """Write FinanceSnapshot rows for every finance-enabled active tenant.
+
+    Called on the 1st of each month via QStash
+    (``snapshot-finance-monthly`` in register_system_crons.py).
+
+    Thin wrapper around ``apps.finance.snapshot.create_monthly_snapshots``
+    so the function can be referenced from TASK_MAP in apps/cron/views.py.
+    Returns the number of snapshots created (0 when all tenants are
+    already snapshotted or none are finance-enabled).
+    """
+    from .snapshot import create_monthly_snapshots
+
+    return create_monthly_snapshots()
+
+
 def schedule_finance_welcome_task(tenant_id: str) -> None:
     """Create a one-shot welcome cron for a newly Gravity-enabled tenant.
 

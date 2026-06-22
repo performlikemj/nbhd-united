@@ -101,10 +101,16 @@ def to_storage_value(
     relationship: str = "",
     notes: str = "",
     updated_at: str | None = None,
+    arbiter_judged_at: str | None = None,
 ) -> dict[str, Any]:
     """Build a canonical dict entry for writing back to
     ``Tenant.pii_entity_map``. Empty optional fields are omitted so
     the JSON stays compact.
+
+    ``arbiter_judged_at`` is the internal stamp written by the PII arbiter
+    cron to record that an entry has already been evaluated, preventing
+    redundant re-evaluation on the next sweep. Pass the existing stamp when
+    updating a user-editable entry so it is preserved across PATCH round-trips.
     """
     out: dict[str, Any] = {"name": name}
     if relationship:
@@ -113,6 +119,8 @@ def to_storage_value(
         out["notes"] = notes
     if updated_at:
         out["updated_at"] = updated_at
+    if arbiter_judged_at:
+        out["arbiter_judged_at"] = arbiter_judged_at
     return out
 
 

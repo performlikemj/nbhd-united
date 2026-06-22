@@ -1,0 +1,18 @@
+[
+ {
+  "ref": "FA-0744",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "The security fix itself is correct and complete - there is NO live vulnerability. SessionDetailView.get_permissions() (apps/journal/session_views.py:195-200) returns [HasSessionsWriteScope()] for DELETE and keeps HasSessionsReadScope for GET; HasPATScope.has_permission (apps/tenants/permissions.py:23-31) passes through for JWT (auth_pat is None) so the console is unaffected; DELETE stays tenant-filtered via get_object_or_404(..., tenant=tenant). A read-only PAT genuinely cannot delete sessions in the shipped code, so no real user/operator is exposed.\n\nThe claim is accurate ONLY as a test-coverage / regression-safety gap. The suggested_fix for FA-0744 explicitly required a regression test asserting a sessions:read-only PAT receives 403 on DELETE while a sessions:write PAT succeeds. That test was not added: the disposition files_changed is just ['apps/journal/session_views.py'] with no test file (fix_dispositions.json:667-673). The only DELETE test (apps/journal/tests_sessions.py:345 test_delete_session) runs under JWT auth (SessionDetailTest.setUp lines 320-325 uses RefreshToken), which bypasses scope checks entirely and never exercises the new write-scope guard. The PAT scope-test class (SessionScopeTest, lines 160-219) covers ingest/list/get-detail for read and write PATs but has NO DELETE case at all.\n\nNet: this is not a user-facing defect - the privilege-escalation fix works. It is a genuine but minor incompleteness: the explicitly-required regression test guarding the just-fixed escalation path was omitted, so a future revert of DELETE to the read scope would pass the suite silently. Correctly rated low / incomplete.",
+  "suggested_fix": "Add two tests to SessionScopeTest in apps/journal/tests_sessions.py (it already has _pat_with_scopes and self.session): (1) test_read_scope_cannot_delete - auth with a ['sessions:read'] PAT, DELETE /api/v1/sessions/{self.session.id}/, assert 403 and that the session still exists; (2) test_write_scope_can_delete - auth with a ['sessions:write'] PAT, DELETE the same endpoint, assert 204 and that the session is gone. This pins the get_permissions() override against regression.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/journal/session_views.py:195-200 - get_permissions() returns HasSessionsWriteScope for DELETE, read scope for GET (fix is correct)",
+   "apps/tenants/permissions.py:23-31 - HasPATScope.has_permission returns True when auth_pat is None (JWT bypass preserved)",
+   "apps/journal/tests_sessions.py:319-348 - SessionDetailTest.setUp uses RefreshToken (JWT); test_delete_session never tests a read-only PAT getting 403 on DELETE",
+   "apps/journal/tests_sessions.py:160-219 - SessionScopeTest covers PAT ingest/list/get-detail but has no DELETE test for either scope",
+   "docs/feature-audit/fix_dispositions.json:667-673 - FA-0744 disposition files_changed lists only session_views.py; no test file added despite suggested_fix requiring a regression test"
+  ]
+ }
+]

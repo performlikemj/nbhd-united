@@ -1,0 +1,18 @@
+[
+ {
+  "ref": "FA-0187-dead-code",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "Accurate dead-code observation with NO user-facing impact. The FA-0187 fix replaced setSuccess(setCreateFeedback,...) with showToast('Task created','success') in handleCreate (line 359); handleUpdate also uses showToast (line 397). This leaves three orphaned artifacts: (1) setSuccess (lines 303-311) defined but never called -- grep confirms line 303 is its only occurrence; dead code. (2) The create button branch at 684-685 (createFeedback.status === 'success' ? 'Created') is unreachable: createFeedback is only ever set to 'saving' (line 339) or 'error' (line 362) on the create path, never 'success'. (3) getSaveButtonClass's emerald 'success' branch (lines 189-191) is unreachable for the create button. The 'stuck at saving after success' note is technically true but harmless: on success the form unmounts (setShowCreate(false), line 358) and createFeedback resets to 'idle' when the form is reopened, and success is surfaced by the toast. So the fix is FUNCTIONALLY COMPLETE and correct -- the original invisible 'Created' success-text defect is resolved. What remains is purely cosmetic dead code that no real user/operator will ever hit. eslint-config-next treats no-unused-vars as a warning (not an error), so CI does not break. This is a legitimate code-hygiene/incompleteness finding, not a broken or regressed fix.",
+  "suggested_fix": "Delete the orphaned setSuccess helper (frontend/app/settings/cron-jobs/page.tsx lines 303-311) and simplify the create submit button (lines 682-686) to just `{createMutation.isPending ? \"Creating...\" : \"Create\"}`, removing the unreachable success branch. The getSaveButtonClass success branch can stay since the same helper is shared with the edit button (line 1097) which is also toast-only now, but it is harmless either way.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "frontend/app/settings/cron-jobs/page.tsx:303-311 setSuccess defined; grep shows line 303 is its only occurrence (never called)",
+   "frontend/app/settings/cron-jobs/page.tsx:339,362 createFeedback set only to 'saving'/'error' on the create path",
+   "frontend/app/settings/cron-jobs/page.tsx:359,397 both create and edit success paths use showToast",
+   "frontend/app/settings/cron-jobs/page.tsx:684-685 unreachable 'Created' success branch",
+   "docs/feature-audit/fix_dispositions.json FA-0187 confirms intentional swap to showToast"
+  ]
+ }
+]

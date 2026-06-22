@@ -76,7 +76,7 @@ export function Starfield({ className = "" }: { className?: string }) {
         ctx.fill();
       }
 
-      rafRef.current = requestAnimationFrame(draw);
+      if (!prefersReduced) rafRef.current = requestAnimationFrame(draw);
     }
 
     if (prefersReduced) {
@@ -88,6 +88,7 @@ export function Starfield({ className = "" }: { className?: string }) {
     const onResize = () => {
       resize();
       initStars();
+      if (prefersReduced) draw();
     };
     window.addEventListener("resize", onResize);
 

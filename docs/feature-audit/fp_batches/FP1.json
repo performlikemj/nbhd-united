@@ -1,0 +1,216 @@
+[
+ {
+  "id": "FA-0068",
+  "area": "byo_models",
+  "feature": "BYO model registry injection into openclaw.json",
+  "expected_behaviour": "`_byo_model_extras(tenant)` in config_generator returns an empty dict if `tenant.byo_models_enabled` is False or no BYO credential for (anthropic, cli_subscription) exists with a status other than ERROR. When a valid credential exists, returns `{'anthropic/claude-sonnet-4-6': {'alias': 'claude-sonnet'}, 'anthropic/claude-opus-4-5': {'alias': 'claude-opus'}}`. These are merged into the tenant's model allowlist by `resolve_tenant_models`. When the resolved primary model is a BYO model, `fallbacks_list` is explicitly set to `[]` so billing/auth errors surface instead of silently switching to a platform-metered model. `generate_openclaw_config` also adds `cliBackends.claude-cli.command=/opt/nbhd/claude-with-token.sh` when BYO Anthropic Sonnet is in extras.",
+  "entry_points": "apps/orchestrator/config_generator.py:_byo_model_extras ; apps/orchestrator/config_generator.py:resolve_tenant_models ; apps/orchestrator/config_generator.py:generate_openclaw_config",
+  "original_claim": "The expected behaviour states BYO extras include `anthropic/claude-opus-4-5` but the code serves `anthropic/claude-opus-4-7` (via `ANTHROPIC_OPUS_MODEL` constant). The spec is stale — the code docstring, constant, and implementation all agree on opus-4-7. Subscribers see the correct (newer) model but the inventory description is wrong, which creates a documentation gap if the spec is used to write integration tests.",
+  "original_category": "data-integrity",
+  "original_severity": "low",
+  "refutation": "Not a product defect. The discrepancy is entirely between the audit spec's hardcoded expected_behaviour string (claude-opus-4-5) and the actual code, which consistently uses anthropic/claude-opus-4-7 across all layers: the constant ANTHROPIC_OPUS_MODEL (constants.py:75), the display name ANTHROPIC_OPUS_DISPLAY = \"Claude Opus 4.7\" (constants.py:76), the _byo_model_extras docstring \"Claude Opus 4.7\" (config_generator.py:983), and the implementation (config_generator.py:1009 maps _OPUS_MODEL to alias \"claude-opus\"). The code is internally self-consistent and serves the newer/correct model. A subscriber's openclaw.json receives the right model id and routes correctly through the anthropic:claude-cli auth profile — zero runtime impact. The QA verdict itself concedes subscribers see the correct model and that only the inventory description is wrong. The stale artifact is the QA spec JSON (docs/feature-audit/areas/byo_models__1.json), a generated audit document, not shipped code or user-facing docs. A spec lagging behind the implementation is not a data-integrity defect in the feature; the hypothetical \"documentation gap if the spec is used to write integration tests\" applies to the audit artifact, not the product.",
+  "refutation_evidence": [
+   "apps/billing/constants.py:72-76 — ANTHROPIC_OPUS_MODEL = 'anthropic/claude-opus-4-7', ANTHROPIC_OPUS_DISPLAY = 'Claude Opus 4.7'",
+   "apps/orchestrator/config_generator.py:983-988 — docstring says 'Claude Opus 4.7' + late import of ANTHROPIC_OPUS_MODEL as _OPUS_MODEL",
+   "apps/orchestrator/config_generator.py:1007-1009 — extras[_OPUS_MODEL] = {'alias': 'claude-opus'} under has_anthropic_cli",
+   "docs/feature-audit/areas/byo_models__1.json FA-0068 expected_behaviour — stale literal 'anthropic/claude-opus-4-5'"
+  ]
+ },
+ {
+  "id": "FA-0119",
+  "area": "core",
+  "feature": "Admin: MeditationSession Management",
+  "expected_behaviour": "Django admin at /admin/core/meditationsession/. list_display: title, tenant, date, status, voice, duration_ms, created_at. list_filter: status. search_fields: title, theme, tenant__user__display_name. readonly_fields: id, created_at, updated_at. The error field is visible for failed sessions to expose the last render error message.",
+  "entry_points": "apps/core/admin.py:MeditationSessionAdmin",
+  "original_claim": "The MeditationSessionAdmin does not include the `error` field in `readonly_fields`, so it renders as an editable textarea in the change form. The expected behaviour states the error field should be visible for diagnosing failed sessions, implying read-only audit access; an admin could accidentally overwrite or clear the last render error message, destroying diagnostic data.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Not a defect. The claim is factually correct that `error` is absent from `readonly_fields` (apps/core/admin.py:19) and therefore renders as an editable textarea. But the feature's own expected_behaviour explicitly specifies \"readonly_fields: id, created_at, updated_at\" and separately says only that \"The error field is visible for failed sessions to expose the last render error message.\" An editable field IS visible in the Django admin change form, so the implementation exactly matches the documented spec. The QA verdict invents a stricter \"read-only audit access\" requirement by inferring it from the word \"visible\" — the spec never asks for `error` to be read-only. Additionally, this surface is the Django admin, accessible only to trusted staff/operators (user_role is \"admin/operator\", not an end-user); editing the diagnostic `error` field would require deliberately typing into the textarea and clicking Save, which is ordinary Django admin behaviour for essentially every non-timestamp field on every registered model (CoreProfileAdmin uses the same readonly set). The error data is overwritten by the render pipeline on each attempt (help_text: \"Last render error, when status=failed\"), not a permanent audit artifact requiring write protection. Intended/acceptable behaviour matching the spec.",
+  "refutation_evidence": [
+   "apps/core/admin.py:14-19 — MeditationSessionAdmin readonly_fields = [id, created_at, updated_at]; error not included",
+   "apps/core/models.py:126 — error = TextField(blank=True, default=\"\", help_text=\"Last render error, when status=failed\")",
+   "docs/feature-audit/areas/core__2.json FA-0119 expected_behaviour — spec lists readonly_fields as id/created_at/updated_at and only requires error to be 'visible'; user_role=admin/operator"
+  ]
+ },
+ {
+  "id": "FA-0121",
+  "area": "cron",
+  "feature": "Cron job list (subscriber dashboard)",
+  "expected_behaviour": "GET /api/v1/cron-jobs/ (tenant-scoped). Requires DRF IsAuthenticated. If tenant.postgres_cron_canonical=True, reads CronJob table directly (no gateway call). If tenant is hibernated, serves from Postgres cache. If gateway is reachable, calls cron.list on the OpenClaw container, upserts results into the CronJob cache, and updates Tenant.cron_jobs_snapshot. Filters out hidden system crons (Background Tasks, Heartbeat Check-in, Personal Question, Project Check-in) and names starting with _sync:/ _fuel: prefixes. Each visible job is tagged with foreground boolean based on presence of Phase 2 sync marker in payload.message. Returns {jobs: [...]} with 200. Returns 502 if gateway is unreachable and no cache exists.",
+  "entry_points": "apps/cron/tenant_views.py:CronJobListCreateView.get ; apps/cron/postgres_canonical.py:list_visible_jobs ; GET /api/v1/cron-jobs/",
+  "original_claim": "The expected behaviour states the endpoint returns 502 when the gateway is unreachable and no cache exists. In the legacy (non-pg-canonical) path, `read_jobs_from_cache` returns an empty list when the CronJob table is empty and `cron_jobs_snapshot` is absent, so the view returns 200 with `{\"jobs\": []}` rather than 502. A subscriber with no previous successful cron.list sync will see a silently empty Scheduled Tasks card instead of an error banner when the container is down.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive on two independent grounds. (1) The cited code path is effectively dead for the entire fleet. The empty-cache-instead-of-502 case only exists in the legacy branch reached when tenant.postgres_cron_canonical=False (tenant_views.py:236-269). Migration 0058 set this flag True for all 24 existing tenants and migration 0067 made True the model default for all new tenants (0067 docstring: \"all 24 already True via 0058\"). Every request short-circuits at tenant_views.py:223 to postgres_canonical.list_visible_jobs, which reads the CronJob table directly and never calls the gateway, so the container being unreachable is irrelevant on the live path and no production subscriber can reach the branch the claim describes. (2) Even within that legacy branch, returning 200 {jobs: []} on container-unavailable is intentional graceful degradation, not a defect. Comments at tenant_views.py:228-235 explicitly distinguish \"no active container at all\" (_require_active_tenant raises GatewayError -> 502 at lines 237-239) from \"container provisioned but momentarily unreachable\" (cold start / transient Azure ingress 404/502/503/504/timeout -> serve cache at lines 244-249, is_container_unavailable_error in cache.py:34-47). The cache-fallback was purpose-built to AVOID surfacing the confusing Azure \"Container App - Unavailable\" splash to users; an empty cache during the brief pre-first-sync window is an accepted edge of that design. The expected_behaviour clause \"Returns 502 if gateway is unreachable and no cache exists\" is the auditor's own reconstruction and conflates the deliberate two-tier handling; the genuine 502 (no active container) is preserved. The frontend does render distinct states (rose error banner on 502 at page.tsx:710-719 vs \"No scheduled tasks configured yet.\" on empty 200 at page.tsx:1132), but the empty-200 state is unreachable in production and intended where it exists.",
+  "refutation_evidence": [
+   "apps/cron/tenant_views.py:223 (postgres_cron_canonical short-circuit to pg.list_visible_jobs for entire fleet)",
+   "apps/cron/tenant_views.py:228-235 (comments: hibernated->cache, not-provisioned->502, fallback only for container-unavailable)",
+   "apps/cron/tenant_views.py:236-250 (502 on no active container vs serve-cache on is_container_unavailable_error)",
+   "apps/cron/cache.py:34-47 (is_container_unavailable_error covers 404/502/503/504/timeouts)",
+   "apps/cron/cache.py:95-111 (read_jobs_from_cache returns [] when no rows and no legacy snapshot)",
+   "apps/tenants/migrations/0067_postgres_cron_canonical_default_true.py:17-18 (all 24 tenants already True via 0058; default now True for new tenants)",
+   "apps/cron/postgres_canonical.py:98-104 (live path reads CronJob table, no gateway call)",
+   "frontend/app/settings/cron-jobs/page.tsx:710-719,1132 (error banner on 502 vs empty-state copy on 200 [])"
+  ]
+ },
+ {
+  "id": "FA-0126",
+  "area": "cron",
+  "feature": "Cron job bulk delete (subscriber dashboard)",
+  "expected_behaviour": "POST /api/v1/cron-jobs/bulk-delete/ (tenant-scoped). Requires IsAuthenticated. Accepts {ids: [name-or-id, ...]}. Returns 400 if ids is not a non-empty list. Returns 403 if any id is a hidden system cron. Deduplicates ids preserving order. If postgres_cron_canonical: deletes rows in atomic transaction, signal fires per-row. Legacy: if tenant is hibernated, wakes container and returns 503 with container_waking=true. Iterates gateway cron.remove calls; if mid-loop unavailability detected, aborts and returns 503. Returns 200 on full success, 207 on partial success, 502 if all fail.",
+  "entry_points": "apps/cron/tenant_views.py:CronJobBulkDeleteView.post ; apps/cron/postgres_canonical.py:bulk_delete_jobs ; POST /api/v1/cron-jobs/bulk-delete/",
+  "original_claim": "The expected behaviour says the endpoint returns 502 when all bulk-delete calls fail. In the postgres-canonical path (`bulk_delete_jobs`), when every requested job is not found the function returns `HTTP_404_NOT_FOUND`, not 502. The legacy gateway path correctly returns 502 when all `cron.remove` calls fail. A frontend coded to treat 502 as the all-failed signal will silently mishandle a 404 on the pg path, leaving the user with no feedback that deletion failed.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "The status-code divergence is real in code -- the pg-canonical path (postgres_canonical.py:265-267) returns 404 when every job is not-found, while the legacy gateway path (tenant_views.py:754-756) returns 502 when all cron.remove calls fail -- but the claimed USER IMPACT does not exist. The claim hinges on 'a frontend coded to treat 502 as the all-failed signal,' which the actual frontend is NOT. The only consumer is the web dashboard: bulkDeleteCronJobs() (frontend/lib/api.ts:1030) calls apiFetch, which throws on ANY non-2xx response (api.ts:171, 'if (!response.ok)'), attaching the status but never branching on it. handleBulkDeleteConfirm (cron-jobs/page.tsx:494-507) wraps the call in try/catch and on any thrown error calls setBulkDeleteError(getErrorMessage(err)), rendering a visible rose-colored error message (page.tsx:770-771). So 404 and 502 are handled identically -- both surface error feedback to the user; neither is silently mishandled. There is no 502-specific branch anywhere in the frontend, and no iOS/Swift consumer of this endpoint exists. Additionally the 404 is arguably more correct than 502 for the pg path: 'all rows not found' is a genuine not-found condition with no gateway involved, whereas 502 (Bad Gateway) describes the legacy path's gateway-failure semantics. The two paths legitimately differ because their failure modes differ. The spec line '502 if all fail' describes legacy gateway behaviour; it is not a contract the frontend depends on. No real user or operator experiences a defect.",
+  "refutation_evidence": [
+   "apps/cron/postgres_canonical.py:253-276 (bulk_delete_jobs returns 404 when errors and not results, 207 partial, 200 full)",
+   "apps/cron/tenant_views.py:706-711 (pg path dispatch returns result _status)",
+   "apps/cron/tenant_views.py:754-758 (legacy returns 502 when errors and not results)",
+   "frontend/lib/api.ts:1024-1035 (bulkDeleteCronJobs / BulkDeleteResult)",
+   "frontend/lib/api.ts:171-176 (apiFetch throws on any !response.ok; no per-status branching)",
+   "frontend/app/settings/cron-jobs/page.tsx:494-507 (try/catch surfaces error via setBulkDeleteError on any thrown status)",
+   "frontend/app/settings/cron-jobs/page.tsx:770-771 (visible error rendering)"
+  ]
+ },
+ {
+  "id": "FA-0127",
+  "area": "cron",
+  "feature": "Cron job bulk foreground/background toggle (subscriber dashboard)",
+  "expected_behaviour": "POST /api/v1/cron-jobs/bulk-update-foreground/ (tenant-scoped). Requires IsAuthenticated. Accepts {ids: [name-or-id, ...], foreground: bool}. Returns 400 if ids invalid or foreground not a boolean. Returns 403 if any id is a hidden system cron. If postgres_cron_canonical: strips existing Phase 2 block, re-wraps per foreground flag, saves each row, signal fires. Legacy path: fetches all jobs, rebuilds each job with delete+recreate, rolls back on failure. Skips jobs already in the desired state. Returns 200, 207 (partial), or 502.",
+  "entry_points": "apps/cron/tenant_views.py:CronJobBulkUpdateForegroundView.post ; apps/cron/postgres_canonical.py:bulk_update_foreground ; POST /api/v1/cron-jobs/bulk-update-foreground/",
+  "original_claim": "The expected behaviour says the endpoint returns 502 when all updates fail. In the postgres-canonical path (`bulk_update_foreground`), when all jobs either do not exist or have no payload, the function returns `HTTP_400_BAD_REQUEST` rather than 502. The legacy gateway path returns 502 when all `cron.remove`/`cron.add` calls fail. The inconsistent error code between the two paths may confuse the frontend error-handling layer.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "The code facts are accurate: postgres_canonical.bulk_update_foreground (postgres_canonical.py:333-335) returns HTTP 400 on the all-fail case, while the legacy gateway path (tenant_views.py:918-920) returns HTTP 502. But this is not a real defect. (1) The differing codes are semantically defensible: the Postgres path's failures are purely local data conditions (job name not found, or payload not a dict) with NO upstream gateway call, so 400 (bad/unprocessable request) is correct; the legacy path's all-fail case is dominated by GatewayError (the OpenClaw container failing cron.remove/cron.add), so 502 (bad gateway) is correct. The only scenario where identical input yields different codes is the corner case 'all requested job IDs do not exist'. (2) The claimed impact -- 'may confuse the frontend error-handling layer' -- is unsubstantiated: the sole frontend caller (frontend/lib/queries.ts:1048-1060 useBulkUpdateForegroundMutation) handles onError generically by invalidating the cron-jobs cache and never branches on HTTP status; apiFetch (frontend/lib/api.ts:98) has no 400/502/207 special-casing either. No code path distinguishes the two responses. (3) Normal UX toggles jobs the dashboard already lists (which exist), so updates succeed (200/207); the all-fail branch is effectively unreachable in practice. (4) The legacy path is deprecated -- postgres_cron_canonical is the canonical default (model default flipped True per migration 0067), so active tenants take the Postgres path. Cosmetic API-semantics nit in a deprecated corner case with no demonstrated user/operator impact.",
+  "refutation_evidence": [
+   "apps/cron/postgres_canonical.py:314-344 (errors populated only by local 'not found'/'no payload' conditions, no gateway call; 400 when errors and not results)",
+   "apps/cron/tenant_views.py:859-931 (legacy path; errors from GatewayError on cron.remove/add and 'Job not found' at :870; 502 when errors and not results)",
+   "apps/cron/tenant_views.py:819-826 (postgres_cron_canonical dispatch — canonical default path)",
+   "frontend/lib/queries.ts:1048-1060 (useBulkUpdateForegroundMutation onError just invalidates cache, no status branching)",
+   "frontend/lib/api.ts:98 (apiFetch has no 400/502/207 special-casing)"
+  ]
+ },
+ {
+  "id": "FA-0135",
+  "area": "cron",
+  "feature": "Register system QStash cron schedules (CI deploy hook)",
+  "expected_behaviour": "POST /api/cron/register-system-crons/. Auth: X-Deploy-Secret header (401 if wrong, 400 if base_url missing, 503 if QSTASH_TOKEN not configured). Fetches existing QStash schedules via API. For each entry in SYSTEM_CRONS (25 schedules): skips if destination+cron_expr unchanged, deletes+recreates if cron expression changed, creates if new. Returns {registered, updated, skipped, failed} lists.",
+  "entry_points": "apps/cron/views.py:register_system_crons ; apps/cron/management/commands/register_system_crons.py:SYSTEM_CRONS ; POST /api/cron/register-system-crons/",
+  "original_claim": "The expected behaviour states SYSTEM_CRONS contains 25 schedules. The actual list in the management command and the view both contain exactly 24 entries. This is a documentation drift rather than a code bug, but if any monitoring or CI assertion counts against the stated 25, it would false-positive.",
+  "original_category": "data-integrity",
+  "original_severity": "low",
+  "refutation": "Not a defect. SYSTEM_CRONS contains exactly 24 tuple entries (verified by listing every entry at register_system_crons.py:21-110). The \"25\" the QA flags exists ONLY in the feature-audit record's own auditor-written expected_behaviour and inventory_notes; it is not asserted anywhere in code, tests, or monitoring. The view at views.py:935 imports the very same SYSTEM_CRONS list and iterates it at views.py:957 (for name, cron_expr, path in SYSTEM_CRONS), so the management command and the view are one shared source of truth, not two divergent lists. The register loop is count-agnostic: it processes whatever the list holds, so 24 vs 25 has zero runtime impact; all crons register/update/skip correctly. A repo-wide search found no test or CI assertion comparing the list length to 25 (the only \"25\" matches are cron-minute fields like \"25 * * * *\" and an unrelated canary Apr-25 date test). The QA's own escape hatch (\"IF any monitoring or CI assertion counts against the stated 25\") is unfulfilled; no such guard exists. This is documentation drift in the audit artifact itself, affecting no user or operator.",
+  "refutation_evidence": [
+   "apps/cron/management/commands/register_system_crons.py:19-111 (24 tuples, counted exactly)",
+   "apps/cron/views.py:935 (imports SYSTEM_CRONS from the management command)",
+   "apps/cron/views.py:957 (single loop iterates the same list, count-agnostic)",
+   "grep across apps/cron: no test or CI assertion on list length == 25; only '25' hits are cron-minute fields and an unrelated canary date test",
+   "docs/feature-audit/areas/cron__1.json FA-0135: '25' appears only in auditor-authored expected_behaviour/inventory_notes"
+  ]
+ },
+ {
+  "id": "FA-0165",
+  "area": "cron",
+  "feature": "Backfill Telegram delivery targets management command",
+  "expected_behaviour": "python manage.py backfill_cron_targets. Targets active tenants with a container FQDN and a telegram_chat_id. For each: fetches cron.list, finds jobs with delivery.mode=announce, delivery.channel=telegram, and no delivery.to set. Updates each such job via cron.update with delivery.to=str(telegram_chat_id). Prints per-job/per-tenant results. Skips tenants with gateway errors.",
+  "entry_points": "apps/cron/management/commands/backfill_cron_targets.py:Command",
+  "original_claim": "The backfill command's purpose is defeated by the iOS delivery normalization backstop in `invoke_gateway_tool`. When it calls `cron.update` with a patch containing `delivery: {mode: 'announce', channel: 'telegram', to: '<chat_id>'}`, the normalization at gateway_client.py:154-166 intercepts the call, detects that the delivery is not iOS-safe, and silently rewrites the patch to `delivery: {mode: 'none'}` before sending to the gateway. The command logs a success and increments its counter, but the actual delivery written to the gateway discards the `to` field and switches the mode from `announce` to `none`, so Telegram delivery is broken rather than fixed for those jobs.",
+  "original_category": "logic",
+  "original_severity": "medium",
+  "refutation": "The interception mechanism is real, but the claimed harm (\"Telegram delivery is broken rather than fixed\") misreads intent, making this a false positive. Chronology: backfill_cron_targets.py (2026-02-19, commit 4116937) was a ONE-TIME migration to populate delivery.to on legacy announce/telegram crons. The iOS backstop (_normalize_cron_delivery_for_ios, 2026-06-21, commit 7e40ef0) was added 4 months later and DELIBERATELY rewrites any non-iOS-safe delivery patch to {mode:\"none\"} at gateway_client.py:159-166. So yes, the backfill's cron.update patch ({delivery:{mode:announce,channel:telegram,to:chat_id}}) does get rewritten to {mode:\"none\"}, discarding to/channel. BUT: (1) the announce/telegram path the backfill targets is already broken fleet-wide per the backstop commit (\"broken on this fleet anyway: no bot token at the OC channel layer\") and never reaches iOS — so the backstop is NOT breaking working delivery; it routes to the CORRECT mode:none + nbhd_send_to_user path that actually reaches the user via Django push. (2) The backstop commit states \"Production currently has zero bypassing user crons (all 26 are mode:none)\", so the backfill's filter (mode=announce, channel=telegram, no to) matches no jobs in production — the command has no rows to act on. The backfill is a superseded, idle artifact, not a live conflict causing user harm. The only genuine residual is cosmetic: a matching job would log \"delivery.to = chat_id\" and increment the success counter (lines 78-82) while the gateway actually received {mode:\"none\"} — misleading operator logging. That is a trivial observability nit in an obsolete one-time command, not the medium-severity broken-Telegram-delivery defect claimed; rewriting to mode:none is the intended, desirable end state.",
+  "refutation_evidence": [
+   "apps/cron/management/commands/backfill_cron_targets.py:50-82 (filters announce/telegram/no-to, then cron.update with delivery.to, logs success unconditionally at 78-82)",
+   "apps/cron/gateway_client.py:159-166 (cron.update patch path rewrites non-iOS-safe delivery to {mode:none}, dropping to/channel)",
+   "apps/cron/gateway_client.py:36-39,42-85 (_is_ios_safe_delivery / _normalize_cron_delivery_for_ios: only mode:none-no-channel is iOS-safe)",
+   "git log 4116937 (2026-02-19 backfill command created) vs 7e40ef0 (2026-06-21 iOS backstop added 4mo later)",
+   "commit 7e40ef0 message: announce/telegram path 'broken on this fleet anyway: no bot token at the OC channel layer'; 'Production currently has zero bypassing user crons (all 26 are mode:none)'"
+  ]
+ },
+ {
+  "id": "FA-0167",
+  "area": "cron",
+  "feature": "System cron schedule catalog (SYSTEM_CRONS)",
+  "expected_behaviour": "SYSTEM_CRONS is a list of (name, cron_expr, path) tuples. Covers 25 schedules including: apply-pending-configs (hourly), reset-daily-counters (daily midnight), reset-monthly-counters (monthly), expire-trials (daily 02:00), hibernate-idle-tenants (hourly), reconcile-tenant-crons (hourly :05), reconcile-fuel-crons (hourly), ensure-at-cron-wakes (every 5 min), nightly-extraction (hourly), pii-arbiter (hourly :40), reap-stuck-inbound-messages (every minute), snapshot-gravity-weekly (Sunday 05:00), model-health-check (every 30 min), and more. All cron_exprs are UTC.",
+  "entry_points": "apps/cron/management/commands/register_system_crons.py:SYSTEM_CRONS",
+  "original_claim": "The expected behaviour states the SYSTEM_CRONS list covers '25 schedules', but the actual list contains 24 entries. This is a documentation/inventory discrepancy rather than a runtime bug, but it means any tooling or documentation that relies on that count will be off by one.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "Not a defect. The \"25 schedules\" count exists ONLY in the audit's own generated artifacts (docs/feature-audit/features_raw.json, areas/cron__3.json, FEATURE_AUDIT.csv) — it is the auditor's own estimate of the list size, not a value present anywhere in the application source. The actual SYSTEM_CRONS list contains 24 (name, cron_expr, path) tuples. The command does NOT reference any hardcoded count: it iterates `for name, cron_expr, path in SYSTEM_CRONS:` and tallies registered/updated/skipped dynamically. No runtime code, CI step, or operator tooling depends on a literal \"25\", so there is nothing to be \"off by one.\" The claimed impact (\"any tooling or documentation that relies on that count will be off by one\") is hypothetical and unfounded — the only document naming 25 is the audit's own expected_behaviour text, which miscounted. A real operator running register_system_crons sees the correct 24 schedules registered with no discrepancy. This is a self-referential error in the audit artifact, not a product defect.",
+  "refutation_evidence": [
+   "apps/cron/management/commands/register_system_crons.py:19-111 — 24 tuple entries (verified by grep count = 24)",
+   "apps/cron/management/commands/register_system_crons.py:159-216 — handle() iterates SYSTEM_CRONS directly, no hardcoded count",
+   "docs/feature-audit/areas/cron__3.json:141 — the sole source of '25 schedules', audit-generated text not product code"
+  ]
+ },
+ {
+  "id": "FA-0172",
+  "area": "dashboard",
+  "feature": "Horizons Aggregation (Goals + Mood + Momentum + Insights + Topic Signals)",
+  "expected_behaviour": "GET /api/v1/dashboard/horizons/ requires IsAuthenticated. Returns HTTP 404 if no tenant. On success (HTTP 200) returns a JSON object with seven sections: (1) \"goals\" — union of typed Goal (status=ACTIVE) and legacy Document(kind=GOAL) rows, deduplicated via Goal.migrated_from_document; returns up to 20 items sorted by -updated_at, each with id, title, slug (\"typed:<uuid>\" for typed Goals), preview (first 200 chars of markdown), created_at, updated_at; inactive typed goals (ACHIEVED/ABANDONED) are excluded. (2) \"pending_extractions\" — up to 10 non-expired PendingExtraction rows of kind GOAL or TASK with status PENDING, ordered by -created_at. (3) \"weekly_pulse\" — up to 4 WeeklyReview rows (legacy model), ordered by -week_start, each with week_start, week_end, week_rating, top_win (first element of top_wins or null). (4) \"weekly_documents\" — up to 4 Document(kind=WEEKLY) rows, serialized via _serialize_weekly_document() which derives week_start/week_end from YYYY-MM-DD slug, strips markdown to a 180-char plain text preview, and includes full markdown. (5) \"mood_trend\" — all JournalEntry rows in the last 30 days with date, mood, energy fields. (6) \"momentum\" — 30-day array (today - 29d to today) where each entry has date, message_count (UsageRecord count for that date), has_journal (True if JournalEntry OR Document(kind=DAILY) exists for that date); plus \"current_streak\" (consecutive days with activity counting backwards from today). (7) \"assistant_insights\" — up to 20 AssistantInsight rows with status OPEN or CONFIRMED (REFUTED excluded), ordered by -created_at, with id, pillar, topic_slug, topic_display_name, statement, status, confidence, created_at, last_confirmed_at. (8) \"topic_signals\" — per-topic meta-state from apps/insights/signals.summarize_topic_signals(), covering topics with any engagement (snapshots, insights, goals, or voice prefs), returning sample_size, confirmed/refuted counts, has_goal flag, register_offset/register_scope. Response is cached per-tenant with a 60-second TTL under the \"dashboard\" cache tag; cache bypassed if Redis tag_v == 0.",
+  "entry_points": "apps/dashboard/views.py:HorizonsView ; apps/insights/signals.py:summarize_topic_signals ; apps/dashboard/views.py:_serialize_weekly_document ; apps/dashboard/views.py:_clean_markdown_preview ; apps/dashboard/views.py:_derive_week_bounds ; GET /api/v1/dashboard/horizons/",
+  "original_claim": "The deduplication of migrated legacy goal documents fetches migrated_doc_ids from the full unsliced typed_goals_qs, then slices typed_goals to :20. If more than 20 typed Goals exist, goals ranked 21+ that have migrated_from_document set cause their corresponding legacy Document rows to be excluded from legacy_goals — even though the typed Goal itself does not appear in the typed_goals list due to the :20 slice. This can silently drop a goal from the combined union entirely. In practice this requires >20 active typed Goals per tenant, which is rare but possible.",
+  "original_category": "logic",
+  "original_severity": "low",
+  "refutation": "False positive. migrated_doc_ids is built from the FULL unsliced typed_goals_qs while typed_goals is sliced to [:20]. The claim is that a typed Goal ranked 21+ with migrated_from_document set would exclude its legacy Document yet not itself appear, silently dropping a goal. But that exclusion can never affect the visible result, which is itself capped at 20 sorted by -updated_at per the feature contract. The migration command creates the typed Goal via Goal.objects.create(...) WITHOUT setting updated_at, and Goal.updated_at uses auto_now=True, so the typed Goal G gets the migration timestamp, always >= its source Document D's updated_at (later edits only push G more recent). For G to rank 21+, there must be >=20 typed goals with updated_at >= G.updated_at >= D.updated_at, all of which also outrank D; therefore D could never have placed in the combined top-20 anyway, so excluding it loses nothing visible. Excluding ALL migrated legacy docs regardless of slice position is in fact the intended dedup behavior: a legacy doc folded into a typed Goal should never render as a separate row. The only way D could outrank G is a post-migration independent edit to the legacy Document, which is not an expected flow (the dual-read exists precisely to phase legacy docs out), and even then suppressing the stale legacy copy in favor of the typed Goal is correct, not a bug. The trigger also requires >20 active typed goals per tenant, which is rare. No real user-visible defect.",
+  "refutation_evidence": [
+   "apps/dashboard/views.py:211-249 (migrated_doc_ids from unsliced qs, typed_goals[:20], legacy exclude+[:20], final sorted[:20])",
+   "apps/journal/models.py:314-326 (updated_at auto_now=True; ordering -updated_at)",
+   "apps/journal/management/commands/migrate_documents_to_typed_models.py:86-98 (Goal.objects.create does not set updated_at, so typed Goal carries migration-time timestamp >= source Document)",
+   "docs/feature-audit/areas/dashboard.json:33 (contract: returns up to 20 items sorted by -updated_at)"
+  ]
+ },
+ {
+  "id": "FA-0197",
+  "area": "fe-automations",
+  "feature": "Pending Reminders — cancel with confirmation",
+  "expected_behaviour": "Each reminder row has a 'Cancel' button. Clicking it shows an inline confirmation: 'Confirm cancel' (rose) and 'Keep' buttons. A 3-second auto-timeout (CANCEL_CONFIRM_TIMEOUT_MS) reverts to the initial Cancel button if no action is taken. Clicking 'Confirm cancel' fires cancelMutation.mutate(job.name), calling DELETE /api/v1/cron-jobs/pending-at/{name}/. While pending, the button shows 'Cancelling…' and is disabled. On success, the ['pending-reminders'] query is invalidated and the reminder disappears. On error, a rose error message appears inline under the reminder name.",
+  "entry_points": "frontend/components/pending-reminders-section.tsx:PendingRemindersSection (handleCancelClick, handleCancelConfirm) ; DELETE /api/v1/cron-jobs/pending-at/{name}/",
+  "original_claim": "The cancel mutation does not invalidate the ['pending-reminders'] query on error — if the DELETE call fails, the reminder stays in the list but no error feedback is shown because the 'Cancelling...' button text reverts to 'Cancel' without explanation. The user sees no indication that the cancel failed; they have to retry manually without knowing the first attempt failed.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "False positive — a misread. The claim asserts that on a failed cancel DELETE \"no error feedback is shown\" and \"the user sees no indication the cancel failed.\" The code contradicts this. While the mutation hook (queries.ts:1077-1085) has no onError, the component supplies an onError at the call site: handleCancelConfirm (pending-reminders-section.tsx:137-147) calls cancelMutation.mutate(job.name, { onError: ... }) which writes the error into per-job cancelError state (\"Cancel failed.\" or the error's message). That message is then rendered in rose/red text under the reminder at lines 190-192. So a failed cancel DOES show explicit, inline, per-reminder error feedback. The reminder correctly remaining in the list is right (cancellation did not happen), and not invalidating ['pending-reminders'] on error is correct — a refetch would just return the same unchanged list. The reviewer overlooked the call-site onError handler and the cancelError render block.",
+  "refutation_evidence": [
+   "frontend/components/pending-reminders-section.tsx:137-147 (mutate with onError writing cancelError)",
+   "frontend/components/pending-reminders-section.tsx:190-192 (renders cancelError in rose text under the reminder)",
+   "frontend/components/pending-reminders-section.tsx:91 (cancelError state declaration)",
+   "frontend/lib/queries.ts:1077-1085 (mutation has onSuccess-only, no onError invalidation)"
+  ]
+ },
+ {
+  "id": "FA-0200",
+  "area": "fe-automations",
+  "feature": "Toast notification system",
+  "expected_behaviour": "The useToast hook provides a [toast, showToast] pair. showToast(message, type) creates a toast with a unique id. The Toast component renders conditionally when toast is non-null at the top of the page. Toasts are used for: bulk delete success ('N tasks deleted', 'success'), bulk foreground update success, and error toasts from bulk foreground mutation errors. The toast auto-dismisses via the hook's internal mechanism. Per the component signature, the onDismiss callback is a no-op in the page (the hook manages state).",
+  "entry_points": "frontend/components/toast.tsx:Toast ; frontend/components/toast.tsx:useToast ; frontend/app/settings/cron-jobs/page.tsx:SettingsCronJobsPage",
+  "original_claim": "The Toast rendered in the cron-jobs page is never removed from the DOM after it animates out because the onDismiss callback is a no-op and the useToast hook has no internal auto-dismiss timer. The Toast component sets itself to opacity-0/pointer-events-none after durationMs-300ms and calls onDismiss() after durationMs, but the page's onDismiss does nothing, so the hook's toast state stays non-null. The ghost Toast element (with aria-live='polite') remains mounted permanently, meaning screen readers see a stale live region indefinitely. Sighted users are unaffected for the first toast, but the mismatch between the code comment ('state auto-managed by hook') and the actual hook implementation (no auto-clear) is a latent bug for any future code that checks toast != null.",
+  "original_category": "ux",
+  "original_severity": "low",
+  "refutation": "Not a user-facing defect. The mechanical facts are accurate: the cron-jobs page passes a no-op onDismiss (page.tsx:533, comment \"state auto-managed by hook\") while useToast (toast.tsx:94-103) has no auto-clear timer, so the hook's toast state stays non-null and the Toast div remains mounted (in opacity-0/pointer-events-none state) after it fades. But no real user experiences this as a defect. (1) Sighted users are fully unaffected: the lingering div is invisible and non-interactive, and every subsequent showToast() bumps _toastCounter giving a new key={toast.id}, so React remounts the Toast and re-runs the in/out animation; all toasts render correctly. (2) The screen-reader claim misreads ARIA semantics: an aria-live=polite region announces content CHANGES, not its mere presence. A silent, idle live region persisting in the DOM is standard practice in virtually every toast library and produces no spurious/stale announcements; when the next toast fires, the key change unmounts the old node and mounts a fresh one with new text, which announces correctly. There is no harmful 'stale live region the SR sees indefinitely.' (3) The 'latent bug for future code that checks toast != null' is speculative: no current code reads toast except to render it. The no-op onDismiss plus misleading comment is a genuine code-cleanliness smell (GlobalToastHost at toast.tsx:111-124 shows the intended onDismiss={() => setToast(null)} pattern), but it yields zero observable defect for any user, sighted or assistive-tech. Fails the 'would a real user actually experience this' bar.",
+  "refutation_evidence": [
+   "frontend/app/settings/cron-jobs/page.tsx:262",
+   "frontend/app/settings/cron-jobs/page.tsx:528-535",
+   "frontend/components/toast.tsx:33-72",
+   "frontend/components/toast.tsx:94-103",
+   "frontend/components/toast.tsx:111-124"
+  ]
+ },
+ {
+  "id": "FA-0230",
+  "area": "fe-constellation",
+  "feature": "Constellation Graph — Delete Lesson from Graph",
+  "expected_behaviour": "The Inspector shows a 'Remove from constellation' button only for Lesson nodes. Clicking it reveals a confirmation row with a 'Delete' button and a 'Cancel' button. Clicking 'Delete' calls useDeleteLessonMutation which sends DELETE /api/v1/lessons/{id}/. While in-flight both buttons are disabled and 'Delete' shows 'Deleting...'. On success, the mutation invalidates the ['constellation'] and ['pending-lessons'] query caches, which refetches and re-renders the graph without the deleted node. The Inspector closes (setSelectedId(null)). On error, the mutation raises and the buttons re-enable (but the error is not surfaced in the UI from what is visible in the code).",
+  "entry_points": "frontend/app/constellation/page.tsx:Inspector ; frontend/app/constellation/page.tsx:ConstellationPage ; DELETE /api/v1/lessons/{id}/",
+  "original_claim": "On delete mutation failure, no error message is surfaced to the user. The `onDelete` call passes only an `onSuccess` handler (`deleteLesson.mutate(id, { onSuccess: () => setSelectedId(null) })`); there is no `onError` handler and no error state is read from `deleteLesson`. The Inspector stays open with the Delete button re-enabled (via `deleting` returning to false), but the user receives no feedback about why the deletion failed.",
+  "original_category": "ux",
+  "original_severity": "medium",
+  "refutation": "False positive. The reviewer concluded delete failures are silent because the onDelete call only passes onSuccess (page.tsx:733) and useDeleteLessonMutation has no per-mutation onError. But React Query applies a GLOBAL mutation error handler defined in the QueryClient defaultOptions.mutations.onError (frontend/app/providers.tsx:30-35), which fires for every mutation that does not opt out via meta.skipErrorToast. On a delete failure it calls emitToast(getErrorMessage(err), \"error\"), rendered by the GlobalToastHost mounted in the same providers tree (providers.tsx:52). useDeleteLessonMutation (queries.ts:1822-1831) sets no meta.skipErrorToast, so it inherits this default. A per-call onSuccess does NOT suppress the default onError — they coexist in React Query. The only intentional silent case is HTTP 401, which redirects to /login. Therefore the user DOES receive an error toast when a lesson delete fails, and the Inspector re-enabling the Delete button (deleting returns to false) is correct retry-able behavior, not silent failure. The QA review missed the centralized error-toast wiring in providers.tsx.",
+  "refutation_evidence": [
+   "frontend/app/constellation/page.tsx:733 — onDelete passes only onSuccess",
+   "frontend/lib/queries.ts:1822-1831 — useDeleteLessonMutation sets no meta.skipErrorToast, inherits global onError",
+   "frontend/app/providers.tsx:25-36 — defaultOptions.mutations.onError emits error toast for all non-401 mutations not opting out",
+   "frontend/app/providers.tsx:52 — GlobalToastHost mounted in providers tree",
+   "frontend/components/toast.tsx:18-26 — emitToast module-level emitter feeding GlobalToastHost"
+  ]
+ }
+]

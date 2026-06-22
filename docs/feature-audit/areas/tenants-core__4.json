@@ -1,0 +1,74 @@
+[
+ {
+  "id": "FA-1149",
+  "area": "tenants-core",
+  "layer": "backend",
+  "feature": "Budget tracking + spendable check",
+  "user_role": "system/cron",
+  "user_story": "As the usage accounting system, I want to compute a tenant's effective budget and whether they can still spend so that the AI gateway can enforce cost limits.",
+  "expected_behaviour": "Tenant.effective_token_budget: returns monthly_token_budget if >0, else TIER_TOKEN_BUDGETS[model_tier] (5M for STARTER). Tenant.effective_cost_budget: returns monthly_cost_budget if >0, else TIER_COST_BUDGETS[model_tier] ($5 for STARTER). Tenant.is_over_budget: True if estimated_cost_this_month >= effective_cost_budget (0 budget = unlimited). Tenant.has_spendable_budget: True if is_budget_exempt OR NOT is_over_budget OR purchased_credit > 0. Quota-email idempotency markers (cost_warn_sent_at, cost_exhausted_email_sent_at) cleared monthly by reset_monthly_counters.",
+  "entry_points": "apps/tenants/models.py:Tenant.effective_token_budget ; apps/tenants/models.py:Tenant.effective_cost_budget ; apps/tenants/models.py:Tenant.is_over_budget ; apps/tenants/models.py:Tenant.has_spendable_budget",
+  "dependencies": "apps/billing (TIER_TOKEN_BUDGETS, TIER_COST_BUDGETS)",
+  "inventory_notes": "purchased_credit extends spending beyond the included allowance but does not affect is_over_budget or effective_cost_budget — those metrics retain their 'included cap' semantics for email notifications."
+ },
+ {
+  "id": "FA-1150",
+  "area": "tenants-core",
+  "layer": "backend",
+  "feature": "Pending config version bump + apply",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to signal that a tenant's config needs regenerating so that the orchestrator can pick it up on the next cycle.",
+  "expected_behaviour": "Tenant.bump_pending_config() increments pending_config_version by 1 and saves. When pending_config_version > config_version the orchestrator's apply_pending_configs cron picks up the tenant and runs update_tenant_config. config_version is bumped to pending_config_version on successful apply. config_refreshed_at is stamped. The gap (pending>config) is visible to the frontend via has_pending_update in RefreshConfigView.",
+  "entry_points": "apps/tenants/models.py:Tenant.bump_pending_config",
+  "dependencies": "apps/orchestrator (apply_pending_configs cron, update_tenant_config)",
+  "inventory_notes": ""
+ },
+ {
+  "id": "FA-1151",
+  "area": "tenants-core",
+  "layer": "backend",
+  "feature": "Welcome email (Day-0)",
+  "user_role": "system/cron",
+  "user_story": "As a newly provisioned subscriber, I want to receive a welcome email so that I know how to connect my messaging app and get started.",
+  "expected_behaviour": "send_welcome_email(tenant) is idempotent via tenant.welcome_email_sent_at — returns False immediately if already sent. Requires user.email. Checks LINE quota (fails closed — omits LINE mention if quota check fails). Renders welcome_subject.txt, welcome_body.txt/.html with {display_name, telegram_connected, settings_url, video_url, line_quota_available, channel_label}. Sends via Django email backend. Stamps welcome_email_sent_at on success. Called from provisioning flow in apps/orchestrator.",
+  "entry_points": "apps/tenants/emails.py:send_welcome_email",
+  "dependencies": "Mailgun (email delivery), apps/router (LineQuotaState)",
+  "inventory_notes": "preview_email management command (and preview_email_task QStash wrapper) lets operators render and send test versions of this email without a real provisioning flow."
+ },
+ {
+  "id": "FA-1152",
+  "area": "tenants-core",
+  "layer": "backend",
+  "feature": "Agent persona + PII context injection into USER.md",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to inject the tenant's profile, timezone, and PII placeholder rules into the agent's system prompt so that the assistant knows who it's talking to.",
+  "expected_behaviour": "envelope.py registers two sections via register_section: 'profile' (order=10, always enabled, refresh_on=User) renders display_name, timezone, preferred_channel, language, location_city as bullet lines (suppresses defaults like 'Friend'/'UTC'/'en'). 'privacy_placeholders' (order=11) renders placeholder handling rules + identity context (one line per entity_map entry with relationship or notes). Sections are rendered into USER.md by the orchestrator on each config regeneration.",
+  "entry_points": "apps/tenants/envelope.py:render_profile ; apps/tenants/envelope.py:render_privacy_placeholders",
+  "dependencies": "apps/orchestrator (envelope_registry)",
+  "inventory_notes": "Identity context sub-section only renders entries that have relationship or notes set — entries with only a name are not injected."
+ },
+ {
+  "id": "FA-1153",
+  "area": "tenants-core",
+  "layer": "backend",
+  "feature": "Tenant creation via Telegram bot (service layer)",
+  "user_role": "subscriber",
+  "user_story": "As a Telegram user starting the bot for the first time, I want a tenant and user account to be created automatically so that I can start using my assistant without a web signup.",
+  "expected_behaviour": "services.create_tenant() takes display_name, telegram_chat_id, telegram_user_id, telegram_username, language. Raises ValueError if user already exists for that telegram_chat_id. Creates User (username=tg_<chat_id>) and Tenant (status=PENDING, key_vault_prefix=tenants-<user_id>) atomically. Seeds journal templates and documents. Does NOT provision the container — provisioning is triggered by billing. Called from the Telegram bot webhook layer when a new user sends a message.",
+  "entry_points": "apps/tenants/services.py:create_tenant",
+  "dependencies": "apps/journal (seed_default_templates_for_tenant, seed_default_documents_for_tenant), Supabase/Postgres",
+  "inventory_notes": "Catch-and-rethrow for IntegrityError on telegram_chat_id ensures clean ValueError surfaces regardless of Django ORM variant."
+ },
+ {
+  "id": "FA-1154",
+  "area": "tenants-core",
+  "layer": "backend",
+  "feature": "Idle hibernation tracking (hibernated_at / cron_wake_at)",
+  "user_role": "system/cron",
+  "user_story": "As the system, I want to track when a container was hibernated and why it was woken so that message delivery logic can apply the right grace window.",
+  "expected_behaviour": "Tenant.hibernated_at is set by the hibernation cron when a container is idle-stopped. Tenant.cron_wake_at is set when a container is woken for a scheduled cron job (not user message) — triggers a shorter 30-minute idle window before re-hibernating. Tenant.last_wake_at is set on any wake from hibernation — the message drain uses this as a 'still booting' grace window to retry delivery without burning delivery attempts. Views check hibernated_at before calling _enqueue_immediate_apply (skips if hibernated).",
+  "entry_points": "apps/tenants/models.py:Tenant.hibernated_at ; apps/tenants/models.py:Tenant.cron_wake_at ; apps/tenants/models.py:Tenant.last_wake_at",
+  "dependencies": "apps/orchestrator (hibernation logic)",
+  "inventory_notes": "These fields are set by apps/orchestrator/hibernation.py — the tenants app only defines the model fields."
+ }
+]

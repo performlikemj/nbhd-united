@@ -1459,6 +1459,7 @@ export class GalaxyScene extends Phaser.Scene {
     } catch {
       this.tutorThinking(false);
       this.renderTutorMessage("copilot", "I couldn't start just now — let's try again in a moment.");
+      this.lockTutorComposer(); // session id is still null; disable Send/Skip so they don't silently no-op
     } finally {
       this.tutorBusy = false;
     }

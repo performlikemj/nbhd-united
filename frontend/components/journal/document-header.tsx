@@ -96,7 +96,7 @@ export function DocumentHeader({
               type="button"
               onClick={() => handleDateNav(-1)}
               aria-label="Previous day"
-              className="group rounded-xl border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 text-ink-faint transition hover:text-ink hover:bg-white/[0.04] hover:border-white/[0.12] active:scale-[0.97] min-h-[40px] min-w-[40px] flex items-center justify-center"
+              className="group rounded-xl border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 text-ink-faint transition hover:text-ink hover:bg-white/[0.04] hover:border-white/[0.12] active:scale-[0.97] min-h-[44px] min-w-[44px] flex items-center justify-center"
             >
               <svg className="h-4 w-4 transition-transform group-hover:-translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" />
@@ -137,7 +137,7 @@ export function DocumentHeader({
               onClick={() => handleDateNav(1)}
               disabled={slug >= todayISO()}
               aria-label="Next day"
-              className="group rounded-xl border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 text-ink-faint transition hover:text-ink hover:bg-white/[0.04] hover:border-white/[0.12] active:scale-[0.97] min-h-[40px] min-w-[40px] flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed"
+              className="group rounded-xl border border-white/[0.06] bg-white/[0.02] px-2.5 py-2 text-ink-faint transition hover:text-ink hover:bg-white/[0.04] hover:border-white/[0.12] active:scale-[0.97] min-h-[44px] min-w-[44px] flex items-center justify-center disabled:opacity-30 disabled:cursor-not-allowed"
             >
               <svg className="h-4 w-4 transition-transform group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
@@ -150,7 +150,7 @@ export function DocumentHeader({
                 type="button"
                 onClick={() => onNavigate("daily", todayISO())}
                 aria-label="Go to today"
-                className="rounded-xl border border-signal/20 bg-signal-faint px-3 py-2 text-xs font-medium text-signal-text transition hover:bg-signal-faint/50 active:scale-95 min-h-[40px]"
+                className="rounded-xl border border-signal/20 bg-signal-faint px-3 py-2 text-xs font-medium text-signal-text transition hover:bg-signal-faint/50 active:scale-95 min-h-[44px]"
               >
                 Today
               </button>
@@ -190,14 +190,14 @@ export function DocumentHeader({
                 type="button"
                 onClick={onSave}
                 disabled={updatePending}
-                className="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[40px]"
+                className="rounded-full bg-accent px-3 py-1.5 text-sm font-medium text-white transition hover:bg-accent/85 disabled:opacity-55 min-h-[44px]"
               >
                 {updatePending ? "..." : "Save"}
               </button>
               <button
                 type="button"
                 onClick={onCancel}
-                className="rounded-full border border-white/[0.08] px-3 py-1.5 text-sm text-ink-muted transition hover:border-white/[0.15] hover:text-ink min-h-[40px]"
+                className="rounded-full border border-white/[0.08] px-3 py-1.5 text-sm text-ink-muted transition hover:border-white/[0.15] hover:text-ink min-h-[44px]"
               >
                 Cancel
               </button>
@@ -206,7 +206,7 @@ export function DocumentHeader({
             <button
               type="button"
               onClick={onEdit}
-              className="rounded-full border border-white/[0.08] px-3 py-1.5 text-sm text-ink-faint transition hover:border-white/[0.15] hover:text-ink min-h-[40px]"
+              className="rounded-full border border-white/[0.08] px-3 py-1.5 text-sm text-ink-faint transition hover:border-white/[0.15] hover:text-ink min-h-[44px]"
             >
               Edit
             </button>

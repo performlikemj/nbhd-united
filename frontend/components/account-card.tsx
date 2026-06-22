@@ -67,7 +67,7 @@ export function AccountCard({
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-6 sm:gap-10 text-right pl-13 sm:pl-0">
+        <div className="flex items-center gap-6 sm:gap-10 text-right pl-[3.25rem] sm:pl-0">
           {account.minimum_payment && (
             <div>
               <p className="text-[10px] text-ink-faint uppercase font-bold mb-0.5">Monthly</p>

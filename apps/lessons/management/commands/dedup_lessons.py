@@ -27,7 +27,7 @@ class Command(BaseCommand):
         parser.add_argument("--tenant", type=str, help="Only process this tenant ID")
         parser.add_argument("--dry-run", action="store_true", help="Show duplicates without deleting")
         parser.add_argument(
-            "--threshold", type=float, default=DEDUP_THRESHOLD, help="Similarity threshold (default 0.75)"
+            "--threshold", type=float, default=DEDUP_THRESHOLD, help=f"Similarity threshold (default {DEDUP_THRESHOLD})"
         )
 
     def handle(self, *args, **options):

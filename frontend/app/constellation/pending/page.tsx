@@ -40,10 +40,11 @@ export default function PendingLessonQueuePage() {
   };
 
   const handleApprove = async (lesson: Lesson) => {
+    setError("");
     try {
       setProcessing(lesson.id);
-      animateRemoval(lesson.id);
       await approveMutation.mutateAsync(lesson.id);
+      animateRemoval(lesson.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to approve lesson.");
     } finally {
@@ -52,10 +53,11 @@ export default function PendingLessonQueuePage() {
   };
 
   const handleDismiss = async (lesson: Lesson) => {
+    setError("");
     try {
       setProcessing(lesson.id);
-      animateRemoval(lesson.id);
       await dismissMutation.mutateAsync(lesson.id);
+      animateRemoval(lesson.id);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to dismiss lesson.");
     } finally {

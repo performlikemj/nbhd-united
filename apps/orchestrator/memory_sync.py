@@ -71,16 +71,27 @@ def render_memory_files(tenant) -> dict[str, str]:
         content = session.redact(content)
         files[path] = content
 
-    # Merge workspace entity mapping with any message-originated entities
+    # Merge workspace entity mapping with any message-originated entities.
+    # Serialize per tenant: the inbound redactor and the settings views can
+    # mutate pii_entity_map concurrently with this sync, and an unlocked
+    # full-dict overwrite would clobber a placeholder minted (or a contact
+    # deleted) between our read and our write. Re-read under a row lock.
     if session.entity_map:
-        existing_map = (
-            type(tenant).objects.filter(pk=tenant.pk).values_list("pii_entity_map", flat=True).first()
-        ) or {}
-        # Workspace entities override, message entities preserved
-        merged = {**existing_map, **session.entity_map}
-        type(tenant).objects.filter(pk=tenant.pk).update(
-            pii_entity_map=merged,
-        )
+        from django.db import transaction
+
+        with transaction.atomic():
+            existing_map = (
+                type(tenant)
+                .objects.select_for_update()
+                .filter(pk=tenant.pk)
+                .values_list("pii_entity_map", flat=True)
+                .first()
+            ) or {}
+            # Workspace entities override, message entities preserved
+            merged = {**existing_map, **session.entity_map}
+            type(tenant).objects.filter(pk=tenant.pk).update(
+                pii_entity_map=merged,
+            )
 
     return files
 

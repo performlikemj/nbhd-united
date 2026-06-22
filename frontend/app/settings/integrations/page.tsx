@@ -584,21 +584,24 @@ function IntegrationsContent() {
         {providers.map((provider) => {
           const integration = data?.find((item) => item.provider === provider.key);
           const isActive = integration?.status === "active";
-          const isRevoked = integration?.status === "revoked" || integration?.status === "error";
+          const needsReconnect =
+            integration?.status === "revoked" ||
+            integration?.status === "error" ||
+            integration?.status === "expired";
           const isConnected = Boolean(integration);
 
           // Description: reflect actual status, not just record presence
           const description = isActive
             ? (integration?.provider_email || "Connected")
-            : isRevoked
+            : needsReconnect
             ? "Reconnection required"
             : (provider.description ?? "Not connected yet.");
 
-          // Badge: revoked shows as error, no integration = pending
+          // Badge: pass raw status so StatusPill renders its per-status tone
+          // (revoked=slate, expired=amber, error=rose — deliberately distinct).
+          // needsReconnect is used only for description/button, not the badge.
           const badgeStatus = isActive
             ? "active"
-            : isRevoked
-            ? "error"
             : isConnected
             ? (integration?.status ?? "pending")
             : "pending";
@@ -616,7 +619,7 @@ function IntegrationsContent() {
               <p className="mt-2 text-sm text-ink-muted">{description}</p>
 
               <div className="mt-4 flex gap-2">
-                {/* Show Reconnect for revoked/error, Connect for not connected */}
+                {/* Show Reconnect for revoked/error/expired, Connect for not connected */}
                 {(!isActive) && (
                   <button
                     className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
@@ -626,7 +629,7 @@ function IntegrationsContent() {
                   >
                     {connectingProvider === provider.key
                       ? "Redirecting..."
-                      : isRevoked
+                      : needsReconnect
                       ? "Reconnect"
                       : "Connect"}
                   </button>
@@ -635,10 +638,12 @@ function IntegrationsContent() {
                   <button
                     className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
                     type="button"
-                    disabled={disconnect.isPending}
+                    disabled={disconnect.isPending && disconnect.variables === integration!.id}
                     onClick={() => disconnect.mutate(integration!.id)}
                   >
-                    {disconnect.isPending ? "Disconnecting..." : "Disconnect"}
+                    {disconnect.isPending && disconnect.variables === integration!.id
+                      ? "Disconnecting..."
+                      : "Disconnect"}
                   </button>
                 )}
               </div>

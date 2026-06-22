@@ -1,0 +1,21 @@
+[
+ {
+  "ref": "journal-core#2",
+  "source": "missed",
+  "severity": "low",
+  "category": "data-integrity",
+  "detail": "Confirmed real defect, but lower impact than claimed. DocumentDetailView.get is wrapped in @tenant_cache(ttl=60, tag=\"journal\") (apps/journal/document_views.py:296). For flag-enabled tenants the GET replaces doc.markdown with a live synthesis of typed Task/Goal rows (lines 318-322), and that synthesized response.data is cached for 60s under the 'journal' tag (cache.set in apps/common/cache.py:141-145). The 'journal' tag is bumped ONLY by post_save/post_delete receivers on JournalEntry, Document, and DailyNote (apps/common/cache_signals.py:91-104). There are NO receivers for Task or Goal, and grep confirms apps/journal/, apps/router/extraction_callbacks.py, and apps/integrations/runtime_views.py never call bump_tag/bump_tags. Every typed write path -- Task.complete()/Goal.mark_achieved()/abandon() (models.py:336-345,416-429), the web lifecycle views (lifecycle_views.py), and the typed approval creates -- does a plain save()/create() that bumps nothing. Net: after completing/creating/reopening a typed task or goal, GET /api/v1/journal/documents/{tasks|goal}/... serves the previously-cached synthesized snapshot for up to 60s, re-introducing the stale-snapshot failure at the HTTP cache layer.\n\nSeverity is LOW not medium because: (1) canary-gated (Tenant.experimental_typed_journal_lifecycle default=False, tenants/models.py:430) -- blast radius today is the canary tenant(s) only; (2) the staleness is transient and self-healing -- the 60s TTL expires and the next read is fresh, so it is a brief inconsistency window, not durable corruption; (3) it is confined to the legacy Document(kind=tasks|goal) markdown view. The typed collection/detail endpoints the iOS client and web UI use to enumerate tasks/goals -- TaskListCreateView/GoalListCreateView GET (lifecycle_views.py:197,238) and Task/GoalDetailView GET -- are NOT decorated with @tenant_cache, so they always render fresh. The latent defect does widen as the rollout broadens, so it is worth fixing before the flag goes fleet-wide.",
+  "suggested_fix": "Add post_save/post_delete receivers for Task and Goal in apps/common/cache_signals.py:_register() that bump the 'journal' tag (and 'dashboard' if task/goal state feeds the dashboard), e.g. import Task, Goal from apps.journal.models and register a receiver calling _bump(instance, [\"journal\", \"dashboard\"]). This is the centralized, single-place pattern the module already enforces, so it covers all write paths (web lifecycle views, model methods, typed approval creates, agent runtime) without touching each call site. Tasks/Goals carry a tenant FK so _tenant_id() resolves correctly.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/journal/document_views.py:296 @tenant_cache(ttl=60, tag='journal') over the GET",
+   "apps/journal/document_views.py:318-322 flag-gated replacement of doc.markdown with _synthesize_tasks_markdown/_synthesize_goals_markdown",
+   "apps/common/cache.py:139-145 cache.set stores response.data including synthesized markdown for ttl=60",
+   "apps/common/cache_signals.py:91-104 receivers only for JournalEntry/Document/DailyNote; no Task/Goal",
+   "grep: zero bump_tag/bump_tags calls in apps/journal/, apps/router/extraction_callbacks.py, apps/integrations/runtime_views.py",
+   "apps/journal/models.py:336-345,416-429 Goal/Task mutators do plain save() with no cache bump",
+   "apps/tenants/models.py:430 experimental_typed_journal_lifecycle default=False (canary-gated)",
+   "apps/journal/lifecycle_views.py:197,238 typed list endpoints are NOT @tenant_cache-decorated, so they stay fresh"
+  ]
+ }
+]

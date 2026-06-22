@@ -1,0 +1,20 @@
+[
+ {
+  "ref": "FA-0692",
+  "source": "fix-attack:incomplete",
+  "severity": "low",
+  "category": "incomplete",
+  "detail": "Genuine. The fix at apps/journal/views.py:535 calls update_tenant_config_task.delay(str(tenant.id)), but update_tenant_config_task (apps/orchestrator/tasks.py:28) is a plain Python function with no Celery decorator and no .delay() attribute. The project explicitly removed Celery for QStash (config/settings/base.py:37 comment: django_celery_beat removed - using QStash for scheduling); there is no celery dependency, and the whole app contains exactly two .delay() call sites - these two journal/views.py calls. Everything else dispatches via publish_task('update_tenant_config', tenant_id), with that task name registered in TASK_MAP at apps/cron/views.py:99. At runtime, plain_function.delay raises AttributeError, swallowed by the surrounding except Exception: pass block. So the config push never fires for either the new DELETE path or the pre-existing PATCH path (lines 507-511). The fix disposition claims it ensures the agent container's templates.md is refreshed after delete-and-promote, eliminating the stale-config window - that behaviour is NOT delivered. update_tenant_config (apps/orchestrator/services.py:600-616) is what re-uploads templates.md (NBHD_SKILL_TEMPLATES_MD) to the running container; without it the container keeps the stale boot-time copy. User impact: a subscriber who deletes or edits their default note template via the web console sees the change in Django, but the running OpenClaw container serves the old daily-journal template slugs until the next unrelated config bump or reboot - a self-healing stale-config window, hence low severity. The fix faithfully copied an established-but-broken pattern, which is exactly the incomplete failure mode: a no-op call does not satisfy the defect's expected behaviour.",
+  "suggested_fix": "In apps/journal/views.py replace both update_tenant_config_task.delay(str(tenant.id)) calls (the new DELETE path near line 535 and the pre-existing PATCH path near line 509) with the QStash dispatch used everywhere else: import publish_task from apps.cron.publish and call publish_task('update_tenant_config', str(tenant.id)). Keep the best-effort try/except. Optionally pass an idempotency_key derived from the tenant id to dedupe rapid edits.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/journal/views.py:533-537 - DELETE path calls update_tenant_config_task.delay() inside try/except Exception: pass",
+   "apps/journal/views.py:507-511 - PATCH path has the identical pre-existing broken .delay() call",
+   "apps/orchestrator/tasks.py:28-30 - update_tenant_config_task is a plain def with no Celery decorator, so no .delay() attribute",
+   "config/settings/base.py:37 - 'django_celery_beat removed - using QStash for scheduling'; no celery dependency exists",
+   "apps/cron/views.py:99 - TASK_MAP registers 'update_tenant_config' -> apps.orchestrator.tasks.update_tenant_config_task for QStash dispatch",
+   "apps/cron/publish.py:57-127 - publish_task is the QStash replacement for .delay(); grep shows these two journal calls are the only .delay() sites in app code",
+   "apps/orchestrator/services.py:600-616 - update_tenant_config re-uploads NBHD_SKILL_TEMPLATES_MD (templates.md) to the running container, which is the behaviour the fix intended but never triggers"
+  ]
+ }
+]

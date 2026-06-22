@@ -1435,7 +1435,7 @@ class SnapshotServiceTests(TestCase):
 
         create_monthly_snapshots(date(2026, 4, 1))
         count = create_monthly_snapshots(date(2026, 4, 1))
-        self.assertEqual(count, 1)  # still 1 — skipped the duplicate
+        self.assertEqual(count, 0)  # duplicate skipped → nothing newly created
         self.assertEqual(
             FinanceSnapshot.objects.filter(tenant=self.tenant).count(),
             1,
@@ -1445,8 +1445,8 @@ class SnapshotServiceTests(TestCase):
         from .snapshot import create_monthly_snapshots
 
         count = create_monthly_snapshots(date(2026, 4, 1))
-        # Tenant has finance_enabled but no accounts — should skip
-        self.assertEqual(count, 1)  # create_monthly_snapshots counts tenants attempted
+        # Tenant has finance_enabled but no accounts — should skip and not count
+        self.assertEqual(count, 0)  # nothing created (no-accounts skip returns None)
         self.assertEqual(FinanceSnapshot.objects.count(), 0)
 
     def test_skips_tenants_with_finance_disabled(self):

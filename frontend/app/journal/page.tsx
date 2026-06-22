@@ -53,10 +53,13 @@ export default function JournalPage() {
   );
 
   const handleNavigate = (kind: string, slug: string) => {
+    setMobileSidebarOpen(false);
+    // If already on this document, do not increment viewKey — that would
+    // force-remount DocumentView and silently discard any in-progress draft.
+    if (kind === activeKind && slug === activeSlug) return;
     setActiveKind(kind);
     setActiveSlug(slug);
     window.location.hash = `${kind}/${slug}`;
-    setMobileSidebarOpen(false);
     setViewKey((k) => k + 1);
   };
 

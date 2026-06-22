@@ -601,9 +601,11 @@ class BYOMarkCredentialErrorTest(TestCase):
         )
         self.assertIsNone(cred)
 
-    def test_skips_pending_credentials(self):
-        # Pending creds shouldn't get flipped to error — they haven't
-        # finished their first verification.
+    def test_flips_pending_credentials(self):
+        # PENDING is the de-facto working state in Phase 1 (no background
+        # verifier advances PENDING→VERIFIED, and the container applies a
+        # PENDING cred), so a runtime billing/auth failure MUST be able to flip
+        # it to ERROR — otherwise the error-surfacing loop is dead in prod.
         from apps.byo_models.services import mark_credential_error
 
         BYOCredential.objects.create(
@@ -618,7 +620,8 @@ class BYOMarkCredentialErrorTest(TestCase):
             provider=BYOCredential.Provider.ANTHROPIC,
             last_error="boom",
         )
-        self.assertIsNone(cred)
+        self.assertIsNotNone(cred)
+        self.assertEqual(cred.status, BYOCredential.Status.ERROR)
 
     def test_truncates_overlong_messages(self):
         from apps.byo_models.services import mark_credential_error

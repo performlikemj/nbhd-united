@@ -1,0 +1,19 @@
+[
+ {
+  "ref": "actions#1",
+  "source": "missed",
+  "severity": "low",
+  "category": "logic",
+  "detail": "Confirmed real. apps/actions/admin.py lines 18, 26, 40 all set search_fields to tenant__owner__email, but the Tenant model (apps/tenants/models.py:142) has no owner relation — the FK is user = OneToOneField(User, related_name=\"tenant\"), and grep finds zero owner occurrences in the model (no FK, no property, no related_name). The User model is tenants.User(AbstractUser) (apps/tenants/models.py:23), so email is valid; the correct lookup is tenant__user__email. Django resolves search_fields lazily at query time, so the three changelist pages (PendingAction, GatePreference, ActionAuditLog) render fine, but the instant an operator types anything into the admin search box, Django raises FieldError (Cannot resolve keyword 'owner' into field) and returns a 500. The reference admin apps/tenants/admin.py:40 correctly uses user__username/user__display_name (direct on Tenant, hence no tenant__ prefix). Impact is limited to internal Django-admin tooling — it does not affect tenants, runtime, provisioning, or any user-facing path; it only breaks email-search on three staff changelists, including the ActionAuditLog forensic log. Genuine but low blast radius and trivial to fix.",
+  "suggested_fix": "Replace tenant__owner__email with tenant__user__email in all three search_fields lists in apps/actions/admin.py (lines 18, 26, 40). Optionally also add tenant__user__username for parity with the tenants admin.",
+  "fix_complexity": "trivial",
+  "evidence": [
+   "apps/actions/admin.py:18 search_fields = [\"display_summary\", \"tenant__owner__email\"]",
+   "apps/actions/admin.py:26 search_fields = [\"tenant__owner__email\"]",
+   "apps/actions/admin.py:40 search_fields = [\"display_summary\", \"tenant__owner__email\"]",
+   "apps/tenants/models.py:142 user = models.OneToOneField(User, on_delete=models.CASCADE, related_name=\"tenant\") — no owner field exists; grep 'owner' on the model returns nothing",
+   "apps/tenants/models.py:23 class User(AbstractUser) — provides standard email field, so tenant__user__email is the valid path",
+   "apps/tenants/admin.py:40 search_fields = (\"user__username\", \"user__display_name\", \"container_id\") — reference admin uses user__ correctly"
+  ]
+ }
+]

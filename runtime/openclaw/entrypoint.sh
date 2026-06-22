@@ -12,10 +12,26 @@ NBHD_MEMORY_DIR="${NBHD_MEMORY_DIR:-$OPENCLAW_WORKSPACE_PATH/memory}"
 
 mkdir -p "$OPENCLAW_HOME" "$OPENCLAW_WORKSPACE_PATH" "$NBHD_MEMORY_DIR"
 
+# Skill templates.md is tenant-specific and authoritative on the file share
+# (rewritten by Django's update_tenant_config on every default-template edit).
+# It lives *inside* the nbhd-managed skills tree, so the rm -rf below would
+# wipe it and revert to a stale boot-time copy. Preserve the share copy across
+# the image-default refresh: stash it before the wipe, restore it after.
+SKILL_TEMPLATES_DST="${NBHD_MANAGED_SKILLS_DST}/daily-journal/references/templates.md"
+SKILL_TEMPLATES_STASH=""
 if [ -d "$NBHD_MANAGED_SKILLS_SRC" ]; then
+    if [ -f "$SKILL_TEMPLATES_DST" ]; then
+        SKILL_TEMPLATES_STASH="$(mktemp)"
+        cp "$SKILL_TEMPLATES_DST" "$SKILL_TEMPLATES_STASH"
+    fi
     rm -rf "$NBHD_MANAGED_SKILLS_DST"
     mkdir -p "$NBHD_MANAGED_SKILLS_DST"
     cp -R "$NBHD_MANAGED_SKILLS_SRC"/. "$NBHD_MANAGED_SKILLS_DST"/
+    if [ -n "$SKILL_TEMPLATES_STASH" ]; then
+        mkdir -p "$(dirname "$SKILL_TEMPLATES_DST")"
+        cp "$SKILL_TEMPLATES_STASH" "$SKILL_TEMPLATES_DST"
+        rm -f "$SKILL_TEMPLATES_STASH"
+    fi
 fi
 
 # AGENTS.md — always overwritten (system-controlled)
@@ -26,9 +42,13 @@ elif [ -f "$NBHD_MANAGED_AGENTS_TEMPLATE" ]; then
     cp "$NBHD_MANAGED_AGENTS_TEMPLATE" "$NBHD_MANAGED_AGENTS_DST"
 fi
 
-# Skill templates.md — overwrite with tenant-specific content from env var
-if [ -n "${NBHD_SKILL_TEMPLATES_MD:-}" ]; then
-    SKILL_TEMPLATES_DST="${NBHD_MANAGED_SKILLS_DST}/daily-journal/references/templates.md"
+# Skill templates.md — seed from env var ONLY when the file share has no copy
+# (first boot, or a tenant that predates the share-write path). The
+# NBHD_SKILL_TEMPLATES_MD env var is a provision-time snapshot that goes stale
+# after the user edits their default template; Django's update_tenant_config
+# writes the authoritative copy to the share (preserved across the rm -rf
+# above), so we must NOT clobber an existing share copy with the stale env var.
+if [ -n "${NBHD_SKILL_TEMPLATES_MD:-}" ] && [ -z "$SKILL_TEMPLATES_STASH" ]; then
     if [ -d "$(dirname "$SKILL_TEMPLATES_DST")" ]; then
         printf '%s\n' "$NBHD_SKILL_TEMPLATES_MD" > "$SKILL_TEMPLATES_DST"
     fi

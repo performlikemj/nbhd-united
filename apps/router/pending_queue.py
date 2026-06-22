@@ -357,13 +357,15 @@ def enqueue_message_for_tenant(
     Returns the freshly created ``PendingMessage`` row so callers can
     log / inspect.
 
-    NOTE: webhooks must do channel-specific preprocessing (workspace
-    routing, datetime context injection, PII redaction, etc.) BEFORE
-    enqueuing. The queue is dumb on purpose — it just POSTs the
-    prepared payload at the container and relays the reply. That keeps
-    the drain task channel-agnostic and avoids re-resolving routing at
-    drain time, when the user might already be in a different
-    workspace.
+    NOTE: callers must do channel-specific preprocessing (workspace
+    routing, datetime context injection, inbound PII redaction of the
+    user's text, etc.) BEFORE enqueuing — the redacted text is what gets
+    stored on the row and forwarded. The Telegram poller does this in
+    ``TelegramPoller._forward_to_container``. The queue itself is dumb on
+    purpose — it just POSTs the prepared payload at the container and
+    relays the reply, so it never re-runs redaction over the assembled
+    body (which carries structural markers the NER detector would
+    misfire on).
     """
     msg = PendingMessage.objects.create(
         tenant=tenant,
@@ -1021,9 +1023,10 @@ def _send_apology_for_stale_pending_message(
         _store_ios_turn_error(tenant, [msg], "stale")
         return
 
+    from apps.pii.redactor import rehydrate_for_tenant
     from apps.router.error_messages import error_msg
 
-    excerpt = (msg.user_text or "").strip().replace("\n", " ")
+    excerpt = rehydrate_for_tenant(tenant, (msg.user_text or "")).strip().replace("\n", " ")
     if len(excerpt) > 50:
         excerpt = excerpt[:50] + "…"
 
@@ -1101,13 +1104,16 @@ def _send_apology_for_dropped_pending_message(tenant: Tenant, msg: PendingMessag
         _store_ios_turn_error(tenant, [msg], "dropped")
         return
 
+    from apps.pii.redactor import rehydrate_for_tenant
     from apps.router.error_messages import error_msg, strip_internal_framing
 
     # Defense in depth: even though every call site is supposed to pass
     # ``raw_user_text`` so PendingMessage.user_text is clean, peel any
     # ``[System: \u2026]`` / ``[Now: \u2026]`` / ``[chat: \u2026]`` / ``[User tapped button: \u2026]``
     # framing off the head before quoting. The user shouldn't see this.
-    excerpt = strip_internal_framing(msg.user_text or "").strip().replace("\n", " ")
+    # Rehydrate first so PII placeholders (e.g. [PERSON_1]) are replaced
+    # with the user's own words before the excerpt is echoed back to them.
+    excerpt = strip_internal_framing(rehydrate_for_tenant(tenant, msg.user_text or "")).strip().replace("\n", " ")
     if len(excerpt) > 50:
         excerpt = excerpt[:50] + "\u2026"
 
@@ -1467,16 +1473,34 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
     now = timezone.now()
     if ai_text:
         text = _clean_assistant_text_for_app(tenant, ai_text)
-        AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
+        # A coalesced batch (N>1) yields ONE combined reply. Attach it to a single
+        # representative row (the last message in the batch) so the since-feed,
+        # thread history, and the USER.md digest each emit exactly one assistant
+        # row. Writing `text` onto every row instead fans the same reply out N
+        # times across all three surfaces (3 quick messages → the same assistant
+        # bubble repeated 3×). The other rows still flip to a terminal READY state
+        # (empty reply_text) so the polling client stops waiting on them — and
+        # `_app_rows` / the digest both suppress an assistant row when reply_text
+        # is empty, so no duplicate is rendered.
+        rep_id = client_ids[-1]
+        AppChatMessage.objects.filter(tenant=tenant, client_msg_id=rep_id).update(
             reply_text=text,
             status=AppChatMessage.Status.READY,
             replied_at=now,
         )
+        other_ids = [cid for cid in client_ids if cid != rep_id]
+        if other_ids:
+            AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=other_ids).update(
+                reply_text="",
+                status=AppChatMessage.Status.READY,
+                replied_at=now,
+            )
         # Notify the device the reply landed (closes the fire-and-forget gap for
         # Siri-escalated / backgrounded turns). No-op unless APNs is configured;
         # fail-open; idempotent (notified_at claim). The app suppresses the alert
-        # if the thread is foregrounded.
-        _dispatch_push(notify_app_reply_ready, tenant, list(client_ids), text)
+        # if the thread is foregrounded. Push only carries the representative id so
+        # the device shows one "reply ready" notification, not N.
+        _dispatch_push(notify_app_reply_ready, tenant, [rep_id], text)
     else:
         AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
             status=AppChatMessage.Status.ERROR,
@@ -1613,10 +1637,7 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
             text = text.replace(match.group(0), "")
 
     # Strip MEDIA references and attempt to send any embedded images
-    # via sendPhoto. We don't bring the full _send_rich_response logic
-    # here (no inline button parsing yet) — that's a follow-up if it
-    # turns out queued Telegram replies need it. Hibernation-buffered
-    # delivery for Telegram has the same limitation today.
+    # via sendPhoto. Mirrors ``poller._send_rich_response``.
     media_pattern = re.compile(
         r"MEDIA:(\S+\.(?:jpg|jpeg|png|gif|webp))",
         re.IGNORECASE,
@@ -1638,10 +1659,30 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
     text = media_pattern.sub("", text)
     text = workspace_pattern.sub("", text).strip()
 
+    # Parse inline buttons: [[button:Label|callback_data]] — same as
+    # ``poller._send_rich_response``. Without this the markers leaked as
+    # literal text on the (production) queue drain path and the
+    # ``agent:``-prefixed callback at poller.py was never reachable on
+    # Telegram. The poller already handles the resulting button taps.
+    button_pattern = re.compile(r"\[\[button:([^|]+)\|([^\]]+)\]\]")
+    buttons = button_pattern.findall(text)
+    text = button_pattern.sub("", text).strip()
+
+    reply_markup = None
+    if buttons:
+        keyboard = [[{"text": label.strip(), "callback_data": f"agent:{data.strip()}"}] for label, data in buttons]
+        reply_markup = {"inline_keyboard": keyboard}
+
     if not text:
+        # Buttons-only reply: agent emitted [[button:...]] markers with no prose.
+        # text is empty after stripping but we still need to deliver the keyboard.
+        # Telegram's sendMessage requires non-empty text; use a middle-dot placeholder
+        # (printable, survives strip()) so reply_markup is not silently dropped.
+        if reply_markup:
+            return _send_telegram_markdown(chat_id, "·", reply_markup=reply_markup)
         return True
 
-    return _send_telegram_markdown(chat_id, text)
+    return _send_telegram_markdown(chat_id, text, reply_markup=reply_markup)
 
 
 # ---------------------------------------------------------------------------
@@ -1699,7 +1740,7 @@ def _split_telegram_message(text: str, max_len: int = _TG_MAX_LEN) -> list[str]:
     return [c for c in chunks if c]
 
 
-def _send_telegram_markdown(chat_id: int, text: str) -> bool:
+def _send_telegram_markdown(chat_id: int, text: str, reply_markup: dict | None = None) -> bool:
     """Render the assistant's markdown to Telegram HTML and deliver it.
 
     The agent emits CommonMark/GFM; Telegram's legacy ``Markdown`` parse-mode
@@ -1708,6 +1749,9 @@ def _send_telegram_markdown(chat_id: int, text: str) -> bool:
     bold headings, aligned monospace tables, real anchors, no visible markdown.
     Each block-bounded chunk is sent with ``parse_mode="HTML"``; on the rare
     rejection we degrade that chunk to tag-free text (still markdown-free).
+
+    ``reply_markup`` (e.g. an ``inline_keyboard`` of agent buttons) is attached
+    to the LAST chunk only, mirroring ``TelegramPoller._send_rich_response``.
     """
     base = _telegram_api_base()
     if not base:
@@ -1724,19 +1768,25 @@ def _send_telegram_markdown(chat_id: int, text: str) -> bool:
     for i, chunk in enumerate(chunks):
         if i > 0:
             time.sleep(0.3)  # brief delay between chunks (matches poller)
+        payload = {"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"}
+        if reply_markup and i == len(chunks) - 1:
+            payload["reply_markup"] = reply_markup
         try:
             resp = httpx.post(
                 f"{base}/sendMessage",
-                json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML"},
+                json=payload,
                 timeout=10,
             )
             if resp.is_success:
                 continue
             if resp.status_code == 400:
                 # HTML rejected — retry as tag-free plain text (no markdown).
+                plain_payload = {"chat_id": chat_id, "text": strip_telegram_html(chunk)}
+                if reply_markup and i == len(chunks) - 1:
+                    plain_payload["reply_markup"] = reply_markup
                 plain = httpx.post(
                     f"{base}/sendMessage",
-                    json={"chat_id": chat_id, "text": strip_telegram_html(chunk)},
+                    json=plain_payload,
                     timeout=10,
                 )
                 overall = overall and plain.is_success
