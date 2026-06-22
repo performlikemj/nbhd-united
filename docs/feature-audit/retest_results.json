@@ -1,0 +1,1467 @@
+[
+ {
+  "id": "FA-0913",
+  "retest_verdict": "pass",
+  "notes": "Inbound PII redaction is now wired. apps/router/poller.py:1344-1347 runs both message_text and the persisted raw_user_text excerpt through redact_user_message(text, tenant) BEFORE the proactive/datetime/chat markers are prepended (markers added at line 1379), so the third-party LLM never sees the raw name/email/phone and the persisted apology excerpt has no raw PII. redact_user_message (apps/pii/redactor.py:248) has the expected signature (allow_user_name default True, fail-open). Although C01's disposition claimed Telegram-only (LINE/iOS out of scope), the committed worktree ALSO wires the other two inbound channels: apps/router/line_webhook.py:1248-1249 and apps/router/chat_views.py:226 (iOS sends redacted_text to the LLM while persisting verbatim user_text for the ?since= feed). So at the user-behaviour level the privacy guarantee now holds on all three channels. Test PollerInboundRedactionTest asserts [EMAIL_ADDRESS_1] appears in both body and excerpt and markers survive — 6/6 C01 tests pass.",
+  "evidence": [
+   "apps/router/poller.py:1332-1347",
+   "apps/router/poller.py:1379",
+   "apps/router/line_webhook.py:1246-1249",
+   "apps/router/chat_views.py:224-242",
+   "apps/pii/redactor.py:248-281",
+   "apps/router/tests_audit_C01.py:54-83"
+  ],
+  "_cluster": "C01"
+ },
+ {
+  "id": "FA-0914",
+  "retest_verdict": "pass",
+  "notes": "Same root gap as FA-0913 and now closed for the live Telegram path (the poller, not the webhook view — poller deletes the webhook on startup, so redact_telegram_update has no production caller and redact_user_message is the correct seam, which is what was wired at poller.py:1346-1347). The stale enqueue docstring in pending_queue.enqueue_message_for_tenant was corrected to state callers redact inbound text before enqueuing and the queue never re-redacts the assembled body (pending_queue.py:357-368). LINE and iOS inbound seams are also wired in the committed worktree (line_webhook.py:1248, chat_views.py:226), so the asymmetry (inbound never minted placeholders) is resolved fleet-wide. Verified the redacted text is what flows into enqueue_message_for_tenant payload.",
+  "evidence": [
+   "apps/router/poller.py:1344-1347",
+   "apps/router/pending_queue.py:357-368",
+   "apps/router/line_webhook.py:1248-1249",
+   "apps/router/chat_views.py:226-242"
+  ],
+  "_cluster": "C01"
+ },
+ {
+  "id": "FA-0929",
+  "retest_verdict": "pass",
+  "notes": "Disposition recorded action=noop (config.py deemed outside C01's file list), but the committed Phase-3 change actually DID edit apps/pii/config.py: DATE_OF_BIRTH is removed from TIER_POLICIES['starter']['entities'] and replaced with an explanatory comment (config.py:91-97). Verified at runtime TIER_POLICIES['starter']['entities'] no longer contains DATE_OF_BIRTH, and grep shows no remaining DATE_OF_BIRTH reference in apps/pii except the comment. The stale advertisement of unreachable coverage is gone — exactly the suggested fix. Harmless whitelist entry eliminated; no detector path affected.",
+  "evidence": [
+   "apps/pii/config.py:91-97"
+  ],
+  "_cluster": "C01"
+ },
+ {
+  "id": "FA-1015",
+  "retest_verdict": "pass",
+  "notes": "Poller PENDING/PROVISIONING branch (poller.py:851-855) now derives lang = getattr(tenant.user, 'language', None) or 'en' and sends error_msg(lang, 'waking_up') instead of the hardcoded English literal, mirroring the webhook path. Verified error_msg('ja','waking_up') returns the Japanese translation distinct from English. A non-English subscriber on the live poller path now gets the localized waking-up message.",
+  "evidence": [
+   "apps/router/poller.py:851-855",
+   "apps/router/error_messages.py (waking_up ja translation)"
+  ],
+  "_cluster": "C01"
+ },
+ {
+  "id": "FA-1016",
+  "retest_verdict": "pass",
+  "notes": "Poller SUSPENDED (not-trial, no-subscription) branch (poller.py:858-866) now sends error_msg(lang, 'suspended', billing_url=f'{frontend_url}/settings/billing') with lang from tenant.user.language, replacing the hardcoded English literal. Verified error_msg resolves localized 'suspended' for ja/fr and correctly substitutes the billing_url placeholder. The working billing link is preserved and copy is now localized for ~12 locales.",
+  "evidence": [
+   "apps/router/poller.py:857-866",
+   "apps/router/error_messages.py (suspended translations + billing_url)"
+  ],
+  "_cluster": "C01"
+ },
+ {
+  "id": "FA-1021",
+  "retest_verdict": "pass",
+  "notes": "Poller callback dispatch now has a task_action: prefix case (poller.py:750-754) delegating to new _handle_task_action_callback (poller.py:1511-1534), which calls apps.router.task_action_callbacks.handle_task_action_callback(update, tenant), parses the returned JsonResponse, and runs it through _execute_telegram_response. The handler (task_action_callbacks.py:69-111) performs undo_task_action, edits the channel message to strike-through, and returns an answerCallbackQuery dict ({method:'answerCallbackQuery',...}) which _execute_telegram_response POSTs — so the tapped Undo button stops spinning AND the reconciliation change is reverted on the live poller path. Test PollerTaskActionCallbackDispatchTest passes (dispatched + answered).",
+  "evidence": [
+   "apps/router/poller.py:750-754",
+   "apps/router/poller.py:1511-1534",
+   "apps/router/poller.py:636-650",
+   "apps/router/task_action_callbacks.py:69-111",
+   "apps/router/task_action_callbacks.py:33-34"
+  ],
+  "_cluster": "C01"
+ },
+ {
+  "id": "FA-1023",
+  "retest_verdict": "pass",
+  "notes": "_handle_update now tracks had_photo = bool(msg_data.get('photo')) (poller.py:942); when a photo was present but _upload_photo_to_workspace returned None (e.g. >5MB cap), it prepends '[Photo too large to process — please send a smaller image under 5 MB]' to message_text (poller.py:951-959) before forwarding, mirroring the document/voice 'couldn't process' markers. The agent is now told the image was not seen instead of replying blind. The marker is plain text and survives the subsequent inbound redaction. Minor residual (acknowledged in the original finding's optional suggestion): a non-size download failure also shows the 'too large' wording, but the core user-visible behaviour — agent no longer confidently answers an unseen photo — is fixed.",
+  "evidence": [
+   "apps/router/poller.py:939-965"
+  ],
+  "_cluster": "C01"
+ },
+ {
+  "id": "FA-1036",
+  "retest_verdict": "pass",
+  "notes": "relay_ai_response_to_telegram (the production queue-drain Telegram relay) now parses [[button:Label|callback_data]] markers, strips them from the text, and builds an inline_keyboard with callback_data 'agent:<data>' (pending_queue.py:1640-1657). _send_telegram_markdown was extended with an optional reply_markup arg attached to the LAST chunk only, including the HTML-rejection plain-text fallback (pending_queue.py:1715-1762). The poller's existing agent:-prefixed callback receiver handles taps, so no receiver change needed. The stale 'no inline button parsing yet' comment was removed. Test TelegramRelayButtonParsingTest asserts the markup produces {agent:confirm_yes, agent:confirm_no} and that no [[button: literal leaks — passes.",
+  "evidence": [
+   "apps/router/pending_queue.py:1640-1660",
+   "apps/router/pending_queue.py:1715-1762",
+   "apps/router/tests_audit_C01.py:134-158"
+  ],
+  "_cluster": "C01"
+ },
+ {
+  "id": "FA-1050",
+  "retest_verdict": "pass",
+  "notes": "get_forwarding_timeout (services.py:259-285) now imports BYO_SLOW_MODELS with the same defensive ImportError fallback used in pending_queue._resolve_chat_timeout, and computes is_reasoning = model in REASONING_MODELS or model in BYO_SLOW_MODELS — exactly mirroring _resolve_chat_timeout (pending_queue.py:329). A BYO Claude (Sonnet/Opus) tenant now gets REASONING_MODEL_TIMEOUT (240s) and is_reasoning=True consistently across both helpers, closing the maintainability/consistency gap. Tests ForwardingTimeoutByoSlowModelTest (slow + standard) pass.",
+  "evidence": [
+   "apps/router/services.py:259-285",
+   "apps/router/pending_queue.py:317-329",
+   "apps/router/tests_audit_C01.py:90-110"
+  ],
+  "_cluster": "C01"
+ },
+ {
+  "id": "FA-0653",
+  "retest_verdict": "pass",
+  "notes": "RuntimeLessonSearchView.get now wraps the search QuerySet in list(...) inside the existing try/except, so a DB-execution failure during iteration (OperationalError/pgvector unavailable/network drop) is caught and mapped to the documented {error: search_failed} 500 envelope instead of raising an unguarded generic 500. The except clauses (ValueError + Exception) are intact. The materialize-inside-guard pattern is exactly the suggested fix; behaviour now matches the error-envelope contract on the DB-failure path.",
+  "evidence": [
+   "apps/integrations/runtime_views.py:1725-1734"
+  ],
+  "_cluster": "C02"
+ },
+ {
+  "id": "FA-0656",
+  "retest_verdict": "pass",
+  "notes": "RuntimeJournalSearchView.get replaced the bare min(int(limit),50) with _parse_positive_int(...) wrapped in try/except ValueError returning HTTP 400 {error: invalid_request}. Verified _parse_positive_int raises ValueError('must be an integer') on non-numeric input, so ?limit=abc now yields 400 not 500. The second location the original detail cited (the reconcile endpoint ~line 2724) already wraps its int cast in try/except (TypeError, ValueError) with a default fallback, so it was never a 500 bug; leaving it unchanged is correct. Sibling-endpoint consistency restored.",
+  "evidence": [
+   "apps/integrations/runtime_views.py:1999-2005",
+   "apps/integrations/runtime_views.py:70-87",
+   "apps/integrations/runtime_views.py:2724"
+  ],
+  "_cluster": "C02"
+ },
+ {
+  "id": "FA-0657",
+  "retest_verdict": "pass",
+  "notes": "Added DAILY_SLUG_RE (^\\d{4}-\\d{2}-\\d{2}$) and folded the daily-date check into validate_kind_slug() so kind=='daily' with a non-ISO slug returns ('invalid_slug', ...). All three write paths call validate_kind_slug and return its error: GET (1889), PUT (1944), and set-section (2301). The set-section path still defaults an empty daily slug to today's ISO date before validating. So a PUT/set-section with kind=daily slug=my-notes now 400s, closing the journal-context-bundle corruption (slug__gte text-compare) gap. Dedicated tests (test_daily_requires_iso_date_slug / accepts / non_daily_unaffected) pass.",
+  "evidence": [
+   "apps/journal/path_validation.py:39-76",
+   "apps/integrations/runtime_views.py:1944",
+   "apps/integrations/runtime_views.py:2295-2307"
+  ],
+  "_cluster": "C02"
+ },
+ {
+  "id": "FA-0662",
+  "retest_verdict": "pass",
+  "notes": "RuntimeProfileUpdateView.patch now returns explicit 400s (invalid_display_name/invalid_language/invalid_location_city) for present-but-empty-after-strip or over-length values (>100 / >10 / >255), symmetric with the existing timezone (invalid_timezone) and coordinate (invalid_coordinates) paths. A present-but-invalid field is no longer silently dropped and misreported as no_changes, so the agent gets an actionable, distinct error. Matches the suggested fix.",
+  "evidence": [
+   "apps/integrations/runtime_views.py:2386-2429"
+  ],
+  "_cluster": "C02"
+ },
+ {
+  "id": "FA-0783",
+  "retest_verdict": "pass",
+  "notes": "search_lessons() now chains .prefetch_related('journal_entries','tutoring_sessions') BEFORE the [:limit] slice, mirroring recent_active_stars(). This eliminates the 2-extra-FK-queries-per-star N+1 when build_star_context(full=True) reads star.journal_entries.all()/tutoring_sessions.all() in the constellation q-mode path. Both related_names exist on Lesson (used elsewhere in the codebase). Prefetch is placed correctly before the slice so it actually applies. Lessons suite (106 tests) green.",
+  "evidence": [
+   "apps/lessons/services.py:148-152"
+  ],
+  "_cluster": "C02"
+ },
+ {
+  "id": "FA-0792",
+  "retest_verdict": "pass",
+  "notes": "create_connections() now reconciles similarity edges instead of strictly accreting: inside transaction.atomic() it deletes connection_type='similar' edges (both directions) to peers no longer in the current similar set, recreates current edges via get_or_create, and .update(similarity=...) refreshes weights on surviving similar edges. Operator precedence in the delete Q (& binds tighter than |) parses correctly as (from=lesson AND NOT to in peers) OR (to=lesson AND NOT from in peers). User-curated edge types (user_linked/builds_on/contradicts) are preserved because the filter is scoped to connection_type='similar' — verified by test_rewrite_preserves_user_curated_edges. test_rewrite_drops_stale_similar_edges proves both-direction stale-edge removal; the targeted (not delete-all) approach keeps the idempotency count at 0 when the set is unchanged. Full lessons suite (106) passes including the pre-existing idempotency assertion.",
+  "evidence": [
+   "apps/lessons/services.py:80-130",
+   "apps/lessons/tests_audit_C02.py:69-110"
+  ],
+  "_cluster": "C02"
+ },
+ {
+  "id": "FA-0973",
+  "retest_verdict": "pass",
+  "notes": "_handle_lesson_postback no longer returns silently for a non-pending lesson: it re-queries the lesson without the status filter and, if it exists in a resolved state, sends '👍 That one's already saved/already skipped!' via _send_line_follow_up (status=='approved' → saved, else skipped), mirroring the sibling _handle_extraction_postback ack. Silence remains only when the lesson truly does not exist. Lesson statuses ('approved'/'dismissed') match the branch logic; _send_line_follow_up exists and pushes a text message. Stale-button-feels-dead UX gap closed. Router LINE suite (255) green.",
+  "evidence": [
+   "apps/router/line_webhook.py:1578-1586",
+   "apps/router/line_webhook.py:616-621"
+  ],
+  "_cluster": "C02"
+ },
+ {
+  "id": "FA-0974",
+  "retest_verdict": "partial",
+  "notes": "LINE side fully and correctly fixed: the generic-postback fallback in _handle_postback now runs a SUSPENDED check + check_budget pre-flight (with _hibernate_for_quota on over-budget) before _forward_to_container, mirroring _handle_message's gate, so a tapped generic button on an over-budget-but-still-LIVE tenant no longer skips the budget gate. Helpers (check_budget, build_status_bubble, error_msg, _hibernate_for_quota) are imported/available. HOWEVER the defect and its suggested_fix are explicitly cross-channel and name the Telegram poller path (poller.py:831-836) as needing the same fix. I verified the Telegram poller's 'agent:' generic button-tap branch (poller.py:826-843) still calls _forward_to_container and returns BEFORE the SUSPENDED/budget gates (poller.py:860-875); the C01 poller diff added gating only to the typed-message path, not the agent: branch. So the same exploit window (one billable turn via a tapped button on an over-budget-but-LIVE tenant) remains open on Telegram. Disposition flagged this as out-of-scope (C01 file), but the cross-channel user-story behaviour is not fully met → partial.",
+  "evidence": [
+   "apps/router/line_webhook.py:1349-1386",
+   "apps/router/poller.py:826-843",
+   "apps/router/poller.py:860-875"
+  ],
+  "_cluster": "C02"
+ },
+ {
+  "id": "FA-0995",
+  "retest_verdict": "partial",
+  "notes": "Primary onboarding case fixed: the LINE audio branch now resolves the tenant early and, if (not onboarding_complete or onboarding_step==0), sends the 'please type your answer' bubble and returns BEFORE _show_loading and the paid Whisper call; the resolution is reused downstream via prefetched_tenant/tenant_prefetched (no double resolve). The common fresh-onboarding voice case no longer wastes a Whisper transcript or shows a >10s loading animation. RESIDUAL: the defect explicitly framed the window as 'first interaction OR after re-introduction.' A re-introduction-eligible tenant has onboarding_complete=True and onboarding_step>0, so the EARLY gate (which runs before needs_reintroduction resets step to 0 at line ~1116) does NOT catch them — their voice message still incurs the full Whisper call before being rejected. needs_reintroduction only fires for backfilled legacy users (narrow population), but the named 'after re-introduction' sub-case is genuinely not covered → partial. Router LINE suite (255) green.",
+  "evidence": [
+   "apps/router/line_webhook.py:931-949",
+   "apps/router/line_webhook.py:1112-1123",
+   "apps/router/onboarding.py:571-588"
+  ],
+  "_cluster": "C02"
+ },
+ {
+  "id": "FA-0023",
+  "retest_verdict": "pass",
+  "notes": "Scheduled-automations dispatcher is now FULLY wired (better than the disposition, which claimed only TASK_MAP was added and SYSTEM_CRONS was an external follow-up). TASK_MAP in apps/cron/views.py:203 maps 'run_due_automations' -> apps.automations.tasks.run_due_automations_task. AND register_system_crons.py:118 now has the QStash schedule ('run-due-automations', '* * * * *', '/api/cron/trigger/run_due_automations/') — added in the same fix commit. Traced the full path: SYSTEM_CRONS -> /api/cron/trigger/run_due_automations/ -> TASK_MAP -> run_due_automations_task (tasks.py:8) -> run_due_automations (scheduler.py:30), which filters status=ACTIVE + next_run_at<=now, orders by next_run_at, limits to DEFAULT_DUE_BATCH_SIZE=100, calls execute_automation(trigger_source=SCHEDULE), catches per-automation exceptions into 'errors', returns summary dict. Verified import resolution at runtime (import_string resolved run_due_automations_task). A subscriber's ACTIVE automation will now fire automatically every minute once register_system_crons runs post-deploy. Expected behaviour met.",
+  "evidence": [
+   "apps/cron/views.py:198-203",
+   "apps/cron/management/commands/register_system_crons.py:111-118",
+   "apps/automations/tasks.py:8-9",
+   "apps/automations/scheduler.py:18-63"
+  ],
+  "_cluster": "C03"
+ },
+ {
+  "id": "FA-0138",
+  "retest_verdict": "pass",
+  "notes": "The dedup_crons fleet fan-out branch no longer hardcodes 'failed': 0. apps/cron/views.py:1356-1357 now computes failed = len(batch_tasks) - enqueued and returns {enqueued, failed}, identical to the sibling broadcast endpoint at views.py:1296-1297. On publish_batch failure the except block forces enqueued=0 (views.py:1352-1354), so failed now equals the number of dropped tasks instead of masking a total drop as a no-op; partial sync-fallback counts (enqueued < len(tasks)) are also surfaced. Operator telemetry now distinguishes 'every dedup task dropped' from 'no active tenants matched'. Expected behaviour met.",
+  "evidence": [
+   "apps/cron/views.py:1348-1357",
+   "apps/cron/views.py:1293-1297"
+  ],
+  "_cluster": "C03"
+ },
+ {
+  "id": "FA-0143",
+  "retest_verdict": "pass",
+  "notes": "Took the documented lowest-risk path (suggested-fix option: accept per-task idempotency as the real guard, remove the misleading TTL comment). The 'covers slowest fleet rollout' comment is gone; apps/cron/views.py:1689-1697 now accurately states the lock only guards the millisecond enqueue (eligibility query + publish_batch), is released in finally, and that double-bumps are prevented at the task layer (bump_openclaw_atomic_per_tenant re-checks version+image_tag at execution; bump_openclaw_version_for_tenant snapshots-before-write/restores-on-failure). TTL narrowed from 30min to 5min as an enqueue mutex with worker-death orphan headroom (views.py:1698). This was a comment/telemetry-accuracy defect (low severity, logic category); the lock lifecycle behaviour is intentionally unchanged and the documentation now matches reality. Expected behaviour (409 concurrency lock on the enqueue, per-task idempotency for the rollout) holds.",
+  "evidence": [
+   "apps/cron/views.py:1683-1698"
+  ],
+  "_cluster": "C03"
+ },
+ {
+  "id": "FA-0536",
+  "retest_verdict": "partial",
+  "notes": "Sub-claim (a) count-mismatch is FULLY fixed (disposition is stale — it claimed this was reverted, but the code shows it was applied). apps/finance/snapshot.py:35-39 now guards 'created_count += 1' on a non-None return from _create_snapshot_for_tenant, so duplicate-skip and no-accounts-skip (both return None) no longer inflate the count; docstring 'number of snapshots created' is now truthful. The two existing tests were correctly updated to count==0 semantics (apps/finance/tests.py:1438 'duplicate skipped -> nothing newly created', :1449 'nothing created'), and SnapshotServiceTests (5 tests) PASS. Sub-claim (b) scheduling is NOT done: grep finds no create_monthly_snapshots task in apps/finance/tasks.py (only schedule_finance_welcome_task), no TASK_MAP entry in apps/cron/views.py, and no SYSTEM_CRONS schedule — so create_monthly_snapshots still never runs in production. Partial is the right verdict: the live-impacting docstring-vs-behaviour half is fixed and test-verified; the scheduling half is an acceptable documented dormant-feature follow-up (defect itself notes feature is latent with no production consumer).",
+  "evidence": [
+   "apps/finance/snapshot.py:18-51",
+   "apps/finance/tests.py:1427-1450",
+   "apps/finance/tasks.py:10",
+   "apps/cron/views.py:147-188"
+  ],
+  "_cluster": "C03"
+ },
+ {
+  "id": "FA-1071",
+  "retest_verdict": "pass",
+  "notes": "The lockout/data-integrity gap is closed via the suggested-fix option (a): the previously-stubbed --resend-only flag is now implemented. apps/tenants/management/commands/rotate_all_passwords.py:74-83 declares the flag; handle() short-circuits to _handle_resend_only (line 94-95); _handle_resend_only (lines 170-224) targets users with an unusable password (has_usable_password() is False, owner-excluded), re-sends the reset email, and does NOT re-bump password_last_changed_at — so it recovers email-failed users regardless of the --since cutoff (the case that the documented same---since retry previously skipped forever). New test tests_audit_C03.py:test_resend_only_recovers_email_failed_user asserts the flaky-email user is recovered and bob's password_last_changed_at is unchanged (lines 64-84). The 3 new C03 tests PASS and all 33 existing privacy-rotation tests PASS (serial run; the earlier 3 'connection is closed' errors were a parallel-DB flake, not logic). Expected behaviour met.",
+  "evidence": [
+   "apps/tenants/management/commands/rotate_all_passwords.py:74-95",
+   "apps/tenants/management/commands/rotate_all_passwords.py:170-224",
+   "apps/tenants/tests_audit_C03.py:41-101"
+  ],
+  "_cluster": "C03"
+ },
+ {
+  "id": "FA-1085",
+  "retest_verdict": "pass",
+  "notes": "Same root cause as FA-1071, addressed by the same --resend-only implementation, which provides an automated recovery path that does NOT depend on the operator remembering an earlier --since. The module docstring was updated (lines 15-19) to document --resend-only as the recovery mechanism instead of a 'future enhancement', and the email-failure ERROR line now instructs 're-run with --resend-only to re-send their reset link' (lines 162-168). The footgun (naive same---since retry silently skipping locked-out users) now has a first-class command-driven fix. Verified via new tests + full existing suite passing. Expected behaviour met.",
+  "evidence": [
+   "apps/tenants/management/commands/rotate_all_passwords.py:9-19",
+   "apps/tenants/management/commands/rotate_all_passwords.py:162-168",
+   "apps/tenants/management/commands/rotate_all_passwords.py:170-224"
+  ],
+  "_cluster": "C03"
+ },
+ {
+  "id": "FA-1140",
+  "retest_verdict": "pass",
+  "notes": "Operator-summary undercount fixed exactly per suggested fix. The green headline is scoped to 'Rotated + emailed (got reset link): {rotated}' (line 153), and a new explicit line 'Total passwords rotated / locked out: {rotated + email_failed}' (lines 156-161, WARNING style) now surfaces the true blast radius as a single number, so a partial-Mailgun-outage run cannot be misread by reading only the green line. The distinct red ERROR line for email_failed is retained (lines 162-168). Expected behaviour (operator sees the real locked-out count) met.",
+  "evidence": [
+   "apps/tenants/management/commands/rotate_all_passwords.py:152-168"
+  ],
+  "_cluster": "C03"
+ },
+ {
+  "id": "FA-0207",
+  "retest_verdict": "pass",
+  "notes": "Unreachable checkoutError banner removed from the no-tenant empty-state branch. The diff deletes the {checkoutError && (...)} block that lived in the else branch which has no checkout control. checkoutError state/setter remain genuinely used in the hasTenant branch (set in handleCheckout at lines 37/48/50, rendered at line 169), so no dead state was orphaned. Matches suggested_fix exactly; maintainability defect resolved, no behaviour regression.",
+  "evidence": [
+   "frontend/app/settings/billing/page.tsx:197-202 (removed block)",
+   "frontend/app/settings/billing/page.tsx:18,37,48,50,169-171 (remaining valid usage)"
+  ],
+  "_cluster": "C04"
+ },
+ {
+  "id": "FA-0221",
+  "retest_verdict": "pass",
+  "notes": "useDonationPreferenceMutation.onMutate now recomputes donation_amount client-side inside the optimistic setQueryData, mirroring the server formula round(surplus*pct/100,4). effectiveEnabled/effectivePct derived from newData ?? old; donation_amount = (enabled && surplus>0) ? Math.round(surplus*pct/100*10000)/10000 : 0; merged alongside ...newData. This keeps the StatCard impact dollars, cost-split legend, split-bar widths and mealsEstimate consistent with the toggled percentage during the optimistic window instead of leaving them stale until onSettled refetch. The 4-decimal rounding is correctly implemented.",
+  "evidence": [
+   "frontend/lib/queries.ts:332-344 (onMutate recompute)"
+  ],
+  "_cluster": "C04"
+ },
+ {
+  "id": "FA-0269",
+  "retest_verdict": "pass",
+  "notes": "pollUntilDone timeout branch no longer stops watching at POLL_TIMEOUT_MS. It now sets longRunning (copy 'Still composing…/I'll message you') but re-schedules tick at SLOW_POLL_INTERVAL_MS (30s), capped at POLL_HARD_TIMEOUT_MS (~20min past the fast window). The re-scheduled tick re-runs the full status checks, so a post-timeout status=failed flips phase to 'failed' with the in-page error (surfacing retry) and a late status=ready/delivered still resolves the toast+library. This fully satisfies the frontend story in expected_behaviour. The disposition correctly scoped out the backend defense-in-depth channel-ping on _fail() (apps/core/services.py is outside cluster C04); that was an optional 'backend defense-in-depth' suggestion, not part of the frontend expected_behaviour, so the frontend stranding symptom is fully fixed — pass, not partial.",
+  "evidence": [
+   "frontend/app/core/page.tsx:24-30 (new SLOW_POLL/HARD_TIMEOUT consts)",
+   "frontend/app/core/page.tsx:122-152 (tick status checks + slow re-poll)"
+  ],
+  "_cluster": "C04"
+ },
+ {
+  "id": "FA-0293",
+  "retest_verdict": "pass",
+  "notes": "Added openArchiveDialog (calls archiveMutation.reset() then setConfirmArchive) and closeArchiveDialog (reset() then setConfirmArchive(null)). AccountCard onArchive for both debt and savings lists wired to openArchiveDialog; ConfirmArchiveDialog onCancel wired to closeArchiveDialog. Resetting the shared mutation on both open and close prevents the stale isError/error from a prior failed archive leaking into a freshly-mounted dialog, including the same-account re-open case the defect called out. Matches the preferred suggested_fix (reset() approach).",
+  "evidence": [
+   "frontend/app/finance/page.tsx:80-88 (open/close helpers)",
+   "frontend/app/finance/page.tsx:252,268 (AccountCard onArchive=openArchiveDialog)",
+   "frontend/app/finance/page.tsx:322 (dialog onCancel=closeArchiveDialog)"
+  ],
+  "_cluster": "C04"
+ },
+ {
+  "id": "FA-0294",
+  "retest_verdict": "pass",
+  "notes": "ArchivedAccountsSection is now rendered inside the zero-active-accounts empty-state branch (after the 'No accounts yet' card) with props identical to the existing main-block render (expanded/onToggle/isLoading/accounts/onRestore/restoringId). The component renders the aria-expanded toggle with ▾/▴ chevrons, Loading state, 'No archived accounts.' empty text, and per-account Restore button that fires unarchiveMutation.mutate(id) showing 'Restoring…'/disabled. A subscriber who archives every account can now reach the Restore path without first creating a new account. Wiring matches expected_behaviour and suggested_fix.",
+  "evidence": [
+   "frontend/app/finance/page.tsx:159-172 (empty-state ArchivedAccountsSection)",
+   "frontend/app/finance/page.tsx:305-316 (main-block render, identical props)",
+   "frontend/app/finance/page.tsx:343-409 (component: aria-expanded, Restore, Restoring…)"
+  ],
+  "_cluster": "C04"
+ },
+ {
+  "id": "FA-0406",
+  "retest_verdict": "pass",
+  "notes": "Added validationError state. handleSubmit now sets a specific message before each early return ('Add a template name.' / 'Add a slug for the template.' / 'Add at least one section with both a slug and a title.') instead of silently returning, and clears it on the valid path. Rendered in a rose panel (border-rose-border/bg-rose-bg/text-rose-text) above the createMutation/updateMutation error panels. Cleared on handleStartCreate, handleStartEdit, and on Name/Slug onChange edits. A user who forgets the Name now gets explicit guidance instead of a dead button. Matches the preferred local-error suggested_fix.",
+  "evidence": [
+   "frontend/app/journal/templates/page.tsx:83 (state), 92,103 (clear on start), 128-140 (per-field messages), 196-198,206-213 (clear on edit), 308-312 (rose panel)"
+  ],
+  "_cluster": "C04"
+ },
+ {
+  "id": "FA-0511",
+  "retest_verdict": "pass",
+  "notes": "Invalid Tailwind class pl-13 (silently dropped by JIT — no '13' spacing step in v3.4) replaced with arbitrary value pl-[3.25rem] (52px = 40px icon + 12px gap), restoring the intended mobile indent so Monthly/Balance figures align under the nickname; sm:pl-0 preserved for desktop. Grep confirms no remaining pl-13 reference and no '13' key was added to tailwind.config.ts (scoped component fix per disposition). Resolves the mobile-only misalignment.",
+  "evidence": [
+   "frontend/components/account-card.tsx:70 (pl-[3.25rem] sm:pl-0)"
+  ],
+  "_cluster": "C04"
+ },
+ {
+  "id": "FA-0555",
+  "retest_verdict": "pass",
+  "notes": "WorkoutDuplicateView now dates the copy with today_in_tenant_tz(tenant) instead of bare date_cls.today() (UTC). The helper (apps/common/llm_contracts.py:121-123) derives the date from the tenant's own IANA timezone via dj_tz.now().astimezone(tenant_tz(tenant)).date() — actually more robust than the suggested timezone.localdate() because it does not depend on request-middleware tz activation. Regression test test_duplicate_uses_tenant_local_date freezes the clock just after JST midnight (UTC still prior day) and asserts the duplicate lands on 2026-06-02 (tenant-local), status=planned. An east-of-UTC tenant duplicating in the early-morning window now gets the correct calendar day. Test suite (7 tests) passes.",
+  "evidence": [
+   "apps/fuel/views.py:732",
+   "apps/common/llm_contracts.py:121-123",
+   "apps/fuel/tests_audit_C05.py:99-115"
+  ],
+  "_cluster": "C05"
+ },
+ {
+  "id": "FA-0567",
+  "retest_verdict": "pass",
+  "notes": "RestingHRDetailView.patch now has the missing date-conflict guard: after is_valid(), reads serializer.validated_data.get('date') and, if it differs from entry.date and another RestingHeartRateLog row exists for the same tenant/date, returns a clean 409 {error:date_conflict} before serializer.save(). This exactly mirrors the BodyWeightDetailView guard (views.py:626-632). Moving a resting-HR entry onto an occupied date now returns 409 instead of an opaque 500 IntegrityError. Test test_resting_hr_patch_date_collision_returns_409 (+ same-date-still-ok) passes.",
+  "evidence": [
+   "apps/fuel/views.py:1033-1042",
+   "apps/fuel/views.py:623-632",
+   "apps/fuel/tests_audit_C05.py:37-60"
+  ],
+  "_cluster": "C05"
+ },
+ {
+  "id": "FA-0568",
+  "retest_verdict": "pass",
+  "notes": "SleepDetailView.patch now has the identical 409 date_conflict guard (filters SleepLog by tenant/new_date, excludes self) before serializer.save(), mirroring BodyWeight. PATCH moving a sleep entry onto an occupied date returns a clean 409 instead of a 500. Test test_sleep_patch_date_collision_returns_409 (+ move-to-free-date-ok) passes.",
+  "evidence": [
+   "apps/fuel/views.py:1138-1147",
+   "apps/fuel/tests_audit_C05.py:62-85"
+  ],
+  "_cluster": "C05"
+ },
+ {
+  "id": "FA-0570",
+  "retest_verdict": "pass",
+  "notes": "Both halves of the regen-boundary UTC drift are fixed. Consumer WorkoutPlanDetailView.patch (views.py) replaced the local 'from datetime import date as _date; today = _date.today()' with today = today_in_tenant_tz(tenant) at line 1247 (tenant in scope from line 1228); used for both the delete date__gte filter and regen_start. Runtime RuntimeWorkoutPlanDetailView.patch now passes today=today_in_tenant_tz(tenant) into reconcile_plan_state (runtime_views.py:1430-1432); services.reconcile_plan_state already exposes the today= keyword seam (services.py:96). services.py needed no edit (per disposition). East-of-UTC tenants editing a plan in early-morning local hours no longer get a 1-day-prior regen boundary.",
+  "evidence": [
+   "apps/fuel/views.py:1247-1253",
+   "apps/fuel/runtime_views.py:1430-1432",
+   "apps/fuel/services.py:96"
+  ],
+  "_cluster": "C05"
+ },
+ {
+  "id": "FA-0582",
+  "retest_verdict": "pass",
+  "notes": "RuntimeWorkoutPlanListCreateView.post now wraps WorkoutPlan.objects.create() AND _expand_plan_workouts() in a single transaction.atomic() inside the existing try/except (returns 400 create_failed on failure). A mid-loop expansion failure now rolls back the plan row too, so the (tenant,name,start_date,status=active) idempotency short-circuit above can no longer match a partial orphan and lock in a structurally-incomplete plan; the retry recreates cleanly. workouts_created is assigned inside the atomic block and correctly referenced afterward (line 1298) — bound on every success path since the except always returns. Matches the sibling swap view's atomic pattern. No dedicated regression test for the atomicity/dedup-lockin scenario exists (the test-file header claims behavioural coverage but I found none specific to this defect), however the code fix is present, correct, and complete; verdict pass on code-path inspection.",
+  "evidence": [
+   "apps/fuel/runtime_views.py:1264-1299"
+  ],
+  "_cluster": "C05"
+ },
+ {
+  "id": "FA-0584",
+  "retest_verdict": "pass",
+  "notes": "RuntimeWorkoutPlanDetailView.patch no longer stores schedule_json after a bare isinstance(dict) check. It now runs _validate_normalize_schedule(raw_schedule) (the same validate_detail/normalize_detail contract the POST path enforces, returning the LLMValidationError 400 envelope on bad strength/calisthenics sets) and also validates week_overrides via _validate_normalize_week_overrides for POST parity. The subtle reconciler hazard is correctly handled: _validate_normalize_schedule always injects a detail_json key (line 953), which the reconciler would treat as 'clear it'; the fix strips that injected key for days where the caller supplied no detail_json, preserving the 'silence = leave alone' contract. Tests prove a negative-rep set is rejected 400 and does NOT mutate plan.schedule_json, and a valid set is accepted 200 and persists. Malformed sets can no longer bypass validation into future Workout.detail_json via reconcile/apply.",
+  "evidence": [
+   "apps/fuel/runtime_views.py:1366-1396",
+   "apps/fuel/runtime_views.py:894-960",
+   "apps/fuel/tests_audit_C05.py:138-182"
+  ],
+  "_cluster": "C05"
+ },
+ {
+  "id": "FA-0586",
+  "retest_verdict": "pass",
+  "notes": "Disposition reported action=partial/noop claiming the fix line (apps/fuel/runtime_views.py:1510, change bare date.today() to today_in_tenant_tz(tenant)) was outside cluster C06's allowed files. However the HEAD commit (HEAD~1..HEAD diff) DID apply this fix — RuntimeFuelAuditView.get() now computes `today = today_in_tenant_tz(tenant)` (runtime_views.py:1549) instead of `date.today()`. This tenant-local today correctly drives the daily-note slug lookup (slug=str(today), line 1554) and the 14-day planned-workout window (date__gte=today, line 1564), so east-of-UTC tenants no longer resolve 'today' as yesterday in the 00:00-09:00 local window. No bare date.today() remains in executable code (only in explanatory comments at lines 1241 and 1546). Whichever cluster owns runtime_views.py applied it; the user-facing morning-window advisory drift is resolved. Verified by inspecting the diff and the current code path.",
+  "evidence": [
+   "apps/fuel/runtime_views.py:1549 (today = today_in_tenant_tz(tenant))",
+   "apps/fuel/runtime_views.py:1554 (slug=str(today) daily-note lookup)",
+   "apps/fuel/runtime_views.py:1564 (date__gte=today 14d window)",
+   "apps/fuel/runtime_views.py:1546-1548 (comment warning against bare date.today())",
+   "git diff HEAD~1 runtime_views.py: -today = date.today() +today = today_in_tenant_tz(tenant)"
+  ],
+  "_cluster": "C06"
+ },
+ {
+  "id": "FA-0819",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct: '_fuel:' added to _UNMANAGED_PREFIXES at apps/orchestrator/cron_reconcile.py:49 (now ('_sync:', '_fuel:')) with an accurate explanatory comment. _is_unmanaged_cron (cron_reconcile.py:80-95) matches names via name.startswith(_UNMANAGED_PREFIXES), so live _fuel:* gateway crons are now treated as unmanaged by the main diff, the dedup pre-pass, and the at-cron janitor — they never enter to_remove and are never cron.removed. This leaves regenerate_fuel_crons as the sole writer, matching the design. Regression test test_fuel_session_cron_survives_tenant_reconcile asserts a _fuel:{8-hex} kind=cron job with no CronJob row is NOT passed to cron.remove and summary['removed']==0. Test passes. The destructive flapping race against the fuel reconciler is closed.",
+  "evidence": [
+   "apps/orchestrator/cron_reconcile.py:49 (_UNMANAGED_PREFIXES = ('_sync:', '_fuel:'))",
+   "apps/orchestrator/cron_reconcile.py:80-95 (_is_unmanaged_cron prefix match)",
+   "apps/orchestrator/tests_audit_C06.py:50-83 (FuelCronNotReapedByTenantReconcilerTests)"
+  ],
+  "_cluster": "C06"
+ },
+ {
+  "id": "FA-0824",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct: a hibernation/suspension guard was pushed down into regenerate_fuel_crons itself (apps/orchestrator/fuel_cron.py:133-148). After the use_session_scheduling check and before any invoke_gateway_tool('cron.list') call, it returns the zero summary when tenant.hibernated_at is not None or tenant.status == SUSPENDED. Centralizing in regenerate_fuel_crons (not just reconcile_fuel_crons_task) means the hourly fleet sweep, the per-tenant task, and any other caller all inherit the guard, so they cannot drift again. This prevents the doomed cron.list POST to a scaled-to-zero container (GatewayError + full stack trace + inflated error telemetry every hour). Reconcile-on-wake still rebuilds the crons, so no data loss. Tests test_skips_hibernated_tenant_without_gateway_call and test_skips_suspended_tenant_without_gateway_call assert invoke_gateway_tool is never called and errors==0. Both pass.",
+  "evidence": [
+   "apps/orchestrator/fuel_cron.py:133-148 (hibernated/suspended early return before cron.list)",
+   "apps/orchestrator/tests_audit_C06.py:86-117 (RegenerateFuelCronsHibernationGuardTests)"
+  ],
+  "_cluster": "C06"
+ },
+ {
+  "id": "FA-0846",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct: apply_single_tenant_config_task (apps/orchestrator/tasks.py:193-202) now, after refresh_from_db(), re-checks the SAME guard update_tenant_config uses (status != ACTIVE or not container_id — verified identical to services.py:574) and returns WITHOUT advancing config_version when it holds. So if the tenant flips SUSPENDED / loses its container between the version gate and the write, config_version stays behind pending_config_version, letting apply_pending_configs / billing reactivation / idle-wake / manual force_apply (all gated on pending>config) naturally retry once the tenant is ACTIVE again. The change is no longer falsely marked applied. Hibernated-but-ACTIVE tenants retain ACTIVE status + container_id so they still pass the guard and advance correctly (existing hibernated branch at tasks.py:212 still runs). Implemented within the allowed file by mirroring the guard rather than changing update_tenant_config's signature; functionally equivalent for this entry point. Tests test_does_not_advance_version_when_tenant_suspended_mid_apply (version stays 1) and test_advances_version_for_active_tenant (advances to 2) both pass.",
+  "evidence": [
+   "apps/orchestrator/tasks.py:193-202 (status/container re-check, return without advancing)",
+   "apps/orchestrator/tasks.py:205-218 (version advance + hibernated branch preserved)",
+   "apps/orchestrator/services.py:574 (mirrored guard: status != ACTIVE or not container_id)",
+   "apps/orchestrator/tests_audit_C06.py:120-160 (ApplyConfigSkippedWriteVersionGuardTests)"
+  ],
+  "_cluster": "C06"
+ },
+ {
+  "id": "FA-0866",
+  "retest_verdict": "pass",
+  "notes": "Duplicate of FA-0824, same root cause and same fix. The hibernated/suspended early-return in regenerate_fuel_crons (apps/orchestrator/fuel_cron.py:133-148) is the single chokepoint both the fleet sweep reconcile_fuel_crons_task and the per-tenant path flow through, so the hourly fleet reconcile no longer issues doomed gateway POSTs to scaled-to-zero containers, no longer wastes the ~90s timeout, no longer logs GatewayError, and no longer inflates totals['errors'] (which masked real drift). It also avoids cold-starting idle containers (preserving hibernation). Covered by the same two passing regression tests asserting no gateway call for hibernated and suspended tenants.",
+  "evidence": [
+   "apps/orchestrator/fuel_cron.py:133-148 (single guard shared by fleet + per-tenant paths)",
+   "apps/orchestrator/tests_audit_C06.py:86-117 (RegenerateFuelCronsHibernationGuardTests covers both cases)"
+  ],
+  "_cluster": "C06"
+ },
+ {
+  "id": "FA-0175",
+  "retest_verdict": "pass",
+  "notes": "The internal Django management-command hint 'If this persists, run: python manage.py check_gateway_health' is gone. Line 717 now reads 'If this keeps happening, please contact support.' — subscriber-appropriate and harmless to non-operators. Error card still correctly shows 'Could not load scheduled tasks.' plus any error.message. Fix is complete and correct.",
+  "evidence": [
+   "frontend/app/settings/cron-jobs/page.tsx:716-718 (error-state paragraph now shows contact-support text, not the CLI command)"
+  ],
+  "_cluster": "C07"
+ },
+ {
+  "id": "FA-0187",
+  "retest_verdict": "pass",
+  "notes": "handleCreate (lines 336-364) now calls showToast('Task created', 'success') on line 359, after setShowCreate(false) on line 358. The Toast component is rendered at page-level (lines 527-534), outside the showCreate conditional, so it displays correctly even though the form has already been unmounted. The old setSuccess(setCreateFeedback, createTimeoutRef) dead-code path was removed entirely. The 'Creating...' pending state and error path remain intact. Matches the bulk-delete/enable pattern on lines 503 and 517.",
+  "evidence": [
+   "frontend/app/settings/cron-jobs/page.tsx:357-359 (setCreateForm reset, setShowCreate(false), showToast called in sequence)",
+   "frontend/app/settings/cron-jobs/page.tsx:527-534 (Toast renders at page root, not inside form conditional)",
+   "frontend/app/settings/cron-jobs/page.tsx:260-262 (useToast hook instantiated; showToast available page-wide)"
+  ],
+  "_cluster": "C07"
+ },
+ {
+  "id": "FA-0472",
+  "retest_verdict": "pass",
+  "notes": "Toggle button disabled attribute on line 884 is now 'disabled={toggleMutation.isPending && toggleMutation.variables?.name === jobIdentifier}'. Only the row currently being toggled is disabled while the PATCH request is in flight; all other rows remain interactive. This mirrors the per-row singleDeletePending guard on line 824. Fix is correct and matches the suggested approach.",
+  "evidence": [
+   "frontend/app/settings/cron-jobs/page.tsx:884 (per-row scoped disabled check using toggleMutation.variables?.name)",
+   "frontend/app/settings/cron-jobs/page.tsx:824 (singleDeletePending per-job pattern — contrasting correct model still present)"
+  ],
+  "_cluster": "C07"
+ },
+ {
+  "id": "FA-0473",
+  "retest_verdict": "pass",
+  "notes": "handleUpdate (lines 374-402) now calls setEditingName(null) on line 396 (unmounts the desktop inline form) followed by showToast('Task saved', 'success') on line 397. The toast renders at page-level and is visible after the form unmounts. The old setSuccess(setEditFeedback, editTimeoutRef) dead-code path is gone. Error path on line 400 still uses setError(setEditFeedback, ...) which correctly remains visible because the form stays mounted on error. The '✓ Saved' markup inside the desktop form (lines 1099-1103) is still present but now unreachable on success — it was already dead code before the fix; the toast approach supersedes it cleanly.",
+  "evidence": [
+   "frontend/app/settings/cron-jobs/page.tsx:396-397 (setEditingName(null) then showToast on success)",
+   "frontend/app/settings/cron-jobs/page.tsx:398-401 (setError still used on failure — form stays mounted, error text visible)",
+   "frontend/app/settings/cron-jobs/page.tsx:527-534 (Toast at page root, visible after form unmount)"
+  ],
+  "_cluster": "C07"
+ },
+ {
+  "id": "FA-0474",
+  "retest_verdict": "pass",
+  "notes": "The same handleUpdate fix (showToast line 397) resolves the mobile overlay case. When isMobile===true, the overlay is rendered via createPortal (lines 936-1027) and unmounts when setEditingName(null) runs on line 396. The toast fires on line 397, is rendered at the page root outside the portal, and is visible as the overlay closes. The mobile Save button (line 946-948) still lacks a dedicated success state (shows only '...' or 'Save'), but this is acceptable since the toast provides the confirmation. The mobile error path (lines 1020-1022) remains intact.",
+  "evidence": [
+   "frontend/app/settings/cron-jobs/page.tsx:396-397 (setEditingName(null) unmounts portal; showToast fires immediately after)",
+   "frontend/app/settings/cron-jobs/page.tsx:936-1027 (mobile portal — unmounts on editingName===null; error path at 1020-1022 still intact)",
+   "frontend/app/settings/cron-jobs/page.tsx:527-534 (Toast at page root, independent of portal lifecycle)"
+  ],
+  "_cluster": "C07"
+ },
+ {
+  "id": "FA-0390",
+  "retest_verdict": "pass",
+  "notes": "Touch-target fix present and correct. document-header.tsx Previous-day chevron (line 99) and Next-day chevron (line 140) now use min-h-[44px] min-w-[44px]; Today button (line 153) uses min-h-[44px]. All retain flex items-center justify-center so icon centering is unaffected. Matches the sibling sidebar-toggle (line 82) convention and the WCAG 2.1 AA 44x44 standard from CLAUDE.md/DESIGN.md. Date-nav behaviour (shiftDate, max=todayISO, disabled next chevron, native date picker, Today button) is intact.",
+  "evidence": [
+   "frontend/components/journal/document-header.tsx:99",
+   "frontend/components/journal/document-header.tsx:140",
+   "frontend/components/journal/document-header.tsx:153",
+   "frontend/components/journal/document-header.tsx:82"
+  ],
+  "_cluster": "C08"
+ },
+ {
+  "id": "FA-0391",
+  "retest_verdict": "pass",
+  "notes": "Material silent-save-failure fix present and correct. document-view.tsx handleSave (317-339) now wraps mutateAsync in try/catch; on failure it sets saveError=true and returns early, keeping the editor open (no data loss) and skipping the false 'Saved' indicator. A visible role='alert' message renders below the desktop editor (lines 510-514: \"Couldn't save your changes... tap Save to try again.\") using the text-rose-text token. saveError state declared at line 145, reset in handleEdit (291) and handleCancel (343) so a fresh edit/cancel clears the alert. Low-priority touch-target nit also addressed: header Save/Cancel/Edit buttons bumped to min-h-[44px] (document-header.tsx:193,200,209). Save-success path still exits editing and shows the 2s Saved pill.",
+  "evidence": [
+   "frontend/components/journal/document-view.tsx:317-339",
+   "frontend/components/journal/document-view.tsx:145",
+   "frontend/components/journal/document-view.tsx:291",
+   "frontend/components/journal/document-view.tsx:343",
+   "frontend/components/journal/document-view.tsx:510-514",
+   "frontend/components/journal/document-header.tsx:193,200,209"
+  ],
+  "_cluster": "C08"
+ },
+ {
+  "id": "FA-0392",
+  "retest_verdict": "pass",
+  "notes": "Node-type-aware indent/outdent fix present in both code paths. Toolbar Indent (markdown-editor.tsx:137-138) and Outdent (148-149) buttons now compute itemType = editor.isActive('taskList') ? 'taskItem' : 'listItem' before sink/liftListItem. The Tab/Shift+Tab handleKeyDown handler (258-269) does the same: itemType picked from isActive('taskList'), then liftListItem on shift else sinkListItem. This stops the silent no-op inside task lists (correct prosemirror-schema-list itemType now passed) while leaving bullet/ordered lists on 'listItem' unchanged. Tab still preventDefaults, but the command now succeeds for task lists, so the expected 'Tab indents / Shift+Tab outdents' behaviour holds for all list types.",
+  "evidence": [
+   "frontend/components/journal/markdown-editor.tsx:134-155",
+   "frontend/components/journal/markdown-editor.tsx:258-269"
+  ],
+  "_cluster": "C08"
+ },
+ {
+  "id": "FA-0396",
+  "retest_verdict": "pass",
+  "notes": "Disposition reported 'partial / files_changed=[]' because the C08 fixer (correctly) could not edit markdown-renderer.tsx (not in C08's allowed files). HOWEVER the orchestrator mop-up landed the real root-cause fix in the same Phase-3 commit c1124d2 (commit message: 'markdown checkbox toggles the clicked box (AST source line)'). Current markdown-renderer.tsx:28-56 replaces the buggy first-same-state-match scan with AST-position disambiguation: it reads node.position.start.line (1-based) and calls onCheckboxToggle(sourceLine - 1, !checked), giving the exact 0-based index into doc.markdown.split('\\n'). document-view.tsx handleCheckboxToggle (357-378) line-patches that exact index, so clicking the Nth checkbox now toggles the Nth box. The input is disabled when onCheckboxToggle/sourceLine is absent (read-only/typedManaged), matching expected non-interactive behaviour. Commit reports tsc/eslint clean + build succeeds. Behaviour now matches the user story → pass, not partial.",
+  "evidence": [
+   "frontend/components/markdown-renderer.tsx:28-56",
+   "frontend/components/markdown-renderer.tsx:40",
+   "frontend/components/markdown-renderer.tsx:45",
+   "frontend/components/journal/document-view.tsx:357-378",
+   "frontend/components/journal/document-view.tsx:543"
+  ],
+  "_cluster": "C08"
+ },
+ {
+  "id": "FA-0081",
+  "retest_verdict": "pass",
+  "notes": "The fixer's disposition said 'partial' (claiming runtime_views.py was out of scope), but the fix WAS applied in the Phase 3 commit. `_state()` in RuntimePreferredModelView (apps/tenants/runtime_views.py:207-218) now imports and calls `_get_allowed_models(tenant)` from apps.tenants.views instead of the old manual construction of TIER_MODEL_CONFIGS + _byo_model_extras. Since `_get_allowed_models` merges `offer_model_entry()` (billing/model_offers.py:80-86) into the base when the promo is active, GET state, the 400 rejection body, and the POST 200 success body all now reflect the same allowlist the write gate enforces — including the active free offer model. The divergence described in the defect is resolved. No adjacent behaviour is broken: the write-path in post() already called `_get_allowed_models`; this merely unifies the read-path to match.",
+  "evidence": [
+   "apps/tenants/runtime_views.py:207-218 (_state now imports _get_allowed_models and calls it)",
+   "git diff HEAD~1 -- apps/tenants/runtime_views.py (confirms the 3-line manual dict build was replaced with _get_allowed_models call in Phase 3 commit)",
+   "apps/tenants/views.py:799-811 (_get_allowed_models merges offer_model_entry() + TIER_MODEL_CONFIGS + _byo_model_extras)"
+  ],
+  "_cluster": "C09"
+ },
+ {
+  "id": "FA-0920",
+  "retest_verdict": "pass",
+  "notes": "Fix is present and correct. `to_storage_value()` in apps/pii/entity_registry.py now accepts an optional `arbiter_judged_at: str | None = None` parameter (line 104) and emits it when set (lines 122-123). The PATCH call site at EntityRegistryItemView.patch() (apps/tenants/views.py:1136-1142) now passes `arbiter_judged_at=current.get('arbiter_judged_at')` to `to_storage_value()`, so the arbiter stamp is preserved across user edits of name/relationship/notes. The `coerce()` function already included `arbiter_judged_at` in `_KNOWN_FIELDS` (line 45), so it survives the coerce() step into `current`. The chain is complete: coerce() -> current preserves stamp -> to_storage_value() receives and emits it -> written back to pii_entity_map. On the next arbiter sweep, `_entries_to_judge` sees the stamp and skips re-evaluation.",
+  "evidence": [
+   "apps/pii/entity_registry.py:98-124 (to_storage_value now accepts and emits arbiter_judged_at)",
+   "apps/pii/entity_registry.py:45 (_KNOWN_FIELDS includes arbiter_judged_at, so coerce() preserves it)",
+   "apps/tenants/views.py:1136-1142 (PATCH call site forwards current.get('arbiter_judged_at'))",
+   "git diff HEAD~1 -- apps/pii/entity_registry.py (confirms parameter and emit logic added in Phase 3 commit)",
+   "git diff HEAD~1 -- apps/tenants/views.py (confirms arbiter_judged_at= kwarg added to to_storage_value call)"
+  ],
+  "_cluster": "C09"
+ },
+ {
+  "id": "FA-1112",
+  "retest_verdict": "pass",
+  "notes": "Fix is present and correct. PreferredModelView.patch() (apps/tenants/views.py:769-776) now wraps `request.user.tenant` in try/except Tenant.DoesNotExist and returns Response({'detail': 'No tenant found. Complete onboarding first.'}, status=HTTP_404_NOT_FOUND). This matches the established pattern used by ProvisioningStatusView, RetryProvisioningView, RefreshConfigView, AvailableModelsView, and the EntityRegistry/PIIDenylist views throughout the same file. An authenticated pre-onboarding user or one whose tenant was deleted now receives a clean 404 instead of an unhandled 500. No adjacent behaviour is affected: the happy path (tenant exists) proceeds identically to before.",
+  "evidence": [
+   "apps/tenants/views.py:769-776 (try/except Tenant.DoesNotExist returning 404 now wraps request.user.tenant access)",
+   "git diff HEAD~1 -- apps/tenants/views.py (confirms the try/except block was added to PreferredModelView.patch in Phase 3 commit)"
+  ],
+  "_cluster": "C09"
+ },
+ {
+  "id": "FA-1114",
+  "retest_verdict": "pass",
+  "notes": "Fix is present and correct. TaskModelPreferencesView.patch() (apps/tenants/views.py:904-911) now wraps `request.user.tenant` in try/except Tenant.DoesNotExist and returns Response({'detail': 'No tenant found. Complete onboarding first.'}, status=HTTP_404_NOT_FOUND). This matches the pattern applied to PreferredModelView.patch() (FA-1112) and all other sibling views in the file. An authenticated pre-onboarding user hitting PATCH /settings/task-model-preferences/ now gets a 404 instead of a 500. The subsequent validation (isinstance prefs check, slug validation, allowed-model check, merge, save, bump config, enqueue apply) is unchanged and correct for the happy path.",
+  "evidence": [
+   "apps/tenants/views.py:904-911 (try/except Tenant.DoesNotExist returning 404 now wraps request.user.tenant access in TaskModelPreferencesView.patch)",
+   "git diff HEAD~1 -- apps/tenants/views.py (confirms the try/except block was added to TaskModelPreferencesView.patch in Phase 3 commit)"
+  ],
+  "_cluster": "C09"
+ },
+ {
+  "id": "FA-0440",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct. A saveStatus state (\"success\"|\"error\") was added (page.tsx:249), set to \"error\" in the shared handleSaveProfileField catch block (page.tsx:330) and reset to \"success\" on entry/success/clearStatus (300-301, 285-289). The single banner now branches: when saveStatus===\"error\" it renders the rose/danger variant (border-rose-border bg-rose-bg text-rose-text, role=\"alert\") instead of the teal success variant (border-signal/30 bg-signal-faint text-signal, role=\"status\") (page.tsx:787-796). Display-name save flows through handleDisplayNameSave -> handleSaveProfileField(\"display_name\",...) so a PATCH failure now surfaces in error styling, not success-green. rose-border/rose-bg/rose-text tokens confirmed defined in frontend/tailwind.config.ts:37-39. Expected behaviour (success closes form + \"Saved!\", error replaces toast, equal value = no API call via early return at page.tsx:379, Save disabled while in flight via savingField) all hold.",
+  "evidence": [
+   "frontend/app/settings/page.tsx:249",
+   "frontend/app/settings/page.tsx:329-331",
+   "frontend/app/settings/page.tsx:377-384",
+   "frontend/app/settings/page.tsx:787-796",
+   "frontend/tailwind.config.ts:37-39"
+  ],
+  "_cluster": "C10"
+ },
+ {
+  "id": "FA-0441",
+  "retest_verdict": "pass",
+  "notes": "Same shared-handler/banner fix covers language. handleLanguageSave -> handleSaveProfileField(\"language\",...) (page.tsx:368-374); on PATCH failure setSaveStatus(\"error\") drives the rose error banner (page.tsx:330, 791-792) instead of the teal success banner. The error-vs-success styling is now distinct, so a failed language save no longer reads as a confirmed save. The fix is applied once in the shared handler/banner, so it equally covers timezone and location saves as the defect noted. Expected behaviour for language (label display, 16-option select, PATCH {language}, Saved! for 3s, no API call when unchanged via page.tsx:370 early return) holds.",
+  "evidence": [
+   "frontend/app/settings/page.tsx:368-374",
+   "frontend/app/settings/page.tsx:300-301",
+   "frontend/app/settings/page.tsx:330-331",
+   "frontend/app/settings/page.tsx:787-796"
+  ],
+  "_cluster": "C10"
+ },
+ {
+  "id": "FA-0442",
+  "retest_verdict": "pass",
+  "notes": "Both halves fixed. (1) offsetLabel (page.tsx:189-210) now computes the real offset at runtime via Intl.DateTimeFormat(\"en-US\",{timeZone:tz,timeZoneName:\"shortOffset\"}).formatToParts, normalizing GMT->UTC and bare \"UTC\"->\"UTC+0\", with a try/catch fallback to \"UTC+0\" for invalid zones. The 18-zone static map and literal-\"UTC\" fallback are gone, so zones like Africa/Lagos, Europe/Brussels, Asia/Bangkok now render their true offsets in both the read-only display (page.tsx:579 findTimezoneLabel) and every edit-mode option (page.tsx:593). shortOffset is fully supported in the browser runtime this client-side Next.js page runs in. (2) Within-group duplicates removed: programmatic scan of all 6 TIMEZONE_GROUPS shows zero within-group duplicates (Europe has Madrid@101 and Zurich@107 once each; Africa has Cairo@169 once). React option keys `${group.region}-${tz}` (page.tsx:592) are now unique within each optgroup, so no duplicate-key warning or redundant rows. Cross-group Popular-vs-Asia overlaps (Shanghai/Singapore) have distinct keys and are the intentional shortcuts pattern. Saved value remains the IANA string; expected behaviour (grouped optgroups, PATCH {timezone}, contextual \"Saved! Agent timezone updated...\" vs \"Saved!\", 3s auto-clear) holds.",
+  "evidence": [
+   "frontend/app/settings/page.tsx:189-214",
+   "frontend/app/settings/page.tsx:91-111",
+   "frontend/app/settings/page.tsx:166-185",
+   "frontend/app/settings/page.tsx:589-597",
+   "frontend/app/settings/page.tsx:322-327"
+  ],
+  "_cluster": "C10"
+ },
+ {
+  "id": "FA-0228",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct at frontend/app/constellation/page.tsx:328. The copy button onClick now early-returns if navigator.clipboard is absent (const c = navigator.clipboard; if (!c) return;), and setCopied(true)+the 1400ms revert timer run ONLY inside c.writeText(cypher).then(...), with .catch(() => {}) swallowing rejections. The previous unconditional setCopied(true) after an optional-chained writeText is gone, so the 'copied ✓' indicator can no longer lie when the clipboard API is missing or the write promise rejects. Matches the suggested fix exactly. Manual-copy fallback (cypher in <pre> at line 330) preserved. Typecheck clean.",
+  "evidence": [
+   "frontend/app/constellation/page.tsx:328",
+   "frontend/app/constellation/page.tsx:330",
+   "frontend/app/constellation/page.tsx:302 (copied state)"
+  ],
+  "_cluster": "C11"
+ },
+ {
+  "id": "FA-0229",
+  "retest_verdict": "pass",
+  "notes": "Fix present at frontend/app/constellation/page.tsx:564-579. focusNode no longer silently returns when positions[id] is missing. The if(!p) branch now: (1) looks up the target node from graphData.nodes (early-returns only if the node genuinely doesn't exist), (2) adds target.kind to kindFilter via setKindFilter, (3) collects all rel types of edges touching the node and adds them to relFilter via a Set-mutation matching the toggleRel style, then (4) setSelectedId(id). This reveals the hidden-kind neighbour on the next layout pass AND immediately re-renders the Inspector for the new node (Inspector is keyed on selected.id at line 748), so the user now gets clear feedback instead of a no-op. The neighbour buttons (onJump=focusNode wired at line 748) reach this path. Note: the hidden-node reveal path does not pan/zoom (position is unknown until the next layout), but that is inherent — the node becomes visible and selected; a follow-up interaction pans normally. The core defect (zero feedback on click) is fully resolved. Typecheck clean.",
+  "evidence": [
+   "frontend/app/constellation/page.tsx:564-579",
+   "frontend/app/constellation/page.tsx:580 (neighbors useMemo)",
+   "frontend/app/constellation/page.tsx:748 (onJump=focusNode, Inspector keyed on selected.id)"
+  ],
+  "_cluster": "C11"
+ },
+ {
+  "id": "FA-0231",
+  "retest_verdict": "pass",
+  "notes": "Fix present at frontend/app/constellation/page.tsx:560. toggleKind now ends with: if (k === 'Cluster' && kindFilter.has(k)) setIsolated(null). Logic verified: kindFilter is read from the current render's closure (toggleKind is re-created each render in the component body), so kindFilter.has('Cluster') is true exactly when Cluster is currently ON and this click is turning it OFF — precisely the incoherent focused-but-hubless case described. In that case setIsolated(null) clears isolation and its breadcrumb together, alongside the existing setSelectedId(null). Toggling Cluster back ON (when it was OFF) does not fire the branch (kindFilter.has is false), so isolation is not spuriously cleared. Other kinds (Lesson/Evidence/Tag) are unaffected. Matches the suggested one-line isolation-aware fix. Typecheck clean.",
+  "evidence": [
+   "frontend/app/constellation/page.tsx:560",
+   "frontend/app/constellation/page.tsx:390 (isolated state)",
+   "frontend/app/constellation/page.tsx:649 (breadcrumb exit clears isolated)"
+  ],
+  "_cluster": "C11"
+ },
+ {
+  "id": "FA-0362",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. The variable was renamed from isRevoked to needsReconnect and 'expired' was added to the predicate (lines 587-590). This flows through correctly: description shows 'Reconnection required' (line 597), badgeStatus becomes 'error' (lines 601-603), and the button label shows 'Reconnect' (line 633). An expired Google integration now has consistent framing — the amber expired badge aligns with the description and button text. The OAuth flow triggered by the button is unchanged (handleConnect), so no regression in the connect path. Expected behaviour fully met.",
+  "evidence": [
+   "frontend/app/settings/integrations/page.tsx:587-590 (needsReconnect includes 'expired')",
+   "frontend/app/settings/integrations/page.tsx:594-598 (description branch uses needsReconnect)",
+   "frontend/app/settings/integrations/page.tsx:601-607 (badgeStatus branch uses needsReconnect)",
+   "frontend/app/settings/integrations/page.tsx:632-634 (button label uses needsReconnect)",
+   "git diff HEAD~1 confirms rename from isRevoked to needsReconnect with 'expired' added"
+  ],
+  "_cluster": "C12"
+ },
+ {
+  "id": "FA-0363",
+  "retest_verdict": "pass",
+  "notes": "Same single-variable fix as FA-0362 — needsReconnect applies to all providers including Reddit. The diff confirms only one predicate change was made, and it covers all providers uniformly via the shared providers.map() loop. A Reddit integration with status='expired' now shows 'Reconnection required' description and 'Reconnect' button, matching the amber StatusPill. No Reddit-specific code path was required or omitted.",
+  "evidence": [
+   "frontend/app/settings/integrations/page.tsx:584-651 (shared providers.map loop covers both google and reddit)",
+   "frontend/app/settings/integrations/page.tsx:587-590 (needsReconnect includes 'expired' for all providers)",
+   "git diff HEAD~1 shows single predicate rename — no provider-specific branching added or missing"
+  ],
+  "_cluster": "C12"
+ },
+ {
+  "id": "FA-0364",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. The disconnect button's disabled prop and label are now scoped to `disconnect.isPending && disconnect.variables === integration!.id` (lines 641, 644). React Query sets mutation.variables to the argument passed to mutate(), which here is the UUID string of the integration being disconnected. Only the card whose ID matches the in-flight mutation ID shows the pending state; unrelated connected provider cards remain fully interactive. The optimistic-removal behaviour (isConnected gated on Boolean(integration)) means the clicked card disappears from the disconnect button view immediately, so the per-card scoping applies precisely to the non-clicked still-connected cards. Expected behaviour fully met.",
+  "evidence": [
+   "frontend/app/settings/integrations/page.tsx:641 (disabled scoped to disconnect.variables === integration!.id)",
+   "frontend/app/settings/integrations/page.tsx:644-645 (label scoped to same condition)",
+   "frontend/app/settings/integrations/page.tsx:637-648 (full disconnect button block showing per-card scope)",
+   "git diff HEAD~1 confirms old `disabled={disconnect.isPending}` replaced with per-id check"
+  ],
+  "_cluster": "C12"
+ },
+ {
+  "id": "FA-0596",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. _record_insight_impl (views.py lines 358-371) now wraps both resolve_topic and AssistantInsight.objects.create in a single outer transaction.atomic() block. Since resolve_topic is decorated @transaction.atomic, Django promotes it to a savepoint inside the outer block. If AssistantInsight.objects.create fails, the entire outer block rolls back — including any proposed TopicRegistry row that resolve_topic created — preventing orphaned proposed-topic rows. The lazy import (from django.db import transaction as _tx) avoids the lint-hook stripping an unused module-level import. The runtime_views.py path delegates to the same _record_insight_impl function so the fix covers both the user-facing and internal call paths. Behaviour now matches expected: topic creation and insight creation are atomic.",
+  "evidence": [
+   "apps/insights/views.py:355-371 (_record_insight_impl with outer _tx.atomic() block)",
+   "apps/insights/topic_resolver.py:47-53 (@transaction.atomic on resolve_topic becomes savepoint inside outer block)",
+   "apps/insights/runtime_views.py:331 (delegates to same _record_insight_impl)"
+  ],
+  "_cluster": "C13"
+ },
+ {
+  "id": "FA-0607",
+  "retest_verdict": "pass",
+  "notes": "The TOCTOU race in resolve_topic is fixed. The bare TopicRegistry.objects.create call (previously unguarded) is now wrapped in a nested transaction.atomic() savepoint (topic_resolver.py lines 84-93) with an IntegrityError catch (lines 94-102). On collision the savepoint is rolled back cleanly (leaving the outer atomic block usable), and the code re-queries for the row the winning concurrent transaction committed. A recursive fallback handles the extremely unlikely case where the slug itself changed. The fix is centralized in resolve_topic so all three call sites — markers.py (already caught exceptions), _record_insight_impl, and _upsert_voice_pref_impl — are uniformly protected without per-caller changes. The pillar 404-vs-400 part-1 cosmetic mismatch is intentional by design and not addressed, which is consistent with the disposition.",
+  "evidence": [
+   "apps/insights/topic_resolver.py:20 (IntegrityError imported)",
+   "apps/insights/topic_resolver.py:83-102 (nested savepoint + IntegrityError catch + re-query + recursive fallback)",
+   "apps/insights/models.py:94 (unique_together=[pillar, slug] constraint confirmed)",
+   "apps/insights/markers.py:89 (markers path already had broad except Exception guard)"
+  ],
+  "_cluster": "C13"
+ },
+ {
+  "id": "FA-0617",
+  "retest_verdict": "pass",
+  "notes": "Same root cause as FA-0607 and fixed by the same centralized change in topic_resolver.py. The guarded-vs-unguarded asymmetry across call sites is resolved: the TOCTOU guard now lives inside resolve_topic itself (savepoint + IntegrityError catch-and-re-query), so _record_insight_impl (views.py:361, runtime_views.py:331) and _upsert_voice_pref_impl (views.py:644, runtime_views.py:452) both benefit without modification. The markers path's broad try/except Exception continues to work. The unique_together=(pillar, slug) constraint (models.py:94) that triggered the race is unchanged. All three original unguarded callers are now covered uniformly.",
+  "evidence": [
+   "apps/insights/topic_resolver.py:84-102 (centralized TOCTOU guard)",
+   "apps/insights/views.py:644 (_upsert_voice_pref_impl still calls resolve_topic without wrapper — correct, guard is inside resolve_topic)",
+   "apps/insights/views.py:361 (_record_insight_impl calls resolve_topic inside outer _tx.atomic())",
+   "apps/insights/runtime_views.py:331 (runtime record path delegates to same guarded impl)",
+   "apps/insights/runtime_views.py:452 (runtime voice-pref path delegates to same guarded impl)"
+  ],
+  "_cluster": "C13"
+ },
+ {
+  "id": "FA-0180",
+  "retest_verdict": "pass",
+  "notes": "Off-by-one weekday bug is fixed by reordering WEEKDAY_LABELS/WEEKDAY_NAMES to standard cron order (Sunday=index0 ... Saturday=index6), so array index == cron DOW value. Traced all paths: (1) Day-picker (lines 367-394) writes the array index verbatim into state.weekdays — picking 'Mon' (index 1) now stores 1, which buildCronFromState (lines 122-126) joins into the cron DOW field as '1' = Monday under backend croniter/QStash standard semantics. Previously emitted '0'=Sunday → fired one day early; now correct. (2) parseCronExpr (lines 176-192) reads cron tokens 0-6 directly into the same index space, so '0' round-trips to index0=Sunday. (3) formatHumanWeekdays (line 213) and cronToHuman display via WEEKDAY_NAMES[d] with d as the cron value → 'Monday' for 1. (4) default weekdays:[1] and weekly fallback '1' now both resolve to Monday consistently. Presets weekdays(1-5)/weekends(0,6) were already standard cron and their parse branches (lines 156,166) still match. The arrays are consumed only within schedule-builder.tsx (grep confirmed), and cron-jobs/page.tsx:600-603 submits the expr verbatim with no remapping, so no double-correction or adjacent breakage. expected_behaviour (easy-mode frequency/weekly/monthly/hour/minute selects, live human label, advanced toggle) all preserved. Minor gap vs suggested_fix: the recommended unit test (Monday emits '1', '0' round-trips to Sunday) was NOT added — test-coverage gap only, not a behavioral one; does not block pass.",
+  "evidence": [
+   "frontend/components/schedule-builder.tsx:33-50 (WEEKDAY_LABELS/WEEKDAY_NAMES reordered Sun=0..Sat=6 with explanatory comment)",
+   "frontend/components/schedule-builder.tsx:122-126 (buildCronFromState joins state.weekdays indices == cron DOW)",
+   "frontend/components/schedule-builder.tsx:176-192 (parseCronExpr reads cron 0-6 into same index space)",
+   "frontend/components/schedule-builder.tsx:212-218 (formatHumanWeekdays via WEEKDAY_NAMES)",
+   "frontend/components/schedule-builder.tsx:255,323 (default/fallback weekdays:[1]=Monday)",
+   "frontend/components/schedule-builder.tsx:367-394 (day-picker writes array index)",
+   "frontend/app/settings/cron-jobs/page.tsx:600-603 (expr submitted verbatim, no remap)"
+  ],
+  "_cluster": "C14"
+ },
+ {
+  "id": "FA-0469",
+  "retest_verdict": "pass",
+  "notes": "Same root-cause defect as FA-0180 (weekly-frequency off-by-one) and resolved by the same single array reorder. Verified the specific symptoms called out in this defect: (a) selecting Mon now emits cron 1 (Monday), not 0; (b) Sun (index 0) emits cron 0 = Sunday and no longer collides with Saturday (was index6→'6'=Saturday); (c) the default weekdays:[1] previously DISPLAYED 'Tuesday' (old WEEKDAY_NAMES[1]) while emitting Monday — now both display and emit Monday, so the display/emit inconsistency is gone (lines 43-50 + 255). Round-trip still internally consistent because parse and display share the same index space, but now that space is aligned to backend 0=Sunday semantics (confirmed by register_system_crons.py:78 '0 5 * * 0' = Sunday). No backend change needed; arrays used only in this file; downstream submits verbatim. Same minor note as FA-0180: no unit test added — coverage gap only.",
+  "evidence": [
+   "frontend/components/schedule-builder.tsx:33-50 (reordered arrays, Sunday=0)",
+   "frontend/components/schedule-builder.tsx:119-126 (buildCronFromState emit; weekends '0,6'/weekdays '1-5' presets intact)",
+   "frontend/components/schedule-builder.tsx:176-192 (parseCronExpr DOW read)",
+   "frontend/components/schedule-builder.tsx:255 (default weekdays:[1] now = Monday in both display and emit)",
+   "apps/cron/management/commands/register_system_crons.py:78 (backend 0=Sunday convention the fix aligns to)"
+  ],
+  "_cluster": "C14"
+ },
+ {
+  "id": "FA-0317",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct. key={`distance-${unit}`} (line 1182) and key={`elevation-${unit}`} (line 1244) were added to the DISTANCE and ELEVATION NumericInputs. NumericInput seeds its text useState from the value prop only at mount with no sync effect (line 187), so the key-remount is the right mechanism. On unit toggle (setUnit, line 1163), the useDistanceUnit() unit changes; distanceDisplay (line 1151) and elevationDisplay (line 1154) are recomputed via kmToDisplay/metersToDisplay; the changed key forces React to remount each input, re-seeding text from the fresh value prop. This resolves both stated impacts: (1) the stale number beside the new unit label, and (2) the silent corruption where a blur without re-typing pushed the stale display value through the new-unit converter (displayToKm/displayToMeters, lines 1185/1247). Subtle check: the elevation key uses `unit` not `elevUnit`, but elevUnit=elevationLabel(unit) is a deterministic 1:1 function of unit, so keying on unit captures every transition correctly. Shared NumericInput component left untouched (HEART RATE/POWER inputs use no key, correctly, since they don't depend on unit). No adjacent breakage.",
+  "evidence": [
+   "frontend/components/fuel/workout-detail.tsx:187",
+   "frontend/components/fuel/workout-detail.tsx:1147-1154",
+   "frontend/components/fuel/workout-detail.tsx:1161-1170",
+   "frontend/components/fuel/workout-detail.tsx:1182",
+   "frontend/components/fuel/workout-detail.tsx:1244"
+  ],
+  "_cluster": "C15"
+ },
+ {
+  "id": "FA-0316",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct. The '+ SET' fallback at line 1077 was changed from unit===\"lbs\" ? 27 : 60 to unit===\"lbs\" ? 60 : 27, now matching the '+ EXERCISE' default at line 965 (unit===\"lbs\" ? 60 : 27). Both paths now seed a consistent ~27 kg physical weight in either unit (60 lbs ≈ 27 kg). The fallback only fires when the previous set has no weight (ex.sets.at(-1)?.weight falsy), so the common copy-previous-weight path is unaffected. Verified the '+ EXERCISE' default was not altered and still reads 60 : 27. No data corruption was ever involved (editable pre-fill); this was purely the ergonomic inconsistency and it is now resolved.",
+  "evidence": [
+   "frontend/components/fuel/workout-detail.tsx:965",
+   "frontend/components/fuel/workout-detail.tsx:1077"
+  ],
+  "_cluster": "C15"
+ },
+ {
+  "id": "FA-0744",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct. SessionDetailView now overrides get_permissions() (session_views.py:195-200) returning [HasSessionsWriteScope()] for DELETE while keeping the class-level [HasSessionsReadScope] for GET, mirroring SessionCreateView's write-path guard. HasSessionsWriteScope is already imported (line 12). HasPATScope (permissions.py:23-31) requires the scope only for PAT-authed requests and passes JWT through (auth_pat is None -> True), and HasSessionsWriteScope.required_scope='sessions:write'. I verified the real code path with an ad-hoc test: a user-provisioned read-only PAT (scopes=['sessions:read']) now gets 403 on DELETE and the session is NOT destroyed; a sessions:write PAT gets 204; a read-only PAT still gets 200 on GET detail; and the existing JWT-based test_delete_session still passes (204). All 29 existing session tests pass. Behaviour now matches the user story (destructive verb moved off the read scope). Minor gap vs suggested_fix: the fixer did not add the requested regression test (no diff in tests_sessions.py), but the defect behaviour itself is fully resolved.",
+  "evidence": [
+   "apps/journal/session_views.py:193-200 (get_permissions override: DELETE -> HasSessionsWriteScope, GET -> class-level HasSessionsReadScope)",
+   "apps/journal/session_views.py:12 (HasSessionsWriteScope imported)",
+   "apps/journal/session_views.py:210-219 (DELETE handler, tenant-filtered get_object_or_404 + session.delete + 204)",
+   "apps/tenants/permissions.py:23-39 (HasPATScope JWT passthrough; distinct write/read required_scope)"
+  ],
+  "_cluster": "C16"
+ },
+ {
+  "id": "FA-0742",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct. SessionListView.get (session_views.py:162-172) now parses `since` via parse_datetime(since) or parse_date(since) (both return None on bad input, never raise); a None result returns Response({'detail':'since must be an ISO date/datetime.'}, status=400) and only the parsed value is passed to qs.filter(session_start__gte=...). This matches the existing limit-validation 400 block in the same view. Verified via ad-hoc test: ?since=not-a-date returns 400 (previously an opaque 500 from a Django ValidationError at queryset evaluation, which DRF's default handler does not convert); valid ?since=2026-01-01T00:00:00Z returns 200; date-only ?since=2030-01-01 returns 200 and correctly filters out the pre-existing session. The date-only path emits a benign naive-datetime RuntimeWarning (date compared against a DateTimeField) but the filter still works -- no error. All 29 existing session tests pass.",
+  "evidence": [
+   "apps/journal/session_views.py:162-172 (since parsed via parse_datetime/parse_date; None -> 400 with documented detail; filter uses parsed value)",
+   "apps/journal/session_views.py:178-184 (existing limit 400 block the fix mirrors)",
+   "apps/journal/session_models.py / serializer session_start DateTimeField (the field that previously raised on raw string)"
+  ],
+  "_cluster": "C16"
+ },
+ {
+  "id": "FA-0020",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct in AutomationManualRunView.post. After execute_automation returns, the view inspects run.status and returns HTTP 502 BAD_GATEWAY with the serialized FAILED run (AutomationRunSerializer exposes status + error_message) instead of an unconditional 201; success still returns 201. This resolves the REST-semantics mismatch from the defect: a subscriber clicking 'Run now' against a non-ACTIVE tenant / missing container_fqdn / missing telegram_chat_id (which _dispatch_to_openclaw raises AutomationExecutionError -> swallowed at services.py:469-471 into a FAILED run) now gets a failure HTTP status, not 201. Manual keys include uuid4 so created=True always, meaning run.status reflects the real dispatch outcome and is never a stale short-circuit. AutomationRunSerializer is imported (views.py:17). The fixer chose 502 over the alternative 409; 502 is the more accurate upstream-dispatch-failure mapping. expected_behaviour (limits -> 400, success -> 201) is preserved; the only intentional deviation is FAILED -> 502, which is the intended improvement.",
+  "evidence": [
+   "apps/automations/views.py:106-129",
+   "apps/automations/views.py:17",
+   "apps/automations/services.py:208-213",
+   "apps/automations/services.py:469-471",
+   "apps/automations/serializers.py"
+  ],
+  "_cluster": "C17"
+ },
+ {
+  "id": "FA-0026",
+  "retest_verdict": "pass",
+  "notes": "Self-healing fix present and correct. STALE_RUNNING_THRESHOLD=15min added (services.py:29). In execute_automation, when get_or_create returns an existing row (created=False), it now computes is_stale_running = status==RUNNING and started_at is not None and (now - started_at) >= 15min; only non-stale rows short-circuit (return run). A stale RUNNING row falls through to the re-dispatch block (lines 457-494): re-marks started_at, dispatches via _dispatch_to_openclaw, and for SCHEDULE triggers calls _advance_schedule (line 490-492) which advances next_run_at to scheduled_for+1s. Traced the original infinite loop: scheduler.py:48 passes scheduled_for=automation.next_run_at, key=_build_idempotency_key=schedule:<id>:<epoch(next_run_at)> (services.py:240-242); with next_run_at unadvanced the same key was rebuilt every tick and get_or_create returned the stranded RUNNING row forever. With the fix, after one re-dispatch next_run_at moves forward, the next tick builds a new key and creates a fresh PENDING run -> loop broken, automatic recovery without operator intervention. Terminal rows (succeeded/failed/skipped) and fresh RUNNING rows (genuine concurrent in-flight) still short-circuit unchanged, preserving concurrent-duplicate protection. timezone imported (services.py:13). The fixer chose the in-scope re-dispatch path over the suggested reaper cron (which would touch out-of-cluster files); functionally equivalent for recovery. Residual: a fresh hard-kill within the 15-min window after re-dispatch could re-strand, but it self-heals on the next tick past the threshold, so the permanent-wedge defect is genuinely eliminated.",
+  "evidence": [
+   "apps/automations/services.py:26-30",
+   "apps/automations/services.py:432-455",
+   "apps/automations/services.py:457-495",
+   "apps/automations/services.py:287-294",
+   "apps/automations/services.py:240-242",
+   "apps/automations/scheduler.py:43-49"
+  ],
+  "_cluster": "C17"
+ },
+ {
+  "id": "FA-0074",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. The old inline dict `{**TIER_MODEL_CONFIGS.get(tenant.model_tier, {}), **_byo_model_extras(tenant)}` in `_state()` has been replaced with a call to `_get_allowed_models(tenant)` imported from `apps.tenants.views`. That helper (views.py:807) merges `offer_model_entry()` first, then tier models, then BYO extras — identical to the POST gate's allowlist. GET now returns `allowed_models` including the active free-offer model, and every POST response body (success and 400 error) reflects the same unified set. The fix closes the discovery gap: an agent enumerating GET's `allowed_models` will now see any model that a POST would actually accept. No adjacent behaviour is broken — the POST gate already used `_get_allowed_models`, so this change only brings `_state()` into alignment with it.",
+  "evidence": [
+   "apps/tenants/runtime_views.py:207-218 — _state() now calls _get_allowed_models(tenant) from apps.tenants.views",
+   "apps/tenants/runtime_views.py:233 — post() imports _get_allowed_models from same module, confirming shared source of truth",
+   "apps/tenants/views.py:799-811 — _get_allowed_models merges offer_model_entry() + TIER_MODEL_CONFIGS + _byo_model_extras, matches the POST gate and resolve_tenant_models",
+   "git diff HEAD~1 -- apps/tenants/runtime_views.py confirms the exact substitution was made"
+  ],
+  "_cluster": "C18"
+ },
+ {
+  "id": "FA-1148",
+  "retest_verdict": "pass",
+  "notes": "Same root cause and same code fix as FA-0074. Both defects described the identical inconsistency in `RuntimePreferredModelView._state()`. The single edit replacing the inline dict with `_get_allowed_models(tenant)` resolves both. During an active promo, the free-offer model (e.g. nemotron free) is now returned in `allowed_models` on GET and in all POST response bodies, exactly matching what the POST gate accepts. The fix is complete — no residual gap remains. The disposition note ('same code fix as FA-0074') is accurate.",
+  "evidence": [
+   "apps/tenants/runtime_views.py:208 — `from apps.tenants.views import _get_allowed_models` added to _state()",
+   "apps/tenants/runtime_views.py:210 — `allowed = _get_allowed_models(tenant)` replaces the old inline dict",
+   "apps/tenants/views.py:804 — `from apps.billing.model_offers import offer_model_entry` confirms offer model is included in _get_allowed_models",
+   "apps/tenants/views.py:807 — `base = {**offer_model_entry(), **TIER_MODEL_CONFIGS.get(tenant.model_tier, {})}` is the authoritative allowlist"
+  ],
+  "_cluster": "C18"
+ },
+ {
+  "id": "FA-0100",
+  "retest_verdict": "pass",
+  "notes": "Fix is present and correct. 'onboarding_status' was added to read_only_fields in CoreProfileSerializer. A web PATCH to /api/v1/core/profile/ will now have the field silently ignored by DRF rather than persisted. The runtime internal-auth endpoint (apps/core/runtime_views.py) writes the field via ORM directly and is unaffected. The fix matches the suggested_fix exactly and the expected_behaviour (writable fields are preferred_voice, preferred_duration_minutes, ambient_bed_enabled, daily_cron_enabled, preferred_time, additional_context, user_feedback; onboarding_status read-only) is now correctly enforced.",
+  "evidence": [
+   "apps/core/serializers.py:23 — read_only_fields = [\"id\", \"onboarding_status\", \"created_at\", \"updated_at\"]",
+   "git diff HEAD~1 -- apps/core/serializers.py confirms the one-line addition of onboarding_status to read_only_fields"
+  ],
+  "_cluster": "C19"
+ },
+ {
+  "id": "FA-0101",
+  "retest_verdict": "pass",
+  "notes": "Fix is present and correct. CoreComposeView.post now wraps the in-flight check and MeditationSession.objects.create() in transaction.atomic() with a select_for_update() lock on the Tenant row (apps/core/views.py:222-241). Concurrent POST requests now serialize at the Postgres row lock, so both cannot pass the in-flight check simultaneously and create duplicate PENDING sessions. The publish_task call is correctly placed outside the atomic block, avoiding holding a DB transaction during the external QStash HTTP call. The disposition deliberately skipped the partial UniqueConstraint migration (defense-in-depth), and the logic-only lock approach is sufficient to satisfy the expected_behaviour (coalescing duplicate taps, returning existing in-flight session). No adjacent behaviour is broken: the early-return path for in-flight sessions and the 201 path for new sessions are both preserved within the atomic block.",
+  "evidence": [
+   "apps/core/views.py:222-242 — with transaction.atomic(): block wrapping select_for_update().get() + in-flight check + create()",
+   "apps/core/views.py:5 — from django.db import transaction import added",
+   "apps/core/views.py:243-248 — publish_task call correctly outside the atomic block",
+   "git diff HEAD~1 -- apps/core/views.py confirms the atomic block wrapping and import addition"
+  ],
+  "_cluster": "C19"
+ },
+ {
+  "id": "FA-0241",
+  "retest_verdict": "pass",
+  "notes": "The approve-path flicker is fully fixed. The diff shows animateRemoval(lesson.id) was moved from before the await to after await approveMutation.mutateAsync(lesson.id) succeeds (line 47 in the new file). On failure the catch block sets the error state and animateRemoval is never called, so the card stays visible with no fade-then-snap-back. On success the 220ms fade plays and the onSuccess invalidation of ['pending-lessons'] and ['constellation'] removes the card from the list. The processing guard still works correctly (disabled while processing === lesson.id, reset in finally). No adjacent behaviour broken.",
+  "evidence": [
+   "frontend/app/constellation/pending/page.tsx:42-52 — setError(\"\") at top of handleApprove, await before animateRemoval",
+   "frontend/app/constellation/pending/page.tsx:35-40 — animateRemoval unchanged (220ms timer)",
+   "git diff HEAD~1 — confirms animateRemoval moved from before to after await approveMutation.mutateAsync",
+   "frontend/lib/queries.ts:1811-1820 — useApproveLessonMutation onSuccess invalidates ['pending-lessons'] and ['constellation']"
+  ],
+  "_cluster": "C20"
+ },
+ {
+  "id": "FA-0242",
+  "retest_verdict": "pass",
+  "notes": "Both sub-issues fixed. (1) Stale error banner: setError(\"\") is now called at the start of both handleApprove (line 43) and handleDismiss (line 56) before the mutation runs, so any prior error is cleared on each new attempt. The banner at line 87 will only show an error from the most recent operation. (2) Dismiss-path flicker: animateRemoval(lesson.id) was moved to after await dismissMutation.mutateAsync(lesson.id) succeeds (line 60), matching the approve fix. On dismiss failure the card stays visible with no flicker. useDismissLessonMutation still only invalidates ['pending-lessons'] (not ['constellation']) on success, which is correct per the defect's expected behaviour.",
+  "evidence": [
+   "frontend/app/constellation/pending/page.tsx:55-66 — setError(\"\") at top of handleDismiss, await before animateRemoval",
+   "frontend/app/constellation/pending/page.tsx:43 — setError(\"\") at top of handleApprove",
+   "git diff HEAD~1 — shows +setError(\"\") in both handlers and animateRemoval moved after await in both",
+   "frontend/lib/queries.ts:1822-1830 — useDismissLessonMutation onSuccess invalidates only ['pending-lessons']"
+  ],
+  "_cluster": "C20"
+ },
+ {
+  "id": "FA-0377",
+  "retest_verdict": "pass",
+  "notes": "The same-destination guard is present and correct. handleNavigate now calls setMobileSidebarOpen(false) first (so the mobile overlay always closes on tap), then returns early at line 59 when kind === activeKind && slug === activeSlug, skipping the setViewKey increment. DocumentView is keyed on activeKind-activeSlug-viewKey (page.tsx:126), so without the viewKey increment there is no force-remount and any in-progress desktop draft is preserved. The early return is placed after the mobile-sidebar close, which is the right order: a same-destination tap from the mobile overlay still dismisses the overlay without discarding a concurrent desktop draft. The original defect path — clicking the active Daily nav item or the New Entry button while editing today's daily note — now leaves DocumentView mounted and the draft intact.",
+  "evidence": [
+   "frontend/app/journal/page.tsx:55-64 (handleNavigate with same-destination guard at line 59)",
+   "frontend/app/journal/page.tsx:126 (DocumentView key=activeKind-activeSlug-viewKey, no remount when viewKey unchanged)",
+   "git diff HEAD~1 -- frontend/app/journal/page.tsx confirms the guard was added in this fix commit"
+  ],
+  "_cluster": "C21"
+ },
+ {
+  "id": "FA-0379",
+  "retest_verdict": "pass",
+  "notes": "The collapse button's touch target has been corrected. sidebar.tsx line 238 now carries min-h-[44px] min-w-[44px], upgraded from the original min-h-[36px] min-w-[36px]. This brings it into parity with the expand button (line 202, min-h-[44px] min-w-[44px]) and the mobile overlay close button (page.tsx:104, min-h-[44px] min-w-[44px]), satisfying the 44x44px WCAG 2.1 AA touch-target standard. The p-1.5 padding is retained so the chevron icon stays visually balanced inside the larger hit area. No adjacent buttons were disturbed.",
+  "evidence": [
+   "frontend/components/journal/sidebar.tsx:238 (min-h-[44px] min-w-[44px] on collapse button)",
+   "frontend/components/journal/sidebar.tsx:202 (expand button already min-h-[44px] min-w-[44px] for comparison)",
+   "git diff HEAD~1 -- frontend/components/journal/sidebar.tsx confirms the 36px→44px change in this fix commit"
+  ],
+  "_cluster": "C21"
+ },
+ {
+  "id": "FA-0494",
+  "retest_verdict": "partial",
+  "notes": "The invalid nested-anchor defect is resolved: the outer Link href='/journal' wrapper around BrandLogo was removed (app-shell.tsx lines 353-360). BrandLogo is now standalone, so there is no anchor-inside-anchor. This is valid HTML and the keyboard/accessibility ambiguity is gone. However, the expected behaviour specifies that clicking the logo in the authenticated shell navigates to /journal — this is still not met. BrandLogo unconditionally renders its own Link href='/' (brand-logo.tsx line 17) and has no asLink prop to suppress it, so authenticated users who click the logo land on '/' (the full-bleed landing/galaxy page) rather than /journal. The disposition correctly marks this partial: the critical HTML-validity bug is fixed, the destination follow-up (requires adding asLink={false} to brand-logo.tsx) is documented in a code comment at app-shell.tsx lines 354-359 referencing FA-0494. The residual is an accepted documented follow-up, not an unaddressed regression.",
+  "evidence": [
+   "frontend/components/app-shell.tsx:353-360 (outer Link removed; BrandLogo standalone; comment explains residual)",
+   "frontend/components/brand-logo.tsx:17 (BrandLogo still renders unconditional Link href='/' — no asLink prop)",
+   "frontend/components/app-shell.tsx:325 (public-page BrandLogo unaffected — still standalone, no nesting)"
+  ],
+  "_cluster": "C22"
+ },
+ {
+  "id": "FA-0497",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. The Link in MobileTabBar (line 221) now has 'relative' as the first class in its className: 'relative flex flex-1 flex-col items-center justify-center gap-0.5 py-1.5 text-[10px] font-medium transition-all duration-200 min-h-[44px]'. This makes the Link the CSS containing block for the absolute-positioned dot at line 247 ('absolute bottom-1.5 h-1 w-1 rounded-full bg-accent ...'). Previously the containing block fell through to the root shell div (relative h-[100dvh] at line 336), causing the dot to float to the viewport bottom on notched iPhones. With 'relative' on the Link, bottom:6px now anchors to the individual tab element (~56px tall), placing the dot just below the active label as designed. All other classes on the Link are unchanged; the 44px min-h touch target, flex centering, and transition are intact. No adjacent behaviour is broken.",
+  "evidence": [
+   "frontend/components/app-shell.tsx:221 (className now starts with 'relative', making Link the containing block)",
+   "frontend/components/app-shell.tsx:247 (active dot: 'absolute bottom-1.5' now resolves against the Link, not the root div)",
+   "frontend/components/app-shell.tsx:336 (root div 'relative h-[100dvh]' is no longer the fallback containing block for the dot)"
+  ],
+  "_cluster": "C22"
+ },
+ {
+  "id": "FA-0690",
+  "retest_verdict": "pass",
+  "notes": "The fix is present: WeeklyReviewDetailView.delete() now returns Response(status=status.HTTP_204_NO_CONTENT, headers=DEPRECATION_HEADERS), matching the GET and PATCH handlers on the same view. The git diff confirms the change is a single-line addition. DEPRECATION_HEADERS is defined at lines 62-65 and was already referenced by all sibling methods. The delete itself (tenant-scoped fetch + review.delete()) is unchanged, so no adjacent behaviour is broken.",
+  "evidence": [
+   "apps/journal/views.py:62-65 (DEPRECATION_HEADERS constant)",
+   "apps/journal/views.py:445 (GET — already passed headers)",
+   "apps/journal/views.py:453 (PATCH — already passed headers)",
+   "apps/journal/views.py:459 (DELETE — headers=DEPRECATION_HEADERS now present)"
+  ],
+  "_cluster": "C23"
+ },
+ {
+  "id": "FA-0692",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. was_default = template.is_default is captured before template.delete() so the flag remains reliable after the row is removed. The existing if template.is_default: guard was updated to if was_default:, preserving the 400 guard and alternate promotion logic. After template.delete(), a new if was_default: block fires update_tenant_config_task.delay(str(tenant.id)) inside a best-effort try/except, matching the PATCH path's established pattern (lines 505-511). The config push fires only when the deleted template was the default, so non-default deletes are unaffected. The 400 early-return (cannot delete last template) still exits before deletion and before the config push, so that guard is intact.",
+  "evidence": [
+   "apps/journal/views.py:520 (was_default = template.is_default captured before delete)",
+   "apps/journal/views.py:521-526 (if was_default: guard + alternate promotion unchanged)",
+   "apps/journal/views.py:528 (template.delete())",
+   "apps/journal/views.py:530-537 (new config push block, mirrors PATCH at lines 505-511)",
+   "apps/journal/views.py:505-511 (PATCH path reference for pattern comparison)"
+  ],
+  "_cluster": "C23"
+ },
+ {
+  "id": "FA-0828",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. In _check_tools_invoke (line 130), _extract_cron_jobs is now imported from apps.orchestrator.services and used at line 134 as `len(_extract_cron_jobs(result) or [])` instead of the former `result.get('jobs', [])`. This reuses the canonical helper that already handles both the flat {jobs:[...]} and nested {details:{jobs:[...]}} shapes that the gateway actually returns, so the reported job count is now accurate. The import follows the lazy-import style used for other symbols in the file. No adjacent behaviour is affected — PASS/FAIL is still determined solely by whether GatewayError is raised, not by the job count.",
+  "evidence": [
+   "apps/orchestrator/management/commands/check_gateway_health.py:130 — `from apps.orchestrator.services import _extract_cron_jobs` added",
+   "apps/orchestrator/management/commands/check_gateway_health.py:134 — `job_count = len(_extract_cron_jobs(result) or [])` replaces `result.get('jobs', [])`",
+   "git diff HEAD~1 confirms both lines changed in this commit"
+  ],
+  "_cluster": "C24"
+ },
+ {
+  "id": "FA-0876",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. In handle() at line 41, the bare `return` is replaced with `raise CommandError(f'Gateway health check failed at: {check.__name__}')`. CommandError is already imported at line 7 and used in _resolve_tenant; Django's run_from_argv propagates CommandError to sys.exit(1), so the process now exits non-zero on any check failure, matching the spec's 'Exits non-zero at first failure' requirement. The per-check methods still return bool and print their own FAIL lines; the loop prints 'Stopped at first failure.' then raises. No other check paths are affected.",
+  "evidence": [
+   "apps/orchestrator/management/commands/check_gateway_health.py:7 — `CommandError` imported",
+   "apps/orchestrator/management/commands/check_gateway_health.py:41 — `raise CommandError(f'Gateway health check failed at: {check.__name__}')` replaces bare `return`",
+   "git diff HEAD~1 confirms the single-line change in handle()"
+  ],
+  "_cluster": "C24"
+ },
+ {
+  "id": "FA-1054",
+  "retest_verdict": "pass",
+  "notes": "Email normalization and case-insensitive duplicate check are both present and correct. Line 188 now reads `(request.data.get('email') or '').strip().lower()`, matching the PasswordResetRequestView pattern at line 93. The duplicate check at line 207 uses `email__iexact=email`. The `not email` guard at line 192 still works correctly after normalization (empty string is falsy). The normalized email is stored in both `username` and `email` fields at lines 222-223, so the stored value is consistent. Signing up as Test@X.com and test@x.com will now be blocked by the `email__iexact` filter after the first registration.",
+  "evidence": [
+   "apps/tenants/auth_views.py:188 — `email = (request.data.get('email') or '').strip().lower()`",
+   "apps/tenants/auth_views.py:207 — `User.objects.filter(email__iexact=email).exists()`",
+   "apps/tenants/auth_views.py:221-223 — `create_user(username=email, email=email, ...)` uses normalized value"
+  ],
+  "_cluster": "C25"
+ },
+ {
+  "id": "FA-1095",
+  "retest_verdict": "pass",
+  "notes": "Password strength validation via `validate_password(password)` is now called at lines 213-219 in SignupView.post(), before `create_user()` at line 221. A DjangoValidationError is caught and returned as HTTP 400 with the joined messages, mirroring PasswordResetConfirmView lines 152-158. The AUTH_PASSWORD_VALIDATORS (MinimumLength, CommonPassword, Numeric, UserAttributeSimilarity) will now be enforced at signup. Note: `validate_password` is called without a `user=` argument since the user object does not exist yet at this point — the UserAttributeSimilarity validator will not run, but MinimumLength, CommonPassword, and Numeric validators all work correctly without a user object. This is acceptable and the defect report did not require user= to be passed. The signup endpoint is now consistent with the password-reset confirm flow.",
+  "evidence": [
+   "apps/tenants/auth_views.py:7 — `validate_password` already imported",
+   "apps/tenants/auth_views.py:10 — `DjangoValidationError` already imported",
+   "apps/tenants/auth_views.py:213-219 — new `try: validate_password(password)` block before create_user",
+   "apps/tenants/auth_views.py:221 — `create_user()` only reached if password passes validation"
+  ],
+  "_cluster": "C25"
+ },
+ {
+  "id": "FA-0628",
+  "retest_verdict": "pass",
+  "notes": "Fix is present, correct, and complete. tasks.py:14 imports COMPOSIO_MANAGED_PROVIDERS from .services and tasks.py:36 adds .exclude(provider__in=COMPOSIO_MANAGED_PROVIDERS) to the queryset, applied BEFORE the token_expires_at__isnull/lte filter. Verified the chain: COMPOSIO_MANAGED_PROVIDERS={'reddit'} (services.py:28), so reddit ACTIVE rows persisted with token_expires_at=NULL are now excluded from selection entirely and never reach the credentials guard at tasks.py:45-48 that previously flipped them to ERROR (errored++). This matches expected_behaviour ('Composio-managed integrations (reddit) are skipped from this task as Composio handles their own refresh'). The query-level exclude is the cleaner of the two suggested approaches. Adjacent behaviour intact: non-Composio providers (google/sautai PROVIDER_GROUP entries) are not in the excluded set, so their refresh/expire/error paths are unchanged. Regression test apps/integrations/tests_audit_C26.py creates a reddit ACTIVE integration with token_expires_at=None and asserts checked=0, errored=0, refreshed=0, expired=0, status stays ACTIVE, and refresh_integration_tokens/load_tokens_from_key_vault are not called. Ran the test with the project venv python: 1 test, OK.",
+  "evidence": [
+   "apps/integrations/tasks.py:14 (import COMPOSIO_MANAGED_PROVIDERS)",
+   "apps/integrations/tasks.py:36 (.exclude(provider__in=COMPOSIO_MANAGED_PROVIDERS))",
+   "apps/integrations/tasks.py:42-54 (missing-credentials guard now unreachable for reddit)",
+   "apps/integrations/services.py:28 (COMPOSIO_MANAGED_PROVIDERS={'reddit'})",
+   "apps/integrations/models.py:20 (Provider.REDDIT)",
+   "apps/integrations/tests_audit_C26.py:23-46 (regression test, passes)"
+  ],
+  "_cluster": "C26"
+ },
+ {
+  "id": "FA-0510",
+  "retest_verdict": "fail",
+  "notes": "The fix is present and replaces the buggy first-match-by-state scan with a per-node AST line lookup: input component destructures `node` and uses `node?.position?.start.line`, converting 1-based to 0-based via `sourceLine - 1` (markdown-renderer.tsx:40,45). The wiring is correct (document-view.tsx:542 passes `content={doc.markdown}`; handleCheckboxToggle at :357-371 splits that same string by '\\n', so indices would align). HOWEVER the chosen mechanism does not work in this library stack. With react-markdown ^10.1.0 + remark-gfm ^4.0.1 + remark-breaks ^4.0.0, the GFM task-list checkbox `input` element is a SYNTHETIC hast node created by mdast-util-to-hast's listItem handler (node_modules/mdast-util-to-hast/lib/handlers/list-item.js) WITHOUT any `position` assigned — only the enclosing `<li>` carries position. I confirmed this empirically by running the exact pipeline (remarkParse+remarkGfm+remarkBreaks+remarkRehype) over a 3-checkbox document: every `input` node reported `position: undefined` while the parent `li` reported correct line numbers (1,2,3). react-markdown passes this position-less node to the custom component (passNode=true, hast-util-to-jsx-runtime line 340). Consequence: `sourceLine` is always undefined, so `disabled={!onCheckboxToggle || sourceLine == null}` evaluates to true and `handleChange` early-returns on `sourceLine == null`. Net effect: ALL editable journal task-list checkboxes are now rendered disabled and inert. The original silent wrong-item mutation is technically gone (nothing mutates at all), but the expected_behaviour — clicking a checkbox toggles and persists the CORRECT item — is not met; the feature is fully broken instead of subtly wrong. The disposition's claim that `node.position.start.line` is available on the checkbox input is false for this version stack. The suggested_fix's second alternative (running ordinal counter over emitted checkboxes mapped to the nth task-list line) or reading position from the parent `li` would have worked; the AST-position approach as implemented does not.",
+  "evidence": [
+   "frontend/components/markdown-renderer.tsx:28-56 (input component reads node?.position?.start.line, disables + no-ops when null)",
+   "frontend/components/markdown-renderer.tsx:40 (const sourceLine = node?.position?.start.line — undefined for synthetic checkbox input)",
+   "frontend/components/markdown-renderer.tsx:43,51 (handleChange early-returns and input disabled when sourceLine == null)",
+   "frontend/components/journal/document-view.tsx:542-543 (content={doc.markdown}, onCheckboxToggle wired for non-typedManaged)",
+   "frontend/components/journal/document-view.tsx:357-371 (handleCheckboxToggle splits doc.markdown by newline, rewrites lines[lineIndex])",
+   "node_modules/mdast-util-to-hast/lib/handlers/list-item.js (input element pushed with no position; only li gets state.patch)",
+   "empirical: pipeline run over 3-checkbox doc -> every input node position=undefined, li nodes line 1/2/3"
+  ],
+  "_cluster": "C27"
+ },
+ {
+  "id": "FA-0341",
+  "retest_verdict": "partial",
+  "notes": "Core defect (the Active Goals dead-end) is genuinely FIXED. New route frontend/app/journal/goal/[slug]/page.tsx + goal-detail-client.tsx now exist. The server component exports generateStaticParams([{slug:'_'}]) so the dynamic segment builds under next.config output:'export'; the client component reads the slug from usePathname() (correct under the Azure SWA navigationFallback -> /index.html rewrite where useParams is unpopulated), URL-decodes it, resolves the goal from the cached useHorizonsQuery() data via g.slug===slug, and renders title (same extractDisplayTitle as the card), markdown via shared MarkdownRenderer, the updated date, a Back-to-Horizons link, and loading/error/not-found states. typed:<uuid> and legacy slug matching is consistent because the card Link (goal-card.tsx:55) and the lookup both use the same goal.slug from the same response. [slug] is the only dynamic route in app/ (no conflicts), MarkdownRenderer is a real export, and tsc --noEmit passes clean (exit 0). Clicking a goal card now lands on a real detail page instead of bouncing onto the index.html shell -- expected_behaviour's navigation clause now holds. CAVEAT (why partial, not pass): the disposition claims 'the Horizons response carries the goal's full markdown in preview', but apps/dashboard/views.py:373 TRUNCATES it: preview = (g['markdown'] or '')[:200]. The detail page renders goal.preview, so it shows only the first 200 chars of the goal -- essentially the same truncated content the card already had. The dead-end is gone, but the 'detail' view is content-thin: a user clicking through to read the full goal gets a 200-char excerpt, not the complete goal. A true full goal-detail surface would need the backend to return untruncated markdown (or a dedicated field) for this route; that was not done. Improvement is real but the full detail-view experience is not met.",
+  "evidence": [
+   "frontend/app/journal/goal/[slug]/page.tsx:13-19 (generateStaticParams + GoalDetailClient render)",
+   "frontend/app/journal/goal/[slug]/goal-detail-client.tsx:40-51 (slug from usePathname + decodeURIComponent)",
+   "frontend/app/journal/goal/[slug]/goal-detail-client.tsx:90-123 (goal lookup g.slug===slug, not-found state, render preview via MarkdownRenderer)",
+   "frontend/components/goal-card.tsx:54-55 (Link href=/journal/goal/${goal.slug})",
+   "apps/dashboard/views.py:368-377 (goals serialization; line 373 'preview': (g['markdown'] or '')[:200] -- truncated, NOT full markdown as disposition claimed)",
+   "frontend/lib/types.ts:581-588 (HorizonsGoal has slug/preview/title/updated_at)",
+   "frontend/next.config.mjs:9 (output:'export'); frontend/public/staticwebapp.config.json:22-24 (navigationFallback rewrite to /index.html)",
+   "tsc --noEmit exit 0 (clean)"
+  ],
+  "_cluster": "C28"
+ },
+ {
+  "id": "FA-0334",
+  "retest_verdict": "pass",
+  "notes": "Stale-text unit-toggle corruption is genuinely fixed. The in-scope file use-distance-unit.ts was correctly left unchanged (noop): its conversion helpers are mathematically correct — displayToKm(5,'mi')=round(5*(1/0.621371)*1000)/1000=8.047 km is the *correct* mi→km round-trip, not the bug; the corruption was never in this file, so editing it would be wrong. The actual root-cause fix lives in the adjacent (out-of-C29-scope) workout-detail.tsx and IS present in the worktree, applied by the Phase-3 fix commit c1124d2 (not pre-existing): git diff HEAD~1 shows both `key={`distance-${unit}`}` (line 1182) and `key={`elevation-${unit}`}` (line 1244) as added lines on the distance/elevation NumericInputs. Traced the behaviour: NumericInput still seeds text state only at mount via useState(value==null?'':String(value)) with no useEffect (line 187), so without a remount it would keep stale text. The unit-derived key now forces React to remount both inputs on every km↔mi toggle, re-seeding text from the freshly converted distanceDisplay/elevationDisplay (kmToDisplay/metersToDisplay at lines 1151/1154). Result: (1) the visible number matches the active unit, and (2) commit() on a blur-without-retype now parses the correctly-converted display value and onCommit→displayToKm/displayToMeters stores the right canonical km/m — no silent inflation of logged fitness data. Expected_behaviour ('all distance and elevation inputs display in the selected unit; on commit values convert back to canonical km/m') now holds. Adjacent behaviour intact: the key only affects remount timing; toggle PATCH/disable/refetch flow in use-distance-unit.ts unchanged.",
+  "evidence": [
+   "frontend/components/fuel/use-distance-unit.ts:36-54 (kmToDisplay/displayToKm/metersToDisplay/displayToMeters — correct, unchanged)",
+   "frontend/components/fuel/workout-detail.tsx:1182 (key=`distance-${unit}` — added by fix commit c1124d2)",
+   "frontend/components/fuel/workout-detail.tsx:1244 (key=`elevation-${unit}` — added by fix commit c1124d2)",
+   "frontend/components/fuel/workout-detail.tsx:187 (NumericInput text state still mount-only useState, no useEffect — remount via key is the mechanism)",
+   "frontend/components/fuel/workout-detail.tsx:1151,1154 (distanceDisplay/elevationDisplay recompute in active unit)",
+   "git diff HEAD~1 shows both key props as '+' additions (introduced by Phase-3 fix, not pre-existing)"
+  ],
+  "_cluster": "C29"
+ },
+ {
+  "id": "FA-0533",
+  "retest_verdict": "pass",
+  "notes": "Fix present, correct, and complete. New _ALLOWED_ORDER_BY catalogue (query_views.py:128-130) = _ALLOWED_FIELDS['accounts'] minus {is_debt, payoff_progress}; _order (line 332) now validates against _ALLOWED_ORDER_BY.get(resource, _ALLOWED_FIELDS[resource]), so order_by=is_debt / payoff_progress / -payoff_progress raise QueryExecutionError('invalid_order_by'). _ALLOWED_GROUP_BY['accounts'] (line 135) was reduced to {'account_type'} (is_debt removed), so _validate_group_by (lines 370-375) raises QueryExecutionError('unknown_group_by') for group_by=is_debt. QueryExecutionError defaults to status_code=400 (query_view.py:50) and is caught in BaseQueryView.post at query_view.py:151 -> clean HTTP 400, matching the strict-400 contract instead of the prior uncaught Django FieldError -> HTTP 500. Both properties remain in _ALLOWED_FIELDS (lines 80-81) so they are still requestable via fields= and serialized (test_property_fields_still_requestable asserts this). Adjacent behaviour intact: real-column order_by and group_by=account_type still validate; the .get(resource, _ALLOWED_FIELDS[resource]) fallback leaves transactions/plan order-by unchanged; the is_debt FILTER path (account_type__in translation, still in _ALLOWED_FILTERS line 111) is untouched. Regression tests in apps/finance/tests_audit_C30.py cover all claimed cases (property order_by/group_by -> 400 with exact error codes, real-column still 200, properties still requestable via fields=). Caveat: no Django environment available in this worktree so I could not execute the suite; disposition reports 7 new + 24 existing pass and the static code trace is unambiguous.",
+  "evidence": [
+   "apps/finance/query_views.py:80-81",
+   "apps/finance/query_views.py:122-138",
+   "apps/finance/query_views.py:327-339",
+   "apps/finance/query_views.py:366-380",
+   "apps/common/query_view.py:47-54",
+   "apps/common/query_view.py:148-155",
+   "apps/finance/tests_audit_C30.py:57-108"
+  ],
+  "_cluster": "C30"
+ },
+ {
+  "id": "FA-0907",
+  "retest_verdict": "pass",
+  "notes": "Fix present and correct. apps/orchestrator/services.py:616 adds NBHD_SKILL_TEMPLATES_MD -> workspace/skills/nbhd-managed/daily-journal/references/templates.md to the file_map_overwrite dict (the always-overwrite-on-refresh dict, uploaded by the loop at services.py:633-636). Traced the full path: (1) update_tenant_config calls render_workspace_files(persona_key, tenant=tenant) at services.py:599, so tenant is always provided on the refresh path; (2) render_workspace_files sets result['NBHD_SKILL_TEMPLATES_MD']=render_templates_md(tenant) only when tenant is not None (personas.py:519-520) — satisfied; (3) render_templates_md always returns non-empty content — the no-template placeholder '# Daily Note Template\\n\\nNo template configured yet.\\n' (personas.py:331-332) or the rendered section/slug list (personas.py:334-356), so the `if content:` upload guard at services.py:635 always passes and uploads either the real slug list or the placeholder; (4) destination workspace/skills/nbhd-managed/daily-journal/references/templates.md matches entrypoint.sh SKILL_TEMPLATES_DST = $OPENCLAW_WORKSPACE_PATH/skills/nbhd-managed/daily-journal/references/templates.md (entrypoint.sh:8,31), and upload_workspace_file uses ensure_dirs=True (azure_client.py:542, parent-dir creation at 478-485) so no directory-existence guard is needed. Result: TemplateDetailView.patch's update_tenant_config_task (journal/views.py) now actually re-uploads templates.md to the share after a default-template section rename/add/remove, so the agent's canonical slug source is refreshed and nbhd_daily_note_set_section no longer writes to a stale/wrong section. Additive entry to an existing dict, logic-only, no migration — no adjacent behaviour broken (other overwrite keys untouched, seed_once dict and rules loop unchanged). The expected_behaviour ('Uploaded to the container during provision and config refreshes') now holds on both paths.",
+  "evidence": [
+   "apps/orchestrator/services.py:602-617 (NBHD_SKILL_TEMPLATES_MD added to file_map_overwrite)",
+   "apps/orchestrator/services.py:633-636 (upload loop iterates file_map_overwrite with `if content:` guard)",
+   "apps/orchestrator/services.py:599 (render_workspace_files called with tenant= on refresh path)",
+   "apps/orchestrator/personas.py:519-520 (key set only when tenant is not None)",
+   "apps/orchestrator/personas.py:330-356 (render_templates_md always returns non-empty content)",
+   "runtime/openclaw/entrypoint.sh:8,29-33 (SKILL_TEMPLATES_DST destination matches share path)",
+   "apps/orchestrator/azure_client.py:526-542,478-485 (upload_workspace_file ensure_dirs creates parents)"
+  ],
+  "_cluster": "C31"
+ },
+ {
+  "id": "FA-0951",
+  "retest_verdict": "pass",
+  "notes": "Fix present, correct, and behaviour now holds. The per-tenant 20 msg/hr runaway throttle's increment (_record_send) was moved from the Telegram/LINE branches into a shared post-routing block at cron_delivery.py:206-211, guarded by `200 <= resp.status_code < 300`, and the two per-branch calls were removed (verified via git diff HEAD~1). The app (iOS-only) branch builds an inline 2xx Response at line 196 and now flows through this block, so the counter increments for the app channel exactly as it does for Telegram/LINE. The 2xx guard correctly preserves prior semantics: telegram/line 502/503 early-returns still do not increment (they early-returned before the old _record_send anyway), and there is no double-counting (exactly one increment per 2xx send). Traced the user/operator path: an iOS-only tenant (resolve_user_channel -> 'app' when only a DeviceToken exists) now has each proactive/cron send counted; after 20 sends the 21st is rejected at line 156 with 429 rate_limited, restoring the runaway-cron backstop that was previously a silent no-op. Adjacent behaviour intact: record_proactive_outbound / ProactiveOutbound persistence block (lines 213-225) untouched. Ran the suite with the repo venv: all 10 router tests pass (3 new C32 app-channel tests in tests_audit_C32.py — increments-by-one, once-per-call, and runaway->429 — plus the 7 existing test_cron_delivery tests). The new test patches record_proactive_outbound at its source module, which works because the view imports it lazily at call time.",
+  "evidence": [
+   "apps/router/cron_delivery.py:206-211 (shared 2xx-guarded _record_send for all channels)",
+   "apps/router/cron_delivery.py:190-196 (app branch inline 2xx Response now flows through the counting block)",
+   "apps/router/cron_delivery.py:154-160 (rate check at 156 runs for all channels, returns 429)",
+   "apps/router/cron_delivery.py:305,408 (per-branch _record_send removed per diff)",
+   "apps/router/tests_audit_C32.py:54-72 (app-channel increment + runaway->429 tests)",
+   "test run: 10 tests OK (apps.router.tests_audit_C32 + apps.router.test_cron_delivery)"
+  ],
+  "_cluster": "C32"
+ },
+ {
+  "id": "FA-0006",
+  "retest_verdict": "partial",
+  "notes": "Fix present and correct for the documented interim guard, but the full expected behaviour (iOS-only users can receive AND act on a gate confirmation) is not met. VERIFIED PRESENT: send_gate_confirmation no longer reads tenant.user.preferred_channel directly; it now calls resolve_user_channel(tenant.user) (lazily imported from apps.router.cron_delivery) at messaging.py:327-329. resolve_user_channel (cron_delivery.py:48-83) honours preferred_channel when that channel is linked, falls back to any linked Telegram/LINE channel, returns 'app' for DeviceToken-only iOS users, and None when no surface exists. Since _SENDERS (messaging.py:305-308) maps only 'telegram'/'line', both 'app' and None hit the no-sender branch, which now emits a single clear warning naming action id, tenant, and resolved channel ('action will expire without user confirmation') at messaging.py:336-343 instead of the old misleading 'no Telegram chat_id' deep failure. CORRECTNESS: Telegram and LINE users route exactly as before (preferred honoured, msg_id stored in platform_message_id, channel in platform_channel) — no adjacent breakage. Confirmed by running apps.actions.tests_audit_C33 (4/4 pass) and the full apps.actions suite (44/44 pass) under the project venv; the warning fires for both resolved-channel 'app' and None as designed. WHY PARTIAL (not pass): the suggested_fix's full remediation — deliver the confirmation to iOS-only users as an APNs push + a ?since= gate feed row, plus an app-side approve/deny endpoint wrapping GateRespondView so the iOS app can act — is deliberately NOT implemented (it requires apps/router/* and apps/actions/views.py, outside cluster C33's single-file scope). So an iOS-only user with GWS connected who triggers a destructive action STILL receives no actionable prompt and the PendingAction still silently expires after 5 minutes from the user's perspective; only the operator now gets a diagnosable log. This is a genuine improvement with a clearly documented external follow-up, matching the disposition's 'partial' action and the FA-0006 suggested_fix's explicit 'Minimum interim guard' — exactly the iOS APNs-gate-path follow-up case that warrants partial rather than pass.",
+  "evidence": [
+   "apps/actions/messaging.py:311-344 (send_gate_confirmation now resolves via resolve_user_channel + clear no-surface warning)",
+   "apps/actions/messaging.py:327-330 (lazy import + channel = resolve_user_channel(tenant.user); _SENDERS.get)",
+   "apps/actions/messaging.py:336-343 (explicit warning naming action/tenant/resolved channel instead of doomed Telegram send)",
+   "apps/actions/messaging.py:305-308 (_SENDERS still maps only telegram/line — 'app'/None fall through to no-sender)",
+   "apps/router/cron_delivery.py:48-83 (resolve_user_channel: honour preferred, fallback to linked, 'app' for DeviceToken, None otherwise)",
+   "apps/actions/tests_audit_C33.py:60-128 (4 regression tests: iOS-only no-send, no-surface no-send, telegram routed, line routed)",
+   "test run: apps.actions.tests_audit_C33 4/4 OK; apps.actions full suite 44/44 OK"
+  ],
+  "_cluster": "C33"
+ },
+ {
+  "id": "FA-0029",
+  "retest_verdict": "pass",
+  "notes": "The fix is present, correct, and complete. The old elif/else pair that silently dropped checkout.session.async_payment_succeeded for subscription sessions has been replaced with a plain else: handle_checkout_completed(data). The credit-topup branch (mode==payment + kind==credit_topup) still fires first and is unchanged. handle_checkout_completed at services.py:303-305 guards against payment-mode mis-routes internally, and at services.py:319-323 short-circuits for already-active tenants, so no double-provisioning risk exists on the normal card path where both events fire. Async payment methods (ACH, SEPA, etc.) now correctly provision/reactivate tenants. Test file apps/billing/tests_audit_C34.py covers all four combinations (subscription/credit x completed/async_payment_succeeded).",
+  "evidence": [
+   "apps/billing/views.py:161-177 — match arm now routes both event types to handle_checkout_completed via plain else after credit_topup guard",
+   "apps/billing/services.py:296-323 — handle_checkout_completed guards against payment-mode mis-routes (line 303-305) and short-circuits on already-active same-subscription tenants (line 319-323)",
+   "apps/billing/tests_audit_C34.py:57-124 — four regression tests covering async_payment_succeeded for subscription (must call handle_checkout_completed), completed for subscription (still calls handle_checkout_completed), async_payment_succeeded for credit_topup (calls credit handler), and completed for credit_topup (calls credit handler)",
+   "git diff HEAD~1 -- apps/billing/views.py confirms the elif/else replacement in the Phase 3 fix commit c1124d2"
+  ],
+  "_cluster": "C34"
+ },
+ {
+  "id": "FA-0059",
+  "retest_verdict": "pass",
+  "notes": "Fix is present, correct, and complete. The dead `is_capped` field (always False, never written) has been removed from MonthlyBudgetAdmin's list_display and list_filter. In its place: (1) a `capped` admin method decorated with `@admin.display(boolean=True)` delegates to `obj.is_over_budget` (the real enforcement property: `spent_dollars >= budget_dollars`), and (2) an `OverBudgetFilter(SimpleListFilter)` filters via a DB-level `F()` expression on the same condition. The UsageRecordAdmin is also correctly configured with `list_display = ('event_type', 'tenant', 'input_tokens', 'output_tokens', 'model_used', 'cost_estimate', 'created_at')`, `list_filter = ('event_type',)`, and `date_hierarchy = 'created_at'`, matching the expected_behaviour exactly. The import of `from django.db.models import F` and `from django.utils.translation import gettext_lazy as _` were added to support the fix. No adjacent behaviour is broken — UsageRecordAdmin is unchanged relative to expected behaviour, and the MonthlyBudget model's `is_capped` field (still in the model/migration) is simply no longer surfaced in the admin since it has no enforcement role.",
+  "evidence": [
+   "apps/billing/admin.py:2-3 (F and gettext_lazy imports added)",
+   "apps/billing/admin.py:23-40 (OverBudgetFilter with F()-based queryset filter)",
+   "apps/billing/admin.py:44-50 (MonthlyBudgetAdmin with capped method replacing is_capped)",
+   "apps/billing/models.py:145-147 (is_over_budget property: spent_dollars >= budget_dollars, confirmed as the real enforcement source of truth)"
+  ],
+  "_cluster": "C35"
+ },
+ {
+  "id": "FA-0083",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. apps/common/cache_signals.py line 87 now has @receiver(post_delete, sender=FuelProfile) stacked above the existing @receiver(post_save, sender=FuelProfile) on _profile_changed, making it consistent with all 6 other fuel model handlers (WorkoutPlan, PersonalRecord, RestingHeartRateLog, SleepLog, FuelGoal, Workout/BodyWeightLog) which already carried both decorators. The git diff confirms this was the sole change: one line added. The expected behaviour contract — post_save and post_delete registered for every data model backing a cached view — is now fully met for FuelProfile. A FuelProfile deletion (via Django admin, the only realistic path) will now immediately bump the 'fuel' cache tag via _bump(instance, ['fuel']), rather than leaving up to 60 s of stale data. The apps.py CommonConfig.ready() registration path is unchanged and correct. The _bump helper is exception-safe. No adjacent behaviour is broken.",
+  "evidence": [
+   "apps/common/cache_signals.py:86-89 (both post_save and post_delete decorators now present on _profile_changed)",
+   "apps/common/cache_signals.py:51-84 (all other fuel model handlers have the same dual-decorator pattern — fix brings FuelProfile into conformance)",
+   "apps/common/apps.py:9 (CommonConfig.ready imports cache_signals, triggering _register() at module level)",
+   "git diff HEAD~1 -- apps/common/cache_signals.py (single-line addition: @receiver(post_delete, sender=FuelProfile) at line 87)"
+  ],
+  "_cluster": "C36"
+ },
+ {
+  "id": "FA-0162",
+  "retest_verdict": "pass",
+  "notes": "Fix is present and correct. At line 213 of apps/cron/management/commands/register_system_crons.py, `registered += 1` was added inside the dry-run new-entry branch (lines 211-214), immediately before the `continue`. This exactly mirrors the dry-run update branch at lines 186-189 which already incremented `updated += 1` before its `continue`. The git diff confirms the addition. Now when --dry-run runs and encounters cron entries not yet in QStash, the summary line at line 226 (`Done: {registered} registered, {updated} updated, {skipped} unchanged`) correctly tallies the new-would-be-registered count. The non-dry-run path (lines 216-224) was always correct and is unchanged. No adjacent logic was disturbed.",
+  "evidence": [
+   "apps/cron/management/commands/register_system_crons.py:211-214 (dry-run new-entry branch now increments registered before continue)",
+   "apps/cron/management/commands/register_system_crons.py:186-189 (dry-run update branch, correctly increments updated — the mirror this fix follows)",
+   "apps/cron/management/commands/register_system_crons.py:226 (summary line reads registered counter)",
+   "git diff HEAD~1 confirms `registered += 1` was added at line 213 in the dry-run register branch"
+  ],
+  "_cluster": "C37"
+ },
+ {
+  "id": "FA-0173",
+  "retest_verdict": "pass",
+  "notes": "The fix is present, correct, and complete. A new `_bump_on_pending_extraction` receiver was added to `apps/dashboard/receivers.py` (lines 96-103) decorated with both `@receiver(post_save, sender=PendingExtraction)` and `@receiver(post_delete, sender=PendingExtraction)`. It follows the identical pattern as the four pre-existing receivers — calling `_bump_for(instance)` which calls `bump_tag(tenant_id, 'dashboard')` and swallows exceptions. The import line was updated to include `PendingExtraction` from `apps.journal.models`. The module docstring was updated to document the new coverage and preserve the intentional exclusion of `Task`. The `apps/dashboard/apps.py` `DashboardConfig.ready()` already imports `apps.dashboard.receivers`, so the new receiver auto-registers on startup with no additional wiring needed. Tracing the defect's primary code path: `ExtractionDismissView.post()` calls `pending.save(update_fields=['status', 'resolved_at'])` (journal/views.py:601), which fires the `post_save` signal → `_bump_on_pending_extraction` → `_bump_for(instance)` → `bump_tag(tenant_id, 'dashboard')`. This invalidates the `HorizonsView` cache (tagged 'dashboard', TTL 60s at views.py:192) so a hard-reload within the TTL window no longer returns a stale response showing already-dismissed/approved extractions. `PendingExtraction.tenant` is a ForeignKey, so `instance.tenant_id` resolves correctly via Django's FK descriptor. The `apps/common/cache.py` is unchanged and functions correctly. No adjacent behaviour is broken: the existing four receivers are untouched, Task remains intentionally excluded, and the exception-swallowing pattern ensures Redis failures cannot cascade into model saves.",
+  "evidence": [
+   "apps/dashboard/receivers.py:26-35 — updated docstring documents PendingExtraction coverage and preserves Task exclusion note",
+   "apps/dashboard/receivers.py:46 — import updated: `from apps.journal.models import Document, Goal, PendingExtraction`",
+   "apps/dashboard/receivers.py:96-103 — new `_bump_on_pending_extraction` receiver with post_save + post_delete decorators",
+   "apps/dashboard/apps.py:15 — `import apps.dashboard.receivers` in ready() ensures auto-registration",
+   "apps/journal/views.py:599-601 — ExtractionDismissView writes pending.status=DISMISSED then calls pending.save(), triggering the new receiver",
+   "apps/journal/models.py:230 — PendingExtraction.tenant is a ForeignKey(Tenant) so instance.tenant_id is always available",
+   "apps/dashboard/views.py:192 — HorizonsView.get is wrapped with @tenant_cache(ttl=60, tag='dashboard'), confirming the tag bump invalidates the right cache",
+   "git diff HEAD~1 confirms exactly the described change: +PendingExtraction import, +docstring block, +receiver function"
+  ],
+  "_cluster": "C38"
+ },
+ {
+  "id": "FA-0198",
+  "retest_verdict": "pass",
+  "notes": "The fix is present, correct, and complete. The offending useEffect (which called onChange(filteredTimezones[0]) on every filter keystroke that hid the current selection) has been fully removed, along with the now-unused useEffect import. In its place, a boolean currentValueFiltered is computed, and when true a 'Current selection' optgroup is prepended to the select so the current value remains visible without mutating form state. The select's value binding still mirrors props.value, and onChange is only invoked by an explicit user pick. The type-then-abandon footgun is closed: filtering now has no side-effect on form state. The empty-results branch ('No timezones match your search') and normal no-filter behaviour are both unchanged.",
+  "evidence": [
+   "frontend/components/timezone-selector.tsx:1 — useEffect removed from import (only useMemo, useState remain)",
+   "frontend/components/timezone-selector.tsx:119-120 — useEffect replaced by boolean currentValueFiltered computed from filteredTimezones.includes(currentValue)",
+   "frontend/components/timezone-selector.tsx:146-152 — currentValueFiltered guard renders a sticky 'Current selection' optgroup when the active filter hides the current value",
+   "frontend/components/timezone-selector.tsx:140 — onChange still wired only to the select's onChange event (explicit user action)",
+   "git diff HEAD~1 confirms removal of the 5-line useEffect block and addition of the optgroup guard"
+  ],
+  "_cluster": "C39"
+ },
+ {
+  "id": "FA-0212",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. A new useEffect at lines 26-29 of credits-card.tsx calls window.history.replaceState({}, \"\", window.location.pathname) whenever topup is non-null (covers both 'success' and 'cancelled' values). Because the topup state is captured synchronously by the lazy useState initializer before any effects run, the banner and the three credit-balance re-fetches still fire correctly on the initial post-checkout page load. On a subsequent manual refresh, window.location.search is empty so topup is null, no banner is shown, and no spurious re-fetches are triggered. The suggested fix asked for replaceState in the success branch and 'the same for cancelled for consistency' — the implementation covers both branches via the single !topup guard. No adjacent behaviour is affected; the existing success-refetch effect and the JSX banner rendering are untouched.",
+  "evidence": [
+   "frontend/components/billing/credits-card.tsx:26-29 (new useEffect calling replaceState when topup is non-null)",
+   "frontend/components/billing/credits-card.tsx:18-20 (lazy useState initializer captures topup before effects fire)",
+   "frontend/components/billing/credits-card.tsx:34-44 (existing success re-fetch effect unchanged)",
+   "frontend/components/billing/credits-card.tsx:72-80 (banners conditioned on topup state, not URL, so current render unaffected)"
+  ],
+  "_cluster": "C40"
+ },
+ {
+  "id": "FA-0256",
+  "retest_verdict": "pass",
+  "notes": "Fix is present and correct. In openTutor()'s catch block (galaxy-scene.ts:1462), this.lockTutorComposer() is now called immediately after renderTutorMessage, disabling #cg-tutor-send and #cg-tutor-skip and relabelling the End button to 'Done'. This mirrors the identical guard in tutorTurn() at line 1512. Before the fix, resetTutorControls() at line 1446 enabled Send/Skip before the try block, so a tutorStart() failure left both buttons active despite tutorSessionId being null — clicking either silently no-oped. Now the failure path removes the false affordance. The git diff confirms exactly one line was added in the last commit. No adjacent code path is disrupted: the success path leaves controls enabled normally, and the lockTutorComposer logic is only exercised on the catch path.",
+  "evidence": [
+   "frontend/lib/constellation-game/galaxy-scene.ts:1459-1465 (catch block now calls this.lockTutorComposer() at line 1462)",
+   "frontend/lib/constellation-game/galaxy-scene.ts:1544-1551 (lockTutorComposer disables send/skip buttons and sets End label to 'Done')",
+   "frontend/lib/constellation-game/galaxy-scene.ts:1553-1560 (resetTutorControls still runs at line 1446 on entry, enabling controls for the success path)",
+   "frontend/lib/constellation-game/galaxy-scene.ts:1510-1512 (tutorTurn 404 path lockTutorComposer call — pattern now mirrored in openTutor catch)"
+  ],
+  "_cluster": "C41"
+ },
+ {
+  "id": "FA-0413",
+  "retest_verdict": "pass",
+  "notes": "The fix is present, correct, and complete. login/page.tsx:35-36 now computes `messagingLinked = Boolean(me.tenant?.user.telegram_chat_id) || Boolean(me.line_user_id)` and uses `!messagingLinked` in `isOnboardingNeeded`. A LINE-only subscriber (telegram_chat_id=null, line_user_id set, tenant active) will now have messagingLinked=true and be routed directly to /journal instead of /onboarding. The `me.line_user_id` field is correctly sourced from the top-level AuthUser (types.ts:206), which is what fetchMe() returns — no type or backend changes were needed. Telegram-only users, users with neither channel, the hasPendingAppAuthorize() shortcut, and the fetchMe() error fallback are all unaffected. No adjacent breakage observed.",
+  "evidence": [
+   "frontend/app/login/page.tsx:35-36 — messagingLinked OR-gates both channels; isOnboardingNeeded uses !messagingLinked",
+   "frontend/lib/types.ts:206 — AuthUser.line_user_id: string | null (field exists on the type returned by fetchMe())",
+   "frontend/lib/types.ts:17 — TenantUser.telegram_chat_id: number | null (first OR clause)",
+   "git diff HEAD~1 confirms exactly two lines changed: addition of messagingLinked and replacement of telegram-only clause"
+  ],
+  "_cluster": "C42"
+ },
+ {
+  "id": "FA-0415",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. Line 47 of frontend/app/signup/page.tsx was changed from `!me.tenant.user.telegram_chat_id` to `(!me.tenant.user.telegram_chat_id && !me.line_user_id)`. This makes post-signup routing channel-agnostic: a LINE-only subscriber (telegram_chat_id null, line_user_id set) is now routed directly to /journal instead of being detoured through /onboarding. The fix reads me.line_user_id from the top-level AuthUser returned by fetchMe(), which is type-safe — AuthUser already carries line_user_id: string | null at types.ts:206 and no backend changes were needed. All other routing branches (hasPendingAppAuthorize iOS path, !me.tenant guard, status !== active guard) are unchanged. Telegram-only users continue to work correctly. The defect's expected behaviour — that a fully provisioned LINE subscriber lands at /journal without an onboarding detour — now holds.",
+  "evidence": [
+   "frontend/app/signup/page.tsx:47 (condition changed to &&-combine both channel checks)",
+   "frontend/lib/types.ts:206 (line_user_id: string | null on AuthUser, already present)"
+  ],
+  "_cluster": "C43"
+ },
+ {
+  "id": "FA-0427",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. Line 79 now reads `if (!prefersReduced) rafRef.current = requestAnimationFrame(draw);`, making the RAF re-schedule conditional. When prefers-reduced-motion is active, draw() is called once directly at line 83 and does not re-schedule itself, satisfying the draw-once contract. The normal animation loop path (line 85 initial schedule + line 79 re-schedule when !prefersReduced) is unaffected. All other expected behaviours hold: canvas is aria-hidden + pointer-events-none (line 101-105), density is 1 per 4000px² (line 46-48), star properties cover random position/radius(0.3-1.8px)/opacity/speed/color from 4 COLORS (lines 49-56), flicker is suppressed when reduced-motion (lines 69-72), resize handler reinitialises stars (lines 88-91), and cleanup cancels the RAF on unmount (line 95).",
+  "evidence": [
+   "frontend/components/landing/starfield.tsx:79 — `if (!prefersReduced) rafRef.current = requestAnimationFrame(draw);`",
+   "frontend/components/landing/starfield.tsx:82-86 — reduced-motion branch calls draw() once directly; normal path schedules via RAF",
+   "frontend/components/landing/starfield.tsx:101-106 — canvas has aria-hidden=true and pointer-events-none",
+   "frontend/components/landing/starfield.tsx:46-48 — star count = floor(w*h/4000)",
+   "frontend/components/landing/starfield.tsx:69-72 — flicker sine wave suppressed when prefersReduced",
+   "frontend/components/landing/starfield.tsx:94-97 — cleanup cancels RAF and removes resize listener"
+  ],
+  "_cluster": "C44"
+ },
+ {
+  "id": "FA-0437",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. The `case \"/settings/ai-provider\":` block was added at layout.tsx:153-156, prefetching both `[\"tenant\"]` (fetchTenant) and `[\"byo-credentials\"]` (fetchByoCredentials). `fetchByoCredentials` was also added to the import list (line 10). All 8 settings tabs now have coverage in the switch — no tab is left falling through to `default: break`. The `prefetchTabData` function remains wired to `onMouseEnter` (line 192) and `onTouchStart` (line 216), so the prefetch fires on hover and touch exactly as described in expected_behaviour. `fetchByoCredentials` resolves to a real export at frontend/lib/api.ts:1528. No adjacent cases were disturbed.",
+  "evidence": [
+   "frontend/app/settings/layout.tsx:10 (fetchByoCredentials import added)",
+   "frontend/app/settings/layout.tsx:153-156 (case \"/settings/ai-provider\" prefetches [\"tenant\"] and [\"byo-credentials\"])",
+   "frontend/app/settings/layout.tsx:192 (onMouseEnter fires prefetchTabData)",
+   "frontend/app/settings/layout.tsx:216 (onTouchStart fires prefetchTabData)",
+   "frontend/lib/api.ts:1528 (fetchByoCredentials exported)"
+  ],
+  "_cluster": "C45"
+ },
+ {
+  "id": "FA-0531",
+  "retest_verdict": "pass",
+  "notes": "The validation guard is present and correct at apps/finance/runtime_views.py lines 385-390. Immediately after reading strategy from the request body (line 383), the view now checks: if strategy is not None and strategy not in ('snowball', 'avalanche', 'hybrid'), it returns HTTP 400 with a descriptive error message including the offending value and the allowed set. This correctly blocks the KeyError path at line 427 (results[strategy]) because that path is now only reachable when strategy is one of the three valid values, which will always be a key in results. The None case (compare all three strategies) still passes through correctly. The save=true + valid strategy path is unaffected. No adjacent behaviour is broken.",
+  "evidence": [
+   "apps/finance/runtime_views.py:383 — strategy = body.get('strategy')",
+   "apps/finance/runtime_views.py:385-390 — new validation guard: _VALID_STRATEGIES = ('snowball','avalanche','hybrid'); if strategy is not None and strategy not in _VALID_STRATEGIES: return Response({'error': f'Unknown strategy: {strategy!r}...'}, status=400)",
+   "apps/finance/runtime_views.py:417-427 — save path now only reachable with a valid strategy key that exists in results",
+   "git diff HEAD~1 -- apps/finance/runtime_views.py confirms the guard was added in the Phase 3 fix commit (c1124d2)"
+  ],
+  "_cluster": "C46"
+ },
+ {
+  "id": "FA-0700",
+  "retest_verdict": "pass",
+  "notes": "Fix is present and correct. Lines 465-468 of apps/journal/document_views.py add `tree['weekly'].sort(key=lambda x: x['slug'], reverse=True)` immediately after the existing daily-note sort block, mirroring the identical pattern. Weekly slugs are YYYY-MM-DD week-start date strings, so lexicographic descending sort equals date-descending order. The [:12] cap at line 473 now operates on the sorted list, ensuring the 12 most-recent weeks by calendar date are shown rather than the 12 most-recently-edited. Daily note sorting and all other sidebar kinds are unaffected. No adjacent behaviour was disturbed.",
+  "evidence": [
+   "apps/journal/document_views.py:465-468 — new weekly sort block present",
+   "apps/journal/document_views.py:461-463 — pre-existing daily sort unchanged",
+   "apps/journal/document_views.py:473 — [:12] cap still in place, now operates on slug-sorted list",
+   "git diff HEAD~1 confirms the 5-line addition is the only change in this file"
+  ],
+  "_cluster": "C47"
+ },
+ {
+  "id": "FA-0763",
+  "retest_verdict": "pass",
+  "notes": "The missing `hasattr(request.user, 'tenant')` guard has been added at line 282-283 of apps/lessons/views.py, immediately before the first access to `request.user.tenant`. The guard is identical in form to the three sibling actions: refresh (line 122-123), galaxy_insights (line 327-328), and galaxy_reflect. The fix was confirmed via `git diff HEAD~1`: two lines inserted at the top of the `galaxy_summary` action body. An IsAuthenticated user with no associated Tenant (e.g. a staff account created via createsuperuser) now receives a 400 `{\"error\": \"tenant_required\"}` instead of an unhandled 500 RelatedObjectDoesNotExist traceback. No adjacent behaviour is affected — normal subscriber tenants (always created with an associated Tenant via the atomic provisioning path) pass the hasattr check and continue to the existing queryset logic unchanged.",
+  "evidence": [
+   "apps/lessons/views.py:282-283 (new guard: `if not hasattr(request.user, 'tenant'): return Response({\"error\": \"tenant_required\"}, status=status.HTTP_400_BAD_REQUEST)`)",
+   "apps/lessons/views.py:122-123 (sibling refresh guard — identical pattern)",
+   "apps/lessons/views.py:327-328 (sibling galaxy_insights guard — identical pattern)",
+   "git diff HEAD~1 -- apps/lessons/views.py (confirms exactly two lines inserted, nothing else changed)"
+  ],
+  "_cluster": "C48"
+ },
+ {
+  "id": "FA-0788",
+  "retest_verdict": "pass",
+  "notes": "The fix is present, correct, and complete. The --threshold argument's help string was changed from a hardcoded 'Similarity threshold (default 0.75)' to an f-string 'f\"Similarity threshold (default {DEDUP_THRESHOLD})\"'. DEDUP_THRESHOLD is 0.65 at line 20, so the help text now correctly reads 'Similarity threshold (default 0.65)', matching the actual runtime default. No adjacent logic was touched — default=DEDUP_THRESHOLD and all dedup/deletion code paths are unchanged. An operator running --help now sees the accurate threshold, eliminating the misleading 0.75 documentation that could cause unintended aggressive deduplication. The f-string approach also future-proofs the help text against drift if the constant is ever adjusted.",
+  "evidence": [
+   "apps/lessons/management/commands/dedup_lessons.py:20 — DEDUP_THRESHOLD = 0.65 (unchanged constant)",
+   "apps/lessons/management/commands/dedup_lessons.py:29-31 — help=f\"Similarity threshold (default {DEDUP_THRESHOLD})\" (fix applied; old hardcoded '0.75' removed)",
+   "git diff HEAD~1 confirms exactly one line changed: the help= string on line 30 from literal '0.75' to f-string interpolation of DEDUP_THRESHOLD"
+  ],
+  "_cluster": "C49"
+ },
+ {
+  "id": "FA-0814",
+  "retest_verdict": "pass",
+  "notes": "The fix is fully present and correct. The old log-only Telegram else-branch (logger.info only, no send) at hibernation.py:979-986 has been replaced with a send path mirroring the LINE branch: reads tenant.user.telegram_chat_id via getattr (safe), early-returns if None (matches the LINE guard on line_user_id), imports send_telegram_message from apps.router.services (confirmed to exist at line 344 as a plain Bot API call), calls it with the already-computed localized text (built from error_msg dropped_message / dropped_message_with_excerpt keys which are channel-agnostic), and wraps the call in try/except + logger.exception so a send failure cannot break delivery accounting. The LINE branch is untouched. Three regression tests were added in apps/orchestrator/tests_audit_C50.py covering: successful Telegram send, missing chat_id early-return, and exception suppression. Expected behaviour now holds: a Telegram user whose buffered message is dropped after 3 attempts receives the same localized apology notification that LINE users already received.",
+  "evidence": [
+   "apps/orchestrator/hibernation.py:966-993 (_send_apology_for_dropped_message — Telegram branch now sends via send_telegram_message)",
+   "apps/orchestrator/hibernation.py:982-988 (telegram_chat_id guard + send_telegram_message call with try/except)",
+   "apps/router/services.py:344 (send_telegram_message function confirmed to exist, plain Bot API call)",
+   "apps/router/error_messages.py:67-76 (dropped_message and dropped_message_with_excerpt keys confirmed present)",
+   "apps/orchestrator/tests_audit_C50.py:1-74 (3 regression tests for Telegram send, missing chat_id, exception suppression)"
+  ],
+  "_cluster": "C50"
+ },
+ {
+  "id": "FA-0899",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. Line 68 of backfill_welcomes.py was changed from `tenant.finance_enabled` to `tenant.finance_active`. The `finance_active` property (models.py:707-718) ANDs `finance_enabled` with `settings.GRAVITY_ENABLED` (default False in production), so with GRAVITY off, a tenant with finance_enabled=True will now be correctly skipped by the manual backfill command. This matches the HTTP endpoint guard (cron/views.py:867) and the daily watchdog guard (tasks.py:1146). The fuel_enabled check on line 65 is correctly left unchanged (no fuel_active property exists - no analogous kill switch for fuel). No adjacent behaviour is broken; counter tracking, _run_one dispatch, and output formatting are all untouched.",
+  "evidence": [
+   "apps/orchestrator/management/commands/backfill_welcomes.py:68 — now reads `tenant.finance_active`",
+   "apps/tenants/models.py:707-718 — finance_active property ANDs finance_enabled with GRAVITY_ENABLED (default False)",
+   "git diff HEAD~1 confirms single-line change: -finance_enabled +finance_active"
+  ],
+  "_cluster": "C51"
+ },
+ {
+  "id": "FA-0908",
+  "retest_verdict": "pass",
+  "notes": "The fix is present, correct, and complete for the stated defect. Goal was added to the module-level import at agenda_envelope.py:48 and to the refresh_on tuple at agenda_envelope.py:92. The envelope_registry wires post_save/post_delete signals for every model in refresh_on to _universal_refresh_receiver (envelope_registry.py:150-155), which resolves the tenant via Goal.tenant ForeignKey (journal/models.py:292) and schedules push_user_md on commit. The now-redundant local 'from apps.journal.models import Goal' inside _count_active_goals (previously needed because Goal was absent from the module-level import) was cleanly removed; the function correctly uses the module-level Goal at line 282 with no NameError risk. Adjacent behaviour is unaffected: Document, Workout, FuelGoal, PayoffPlan all remain in refresh_on; the _count_open_tasks path reads from Document (already in refresh_on), so task staleness is a pre-existing separate issue not part of this defect. The expected_behaviour mentions Task and AgendaEngagement as ideal refresh triggers, but the defect detail and suggested_fix narrowly target Goal, and the disposition action='fixed' correctly scopes to Goal.",
+  "evidence": [
+   "apps/orchestrator/agenda_envelope.py:48 — module-level import now includes Goal",
+   "apps/orchestrator/agenda_envelope.py:92 — refresh_on=(Document, Goal, Workout, FuelGoal, PayoffPlan)",
+   "apps/orchestrator/agenda_envelope.py:282 — Goal.objects.filter used without local import",
+   "apps/orchestrator/envelope_registry.py:150-155 — post_save/post_delete connected for each model in refresh_on",
+   "apps/orchestrator/envelope_registry.py:217 — _resolve_tenant_id handles instance.tenant_id (Goal has tenant FK)",
+   "apps/journal/models.py:292 — Goal.tenant = ForeignKey(Tenant) confirms tenant_id resolution works"
+  ],
+  "_cluster": "C52"
+ },
+ {
+  "id": "FA-1136",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. The old entitled_active() used negative-exclude logic (.exclude(is_trial=True, trial_ends_at__lte=now, stripe_subscription_id='')) which only filtered tenants where ALL three conditions matched simultaneously. Ghost tenants (is_trial=False, no subscription, not budget-exempt) had is_trial=False so they did not match the exclude clause and passed through, receiving spurious cron seeding/config-apply cycles until the daily expire_trials sweep caught them. The fix replaces this with positive-inclusion logic (.filter(Q(stripe_subscription_id__gt='') | Q(is_trial=True, trial_ends_at__gt=now) | Q(is_budget_exempt=True))) which exactly mirrors the complement of _unentitled_active_tenants() in apps/cron/views.py, including the is_budget_exempt arm that protects canary/internal accounts. A ghost tenant now fails to match any of the three positive conditions and is correctly excluded. Eight regression tests in apps/tenants/tests_audit_C53.py cover: ghost excluded, paid included, unexpired trial included, expired trial excluded, budget-exempt included, suspended excluded, no-container excluded, and has_entitlement/entitled_active() agreement for ghosts.",
+  "evidence": [
+   "apps/tenants/models.py:729-751 (new entitled_active() positive-filter implementation)",
+   "apps/tenants/models.py:720-727 (has_entitlement unchanged — consistent with fix)",
+   "apps/cron/views.py:657-680 (_unentitled_active_tenants() — fix mirrors this complement exactly)",
+   "apps/tenants/tests_audit_C53.py:45-168 (8 regression tests all covering the key paths)"
+  ],
+  "_cluster": "C53"
+ },
+ {
+  "id": "FA-0007",
+  "retest_verdict": "partial",
+  "notes": "Two of the three required fixes are present; one critical wiring step is still missing.\n\n1. Celery import removal (tasks.py): FIXED. The `from celery import shared_task` import and `@shared_task` decorator have been removed. `expire_stale_pending_actions()` is now a plain callable with correct sweep logic: filters PENDING+expired rows, sets EXPIRED, creates ActionAuditLog, calls `update_gate_message` per action with per-action exception handling, returns 'Expired N actions'. The ImportError on module load is resolved.\n\n2. GatePollView lazy-expiry button refresh (views.py lines 229-234): FIXED — and beyond what the disposition claimed was out of scope. The lazy-expiry branch in GatePollView now calls `update_gate_message(action)` inside a try/except after setting EXPIRED status. Stale Approve/Deny buttons will now be cleared when the container polls, not only when a sweep runs.\n\n3. TASK_MAP wiring (apps/cron/views.py): NOT FIXED. `expire_stale_actions` (or any alias) is absent from TASK_MAP. The sweep function is importable and correct, but QStash has no endpoint to invoke it on a schedule. The expected behaviour — 'run every 60 seconds via QStash cron' — is still not met. The proactive sweep never fires in production.",
+  "evidence": [
+   "apps/actions/tasks.py:1-53 — no celery import, no @shared_task, correct plain function with update_gate_message call and per-action exception handling",
+   "apps/actions/views.py:224-234 (diff HEAD~1) — update_gate_message added to GatePollView lazy-expiry branch, wrapped in try/except so messaging errors cannot break the poll response",
+   "apps/cron/views.py:70-204 — TASK_MAP inspected line by line; 'expire_stale_actions' and 'expire_stale_pending_actions' are both absent; no cron entry exists to invoke the sweep"
+  ],
+  "_cluster": "C54"
+ },
+ {
+  "id": "FA-0046",
+  "retest_verdict": "pass",
+  "notes": "Both prongs are correctly fixed in apps/billing/model_health.py. Prong A: the three NEMOTRON_FREE_DISPLAY literals in _transition_message have been replaced with display_name_for_model(offer.model_id), and the NEMOTRON_FREE_DISPLAY import was removed from the imports block. The _transition_message function now computes offer_name = display_name_for_model(offer.model_id) at line 274 and uses it in all three notification branches. If an operator changes FreeModelOffer.model_id to a different model, notifications will correctly name that model. Prong B: a bulk update was added at the top of _apply_to_tenants (lines 231-234) that, on deactivation, clears preferred_model to '' for all tenants whose preferred_model equals the offer model EXCEPT those that are both ACTIVE and non-hibernated. The .exclude(status=ACTIVE, hibernated_at__isnull=True) correctly catches SUSPENDED tenants, hibernated ACTIVE tenants, and any other non-running statuses. The subsequent per-row loop still handles ACTIVE non-hibernated tenants correctly. Config bumps and notifications remain scoped to ACTIVE non-hibernated containers only. No adjacent behaviour is broken: the activation path is unchanged, the failure/no_longer_free deactivation gates are unchanged, and tasks.py is a thin dispatcher that is unaffected.",
+  "evidence": [
+   "apps/billing/model_health.py:30-36 (NEMOTRON_FREE_DISPLAY import removed, display_name_for_model retained)",
+   "apps/billing/model_health.py:231-234 (Prong B bulk update for SUSPENDED/hibernated tenants)",
+   "apps/billing/model_health.py:273-295 (Prong A: offer_name = display_name_for_model(offer.model_id) used in all three notification templates)",
+   "apps/billing/tasks.py:22-27 (thin dispatcher, unchanged)"
+  ],
+  "_cluster": "C55"
+ },
+ {
+  "id": "FA-0053",
+  "retest_verdict": "pass",
+  "notes": "Fix is present and correct in both cap_budget.py and admin.py. The cap branch now sets is_capped=True alongside spent_dollars=budget_dollars and includes both in update_fields; the uncap branch sets is_capped=False alongside spent_dollars=0 and includes both in update_fields. The admin was also fixed (contrary to the disposition's claim it was 'already correct' — admin.py was in fact changed): the broken list_display='is_capped' and list_filter='is_capped' were replaced with a computed capped() method using is_over_budget (spent_dollars >= budget_dollars) and an OverBudgetFilter keyed on the same arithmetic comparison. This is actually more robust than just writing is_capped, since it stays accurate for any rows where older code paths (e.g. reconcile_openrouter_spend) updated spent_dollars without touching is_capped. The --status branch correctly uses is_over_budget. The get_or_create defaults (budget_dollars=100, spent_dollars=0) match the expected behaviour. Enforcement in services.py (remaining <= 0) was never broken and is unchanged. No adjacent behaviour appears broken.",
+  "evidence": [
+   "apps/billing/management/commands/cap_budget.py:51-52 (uncap: is_capped=False + update_fields=['spent_dollars','is_capped'])",
+   "apps/billing/management/commands/cap_budget.py:57-58 (cap: is_capped=True + update_fields=['spent_dollars','is_capped'])",
+   "apps/billing/admin.py:23-50 (OverBudgetFilter on spent_dollars>=budget_dollars; capped() computed via is_over_budget)",
+   "apps/billing/models.py:146-147 (is_over_budget property: spent_dollars >= budget_dollars)",
+   "git diff HEAD~1 -- apps/billing/admin.py (admin.py was changed, not pre-existing)"
+  ],
+  "_cluster": "C56"
+ },
+ {
+  "id": "FA-0303",
+  "retest_verdict": "pass",
+  "notes": "The fix is present and correct. In handleSubmit, the unconditional `setForceEdit(false)` after `Promise.allSettled` (old lines 192-193) was replaced with: capture results, check `results.every(r => r.status === 'fulfilled')`, and only call `setForceEdit(false)` when all jobs succeeded. On partial failure, `forceEdit` remains `true`, which keeps `collapsed` false (line 52: `collapsed = !forceEdit && allLogged && isToday`), so the form stays expanded. The global mutation onError toast still fires for each failed field via providers.tsx, and the user can retry. Edge case for empty jobs (nothing dirty) correctly still calls `setForceEdit(false)` unconditionally at line 188 before returning. No adjacent behaviour broken: submit-disabled logic, dirty detection, and the one-liner summary collapse on fresh page load (where forceEdit is false and all fields were already logged) are all unaffected.",
+  "evidence": [
+   "frontend/components/fuel/today-checkin.tsx:192-199 (fix: allSucceeded guard before setForceEdit)",
+   "frontend/components/fuel/today-checkin.tsx:52 (collapsed gating: !forceEdit && allLogged && isToday)",
+   "frontend/components/fuel/today-checkin.tsx:187-190 (empty-jobs fast-path still collapses correctly)"
+  ],
+  "_cluster": "C57"
+ },
+ {
+  "id": "FA-0324",
+  "retest_verdict": "pass",
+  "notes": "All five changes from the fix disposition are present and correct in frontend/components/fuel/history.tsx. (1) DistanceUnit is now imported from @/lib/types. (2) kmToDisplay and useDistanceUnit are imported from ./use-distance-unit. (3) summaryChips() accepts a unit: DistanceUnit parameter. (4) The cardio distance chip renders kmToDisplay(d.distance_km, unit) with the unit string as the label — both value and label are now unit-aware. (5) The pace label uses /${unit} instead of the hardcoded /km. (6) WorkoutRow calls useDistanceUnit() and passes the resulting unit to summaryChips(). For a mi-preference user, a stored 5.0 km run now correctly displays '3.11 mi' and '/mi' on every history row chip. Non-cardio branches (strength, hiit, calisthenics) are unchanged. The fix exactly mirrors the canonical pattern in workout-detail-readonly.tsx CardioStatsReadOnly as specified in the defect's suggested_fix.",
+  "evidence": [
+   "frontend/components/fuel/history.tsx:6 — DistanceUnit imported",
+   "frontend/components/fuel/history.tsx:9 — kmToDisplay, useDistanceUnit imported",
+   "frontend/components/fuel/history.tsx:105 — summaryChips(w: FuelWorkout, unit: DistanceUnit)",
+   "frontend/components/fuel/history.tsx:114 — kmToDisplay(d.distance_km as number, unit) ${unit}",
+   "frontend/components/fuel/history.tsx:115 — ${d.pace}/${unit}",
+   "frontend/components/fuel/history.tsx:129 — const { unit } = useDistanceUnit()",
+   "frontend/components/fuel/history.tsx:152 — summaryChips(w, unit)"
+  ],
+  "_cluster": "C58"
+ },
+ {
+  "id": "FA-0335",
+  "retest_verdict": "partial",
+  "notes": "The accessibility hardening claimed by the fixer is present and correct: UnitToggle in body-weight.tsx now has role=\"group\" and aria-label=\"Weight unit\" on the container (line 349-350), and each button has type=\"button\" (line 357) and aria-pressed={unit === u} (line 358), satisfying WCAG 2.1 toggle-button semantics. The JSDoc comment added to useWeightUnit (use-weight-unit.ts lines 29-38) accurately documents the device-local limitation and the exact migration path to fix it. No adjacent behavior was broken — localStorage sync, cross-tab event bus, sparkline, edit/delete dialogs, and the kg-storage/display-conversion boundary are all unchanged and still functional. The core defect — weight_unit not being server-persisted like distance_unit — remains unaddressed. This requires adding a field to apps/fuel/models.py, updating apps/fuel/serializers.py, creating a DB migration, extending frontend/lib/types.ts (FuelProfile), and adding a query mutation in frontend/lib/queries.ts — all outside C59's allowed file list. The partial disposition is accurate: within-scope improvements are applied; the server-sync leg is a documented follow-up blocked on external files.",
+  "evidence": [
+   "frontend/components/fuel/body-weight.tsx:349-350 (role=\"group\" + aria-label=\"Weight unit\" on UnitToggle container)",
+   "frontend/components/fuel/body-weight.tsx:357-358 (type=\"button\" + aria-pressed={unit === u} on each toggle button)",
+   "frontend/components/fuel/use-weight-unit.ts:29-38 (JSDoc documenting device-local limitation and migration path)",
+   "git diff HEAD~1 -- frontend/components/fuel/body-weight.tsx frontend/components/fuel/use-weight-unit.ts (confirms only accessibility attributes and JSDoc added; no server-persistence changes)",
+   "frontend/lib/types.ts not touched — FuelProfile still has no weight_unit field (cross-device persistence defect remains open)"
+  ],
+  "_cluster": "C59"
+ }
+]

@@ -830,6 +830,34 @@ class TelegramPoller:
                 orig_msg_id = update["callback_query"].get("message", {}).get("message_id")
                 if orig_msg_id:
                     self._edit_message_reply_markup(chat_id, orig_msg_id, None)
+                # A tapped agent button spawns a real AI turn, so it must clear
+                # the same suspended + budget pre-flight gate as a typed message;
+                # otherwise a button tap lands a billable turn on a suspended or
+                # over-budget tenant. Mirrors the typed-message gate below and the
+                # LINE _handle_postback gate. See FA-0974.
+                if tenant is None:
+                    response_data = send_onboarding_link(chat_id)
+                    self._execute_telegram_response(response_data)
+                    return
+                frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
+                if (
+                    tenant.status == Tenant.Status.SUSPENDED
+                    and not tenant.is_trial
+                    and not bool(tenant.stripe_subscription_id)
+                ):
+                    lang = getattr(tenant.user, "language", None) or "en"
+                    self._send_message(
+                        chat_id,
+                        error_msg(lang, "suspended", billing_url=f"{frontend_url}/settings/billing"),
+                    )
+                    return
+                budget_reason = check_budget(tenant)
+                if budget_reason:
+                    from apps.router.views import _hibernate_for_quota
+
+                    _hibernate_for_quota(tenant)
+                    self._send_budget_exhausted(chat_id, tenant, budget_reason)
+                    return
                 # Forward the button tap to the agent. ``raw_user_text=button_value``
                 # so the dropped-message apology quotes the button label rather than
                 # the ``[User tapped button: …]`` framing if delivery fails.

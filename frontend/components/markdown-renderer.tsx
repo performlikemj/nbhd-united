@@ -3,9 +3,8 @@
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { memo, useMemo } from "react";
+import { memo, useMemo, useRef } from "react";
 import type { Components } from "react-markdown";
-import type { Element } from "hast";
 
 interface MarkdownRendererProps {
   content: string;
@@ -16,6 +15,12 @@ interface MarkdownRendererProps {
 // memoization (it re-runs the full remark pipeline when the reference changes).
 const REMARK_PLUGINS = [remarkGfm, remarkBreaks];
 
+// Matches a GFM task-list item line ("- [ ]", "* [x]", "1. [ ]", indented),
+// outside fenced code. Mirrors how remark-gfm recognizes task checkboxes so the
+// indices line up 1:1 with the rendered <input>s.
+const TASK_LINE_RE = /^\s*(?:[-*+]|\d+[.)])\s+\[[ xX]\]/;
+const FENCE_RE = /^\s*(?:```|~~~)/;
+
 // memo'd so parents that re-render on every keystroke (e.g. DocumentView while
 // the editor is open) don't re-run the markdown pipeline when `content` and
 // `onCheckboxToggle` are unchanged.
@@ -23,39 +28,59 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
   content,
   onCheckboxToggle,
 }: MarkdownRendererProps) {
+  // 0-based source-line index of every task-list checkbox, in document order.
+  // We CANNOT use the AST node's position: remark-gfm emits a synthetic <input>
+  // node with no `position` (only the enclosing <li> carries one), so reading
+  // node.position.start.line yields undefined for every checkbox. Instead we
+  // map the Nth rendered checkbox to the Nth task-list line in the source —
+  // react-markdown renders the inputs in document order, so the ordinals align.
+  const taskLineIndices = useMemo(() => {
+    const out: number[] = [];
+    let inFence = false;
+    const lines = content.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      if (FENCE_RE.test(lines[i])) {
+        inFence = !inFence;
+        continue;
+      }
+      if (!inFence && TASK_LINE_RE.test(lines[i])) {
+        out.push(i);
+      }
+    }
+    return out;
+  }, [content]);
+
+  // Reset before each render's children render. react-markdown renders the
+  // checkbox <input>s synchronously and in document order during this render,
+  // each one consuming the next ordinal.
+  const checkboxOrdinal = useRef(0);
+  checkboxOrdinal.current = 0;
+
   const components = useMemo<Components>(
     () => ({
-      input: ({
-        node,
-        ...props
-      }: React.InputHTMLAttributes<HTMLInputElement> & {
-        node?: Element;
-      }) => {
+      input: (props: React.InputHTMLAttributes<HTMLInputElement>) => {
         if (props.type !== "checkbox") return <input {...props} />;
 
-        // Resolve the exact source line this checkbox came from via the AST
-        // node's position data, so clicking checkbox B toggles B — not the
-        // first same-state checkbox. (react-markdown line numbers are 1-based;
-        // onCheckboxToggle expects a 0-based line index.)
-        const sourceLine = node?.position?.start.line;
+        // Tie this checkbox to its source line by document-order position, so
+        // clicking checkbox B toggles B — not the first same-state checkbox.
+        const sourceLine = taskLineIndices[checkboxOrdinal.current++];
 
         const handleChange = () => {
           if (!onCheckboxToggle || sourceLine == null) return;
-          const checked = props.checked ?? false;
-          onCheckboxToggle(sourceLine - 1, !checked);
+          onCheckboxToggle(sourceLine, !(props.checked ?? false));
         };
 
         return (
           <input
             {...props}
-            disabled={!onCheckboxToggle || sourceLine == null}
+            disabled={!onCheckboxToggle}
             onChange={handleChange}
             className="mr-2 h-4 w-4 cursor-pointer rounded border-border accent-accent"
           />
         );
       },
     }),
-    [onCheckboxToggle],
+    [taskLineIndices, onCheckboxToggle],
   );
 
   return (

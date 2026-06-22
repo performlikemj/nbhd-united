@@ -116,6 +116,11 @@ SYSTEM_CRONS = [
     # query, so the every-minute tick is cheap (mirrors reap-stuck-inbound).
     # See apps/automations/scheduler.py:run_due_automations.
     ("run-due-automations", "* * * * *", "/api/cron/trigger/run_due_automations/"),
+    # Every 5 min — sweep expired action-gate rows (flip to EXPIRED + clear the
+    # stale Approve/Deny buttons on the platform message). Backstops the lazy
+    # GatePollView expiry for actions the container abandons (never polls again).
+    # See apps/actions/tasks.py:expire_stale_pending_actions.
+    ("expire-stale-actions", "*/5 * * * *", "/api/cron/trigger/expire_stale_actions/"),
 ]
 
 

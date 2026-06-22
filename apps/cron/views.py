@@ -84,6 +84,11 @@ TASK_MAP = {
     # in the platform owner's inbox.
     "preview_email": "apps.tenants.tasks.preview_email_task",
     "refresh_expiring_integrations": "apps.integrations.tasks.refresh_expiring_integrations_task",
+    # Sweep PENDING action-gate rows past their 5-min expiry: flip to EXPIRED,
+    # audit-log, and refresh the platform message so stale Approve/Deny buttons
+    # are cleared. GatePollView expires lazily on poll, but abandoned actions
+    # (container never polls again) need this backstop. See apps/actions/tasks.py.
+    "expire_stale_actions": "apps.actions.tasks.expire_stale_pending_actions",
     # PR #1.6: hourly OR-spend truing-up (per-tenant + platform).
     "reconcile_openrouter_spend": "apps.billing.tasks.reconcile_openrouter_spend_task",
     # Journal memory sync (on-demand via signal or QStash publish)
