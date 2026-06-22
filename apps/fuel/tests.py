@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, timedelta
 from decimal import Decimal
 from unittest import TestCase as UnitTestCase
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
+from rest_framework.renderers import JSONRenderer
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.common.llm_contracts import today_in_tenant_tz
 from apps.tenants.services import create_tenant
 
 from .models import BodyWeightLog, FuelProfile, PlanSlot, Workout, WorkoutPlan
@@ -4460,3 +4463,146 @@ class HealthKitSyncHardeningTests(TestCase):
         resp = self._post({"workouts": [self._item()]})
         self.assertEqual(resp.data["results"][0]["status"], "duplicate")
         self.assertFalse(Workout.objects.filter(tenant=self.tenant, external_id="hk-hard-1").exists())
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Fuel Overview Aggregate (BFF) View Tests
+# ═════════════════════════════════════════════════════════════════════
+
+
+class FuelOverviewViewTests(TestCase):
+    """GET /api/v1/fuel/overview/ — the screen-shaped first-paint aggregate.
+
+    Composes profile + recent workouts + current-month calendar into one
+    response. The strongest guard here is the shape-parity test: each key must
+    be byte-identical to its dedicated endpoint so the iOS DTO initializers
+    parse it unchanged.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Overview Test", telegram_chat_id=800077)
+        self.user = self.tenant.user
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    @staticmethod
+    def _as_json(data):
+        # The JSON the client actually receives — order-insensitive, byte-faithful.
+        return json.loads(JSONRenderer().render(data))
+
+    def test_one_call_populates_all_sections(self):
+        FuelProfile.objects.create(
+            tenant=self.tenant,
+            fitness_level="intermediate",
+            goals=["strength"],
+            days_per_week=4,
+        )
+        today = today_in_tenant_tz(self.tenant)
+        Workout.objects.create(tenant=self.tenant, date=today, category="strength", activity="Squats")
+
+        resp = self.client.get(f"/api/v1/fuel/overview/?year={today.year}&month={today.month}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["profile"]["fitness_level"], "intermediate")
+        self.assertEqual(len(resp.data["workouts"]), 1)
+        self.assertEqual(resp.data["workouts"][0]["activity"], "Squats")
+        self.assertTrue(any(day["date"] == str(today) for day in resp.data["calendar"]))
+
+    def test_no_profile_returns_200_with_marker(self):
+        # no_profile is a 200 body (never a 404) so the aggregate still gets an
+        # ETag and the client's profile-optional path parses it unchanged.
+        today = today_in_tenant_tz(self.tenant)
+        Workout.objects.create(tenant=self.tenant, date=today, category="cardio", activity="Run")
+
+        resp = self.client.get("/api/v1/fuel/overview/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["profile"], {"error": "no_profile"})
+        self.assertEqual(len(resp.data["workouts"]), 1)
+        self.assertTrue(any(day["date"] == str(today) for day in resp.data["calendar"]))
+
+    def test_defaults_to_tenant_current_month(self):
+        today = today_in_tenant_tz(self.tenant)
+        Workout.objects.create(tenant=self.tenant, date=today, category="cardio", activity="Run")
+        # A workout in a far-off month must NOT appear in the default grid.
+        Workout.objects.create(tenant=self.tenant, date=date(2020, 1, 15), category="cardio", activity="Old run")
+
+        resp = self.client.get("/api/v1/fuel/overview/")  # no year/month → current month
+        self.assertEqual(resp.status_code, 200)
+        cal_dates = [day["date"] for day in resp.data["calendar"]]
+        self.assertIn(str(today), cal_dates)
+        self.assertNotIn("2020-01-15", cal_dates)
+
+    def test_explicit_year_month_scopes_calendar(self):
+        Workout.objects.create(tenant=self.tenant, date=date(2026, 4, 21), category="strength", activity="Push")
+        resp = self.client.get("/api/v1/fuel/overview/?year=2026&month=4")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual([day["date"] for day in resp.data["calendar"]], ["2026-04-21"])
+
+    def test_malformed_params_fall_back_to_current_month(self):
+        # A first-paint endpoint shouldn't 400 over a calendar arg.
+        today = today_in_tenant_tz(self.tenant)
+        Workout.objects.create(tenant=self.tenant, date=today, category="cardio", activity="Run")
+        resp = self.client.get("/api/v1/fuel/overview/?year=abc&month=99")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn(str(today), [day["date"] for day in resp.data["calendar"]])
+
+    def test_workouts_capped_at_limit(self):
+        from apps.fuel.views import OVERVIEW_WORKOUT_LIMIT
+
+        base = date(2026, 1, 1)
+        for i in range(OVERVIEW_WORKOUT_LIMIT + 5):
+            Workout.objects.create(
+                tenant=self.tenant, date=base + timedelta(days=i), category="cardio", activity=f"Run {i}"
+            )
+        resp = self.client.get("/api/v1/fuel/overview/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data["workouts"]), OVERVIEW_WORKOUT_LIMIT)
+        returned_dates = {w["date"] for w in resp.data["workouts"]}
+        # Newest first → latest date present, oldest dropped.
+        self.assertIn(str(base + timedelta(days=OVERVIEW_WORKOUT_LIMIT + 4)), returned_dates)
+        self.assertNotIn(str(base), returned_dates)
+
+    def test_shape_parity_with_source_endpoints(self):
+        # Each aggregate key must be byte-identical to its dedicated endpoint.
+        FuelProfile.objects.create(
+            tenant=self.tenant,
+            fitness_level="advanced",
+            goals=["strength", "endurance"],
+            days_per_week=5,
+        )
+        today = today_in_tenant_tz(self.tenant)
+        Workout.objects.create(
+            tenant=self.tenant, date=today, category="strength", activity="Squats", rpe=8, duration_minutes=45
+        )
+        Workout.objects.create(tenant=self.tenant, date=today, category="cardio", activity="Run")
+        y, m = today.year, today.month
+
+        overview = self.client.get(f"/api/v1/fuel/overview/?year={y}&month={m}").data
+        profile = self.client.get("/api/v1/fuel/profile/").data
+        workouts = self.client.get("/api/v1/fuel/workouts/").data
+        cal = self.client.get(f"/api/v1/fuel/calendar/?year={y}&month={m}").data
+
+        self.assertEqual(self._as_json(overview["profile"]), self._as_json(profile))
+        self.assertEqual(self._as_json(overview["workouts"]), self._as_json(workouts))
+        self.assertEqual(self._as_json(overview["calendar"]), self._as_json(cal))
+
+    def test_etag_repeat_returns_304(self):
+        FuelProfile.objects.create(tenant=self.tenant)
+        resp = self.client.get("/api/v1/fuel/overview/")
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("ETag", resp)
+        etag = resp["ETag"]
+        resp2 = self.client.get("/api/v1/fuel/overview/", HTTP_IF_NONE_MATCH=etag)
+        self.assertEqual(resp2.status_code, 304)
+
+    def test_tenant_isolation(self):
+        other = create_tenant(display_name="Other Overview", telegram_chat_id=800078)
+        Workout.objects.create(tenant=other, date=date(2026, 4, 21), category="strength", activity="Leaked")
+        resp = self.client.get("/api/v1/fuel/overview/?year=2026&month=4")
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("Leaked", [w["activity"] for w in resp.data["workouts"]])
+        self.assertEqual(resp.data["calendar"], [])
+
+    def test_requires_auth(self):
+        resp = APIClient().get("/api/v1/fuel/overview/")
+        self.assertEqual(resp.status_code, 401)

@@ -452,6 +452,50 @@ class FuelVersionView(APIView):
         return Response({"fuel_version": tenant.fuel_version})
 
 
+# ── Shared payload builders ──────────────────────────────────────────────
+# Composed by BOTH the dedicated endpoints and the Fuel overview aggregate so
+# their shapes cannot drift. Build the overview from these, never by
+# re-implementing the serializers.
+
+# Recent-workouts cap for the overview aggregate. The Fuel list view only
+# renders "Recent workouts"; full unbounded history stays on the paginated
+# /fuel/workouts/ endpoint. Bump here (one place) if product wants more.
+OVERVIEW_WORKOUT_LIMIT = 30
+
+
+def _recent_workouts_payload(tenant, limit=OVERVIEW_WORKOUT_LIMIT):
+    """Serialize a tenant's most-recent workouts (newest first), bounded.
+
+    Byte-identical to ``GET /fuel/workouts/?limit=<limit>`` with no filters:
+    same ``WorkoutSerializer``, same ``-date, -id`` ordering.
+    ``select_related('plan')`` avoids N+1 on ``plan_id`` / ``plan_name``.
+    """
+    qs = Workout.objects.filter(tenant=tenant).select_related("plan").order_by("-date", "-id")[:limit]
+    return WorkoutSerializer(qs, many=True).data
+
+
+def _calendar_month_payload(tenant, year, month):
+    """Workout stubs grouped by date for one month.
+
+    Shared by :class:`WorkoutCalendarView` and :class:`FuelOverviewView` so the
+    ``[{"date", "workouts": [...]}]`` shape stays identical across both. Caller
+    is responsible for validating ``year`` / ``month``.
+    """
+    _, days_in_month = calendar.monthrange(year, month)
+    date_from = f"{year}-{month:02d}-01"
+    date_to = f"{year}-{month:02d}-{days_in_month:02d}"
+
+    workouts = Workout.objects.filter(tenant=tenant, date__gte=date_from, date__lte=date_to).order_by(
+        "date", "created_at"
+    )
+
+    by_date = defaultdict(list)
+    for w in workouts:
+        by_date[str(w.date)].append(WorkoutStubSerializer(w).data)
+
+    return [{"date": d, "workouts": ws} for d, ws in sorted(by_date.items())]
+
+
 class WorkoutCalendarView(APIView):
     """GET: workout stubs grouped by date for a given month."""
 
@@ -474,20 +518,64 @@ class WorkoutCalendarView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        _, days_in_month = calendar.monthrange(year, month)
-        date_from = f"{year}-{month:02d}-01"
-        date_to = f"{year}-{month:02d}-{days_in_month:02d}"
+        return Response(_calendar_month_payload(tenant, year, month))
 
-        workouts = Workout.objects.filter(tenant=tenant, date__gte=date_from, date__lte=date_to).order_by(
-            "date", "created_at"
+
+class FuelOverviewView(APIView):
+    """GET: the full first-paint payload for the Fuel tab in one round trip.
+
+    Backend-for-frontend aggregate that composes the three source serializers
+    — profile, recent workouts, current-month calendar — into a single
+    screen-shaped response so a cold tab open is one request instead of three:
+
+        {"profile": {...} | {"error": "no_profile"},
+         "workouts": [ ...recent N workout rows... ],
+         "calendar": [ {"date": "YYYY-MM-DD", "workouts": [...]} ]}
+
+    The dedicated ``/fuel/profile/``, ``/fuel/workouts/``, and
+    ``/fuel/calendar/`` endpoints are unchanged and still serve Telegram, web,
+    full history, and month paging.
+
+    ``ETag`` / ``If-None-Match`` → ``304`` is handled for every 200 GET by
+    :class:`config.cache_middleware.ETagMiddleware`, so a repeat load with an
+    unchanged dataset is a near-free 304 the client's stale-while-revalidate
+    refresh can short-circuit on.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @tenant_cache(ttl=30, tag="fuel")
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Profile — 200 with {"error": "no_profile"} (never 404), so the whole
+        # aggregate still earns an ETag and the client parses it exactly like
+        # /fuel/profile/'s no_profile body. Same serializer as the endpoint.
+        try:
+            profile = FuelProfile.objects.get(tenant=tenant)
+            profile_payload = FuelProfileSerializer(profile).data
+        except FuelProfile.DoesNotExist:
+            profile_payload = {"error": "no_profile"}
+
+        # Calendar month — default to the tenant's local current month when
+        # omitted. Lenient on malformed/out-of-range params: a first-paint
+        # endpoint shouldn't 400 over a calendar arg, so we fall back to the
+        # current month. (/fuel/calendar/ keeps the strict 400 for paging.)
+        today = today_in_tenant_tz(tenant)
+        year = _safe_int(request.query_params.get("year"), today.year)
+        month = _safe_int(request.query_params.get("month"), today.month)
+        if not (1 <= month <= 12) or not (1900 <= year <= 2100):
+            year, month = today.year, today.month
+
+        return Response(
+            {
+                "profile": profile_payload,
+                "workouts": _recent_workouts_payload(tenant),
+                "calendar": _calendar_month_payload(tenant, year, month),
+            }
         )
-
-        by_date = defaultdict(list)
-        for w in workouts:
-            by_date[str(w.date)].append(WorkoutStubSerializer(w).data)
-
-        result = [{"date": d, "workouts": ws} for d, ws in sorted(by_date.items())]
-        return Response(result)
 
 
 class WorkoutProgressView(APIView):
