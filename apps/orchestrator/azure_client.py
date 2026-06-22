@@ -1432,3 +1432,39 @@ def delete_container_app(container_name: str) -> None:
     except Exception:
         logger.exception("Failed to delete container %s", container_name)
         raise
+
+
+def list_tenant_container_app_names() -> list[str]:
+    """Return the names of every ``oc-*`` tenant Container App in the RG.
+
+    Used by the orphan reaper to diff live containers against DB tenants.
+    Returns ``[]`` in mock mode.
+    """
+    if _is_mock():
+        return []
+
+    client = get_container_client()
+    names: list[str] = []
+    for app in client.container_apps.list_by_resource_group(settings.AZURE_RESOURCE_GROUP):
+        name = getattr(app, "name", "") or ""
+        if name.startswith("oc-"):
+            names.append(name)
+    return names
+
+
+def container_app_has_active_revision(container_name: str) -> bool:
+    """Return True if the container app has at least one active revision.
+
+    An active revision means the container is awake (consuming compute). The
+    orphan reaper uses this to report which orphans were awake before
+    hibernating them. Returns False in mock mode.
+    """
+    if _is_mock():
+        return False
+
+    client = get_container_client()
+    revisions = client.container_apps_revisions.list_revisions(
+        settings.AZURE_RESOURCE_GROUP,
+        container_name,
+    )
+    return any(getattr(rev, "active", False) for rev in revisions)
