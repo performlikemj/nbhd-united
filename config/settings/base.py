@@ -573,6 +573,12 @@ SENTRY_SEND_DEFAULT_PII = env.bool("SENTRY_SEND_DEFAULT_PII", default=False)
 # Forward Python `logging` records to Sentry's Logs stream — the "check logs as
 # things happen" surface. On by default; set SENTRY_ENABLE_LOGS=false to mute.
 SENTRY_ENABLE_LOGS = env.bool("SENTRY_ENABLE_LOGS", default=True)
+# Minimum level forwarded to the Logs stream. Default WARNING so the app's
+# per-request INFO chatter (httpx calls, request logs, PERF lines) does NOT
+# flood Sentry or burn log quota — only warnings and errors go through. Set
+# ERROR for errors-only, or INFO to capture everything. (Errors are captured as
+# Issues regardless of this setting.)
+SENTRY_LOGS_LEVEL = env("SENTRY_LOGS_LEVEL", default="WARNING")
 # Tracing + profiling are sampled and billed separately from errors. Default 1.0
 # (capture everything) is fine at current traffic; dial down via env (e.g. 0.1)
 # as volume grows — no redeploy needed.
@@ -592,12 +598,17 @@ import sys  # noqa: E402
 _SENTRY_RUNNING_TESTS = "test" in sys.argv or "pytest" in sys.modules
 
 if SENTRY_DSN and not _SENTRY_RUNNING_TESTS:
+    import logging as _logging
     import re as _re
 
     import sentry_sdk
+    from sentry_sdk.integrations.logging import LoggingIntegration as _LoggingIntegration
 
     _SENTRY_BYO_PATH = "/api/v1/tenants/byo-credentials/"
     _SENTRY_JSON_BLOCK = _re.compile(r"\{.*\}", _re.DOTALL)
+    # Map SENTRY_LOGS_LEVEL ("WARNING"/"ERROR"/"INFO") to a logging int; unknown
+    # → WARNING. Controls what the Logs stream receives (see SENTRY_LOGS_LEVEL).
+    _sentry_logs_level = getattr(_logging, SENTRY_LOGS_LEVEL.upper(), _logging.WARNING)
 
     def _sentry_before_send(event, hint):
         """Backstop scrub: strip JSON-shaped bodies from log-message error events
@@ -645,6 +656,9 @@ if SENTRY_DSN and not _SENTRY_RUNNING_TESTS:
         release=SENTRY_RELEASE or None,
         send_default_pii=SENTRY_SEND_DEFAULT_PII,
         enable_logs=SENTRY_ENABLE_LOGS,
+        # Configured LoggingIntegration: only WARNING+ reaches the Logs stream
+        # (Django + other default integrations stay auto-enabled).
+        integrations=[_LoggingIntegration(sentry_logs_level=_sentry_logs_level)],
         traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
         profile_session_sample_rate=SENTRY_PROFILE_SESSION_SAMPLE_RATE,
         profile_lifecycle=SENTRY_PROFILE_LIFECYCLE,
