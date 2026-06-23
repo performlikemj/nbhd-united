@@ -368,15 +368,24 @@ jobs:
         run: |
           DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
           echo "Waiting for Django to come up..."
+          HEALTHY=0
           for i in $(seq 1 24); do
             STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$DJANGO_URL/health/" 2>/dev/null || echo "000")
             if [ "$STATUS" = "200" ]; then
               echo "Django is up (attempt $i)"
+              HEALTHY=1
               break
             fi
             echo "Attempt $i: status=$STATUS, retrying in 10s..."
             sleep 10
           done
+          # Fail the deploy if the new revision never served a healthy 200 — a
+          # broken image must not pass silently (the /health/ route is defined
+          # in config/health.py).
+          if [ "$HEALTHY" != "1" ]; then
+            echo "::error::Django did not become healthy (no 200 from /health/ after 24 attempts)"
+            exit 1
+          fi
 
       # Register this deploy as a Sentry release so errors map to a specific
       # build and Sentry can surface the suspect commit. Gated on the optional
