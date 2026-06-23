@@ -33,6 +33,7 @@ from apps.orchestrator.azure_client import (
     API_BASE_URL="https://nbhd-django.example.com",
 )
 class AzureClientTest(SimpleTestCase):
+    @override_settings(OPENCLAW_IMAGE_TAG="2026.5.28-test")
     @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
     @patch("apps.orchestrator.azure_client.get_container_client")
     def test_create_container_app_includes_runtime_config_env(
@@ -88,7 +89,10 @@ class AzureClientTest(SimpleTestCase):
         )
 
         container = payload["properties"]["template"]["containers"][0]
-        self.assertEqual(container["image"], "nbhdunited.azurecr.io/nbhd-openclaw:latest")
+        # Image tag is driven by settings.OPENCLAW_IMAGE_TAG (the fleet tag CI
+        # sets after every deploy), NOT a hardcoded ``:latest`` — which never
+        # exists in ACR and caused MANIFEST_UNKNOWN on every fresh provision.
+        self.assertEqual(container["image"], "nbhdunited.azurecr.io/nbhd-openclaw:2026.5.28-test")
 
         env_entries = container["env"]
         env_map = {entry["name"]: entry for entry in env_entries}

@@ -11,6 +11,7 @@ users.
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -19,6 +20,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken
 
+from .models import Tenant
 from .oauth_models import (
     OAuthAuthorizationCode,
     generate_authorization_code,
@@ -55,6 +57,14 @@ class ExchangeViewTests(TestCase):
             username="web@example.com", email="web@example.com", password="OldPass123!"
         )
         self.url = reverse("auth-exchange")
+        # A successful exchange now provisions the user's tenant. These tests
+        # only assert the token/PKCE contract, so stub the provision publish to
+        # keep them fast and decoupled (tenant-creation is covered explicitly by
+        # ExchangeProvisionsTenantTests). Without QStash configured locally,
+        # publish_task would otherwise run provision_tenant synchronously.
+        _publish = patch("apps.cron.publish.publish_task")
+        self.addCleanup(_publish.stop)
+        _publish.start()
 
     def _post(self, **body):
         return self.client.post(self.url, body, format="json")
@@ -181,6 +191,11 @@ class AuthorizeBeginViewTests(TestCase):
         self.user = User.objects.create_user(username="spa@example.com", email="spa@example.com", password="Pass1234!")
         self.url = reverse("auth-authorize")
         self.exchange_url = reverse("auth-exchange")
+        # Round-trip tests exchange a real code → provisioning fires; stub the
+        # publish so they stay focused on the begin→exchange contract.
+        _publish = patch("apps.cron.publish.publish_task")
+        self.addCleanup(_publish.stop)
+        _publish.start()
 
     def _auth(self):
         token = EmailTokenObtainPairSerializer.get_token(self.user)
@@ -313,3 +328,70 @@ class AuthorizeBeginViewTests(TestCase):
 # TransactionTestCases in the full suite. The single-use logic itself is
 # covered deterministically by
 # ``test_reused_code_is_invalid_grant_and_consumed_once`` above.
+
+
+class ExchangeProvisionsTenantTests(TestCase):
+    """The exchange chokepoint must create + provision the user's tenant.
+
+    Regression guard for the incident where iOS "Create an account" web-signup
+    handoff users were authenticated but left with NO tenant — every feature tab
+    (Journal/Fuel/Horizons/Chat) then 404'd on the missing tenant. The exchange
+    is the one server-side chokepoint every handoff user passes through, so it
+    must guarantee the backend workspace exists.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        self.user = User.objects.create_user(
+            username="handoff@example.com",
+            email="handoff@example.com",
+            password="OldPass123!",
+        )
+        self.url = reverse("auth-exchange")
+
+    def _exchange(self):
+        code = _mint_code(self.user)
+        return self.client.post(
+            self.url,
+            {"code": code, "code_verifier": VERIFIER, "redirect_uri": REDIRECT_URI},
+            format="json",
+        )
+
+    @patch("apps.cron.publish.publish_task")
+    def test_exchange_creates_and_provisions_tenant(self, mock_publish):
+        self.assertFalse(Tenant.objects.filter(user=self.user).exists())
+
+        resp = self._exchange()
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("access", resp.data)
+
+        tenant = Tenant.objects.get(user=self.user)
+        self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
+        self.assertTrue(tenant.is_trial)
+        self.assertEqual(tenant.model_tier, Tenant.ModelTier.STARTER)
+        mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
+
+    @patch("apps.cron.publish.publish_task")
+    def test_exchange_is_idempotent_for_existing_tenant(self, mock_publish):
+        # A user who already onboarded on web keeps their one tenant untouched —
+        # the exchange must never create a second one or re-publish provisioning.
+        existing = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
+
+        resp = self._exchange()
+        self.assertEqual(resp.status_code, 200, resp.content)
+
+        self.assertEqual(Tenant.objects.filter(user=self.user).count(), 1)
+        self.assertEqual(Tenant.objects.get(user=self.user).id, existing.id)
+        mock_publish.assert_not_called()
+
+    @patch("apps.cron.publish.publish_task", side_effect=RuntimeError("qstash down"))
+    def test_exchange_still_signs_in_when_provisioning_publish_fails(self, _mock_publish):
+        # Best-effort provisioning: a QStash hiccup must NOT block authentication.
+        # The user still gets tokens; the tenant is left PENDING for the
+        # repair-stale-provisioning cron to retry.
+        resp = self._exchange()
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("access", resp.data)
+
+        tenant = Tenant.objects.get(user=self.user)
+        self.assertEqual(tenant.status, Tenant.Status.PENDING)

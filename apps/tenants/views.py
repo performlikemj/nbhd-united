@@ -1,7 +1,6 @@
 """Tenant views."""
 
 import logging
-from datetime import UTC, datetime, timedelta
 
 from django.db import transaction
 from django.utils import timezone
@@ -13,11 +12,11 @@ from rest_framework.views import APIView
 
 from apps.common.cache import tenant_cache
 from apps.cron.publish import publish_task
-from apps.journal.services import seed_default_templates_for_tenant
 from apps.orchestrator.config_generator import TIER_MODEL_CONFIGS
 
 from .models import Tenant
 from .serializers import HeartbeatConfigSerializer, TenantRegistrationSerializer, TenantSerializer, UserSerializer
+from .services import ensure_tenant_provisioned
 
 logger = logging.getLogger(__name__)
 
@@ -82,41 +81,12 @@ class OnboardTenantView(APIView):
         }
         user.save(update_fields=["display_name", "language", "timezone", "preferences"])
 
-        # Create tenant and provision immediately for free trial
-        # TODO: revert to timedelta(days=7) after March 2026 promotion ends
-        now = timezone.now()
-        trial_end = datetime(2026, 3, 31, 23, 59, 59, tzinfo=UTC)
-        tenant = Tenant.objects.create(
-            user=user,
-            is_trial=True,
-            trial_started_at=now,
-            trial_ends_at=max(now + timedelta(days=7), trial_end),
-            model_tier=Tenant.ModelTier.STARTER,
-            status=Tenant.Status.PROVISIONING,
-        )
-        logger.info(
-            "tenant_provisioning tenant_id=%s user_id=%s stage=onboarding_tenant_created error=",
-            tenant.id,
-            user.id,
-        )
-        seed_default_templates_for_tenant(tenant=tenant)
-
-        try:
-            publish_task("provision_tenant", str(tenant.id))
-            logger.info(
-                "tenant_provisioning tenant_id=%s user_id=%s stage=publish_provision_task error=",
-                tenant.id,
-                user.id,
-            )
-        except Exception as exc:
-            tenant.status = Tenant.Status.PENDING
-            tenant.save(update_fields=["status", "updated_at"])
-            logger.exception(
-                "tenant_provisioning tenant_id=%s user_id=%s stage=publish_provision_task_failed error=%s",
-                tenant.id,
-                user.id,
-                exc,
-            )
+        # Create + provision the trial tenant via the shared chokepoint helper
+        # (also used by the iOS web-signup PKCE handoff in ExchangeView) so the
+        # two new-user paths can never drift. Idempotent; the duplicate-tenant
+        # case is already handled by the 409 guard above.
+        tenant, _created, provision_published = ensure_tenant_provisioned(user)
+        if not provision_published:
             return Response(
                 {
                     "detail": "Signup succeeded, but provisioning could not be started. Please retry shortly.",

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime, timedelta
 
 from django.db import IntegrityError, transaction
+from django.utils import timezone
 
 from apps.journal.services import (
     seed_default_documents_for_tenant,
@@ -14,6 +16,78 @@ from apps.journal.services import (
 from .models import Tenant, User
 
 logger = logging.getLogger(__name__)
+
+
+def ensure_tenant_provisioned(user: User) -> tuple[Tenant, bool, bool]:
+    """Idempotently create + kick off provisioning of a trial tenant for ``user``.
+
+    This is the single source of truth for "a brand-new user gets a backend
+    workspace". Every post-authentication chokepoint routes through it —
+    web onboarding (``OnboardTenantView``) and the iOS web-signup PKCE handoff
+    (``ExchangeView``) — so no path can leave an authenticated user stranded
+    without a tenant (the bug that 404'd every feature tab for handoff users).
+
+    Returns ``(tenant, created, provision_published)``:
+
+    * ``created`` is ``False`` when the user already had a tenant (pure no-op —
+      safe to call on every sign-in).
+    * ``provision_published`` is ``False`` only when the ``provision_tenant``
+      task could not be enqueued; the tenant is left at ``PENDING`` for the
+      ``repair-stale-provisioning`` cron to retry. Callers that must surface
+      that (the web onboarding 503) branch on it; best-effort callers ignore it.
+    """
+    # Lazy import: ``apps.cron.publish`` pulls in QStash wiring — keep it out of
+    # this module's import-time graph (it is imported early by signals/models).
+    from apps.cron.publish import publish_task
+
+    existing = Tenant.objects.filter(user=user).first()
+    if existing is not None:
+        return existing, False, True
+
+    now = timezone.now()
+    # Kept in lockstep with OnboardTenantView so both paths mint identical trials.
+    # TODO: revert to ``now + timedelta(days=7)`` after the March 2026 promo ends.
+    trial_end = datetime(2026, 3, 31, 23, 59, 59, tzinfo=UTC)
+    try:
+        with transaction.atomic():
+            tenant = Tenant.objects.create(
+                user=user,
+                is_trial=True,
+                trial_started_at=now,
+                trial_ends_at=max(now + timedelta(days=7), trial_end),
+                model_tier=Tenant.ModelTier.STARTER,
+                status=Tenant.Status.PROVISIONING,
+            )
+    except IntegrityError:
+        # A concurrent caller won the OneToOne(user) race — return their row.
+        return Tenant.objects.get(user=user), False, True
+
+    logger.info(
+        "tenant_provisioning tenant_id=%s user_id=%s stage=tenant_created error=",
+        tenant.id,
+        user.id,
+    )
+    seed_default_templates_for_tenant(tenant=tenant)
+
+    try:
+        publish_task("provision_tenant", str(tenant.id))
+        logger.info(
+            "tenant_provisioning tenant_id=%s user_id=%s stage=publish_provision_task error=",
+            tenant.id,
+            user.id,
+        )
+    except Exception as exc:
+        tenant.status = Tenant.Status.PENDING
+        tenant.save(update_fields=["status", "updated_at"])
+        logger.exception(
+            "tenant_provisioning tenant_id=%s user_id=%s stage=publish_provision_task_failed error=%s",
+            tenant.id,
+            user.id,
+            exc,
+        )
+        return tenant, True, False
+
+    return tenant, True, True
 
 
 def create_tenant(
