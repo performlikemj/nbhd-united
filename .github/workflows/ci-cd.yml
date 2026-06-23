@@ -282,8 +282,18 @@ jobs:
     runs-on: ubuntu-latest
     needs: [frontend-test, backend-test, openclaw-config-smoke]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      # Optional: add a SENTRY_AUTH_TOKEN repo secret to enable Sentry release
+      # tracking + suspect-commit detection. When unset, the release step below
+      # is skipped and the deploy is unaffected — events still group by the
+      # SENTRY_RELEASE (git SHA) set on the container app.
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_ORG: by-way-of-mj
+      SENTRY_PROJECT: python-django
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history so Sentry can attribute suspect commits
 
       - name: Azure Login
         uses: azure/login@v2
@@ -352,7 +362,7 @@ jobs:
             --name ${{ env.DJANGO_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --image ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
-            --set-env-vars OPENCLAW_IMAGE_TAG=${{ env.OC_IMAGE_TAG }}
+            --set-env-vars OPENCLAW_IMAGE_TAG=${{ env.OC_IMAGE_TAG }} SENTRY_RELEASE=${{ github.sha }}
 
       - name: Wait for Django to be healthy
         run: |
@@ -367,6 +377,25 @@ jobs:
             echo "Attempt $i: status=$STATUS, retrying in 10s..."
             sleep 10
           done
+
+      # Register this deploy as a Sentry release so errors map to a specific
+      # build and Sentry can surface the suspect commit. Gated on the optional
+      # SENTRY_AUTH_TOKEN secret and continue-on-error, so a release-tracking
+      # hiccup never fails a production deploy.
+      - name: Create Sentry release (suspect commits)
+        if: ${{ env.SENTRY_AUTH_TOKEN != '' }}
+        continue-on-error: true
+        run: |
+          curl -sL https://sentry.io/get-cli/ | bash
+          VERSION=${{ github.sha }}
+          sentry-cli releases new "$VERSION"
+          # Prefer the GitHub integration (author attribution); fall back to
+          # local git history (needs fetch-depth: 0 above); never hard-fail.
+          sentry-cli releases set-commits "$VERSION" --auto \
+            || sentry-cli releases set-commits "$VERSION" --local \
+            || true
+          sentry-cli releases finalize "$VERSION"
+          sentry-cli releases deploys "$VERSION" new -e production
 
       - name: Bump pending config version for all tenants
         run: |

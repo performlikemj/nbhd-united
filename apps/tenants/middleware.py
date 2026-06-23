@@ -4,6 +4,7 @@ import logging
 import threading
 import zoneinfo
 
+import sentry_sdk
 from django.db import connection
 from django.utils import timezone as dj_timezone
 from django.utils.deprecation import MiddlewareMixin
@@ -85,6 +86,10 @@ class TenantContextMiddleware(MiddlewareMixin):
             tenant = _tenant_context.tenant
             if tenant:
                 set_rls_context(tenant_id=tenant.id, user_id=request.user.id)
+                # Tag Sentry events with the tenant so errors are filterable by
+                # tenant ("show me errors for tenant X"). Safe no-op when Sentry
+                # is disabled; tenant.id is an opaque UUID, not PII.
+                sentry_sdk.set_tag("tenant", str(tenant.id))
         else:
             _tenant_context.tenant = None
 
