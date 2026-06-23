@@ -32,6 +32,7 @@ from .oauth_models import (
     pkce_s256,
 )
 from .serializers import EmailTokenObtainPairSerializer
+from .services import ensure_tenant_provisioned
 from .throttling import AuthorizeMintMinuteThrottle, ExchangeMinuteThrottle
 
 logger = logging.getLogger(__name__)
@@ -162,6 +163,17 @@ class ExchangeView(APIView):
             # fault) rather than silently burning the code.
             row.consumed_at = timezone.now()
             row.save(update_fields=["consumed_at"])
+
+        # Brand-new "Create an account" handoff users never pass through the web
+        # /onboarding step, so this exchange is the one chokepoint at which to
+        # guarantee their backend workspace exists — without it every feature tab
+        # 404s on a missing tenant (the incident this fixes). Idempotent and
+        # best-effort: a provisioning hiccup must never block authentication —
+        # a PENDING tenant is retried by the repair-stale-provisioning cron.
+        try:
+            ensure_tenant_provisioned(user)
+        except Exception:
+            logger.exception("auth.exchange.ensure_tenant_failed user_id=%s", user.id)
 
         # pw_iat-carrying mint — NOT RefreshToken.for_user (which omits the
         # claim and would be rejected by JWTAuthenticationWithRLS for any user

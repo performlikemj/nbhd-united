@@ -276,8 +276,8 @@ class OnboardTenantViewTest(TestCase):
         self.client = APIClient()
         self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
 
-    @patch("apps.tenants.views.publish_task")
-    @patch("apps.tenants.views.seed_default_templates_for_tenant")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.tenants.services.seed_default_templates_for_tenant")
     def test_onboard_creates_trial_and_triggers_provisioning(self, mock_seed, mock_publish):
         response = self.client.post(
             "/api/v1/tenants/onboard/",
@@ -306,8 +306,8 @@ class OnboardTenantViewTest(TestCase):
         mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
         mock_seed.assert_called_once_with(tenant=tenant)
 
-    @patch("apps.tenants.views.publish_task", side_effect=RuntimeError("qstash down"))
-    @patch("apps.tenants.views.seed_default_templates_for_tenant")
+    @patch("apps.cron.publish.publish_task", side_effect=RuntimeError("qstash down"))
+    @patch("apps.tenants.services.seed_default_templates_for_tenant")
     def test_onboard_returns_503_and_marks_pending_when_publish_fails(self, mock_seed, _mock_publish):
         response = self.client.post(
             "/api/v1/tenants/onboard/",

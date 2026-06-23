@@ -794,7 +794,15 @@ def create_container_app(
                 "containers": [
                     {
                         "name": "openclaw",
-                        "image": f"{settings.AZURE_ACR_SERVER}/nbhd-openclaw:latest",
+                        # Pin to the fleet's current image tag (CI sets the
+                        # OPENCLAW_IMAGE_TAG env var to a concrete SHA tag after
+                        # every deploy). ``:latest`` is NEVER pushed to ACR, so
+                        # hardcoding it here made every fresh container-create
+                        # fail with MANIFEST_UNKNOWN — a silent fleet-wide
+                        # new-tenant provisioning outage. Every other provision
+                        # path (tasks.py / services.py / hibernation.py) already
+                        # uses settings.OPENCLAW_IMAGE_TAG; this was the lone gap.
+                        "image": f"{settings.AZURE_ACR_SERVER}/nbhd-openclaw:{settings.OPENCLAW_IMAGE_TAG}",
                         "resources": {"cpu": 0.5, "memory": "1.0Gi"},
                         "env": [
                             {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
