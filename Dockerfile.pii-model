@@ -9,8 +9,9 @@
 # and the Django Dockerfile COPY line — the next deploy builds the new tag.
 #
 # Model: lakshyakh93/deberta_finetuned_pii (DeBERTa-v3-base + ai4privacy, Apache-2.0).
-# ~554 MB FP32 safetensors. `ignore_patterns` skips the duplicate pytorch_model.bin —
-# transformers loads the safetensors variant and the .bin would just double the size.
+# ~554 MB FP32 weights. This repo ships weights ONLY as pytorch_model.bin — there is
+# NO model.safetensors variant — so we MUST keep the .bin. `ignore_patterns` drops
+# only training-state artifacts (optimizer/scheduler/rng/trainer), never the weights.
 FROM python:3.12-slim AS dl
 
 # Match the huggingface-hub pin in requirements.txt so snapshot_download's API +
@@ -20,7 +21,7 @@ RUN pip install --no-cache-dir huggingface-hub==1.8.0
 # Retry with backoff — HuggingFace returns transient 429s. This is the ONLY place
 # in the pipeline that touches HF, and only on a cache miss (missing ACR tag).
 RUN for i in 1 2 3 4 5; do \
-      python -c "from huggingface_hub import snapshot_download; snapshot_download('lakshyakh93/deberta_finetuned_pii', local_dir='/pii-model', ignore_patterns=['pytorch_model.bin', 'optimizer.pt', '*.msgpack', '*.h5'])" && exit 0; \
+      python -c "from huggingface_hub import snapshot_download; snapshot_download('lakshyakh93/deberta_finetuned_pii', local_dir='/pii-model', ignore_patterns=['optimizer.pt', 'rng_state.pth', 'scheduler.pt', 'trainer_state.json', 'training_args.bin', '*.msgpack', '*.h5'])" && exit 0; \
       echo "HF model download attempt $i failed; retrying in $((i*20))s..."; \
       sleep $((i*20)); \
     done; \
