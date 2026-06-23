@@ -309,7 +309,7 @@ jobs:
       # tag, ever. Bump PII_MODEL_TAG here + the COPY line in Dockerfile together.
       - name: Ensure PII model image
         run: |
-          PII_MODEL_TAG=deberta-finetuned-pii-v1
+          PII_MODEL_TAG=deberta-finetuned-pii-v2
           if az acr repository show \
               --name ${{ env.REGISTRY }} \
               --image pii-model:${PII_MODEL_TAG} >/dev/null 2>&1; then
@@ -331,6 +331,16 @@ jobs:
             .
           docker push ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }}
           docker push ${{ env.REGISTRY }}.azurecr.io/django:latest
+
+      - name: Smoke-test PII stack in Django image
+        run: |
+          # Guards two regressions that have shipped before: (1) torch reinstalled
+          # as the CUDA wheel (loses +cpu) which corrupts transformers' AutoModel
+          # imports; (2) the pii-model layer carrying no weights file. Fail here,
+          # before deploy, rather than as a silent PII degrade in prod.
+          docker run --rm --entrypoint python \
+            ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
+            -c "import os, torch; assert '+cpu' in torch.__version__, f'torch is not the CPU build: {torch.__version__}'; from transformers import AutoModelForTokenClassification; files = os.listdir('/app/pii-model'); assert any(f.endswith(('.bin', '.safetensors')) for f in files), f'no model weights in /app/pii-model: {files}'; print('PII smoke OK:', torch.__version__, '| weights:', [f for f in files if f.endswith(('.bin', '.safetensors'))])"
 
       - name: Build and push OpenClaw runtime image
         run: |
