@@ -18,9 +18,26 @@ logger = logging.getLogger(__name__)
 class GatewayError(Exception):
     """Raised when a Gateway tool invocation fails."""
 
-    def __init__(self, message: str, status_code: int | None = None):
+    def __init__(self, message: str, status_code: int | None = None, unavailable: bool = False):
         super().__init__(message)
         self.status_code = status_code
+        # True when the failure is just an idle-hibernated / scaled-to-zero
+        # container (expected for our cost-saving hibernation), NOT a real fault.
+        # Callers should treat this as "skip, self-heals on wake" — never alarm.
+        self.unavailable = unavailable
+
+
+# Azure Container Apps' ingress returns this page (HTTP 404) when a container has
+# no running replica — i.e. it has been idle-hibernated / scaled to zero. That is
+# expected for our cost-saving hibernation, not a fault, so callers must not log
+# it as an error or alert on it.
+_CONTAINER_UNAVAILABLE_MARKER = "Container App - Unavailable"
+
+
+def _is_container_unavailable(status_code: int | None, text: str | None) -> bool:
+    """True when a non-200 response is Azure's 'no running replica' page —
+    i.e. the tenant container is hibernated/scaled to zero, not broken."""
+    return status_code == 404 and _CONTAINER_UNAVAILABLE_MARKER in (text or "")
 
 
 # Delivery modes where OpenClaw delivers the cron's output ITSELF (container →
@@ -212,6 +229,21 @@ def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict
         raise GatewayError(f"Gateway request failed: {last_exc}")
 
     if resp.status_code != 200:
+        if _is_container_unavailable(resp.status_code, resp.text):
+            # Idle-hibernated / scaled-to-zero container — expected, not an error.
+            # Log quietly at INFO and flag the error so callers skip without
+            # tripping Sentry.
+            logger.info(
+                "Gateway %s.%s: tenant %s container unavailable (hibernated/scaled to zero)",
+                tool_name,
+                action or "",
+                tenant.id,
+            )
+            raise GatewayError(
+                f"Gateway container unavailable (status {resp.status_code})",
+                status_code=resp.status_code,
+                unavailable=True,
+            )
         logger.error(
             "Gateway %s.%s returned %s: %s",
             tool_name,
