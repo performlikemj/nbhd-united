@@ -1,0 +1,16 @@
+{% autoescape off %}Hi {{ display_name|default:"there" }},
+
+When you first joined NBHD United, your assistant didn't come online the
+way it should have — a setup issue on our end left it stuck. That's fixed
+now.
+
+Your assistant is set up and waiting for you. Open NBHD and say hello —
+everything's ready to go.
+
+  {{ app_url|default:"https://hoodunited.org" }}
+
+Sorry for the bumpy start, and thanks for your patience.
+
+— NBHD United
+neighborhoodunited.org
+{% endautoescape %}
