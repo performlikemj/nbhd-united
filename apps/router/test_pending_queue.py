@@ -33,6 +33,7 @@ from django.utils import timezone
 
 from apps.router.models import PendingMessage
 from apps.router.pending_queue import (
+    _PROVISION_MAX_WAIT_SECONDS,
     _WAKE_BOOT_GRACE_SECONDS,
     _WAKE_DEFER_SECONDS,
     drain_pending_messages_for_tenant_task,
@@ -1475,3 +1476,139 @@ class WakeBootGraceTest(TestCase):
         turn.refresh_from_db()
         self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
         self.assertIsNotNone(turn.waking_at)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", LINE_CHANNEL_ACCESS_TOKEN="test-token")
+class DrainDuringProvisioningTest(TestCase):
+    """A brand-new tenant's container is built asynchronously (~1 min) and has
+    no FQDN yet. Messages that arrive in that window must be BUFFERED + re-driven
+    until the container lands — not failed (which silently strands a new user's
+    very first message: it goes FAILED, the reaper only re-drives PENDING rows,
+    and nothing re-delivers it once the container is up). A tenant that is
+    genuinely gone (deprovisioned) still fails fast, as before.
+
+    NOTE: ``_reschedule_drain`` is patched because in tests ``publish_task`` runs
+    synchronously (no QStash), so a real re-drive would recurse into the same
+    provisioning guard forever. In prod the re-drive is an async QStash task
+    (~20s later), so there is no recursion.
+    """
+
+    def _provisioning_tenant(self, user):
+        return Tenant.objects.create(user=user, status=Tenant.Status.PROVISIONING, container_fqdn="")
+
+    def _line_row(self, tenant, channel_user_id, *, created_at=None):
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id=channel_user_id,
+            payload={"message_text": "Hello", "user_param": channel_user_id, "user_timezone": "UTC"},
+            user_text="Hello",
+        )
+        if created_at is not None:
+            PendingMessage.objects.filter(pk=msg.pk).update(created_at=created_at)
+            msg.refresh_from_db()
+        return msg
+
+    @patch("apps.router.pending_queue._reschedule_drain")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_provisioning_buffers_and_reschedules_instead_of_failing(self, mock_post, mock_resched):
+        user = _make_user(line_user_id="Uprov")
+        tenant = self._provisioning_tenant(user)
+        msg = self._line_row(tenant, "Uprov")
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "Uprov")
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.PENDING)  # buffered, NOT failed
+        self.assertTrue(result.get("provisioning"))
+        mock_resched.assert_called_once()  # a re-drive was scheduled
+        mock_post.assert_not_called()  # never POSTed to a not-yet-built container
+
+    @patch("apps.router.pending_queue._reschedule_drain")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_deprovisioned_tenant_still_fails_fast(self, mock_post, mock_resched):
+        user = _make_user(line_user_id="Udep")
+        tenant = Tenant.objects.create(user=user, status=Tenant.Status.DEPROVISIONING, container_fqdn="")
+        msg = self._line_row(tenant, "Udep")
+
+        drain_pending_messages_for_tenant_task(str(tenant.id), "line", "Udep")
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.FAILED)
+        mock_resched.assert_not_called()
+        mock_post.assert_not_called()
+
+    @patch("apps.router.pending_queue._reschedule_drain")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_provisioning_past_max_wait_fails(self, mock_post, mock_resched):
+        user = _make_user(line_user_id="Ucap")
+        tenant = self._provisioning_tenant(user)
+        old = timezone.now() - timedelta(seconds=_PROVISION_MAX_WAIT_SECONDS + 60)
+        msg = self._line_row(tenant, "Ucap", created_at=old)
+
+        drain_pending_messages_for_tenant_task(str(tenant.id), "line", "Ucap")
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.FAILED)
+        mock_resched.assert_not_called()
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    @patch("apps.router.pending_queue._reschedule_drain")
+    def test_buffered_message_delivers_once_container_is_up(self, mock_resched, mock_post, _mock_send):
+        mock_post.return_value = _ok_chat_response("welcome!")
+        user = _make_user(line_user_id="Udeliver")
+        tenant = self._provisioning_tenant(user)
+        msg = self._line_row(tenant, "Udeliver")
+
+        # During provisioning: buffered, not delivered, no container POST.
+        drain_pending_messages_for_tenant_task(str(tenant.id), "line", "Udeliver")
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.PENDING)
+        mock_post.assert_not_called()
+
+        # Container finishes provisioning.
+        Tenant.objects.filter(id=tenant.id).update(status=Tenant.Status.ACTIVE, container_fqdn="oc-prov.example.com")
+
+        # The next drain delivers the buffered message — the first "Hello" lands.
+        drain_pending_messages_for_tenant_task(str(tenant.id), "line", "Udeliver")
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.DELIVERED)
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch("apps.router.pending_queue._reschedule_drain")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_provisioning_stamps_waking_at_for_ios_polling_clients(self, mock_post, _mock_resched):
+        from apps.router.models import AppChatMessage, ChatThread
+
+        user = _make_user()
+        tenant = self._provisioning_tenant(user)
+        thread = ChatThread.objects.create(tenant=tenant, user=user, title="", is_main=True)
+        turn = AppChatMessage.objects.create(
+            tenant=tenant,
+            user=user,
+            thread=thread,
+            client_msg_id="cmid-prov-1",
+            user_text="Hello",
+        )
+        PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(thread.id),
+            payload={
+                "message_text": "Hello",
+                "user_param": f"thread:{thread.id}",
+                "user_timezone": "UTC",
+                "client_msg_id": "cmid-prov-1",
+            },
+            user_text="Hello",
+        )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        self.assertTrue(result.get("provisioning"))
+        turn.refresh_from_db()
+        # iOS renders "setting up / waking" off waking_at instead of a blind spinner.
+        self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
+        self.assertIsNotNone(turn.waking_at)
+        mock_post.assert_not_called()

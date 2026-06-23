@@ -101,6 +101,13 @@ _WAKE_BOOT_GRACE_SECONDS = 240
 # the drain's SKIP-LOCKED claim handles concurrency cleanly.
 _REAPER_STUCK_AGE_SECONDS = 90
 
+# A brand-new tenant's container is built asynchronously (~1 min). While it
+# is still provisioning it has no FQDN yet — but it IS coming online, so a
+# message that arrives in that window is buffered + re-driven (not failed)
+# until the container lands. This caps how long we keep deferring before
+# giving up, so a genuinely stuck/failed provision can't loop forever.
+_PROVISION_MAX_WAIT_SECONDS = 300
+
 # Cap per reaper tick so a pathological backlog can't blow up the cron
 # worker budget. At 60s cadence + 200 keys/tick the steady-state ceiling
 # is ~3.3 republished drains/second across the entire fleet, which is
@@ -581,6 +588,68 @@ def drain_pending_messages_for_tenant_task(
     """
     tenant = Tenant.objects.select_related("user").filter(id=tenant_id).first()
     if not tenant or not tenant.container_fqdn:
+        # A missing FQDN means one of two very different things, and they
+        # must NOT be treated the same:
+        #   (1) container still being BUILT — a brand-new signup whose
+        #       per-tenant container is mid-provision (status provisioning/
+        #       pending). The FQDN is coming online shortly. Failing the
+        #       message here silently strands a new user's very first
+        #       "Hello": it goes FAILED, the reaper only re-drives PENDING
+        #       rows, and nothing re-delivers it when the container lands.
+        #       Instead buffer it the same way the hibernation-wake path
+        #       does — keep the rows PENDING, surface "waking" to rich
+        #       clients, and re-drive after a short delay so it delivers the
+        #       moment the container is up.
+        #   (2) container GONE — no tenant row, or deprovisioned/suspended/
+        #       deleted. The original intent of this guard: nothing to wait
+        #       for, so fail orphaned rows and stop re-scheduling.
+        provisioning = tenant is not None and tenant.status in (
+            Tenant.Status.PROVISIONING,
+            Tenant.Status.PENDING,
+        )
+        if provisioning:
+            pending_rows = list(
+                PendingMessage.objects.filter(
+                    tenant_id=tenant_id,
+                    channel=channel,
+                    channel_user_id=channel_user_id or "",
+                    delivery_status=PendingMessage.Status.PENDING,
+                ).order_by("created_at")
+            )
+            oldest = pending_rows[0].created_at if pending_rows else None
+            within_wait = oldest is not None and (timezone.now() - oldest).total_seconds() < _PROVISION_MAX_WAIT_SECONDS
+            if within_wait:
+                logger.info(
+                    "drain_pending: tenant %s still provisioning (no FQDN) — buffering %d msg(s), deferring drain %ds",
+                    tenant_id[:8],
+                    len(pending_rows),
+                    _WAKE_DEFER_SECONDS,
+                )
+                # Rich clients (iOS) render "your assistant is waking up"
+                # off waking_at instead of an indefinite typing spinner.
+                _mark_ios_waking(channel, pending_rows)
+                _reschedule_drain(
+                    tenant,
+                    channel,
+                    channel_user_id or "",
+                    delay_seconds=_WAKE_DEFER_SECONDS,
+                )
+                return {
+                    "delivered": 0,
+                    "failed": 0,
+                    "dropped": 0,
+                    "skipped_in_flight": 0,
+                    "provisioning": True,
+                }
+            # Provisioning has run well past the expected window (stuck or
+            # failed provision). Fall through and fail so we don't defer
+            # forever — the repair-stale-provisioning cron owns recovery.
+            logger.warning(
+                "drain_pending: tenant %s provisioning exceeded %ds — failing queued msg(s)",
+                tenant_id[:8],
+                _PROVISION_MAX_WAIT_SECONDS,
+            )
+
         logger.warning(
             "drain_pending: tenant %s not found or no FQDN, dropping queue",
             tenant_id[:8],
