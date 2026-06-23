@@ -551,6 +551,107 @@ COMPOSIO_ALLOW_MULTIPLE_ACCOUNTS = env.bool(
 # tunable via env if telemetry shows misfires.
 FUEL_EDIT_LOCK_TTL_SECONDS = env.int("FUEL_EDIT_LOCK_TTL_SECONDS", default=60)
 
+# ---------------------------------------------------------------------------
+# Sentry — error & log & performance monitoring.
+#
+# Inert unless SENTRY_DSN is set AND we're not in a test run: with no DSN,
+# sentry_sdk.init is skipped, so local dev and CI never phone home. Set
+# SENTRY_DSN on the Azure Container App (sourced from Key Vault) to turn it on
+# in production — no code change needed. The Django integration ships in the
+# core SDK and is auto-enabled, so request/view/ORM errors are captured.
+#
+# PRIVACY: send_default_pii defaults False — load-bearing. The whole platform
+# exists to keep user PII out of third parties (DeBERTa redactor, BYO body
+# scrubbing). False means Sentry does NOT attach request bodies, cookies, user
+# emails, or client IPs to events. Override SENTRY_SEND_DEFAULT_PII=true only as
+# a deliberate decision. `before_send` / `before_send_log` are a second line of
+# defense mirroring apps.byo_models.logging_filters.RedactBYOPasteBody — they
+# scrub BYO request bodies out of both error events AND the logs stream.
+SENTRY_DSN = env("SENTRY_DSN", default="")
+SENTRY_ENVIRONMENT = env("SENTRY_ENVIRONMENT", default="production")
+SENTRY_SEND_DEFAULT_PII = env.bool("SENTRY_SEND_DEFAULT_PII", default=False)
+# Forward Python `logging` records to Sentry's Logs stream — the "check logs as
+# things happen" surface. On by default; set SENTRY_ENABLE_LOGS=false to mute.
+SENTRY_ENABLE_LOGS = env.bool("SENTRY_ENABLE_LOGS", default=True)
+# Tracing + profiling are sampled and billed separately from errors. Default 1.0
+# (capture everything) is fine at current traffic; dial down via env (e.g. 0.1)
+# as volume grows — no redeploy needed.
+SENTRY_TRACES_SAMPLE_RATE = env.float("SENTRY_TRACES_SAMPLE_RATE", default=1.0)
+SENTRY_PROFILE_SESSION_SAMPLE_RATE = env.float("SENTRY_PROFILE_SESSION_SAMPLE_RATE", default=1.0)
+# "trace" auto-runs the profiler whenever a transaction is active.
+SENTRY_PROFILE_LIFECYCLE = env("SENTRY_PROFILE_LIFECYCLE", default="trace")
+# Optional: tie events to a deploy so regressions point at a build. CI can pass
+# the Django image SHA here.
+SENTRY_RELEASE = env("SENTRY_RELEASE", default="")
+
+# Never initialize Sentry during a test run. `make test` and CI both invoke
+# `manage.py test` under DEV settings, so a SENTRY_DSN present in that
+# environment would otherwise make the suite phone home (stray events + latency).
+import sys  # noqa: E402
+
+_SENTRY_RUNNING_TESTS = "test" in sys.argv or "pytest" in sys.modules
+
+if SENTRY_DSN and not _SENTRY_RUNNING_TESTS:
+    import re as _re
+
+    import sentry_sdk
+
+    _SENTRY_BYO_PATH = "/api/v1/tenants/byo-credentials/"
+    _SENTRY_JSON_BLOCK = _re.compile(r"\{.*\}", _re.DOTALL)
+
+    def _sentry_before_send(event, hint):
+        """Backstop scrub: strip JSON-shaped bodies from log-message error events
+        that touch the BYO paste endpoint, mirroring the console handler's filter."""
+        try:
+            logentry = event.get("logentry") or {}
+            message = logentry.get("message")
+            params = logentry.get("params")
+            haystacks = [message]
+            if isinstance(params, (list, tuple)):
+                haystacks.extend(params)
+            if any(isinstance(h, str) and _SENTRY_BYO_PATH in h for h in haystacks):
+                if isinstance(message, str):
+                    logentry["message"] = _SENTRY_JSON_BLOCK.sub("[REDACTED]", message)
+                if isinstance(params, (list, tuple)):
+                    scrubbed = [_SENTRY_JSON_BLOCK.sub("[REDACTED]", p) if isinstance(p, str) else p for p in params]
+                    logentry["params"] = scrubbed if isinstance(params, list) else tuple(scrubbed)
+                event["logentry"] = logentry
+        except Exception:
+            # Never let scrubbing raise inside Sentry's send path.
+            pass
+        return event
+
+    def _sentry_before_send_log(log, hint):
+        """Same BYO scrub for the Logs stream — enable_logs forwards `logging`
+        records as structured logs, a path separate from error events."""
+        try:
+            body = log.get("body")
+            attributes = log.get("attributes")
+            attr_values = list(attributes.values()) if isinstance(attributes, dict) else []
+            if any(isinstance(h, str) and _SENTRY_BYO_PATH in h for h in [body, *attr_values]):
+                if isinstance(body, str):
+                    log["body"] = _SENTRY_JSON_BLOCK.sub("[REDACTED]", body)
+                if isinstance(attributes, dict):
+                    for key, value in list(attributes.items()):
+                        if isinstance(value, str):
+                            attributes[key] = _SENTRY_JSON_BLOCK.sub("[REDACTED]", value)
+        except Exception:
+            pass
+        return log
+
+    sentry_sdk.init(
+        dsn=SENTRY_DSN,
+        environment=SENTRY_ENVIRONMENT,
+        release=SENTRY_RELEASE or None,
+        send_default_pii=SENTRY_SEND_DEFAULT_PII,
+        enable_logs=SENTRY_ENABLE_LOGS,
+        traces_sample_rate=SENTRY_TRACES_SAMPLE_RATE,
+        profile_session_sample_rate=SENTRY_PROFILE_SESSION_SAMPLE_RATE,
+        profile_lifecycle=SENTRY_PROFILE_LIFECYCLE,
+        before_send=_sentry_before_send,
+        before_send_log=_sentry_before_send_log,
+    )
+
 # Custom test runner — disconnects the CronJob → reconciler signal during
 # test runs so the publish_task sync fallback (no QSTASH_TOKEN) doesn't
 # accumulate DB connections + outbound HTTP attempts on every CronJob save.

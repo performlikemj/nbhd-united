@@ -72,6 +72,10 @@ matplotlib
 # Cron expression parsing (compute next fire time for hibernation wake)
 croniter
 
+# Error / performance monitoring (Django integration ships in the core SDK,
+# auto-enabled. Inert unless SENTRY_DSN is set — see config/settings/base.py).
+sentry-sdk>=2.0
+
 # Utils
 whitenoise
 django-extensions
