@@ -8,6 +8,7 @@ from unittest import mock
 from django.test import TestCase
 
 from apps.cron.gateway_client import (
+    GatewayError,
     _next_fire_at,
     _normalize_cron_delivery_for_ios,
     cron_exists,
@@ -201,7 +202,6 @@ class CronGetTests(TestCase):
             self.assertIsNone(cron_get(_FakeTenant(), "_fuel:welcome"))
 
     def test_returns_none_on_gateway_error(self):
-        from apps.cron.gateway_client import GatewayError
 
         with mock.patch(
             "apps.cron.gateway_client.invoke_gateway_tool",
@@ -258,3 +258,53 @@ class _FakeTenant:
 
     container_fqdn = "oc-fake.example.com"
     id = "00000000-0000-0000-0000-000000000000"
+
+
+class InvokeGatewayToolHibernationTests(TestCase):
+    """A hibernated / scaled-to-zero container makes Azure's ingress return a 404
+    "Container App - Unavailable" page. That's expected for cost-saving
+    hibernation, NOT a fault — invoke_gateway_tool must flag it (unavailable=True)
+    and log it at INFO, never ERROR, so it doesn't become a Sentry issue/alert."""
+
+    class _Tenant:
+        id = "00000000-0000-0000-0000-000000000000"
+        container_fqdn = "oc-hib.example.com"
+        internal_api_key = "k"
+
+    _AZURE_UNAVAILABLE = (
+        "<!DOCTYPE html><html><head><title>Azure Container App - Unavailable</title>"
+        "</head><body>unavailable</body></html>"
+    )
+
+    def _invoke_with_response(self, status_code, text):
+        class _Resp:
+            def __init__(self):
+                self.status_code = status_code
+                self.text = text
+
+            @staticmethod
+            def json():
+                return {}
+
+        post = mock.patch("apps.cron.gateway_client.requests.post", return_value=_Resp())
+        token = mock.patch("apps.cron.gateway_client._get_gateway_token", return_value="tok")
+        with token, post:
+            invoke_gateway_tool(self._Tenant(), "cron.list", {"includeDisabled": True})
+
+    def test_hibernated_container_is_flagged_unavailable_and_logged_info(self):
+        with (
+            self.assertLogs("apps.cron.gateway_client", level="INFO") as logs,
+            self.assertRaises(GatewayError) as ctx,
+        ):
+            self._invoke_with_response(404, self._AZURE_UNAVAILABLE)
+        self.assertTrue(ctx.exception.unavailable)
+        self.assertEqual(ctx.exception.status_code, 404)
+        joined = "\n".join(logs.output)
+        self.assertIn("unavailable", joined.lower())
+        self.assertNotIn("ERROR:apps.cron.gateway_client", joined)
+
+    def test_real_non_200_is_a_normal_error(self):
+        with self.assertRaises(GatewayError) as ctx:
+            self._invoke_with_response(500, "boom")
+        self.assertFalse(ctx.exception.unavailable)
+        self.assertEqual(ctx.exception.status_code, 500)

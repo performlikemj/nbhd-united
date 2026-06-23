@@ -257,7 +257,16 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
 
     try:
         list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-    except GatewayError:
+    except GatewayError as exc:
+        if getattr(exc, "unavailable", False):
+            # Container is idle-hibernated (scaled to zero) — expected, not a
+            # failure. The reconciler self-heals on next wake; skip quietly so
+            # hibernation doesn't surface as a Sentry error/alert.
+            logger.info(
+                "regenerate_tenant_crons: tenant %s container hibernated — skipping reconcile",
+                tenant.id,
+            )
+            return summary
         logger.exception("regenerate_tenant_crons: cron.list failed for tenant %s", tenant.id)
         summary["errors"] += 1
         return summary
