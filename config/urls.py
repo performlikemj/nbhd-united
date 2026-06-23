@@ -4,8 +4,11 @@ from django.urls import include, path
 from apps.integrations.runtime_views import RuntimeBYOErrorReportView, RuntimeUsageReportView
 from apps.router.chat_views import ChatProgressEventView
 from apps.router.views import serve_chart_image, serve_meditation_audio
+from config.health import health
 
 urlpatterns = [
+    # Liveness probe — unauthenticated, used by the CI deploy gate + LB.
+    path("health/", health, name="health"),
     path("admin/", admin.site.urls),
     # Chart images — unauthenticated, served for LINE image messages
     path("api/v1/charts/<uuid:tenant_id>/<str:filename>", serve_chart_image, name="serve-chart-image"),
