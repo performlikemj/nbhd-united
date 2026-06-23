@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@tailwindcss/typography": "^0.5.20",
-    "@tanstack/react-query": "^5.101.0",
+    "@tanstack/react-query": "^5.101.1",
     "@tiptap/core": "^3.25.0",
     "@tiptap/extension-list": "^3.27.1",
     "@tiptap/extension-placeholder": "^3.27.1",
