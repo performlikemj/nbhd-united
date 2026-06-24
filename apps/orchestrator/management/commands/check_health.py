@@ -61,7 +61,12 @@ class Command(BaseCommand):
         self.stdout.write(f"{cache_icon} cache — {cache_detail}")
 
         for result in results:
-            icon = "\u2705" if result["healthy"] else "\u274c"
+            if result.get("hibernated"):
+                icon = "\U0001f4a4"  # asleep (scaled to zero) -- not a fault, but not serving
+            elif result["healthy"]:
+                icon = "\u2705"
+            else:
+                icon = "\u274c"
             name = result.get("display_name", "?")
             container = result.get("container", "(none)")
             self.stdout.write(f"{icon}  {result['tenant_id']}  {name:<20}  {container}")
