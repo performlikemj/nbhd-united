@@ -70,6 +70,16 @@ class Command(BaseCommand):
             help="ISO datetime — hard deadline; redemption rejected after.",
         )
         parser.add_argument(
+            "--template-base",
+            default="email/privacy_rotation_2026/email_2",
+            help=(
+                "Template path prefix for this campaign's email. The command "
+                "renders <base>_subject.txt, <base>_body.html and <base>_body.txt. "
+                "Default is the original privacy-rotation email; pass e.g. "
+                "'email/ios_relaunch_2026/email' for the iOS relaunch send."
+            ),
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Print audience + would-send addresses without creating the campaign or sending.",
@@ -82,6 +92,7 @@ class Command(BaseCommand):
         kind: str,
         days: int,
         valid_until: str,
+        template_base: str,
         dry_run: bool,
         **opts,
     ):
@@ -151,7 +162,12 @@ class Command(BaseCommand):
             promo_url = f"{frontend_url}/promo/redeem?{qs}"
 
             try:
-                self._send_promo_email(user, promo_url=promo_url, valid_until=campaign.valid_until)
+                self._send_promo_email(
+                    user,
+                    promo_url=promo_url,
+                    valid_until=campaign.valid_until,
+                    template_base=template_base,
+                )
                 sent += 1
             except Exception:
                 email_failed += 1
@@ -166,7 +182,7 @@ class Command(BaseCommand):
         if email_failed:
             self.stdout.write(self.style.ERROR(f"Email failed: {email_failed}"))
 
-    def _send_promo_email(self, user: User, *, promo_url: str, valid_until=None) -> None:
+    def _send_promo_email(self, user: User, *, promo_url: str, valid_until=None, template_base: str) -> None:
         context = {
             "display_name": getattr(user, "display_name", None) or "there",
             "promo_url": promo_url,
@@ -175,18 +191,9 @@ class Command(BaseCommand):
             # hardcoded "June 6, 2026" and went stale).
             "valid_until": valid_until,
         }
-        subject = render_to_string(
-            "email/privacy_rotation_2026/email_2_subject.txt",
-            context,
-        ).strip()
-        text_body = render_to_string(
-            "email/privacy_rotation_2026/email_2_body.txt",
-            context,
-        )
-        html_body = render_to_string(
-            "email/privacy_rotation_2026/email_2_body.html",
-            context,
-        )
+        subject = render_to_string(f"{template_base}_subject.txt", context).strip()
+        text_body = render_to_string(f"{template_base}_body.txt", context)
+        html_body = render_to_string(f"{template_base}_body.html", context)
         send_mail(
             subject=subject,
             message=text_body,
