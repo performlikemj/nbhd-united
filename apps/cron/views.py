@@ -1375,6 +1375,10 @@ def dedup_crons(request):
 
 # Cooldown: don't send duplicate alerts within this window
 _HEALTH_ALERT_COOLDOWN_SECONDS = 30 * 60  # 30 minutes
+# Shorter backoff when the gateway is slow/cold (read timeout or 5xx during a
+# cold start): long enough to stop the every-5-min storm, short enough to retry
+# and actually deliver once the gateway warms.
+_HEALTH_ALERT_TIMEOUT_COOLDOWN_SECONDS = 10 * 60  # 10 minutes
 
 
 def _send_alert_to_personal_openclaw(message: str) -> str:
@@ -1384,13 +1388,20 @@ def _send_alert_to_personal_openclaw(message: str) -> str:
     receives the alert and can propose fixes without acting.
 
     Returns a delivery status:
-      - "delivered"    — the gateway accepted it (HTTP 200)
+      - "delivered"    — the gateway accepted it (HTTP 200). Full cooldown.
       - "undeliverable" — a config/auth problem that retrying won't fix
                           (missing env, a 3xx CF-Access login redirect, or a 4xx).
-                          The caller suppresses re-alerting for the cooldown window
-                          so we don't POST a doomed request every 5 minutes.
-      - "transient"    — a 5xx / network blip; the caller leaves the cooldown unset
-                          so the next tick retries against a (hopefully) healthy gateway.
+                          Full cooldown so we don't POST a doomed request every 5 minutes.
+      - "timeout"      — we connected but the gateway was slow/cold: a client-side
+                          read timeout, or a 5xx (incl. Cloudflare 52x) from a
+                          cold/waking origin. The personal gateway is itself an
+                          idle-hibernating Container App behind Cloudflare, so a
+                          real-outage alert often wakes a cold gateway. The caller
+                          starts a SHORT backoff — stops the every-tick storm but
+                          retries soon enough to land the alert once it warms.
+      - "transient"    — a fast connect-side failure (DNS/TCP/connect timeout) or
+                          an odd error; the caller leaves the cooldown unset so the
+                          next tick retries immediately against a hopefully-up gateway.
     """
     import httpx
 
@@ -1434,8 +1445,31 @@ def _send_alert_to_personal_openclaw(message: str) -> str:
             # httpx does NOT follow redirects by default — a 302 is returned as-is
             # (which is what we want: a CF-Access login redirect must read as a
             # failure, not be chased to an HTML login page).
-            timeout=30,
+            # Split timeout: a connect/DNS/TCP failure fast-fails in ~10s
+            # (-> transient) so it's cleanly separated from "reached the gateway,
+            # the LLM round-trip is just slow" (read=75 covers a cold start +
+            # generation). The body is tiny, so write/pool never bind.
+            timeout=httpx.Timeout(connect=10.0, read=75.0, write=10.0, pool=10.0),
         )
+    # Exception order is LOAD-BEARING: ReadTimeout and ConnectTimeout both subclass
+    # httpx.TimeoutException, so the specific types MUST precede the broad
+    # `except httpx.TimeoutException`; the bare `except Exception` MUST stay last
+    # (a plain Exception -> transient, which test_network_error_is_transient pins).
+    except httpx.ReadTimeout:
+        # Connected fine; the gateway (cold start + LLM round-trip) didn't answer
+        # within the read window. It's warming now — back off briefly and retry.
+        logger.warning("Personal OpenClaw alert read-timed-out (gateway slow/cold) — backing off")
+        return "timeout"
+    except httpx.ConnectTimeout:
+        logger.warning("Personal OpenClaw alert connect-timed-out (gateway unreachable) — transient")
+        return "transient"
+    except httpx.ConnectError:
+        logger.warning("Personal OpenClaw alert connection error (gateway unreachable) — transient")
+        return "transient"
+    except httpx.TimeoutException:
+        # Write/pool timeout — unusual; treat as a quick transient retry.
+        logger.warning("Personal OpenClaw alert timed out (write/pool) — transient")
+        return "transient"
     except Exception:
         logger.exception("Failed to send alert to personal OpenClaw (transient)")
         return "transient"
@@ -1458,6 +1492,15 @@ def _send_alert_to_personal_openclaw(message: str) -> str:
     if 400 <= resp.status_code < 500:
         logger.error("Personal OpenClaw alert rejected (HTTP %d): %s", resp.status_code, resp.text[:200])
         return "undeliverable"
+    if resp.status_code >= 500:
+        # 5xx (incl. Cloudflare 520-526) usually means the gateway origin is
+        # cold/waking behind CF — operationally the same as a slow read, so back
+        # off ~10 min rather than re-POSTing every 5-min tick (the storm fix for
+        # the real-outage path, where a cold gateway answers 5xx before read=75).
+        logger.warning(
+            "Personal OpenClaw returned %d (gateway slow/cold) — backing off: %s", resp.status_code, resp.text[:200]
+        )
+        return "timeout"
     logger.warning("Personal OpenClaw returned %d (transient): %s", resp.status_code, resp.text[:200])
     return "transient"
 
@@ -1511,13 +1554,18 @@ def run_health_check(request):
                 lines.append(f"  ... and {len(unhealthy) - 10} more")
 
             status = _send_alert_to_personal_openclaw("\n".join(lines))
-            # Start the cooldown when the alert was delivered OR is undeliverable for
-            # a reason retrying won't fix (missing config / CF-Access 302 / 4xx) — the
-            # latter is what stops the doomed POST from firing every 5 minutes. A
-            # transient 5xx/network failure leaves the cooldown unset so the next tick
-            # retries.
+            # Cooldown policy:
+            #   delivered / undeliverable -> full 30-min cooldown (it landed, or
+            #     retrying won't fix it: missing config / CF-Access 302 / 4xx).
+            #   timeout -> short 10-min backoff: the gateway was slow/cold (read
+            #     timeout or 5xx). Don't hammer every 5-min tick, but retry soon so
+            #     the alert lands once it warms. THIS is the storm fix.
+            #   transient -> no cooldown: a fast connect-side failure / odd error;
+            #     the next tick retries immediately against a hopefully-up gateway.
             if status in ("delivered", "undeliverable"):
                 cache.set(cache_key, True, _HEALTH_ALERT_COOLDOWN_SECONDS)
+            elif status == "timeout":
+                cache.set(cache_key, True, _HEALTH_ALERT_TIMEOUT_COOLDOWN_SECONDS)
             summary["alerted"] = status == "delivered"
             summary["alert_status"] = status
         else:
@@ -1555,12 +1603,17 @@ def admin_health_status(request):
     results = check_all_tenants_health()
     unhealthy = [r for r in results if not r["healthy"]]
     with_drift = [r for r in results if r.get("config_drift")]
+    # Hibernated tenants are healthy=True (asleep on purpose, not a fault) so they
+    # are excluded from `unhealthy`; break them out so the on-demand answer can say
+    # "N healthy (M asleep)" instead of conflating asleep with serving.
+    hibernated = [r for r in results if r.get("hibernated")]
 
     return JsonResponse(
         {
             "total": len(results),
             "healthy": len(results) - len(unhealthy),
             "unhealthy": len(unhealthy),
+            "hibernated": len(hibernated),
             "config_drift": len(with_drift),
             "results": results,
         }

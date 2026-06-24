@@ -10,7 +10,11 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
-from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
+from apps.cron.gateway_client import (
+    GatewayError,
+    invoke_gateway_tool,
+    is_container_unavailable_response,
+)
 from apps.tenants.models import Tenant
 
 from .azure_client import (
@@ -1867,6 +1871,26 @@ def check_tenant_health(tenant_id: str) -> dict:
     health_url = f"https://{tenant.container_fqdn}/health"
     try:
         resp = httpx.get(health_url, timeout=10)
+        # Azure's ingress serves a 404 "Container App - Unavailable" splash when a
+        # container has no running replica. That happens for BOTH deliberate idle
+        # hibernation (expected) AND genuine failure (crash-loop / failed image
+        # pull / 0 healthy replicas) — they look identical at the ingress. Only
+        # treat it as benign when WE put the tenant to sleep (hibernated_at set);
+        # the same splash with hibernated_at unset is a "should be running but
+        # isn't" fault that must stay unhealthy so the alert fires.
+        if is_container_unavailable_response(resp.status_code, resp.text) and tenant.hibernated_at:
+            # Set healthy=True explicitly (don't rely on the all(checks) reduction,
+            # which is fragile if a future check is added) and flag it so callers
+            # can tell "asleep" from "serving". Omit response_time_ms so the
+            # `make health` CLI surfaces the hibernated detail rather than a latency.
+            result["hibernated"] = True
+            result["healthy"] = True
+            result["checks"]["gateway"] = {
+                "ok": True,
+                "status_code": resp.status_code,
+                "detail": "container hibernated (scaled to zero)",
+            }
+            return result
         response_time_ms = int(resp.elapsed.total_seconds() * 1000)
         is_healthy = resp.status_code == 200
         result["checks"]["gateway"] = {

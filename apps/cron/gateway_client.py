@@ -34,10 +34,22 @@ class GatewayError(Exception):
 _CONTAINER_UNAVAILABLE_MARKER = "Container App - Unavailable"
 
 
-def _is_container_unavailable(status_code: int | None, text: str | None) -> bool:
-    """True when a non-200 response is Azure's 'no running replica' page —
-    i.e. the tenant container is hibernated/scaled to zero, not broken."""
+def is_container_unavailable_response(status_code: int | None, text: str | None) -> bool:
+    """True when a non-200 response is Azure's 'no running replica' splash page.
+
+    The ingress serves this 404 "Container App - Unavailable" page whenever a
+    container has no running replica — which happens for BOTH deliberate idle
+    hibernation (expected, cost-saving) AND genuine failure (crash-loop, failed
+    image pull, 0 healthy replicas). This helper cannot tell those apart on its
+    own: callers that must NOT mask a real outage should AND this with a
+    deliberate-hibernation signal such as ``tenant.hibernated_at``.
+    """
     return status_code == 404 and _CONTAINER_UNAVAILABLE_MARKER in (text or "")
+
+
+# Backward-compat alias: the cron reconciler (invoke_gateway_tool) and its tests
+# still reference the original private name.
+_is_container_unavailable = is_container_unavailable_response
 
 
 # Delivery modes where OpenClaw delivers the cron's output ITSELF (container →
