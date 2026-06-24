@@ -311,6 +311,11 @@ export class GalaxyScene extends Phaser.Scene {
   private docking = false; // mid touchdown-glide (input stays paused)
   private meteorTimer?: Phaser.Time.TimerEvent;
   private rmQuery: MediaQueryList | null = null; // cached prefers-reduced-motion (read per frame)
+  // ── Visual quality + screen-space overlays (Phase 3) ──
+  private lowQuality = false; // weak-device heuristic; gates the per-object ship glow
+  private shipGlow: any; // the ship's lit-from-within engine glow (a Phaser Glow filter controller)
+  private vignette?: Phaser.GameObjects.Image; // depth-layered edge darkening (NOT a camera filter → HUD stays crisp)
+  private spill?: Phaser.GameObjects.Image; // ambient cluster-colour wash around the ship
 
   constructor(galaxy: GalaxyData, overlayRoot: HTMLElement) {
     super("galaxy");
@@ -323,12 +328,14 @@ export class GalaxyScene extends Phaser.Scene {
   }
 
   create() {
+    this.lowQuality = this.detectLowQuality();
     this.makeTextures();
     const { pos, world } = layoutStars(this.galaxy.stars);
     this.world = world;
     this.physics.world.setBounds(0, 0, world.w, world.h);
     this.cameras.main.setBounds(0, 0, world.w, world.h);
     this.cameras.main.setBackgroundColor("#0b0f13");
+    this.applyColorGrade();
 
     this.buildStarfield();
     this.buildNeighborhoods(pos);
@@ -340,6 +347,7 @@ export class GalaxyScene extends Phaser.Scene {
     this.buildHUD();
     this.buildInput();
     this.buildMinimap();
+    this.buildOverlays();
 
     this.ring = this.add.graphics().setDepth(6);
     this.waypointGfx = this.add.graphics().setDepth(5);
@@ -454,12 +462,114 @@ export class GalaxyScene extends Phaser.Scene {
     ng.fillCircle(11, 12, 2.2);
     ng.generateTexture("nega", 34, 24);
     ng.destroy();
+
+    // Vignette texture: a smooth radial gradient (clear centre → dark edges)
+    // painted on a 2D canvas. Used as a depth-layered overlay (buildOverlays),
+    // NOT a camera filter, so it darkens the void without dimming the HUD/minimap
+    // (which render at a higher depth). Radial gradients aren't drawable with
+    // Phaser Graphics, hence the canvas.
+    try {
+      const VS = 256;
+      const vc = document.createElement("canvas");
+      vc.width = VS;
+      vc.height = VS;
+      const vctx = vc.getContext("2d");
+      if (vctx) {
+        const grad = vctx.createRadialGradient(VS / 2, VS / 2, VS * 0.32, VS / 2, VS / 2, VS * 0.62);
+        grad.addColorStop(0, "rgba(0,0,0,0)");
+        grad.addColorStop(1, "rgba(0,0,0,0.55)");
+        vctx.fillStyle = grad;
+        vctx.fillRect(0, 0, VS, VS);
+        this.textures.addCanvas("vignette", vc);
+      }
+    } catch {
+      // No 2D canvas (e.g. headless) — buildOverlays guards on texture existence.
+    }
+  }
+
+  // A single cinematic colour grade over the whole frame — one cheap full-screen
+  // GPU pass (already compiled into Phaser, 0 added bytes): richer saturation,
+  // gentle filmic contrast, and a subtle cool/teal cast that pulls the flat
+  // "#0b0f13 + coloured dots" toward a deliberate deep-space palette. WebGL-only;
+  // skipped on the (rare) Canvas fallback. Not animated, so it always applies.
+  private applyColorGrade() {
+    if (this.game.renderer.type !== Phaser.WEBGL) return;
+    const cm = this.cameras.main.filters?.internal.addColorMatrix();
+    if (!cm) return;
+    cm.colorMatrix.saturate(0.12);
+    cm.colorMatrix.contrast(0.06, true);
+    // Subtle cool cast: trim red a touch, lift blue a touch (brightness-preserving).
+    cm.colorMatrix.multiply(
+      [0.97, 0, 0, 0, 0, 0, 1.0, 0, 0, 0, 0, 0, 1.05, 0, 0, 0, 0, 0, 1, 0],
+      true,
+    );
+  }
+
+  // Conservative weak-device heuristic (defaults to high quality — iOS reports no
+  // deviceMemory and a healthy core count, so iPhones stay on). Only the clearest
+  // low-end signals drop it. Gates the per-object ship glow (and future passes).
+  private detectLowQuality(): boolean {
+    try {
+      const nav = navigator as Navigator & { deviceMemory?: number };
+      if (typeof nav.deviceMemory === "number" && nav.deviceMemory > 0 && nav.deviceMemory <= 2) return true;
+      if (typeof nav.hardwareConcurrency === "number" && nav.hardwareConcurrency > 0 && nav.hardwareConcurrency <= 2) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }
+
+  // Screen-space overlays (scrollFactor 0): an ambient cluster-colour spill that
+  // washes the space around the ship, and a vignette that darkens the edges. Both
+  // are depth-layered sprites, NOT camera filters — so the HUD/minimap (higher
+  // depth) stay crisp. Vignette sits above the world (depth 16) but below the HUD
+  // (19–20); the spill sits low (depth 1) so stars/ship draw over it.
+  private buildOverlays() {
+    this.spill = this.add
+      .image(0, 0, "glow")
+      .setScrollFactor(0)
+      .setBlendMode(Phaser.BlendModes.ADD)
+      .setDepth(1)
+      .setAlpha(0);
+    if (this.textures.exists("vignette")) {
+      this.vignette = this.add.image(0, 0, "vignette").setScrollFactor(0).setDepth(16).setAlpha(0.8);
+    }
+    this.fitOverlays();
+  }
+
+  private fitOverlays() {
+    const w = this.scale.width;
+    const h = this.scale.height;
+    if (this.vignette) this.vignette.setPosition(w / 2, h / 2).setDisplaySize(w * 1.04, h * 1.04);
+    if (this.spill) {
+      const r = Math.max(w, h) * 1.5;
+      this.spill.setPosition(w / 2, h / 2).setDisplaySize(r, r);
+    }
+  }
+
+  // Colour as navigation: the neighbourhood you're closest to bleeds its colour
+  // into the ship's engine glow and the ambient spill, so you FEEL which
+  // constellation you're in. `near` (0 far … 1 on top) comes from
+  // updateNeighborhoods(); both effects fade to nothing out in the void.
+  private applySpill(near: number, color: number) {
+    if (this.shipGlow) {
+      const base = 0x9bd9ff;
+      const t = near * 0.7;
+      const r = Math.round(((base >> 16) & 255) + (((color >> 16) & 255) - ((base >> 16) & 255)) * t);
+      const g = Math.round(((base >> 8) & 255) + (((color >> 8) & 255) - ((base >> 8) & 255)) * t);
+      const b = Math.round((base & 255) + ((color & 255) - (base & 255)) * t);
+      this.shipGlow.color = (r << 16) | (g << 8) | b;
+    }
+    if (this.spill) this.spill.setTint(color).setAlpha(near * 0.1);
   }
 
   private buildStarfield() {
     const W = this.world.w;
     const H = this.world.h;
     const density = Math.min(6, (W * H) / (3600 * 2400)); // keep the void starry as the world grows
+    // Star colour temperatures — mostly white-blue, some warm amber, a few hot
+    // blue — so the field reads as a real sky instead of uniform noise dots.
+    const STAR_HUES = [0xcfe0ff, 0xcfe0ff, 0xcfe0ff, 0xe9f1ff, 0xfff0d8, 0xffe6c4, 0xaecbff];
     const layers = [
       // The deep field barely scrolls — it's what makes the nearer layers read as
       // motion. Three planes of parallax turn "panning a picture" into depth.
@@ -470,9 +580,47 @@ export class GalaxyScene extends Phaser.Scene {
     for (const L of layers) {
       const g = this.add.graphics().setScrollFactor(L.sf).setDepth(0);
       for (let i = 0; i < L.n; i++) {
-        g.fillStyle(0xcfe0ff, L.alpha * (0.4 + Math.random() * 0.6));
+        g.fillStyle(STAR_HUES[(Math.random() * STAR_HUES.length) | 0], L.alpha * (0.4 + Math.random() * 0.6));
         g.fillCircle(Math.random() * W * 1.4, Math.random() * H * 1.4, L.r * (0.6 + Math.random()));
       }
+    }
+    this.buildMilkyWay(W, H, density);
+  }
+
+  // A faint diagonal galactic band: a tilted river of dim stars concentrated on a
+  // spine, plus a few large soft haze puffs along it — structure and a sense of
+  // scale instead of an even sprinkle. Drawn once into the deep parallax field.
+  private buildMilkyWay(W: number, H: number, density: number) {
+    const cx = W / 2;
+    const cy = H / 2;
+    const ang = -0.5; // band tilt (radians)
+    const ca = Math.cos(ang);
+    const sa = Math.sin(ang);
+    const len = Math.hypot(W, H) * 0.75;
+    const halfW = Math.min(W, H) * 0.16;
+    const g = this.add.graphics().setScrollFactor(0.1).setDepth(0);
+    const N = Math.round(420 * density);
+    for (let i = 0; i < N; i++) {
+      const t = (Math.random() - 0.5) * len; // along the band
+      // Bias toward the spine (sum-of-uniforms ≈ gaussian) so the band has a core.
+      const off = ((Math.random() + Math.random() + Math.random()) / 3 - 0.5) * 2 * halfW;
+      const x = cx + t * ca - off * sa;
+      const y = cy + t * sa + off * ca;
+      const fall = 1 - Math.min(1, Math.abs(off) / halfW);
+      g.fillStyle(0xdfe9ff, 0.05 + 0.1 * fall * Math.random());
+      g.fillCircle(x, y, 0.6 + Math.random() * 0.8);
+    }
+    // A few large, very faint haze clouds along the spine (reuse the puff texture).
+    for (let i = 0; i < 5; i++) {
+      const t = (i / 4 - 0.5) * len * 0.85;
+      this.add
+        .image(cx + t * ca, cy + t * sa, "puff")
+        .setScrollFactor(0.1)
+        .setDepth(0)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setTint(0x9fb6e8)
+        .setScale((halfW * 2.4) / 80)
+        .setAlpha(0.045);
     }
   }
 
@@ -657,17 +805,25 @@ export class GalaxyScene extends Phaser.Scene {
   // tween owns; the twinkle/pulse tweens animate the other properties.)
   private updateNeighborhoods() {
     const ship = this.ship;
+    let bestNear = 0;
+    let bestColor = 0x9bd9ff;
     for (const nb of this.neighborhoods) {
       const d = Phaser.Math.Distance.Between(ship.x, ship.y, nb.cx, nb.cy);
       const t = Phaser.Math.Clamp((d - nb.r) / (nb.r * 3), 0, 1); // 0 inside … 1 far
       nb.name.setAlpha(0.62 - 0.46 * t);
       const near = Phaser.Math.Clamp(1 - d / (nb.r * 1.8), 0, 1); // 0 far … 1 right on top
+      if (near > bestNear) {
+        bestNear = near;
+        bestColor = nb.color;
+      }
       for (const img of nb.cloud) img.setAlpha((img.getData("a0") as number) * (1 + near * 1.1));
       for (const s of nb.stars) {
         s.glow.setAlpha(0.78 + near * 0.22);
         s.core.setScale((s.r / 8) * (1 + near * 0.55));
       }
     }
+    // Spill the nearest neighbourhood's colour onto the ship + the space around it.
+    this.applySpill(bestNear, bestColor);
   }
 
   private markVisited(entry: StarEntry) {
@@ -685,6 +841,14 @@ export class GalaxyScene extends Phaser.Scene {
     // You cannot fly off into the abyss and lose yourself — the edge of the mind
     // is a hard wall (with the camera bounded to the same world).
     this.ship.body.setCollideWorldBounds(true);
+    // Real lit-from-within engine glow — a per-object GPU Glow filter on the ship
+    // ALONE (one render target, not the hundreds a per-star glow would need). Its
+    // colour drifts toward the neighbourhood you're flying through (see applySpill).
+    // WebGL-only and skipped on weak devices.
+    if (!this.lowQuality && this.game.renderer.type === Phaser.WEBGL) {
+      this.ship.enableFilters?.();
+      this.shipGlow = this.ship.filters?.internal.addGlow(0x9bd9ff, 3, 0, 1, false, 6, 12);
+    }
     this.flame = this.add
       .particles(0, 0, "core", {
         lifespan: 320,
@@ -2116,6 +2280,7 @@ export class GalaxyScene extends Phaser.Scene {
     } else {
       this.positionMinimap();
     }
+    this.fitOverlays();
   }
 
   private positionMinimap() {
@@ -2305,6 +2470,10 @@ export function mountGalaxyGame(canvasParent: HTMLElement, overlayRoot: HTMLElem
     parent: canvasParent,
     backgroundColor: "#0b0f13",
     scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
+    // Hint the OS to pick the performant GPU path (Phaser default is "default").
+    // Phaser renders at CSS-pixel resolution (it never multiplies by
+    // devicePixelRatio), so this is the lever, not a DPR cap.
+    render: { powerPreference: "high-performance" },
     physics: { default: "arcade", arcade: { debug: false } },
     scene: new GalaxyScene(galaxy, overlayRoot),
   });
