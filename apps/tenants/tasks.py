@@ -101,3 +101,40 @@ def send_promo_campaign_task() -> dict:
         stdout=buf,
     )
     return {"output": buf.getvalue()[-2000:]}
+
+
+def send_ios_relaunch_campaign_task() -> dict:
+    """QStash-dispatched wrapper around ``send_promo_campaign`` — the iOS
+    relaunch win-back (14 days free, now that NBHD is on the App Store).
+
+    Zero-arg by contract (QStash MCP body passthrough is unreliable), so the
+    campaign constants are inlined. This re-sends to the same lapsed /
+    active-trial cohort as ``privacy-zdr-2026`` — which closed 2026-06-24 with
+    **0 redemptions** (the blast almost certainly landed in spam) — but with:
+
+      - a fresh, unique ``code`` → a new audience snapshot and brand-new
+        per-user redemption rows, so anyone who saw the prior offer can still
+        claim this one;
+      - a new redemption window (``valid_until``);
+      - a refreshed subject + the iOS-relaunch template (leads with the App
+        Store launch, keeps the click-to-extend-trial mechanic unchanged).
+
+    Re-running is safe: ``get_or_create(code=...)`` reuses the campaign row and
+    re-emails the original snapshot; double-redemption is blocked at the view
+    layer by ``unique_together(campaign, user)``.
+    """
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    buf = StringIO()
+    call_command(
+        "send_promo_campaign",
+        code="ios-relaunch-2026-06",
+        kind="trial_extension",
+        days=14,
+        valid_until="2026-07-02T00:00:00+00:00",
+        template_base="email/ios_relaunch_2026/email",
+        stdout=buf,
+    )
+    return {"output": buf.getvalue()[-2000:]}

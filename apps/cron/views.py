@@ -78,6 +78,11 @@ TASK_MAP = {
     # and send_promo_campaign.py for the underlying commands.
     "rotate_all_passwords": "apps.tenants.tasks.rotate_all_passwords_task",
     "send_promo_campaign": "apps.tenants.tasks.send_promo_campaign_task",
+    # iOS relaunch win-back (June 2026) — re-send of the 14-day trial offer
+    # with the App Store launch + a fresh redemption window (the prior
+    # privacy-zdr-2026 blast closed with 0 redemptions). Zero-arg; fire via a
+    # QStash publish to /api/cron/trigger/send_ios_relaunch_campaign/.
+    "send_ios_relaunch_campaign": "apps.tenants.tasks.send_ios_relaunch_campaign_task",
     # Operator-fired preview of the campaign emails — accepts
     # {"kwargs": {"kind": 1|2, "to": "<email>", "display_name": "..."}}
     # in the QStash body. Used pre-launch to sanity-check rendered HTML

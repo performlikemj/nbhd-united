@@ -1,0 +1,26 @@
+{% autoescape off %}Hi {{ display_name|default:"there" }},
+
+A little while back we made NBHD United more private — including turning
+on zero data retention with our AI provider. In plain terms: your
+conversations aren't kept after they're answered, and they're never used
+to train AI models. Your data does exactly one thing — make your
+assistant more helpful to you. Nothing else.
+
+And there's a new way in: NBHD is now an app on your iPhone. The same
+private assistant — now a tap away on your home screen, not just a
+browser tab.
+
+To welcome you back, we'd like to put fourteen days on your account — on
+us. No card, no checkout. Your trial starts the moment you click.
+
+  Claim 14 days:
+  {{ promo_url }}
+
+  Then take it with you — download on the App Store:
+  https://apps.apple.com/us/app/nbhd/id6779158519
+
+Good through {{ valid_until|date:"F j, Y" }}.
+
+— NBHD United
+neighborhoodunited.org
+{% endautoescape %}
