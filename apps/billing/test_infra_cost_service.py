@@ -12,6 +12,7 @@ for months:
 
 from __future__ import annotations
 
+import os
 from datetime import date, datetime
 from decimal import Decimal
 from unittest.mock import MagicMock, patch
@@ -57,6 +58,14 @@ class QueryResourceCostsDatetimeTest(TestCase):
 
 class RefreshInfraCostsTest(TestCase):
     def setUp(self):
+        # CI sets AZURE_MOCK=true (ci-cd.yml), which short-circuits
+        # refresh_infra_costs to the estimate path before our patched Azure
+        # query runs. Force the real path here; the mock-mode test below
+        # re-enables it within its own scope.
+        mock_off = patch.dict(os.environ, {"AZURE_MOCK": "false"})
+        mock_off.start()
+        self.addCleanup(mock_off.stop)
+
         self.tenant = create_tenant(display_name="Cost Test", telegram_chat_id=700700700)
         self.tenant.status = Tenant.Status.ACTIVE
         self.tenant.container_id = "oc-abc"
