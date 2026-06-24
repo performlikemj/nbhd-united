@@ -1375,6 +1375,24 @@ def scale_container_app(container_name: str, *, min_replicas: int, max_replicas:
         wake_container_app(container_name)
 
 
+def _is_already_in_requested_state(exc) -> bool:
+    """True if an Azure revisions 409 means the revision is already in the
+    requested active/inactive state — i.e. the activate/deactivate is a no-op
+    and should be treated as success.
+
+    Azure folds the whole 409 Conflict family for the Container Apps revisions
+    API into ``ResourceExistsError``, so we match the specific
+    ``RevisionAlreadyInRequestedState`` code (or its message) rather than
+    swallowing every 409 — a different conflict (e.g. another operation in
+    progress) must still propagate.
+    """
+    code = getattr(getattr(exc, "error", None), "code", "") or ""
+    if code == "RevisionAlreadyInRequestedState":
+        return True
+    msg = str(exc).lower()
+    return "already active" in msg or "already inactive" in msg or "already in requested state" in msg
+
+
 def hibernate_container_app(container_name: str) -> None:
     """Hibernate a container by deactivating all active revisions.
 
@@ -1385,16 +1403,29 @@ def hibernate_container_app(container_name: str) -> None:
         logger.info("[MOCK] Hibernated %s", container_name)
         return
 
+    from azure.core.exceptions import ResourceExistsError
+
     client = get_container_client()
     rg = settings.AZURE_RESOURCE_GROUP
 
     revisions = list(client.container_apps_revisions.list_revisions(rg, container_name))
     active_revs = [r for r in revisions if r.active]
 
+    deactivated = 0
     for rev in active_revs:
-        client.container_apps_revisions.deactivate_revision(rg, container_name, rev.name)
+        try:
+            client.container_apps_revisions.deactivate_revision(rg, container_name, rev.name)
+            deactivated += 1
+        except ResourceExistsError as exc:
+            # Stale list read: the revision is already inactive — the desired end
+            # state. Don't let it abort hibernation, or hibernate_idle_tenant
+            # returns False and the tenant is left awake with no cron-wake armed
+            # (the mirror of the wake-side stale-read bug, canary 148ccf1c).
+            if not _is_already_in_requested_state(exc):
+                raise
+            logger.info("Hibernate %s — revision %s already inactive", container_name, rev.name)
 
-    logger.info("Hibernated %s — deactivated %d revision(s)", container_name, len(active_revs))
+    logger.info("Hibernated %s — deactivated %d revision(s)", container_name, deactivated)
 
 
 def wake_container_app(container_name: str) -> None:
@@ -1406,6 +1437,8 @@ def wake_container_app(container_name: str) -> None:
     if _is_mock():
         logger.info("[MOCK] Woke %s", container_name)
         return
+
+    from azure.core.exceptions import ResourceExistsError
 
     client = get_container_client()
     rg = settings.AZURE_RESOURCE_GROUP
@@ -1421,7 +1454,29 @@ def wake_container_app(container_name: str) -> None:
         logger.info("Wake %s — latest revision %s already active", container_name, latest.name)
         return
 
-    client.container_apps_revisions.activate_revision(rg, container_name, latest.name)
+    try:
+        client.container_apps_revisions.activate_revision(rg, container_name, latest.name)
+    except ResourceExistsError as exc:
+        # Azure raises RevisionAlreadyInRequestedState (409) when the revision is
+        # already active. The ``latest.active`` pre-check above can read a stale
+        # revision list (the control plane lags the live state, or a concurrent
+        # wake won the race), so we still reach activate_revision on an
+        # already-active revision. "Already active" IS the desired end state, so
+        # treat it as success. Letting it propagate wedges the poller drain:
+        # wake_hibernated_tenant's except clause never clears ``hibernated_at``,
+        # so every retry re-enters the 404→wake branch and crashes again — the
+        # message never delivers and never hits the attempt cap, an infinite
+        # silent loop (canary 148ccf1c, 2026-06-25).
+        #
+        # Azure maps the whole 409 Conflict family for the revisions API to
+        # ResourceExistsError, so only swallow the already-active condition — a
+        # genuinely different 409 (e.g. another operation in progress) must
+        # propagate so wake_hibernated_tenant returns False and the drain takes
+        # its bounded failure path instead of falsely reporting a wake.
+        if not _is_already_in_requested_state(exc):
+            raise
+        logger.info("Wake %s — revision %s already active (idempotent activate)", container_name, latest.name)
+        return
     logger.info("Woke %s — activated revision %s", container_name, latest.name)
 
 

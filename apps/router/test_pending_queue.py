@@ -684,6 +684,62 @@ class PendingMessageStaleHibernationReconcileTest(TestCase):
         self.assertTrue(drain_calls, "expected a deferred drain reschedule")
         self.assertEqual(drain_calls[-1].kwargs.get("delay_seconds"), _WAKE_DEFER_SECONDS)
 
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=False)
+    @patch("apps.billing.services.check_budget", return_value="")
+    @patch("apps.router.pending_queue._looks_like_openrouter_credit_limit", return_value=False)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_hibernated_container_404_failed_wake_falls_through(
+        self, mock_post, _mock_credit_check, _mock_budget, mock_wake, _mock_publish
+    ):
+        """If the wake genuinely fails (returns False), the drain must NOT defer
+        for free — that re-arms the 404→wake→fail loop forever. It falls through
+        to the bounded failure path, which burns an attempt (and ultimately
+        drops + apologizes) so the message can't wedge (canary 148ccf1c,
+        2026-06-25).
+        """
+
+        def _route(url, *args, **kwargs):
+            if "/v1/chat/completions" in url:
+                resp = MagicMock()
+                resp.status_code = 404
+                resp.is_success = False
+                resp.text = "Not Found"
+                resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+                    "404 Not Found", request=MagicMock(), response=resp
+                )
+                return resp
+            ok = MagicMock()
+            ok.is_success = True
+            ok.status_code = 200
+            return ok
+
+        mock_post.side_effect = _route
+
+        user = _make_user(telegram_chat_id=53535354)
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.TELEGRAM,
+            channel_user_id="53535354",
+            payload={"message_text": "wake up", "user_param": "53535354", "user_timezone": "UTC"},
+            user_text="wake up",
+        )
+
+        # Failed wake → falls through to the failure path, which raises to
+        # surface a non-2xx for the QStash retry.
+        with self.assertRaises(RuntimeError):
+            drain_pending_messages_for_tenant_task(str(tenant.id), "telegram", "53535354")
+
+        mock_wake.assert_called_once()
+        # The attempt counter advanced (bounded), lease released, still pending.
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_attempts, 1)
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.PENDING)
+        self.assertIsNone(msg.delivery_in_flight_until)
+
 
 @override_settings(
     NBHD_INTERNAL_API_KEY="test-key",

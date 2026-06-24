@@ -16,6 +16,7 @@ from apps.orchestrator.azure_client import (
     store_tenant_internal_key_in_key_vault,
     update_container_image,
     upload_config_to_file_share,
+    wake_container_app,
 )
 
 
@@ -646,3 +647,134 @@ class UploadConfigToFileShareTest(SimpleTestCase):
     def test_mock_mode_is_no_op(self, _mock_is_mock):
         # Must not raise; must not hit Azure.
         upload_config_to_file_share("any-tenant", '{"agents": {}}')
+
+
+@override_settings(AZURE_RESOURCE_GROUP="rg-nbhd-prod")
+class WakeContainerAppIdempotencyTest(SimpleTestCase):
+    """wake_container_app must treat an already-active revision as success.
+
+    Regression for the canary 148ccf1c delivery wedge (2026-06-25): the
+    ``latest.active`` pre-check can read a stale revision list, so
+    activate_revision is still called on an already-active revision and Azure
+    raises ResourceExistsError (RevisionAlreadyInRequestedState). Letting that
+    propagate left ``hibernated_at`` set in wake_hibernated_tenant's except
+    clause, wedging the poller drain in an infinite 404->wake->crash loop.
+    """
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_already_active_revision_is_treated_as_success(self, mock_get_client, _mock_is_mock):
+        from azure.core.exceptions import ResourceExistsError
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        # Stale read: list says inactive, but the activate call hits "already active".
+        rev = SimpleNamespace(name="oc-x--u8a1074", created_time=1, active=False)
+        mock_client.container_apps_revisions.list_revisions.return_value = [rev]
+        mock_client.container_apps_revisions.activate_revision.side_effect = ResourceExistsError(
+            "Revision oc-x--u8a1074 is already active!"
+        )
+
+        # Must NOT raise — already-active is the desired end state.
+        wake_container_app("oc-x")
+        mock_client.container_apps_revisions.activate_revision.assert_called_once()
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_other_activation_errors_still_propagate(self, mock_get_client, _mock_is_mock):
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        rev = SimpleNamespace(name="oc-x--u8a1074", created_time=1, active=False)
+        mock_client.container_apps_revisions.list_revisions.return_value = [rev]
+        mock_client.container_apps_revisions.activate_revision.side_effect = RuntimeError("boom")
+
+        # A genuinely different failure must NOT be swallowed.
+        with self.assertRaises(RuntimeError):
+            wake_container_app("oc-x")
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_already_active_pre_check_skips_activate(self, mock_get_client, _mock_is_mock):
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        rev = SimpleNamespace(name="oc-x--u8a1074", created_time=1, active=True)
+        mock_client.container_apps_revisions.list_revisions.return_value = [rev]
+
+        wake_container_app("oc-x")
+        mock_client.container_apps_revisions.activate_revision.assert_not_called()
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_activates_latest_inactive_revision(self, mock_get_client, _mock_is_mock):
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        old = SimpleNamespace(name="oc-x--old", created_time=1, active=False)
+        new = SimpleNamespace(name="oc-x--new", created_time=2, active=False)
+        mock_client.container_apps_revisions.list_revisions.return_value = [old, new]
+
+        wake_container_app("oc-x")
+        mock_client.container_apps_revisions.activate_revision.assert_called_once_with(
+            "rg-nbhd-prod", "oc-x", "oc-x--new"
+        )
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_non_already_active_conflict_propagates(self, mock_get_client, _mock_is_mock):
+        from azure.core.exceptions import ResourceExistsError
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        rev = SimpleNamespace(name="oc-x--u8a1074", created_time=1, active=False)
+        mock_client.container_apps_revisions.list_revisions.return_value = [rev]
+        # A 409 that is NOT the already-active condition must propagate so the
+        # caller takes its bounded failure path rather than a false wake.
+        mock_client.container_apps_revisions.activate_revision.side_effect = ResourceExistsError(
+            "Another operation is in progress on this resource."
+        )
+
+        with self.assertRaises(ResourceExistsError):
+            wake_container_app("oc-x")
+
+
+@override_settings(AZURE_RESOURCE_GROUP="rg-nbhd-prod")
+class HibernateContainerAppIdempotencyTest(SimpleTestCase):
+    """hibernate_container_app must treat an already-inactive revision as success.
+
+    Mirror of the wake-side stale-read bug: list_revisions can report a revision
+    as active when it is already inactive, so deactivate_revision raises
+    ResourceExistsError. Letting it propagate aborts hibernation and leaves the
+    tenant awake with no cron-wake armed.
+    """
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_already_inactive_revision_is_treated_as_success(self, mock_get_client, _mock_is_mock):
+        from azure.core.exceptions import ResourceExistsError
+
+        from apps.orchestrator.azure_client import hibernate_container_app
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        rev = SimpleNamespace(name="oc-x--u8a1074", active=True)
+        mock_client.container_apps_revisions.list_revisions.return_value = [rev]
+        mock_client.container_apps_revisions.deactivate_revision.side_effect = ResourceExistsError(
+            "Revision oc-x--u8a1074 is already inactive!"
+        )
+
+        # Must NOT raise — already-inactive is the desired end state.
+        hibernate_container_app("oc-x")
+        mock_client.container_apps_revisions.deactivate_revision.assert_called_once()
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_container_client")
+    def test_other_deactivation_errors_still_propagate(self, mock_get_client, _mock_is_mock):
+        from apps.orchestrator.azure_client import hibernate_container_app
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        rev = SimpleNamespace(name="oc-x--u8a1074", active=True)
+        mock_client.container_apps_revisions.list_revisions.return_value = [rev]
+        mock_client.container_apps_revisions.deactivate_revision.side_effect = RuntimeError("boom")
+
+        with self.assertRaises(RuntimeError):
+            hibernate_container_app("oc-x")

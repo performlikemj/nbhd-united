@@ -164,7 +164,12 @@ class WorkoutSerializer(serializers.ModelSerializer):
 class WorkoutStubSerializer(serializers.ModelSerializer):
     """Lightweight serializer for calendar day cells."""
 
-    plan_id = serializers.UUIDField(source="plan.id", read_only=True, default=None)
+    # Read the raw FK column (the field name ``plan_id`` IS the source — no ``source=``,
+    # which DRF rejects as redundant), not ``plan.id``. Traversing the relation
+    # lazy-loads the whole WorkoutPlan row per workout just to read a PK that already
+    # sits on this row — an N+1 that turns a cold-cache month calendar into ~14 extra
+    # DB round-trips (brutal against the trans-Pacific DB). Raw column is the same UUID.
+    plan_id = serializers.UUIDField(read_only=True, default=None)
 
     class Meta:
         model = Workout

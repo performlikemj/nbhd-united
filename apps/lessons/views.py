@@ -212,7 +212,19 @@ class LessonViewSet(viewsets.ModelViewSet):
         """Full galaxy state for the game client — stars with game state, plus
         connection edges (stored LessonConnections + computed embedding affinity)
         and cluster groupings, so the client can draw constellations and links."""
-        lessons = list(self.get_queryset().filter(status="approved").prefetch_related("connections_out"))
+        # Annotate the two per-star counts onto the single list query. Reading
+        # them via SerializerMethodField's obj.<rel>.count() fired 2 COUNT
+        # queries PER star (and .count() ignores any prefetch cache), so a
+        # galaxy of N stars was 2N round-trips — ~30s against the trans-Pacific
+        # DB. distinct=True keeps the two joins from inflating each other's count.
+        lessons = list(
+            self.get_queryset()
+            .filter(status="approved")
+            .annotate(
+                journal_count_anno=Count("journal_entries", distinct=True),
+                connection_count_anno=Count("connections_out", distinct=True),
+            )
+        )
         lesson_ids = [lesson.id for lesson in lessons]
 
         edges = LessonConnection.objects.filter(
