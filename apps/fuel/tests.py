@@ -919,6 +919,48 @@ class ConsumerFuelViewTests(TestCase):
         self.assertEqual(len(resp.data), 1)  # one date entry
         self.assertEqual(len(resp.data[0]["workouts"]), 2)
 
+    def test_calendar_does_not_n_plus_one_on_plan(self):
+        """Calendar serialization must never query fuel_workout_plans per row.
+
+        Regression for the N+1 (Sentry, canary 148ccf1c 2026-06-25):
+        WorkoutStubSerializer.plan_id read ``plan.id`` by traversing the FK
+        relation, firing one SELECT on fuel_workout_plans per planned workout —
+        ~14 trans-Pacific round-trips that wedged the cold-cache calendar. The
+        raw ``plan_id`` column carries the same UUID, so the plan_id payload is
+        unchanged but no plan rows are fetched.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Calendar Plan",
+            start_date=date(2026, 4, 1),
+            weeks=4,
+            days_per_week=3,
+        )
+        for d in range(1, 6):
+            Workout.objects.create(
+                tenant=self.tenant,
+                plan=plan,
+                date=date(2026, 4, d),
+                category="strength",
+                activity=f"Day {d}",
+            )
+
+        with CaptureQueriesContext(connection) as ctx:
+            resp = self.client.get("/api/v1/fuel/calendar/?year=2026&month=4")
+        self.assertEqual(resp.status_code, 200)
+        plan_queries = [q for q in ctx.captured_queries if "fuel_workout_plans" in q["sql"]]
+        self.assertEqual(
+            plan_queries,
+            [],
+            f"calendar issued {len(plan_queries)} fuel_workout_plans queries (N+1 regressed)",
+        )
+        # plan_id is still emitted, just sourced from the raw FK column.
+        cells = [c for day in resp.data for c in day["workouts"]]
+        self.assertTrue(all(str(c["plan_id"]) == str(plan.id) for c in cells))
+
     def test_tenant_isolation(self):
         other = create_tenant(display_name="Other", telegram_chat_id=800099)
         Workout.objects.create(

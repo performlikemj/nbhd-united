@@ -80,6 +80,49 @@ class ConstellationGameTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["stars"][0]["journal_count"], 2)
 
+    def test_galaxy_does_not_n_plus_one_on_counts(self):
+        """journal_count / connection_count must be annotated on the single
+        list query, not fetched per-star. The old code called obj.<rel>.count()
+        per star — 2N standalone COUNT round-trips, catastrophic against the
+        trans-Pacific DB.
+        """
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from .models import LessonConnection
+
+        stars = [self._create_star(self.tenant, text=f"Star {i}", source_ref=f"s-{i}") for i in range(5)]
+        for s in stars:
+            StarJournalEntry.objects.create(tenant=self.tenant, star=s, text="e", entry_type="free")
+        LessonConnection.objects.create(
+            from_lesson=stars[0], to_lesson=stars[1], similarity=0.9, connection_type="similar"
+        )
+        LessonConnection.objects.create(
+            from_lesson=stars[0], to_lesson=stars[2], similarity=0.8, connection_type="similar"
+        )
+
+        with CaptureQueriesContext(connection) as ctx:
+            resp = self.client.get("/api/v1/lessons/galaxy/")
+        self.assertEqual(resp.status_code, 200)
+
+        # Standalone per-star COUNT queries (no GROUP BY) on the count tables —
+        # the N+1 signature. The annotated counts ride the main list query
+        # (FROM "lessons" ... GROUP BY), so this list must be empty.
+        per_star_counts = [
+            q
+            for q in ctx.captured_queries
+            if "COUNT(" in q["sql"].upper()
+            and "GROUP BY" not in q["sql"].upper()
+            and ('FROM "star_journal_entries"' in q["sql"] or 'FROM "lesson_connections"' in q["sql"])
+        ]
+        self.assertEqual(per_star_counts, [], f"galaxy per-star COUNT N+1 regressed: {len(per_star_counts)} queries")
+
+        # Counts remain correct via the annotation.
+        by_id = {s["id"]: s for s in resp.json()["stars"]}
+        self.assertEqual(by_id[stars[0].id]["journal_count"], 1)
+        self.assertEqual(by_id[stars[0].id]["connection_count"], 2)
+        self.assertEqual(by_id[stars[1].id]["connection_count"], 0)
+
     def test_galaxy_excludes_non_approved(self):
         self._create_star(self.tenant, status="approved")
         self._create_star(self.tenant, text="Pending star", status="pending")

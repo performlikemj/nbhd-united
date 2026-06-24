@@ -123,10 +123,19 @@ class GalaxyStarSerializer(serializers.ModelSerializer):
         return getattr(obj, "position_y", None)
 
     def get_journal_count(self, obj):
-        return getattr(obj, "journal_entries", None) and obj.journal_entries.count() or 0
+        # Prefer the queryset annotation (galaxy list path) to avoid a per-star
+        # COUNT; fall back to a direct count for any caller serializing a lone
+        # star without the annotation.
+        anno = getattr(obj, "journal_count_anno", None)
+        if anno is not None:
+            return anno
+        return obj.journal_entries.count()
 
     def get_connection_count(self, obj):
-        return getattr(obj, "connections_out", None) and obj.connections_out.count() or 0
+        anno = getattr(obj, "connection_count_anno", None)
+        if anno is not None:
+            return anno
+        return obj.connections_out.count()
 
 
 class GalaxyEdgeSerializer(serializers.ModelSerializer):

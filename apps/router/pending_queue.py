@@ -817,30 +817,44 @@ def drain_pending_messages_for_tenant_task(
             if not check_budget(tenant):
                 from apps.orchestrator.hibernation import wake_hibernated_tenant
 
-                for row in batch:
-                    row.delivery_in_flight_until = None
-                    row.save(update_fields=["delivery_in_flight_until"])
-                logger.info(
-                    "drain_pending: tenant %s hibernated (container 404) — waking and deferring drain %ds",
+                # Only defer-without-burning-an-attempt when the wake actually
+                # succeeded. If wake_hibernated_tenant returns False (e.g. a
+                # transient Azure error, or a non-already-active revision
+                # conflict that propagated past the idempotent-activate guard),
+                # deferring for free would re-arm the exact 404→wake→fail loop
+                # forever — the message would never deliver and never cap out.
+                # On a failed wake we fall through to the bounded failure path
+                # below, which advances the attempt counter and eventually
+                # drops + apologizes. (canary 148ccf1c, 2026-06-25)
+                woke = wake_hibernated_tenant(tenant)
+                if woke:
+                    for row in batch:
+                        row.delivery_in_flight_until = None
+                        row.save(update_fields=["delivery_in_flight_until"])
+                    logger.info(
+                        "drain_pending: tenant %s hibernated (container 404) — woke and deferring drain %ds",
+                        tenant_id[:8],
+                        _WAKE_DEFER_SECONDS,
+                    )
+                    _notify_waking(tenant, channel, channel_user_id or "")
+                    _mark_ios_waking(channel, batch)
+                    _reschedule_drain(
+                        tenant,
+                        channel,
+                        channel_user_id or "",
+                        delay_seconds=_WAKE_DEFER_SECONDS,
+                    )
+                    return {
+                        "delivered": 0,
+                        "failed": 0,
+                        "dropped": 0,
+                        "skipped_in_flight": 0,
+                        "woke": True,
+                    }
+                logger.warning(
+                    "drain_pending: tenant %s wake attempt failed — falling through to bounded retry",
                     tenant_id[:8],
-                    _WAKE_DEFER_SECONDS,
                 )
-                wake_hibernated_tenant(tenant)
-                _notify_waking(tenant, channel, channel_user_id or "")
-                _mark_ios_waking(channel, batch)
-                _reschedule_drain(
-                    tenant,
-                    channel,
-                    channel_user_id or "",
-                    delay_seconds=_WAKE_DEFER_SECONDS,
-                )
-                return {
-                    "delivered": 0,
-                    "failed": 0,
-                    "dropped": 0,
-                    "skipped_in_flight": 0,
-                    "woke": True,
-                }
 
         # Boot grace: the container was woken moments ago (this drain or the
         # webhook path) and its replica isn't serving yet. Not the message's
