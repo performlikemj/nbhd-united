@@ -1563,13 +1563,19 @@ class RuntimeFuelAuditView(APIView):
         horizon_14d_end = today + timedelta(days=14)
         horizon_48h_end = now + timedelta(hours=48)
 
-        # 1. today_plan — parse from today's daily-note Fuel section
+        # 1. today_plan — the daily-note Fuel section when present. ``exists``
+        # means specifically "a prep cron already wrote today's section": the
+        # cron's idempotence gate depends on that exact meaning, so we must NOT
+        # widen it. The Postgres fallback below adds today's scheduled Workout
+        # rows as a separate ``workouts`` list (without touching ``exists``), so
+        # the guidance can still see a scheduled session the note never captured.
         today_doc = Document.objects.filter(tenant=tenant, kind="daily", slug=str(today)).first()
         today_plan_body = _parse_fuel_section(today_doc.markdown) if today_doc else None
         today_plan = {
             "exists": bool(today_plan_body),
             "iso_date": str(today),
             "raw_section": today_plan_body,
+            "workouts": [],
         }
 
         # 2. next_14d_workouts — Postgres truth
@@ -1595,6 +1601,17 @@ class RuntimeFuelAuditView(APIView):
             }
             for w in next_14d_qs
         ]
+
+        # today_plan fallback — the daily-note Fuel section is authored only by
+        # the prep cron (active plan + training day + cron already fired) and is
+        # absent from the default note template, so keying "is there a plan
+        # today?" off the section alone was a false negative whenever a session
+        # was scheduled but never scraped. Postgres is the source of truth:
+        # surface today's Workout rows (already in next_14d) as a separate list
+        # the guidance uses, so the audit doesn't report "no plan today" — and
+        # invite a duplicate — when one is on the calendar. ``exists`` stays
+        # daily-note-only on purpose (the prep cron's idempotence gate).
+        today_plan["workouts"] = [w for w in next_14d if w["date"] == str(today)]
 
         # 3. fuel-related crons — gateway cron.list filtered to _fuel:* and
         # any user-named cron whose name hints at workout activity.
@@ -1720,6 +1737,16 @@ def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list) -
             "call nbhd_fuel_update_workout or nbhd_fuel_delete_workout directly. "
             "Workout IDs are already in this response — do NOT call nbhd_fuel_summary "
             "just to retrieve them."
+        )
+    if today_plan.get("workouts"):
+        return (
+            "A workout is already on the calendar for today (today_plan.workouts, also "
+            "in next_14d_workouts) — the daily note has no Fuel section, but Postgres "
+            "is the source of truth. Do NOT treat today as unplanned or propose a fresh "
+            "workout over it: deliver the planned session, or acknowledge it if a row is "
+            "already done/skipped (check each row's status). Workout IDs are inline for "
+            "nbhd_fuel_update_workout / nbhd_fuel_delete_workout — do NOT call "
+            "nbhd_fuel_summary just to retrieve them."
         )
     return (
         "No locked plan for today. Safe to propose one. Before scheduling, check "
