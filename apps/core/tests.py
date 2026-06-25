@@ -806,24 +806,36 @@ class RealFfmpegRenderTests(UnitTestCase):
 # ═════════════════════════════════════════════════════════════════════
 
 
+def _over_segmented_manifest() -> dict:
+    """A structurally-correct manifest that trips ONLY the MAX_SPEECH_SEGMENTS
+    ceiling — the 2026-06-25 'too many spoken segments (15 > 12)' failure."""
+    m = _valid_manifest()
+    core = next(p for p in m["phases"] if p["name"] == "core_practice")
+    over = render.MAX_SPEECH_SEGMENTS + 2  # exceed the cap on its own
+    core["segments"] = [
+        {"type": "speech", "text": f"Notice this, moment {i}.", "tone": "soft"} for i in range(over)
+    ] + [{"type": "silence", "seconds": 10}]
+    return m
+
+
 @override_settings(OPENROUTER_API_KEY="test-or-key")
 class ComposeAuthoringTests(SimpleTestCase):
-    def _resp(self, content):
-        resp = MagicMock()
-        resp.raise_for_status.return_value = None
-        resp.json.return_value = {"choices": [{"message": {"content": content}}]}
-        return resp
+    def _ok(self, content, model="test/primary"):
+        """A ``chat_completion`` return value: ``(response_json, model_used)``."""
+        return ({"choices": [{"message": {"content": content}}]}, model)
 
     def test_authors_and_normalizes_valid_manifest(self):
-        with patch("apps.core.compose.requests.post", return_value=self._resp(json.dumps(_valid_manifest()))):
+        with patch("apps.core.compose.chat_completion", return_value=self._ok(json.dumps(_valid_manifest()))) as cc:
             out = compose.author_manifest({"additional_context": "work stress"}, voice="Achernar")
         self.assertEqual(render.validate_manifest(out), [])
         self.assertEqual(out["voice"], "Achernar")  # normalized
         self.assertEqual(out["total_target_seconds"], 600)
+        cc.assert_called_once()  # primary answered — no fallback needed
 
     def test_non_json_raises(self):
+        # Every candidate in the chain returns non-JSON → terminal ComposeError.
         with (
-            patch("apps.core.compose.requests.post", return_value=self._resp("not json {")),
+            patch("apps.core.compose.chat_completion", return_value=self._ok("not json {")),
             self.assertRaises(compose.ComposeError),
         ):
             compose.author_manifest({})
@@ -831,7 +843,7 @@ class ComposeAuthoringTests(SimpleTestCase):
     def test_invalid_manifest_raises(self):
         bad = json.dumps({"phases": [{"name": "arrival", "segments": []}]})
         with (
-            patch("apps.core.compose.requests.post", return_value=self._resp(bad)),
+            patch("apps.core.compose.chat_completion", return_value=self._ok(bad)),
             self.assertRaises(compose.ComposeError),
         ):
             compose.author_manifest({})
@@ -840,6 +852,89 @@ class ComposeAuthoringTests(SimpleTestCase):
     def test_missing_key_raises(self):
         with self.assertRaises(compose.ComposeError):
             compose.author_manifest({})
+
+    # ── model fallback (the fix for the 2026-06-25 "can't generate" incident) ──
+
+    def test_chain_is_low_cost_steerable_first(self):
+        models = compose._compose_models()
+        self.assertEqual(models[0], compose.GEMMA_MODEL)  # steerable, structured-output-capable
+        self.assertIn(compose.DEEPSEEK_FLASH_MODEL, models)  # cheap fallback
+        self.assertIn(compose.DEEPSEEK_MODEL, models)  # V4 Pro last resort
+        self.assertEqual(len(models), len(set(models)))  # de-duped
+
+    def test_explicit_model_pins_a_single_model_no_fallback(self):
+        with (
+            patch("apps.core.compose.chat_completion", return_value=self._ok("not json")) as cc,
+            self.assertRaises(compose.ComposeError),
+        ):
+            compose.author_manifest({}, model="some/model")
+        cc.assert_called_once()
+
+    def test_falls_back_when_primary_truncates_json(self):
+        # Primary drifts to truncated (here, non-English) JSON — the live 06-25
+        # failure; the next candidate returns a valid manifest → compose succeeds.
+        truncated = '{"schema_version": 1, "title": "轻放责备", "theme": "温柔'
+        with patch(
+            "apps.core.compose.chat_completion",
+            side_effect=[self._ok(truncated), self._ok(json.dumps(_valid_manifest()))],
+        ) as cc:
+            out = compose.author_manifest({})
+        self.assertEqual(render.validate_manifest(out), [])
+        self.assertEqual(cc.call_count, 2)
+
+    def test_falls_back_when_primary_returns_non_dict_json(self):
+        # Valid JSON that ISN'T a manifest object (top-level array) — _normalize
+        # raises ComposeError; it must fall through, not abort the chain.
+        with patch(
+            "apps.core.compose.chat_completion",
+            side_effect=[self._ok("[1, 2, 3]"), self._ok(json.dumps(_valid_manifest()))],
+        ) as cc:
+            out = compose.author_manifest({})
+        self.assertEqual(render.validate_manifest(out), [])
+        self.assertEqual(cc.call_count, 2)
+
+    def test_falls_back_when_primary_over_produces_segments(self):
+        over = _over_segmented_manifest()
+        self.assertTrue(any("too many spoken" in e for e in render.validate_manifest(over)))
+        with patch(
+            "apps.core.compose.chat_completion",
+            side_effect=[self._ok(json.dumps(over)), self._ok(json.dumps(_valid_manifest()))],
+        ) as cc:
+            out = compose.author_manifest({})
+        self.assertEqual(render.validate_manifest(out), [])
+        self.assertEqual(cc.call_count, 2)
+
+    def test_falls_back_when_primary_transport_errors(self):
+        with patch(
+            "apps.core.compose.chat_completion",
+            side_effect=[RuntimeError("502 upstream"), self._ok(json.dumps(_valid_manifest()))],
+        ) as cc:
+            out = compose.author_manifest({})
+        self.assertEqual(render.validate_manifest(out), [])
+        self.assertEqual(cc.call_count, 2)
+
+    def test_terminal_error_carries_every_candidate_reason(self):
+        # All three candidates fail differently → the raised reason names each, so
+        # session.error is diagnosable (not just the last candidate's failure).
+        over = json.dumps(_over_segmented_manifest())
+        with (
+            patch(
+                "apps.core.compose.chat_completion",
+                side_effect=[self._ok(over), self._ok("not json"), RuntimeError("503")],
+            ),
+            self.assertRaises(compose.ComposeError) as ctx,
+        ):
+            compose.author_manifest({})
+        msg = str(ctx.exception)
+        self.assertIn("too many spoken", msg)
+        self.assertIn("non-JSON", msg)
+        self.assertIn("503", msg)
+
+    def test_strips_code_fences(self):
+        fenced = "```json\n" + json.dumps(_valid_manifest()) + "\n```"
+        with patch("apps.core.compose.chat_completion", return_value=self._ok(fenced)):
+            out = compose.author_manifest({})
+        self.assertEqual(render.validate_manifest(out), [])
 
 
 class ComposeTargetLengthTests(UnitTestCase):

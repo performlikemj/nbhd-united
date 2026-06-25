@@ -6,8 +6,12 @@ The locked split is "assistant authors the manifest (judgment); backend renders
 6-phase scaffold (it never invents the structure) → validate before any TTS spend.
 
 LLM access mirrors the project's other Django-side calls (apps/insights/synthesis.py,
-apps/pii/arbiter.py): a direct OpenRouter ``chat/completions`` POST with JSON mode.
-Kept LEAN on purpose — one speech line per phase (~6 TTS calls) so a low Gemini
+apps/pii/arbiter.py): the shared ``apps.common.openrouter.chat_completion`` client
+with JSON mode. Like those callers it tries an ORDERED CHAIN of low-cost OpenRouter
+models rather than a single one, so a single model's hiccup on this structured task
+no longer fails the whole compose. Each candidate is parsed AND validated — a model
+that answers with unusable *content* (not just an empty body) also falls through to
+the next. Kept LEAN on purpose — sparse speech (~6-12 TTS calls) so a low Gemini
 tier's per-minute cap isn't tripped; silence (free) does the rest of the 10 minutes.
 """
 
@@ -16,16 +20,27 @@ from __future__ import annotations
 import json
 import logging
 
-import requests
 from django.conf import settings
 
+from apps.billing.constants import DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL, GEMMA_MODEL
+from apps.common.openrouter import chat_completion
 from apps.core import render
 
 logger = logging.getLogger(__name__)
 
-# Reuse the project's proven Django-side LLM (OpenRouter, JSON mode). Swappable.
-DEFAULT_COMPOSE_MODEL = "deepseek/deepseek-v4-pro"
-_MAX_OUTPUT_TOKENS = 2000  # holistic manifests carry more segments (explicit silences)
+# Authoring chain (primary overridable via settings.CORE_COMPOSE_MODEL), de-duped,
+# primary first — mirrors synthesis.SYNTHESIS_MODELS / arbiter.ARBITER_MODELS so a
+# single-model hiccup never sinks the compose. All low-cost OpenRouter models.
+# STEERABLE first, not merely cheapest: Gemma 4 31B (Gemini family — on OpenRouter's
+# structured-output list, English-native, NOT a reasoning model) leads, because this
+# is a structured-authoring task. The DeepSeek V4 tiers are reasoning models that
+# OpenRouter does NOT list for structured outputs — under loose JSON mode they burn
+# output tokens on a reasoning trace (→ truncated JSON) and drift in language /
+# segment count — so they sit BEHIND Gemma as cheap fallbacks (Flash before the
+# pricier Pro), reached only if Gemma is unavailable or returns unusable content.
+DEFAULT_COMPOSE_MODEL = GEMMA_MODEL
+_FALLBACK_COMPOSE_MODELS = [DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL]
+_MAX_OUTPUT_TOKENS = 3000  # headroom: holistic manifests carry many explicit-silence segments
 _LLM_TIMEOUT_S = 60
 
 # Rough per-phase time budgets (seconds) for the ~10-min arc — guidance the model
@@ -85,7 +100,10 @@ _SYSTEM_PROMPT = (
     "- core_practice is the personalized heart: gently name what the signals suggest they're carrying, and "
     "offer permission to set it down. Be specific but kind; never clinical, never list their data back.\n"
     "- closing gives one small carry-forward intention.\n\n"
-    "Return ONLY the JSON object — no prose, no markdown fences."
+    "OUTPUT FORMAT (strict):\n"
+    "- Write ALL text — title, theme, every speech segment — in ENGLISH.\n"
+    "- Return ONLY the JSON object: a single object (not an array), with no prose, no markdown fences, and no "
+    "reasoning or commentary before or after it. Keep it compact so it is never truncated."
 )
 
 
@@ -207,46 +225,92 @@ def _normalize(manifest: dict, voice: str, target_seconds: float = render.DEFAUL
     return manifest
 
 
-def author_manifest(signals: dict, *, voice: str = "", model: str = "") -> dict:
-    """Author a validated render manifest from raw signals via the LLM.
+def _compose_models(model: str = "") -> list[str]:
+    """The ordered authoring chain: explicit override (alone) OR primary + fallbacks.
 
-    Raises ``ComposeError`` if the key is missing, the LLM call fails, the output
-    isn't parseable JSON, or the manifest fails ``render.validate_manifest``.
+    An explicit ``model`` arg pins a single model (callers/tests that want one). With
+    no override, the chain is the configured primary first, then the fallbacks,
+    de-duped and preserving order.
+    """
+    if model:
+        return [model]
+    primary = getattr(settings, "CORE_COMPOSE_MODEL", "") or DEFAULT_COMPOSE_MODEL
+    chain = [primary, *_FALLBACK_COMPOSE_MODELS]
+    seen: set[str] = set()
+    return [m for m in chain if m and not (m in seen or seen.add(m))]
+
+
+def _strip_code_fences(text: str) -> str:
+    """Drop a leading/trailing ```json fence if the model wrapped its JSON in one.
+
+    Mirrors apps.pii.arbiter — some models emit fenced JSON even under
+    ``response_format=json_object``.
+    """
+    if text.startswith("```"):
+        text = text.split("\n", 1)[-1].rsplit("```", 1)[0]
+    return text.strip()
+
+
+def author_manifest(signals: dict, *, voice: str = "", model: str = "") -> dict:
+    """Author a validated render manifest from raw signals via the LLM chain.
+
+    Tries each model in ``_compose_models`` in order; the first whose response
+    parses, normalizes, AND passes ``render.validate_manifest`` wins. A candidate
+    that fails transport, returns unparseable JSON, returns valid JSON that isn't a
+    manifest object, or returns a structurally-invalid manifest is logged and the
+    next candidate is tried. Raises ``ComposeError`` if the key is missing or every
+    candidate fails (carrying every candidate's failure reason for diagnosis).
     """
     api_key = getattr(settings, "OPENROUTER_API_KEY", "") or ""
     if not api_key:
         raise ComposeError("OPENROUTER_API_KEY not configured")
-    model = model or getattr(settings, "CORE_COMPOSE_MODEL", "") or DEFAULT_COMPOSE_MODEL
     target_seconds = _target_seconds_from_signals(signals)
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": _format_signals(signals, target_seconds)},
+    ]
+    body = {
+        "max_tokens": _MAX_OUTPUT_TOKENS,
+        "temperature": 0.7,
+        "response_format": {"type": "json_object"},
+    }
 
-    try:
-        resp = requests.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": _format_signals(signals, target_seconds)},
-                ],
-                "max_tokens": _MAX_OUTPUT_TOKENS,
-                "temperature": 0.7,
-                "response_format": {"type": "json_object"},
-            },
-            timeout=_LLM_TIMEOUT_S,
-        )
-        resp.raise_for_status()
-        content = (resp.json()["choices"][0]["message"]["content"] or "").strip()
-    except (requests.RequestException, KeyError, IndexError, ValueError) as exc:
-        raise ComposeError(f"LLM call failed: {str(exc)[:200]}") from exc
+    candidates = _compose_models(model)
+    failures: list[str] = []
 
-    try:
-        manifest = json.loads(content)
-    except json.JSONDecodeError as exc:
-        raise ComposeError(f"LLM returned non-JSON: {content[:160]}") from exc
+    def _record(model_id: str, reason: str) -> None:
+        failures.append(f"{model_id}: {reason}")
+        logger.warning("compose: model %s failed — %s", model_id, reason)
 
-    manifest = _normalize(manifest, voice, target_seconds)
-    errors = render.validate_manifest(manifest)
-    if errors:
-        raise ComposeError("authored manifest invalid: " + "; ".join(errors[:4]))
-    return manifest
+    for model_id in candidates:
+        try:
+            data, _used = chat_completion(model_id, messages, api_key=api_key, timeout=_LLM_TIMEOUT_S, **body)
+            content = _strip_code_fences((data["choices"][0]["message"]["content"] or "").strip())
+        except Exception as exc:  # noqa: BLE001 — record + fall through to the next model
+            _record(model_id, f"LLM call failed: {str(exc)[:160]}")
+            continue
+
+        try:
+            manifest = json.loads(content)
+        except json.JSONDecodeError:
+            _record(model_id, f"non-JSON response: {content[:120]!r}")
+            continue
+
+        # _normalize raises ComposeError on valid-but-non-dict JSON (e.g. a top-level
+        # array or quoted string — a real drift mode); treat that like any other bad
+        # content and fall through rather than aborting the whole chain.
+        try:
+            manifest = _normalize(manifest, voice, target_seconds)
+        except ComposeError as exc:
+            _record(model_id, str(exc))
+            continue
+
+        errors = render.validate_manifest(manifest)
+        if errors:
+            _record(model_id, "invalid manifest: " + "; ".join(errors[:3]))
+            continue
+
+        return manifest
+
+    detail = " | ".join(failures) if failures else "no compose model configured"
+    raise ComposeError(detail)
