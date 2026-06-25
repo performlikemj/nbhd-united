@@ -4809,3 +4809,137 @@ class FuelOverviewViewTests(TestCase):
     def test_requires_auth(self):
         resp = APIClient().get("/api/v1/fuel/overview/")
         self.assertEqual(resp.status_code, 401)
+
+
+class ManageFuelCronGateTests(TestCase):
+    """The legacy `_manage_fuel_cron` path must NOT run for session-scheduling
+    tenants (closes the dual-writer leak); it MUST still run for legacy tenants."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Cron Gate", telegram_chat_id=800777)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="My Plan",
+            status="active",
+            start_date=date(2026, 5, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},
+        )
+
+    @patch("apps.orchestrator.config_generator.build_fuel_workout_cron", return_value={"name": "_fuel:My Plan"})
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_session_tenant_skips_legacy_cron(self, mock_invoke, _mock_build):
+        from apps.fuel.runtime_views import _manage_fuel_cron
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=True)
+        _manage_fuel_cron(self.tenant, self.plan, action="create")
+        mock_invoke.assert_not_called()
+
+    @patch("apps.orchestrator.config_generator.build_fuel_workout_cron", return_value={"name": "_fuel:My Plan"})
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_legacy_tenant_still_creates_cron(self, mock_invoke, _mock_build):
+        from apps.fuel.runtime_views import _manage_fuel_cron
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=False)
+        _manage_fuel_cron(self.tenant, self.plan, action="create")
+        # Legacy create is now idempotent: it sweeps (cron.list) THEN re-adds
+        # (cron.add) the single plan-name cron.
+        tools = [c.args[1] for c in mock_invoke.call_args_list]
+        self.assertIn("cron.list", tools)
+        self.assertIn("cron.add", tools)
+        add_call = next(c for c in mock_invoke.call_args_list if c.args[1] == "cron.add")
+        self.assertEqual(add_call.args[2], {"job": {"name": "_fuel:My Plan"}})
+
+    @patch("apps.orchestrator.config_generator.build_fuel_workout_cron", return_value={"name": "_fuel:My Plan"})
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_legacy_create_sweeps_existing_orphan(self, mock_invoke, _mock_build):
+        """The write-side seal: create removes a stranded _fuel:{old} orphan
+        before re-adding, so it can never accumulate (the old additive create
+        is what built the pile)."""
+        from apps.fuel.runtime_views import _manage_fuel_cron
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=False)
+        removed = []
+
+        def fake(tenant, tool, args):
+            if tool == "cron.list":
+                return {"details": {"jobs": [{"name": "_fuel:Old Plan", "id": "orphan-1"}]}}
+            if tool == "cron.remove":
+                removed.append(args["jobId"])
+            return None
+
+        mock_invoke.side_effect = fake
+        _manage_fuel_cron(self.tenant, self.plan, action="create")
+        self.assertEqual(removed, ["orphan-1"])  # stale orphan swept
+        tools = [c.args[1] for c in mock_invoke.call_args_list]
+        self.assertIn("cron.add", tools)  # then the canonical cron re-added
+
+    @patch("apps.orchestrator.config_generator.build_fuel_workout_cron", return_value={"name": "_fuel:My Plan"})
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_no_profile_runs_legacy_path(self, mock_invoke, _mock_build):
+        """No FuelProfile → gate can't read the flag → legacy path runs (it's a
+        pre-session tenant by definition)."""
+        from apps.fuel.runtime_views import _manage_fuel_cron
+
+        _manage_fuel_cron(self.tenant, self.plan, action="create")
+        tools = [c.args[1] for c in mock_invoke.call_args_list]
+        self.assertIn("cron.add", tools)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimePlanRenameCronTriggerTests(TestCase):
+    """A pure rename must reconcile the legacy fuel cron, not strand the old
+    name. The PATCH path fires `_manage_fuel_cron(action="update")` on rename."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Rename Trigger", telegram_chat_id=800778)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        seed_internal_key(self.tenant)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+        self.plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Summer Cut",
+            status="active",
+            start_date=date(2026, 5, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},
+        )
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron", return_value=None)
+    def test_rename_only_fires_cron_update(self, mock_manage):
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{self.plan.id}/",
+            data={"name": "Cutting Block"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        mock_manage.assert_called_once()
+        # active plan + name change → action="update" (remove-all + re-add,
+        # which clears the stale-named orphan on the legacy flow).
+        self.assertEqual(mock_manage.call_args.kwargs.get("action") or mock_manage.call_args.args[2], "update")
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron", return_value=None)
+    def test_paused_plan_rename_fires_cron_remove(self, mock_manage):
+        """A rename of a non-active plan must still reconcile — action="remove"
+        sweeps the stranded old-named cron. Pins the newly-reachable branch."""
+        self.plan.status = "paused"
+        self.plan.save(update_fields=["status"])
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{self.plan.id}/",
+            data={"name": "Renamed While Paused"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        mock_manage.assert_called_once()
+        self.assertEqual(mock_manage.call_args.kwargs.get("action") or mock_manage.call_args.args[2], "remove")

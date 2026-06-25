@@ -1124,21 +1124,45 @@ def _manage_fuel_cron(tenant, plan, action="create"):
     """
     try:
         from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
-        from apps.orchestrator.config_generator import build_fuel_workout_cron
+        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+        from apps.orchestrator.services import _extract_cron_jobs
     except ImportError:
-        logger.warning("Could not import gateway_client or config_generator for fuel cron")
+        logger.warning("Could not import gateway_client or fuel_cron for fuel cron")
         return
 
-    cron_name = f"_fuel:{plan.name}"
+    # Session-scheduling tenants own the entire ``_fuel:*`` namespace via the
+    # per-session reconciler (apps/orchestrator/fuel_cron.py), driven by
+    # Workout post_save/post_delete signals (this PATCH already mutates Workout
+    # rows through apply_reconciliation, which fires them). The legacy
+    # plan-name path must NOT run for them: its additive ``cron.add`` mints a
+    # ``_fuel:{plan.name}`` the reconciler treats as legacy, and its
+    # "remove every _fuel:*" sweep deletes the live session crons on every
+    # edit — the dual-writer collision that accumulated duplicate fuel crons.
+    # (Seed-path emission is already suppressed in build_cron_seed_jobs; this
+    # closes the runtime-CRUD gap. Legacy orphans on session tenants are reaped
+    # by the reconciler's namespace ownership.)
+    try:
+        if FuelProfile.objects.get(tenant=tenant).use_session_scheduling:
+            return
+    except FuelProfile.DoesNotExist:
+        pass
 
     try:
-        if action in ("remove", "update"):
-            # Find and remove existing fuel cron(s) for this tenant
+        if action in ("create", "remove", "update"):
+            # Sweep existing _fuel:* cron(s) before (re)creating. "create" is
+            # swept too so it is IDEMPOTENT — the pre-fix additive create left
+            # a _fuel:{plan.name} behind on every call (and renames stranded
+            # old-named crons), which is how the duplicate pile accumulated.
+            # After the sweep, the "create"/"update" block below re-adds the
+            # single canonical cron. The hourly fuel reconciler is the
+            # fleet-wide backstop for anything that slips.
             try:
                 result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
-                existing = (
-                    result.get("jobs", []) if isinstance(result, dict) else result if isinstance(result, list) else []
-                )
+                # Use the canonical extractor: the gateway wraps jobs in
+                # ``{"details": {"jobs": [...]}}``, which the old ad-hoc
+                # ``result.get("jobs")`` missed — so the sweep silently removed
+                # nothing on the real gateway, another reason orphans persisted.
+                existing = _extract_cron_jobs(result) or []
                 for job in existing:
                     if isinstance(job, dict) and str(job.get("name", "")).startswith("_fuel:"):
                         job_id = job.get("id") or job.get("jobId") or job.get("name")
@@ -1148,18 +1172,17 @@ def _manage_fuel_cron(tenant, plan, action="create"):
                 logger.warning("Failed to remove fuel cron for tenant %s", tenant.id)
 
         if action in ("create", "update"):
-            if plan.status != "active":
-                return  # Only create crons for active plans
-            # Get preferred_time from profile for cron scheduling
-            pref_time = ""
-            try:
-                pref_time = FuelProfile.objects.get(tenant=tenant).preferred_time
-            except FuelProfile.DoesNotExist:
-                pass
-            job_dict = build_fuel_workout_cron(tenant, plan, preferred_time=pref_time)
-            if job_dict:
+            # Re-add the CANONICAL desired set — the most-recent active plan's
+            # cron, the exact same selection the hourly reconciler and the seed
+            # path use (apps/orchestrator/fuel_cron._desired_fuel_crons), NOT
+            # the request's `plan`. If a tenant ever holds >1 active plan,
+            # editing an older one must not re-add its cron only to have the
+            # reconciler reap it an hour later: both writers now resolve the
+            # same single owner, so they can never disagree. Returns [] (no add)
+            # when there is no active plan.
+            for job_dict in _desired_fuel_crons(tenant):
                 invoke_gateway_tool(tenant, "cron.add", {"job": job_dict})
-                logger.info("Created fuel cron '%s' for tenant %s", cron_name, tenant.id)
+                logger.info("Created fuel cron '%s' for tenant %s", job_dict.get("name"), tenant.id)
 
     except GatewayError:
         logger.warning("Fuel cron %s failed for tenant %s (best-effort)", action, tenant.id)
@@ -1459,8 +1482,14 @@ class RuntimeWorkoutPlanDetailView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
-        # Manage fuel cron based on status/schedule changes (best-effort)
-        if "status" in updated_fields or needs_regeneration:
+        # Manage fuel cron based on status/schedule/name changes (best-effort).
+        # A pure rename must reconcile too: the legacy cron name is
+        # ``_fuel:{plan.name}``, so renaming without this would strand the
+        # old-named cron forever (and add a new one) — a duplicate fire on the
+        # legacy (non-session) flow. ``action="update"`` removes every
+        # ``_fuel:*`` then re-adds the current one, clearing the orphan.
+        # No-op for session tenants (the gate in _manage_fuel_cron returns early).
+        if "status" in updated_fields or needs_regeneration or "name" in updated_fields:
             if plan.status == "active":
                 _manage_fuel_cron(tenant, plan, action="update")
             else:
