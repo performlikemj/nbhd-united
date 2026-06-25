@@ -1535,6 +1535,50 @@ class RuntimeFuelAuditTests(TestCase):
         self.assertEqual(by_activity["Pull Day"]["rpe"], 7)
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_today_plan_falls_back_to_workout_row(self, mock_invoke):
+        # Daily note has no "## Fuel" section, but a session IS scheduled today.
+        # exists stays False (it means "the cron wrote the section"), but the row
+        # is surfaced in today_plan.workouts and the guidance points the agent at
+        # it instead of inviting a duplicate.
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._make(activity="Leg Day", category="strength", rpe=8)  # date=today, planned
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        tp = resp.data["today_plan"]
+        self.assertFalse(tp["exists"])  # no daily-note section written
+        self.assertIsNone(tp["raw_section"])
+        self.assertEqual(len(tp["workouts"]), 1)
+        self.assertEqual(tp["workouts"][0]["activity"], "Leg Day")
+        # Guidance must NOT invite a duplicate when one is already scheduled.
+        self.assertNotIn("Safe to propose", resp.data["guidance"])
+        self.assertIn("already on the calendar", resp.data["guidance"])
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_today_plan_prefers_daily_note_over_rows(self, mock_invoke):
+        # When both the authored daily-note section and a today row exist, the
+        # prose wins (exists=True, deliver verbatim) but the rows are still listed.
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._set_daily_fuel_section("**Today:** Push Day")
+        self._make(activity="Push Day", category="strength")  # date=today, planned
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        tp = resp.data["today_plan"]
+        self.assertTrue(tp["exists"])
+        self.assertIn("Push Day", tp["raw_section"])
+        self.assertEqual(len(tp["workouts"]), 1)  # rows still surfaced alongside the prose
+        self.assertIn("verbatim", resp.data["guidance"])
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_today_plan_absent_when_no_section_and_no_today_row(self, mock_invoke):
+        from datetime import timedelta
+
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._make(date=date.today() + timedelta(days=3), activity="Future")  # not today
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        tp = resp.data["today_plan"]
+        self.assertFalse(tp["exists"])
+        self.assertEqual(tp["workouts"], [])
+        self.assertIn("Safe to propose", resp.data["guidance"])
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_audit_flags_duplicate_fires(self, mock_invoke):
         mock_invoke.return_value = {
             "details": {
