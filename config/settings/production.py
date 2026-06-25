@@ -61,6 +61,30 @@ DATABASES["default"]["CONN_HEALTH_CHECKS"] = True
 DATABASES["default"].setdefault("OPTIONS", {})
 DATABASES["default"]["OPTIONS"]["prepare_threshold"] = None
 
+# TCP keepalives on the client→Supavisor socket.
+#
+# The DB is in Supabase ap-southeast-2 (Sydney) while Django runs in Azure
+# westus2 — a trans-Pacific hop measured at ~152ms per round trip, so a fresh
+# psycopg connect (TCP + TLS + SCRAM ≈ 5-6 round trips) costs ~900ms. CONN_MAX_AGE
+# is meant to amortize that across a connection's 600s life, but it only pays off
+# if the socket survives between requests. With gthread (2×8 = up to 16
+# thread-local connections) and bursty/low single-client traffic (e.g. the iOS
+# chat poll every ~30s), any given thread's socket sits idle for minutes — long
+# enough for an intermediate NAT/load-balancer (Azure outbound SNAT idle ~4min)
+# to silently reap it. CONN_HEALTH_CHECKS then finds a dead socket and reconnects,
+# charging the ~900ms handshake to that request's FIRST query (the JWT auth user
+# lookup) — which is exactly the >1s "Slow DB Query" Sentry flagged on
+# /api/v1/chat/messages/ (2026-06-24). Postgres' own keepalive is server→client
+# (tcp_keepalives_idle=1800) and doesn't keep the client socket warm.
+#
+# Client-side keepalives send a probe after 30s of idleness, resetting the NAT
+# idle timer so the persistent connection actually persists and CONN_MAX_AGE
+# delivers reuse. libpq params, passed straight through by psycopg3.
+DATABASES["default"]["OPTIONS"]["keepalives"] = 1
+DATABASES["default"]["OPTIONS"]["keepalives_idle"] = 30
+DATABASES["default"]["OPTIONS"]["keepalives_interval"] = 10
+DATABASES["default"]["OPTIONS"]["keepalives_count"] = 5
+
 # Security
 SECURE_SSL_REDIRECT = True
 SECURE_HSTS_SECONDS = 31536000
