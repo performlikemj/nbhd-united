@@ -325,7 +325,7 @@ nvidia-nvtx==13.0.85
     # via cuda-toolkit
 oauthlib==3.3.1
     # via requests-oauthlib
-openai==2.43.0
+openai==2.44.0
     # via
     #   -r requirements.in
     #   composio
