@@ -13,10 +13,10 @@ designed. See ``docs/future/community-finance.md`` for the framing.
 
 from __future__ import annotations
 
-from datetime import date as _date
 from datetime import timedelta as _timedelta
 from decimal import Decimal
 
+from apps.common.tenant_tz import tenant_today
 from apps.finance.models import FinanceAccount, FinanceTransaction, PayoffPlan
 from apps.orchestrator.envelope_registry import register_section
 from apps.tenants.models import Tenant
@@ -73,7 +73,10 @@ def render_finance(tenant: Tenant, *, max_chars: int = 1000) -> str:
                 priority_line += f", min ${priority.minimum_payment:,.2f}/mo"
         sections.append(priority_line)
 
-    today = _date.today()
+    # Tenant-local day — bare ``date.today()`` is UTC, so a tenant east/west of
+    # UTC could window due dates (and the recent-tx lookback below) against the
+    # wrong calendar day. Anchors on ``tenant_today`` like the Fuel/Core sections.
+    today = tenant_today(tenant)
     upcoming = [a for a in debts if a.due_day and 0 <= ((a.due_day - today.day) % 31) <= 7 and a.minimum_payment]
     if upcoming:
         due_lines = ["**Upcoming due dates** (next 7 days):"]

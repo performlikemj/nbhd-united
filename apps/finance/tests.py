@@ -2340,3 +2340,47 @@ class FinanceQueryViewTests(TestCase):
         r = self._post({"resource": "accounts"})
         nicks = [row["nickname"] for row in r.json()["data"]]
         self.assertNotIn("Other Tenant Card", nicks)
+
+
+class FinanceEnvelopeTenantLocalDateTests(TestCase):
+    """render_finance windows due dates against tenant-local today, not UTC.
+
+    Regression: the section used ``date.today()`` (UTC), so a tenant east/west
+    of UTC could window due dates against the wrong calendar day. Patching
+    ``tenant_today`` proves the window now keys off tenant-local time — the old
+    UTC call would have ignored the patch entirely.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="FinEnvTZ", telegram_chat_id=900911)
+
+    def _debt(self, nickname, due_day):
+        return FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname=nickname,
+            current_balance=Decimal("1200.00"),
+            minimum_payment=Decimal("50.00"),
+            due_day=due_day,
+            is_active=True,
+        )
+
+    def test_due_window_keys_off_tenant_today(self):
+        from unittest.mock import patch
+
+        import apps.finance.envelope as fe
+
+        self._debt("SoonCC", due_day=28)
+
+        # Pinned tenant-local 25th: due day 28 is 3 days out -> inside the 7d window.
+        with patch.object(fe, "tenant_today", return_value=date(2026, 6, 25)):
+            body = fe.render_finance(self.tenant)
+        self.assertIn("Upcoming due dates", body)
+        self.assertIn("SoonCC", body.split("**Upcoming due dates**", 1)[1])
+
+        # Pinned tenant-local 20th: now 8 days out -> outside the window, section
+        # drops. The old UTC ``date.today()`` ignored this patch entirely, so the
+        # window could never have tracked the tenant's actual calendar day.
+        with patch.object(fe, "tenant_today", return_value=date(2026, 6, 20)):
+            body2 = fe.render_finance(self.tenant)
+        self.assertNotIn("Upcoming due dates", body2)

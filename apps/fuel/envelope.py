@@ -1,10 +1,11 @@
 """USER.md ``Fuel — fitness state`` section.
 
-Today's planned workout, a computed 4-week trends digest (volume,
-frequency-by-activity, recency, recent PRs — what a coach reasons from,
-not a raw row dump), the single most-recent done session with measured
-metrics + provenance, last body weight (with 7d delta), last sleep entry,
-recent resting HR. Gated on ``tenant.fuel_enabled``.
+A schedule window (recent + today + upcoming sessions, each with its
+status), a computed 4-week trends digest (volume, frequency-by-activity,
+recency, recent PRs — what a coach reasons from, not a raw row dump), the
+single most-recent done session with measured metrics + provenance, last
+body weight (with 7d delta), last sleep entry, recent resting HR. Gated on
+``tenant.fuel_enabled``.
 """
 
 from __future__ import annotations
@@ -32,21 +33,44 @@ def render_fuel(tenant: Tenant, *, max_chars: int = 1200) -> str:
     # Tenant-local day, not server UTC — a JST tenant's "today" section
     # would otherwise flip at 09:00 local.
     today = tenant_today(tenant)
+    tz = tenant_tz(tenant)
     sections: list[str] = []
 
-    planned_today = Workout.objects.filter(
+    # Schedule window — recent + today + upcoming sessions, so every session
+    # (chat reply, briefing, heartbeat) passively knows the training shape
+    # around now without a tool call. Replaces the old today-only line, which
+    # showed nothing the moment today's session was logged/skipped or when no
+    # PLANNED row sat exactly on today. Past rows give adherence ("you already
+    # did legs Tuesday"); future rows answer "what's next" / "anything Friday".
+    window_start = today - _timedelta(days=5)
+    window_end = today + _timedelta(days=7)
+    window_qs = Workout.objects.filter(
         tenant=tenant,
-        status=WorkoutStatus.PLANNED,
-        date=today,
-    ).first()
-    if planned_today:
-        bits = [f"- **Today**: {planned_today.activity} ({planned_today.category})"]
-        if planned_today.scheduled_at:
-            local_at = planned_today.scheduled_at.astimezone(tenant_tz(tenant))
-            bits[0] += f" at {local_at.strftime('%H:%M')}"
-        if planned_today.duration_minutes:
-            bits[0] += f" — {planned_today.duration_minutes} min"
-        sections.append("\n".join(bits))
+        date__gte=window_start,
+        date__lte=window_end,
+    ).order_by("date", "scheduled_at", "created_at")
+    schedule_lines: list[str] = []
+    for w in window_qs[:14]:
+        flag = " (today)" if w.date == today else ""
+        stamp = f"{w.date.strftime('%a')} {w.date.strftime('%m-%d')}{flag}"
+        if w.status == WorkoutStatus.REST:
+            schedule_lines.append(f"- {stamp}: rest day")
+            continue
+        # ``get_status_display()`` -> "Planned"/"Done"/"Skipped"/"Rescheduled"/
+        # "In Progress"; lowercased it reads naturally inline. A past-dated row
+        # still tagged "planned" is a missed/unlogged session — surfacing the
+        # status verbatim lets the assistant spot that without extra logic.
+        line = f"- {stamp}: {w.activity} ({w.category}) — {w.get_status_display().lower()}"
+        if w.status == WorkoutStatus.PLANNED:
+            if w.scheduled_at:
+                line += f" at {w.scheduled_at.astimezone(tz).strftime('%H:%M')}"
+            if w.duration_minutes:
+                line += f", {w.duration_minutes} min"
+        elif w.status == WorkoutStatus.DONE and w.rpe:
+            line += f", RPE {w.rpe}"
+        schedule_lines.append(line)
+    if schedule_lines:
+        sections.append("**Schedule** (last 5d → next 7d):\n" + "\n".join(schedule_lines))
 
     # Computed 4-week trends — what a coach reasons from. Replaces the old
     # raw "last 3 sessions" dump (the least information-dense rows in the
