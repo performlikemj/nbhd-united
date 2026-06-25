@@ -1129,13 +1129,92 @@ class RegenerateFuelCronsTest(TestCase):
         defaults.update(kw)
         return Workout.objects.create(**defaults)
 
-    def test_skips_when_flag_off(self):
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_legacy_no_active_plan_is_noop(self, mock_invoke):
+        """Legacy tenant (session off) with no active plan → desired empty; an
+        empty container yields no actions. (Post-fix the reconciler owns the
+        legacy flow too — it no longer early-returns for non-session tenants.)"""
         self.tenant.fuel_profile.use_session_scheduling = False
         self.tenant.fuel_profile.save(update_fields=["use_session_scheduling"])
         from apps.orchestrator.fuel_cron import regenerate_fuel_crons
 
+        mock_invoke.side_effect = lambda tenant, tool, args: {"details": {"jobs": []}}
         result = regenerate_fuel_crons(self.tenant)
-        self.assertEqual(result, {"added": 0, "removed": 0, "unchanged": 0, "errors": 0})
+        self.assertEqual(result["added"], 0)
+        self.assertEqual(result["removed"], 0)
+        self.assertEqual(result["errors"], 0)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_legacy_reaps_orphans_keeps_active_plan_cron(self, mock_invoke):
+        """The canary scenario on the LEGACY flow: a pile of _fuel:{old plan}
+        orphans plus the active plan's cron. Reap every orphan, keep the
+        active one. This is what cleans up the canary."""
+        from datetime import date as date_cls
+
+        from apps.fuel.models import WorkoutPlan
+        from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+
+        self.tenant.fuel_profile.use_session_scheduling = False
+        self.tenant.fuel_profile.save(update_fields=["use_session_scheduling"])
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Current Block",
+            status="active",
+            start_date=date_cls(2026, 5, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},
+        )
+        desired_name = f"_fuel:{plan.name}"
+        removed = []
+
+        def fake(tenant, tool, args):
+            if tool == "cron.list":
+                return {
+                    "details": {
+                        "jobs": [
+                            {"name": "_fuel:Old A", "id": "o1"},
+                            {"name": "_fuel:Old B", "id": "o2"},
+                            {"name": "_fuel:Renamed Away", "id": "o3"},
+                            {"name": desired_name, "id": "keep"},
+                        ]
+                    }
+                }
+            if tool == "cron.remove":
+                removed.append(args["jobId"])
+            return None
+
+        mock_invoke.side_effect = fake
+        result = regenerate_fuel_crons(self.tenant)
+        self.assertEqual(result["added"], 0)  # active plan's cron already present
+        self.assertEqual(result["unchanged"], 1)
+        self.assertEqual(result["legacy_reaped"], 3)
+        self.assertCountEqual(removed, ["o1", "o2", "o3"])  # the active cron 'keep' survives
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_reaps_orphan_with_no_id_via_name(self, mock_invoke):
+        """A _fuel: orphan that lacks id/jobId is still removable using its name
+        as the cron.remove key (the gateway accepts a name as jobId). Without
+        the name fallback it would be classified to_remove but silently skipped,
+        persisting across every hourly pass."""
+        self.tenant.fuel_profile.use_session_scheduling = False
+        self.tenant.fuel_profile.save(update_fields=["use_session_scheduling"])
+        from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+
+        removed = []
+
+        def fake(tenant, tool, args):
+            if tool == "cron.list":
+                return {"details": {"jobs": [{"name": "_fuel:No Id Orphan"}]}}  # no id/jobId
+            if tool == "cron.remove":
+                removed.append(args["jobId"])
+            return None
+
+        mock_invoke.side_effect = fake
+        # No active plan → desired empty → the id-less orphan must still be reaped.
+        result = regenerate_fuel_crons(self.tenant)
+        self.assertEqual(removed, ["_fuel:No Id Orphan"])
+        self.assertEqual(result["legacy_reaped"], 1)
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_adds_missing_jobs(self, mock_invoke):
@@ -1179,17 +1258,289 @@ class RegenerateFuelCronsTest(TestCase):
         self.assertEqual(result["added"], 0)
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
-    def test_leaves_legacy_plan_jobs_alone(self, mock_invoke):
-        """Legacy `_fuel:{plan_name}` jobs (name has no UUID short-id) must not
-        be removed by the per-session reconcile — they belong to the old flow."""
+    def test_reaps_legacy_plan_jobs_on_session_tenant(self, mock_invoke):
+        """On a session tenant the reconciler OWNS the whole `_fuel:*` prefix.
+        A legacy `_fuel:{plan_name}` job is a duplicate fire (the dual-writer
+        bug) and must be reaped, not left alone. (Inverts the pre-fix contract:
+        coexistence WAS the bug.)"""
         from apps.orchestrator.fuel_cron import regenerate_fuel_crons
 
+        removed_ids = []
         mock_invoke.side_effect = lambda tenant, tool, args: (
-            {"details": {"jobs": [{"name": "_fuel:My Plan", "id": "legacy-id"}]}} if tool == "cron.list" else None
+            {"details": {"jobs": [{"name": "_fuel:My Plan", "id": "legacy-id"}]}}
+            if tool == "cron.list"
+            else removed_ids.append(args.get("jobId"))
         )
         with patch("apps.orchestrator.fuel_cron.derive_fuel_cron_jobs", return_value=[]):
             result = regenerate_fuel_crons(self.tenant)
-        self.assertEqual(result["removed"], 0)
+        self.assertEqual(result["removed"], 1)
+        self.assertEqual(result["legacy_reaped"], 1)
+        self.assertEqual(removed_ids, ["legacy-id"])
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_reaps_same_name_duplicates_keeping_newest(self, mock_invoke):
+        """Two gateway jobs sharing a desired session name → keep the newest
+        (by createdAtMs), reap the older copy. The pre-fix name-keyed dict
+        collapsed these into one entry and could never remove the extra."""
+        from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+
+        removed_ids = []
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {
+                "details": {
+                    "jobs": [
+                        {"name": "_fuel:abcd1234", "id": "old", "createdAtMs": 100},
+                        {"name": "_fuel:abcd1234", "id": "new", "createdAtMs": 200},
+                    ]
+                }
+            }
+            if tool == "cron.list"
+            else removed_ids.append(args.get("jobId"))
+        )
+        desired = [
+            {
+                "name": "_fuel:abcd1234",
+                "schedule": {"kind": "cron", "expr": "0 7 1 5 *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "x"},
+                "delivery": {"mode": "none"},
+                "enabled": True,
+            }
+        ]
+        with patch("apps.orchestrator.fuel_cron.derive_fuel_cron_jobs", return_value=desired):
+            result = regenerate_fuel_crons(self.tenant)
+        self.assertEqual(result["added"], 0)  # the desired name is already present
+        self.assertEqual(result["unchanged"], 1)
+        self.assertEqual(result["duplicates_reaped"], 1)
+        self.assertEqual(removed_ids, ["old"])  # older copy reaped, newest kept
+
+
+class PlanFuelCronReconcileTest(TestCase):
+    """Pure planner — classification of the `_fuel:*` namespace with no gateway
+    or DB. This is the heart of the duplicate-fuel-cron fix."""
+
+    @staticmethod
+    def _desired(*names):
+        return {n: {"name": n} for n in names}
+
+    def test_is_session_cron_name(self):
+        from apps.orchestrator.fuel_cron import _is_session_cron_name
+
+        self.assertTrue(_is_session_cron_name("_fuel:abcd1234"))
+        self.assertTrue(_is_session_cron_name("_fuel:deadbeef"))
+        # Legacy plan-name jobs (not exactly 8 lowercase-hex):
+        self.assertFalse(_is_session_cron_name("_fuel:My Plan"))
+        self.assertFalse(_is_session_cron_name("_fuel:Strength"))  # 8 chars but not hex
+        self.assertFalse(_is_session_cron_name("_fuel:abcd123"))  # 7 chars
+        self.assertFalse(_is_session_cron_name("_fuel:abcd12345"))  # 9 chars
+        self.assertFalse(_is_session_cron_name("_fuel:ABCD1234"))  # uppercase ≠ minted form
+        self.assertFalse(_is_session_cron_name("Morning Briefing"))  # not even fuel
+
+    def test_clean_state_no_actions(self):
+        from apps.orchestrator.fuel_cron import plan_fuel_cron_reconcile
+
+        desired = self._desired("_fuel:abcd1234")
+        current = [{"name": "_fuel:abcd1234", "id": "j1"}]
+        plan = plan_fuel_cron_reconcile(desired, current)
+        self.assertEqual(plan["to_add"], [])
+        self.assertEqual(plan["to_remove"], [])
+        self.assertEqual(plan["unchanged"], 1)
+
+    def test_ignores_non_fuel_jobs(self):
+        from apps.orchestrator.fuel_cron import plan_fuel_cron_reconcile
+
+        current = [{"name": "Morning Briefing", "id": "sys"}, {"name": "_sync:foo", "id": "sync"}]
+        plan = plan_fuel_cron_reconcile(self._desired("_fuel:abcd1234"), current)
+        # Only the missing desired job; the system/sync jobs are untouched.
+        self.assertEqual([j["name"] for j in plan["to_add"]], ["_fuel:abcd1234"])
+        self.assertEqual(plan["to_remove"], [])
+
+    def test_canary_mixed_shape(self):
+        """The real canary shape: desired {a,b}; container has a×2 (dup), b,
+        a legacy plan-name cron, and a stale 8-hex cron. One pass converges all
+        of it — keep one a + b, add nothing, reap dup+legacy+stale."""
+        from apps.orchestrator.fuel_cron import plan_fuel_cron_reconcile
+
+        desired = self._desired("_fuel:aaaa0000", "_fuel:bbbb1111")
+        current = [
+            {"name": "_fuel:aaaa0000", "id": "a-old", "createdAtMs": 1},
+            {"name": "_fuel:aaaa0000", "id": "a-new", "createdAtMs": 2},
+            {"name": "_fuel:bbbb1111", "id": "b1", "createdAtMs": 5},
+            {"name": "_fuel:Summer Cut", "id": "legacy1"},
+            {"name": "_fuel:Cutting Block", "id": "legacy2"},  # rename orphan
+            {"name": "_fuel:deadbeef", "id": "stale1"},  # 8-hex, not desired
+        ]
+        plan = plan_fuel_cron_reconcile(desired, current)
+
+        self.assertEqual(plan["to_add"], [])  # both desired names already present
+        self.assertEqual(plan["unchanged"], 2)
+
+        by_reason = {}
+        for job, reason in plan["to_remove"]:
+            by_reason.setdefault(reason, []).append(job["id"])
+        self.assertEqual(by_reason["duplicate"], ["a-old"])  # newest (a-new) kept
+        self.assertCountEqual(by_reason["legacy"], ["legacy1", "legacy2"])
+        self.assertEqual(by_reason["stale"], ["stale1"])
+
+    def test_missing_desired_is_added(self):
+        from apps.orchestrator.fuel_cron import plan_fuel_cron_reconcile
+
+        plan = plan_fuel_cron_reconcile(self._desired("_fuel:abcd1234"), [])
+        self.assertEqual([j["name"] for j in plan["to_add"]], ["_fuel:abcd1234"])
+        self.assertEqual(plan["unchanged"], 0)
+
+
+class DesiredFuelCronsTest(TestCase):
+    """_desired_fuel_crons branches by flow — this is what makes the reconciler
+    (and cleanup) own _fuel:* for legacy tenants, not just session ones."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Desired Test", telegram_chat_id=999555666)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+
+    def test_fuel_disabled_returns_empty(self):
+        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+
+        self.tenant.fuel_enabled = False
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.assertEqual(_desired_fuel_crons(self.tenant), [])
+
+    def test_legacy_no_active_plan_returns_empty(self):
+        from apps.fuel.models import FuelProfile
+        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=False)
+        self.assertEqual(_desired_fuel_crons(self.tenant), [])
+
+    def test_legacy_active_plan_returns_one_named_cron(self):
+        from datetime import date as date_cls
+
+        from apps.fuel.models import FuelProfile, WorkoutPlan
+        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=False, preferred_time="morning")
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Builder",
+            status="active",
+            start_date=date_cls(2026, 5, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},
+        )
+        jobs = _desired_fuel_crons(self.tenant)
+        self.assertEqual([j["name"] for j in jobs], ["_fuel:Builder"])
+
+    def test_legacy_prefers_most_recent_active_plan(self):
+        from datetime import date as date_cls
+
+        from apps.fuel.models import FuelProfile, WorkoutPlan
+        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=False)
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Older",
+            status="active",
+            start_date=date_cls(2026, 4, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}},
+        )
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Newer",
+            status="active",
+            start_date=date_cls(2026, 5, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}},
+        )
+        jobs = _desired_fuel_crons(self.tenant)
+        # Matches build_cron_seed_jobs: most-recent active plan only.
+        self.assertEqual([j["name"] for j in jobs], ["_fuel:Newer"])
+
+    def test_session_flow_routes_to_derive(self):
+        from apps.fuel.models import FuelProfile
+        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=True)
+        with patch(
+            "apps.orchestrator.fuel_cron.derive_fuel_cron_jobs",
+            return_value=[{"name": "_fuel:abcd1234"}],
+        ) as mock_derive:
+            jobs = _desired_fuel_crons(self.tenant)
+        mock_derive.assert_called_once_with(self.tenant)
+        self.assertEqual([j["name"] for j in jobs], ["_fuel:abcd1234"])
+
+    def test_legacy_desired_matches_seed_emission(self):
+        """Anti-flapping lock: the reconciler's legacy desired cron must be
+        byte-identical to build_cron_seed_jobs' _fuel: emission. The planner
+        keys on NAME only, so if the two hand-written legacy blocks ever drift
+        in expr/payload, the reconciler would never self-correct the body."""
+        from datetime import date as date_cls
+
+        from apps.fuel.models import FuelProfile, WorkoutPlan
+        from apps.orchestrator.config_generator import build_cron_seed_jobs
+        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=False, preferred_time="evening")
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Builder",
+            status="active",
+            start_date=date_cls(2026, 5, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}},
+        )
+        desired = _desired_fuel_crons(self.tenant)
+        seed_fuel = [j for j in build_cron_seed_jobs(self.tenant) if j["name"].startswith("_fuel:")]
+        self.assertEqual(desired, seed_fuel)  # full dict equality, not just name
+
+
+class ReconcileFuelCronsFleetTest(TestCase):
+    """The hourly fleet sweep MUST reach LEGACY (session-off) fuel tenants — every
+    prod fuel tenant is session-off, so this tenant-selection is the only thing
+    that reaps the accumulated _fuel: orphans. Pin it against a regression to a
+    session-only filter (which would pass the whole suite while leaving the leak)."""
+
+    def _mk(self, name, chat, *, fuel, fqdn, session=False):
+        from apps.fuel.models import FuelProfile
+
+        t = create_tenant(display_name=name, telegram_chat_id=chat)
+        t.fuel_enabled = fuel
+        t.container_fqdn = fqdn
+        t.save(update_fields=["fuel_enabled", "container_fqdn"])
+        if fuel:
+            FuelProfile.objects.create(tenant=t, use_session_scheduling=session)
+        return t
+
+    def test_fleet_sweep_selects_legacy_fuel_tenant_only(self):
+        legacy = self._mk("Legacy Fuel", 991001, fuel=True, fqdn="oc-legacy.example.com", session=False)
+        non_fuel = self._mk("No Fuel", 991002, fuel=False, fqdn="oc-nofuel.example.com")
+        blank_fqdn = self._mk("Blank FQDN", 991003, fuel=True, fqdn="", session=False)
+
+        from apps.orchestrator.tasks import reconcile_fuel_crons_task
+
+        per_tenant = {
+            "added": 0,
+            "removed": 3,
+            "unchanged": 1,
+            "errors": 0,
+            "duplicates_reaped": 0,
+            "legacy_reaped": 3,
+            "stale_reaped": 0,
+        }
+        with patch("apps.orchestrator.fuel_cron.regenerate_fuel_crons", return_value=per_tenant) as mock_regen:
+            totals = reconcile_fuel_crons_task()
+
+        called_ids = {c.args[0].id for c in mock_regen.call_args_list}
+        self.assertIn(legacy.id, called_ids)  # session-OFF legacy tenant IS swept
+        self.assertNotIn(non_fuel.id, called_ids)  # non-fuel tenant skipped
+        self.assertNotIn(blank_fqdn.id, called_ids)  # half-provisioned (blank fqdn) skipped
+        self.assertEqual(totals["tenants"], 1)
+        self.assertEqual(totals["legacy_reaped"], 3)
 
 
 class FuelEmissionSuppressionTest(TestCase):

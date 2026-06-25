@@ -653,11 +653,12 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
         snapshot_jobs=snapshot_jobs,
     )
 
-    # If the tenant is on the new per-session Fuel flow, snapshot didn't
-    # capture _fuel:* (the restore step deliberately filters them by prefix),
-    # so we regenerate them here from Postgres truth.
-    profile = getattr(tenant, "fuel_profile", None)
-    if profile and profile.use_session_scheduling:
+    # Rebuild _fuel:* from Postgres truth for ANY fuel tenant. The session
+    # flow's crons aren't in the snapshot (filtered by prefix at capture); the
+    # legacy flow's may be, but regenerate_fuel_crons owns the whole namespace
+    # now and reaps whatever the restore loop above re-added that isn't the
+    # canonical desired set — so this both rebuilds and de-dupes on every wake.
+    if getattr(tenant, "fuel_enabled", False):
         try:
             from apps.orchestrator.fuel_cron import regenerate_fuel_crons
 
@@ -1031,44 +1032,59 @@ def regenerate_fuel_crons_task(tenant_id: str) -> dict:
     """
     import logging
 
-    from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+    from apps.orchestrator.fuel_cron import _empty_summary, regenerate_fuel_crons
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
 
     tenant = Tenant.objects.filter(id=tenant_id).select_related("user").first()
     if not tenant or not tenant.container_fqdn:
-        return {"added": 0, "removed": 0, "unchanged": 0, "errors": 0}
+        return _empty_summary()
     # Hibernated (scale 0/0) or suspended containers can't serve gateway
     # calls — background HealthKit syncs would otherwise generate recurring
     # GatewayError noise for idle tenants. Reconcile-on-wake catches up.
     if tenant.hibernated_at is not None or tenant.status == Tenant.Status.SUSPENDED:
         logger.info("regenerate_fuel_crons: skipping %s (hibernated/suspended)", tenant_id[:8])
-        return {"added": 0, "removed": 0, "unchanged": 0, "errors": 0, "skipped": True}
+        return {**_empty_summary(), "skipped": True}
     return regenerate_fuel_crons(tenant)
 
 
 def reconcile_fuel_crons_task() -> dict:
-    """Hourly fleet-wide reconcile — catches drift on tenants on the new flow."""
+    """Hourly fleet-wide reconcile of the ``_fuel:*`` namespace.
+
+    Covers EVERY fuel-enabled tenant — both the session flow and the legacy
+    flow — because ``regenerate_fuel_crons`` is now the single owner of the
+    prefix for both. This is the durable backstop that seals the duplicate
+    accumulation: any orphaned ``_fuel:{plan_name}`` or same-name duplicate is
+    reaped within the hour, regardless of which write path created it.
+    ``regenerate_fuel_crons`` itself skips hibernated/suspended containers.
+    """
     import logging
 
-    from apps.fuel.models import FuelProfile
     from apps.orchestrator.fuel_cron import regenerate_fuel_crons
     from apps.tenants.models import Tenant
 
     logger = logging.getLogger(__name__)
 
-    profiles = FuelProfile.objects.filter(use_session_scheduling=True).select_related("tenant", "tenant__user")
-    totals = {"tenants": 0, "added": 0, "removed": 0, "errors": 0}
-    for profile in profiles:
-        tenant: Tenant = profile.tenant
-        if not tenant.container_fqdn:
-            continue
+    tenants = Tenant.objects.filter(fuel_enabled=True).exclude(container_fqdn="").select_related("user")
+    totals = {
+        "tenants": 0,
+        "added": 0,
+        "removed": 0,
+        "duplicates_reaped": 0,
+        "legacy_reaped": 0,
+        "stale_reaped": 0,
+        "errors": 0,
+    }
+    for tenant in tenants:
         try:
             res = regenerate_fuel_crons(tenant)
             totals["tenants"] += 1
             totals["added"] += res["added"]
             totals["removed"] += res["removed"]
+            totals["duplicates_reaped"] += res["duplicates_reaped"]
+            totals["legacy_reaped"] += res["legacy_reaped"]
+            totals["stale_reaped"] += res["stale_reaped"]
             totals["errors"] += res["errors"]
         except Exception:
             logger.exception("reconcile_fuel_crons: tenant %s failed", tenant.id)
