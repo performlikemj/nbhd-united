@@ -99,6 +99,49 @@ def _get_or_create_main_thread(tenant, user) -> ChatThread:
     return thread
 
 
+# A tenant's main-thread id is effectively immutable, so the read-heavy ?since=
+# feed caches it rather than paying a get_or_create round trip to Sydney on every
+# ~30s poll. The feed only needs the id (a label for non-app rows), not the
+# object. Cache-aside: a miss (or any cache hiccup) falls straight through to the
+# DB, and on the very first call still creates the thread. The cache is busted on
+# is_main thread deletion via apps/router/signals.py, so a (rare) delete+recreate
+# can't serve a dangling id past the next poll; the TTL is only a last-ditch bound.
+_MAIN_THREAD_ID_TTL = 60 * 60
+
+
+def _main_thread_cache_key(tenant_id) -> str:
+    return f"nbhd:router:main_thread_id:{tenant_id}"
+
+
+def _main_thread_id_cached(tenant, user) -> str:
+    from django.core.cache import cache
+
+    key = _main_thread_cache_key(tenant.id)
+    try:
+        cached = cache.get(key)
+    except Exception:  # noqa: BLE001 — cache blip must never break the feed
+        cached = None
+    if cached:
+        return cached
+    tid = str(_get_or_create_main_thread(tenant, user).id)
+    try:
+        cache.set(key, tid, _MAIN_THREAD_ID_TTL)
+    except Exception:  # noqa: BLE001
+        pass
+    return tid
+
+
+def invalidate_main_thread_cache(tenant_id) -> None:
+    """Drop the cached main-thread id for a tenant. Called on is_main thread
+    deletion so a delete+recreate never serves the old, dangling id."""
+    from django.core.cache import cache
+
+    try:
+        cache.delete(_main_thread_cache_key(tenant_id))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _thread_user_param(thread: ChatThread) -> str:
     """OpenClaw ``user`` param for a thread → its own session, shared memory."""
     return f"thread:{thread.id}"
@@ -335,10 +378,11 @@ class ChatMessageView(APIView):
 
         # Non-app channels (Telegram/LINE/cron) have no thread FK → map them to
         # the tenant's single shared main thread so iOS sees one rolling thread.
-        main_thread = _get_or_create_main_thread(tenant, request.user)
+        # Cached: the id is immutable, so steady-state polls skip the lookup.
+        main_thread_id = _main_thread_id_cached(tenant, request.user)
         messages, next_cursor = build_since_page(
             tenant,
-            str(main_thread.id),
+            main_thread_id,
             cursor=request.query_params.get("since"),
             limit=limit,
         )

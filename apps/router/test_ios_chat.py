@@ -713,6 +713,89 @@ class ChatSinceFeedTest(TestCase):
         self.assertNotIn("secret", texts)
         self.assertNotIn("leak?", texts)
 
+    def test_feed_uses_one_query_per_channel_table(self):
+        # Round-trip budget: the DB is in Sydney while Django runs in US-West, so
+        # every query is a ~152ms cross-Pacific hop. The feed must issue at most
+        # ONE query per channel table — boundary + forward folded into a single
+        # UNION ALL — not two. Regression lock for the 6→3 query cut.
+        from apps.router.chat_history import build_since_page
+
+        self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
+        self._conv_turn(channel="telegram", user_text="tg hi", reply_text="tg yo", minute=2)
+        self._cron_send(message_text="Good morning!", minute=3)
+
+        # Steady-state poll: a real (non-epoch) cursor → one UNION ALL per table.
+        _, cursor = build_since_page(self.tenant, str(self.main.id), cursor=None, limit=100)
+        with self.assertNumQueries(3):
+            build_since_page(self.tenant, str(self.main.id), cursor=cursor, limit=100)
+
+        # From-the-beginning: the boundary is provably empty, so it's skipped and
+        # each table stays a single bounded forward read.
+        with self.assertNumQueries(3):
+            build_since_page(self.tenant, str(self.main.id), cursor=None, limit=100)
+
+    def test_cross_channel_same_timestamp_cluster_paged(self):
+        # A tie-cluster spanning DIFFERENT channel tables at the exact same
+        # microsecond must still page through losslessly. The per-table UNION
+        # keeps its boundary slice unbounded, so a cluster member is never
+        # truncated off the fetch window. Regression for the UNION fold.
+        self._app_turn(cid="a1", user_text="au", reply_text="ar", minute=7)
+        self._conv_turn(channel="telegram", user_text="cu", reply_text="cr", minute=7)
+        self._cron_send(message_text="cron at seven", minute=7)
+
+        # Single-shot read: app(user, asst) + telegram(user, asst) + cron(asst) = 5.
+        single = sorted(m["id"] for m in self._get(limit=100).data["messages"])
+        self.assertEqual(len(single), 5)
+
+        # A paginated walk at the smallest page size returns the SAME id set.
+        seen, cursor = [], None
+        for _ in range(50):  # generous bound; converges well before this
+            resp = self._get(since=cursor, limit=1)
+            page = resp.data["messages"]
+            if not page:
+                break
+            seen.extend(m["id"] for m in page)
+            cursor = resp.data["cursor"]
+        self.assertEqual(sorted(seen), single)
+        self.assertEqual(len(seen), 5)  # no loss, no dupes
+
+    @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+    def test_main_thread_id_cached_skips_db_on_hit(self):
+        # The immutable main-thread id is cached so steady-state polls skip the
+        # get_or_create round trip to Sydney. First call warms it; the second
+        # must touch the DB zero times.
+        from django.core.cache import cache
+
+        from apps.router.chat_views import _main_thread_id_cached
+
+        cache.clear()
+        first = _main_thread_id_cached(self.tenant, self.user)
+        self.assertEqual(first, str(self.main.id))
+        with self.assertNumQueries(0):
+            second = _main_thread_id_cached(self.tenant, self.user)
+        self.assertEqual(second, first)
+
+    @override_settings(CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}})
+    def test_main_thread_cache_busted_on_delete(self):
+        # Deleting the is_main thread must invalidate the cached id (post_delete
+        # signal), so a delete+recreate can never serve a dangling id past the
+        # next poll. Without this, the feed would label non-app rows with a
+        # non-existent thread id for up to the cache TTL.
+        from django.core.cache import cache
+
+        from apps.router.chat_views import _main_thread_cache_key, _main_thread_id_cached
+
+        cache.clear()
+        first = _main_thread_id_cached(self.tenant, self.user)
+        self.assertEqual(cache.get(_main_thread_cache_key(self.tenant.id)), first)
+
+        self.main.delete()
+        self.assertIsNone(cache.get(_main_thread_cache_key(self.tenant.id)))
+
+        # Next call re-derives + re-creates the main thread with a fresh id.
+        second = _main_thread_id_cached(self.tenant, self.user)
+        self.assertNotEqual(second, first)
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
 class IOSDrainDropPushTest(TestCase):

@@ -219,20 +219,28 @@ def _proactive_rows(p, main_thread_id):
 
 def _page_slice(base_qs, after_dt, fetch):
     """One table's rows for a page: the FULL same-timestamp cluster at the
-    watermark, plus the next ``fetch`` rows strictly after it.
+    watermark, plus the next ``fetch`` rows strictly after it — in ONE round trip.
 
     The boundary slice (``created_at == after_dt``) is never truncated: a cluster
     of rows sharing one microsecond — e.g. an offline outbox flushing several
     on-device turns backdated to a single ``occurred_at`` — must be returned in
     full so its tail is paged through, not skipped. (The SQL window can only
     advance by ``created_at``; the ``(created_at, id)`` keyset tiebreak that
-    separates cluster members runs in Python in ``build_since_page``.) The
-    boundary is empty for the from-the-beginning epoch watermark, so the common
-    case stays a single bounded forward read.
+    separates cluster members runs in Python in ``build_since_page``.)
+
+    Boundary and forward are disjoint (``== after_dt`` vs ``> after_dt``), so they
+    fold into a single ``UNION ALL`` — one cross-Pacific round trip per table
+    instead of two (the DB is in Sydney; see ``production.py`` keepalives note).
+    The from-the-beginning epoch watermark has a provably-empty boundary, so it
+    skips the union and stays a single bounded forward read. Row order out of the
+    union is unspecified, but ``build_since_page`` re-sorts by the synthetic
+    ``(created_at, id)`` key, so it doesn't matter here.
     """
-    boundary = list(base_qs.filter(created_at=after_dt))
-    forward = list(base_qs.filter(created_at__gt=after_dt).order_by("created_at", "id")[:fetch])
-    return boundary + forward
+    forward = base_qs.filter(created_at__gt=after_dt).order_by("created_at", "id")[:fetch]
+    if after_dt == _EPOCH:
+        return list(forward)
+    boundary = base_qs.filter(created_at=after_dt)
+    return list(boundary.union(forward, all=True))
 
 
 def build_since_page(tenant, main_thread_id: str, *, cursor: str | None, limit: int):
@@ -257,19 +265,19 @@ def build_since_page(tenant, main_thread_id: str, *, cursor: str | None, limit: 
     fetch = limit + 1
     candidates = []
 
-    app_qs = AppChatMessage.objects.filter(tenant=tenant).only(
-        "id", "thread", "client_msg_id", "user_text", "reply_text", "status", "created_at"
-    )
+    # No ``.only()``: deferred fields interact awkwardly with ``.union()`` (a
+    # deferred attr touched on a union row reloads it lazily), and every column
+    # here is small — the texts are the bulk and we need those anyway — so the
+    # saved bytes are dwarfed by the round trip we drop.
+    app_qs = AppChatMessage.objects.filter(tenant=tenant)
     for m in _page_slice(app_qs, after_dt, fetch):
         candidates.extend(_app_rows(m, main_thread_id))
 
-    conv_qs = ConversationTurn.objects.filter(tenant=tenant).only(
-        "id", "channel", "user_text", "reply_text", "created_at"
-    )
+    conv_qs = ConversationTurn.objects.filter(tenant=tenant)
     for t in _page_slice(conv_qs, after_dt, fetch):
         candidates.extend(_conv_rows(t, main_thread_id))
 
-    pro_qs = ProactiveOutbound.objects.filter(tenant=tenant).only("id", "message_text", "created_at")
+    pro_qs = ProactiveOutbound.objects.filter(tenant=tenant)
     for p in _page_slice(pro_qs, after_dt, fetch):
         candidates.extend(_proactive_rows(p, main_thread_id))
 
