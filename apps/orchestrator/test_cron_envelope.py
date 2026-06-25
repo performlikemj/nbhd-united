@@ -309,7 +309,9 @@ class EnvelopeFuelStateTest(TestCase):
             duration_minutes=45,
         )
         out = envelope_fuel_state(self.tenant)
-        self.assertIn("Today", out)
+        # Today's session is flagged inline in the schedule window, e.g.
+        # "- Thu 06-25 (today): Push — Chest & Shoulders (strength) — planned, 45 min".
+        self.assertIn("(today)", out)
         self.assertIn("Push — Chest & Shoulders", out)
         self.assertIn("strength", out)
         self.assertIn("45 min", out)
@@ -331,15 +333,17 @@ class EnvelopeFuelStateTest(TestCase):
                 duration_minutes=30,
             )
         out = envelope_fuel_state(self.tenant)
-        # The raw "last 3 sessions" dump is replaced by a computed trends
-        # digest (volume / frequency / recency) plus the single most-recent
-        # session for concrete colour.
+        # The computed trends digest (volume / frequency / recency) and the
+        # single most-recent session for concrete colour are both still here...
         self.assertIn("Trends", out)
         self.assertIn("4 sessions", out)
         self.assertIn("Last session", out)
         self.assertIn("RPE 7", out)
-        # Only the most recent session is shown verbatim now.
-        self.assertEqual(out.count("Session "), 1)
+        # ...and the schedule window now also lists recent done sessions (last
+        # 5d) for adherence, so each appears — not just the most-recent one.
+        self.assertIn("done", out)
+        self.assertIn("Session 0", out)  # most recent, day -1
+        self.assertIn("Session 3", out)  # oldest still inside the 5-day window
 
     def test_includes_body_weight_with_delta(self):
         from datetime import date as _date
