@@ -543,6 +543,11 @@ class RuntimeFuelSummaryView(APIView):
                 "category": w.category,
                 "activity": w.activity,
                 "duration_minutes": w.duration_minutes,
+                # Prescribed intensity (the plan's target_rpe, stored on the row).
+                # Echo it back so a later session can see the intensity it set —
+                # without this the assistant is blind to its own prescription.
+                # null = no target prescribed (NOT an easy day).
+                "rpe": w.rpe,
             }
             for w in planned
         ]
@@ -590,6 +595,10 @@ class RuntimeFuelSummaryView(APIView):
                 {
                     "id": str(p.id),
                     "name": p.name,
+                    # The plan's through-line (desired outcome), e.g. "Run a
+                    # sub-25 5K". Echoed back so the assistant can program toward
+                    # the objective it set, not just the workout labels.
+                    "objective": p.objective,
                     "start_date": str(p.start_date),
                     "weeks": p.weeks,
                     "days_per_week": p.days_per_week,
@@ -1578,6 +1587,11 @@ class RuntimeFuelAuditView(APIView):
                 "activity": w.activity,
                 "status": w.status,
                 "duration_minutes": w.duration_minutes,
+                # Prescribed/actual intensity — for a planned row this is the
+                # target_rpe the assistant set; for a done row it's the logged
+                # RPE. The prep cron reads audit, so surfacing it is also the
+                # first rung toward recovery-aware re-tuning. null = unset.
+                "rpe": w.rpe,
             }
             for w in next_14d_qs
         ]

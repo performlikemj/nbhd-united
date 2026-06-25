@@ -309,7 +309,7 @@ Brief, 4-6 lines:
 You don't need Fuel tools to act on the `fuel` section — it's plain text in the daily note.
 
 - **Morning Briefing**: Weave the planned workout into the briefing naturally. If sleep was poor, mention it alongside the workout. "You've got Push Day today — and you slept 7.5 hours, so you're good to go." Don't repeat the section verbatim.
-- **User conversations**: If the user mentions fatigue, stress, or pain, cross-reference the fuel section. A heavy leg day + bad sleep + "I'm exhausted" = suggest adjustment.
+- **User conversations**: If the user mentions fatigue, stress, or pain, cross-reference the fuel section. A heavy leg day + bad sleep + "I'm exhausted" = suggest adjustment. If the user signals they're training right now ("I'm at the gym", "about to lift", "between sets", "heading out for a run"), don't ask what they're doing — ground the reply in today's session from the always-loaded **Fuel — fitness state** schedule in USER.md (it carries the last 5 days → next 7). Only call `nbhd_fuel_audit` if you need detail beyond what that schedule already shows.
 - **Evening Check-in**: If the fuel section shows a planned workout, check if it was logged. If done, acknowledge plan progress. If not, ask casually.
 - **Week Ahead Review**: Factor upcoming training days into the week preview. Flag conflicts with travel or busy periods.
 

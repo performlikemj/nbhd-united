@@ -1521,15 +1521,18 @@ class RuntimeFuelAuditTests(TestCase):
 
         mock_invoke.return_value = {"details": {"jobs": []}}
         today = date.today()
-        self._make(date=today + timedelta(days=2), activity="Pull Day")
+        self._make(date=today + timedelta(days=2), activity="Pull Day", rpe=7)
         self._make(date=today + timedelta(days=4), activity="Leg Day", category="strength")
         # Out of horizon
         self._make(date=today + timedelta(days=20), activity="Far Future")
         resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
-        activities = [w["activity"] for w in resp.data["next_14d_workouts"]]
-        self.assertIn("Pull Day", activities)
-        self.assertIn("Leg Day", activities)
-        self.assertNotIn("Far Future", activities)
+        by_activity = {w["activity"]: w for w in resp.data["next_14d_workouts"]}
+        self.assertIn("Pull Day", by_activity)
+        self.assertIn("Leg Day", by_activity)
+        self.assertNotIn("Far Future", by_activity)
+        # Read-back: the prescribed target_rpe is echoed so the prep cron and a
+        # later session can see the intensity that was set.
+        self.assertEqual(by_activity["Pull Day"]["rpe"], 7)
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_audit_flags_duplicate_fires(self, mock_invoke):
@@ -1861,6 +1864,37 @@ class RuntimeFuelSummaryWithProfileTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertIsNone(resp.data["profile"])
+
+    def test_summary_echoes_rpe_and_objective(self):
+        # Read-back: a later session must be able to see the intensity (target_rpe)
+        # and through-line (objective) the assistant previously prescribed.
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Sub-25 5K",
+            objective="Run a sub-25 5K",
+            start_date=date(2026, 6, 22),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={},
+            status="active",
+        )
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            date=today_in_tenant_tz(self.tenant) + timedelta(days=1),
+            status="planned",
+            category="cardio",
+            activity="Tempo run",
+            duration_minutes=40,
+            rpe=8,
+        )
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["planned_workouts"][0]["rpe"], 8)
+        self.assertEqual(resp.data["active_plans"][0]["objective"], "Run a sub-25 5K")
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -4334,6 +4368,76 @@ class FuelTrendsDigestTests(TestCase):
         self._done(0, "cardio", 42, source="user")
         body = render_fuel(self.tenant)
         self.assertNotIn("via Apple Health", body)
+
+
+class FuelScheduleWindowTests(TestCase):
+    """render_fuel schedule window: recent + today + upcoming, each with status."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Schedule Win", telegram_chat_id=800051)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+
+    def _w(self, day_offset, status, activity="Legs", category="strength", **kw):
+        from apps.common.tenant_tz import tenant_today
+
+        return Workout.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant) + timedelta(days=day_offset),
+            status=status,
+            category=category,
+            activity=activity,
+            **kw,
+        )
+
+    def test_window_spans_recent_today_and_upcoming(self):
+        from .envelope import render_fuel
+
+        self._w(-3, "done", activity="Push", rpe=8)
+        self._w(0, "planned", activity="Legs", duration_minutes=60)
+        self._w(2, "planned", activity="Run", category="cardio")
+        body = render_fuel(self.tenant)
+        self.assertIn("**Schedule** (last 5d → next 7d):", body)
+        self.assertIn("Push (strength) — done, RPE 8", body)
+        self.assertIn("(today): Legs (strength) — planned", body)
+        self.assertIn("Run (cardio) — planned", body)
+
+    def test_today_done_still_visible(self):
+        # Regression: the old today-only line vanished the moment today's
+        # session was logged. The window keeps a completed session visible.
+        from .envelope import render_fuel
+
+        self._w(0, "done", activity="Legs", rpe=9)
+        body = render_fuel(self.tenant)
+        self.assertIn("(today): Legs (strength) — done", body)
+
+    def test_past_planned_surfaces_as_unlogged(self):
+        # A past-dated row still tagged "planned" = a missed/unlogged session;
+        # surfacing the status lets the assistant spot adherence gaps.
+        from .envelope import render_fuel
+
+        self._w(-2, "planned", activity="Pull")
+        body = render_fuel(self.tenant)
+        self.assertIn("Pull (strength) — planned", body)
+        self.assertNotIn("(today): Pull", body)
+
+    def test_rest_day_labeled(self):
+        from .envelope import render_fuel
+
+        self._w(0, "rest", activity="")
+        body = render_fuel(self.tenant)
+        self.assertIn("rest day", body)
+
+    def test_excludes_rows_outside_window(self):
+        from .envelope import render_fuel
+
+        self._w(0, "planned", activity="Legs")  # in-window anchor so schedule renders
+        self._w(-6, "planned", activity="OldGhost")  # before last-5d edge
+        self._w(8, "planned", activity="FarLeg")  # after next-7d edge
+        body = render_fuel(self.tenant)
+        self.assertIn("Legs (strength) — planned", body)
+        self.assertNotIn("OldGhost", body)
+        self.assertNotIn("FarLeg", body)
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")

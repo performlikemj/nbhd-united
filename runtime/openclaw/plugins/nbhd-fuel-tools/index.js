@@ -134,7 +134,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_audit",
       description:
-        "PREFER this tool over nbhd_fuel_summary when the user asks for a workout, asks what's planned, or wants to schedule one. Returns: (a) today_plan parsed from today's daily-note Fuel section — if today_plan.exists is true, deliver THAT plan rather than inventing a new one; (b) next_14d_workouts from Postgres; (c) fuel_crons currently in the container; (d) conflicts.duplicate_fires / orphan_crons / orphan_workouts; (e) a one-line `guidance` string. If conflicts.duplicate_fires is non-empty, surface them and STOP — do not add another cron on top.",
+        "PREFER this tool over nbhd_fuel_summary when the user asks for a workout, asks what's planned, wants to schedule one, or signals they're training right now (e.g. \"I'm at the gym\", \"about to lift\", \"between sets\") and the always-loaded Fuel state in USER.md doesn't already answer it. Returns: (a) today_plan parsed from today's daily-note Fuel section — if today_plan.exists is true, deliver THAT plan rather than inventing a new one; (b) next_14d_workouts from Postgres; (c) fuel_crons currently in the container; (d) conflicts.duplicate_fires / orphan_crons / orphan_workouts; (e) a one-line `guidance` string. If conflicts.duplicate_fires is non-empty, surface them and STOP — do not add another cron on top.",
       parameters: {
         type: "object",
         additionalProperties: false,
