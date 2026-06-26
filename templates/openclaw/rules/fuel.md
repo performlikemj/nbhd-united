@@ -192,7 +192,10 @@ When the profile is empty or declined, default to **safe, general-population rec
 - **After onboarding completes**: When you set `onboarding_status` to `completed`, offer to create a workout plan:
   > "Nice — I've got a good picture of where you're at. Want me to put together a workout plan for the next few weeks? I'll design it around what I know about you — not just your fitness profile, but your schedule, energy patterns, and goals."
 - **On request**: Anytime the user asks to **make / build / design / lay out / fill out / map out / write up** a plan, program, routine, or schedule — including phrasings like "fill out my workout plan for the rest of the month". ("Fill out / build a **plan**" creates the program here. "Fill **in** my workouts / prescribe exercises" for an **existing** plan is a different action — see *Plan Updates*.)
-- **Check first**: Look at `active_plans` in summary. If one already exists, ask before replacing it.
+- **Check first — one plan at a time.** Before creating, look at `active_plans` (in `nbhd_fuel_summary`, or call `nbhd_fuel_audit` — its `guidance` spells this out). If the user **already has an active plan**, do NOT just make a second one. Figure out which they mean:
+  - **They want to change it** (more/fewer days, swap exercises, rename, deload, "fill in" the workouts) → **UPDATE the existing plan** with `nbhd_fuel_update_plan`. Don't create a new one. See *Plan Updates*.
+  - **They want a fresh program** → creating one **replaces** the current plan by default: the backend archives the old plan and returns `superseded_plans` in the response. Say so — *"I'll wrap up your current plan 'X' and start this one."* — don't silently drop it.
+  - **They genuinely want two plans at once** (e.g. "keep my running plan and add lifting") → only then pass `concurrent=true` to `nbhd_fuel_create_plan`. Confirm the intent first, and warn that both plans' training-day reminders will fire.
 
 > **Hard rule — never hand-type a dated plan.** Do NOT write a plan with specific dates or weekdays into a chat message. You give `nbhd_fuel_create_plan` a *weekly cadence* (which weekday does what); the backend assigns the real calendar dates in the user's timezone. If you ever find yourself typing "Jun 9 (Mon) — …" into a reply, **stop and call the tool** — computing weekdays in prose is the #1 cause of wrong-date plans.
 

@@ -1495,6 +1495,30 @@ class RuntimeFuelAuditTests(TestCase):
         self.assertEqual(body["fuel_crons"], [])
         self.assertEqual(body["conflicts"]["duplicate_fires"], [])
         self.assertIn("Safe to propose", body["guidance"])
+        self.assertEqual(body["active_plans"], [])  # none yet → no plan-state note
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_surfaces_active_plan_and_intent_guidance(self, mock_invoke):
+        """With an active plan, the audit must list it and the guidance must tell
+        the agent to disambiguate change/replace/concurrent — not silently make
+        a second plan."""
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Summer Cut",
+            status="active",
+            start_date=date(2026, 5, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},
+        )
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        self.assertEqual(resp.status_code, 200)
+        names = [p["name"] for p in resp.data["active_plans"]]
+        self.assertEqual(names, ["Summer Cut"])
+        self.assertIn("PLAN STATE", resp.data["guidance"])
+        self.assertIn("Summer Cut", resp.data["guidance"])
+        self.assertIn("concurrent=true", resp.data["guidance"])
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_audit_returns_today_plan_when_section_present(self, mock_invoke):
@@ -4943,3 +4967,128 @@ class RuntimePlanRenameCronTriggerTests(TestCase):
         self.assertEqual(resp.status_code, 200, resp.data)
         mock_manage.assert_called_once()
         self.assertEqual(mock_manage.call_args.kwargs.get("action") or mock_manage.call_args.args[2], "remove")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RuntimePlanSingleActiveTests(TestCase):
+    """The single-active-plan invariant, enforced in the backend: creating or
+    activating a plan archives any OTHER active plan (and drops its future
+    planned workouts) unless concurrent=true. This is the safety net that makes
+    the duplicate-plan / duplicate-cron class structurally impossible."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Single Active", telegram_chat_id=800801)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        seed_internal_key(self.tenant)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+        # Stub the gateway-hitting cron lifecycle.
+        p = patch("apps.fuel.runtime_views._manage_fuel_cron", return_value=None)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _url(self):
+        return f"/api/v1/fuel/runtime/{self.tenant.id}/plans/"
+
+    def _create(self, name, **extra):
+        body = {
+            "name": name,
+            "weeks": 2,
+            "days_per_week": 2,
+            "start_date": "2026-06-15",
+            "schedule_json": {
+                "0": {"category": "strength", "activity": "Push"},
+                "2": {"category": "cardio", "activity": "Run"},
+            },
+        }
+        body.update(extra)
+        return self.client.post(self._url(), data=body, format="json", **self.headers)
+
+    def test_create_supersedes_prior_active_plan(self):
+        a = self._create("Plan A")
+        self.assertEqual(a.status_code, 201, a.data)
+        a_id = a.data["id"]
+        plan_a = WorkoutPlan.objects.get(id=a_id)
+        # A completed session on Plan A is HISTORY — it must survive the archive.
+        Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan_a,
+            date=date(2026, 6, 16),
+            category="strength",
+            activity="Done Push",
+            status="done",
+        )
+        self.assertGreater(Workout.objects.filter(plan=plan_a, status="planned").count(), 0)
+
+        b = self._create("Plan B")
+        self.assertEqual(b.status_code, 201, b.data)
+        self.assertEqual(b.data.get("superseded_plans"), ["Plan A"])
+        b_id = b.data["id"]
+
+        plan_a.refresh_from_db()
+        self.assertEqual(plan_a.status, "archived")
+        self.assertEqual(Workout.objects.filter(plan=plan_a, status="planned").count(), 0)  # planned dropped
+        self.assertEqual(Workout.objects.filter(plan=plan_a, status="done").count(), 1)  # completed history KEPT
+        # The kept plan B's planned workouts are untouched.
+        self.assertGreater(Workout.objects.filter(plan_id=b_id, status="planned").count(), 0)
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, status="active").count(), 1)
+
+    def test_dedup_create_still_supersedes_others(self):
+        """The idempotency short-circuit (same name+start_date) must STILL enforce
+        single-active — re-asserting Plan A supersedes the other active plan."""
+        self._create("Plan A")
+        b = self._create("Plan B", concurrent=True)  # both active
+        b_id = b.data["id"]
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, status="active").count(), 2)
+
+        again = self._create("Plan A")  # same name + start_date → dedup path
+        self.assertEqual(again.status_code, 200, again.data)
+        self.assertTrue(again.data.get("deduped"))
+        self.assertEqual(again.data.get("superseded_plans"), ["Plan B"])
+        self.assertEqual(WorkoutPlan.objects.get(id=b_id).status, "archived")
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, status="active").count(), 1)
+
+    def test_concurrent_create_keeps_prior_active(self):
+        a = self._create("Plan A")
+        self.assertEqual(a.status_code, 201, a.data)
+        b = self._create("Plan B", concurrent=True)
+        self.assertEqual(b.status_code, 201, b.data)
+        self.assertNotIn("superseded_plans", b.data)
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, status="active").count(), 2)
+
+    def test_patch_activate_supersedes_others(self):
+        a = self._create("Plan A")
+        b = self._create("Plan B", concurrent=True)  # keep both active
+        a_id, b_id = a.data["id"], b.data["id"]
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, status="active").count(), 2)
+
+        # Genuine paused→active transition on A → B is archived.
+        url = f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{a_id}/"
+        self.client.patch(url, data={"status": "paused"}, format="json", **self.headers)
+        resp = self.client.patch(url, data={"status": "active"}, format="json", **self.headers)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data.get("superseded_plans"), ["Plan B"])
+        self.assertEqual(WorkoutPlan.objects.get(id=b_id).status, "archived")
+        self.assertEqual(WorkoutPlan.objects.get(id=a_id).status, "active")
+
+    def test_noop_status_activate_does_not_supersede(self):
+        """A redundant status='active' on an ALREADY-active plan must NOT archive
+        a second active plan — the guard fires on a transition, not presence."""
+        a = self._create("Plan A")
+        b = self._create("Plan B", concurrent=True)  # both active
+        b_id = b.data["id"]
+
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{a.data['id']}/",
+            data={"status": "active"},  # already active → no-op transition
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertNotIn("superseded_plans", resp.data)
+        self.assertEqual(WorkoutPlan.objects.get(id=b_id).status, "active")  # untouched
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, status="active").count(), 2)

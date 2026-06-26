@@ -1636,10 +1636,20 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             pass
 
         if not use_session_scheduling:
-            active_plan = WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at").first()
-            if active_plan:
+            # One prep cron per ACTIVE plan — normally a single plan under the
+            # single-active-plan invariant, or N for an explicit concurrent
+            # opt-in. MUST match apps/orchestrator/fuel_cron._desired_fuel_crons
+            # (same order + name-dedup) so the name-keyed reconciler doesn't
+            # churn between this seed and the hourly reconcile.
+            from apps.orchestrator.fuel_cron import _FUEL_RESERVED_NAMES
+
+            seen_fuel: set[str] = set()
+            for active_plan in WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at"):
                 fuel_job = build_fuel_workout_cron(tenant, active_plan, preferred_time=pref_time)
-                if fuel_job:
+                # Skip reserved-name collisions (e.g. a plan named "welcome")
+                # — kept byte-identical to _desired_fuel_crons to avoid churn.
+                if fuel_job and fuel_job["name"] not in _FUEL_RESERVED_NAMES and fuel_job["name"] not in seen_fuel:
+                    seen_fuel.add(fuel_job["name"])
                     jobs.append(fuel_job)
 
     # Apply per-task model overrides from tenant preferences. Only stamp

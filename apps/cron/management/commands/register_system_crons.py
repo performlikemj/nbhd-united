@@ -72,6 +72,10 @@ SYSTEM_CRONS = [
     # Re-invokes the self-healing schedulers so a tenant whose welcome was
     # missed (gateway hiccup, agent crash mid-turn) gets retried within 24h.
     ("reconcile-welcomes", "30 1 * * *", "/api/cron/trigger/reconcile_welcomes/"),
+    # Daily at 02:00 UTC — complete workout plans whose duration has elapsed so
+    # "active" means "currently running". Keeps the single-active-plan model
+    # honest and drops finished plans' prep crons.
+    ("complete-elapsed-plans", "0 2 * * *", "/api/cron/trigger/complete_elapsed_plans/"),
     # Weekly Sunday 05:00 UTC — write per-tenant Gravity (finance) snapshot
     # to PillarSnapshot. Feeds the assistant's history/drill/compare tools.
     # Skips hibernated tenants; idempotent per ISO week.
