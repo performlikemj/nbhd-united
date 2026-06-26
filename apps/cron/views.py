@@ -174,6 +174,9 @@ TASK_MAP = {
     # Fuel session-scheduling cutover — derived from Workout.scheduled_at
     "regenerate_fuel_crons": "apps.orchestrator.tasks.regenerate_fuel_crons_task",
     "reconcile_fuel_crons": "apps.orchestrator.tasks.reconcile_fuel_crons_task",
+    # Daily sweep — mark active workout plans whose duration has elapsed as
+    # completed so "active" means "currently running" (single-active hygiene).
+    "complete_elapsed_plans": "apps.orchestrator.tasks.complete_elapsed_plans_task",
     # Postgres-canonical cron cutover — derived view of CronJob rows
     "regenerate_tenant_crons": "apps.orchestrator.tasks.regenerate_tenant_crons_task",
     "reconcile_tenant_crons": "apps.orchestrator.tasks.reconcile_tenant_crons_task",

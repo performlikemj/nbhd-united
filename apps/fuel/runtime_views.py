@@ -1124,7 +1124,7 @@ def _manage_fuel_cron(tenant, plan, action="create"):
     """
     try:
         from apps.cron.gateway_client import GatewayError, invoke_gateway_tool
-        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+        from apps.orchestrator.fuel_cron import _FUEL_RESERVED_NAMES, _desired_fuel_crons
         from apps.orchestrator.services import _extract_cron_jobs
     except ImportError:
         logger.warning("Could not import gateway_client or fuel_cron for fuel cron")
@@ -1164,8 +1164,12 @@ def _manage_fuel_cron(tenant, plan, action="create"):
                 # nothing on the real gateway, another reason orphans persisted.
                 existing = _extract_cron_jobs(result) or []
                 for job in existing:
-                    if isinstance(job, dict) and str(job.get("name", "")).startswith("_fuel:"):
-                        job_id = job.get("id") or job.get("jobId") or job.get("name")
+                    name = str(job.get("name", "")) if isinstance(job, dict) else ""
+                    # Sweep workout-plan crons only; leave reserved names
+                    # (e.g. _fuel:welcome, owned by the welcome scheduler)
+                    # alone — symmetric with the reconciler's exclusion.
+                    if name.startswith("_fuel:") and name not in _FUEL_RESERVED_NAMES:
+                        job_id = job.get("id") or job.get("jobId") or name
                         if job_id:
                             invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
             except GatewayError:
@@ -1188,6 +1192,40 @@ def _manage_fuel_cron(tenant, plan, action="create"):
         logger.warning("Fuel cron %s failed for tenant %s (best-effort)", action, tenant.id)
     except Exception:
         logger.exception("Unexpected error managing fuel cron for tenant %s", tenant.id)
+
+
+def _supersede_other_active_plans(tenant, keep_plan) -> list[str]:
+    """Single-active-plan invariant: archive every OTHER active plan for the
+    tenant and drop its PLANNED workouts (completed sessions are kept as history,
+    still linked to the archived plan). Same teardown contract as deleting a
+    plan (``delete()`` on planned rows, no date filter — a superseded program's
+    remaining sessions, missed or upcoming, no longer apply). Returns the
+    archived plan names so the response can tell the assistant what it replaced.
+
+    This is the backend safety net behind the "one active plan" model: even if
+    the assistant misreads "change my plan" as "make a new one", the prior plan
+    can't linger active and strand a duplicate prep cron (the duplicate-fuel-cron
+    class). A user who genuinely wants two concurrent programs opts in explicitly
+    (``concurrent=true``), which skips this.
+    """
+    from django.db import transaction
+
+    archived: list[str] = []
+    with transaction.atomic():
+        others = WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE).exclude(id=keep_plan.id)
+        for p in others:
+            Workout.objects.filter(plan=p, status=WorkoutStatus.PLANNED).delete()
+            p.status = PlanStatus.ARCHIVED
+            p.save(update_fields=["status", "updated_at"])
+            archived.append(p.name)
+    if archived:
+        logger.info(
+            "fuel.superseded_active_plans tenant=%s kept=%s archived=%s",
+            tenant.id,
+            keep_plan.name,
+            archived,
+        )
+    return archived
 
 
 class RuntimeWorkoutPlanListCreateView(APIView):
@@ -1281,16 +1319,31 @@ class RuntimeWorkoutPlanListCreateView(APIView):
             days_ahead = (7 - today.weekday()) % 7 or 7
             plan_start = today + timedelta(days=days_ahead)
 
+        # Single-active-plan invariant: a new plan REPLACES any current active
+        # plan unless the caller explicitly asks for concurrent programs. This
+        # is the backend half of the model — the assistant confirms intent with
+        # the user, but even a misread can't leave two active plans (and a
+        # stranded prep cron) behind. ``concurrent=true`` keeps the others.
+        concurrent = bool(data.get("concurrent", False))
+
         # Idempotency: a retried / double-fired create with the same name +
         # start_date returns the existing active plan instead of duplicating it
         # (and its whole calendar of planned workouts). Mirrors the task/goal
-        # runtime dedup contract (return 200, not a second 201).
+        # runtime dedup contract (return 200, not a second 201). Even on this
+        # path enforce single-active: the re-asserted plan still supersedes any
+        # OTHER active plans — otherwise the multi-active legacy tenants this
+        # exists to clean up keep their stragglers when a plan is re-created.
         existing = WorkoutPlan.objects.filter(
             tenant=tenant, name=name, start_date=plan_start, status=PlanStatus.ACTIVE
         ).first()
         if existing is not None:
+            superseded = [] if concurrent else _supersede_other_active_plans(tenant, existing)
+            if superseded:
+                _manage_fuel_cron(tenant, existing, action="update")
             result = _serialize_plan(existing)
             result["deduped"] = True
+            if superseded:
+                result["superseded_plans"] = superseded
             return Response(result, status=status.HTTP_200_OK)
 
         # Persist the plan row and expand its full calendar of planned workouts
@@ -1316,6 +1369,7 @@ class RuntimeWorkoutPlanListCreateView(APIView):
                 workouts_created = _expand_plan_workouts(
                     plan, tenant, normalized_schedule, plan_start, weeks, week_overrides=normalized_overrides
                 )
+                superseded = [] if concurrent else _supersede_other_active_plans(tenant, plan)
         except Exception as exc:
             logger.exception("WorkoutPlan creation failed for tenant %s", tenant_id)
             return Response(
@@ -1323,11 +1377,15 @@ class RuntimeWorkoutPlanListCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Create background fuel cron (best-effort)
+        # Reconcile the fuel cron set to the now-canonical active plans
+        # (best-effort). After a supersede this drops the archived plans' crons
+        # and keeps only the new plan's.
         _manage_fuel_cron(tenant, plan, action="create")
 
         result = _serialize_plan(plan)
         result["workouts_created"] = workouts_created
+        if superseded:
+            result["superseded_plans"] = superseded
         return Response(result, status=status.HTTP_201_CREATED)
 
 
@@ -1378,6 +1436,7 @@ class RuntimeWorkoutPlanDetailView(APIView):
             plan.name = str(data["name"]).strip()
             updated_fields.append("name")
 
+        prior_status = plan.status
         if "status" in data and data["status"] in PlanStatus.values:
             plan.status = data["status"]
             updated_fields.append("status")
@@ -1482,6 +1541,21 @@ class RuntimeWorkoutPlanDetailView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 )
 
+        # Activating a plan enforces the single-active invariant: archive any
+        # OTHER active plan (unless concurrent was explicitly requested). Gate on
+        # an actual transition INTO active (prior_status != ACTIVE) — a redundant
+        # status='active' on an already-active plan must NOT silently archive a
+        # second active plan (and hard-delete its future workouts). Done BEFORE
+        # the cron reconcile so the desired set reflects the supersede.
+        superseded: list[str] = []
+        if (
+            "status" in updated_fields
+            and plan.status == PlanStatus.ACTIVE
+            and prior_status != PlanStatus.ACTIVE
+            and not bool(data.get("concurrent", False))
+        ):
+            superseded = _supersede_other_active_plans(tenant, plan)
+
         # Manage fuel cron based on status/schedule/name changes (best-effort).
         # A pure rename must reconcile too: the legacy cron name is
         # ``_fuel:{plan.name}``, so renaming without this would strand the
@@ -1496,7 +1570,10 @@ class RuntimeWorkoutPlanDetailView(APIView):
                 # Paused, completed, archived → remove cron
                 _manage_fuel_cron(tenant, plan, action="remove")
 
-        return Response(_serialize_plan(plan, include_workouts=True))
+        resp = _serialize_plan(plan, include_workouts=True)
+        if superseded:
+            resp["superseded_plans"] = superseded
+        return Response(resp)
 
     def delete(self, request, tenant_id, plan_id):
         err = _internal_auth_or_401(request, tenant_id)
@@ -1734,9 +1811,28 @@ class RuntimeFuelAuditView(APIView):
             if short not in fuel_session_short_ids:
                 orphan_workouts.append({"id": str(w.id), "date": str(w.date), "activity": w.activity})
 
+        # 5. active_plans — the user's current program(s). The assistant must
+        # know these BEFORE creating a plan so it can tell the difference
+        # between "change my plan" (update the existing one) and "new program"
+        # (which replaces it by default), and only run concurrent plans when the
+        # user explicitly asks.
+        active_plans = [
+            {
+                "id": str(p.id),
+                "name": p.name,
+                "status": p.status,
+                "start_date": str(p.start_date),
+                "weeks": p.weeks,
+                "days_per_week": p.days_per_week,
+                "objective": p.objective,
+            }
+            for p in WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE).order_by("-created_at")
+        ]
+
         return Response(
             {
                 "today_plan": today_plan,
+                "active_plans": active_plans,
                 "next_14d_workouts": next_14d,
                 "fuel_crons": fuel_crons,
                 "cron_list_error": cron_list_error,
@@ -1745,20 +1841,46 @@ class RuntimeFuelAuditView(APIView):
                     "orphan_crons": orphan_crons,
                     "orphan_workouts": orphan_workouts,
                 },
-                "guidance": _audit_guidance(today_plan, fuel_crons, duplicate_fires),
+                "guidance": _audit_guidance(today_plan, fuel_crons, duplicate_fires, active_plans),
             }
         )
 
 
-def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list) -> str:
-    """Single-line instruction for the agent based on the audit state."""
+def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list, active_plans: list | None = None) -> str:
+    """Single-line instruction for the agent based on the audit state.
+
+    Appends a plan-management note whenever the user already has an active plan,
+    so the agent surfaces it and disambiguates edit / replace / concurrent
+    rather than silently creating a second active plan (the root cause of the
+    duplicate-plan + duplicate-cron mess).
+    """
+    active_plans = active_plans or []
+    plan_note = ""
+    if active_plans:
+        names = ", ".join(f"'{p['name']}'" for p in active_plans)
+        if len(active_plans) == 1:
+            plan_note = (
+                f" PLAN STATE: the user already has an active plan ({names}). If they want to CHANGE it "
+                "(swap exercises, more days, rename, deload), UPDATE that plan with nbhd_fuel_update_plan — "
+                "do NOT create a new one. If they want a fresh program, creating one REPLACES the current "
+                "plan by default (the old one is archived) — tell them that's what you're doing. Only pass "
+                "concurrent=true to nbhd_fuel_create_plan if the user explicitly says they want to run two "
+                "plans at the same time."
+            )
+        else:
+            plan_note = (
+                f" PLAN STATE: the user has {len(active_plans)} concurrent active plans ({names}). Confirm "
+                "which one they mean before editing, and remember a plain create replaces ALL of them unless "
+                "concurrent=true."
+            )
+
     if duplicate_fires:
-        return (
+        base = (
             "STOP — duplicate cron firings detected. Surface the duplicates to the user "
             "and offer to remove them. Do NOT add more crons until they are resolved."
         )
-    if today_plan.get("exists"):
-        return (
+    elif today_plan.get("exists"):
+        base = (
             "today_plan.raw_section is the locked plan description for today. Deliver "
             "THAT plan to the user verbatim — do not invent a different one. To UPDATE "
             "or DELETE today's workout (e.g. swap an exercise, change weights), find "
@@ -1767,8 +1889,8 @@ def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list) -
             "Workout IDs are already in this response — do NOT call nbhd_fuel_summary "
             "just to retrieve them."
         )
-    if today_plan.get("workouts"):
-        return (
+    elif today_plan.get("workouts"):
+        base = (
             "A workout is already on the calendar for today (today_plan.workouts, also "
             "in next_14d_workouts) — the daily note has no Fuel section, but Postgres "
             "is the source of truth. Do NOT treat today as unplanned or propose a fresh "
@@ -1777,8 +1899,10 @@ def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list) -
             "nbhd_fuel_update_workout / nbhd_fuel_delete_workout — do NOT call "
             "nbhd_fuel_summary just to retrieve them."
         )
-    return (
-        "No locked plan for today. Safe to propose one. Before scheduling, check "
-        "next_14d_workouts so your proposal fits the existing program. Workout IDs "
-        "for any update or delete are in next_14d_workouts[i].id."
-    )
+    else:
+        base = (
+            "No locked plan for today. Safe to propose one. Before scheduling, check "
+            "next_14d_workouts so your proposal fits the existing program. Workout IDs "
+            "for any update or delete are in next_14d_workouts[i].id."
+        )
+    return base + plan_note

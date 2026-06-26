@@ -1388,6 +1388,21 @@ class PlanFuelCronReconcileTest(TestCase):
         self.assertEqual([j["name"] for j in plan["to_add"]], ["_fuel:abcd1234"])
         self.assertEqual(plan["unchanged"], 0)
 
+    def test_reserved_welcome_cron_is_never_reaped(self):
+        """``_fuel:welcome`` belongs to the welcome scheduler, not the workout
+        reconciler — it must be left untouched (not reaped as an orphan), or the
+        reconciler would fight the welcome lifecycle / kill a pending welcome."""
+        from apps.orchestrator.fuel_cron import plan_fuel_cron_reconcile
+
+        current = [
+            {"name": "_fuel:welcome", "id": "w1"},
+            {"name": "_fuel:Old Plan", "id": "o1"},
+        ]
+        plan = plan_fuel_cron_reconcile({}, current)  # desired empty
+        removed_names = [j["name"] for j, _ in plan["to_remove"]]
+        self.assertNotIn("_fuel:welcome", removed_names)  # reserved — untouched
+        self.assertIn("_fuel:Old Plan", removed_names)  # real orphan — reaped
+
 
 class DesiredFuelCronsTest(TestCase):
     """_desired_fuel_crons branches by flow — this is what makes the reconciler
@@ -1431,7 +1446,11 @@ class DesiredFuelCronsTest(TestCase):
         jobs = _desired_fuel_crons(self.tenant)
         self.assertEqual([j["name"] for j in jobs], ["_fuel:Builder"])
 
-    def test_legacy_prefers_most_recent_active_plan(self):
+    def test_legacy_concurrent_plans_each_get_a_cron(self):
+        """Concurrent (opt-in) active plans each get their own prep cron —
+        normally there's just one (single-active invariant), but if a user
+        explicitly keeps two, the cron layer schedules BOTH (no silent
+        cron-less plan). Most-recent-first order, name-deduped."""
         from datetime import date as date_cls
 
         from apps.fuel.models import FuelProfile, WorkoutPlan
@@ -1457,8 +1476,7 @@ class DesiredFuelCronsTest(TestCase):
             schedule_json={"0": {}},
         )
         jobs = _desired_fuel_crons(self.tenant)
-        # Matches build_cron_seed_jobs: most-recent active plan only.
-        self.assertEqual([j["name"] for j in jobs], ["_fuel:Newer"])
+        self.assertEqual([j["name"] for j in jobs], ["_fuel:Newer", "_fuel:Older"])  # most-recent first
 
     def test_session_flow_routes_to_derive(self):
         from apps.fuel.models import FuelProfile
@@ -1497,6 +1515,64 @@ class DesiredFuelCronsTest(TestCase):
         desired = _desired_fuel_crons(self.tenant)
         seed_fuel = [j for j in build_cron_seed_jobs(self.tenant) if j["name"].startswith("_fuel:")]
         self.assertEqual(desired, seed_fuel)  # full dict equality, not just name
+
+    def test_concurrent_desired_matches_seed_emission(self):
+        """Anti-flap lock with TWO active plans — the multi-plan case the change
+        actually adds. Both emission sites must be byte-identical (order, dedup,
+        full dict) or the name-keyed reconciler churns on concurrent tenants."""
+        from datetime import date as date_cls
+
+        from apps.fuel.models import FuelProfile, WorkoutPlan
+        from apps.orchestrator.config_generator import build_cron_seed_jobs
+        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=False, preferred_time="evening")
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Lifting",
+            status="active",
+            start_date=date_cls(2026, 4, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}},
+        )
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Running",
+            status="active",
+            start_date=date_cls(2026, 5, 1),
+            weeks=4,
+            days_per_week=2,
+            schedule_json={"1": {}, "3": {}},
+        )
+        desired = _desired_fuel_crons(self.tenant)
+        seed_fuel = [j for j in build_cron_seed_jobs(self.tenant) if j["name"].startswith("_fuel:")]
+        self.assertEqual(len(desired), 2)
+        self.assertEqual(desired, seed_fuel)  # full list-of-dicts equality for N=2
+
+    def test_plan_named_welcome_gets_no_cron(self):
+        """A plan literally named 'welcome' collides with the reserved
+        _fuel:welcome — it must NOT be emitted (would flap the reconciler)."""
+        from datetime import date as date_cls
+
+        from apps.fuel.models import FuelProfile, WorkoutPlan
+        from apps.orchestrator.config_generator import build_cron_seed_jobs
+        from apps.orchestrator.fuel_cron import _desired_fuel_crons
+
+        FuelProfile.objects.create(tenant=self.tenant, use_session_scheduling=False)
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="welcome",
+            status="active",
+            start_date=date_cls(2026, 5, 1),
+            weeks=4,
+            days_per_week=2,
+            schedule_json={"0": {}, "2": {}},
+        )
+        self.assertEqual(_desired_fuel_crons(self.tenant), [])
+        # And the seed path agrees (no _fuel:welcome emitted for the plan).
+        seed_fuel = [j for j in build_cron_seed_jobs(self.tenant) if j["name"].startswith("_fuel:")]
+        self.assertEqual(seed_fuel, [])
 
 
 class ReconcileFuelCronsFleetTest(TestCase):
@@ -1541,6 +1617,53 @@ class ReconcileFuelCronsFleetTest(TestCase):
         self.assertNotIn(blank_fqdn.id, called_ids)  # half-provisioned (blank fqdn) skipped
         self.assertEqual(totals["tenants"], 1)
         self.assertEqual(totals["legacy_reaped"], 3)
+
+
+class CompleteElapsedPlansTest(TestCase):
+    """Daily auto-complete: a plan whose weeks have elapsed flips to completed so
+    "active" stays meaningful; a still-running plan is untouched."""
+
+    def _plan(self, tenant, name, start, weeks=4):
+        from apps.fuel.models import WorkoutPlan
+
+        return WorkoutPlan.objects.create(
+            tenant=tenant,
+            name=name,
+            status="active",
+            start_date=start,
+            weeks=weeks,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}},
+        )
+
+    @patch("apps.orchestrator.fuel_cron.regenerate_fuel_crons", return_value={})
+    def test_completes_elapsed_keeps_current(self, mock_regen):
+        from datetime import date as date_cls
+        from datetime import timedelta
+
+        from apps.fuel.models import PlanStatus, WorkoutPlan
+        from apps.orchestrator.tasks import complete_elapsed_plans_task
+
+        tenant = create_tenant(display_name="Elapse", telegram_chat_id=992001)
+        tenant.fuel_enabled = True
+        tenant.save(update_fields=["fuel_enabled"])
+        # Elapsed: started 10 weeks ago, 4-week plan → ended ~6 weeks ago.
+        elapsed = self._plan(tenant, "Old Block", date_cls.today() - timedelta(weeks=10))
+        # Current: started this week, still running.
+        current = self._plan(tenant, "Current Block", date_cls.today() - timedelta(days=2))
+
+        totals = complete_elapsed_plans_task()
+
+        elapsed.refresh_from_db()
+        current.refresh_from_db()
+        self.assertEqual(elapsed.status, PlanStatus.COMPLETED)
+        self.assertEqual(current.status, PlanStatus.ACTIVE)
+        self.assertEqual(totals["plans_completed"], 1)
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=tenant, status="active").count(), 1)
+        # The affected tenant's fuel crons are reconciled so the completed
+        # plan's prep cron is dropped.
+        self.assertEqual(totals["tenants_reconciled"], 1)
+        self.assertEqual({c.args[0].id for c in mock_regen.call_args_list}, {tenant.id})
 
 
 class FuelEmissionSuppressionTest(TestCase):

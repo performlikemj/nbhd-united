@@ -590,7 +590,16 @@ def restore_crons_after_image_update_task(tenant_id: str) -> None:
     for job in snapshot_jobs:
         if not isinstance(job, dict) or not job.get("name"):
             continue
-        lower_name = job["name"].lower()
+        name = job["name"]
+        # Never restore _fuel:* from the snapshot. The fuel reconciler
+        # (regenerate_fuel_crons, called right after this) is the source of
+        # truth for the _fuel: namespace and rebuilds it from Postgres — so a
+        # snapshot captured while stale rename/duplicate orphans were present
+        # would otherwise re-inject them on every wake, fighting the reconciler.
+        # (_sync:* IS restored here on purpose — it's agent-owned, not reconciled.)
+        if name.startswith("_fuel:"):
+            continue
+        lower_name = name.lower()
         if lower_name in system_cron_names:
             continue
         if lower_name in seen_names or lower_name in existing_names:
@@ -1090,6 +1099,61 @@ def reconcile_fuel_crons_task() -> dict:
             logger.exception("reconcile_fuel_crons: tenant %s failed", tenant.id)
             totals["errors"] += 1
     logger.info("reconcile_fuel_crons: %s", totals)
+    return totals
+
+
+def complete_elapsed_plans_task() -> dict:
+    """Daily sweep: mark active plans whose duration has fully elapsed as
+    COMPLETED, so ``active`` means "currently running", not "never archived".
+
+    A plan runs from ``start_date`` for ``weeks`` weeks; once
+    ``start_date + weeks*7`` is on or before the tenant-local today, the program
+    is over. Leaving finished plans ``active`` accumulates stale plans — the
+    "which active plan is the real one?" ambiguity that fed the duplicate-plan
+    problem. Completing a plan also drops its prep cron via the per-tenant
+    reconcile below (which skips hibernated/suspended containers).
+    """
+    import logging
+    from datetime import timedelta
+
+    from apps.common.llm_contracts import today_in_tenant_tz
+    from apps.fuel.models import PlanStatus, WorkoutPlan
+    from apps.orchestrator.fuel_cron import regenerate_fuel_crons
+
+    logger = logging.getLogger(__name__)
+    totals = {"plans_completed": 0, "tenants_reconciled": 0, "errors": 0}
+
+    affected_tenants = {}
+    active = WorkoutPlan.objects.filter(status=PlanStatus.ACTIVE).select_related("tenant", "tenant__user")
+    for plan in active:
+        try:
+            today = today_in_tenant_tz(plan.tenant)
+            end_date = plan.start_date + timedelta(days=plan.weeks * 7)
+            if end_date <= today:
+                plan.status = PlanStatus.COMPLETED
+                plan.save(update_fields=["status", "updated_at"])
+                totals["plans_completed"] += 1
+                affected_tenants[plan.tenant_id] = plan.tenant
+                logger.info(
+                    "complete_elapsed_plans: completed plan %s (%s) for tenant %s — ended %s",
+                    plan.id,
+                    plan.name,
+                    str(plan.tenant_id)[:8],
+                    end_date,
+                )
+        except Exception:
+            logger.exception("complete_elapsed_plans: failed for plan %s", plan.id)
+            totals["errors"] += 1
+
+    for tenant in affected_tenants.values():
+        try:
+            regenerate_fuel_crons(tenant)
+            totals["tenants_reconciled"] += 1
+        except Exception:
+            logger.exception("complete_elapsed_plans: reconcile failed for tenant %s", tenant.id)
+            totals["errors"] += 1
+
+    logger.info("complete_elapsed_plans: %s", totals)
     return totals
 
 

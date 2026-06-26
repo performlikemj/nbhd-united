@@ -29,6 +29,15 @@ _FUEL_SESSION_PREFIX = "_fuel:"
 # 8-char suffix (``str(uuid).split("-")[0]``).
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
+# Cron names under the ``_fuel:`` prefix that the workout reconciler does NOT
+# own — they belong to OTHER subsystems and must be left untouched. The
+# welcome scheduler (apps/orchestrator/welcome_scheduler.py) schedules a
+# one-shot ``_fuel:welcome`` onboarding cron and self-removes it after firing;
+# the reconciler reaping it would fight that lifecycle (and could kill a fresh,
+# pending welcome before it fires). The reconciler claims the workout-plan
+# namespace, not the literal ``_fuel:`` string.
+_FUEL_RESERVED_NAMES = frozenset({"_fuel:welcome"})
+
 
 def _is_session_cron_name(name: str) -> bool:
     """True only for a derived per-session cron name ``_fuel:{8-hex}``.
@@ -176,7 +185,9 @@ def plan_fuel_cron_reconcile(desired_by_name: dict[str, dict], current_jobs: lis
         if not isinstance(j, dict):
             continue
         name = j.get("name", "")
-        if name.startswith(_FUEL_SESSION_PREFIX):
+        # Own the workout-plan namespace only — skip reserved names owned by
+        # other subsystems (e.g. the welcome scheduler's ``_fuel:welcome``).
+        if name.startswith(_FUEL_SESSION_PREFIX) and name not in _FUEL_RESERVED_NAMES:
             by_name.setdefault(name, []).append(j)
 
     to_remove: list[tuple[dict, str]] = []
@@ -206,11 +217,13 @@ def _desired_fuel_crons(tenant: Tenant) -> list[dict]:
     * Fuel disabled        → ``[]`` (the reconciler reaps any leftover crons).
     * Session scheduling on → one derived cron per planned Workout in the 48h
       window (``derive_fuel_cron_jobs``).
-    * Legacy (session off)  → at most ONE workout-prep cron, for the
-      most-recent active plan — byte-for-byte what ``build_cron_seed_jobs``
-      emits (apps/orchestrator/config_generator.py:build_fuel_workout_cron).
-      This is the canonical legacy state; every other ``_fuel:*`` job (the
-      additive-create / rename orphans that accumulated) is stale.
+    * Legacy (session off)  → ONE workout-prep cron per ACTIVE plan. With the
+      single-active-plan invariant (archive-on-activate) that is normally one
+      cron; a tenant who explicitly opts into concurrent plans gets one per
+      active plan. Byte-for-byte identical to what ``build_cron_seed_jobs``
+      emits (apps/orchestrator/config_generator.py) — they MUST stay in sync,
+      or the name-keyed reconciler would churn. Every other ``_fuel:*`` job
+      (additive-create / rename orphans) is stale and reaped.
     """
     if not getattr(tenant, "fuel_enabled", False):
         return []
@@ -223,12 +236,21 @@ def _desired_fuel_crons(tenant: Tenant) -> list[dict]:
 
     from .config_generator import build_fuel_workout_cron
 
-    plan = WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at").first()
-    if plan is None:
-        return []
     pref_time = getattr(profile, "preferred_time", "") if profile else ""
-    job = build_fuel_workout_cron(tenant, plan, preferred_time=pref_time)
-    return [job] if job else []
+    jobs: list[dict] = []
+    seen: set[str] = set()
+    # Most-recent first so that if two active plans collide on a name, the
+    # newest wins the single cron slot (deterministic, matches seed order).
+    for plan in WorkoutPlan.objects.filter(tenant=tenant, status="active").order_by("-created_at"):
+        job = build_fuel_workout_cron(tenant, plan, preferred_time=pref_time)
+        # Never emit a plan cron that collides with a reserved name (e.g. a plan
+        # literally named "welcome" → _fuel:welcome): the reconciler excludes
+        # reserved names from its present-set, so emitting one would re-add it
+        # on every pass (flap). Such a plan simply gets no prep cron.
+        if job and job["name"] not in _FUEL_RESERVED_NAMES and job["name"] not in seen:
+            seen.add(job["name"])
+            jobs.append(job)
+    return jobs
 
 
 def regenerate_fuel_crons(tenant: Tenant) -> dict:
