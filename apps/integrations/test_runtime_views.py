@@ -915,6 +915,65 @@ class RuntimeJournalContextBackboneDualReadTest(TestCase):
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeJournalContextRecentNotesFilterTest(TestCase):
+    """recent_notes must surface only real ISO-date daily notes. slug__gte is a
+    TEXT comparison, so a pre-guard garbage slug like 'NaN-NaN-NaN' sorts ABOVE
+    every date and a within-window non-date slug ('<today>-extra') passes the
+    cutoff — both would slip into the agent's context without the regex guard."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="RecentFilter", telegram_chat_id=646464)
+        seed_internal_key(self.tenant)
+
+    def _recent_dates(self) -> list[str]:
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal-context/",
+            HTTP_X_NBHD_INTERNAL_KEY="shared-key",
+            HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        return [n["date"] for n in resp.json()["recent_notes"]]
+
+    def test_nan_and_nondate_dailies_excluded_from_recent_notes(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.journal.models import Document
+
+        today = timezone.now().date()
+        real_slug = str(today - timedelta(days=2))  # within the 7-day window
+        windowed_bad_slug = f"{today}-extra"  # passes slug__gte cutoff but isn't a date
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug=real_slug,
+            title=real_slug,
+            markdown="# real day\n\nbody",
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="NaN-NaN-NaN",
+            title="NaN-NaN-NaN",
+            markdown="# {{date}}\n\ngarbage",
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug=windowed_bad_slug,
+            title=windowed_bad_slug,
+            markdown="# mis-kinded\n\nbody",
+        )
+
+        dates = self._recent_dates()
+        self.assertIn(real_slug, dates)
+        self.assertNotIn("NaN-NaN-NaN", dates)
+        self.assertNotIn(windowed_bad_slug, dates)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeJournalContextConstellationTest(TestCase):
     """journal-context surfaces active constellation stars for session init."""
 

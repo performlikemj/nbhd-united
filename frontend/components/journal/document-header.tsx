@@ -3,18 +3,7 @@
 import { useState, useEffect } from "react";
 import clsx from "clsx";
 import { useDocumentQuery, useUpdateDocumentMutation } from "@/lib/queries";
-
-function todayISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function shiftDate(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const date = new Date(y, m - 1, d);
-  date.setDate(date.getDate() + days);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
+import { shiftISODate, todayISO } from "@/lib/journal-date";
 
 export function formatDate(dateStr: string): string {
   return new Date(dateStr + "T00:00:00").toLocaleDateString(undefined, {
@@ -68,7 +57,7 @@ export function DocumentHeader({
 }: DocumentHeaderProps) {
   const { data: doc } = useDocumentQuery(kind, slug);
   const handleDateNav = (days: number) => {
-    onNavigate("daily", shiftDate(slug, days));
+    onNavigate("daily", shiftISODate(slug, days));
   };
 
   return (

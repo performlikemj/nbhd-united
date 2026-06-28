@@ -5,6 +5,7 @@ import clsx from "clsx";
 import { useQueryClient } from "@tanstack/react-query";
 import type { SidebarSection } from "@/lib/types";
 import { fetchDocument } from "@/lib/api";
+import { todayISO } from "@/lib/journal-date";
 import {
   useSidebarTreeQuery,
   useDeleteDocumentMutation,
@@ -119,11 +120,6 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
     }
   }, [addingKind]);
 
-  function todaySlug(): string {
-    const d = new Date();
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-  }
-
   const handleDelete = useCallback((kind: string, slug: string) => {
     setConfirmDialog({
       open: true,
@@ -135,7 +131,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
           {
             onSuccess: () => {
               if (activeKind === kind && activeSlug === slug) {
-                const today = todaySlug();
+                const today = todayISO();
                 onNavigate("daily", today);
               }
             },
@@ -249,7 +245,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
       <div className="px-3 py-3">
         <button
           type="button"
-          onClick={() => onNavigate("daily", todaySlug())}
+          onClick={() => onNavigate("daily", todayISO())}
           className="group w-full rounded-xl bg-gradient-to-r from-accent/20 to-[#7C6BF0]/10 border border-accent/20 px-4 py-3 text-sm font-semibold text-ink flex items-center justify-center gap-2.5 transition hover:brightness-110 hover:border-accent/35 hover:shadow-[0_0_20px_rgba(124,107,240,0.15)]"
         >
           <IconStarPlus className="h-4 w-4 text-accent transition group-hover:rotate-12" />
@@ -262,7 +258,7 @@ export function Sidebar({ activeKind, activeSlug, onNavigate, collapsed, onToggl
         {PRIMARY_NAV.map((item) => {
           const isActive = activeKind === item.kind;
           const Icon = item.icon;
-          const slug = item.kind === "daily" ? todaySlug() : item.kind;
+          const slug = item.kind === "daily" ? todayISO() : item.kind;
           return (
             <button
               key={item.kind}

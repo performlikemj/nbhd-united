@@ -17,6 +17,7 @@ import { TodayCheckIn } from "@/components/fuel/today-checkin";
 import { WeeklySummary } from "@/components/fuel/weekly-summary";
 import { WorkoutDetail } from "@/components/fuel/workout-detail";
 import { useMeQuery, useWorkoutCountQuery } from "@/lib/queries";
+import { shiftISODate } from "@/lib/journal-date";
 
 type Tab = "schedule" | "calendar" | "history" | "progress";
 
@@ -33,10 +34,7 @@ export default function FuelPage() {
 
   const navigateDay = (delta: number) => {
     if (!dayIso) return;
-    const [y, m, d] = dayIso.split("-").map(Number);
-    const date = new Date(y, m - 1, d + delta);
-    const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-    setDayIso(iso);
+    setDayIso(shiftISODate(dayIso, delta));
   };
 
   return (

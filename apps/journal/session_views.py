@@ -64,8 +64,12 @@ class SessionDetailSerializer(serializers.ModelSerializer):
 
 def _ensure_project_document(tenant, project_name: str) -> None:
     """Auto-create a Document(kind='project') if one doesn't exist."""
+    from apps.journal.path_validation import validate_kind_slug
+
     slug = slugify(project_name)[:128]
-    if not slug:
+    # Best-effort helper: skip silently if slugify produced something the shared
+    # slug guard would reject, so every Document create path stays consistent.
+    if not slug or validate_kind_slug(Document.Kind.PROJECT, slug) is not None:
         return
     Document.objects.get_or_create(
         tenant=tenant,

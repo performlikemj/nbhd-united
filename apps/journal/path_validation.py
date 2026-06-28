@@ -24,6 +24,7 @@ failed SMB roundtrips against it.
 
 from __future__ import annotations
 
+import datetime
 import re
 
 from apps.journal.models import Document
@@ -68,9 +69,21 @@ def validate_kind_slug(kind: str, slug: str) -> tuple[str, str] | None:
         return ("invalid_slug", "slug may not contain '..' segments")
     # Daily notes must be keyed by an ISO date so the date-cutoff filter in the
     # journal context bundle stays correct. Enforce on every write path.
-    if kind == "daily" and not DAILY_SLUG_RE.match(slug):
-        return (
-            "invalid_slug",
-            f"Daily note slug must be a date (YYYY-MM-DD), got: {slug!r}",
-        )
+    if kind == "daily":
+        if not DAILY_SLUG_RE.match(slug):
+            return (
+                "invalid_slug",
+                f"Daily note slug must be a date (YYYY-MM-DD), got: {slug!r}",
+            )
+        # The regex matches the shape but accepts impossible dates like
+        # 2026-02-30; round-trip through the date parser so this (runtime) path
+        # rejects the same calendar-invalid dates as the frontend isISODate()
+        # and the console _validate_slug().
+        try:
+            datetime.date.fromisoformat(slug)
+        except ValueError:
+            return (
+                "invalid_slug",
+                f"Daily note slug is not a real calendar date: {slug!r}",
+            )
     return None

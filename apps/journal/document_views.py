@@ -58,6 +58,11 @@ def _validate_slug(kind: str, slug: str) -> None:
     """Raise ValidationError if the slug is invalid for the given kind."""
     if not slug or not _VALID_SLUG_RE.match(slug):
         raise serializers.ValidationError(f"Invalid slug: {slug!r}")
+    # URL-path endpoints (PATCH/append/clear/GET) pass the slug straight here, so
+    # enforce the column limit too — otherwise an over-long slug 500s on the DB
+    # insert instead of returning a clean 400 (matches validate_kind_slug).
+    if len(slug) > 128:  # Document.slug max_length
+        raise serializers.ValidationError(f"slug must be at most 128 characters (got {len(slug)})")
     if kind == "daily" and not _DATE_RE.match(slug):
         raise serializers.ValidationError(f"Daily note slug must be a date (YYYY-MM-DD), got: {slug!r}")
     if kind == "daily":
@@ -183,6 +188,13 @@ class DocumentListCreateView(APIView):
         serializer = DocumentCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
+
+        # Same slug guard as every other console write path (PATCH/append/clear,
+        # via _get_or_create_document). POST was the one create path that skipped
+        # it — letting a daily slug that isn't a real ISO date (e.g. the web UI's
+        # "NaN-NaN-NaN" Invalid-Date artifact) or an NTFS-hostile slug persist a
+        # garbage row that memory_sync then has to skip forever.
+        _validate_slug(data["kind"], data["slug"])
 
         doc, created = Document.objects.get_or_create(
             tenant=tenant,
