@@ -53,7 +53,7 @@ httpx[http2]
 django-redis
 
 # Managed OAuth (Composio — Google integrations)
-composio>=0.16.0
+composio>=0.17.1
 
 # Azure SDK (for Container Apps, Key Vault, Managed Identity, Storage, Billing)
 azure-identity
