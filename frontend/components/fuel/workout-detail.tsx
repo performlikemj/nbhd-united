@@ -13,9 +13,12 @@ import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
 import {
   displayToKm,
   displayToMeters,
+  displayToPace,
   elevationLabel,
   kmToDisplay,
   metersToDisplay,
+  paceToDisplay,
+  parsePaceSeconds,
   useDistanceUnit,
 } from "./use-distance-unit";
 import { displayToKg, kgToDisplay, useWeightUnit } from "./use-weight-unit";
@@ -1126,6 +1129,54 @@ function StatsEditor({ detail, editing, onChange, fields }: {
   );
 }
 
+/* ---- Pace input ---- */
+/**
+ * Tolerant pace input that edits/displays in the user's distance unit while the
+ * draft stays canonical per-km. The bug this fixes: the old field bound the raw
+ * canonical string and only relabeled "/km"→"/mi", so a 7:08/km run showed as
+ * "7:08 /mi" (overstated by the 1.609× km-per-mile factor).
+ *
+ * Local `text` holds the in-progress display string so partial input ("11:")
+ * isn't reformatted mid-keystroke. A clean value commits canonical live (so a
+ * Save or autosave never persists an unconverted display value); blur normalizes
+ * + converts. The caller remounts via `key={`pace-${unit}`}` to reseed on a unit
+ * toggle (same pattern as NumericInput), so no reseed effect is needed.
+ */
+function PaceInput({ canonical, unit, onCommit, className }: {
+  canonical: string | null;
+  unit: ReturnType<typeof useDistanceUnit>["unit"];
+  onCommit: (canonicalPerKm: string | null) => void;
+  className?: string;
+}) {
+  const [text, setText] = useState<string>(() => paceToDisplay(canonical, unit) ?? "");
+  return (
+    <input
+      type="text"
+      // inputMode="text" so iOS keyboards include `:`, `'`, `"` etc.
+      inputMode="text"
+      maxLength={10}
+      value={text}
+      onChange={(e) => {
+        const v = e.target.value;
+        setText(v);
+        // Live-commit only a fully-formed pace (converted to canonical/km); leave
+        // the last good canonical for partial/descriptive input.
+        const normalized = normalizePace(v);
+        if (parsePaceSeconds(normalized) != null) onCommit(displayToPace(normalized, unit));
+      }}
+      onBlur={(e) => {
+        const normalized = normalizePace(e.target.value);
+        const canonicalPerKm = normalized ? displayToPace(normalized, unit) : null;
+        onCommit(canonicalPerKm);
+        setText(paceToDisplay(canonicalPerKm, unit) ?? "");
+      }}
+      placeholder="5:30"
+      aria-label="Pace"
+      className={className}
+    />
+  );
+}
+
 /* ---- Cardio Stats Editor ---- */
 /**
  * Cardio-specific stats with km/mi unit toggle and tolerant pace input.
@@ -1194,27 +1245,14 @@ function CardioStatsEditor({ detail, editing, onChange }: {
           label="PACE"
           unit={`/${unit}`}
           editing={editing}
-          displayValue={(detail.pace as string | null | undefined) ?? null}
+          displayValue={paceToDisplay(typeof detail.pace === "string" ? detail.pace : null, unit)}
           hint={`Try 5:30, 5'30", or 5m30s per ${unit} — all save as MM:SS. Descriptive text ("tempo") saves but won't graph.`}
         >
-          <input
-            type="text"
-            // inputMode="text" so iOS keyboards include `:`, `'`, `"` etc.
-            // The numeric/decimal pads hide most of these. Normalization
-            // happens on blur via normalizePace(), so users can type any
-            // common notation and the stored value is canonical MM:SS.
-            inputMode="text"
-            maxLength={10}
-            value={(detail.pace as string) ?? ""}
-            onChange={(e) => onChange({ pace: e.target.value || null })}
-            onBlur={(e) => {
-              const normalized = normalizePace(e.target.value);
-              if (normalized !== e.target.value) {
-                onChange({ pace: normalized || null });
-              }
-            }}
-            placeholder="5:30"
-            aria-label="Pace"
+          <PaceInput
+            key={`pace-${unit}`}
+            canonical={typeof detail.pace === "string" ? detail.pace : null}
+            unit={unit}
+            onCommit={(p) => onChange({ pace: p })}
             className="min-w-0 flex-1 bg-transparent font-mono text-base text-ink focus:outline-none placeholder:text-ink-faint"
           />
         </StatBox>
