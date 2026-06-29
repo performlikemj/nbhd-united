@@ -288,6 +288,10 @@ def render_recent_journal(tenant: Tenant, *, limit: int = 3, preview_chars: int 
     today_iso = _date.today().isoformat()
     docs = list(
         Document.objects.filter(tenant=tenant, kind=Document.Kind.DAILY)
+        # Real ISO-date dailies only — a pre-guard garbage slug like
+        # "NaN-NaN-NaN" or a mis-kinded "2026-03-29-debt-chart" isn't a daily
+        # note and shouldn't surface as "recent journal" (mirrors DAILY_SLUG_RE).
+        .filter(slug__regex=r"^\d{4}-\d{2}-\d{2}$")
         .exclude(slug=today_iso)
         .order_by("-updated_at")[:limit]
     )

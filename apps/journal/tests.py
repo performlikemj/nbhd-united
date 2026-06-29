@@ -997,6 +997,50 @@ class DocumentAPITest(TestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertIn("Appended entry", resp.data["markdown"])
 
+    def test_post_rejects_nan_daily_slug(self):
+        """POST is the create path that historically skipped slug validation.
+        A daily slug that isn't a real ISO date (the web UI's 'NaN-NaN-NaN'
+        Invalid-Date artifact) must 400 and never persist."""
+        resp = self.client.post(
+            "/api/v1/journal/documents/",
+            {"kind": "daily", "slug": "NaN-NaN-NaN", "title": "NaN-NaN-NaN"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(Document.objects.filter(tenant=self.tenant, kind="daily", slug="NaN-NaN-NaN").exists())
+
+    def test_post_rejects_ntfs_hostile_slug(self):
+        """POST must reject NTFS-hostile slugs (':' breaks the SMB file path)."""
+        resp = self.client.post(
+            "/api/v1/journal/documents/",
+            {"kind": "project", "slug": "a:b", "title": "x"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(Document.objects.filter(tenant=self.tenant, slug="a:b").exists())
+
+    def test_post_accepts_valid_daily_slug(self):
+        """A real ISO-date daily slug still creates the document via POST."""
+        resp = self.client.post(
+            "/api/v1/journal/documents/",
+            {"kind": "daily", "slug": "2026-02-16", "title": "Feb 16", "markdown": "# hi"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertTrue(Document.objects.filter(tenant=self.tenant, kind="daily", slug="2026-02-16").exists())
+
+    def test_patch_rejects_overlong_slug(self):
+        """A slug longer than the column max (128) must 400, not 500 from the DB
+        insert — URL-path endpoints pass the slug straight to _validate_slug."""
+        long_slug = "p" * 200
+        resp = self.client.patch(
+            f"/api/v1/journal/documents/project/{long_slug}/",
+            {"markdown": "x"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertFalse(Document.objects.filter(tenant=self.tenant, slug=long_slug).exists())
+
     def test_sidebar_tree(self):
         Document.objects.create(
             tenant=self.tenant,
@@ -1383,3 +1427,142 @@ class DocumentSaveSignalAsyncTest(TestCase):
                     markdown="# Test\n",
                 )
             self.assertIsNotNone(doc.id)
+
+
+# ---------------------------------------------------------------------------
+# Bad-slug daily defenses: read-path filtering + cleanup migration
+# ---------------------------------------------------------------------------
+
+
+class RecentJournalFilterTest(TestCase):
+    """The 'recent journal' envelope section (and the runtime context bundle that
+    shares its date-cutoff approach) must surface only real ISO-date daily notes
+    — never a pre-guard garbage slug like 'NaN-NaN-NaN' (which text-sorts ABOVE
+    every date) or a mis-kinded daily like '2026-03-29-debt-chart'."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="recentuser", password="pass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+
+    def test_excludes_non_date_daily_slugs(self):
+        from apps.journal.envelope import render_recent_journal
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-10",
+            title="Feb 10",
+            markdown="# Feb 10\n\nReal entry content here.",
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="NaN-NaN-NaN",
+            title="NaN-NaN-NaN",
+            markdown="# {{date}}\n\nGarbage stub leaking in.",
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-03-29-debt-chart",
+            title="Debt",
+            markdown="# Debt chart\n\nMis-kinded daily with real content.",
+        )
+
+        out = render_recent_journal(self.tenant)
+
+        self.assertIn("Feb 10", out)
+        self.assertNotIn("NaN", out)
+        self.assertNotIn("Debt", out)
+
+
+class CleanupNanDailyStubsMigrationTest(TestCase):
+    """The 0020 cleanup must remove empty placeholder stubs (NaN-NaN-NaN,
+    template, AGENTS.md) WITHOUT touching real content — including real dailies
+    with non-date slugs (debt-chart, week-ahead) and the impossible-but-guarded
+    case of an ISO-date daily that contains a literal '{{date}}'."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="cleanupuser", password="pass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+
+    def _run_cleanup(self):
+        import importlib
+
+        from django.apps import apps as django_apps
+
+        mod = importlib.import_module("apps.journal.migrations.0020_cleanup_nan_daily_stubs")
+        mod.cleanup_nan_daily_stubs(django_apps, None)
+
+    def test_deletes_only_empty_placeholder_stubs(self):
+        # Garbage: non-date slug + unrendered template placeholder → DELETE
+        for slug in ("NaN-NaN-NaN", "template", "AGENTS.md"):
+            Document.objects.create(
+                tenant=self.tenant,
+                kind="daily",
+                slug=slug,
+                title=slug,
+                markdown="# {{date}} ({{weekday}})\n\n## Morning Report\n",
+            )
+        # Real content with non-date slugs → KEEP
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-03-29-debt-chart",
+            title="Debt",
+            markdown="# Debt chart\n\nReal content.",
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="memory/week-ahead/2026-W15",
+            title="Week Ahead",
+            markdown="# Week Ahead\n\nReal content.",
+        )
+        # Real ISO-date daily → KEEP (even if it somehow contains the placeholder)
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-04-01",
+            title="Apr 1",
+            markdown="# {{date}} typed verbatim by the user\n",
+        )
+
+        self._run_cleanup()
+
+        remaining = set(Document.objects.filter(tenant=self.tenant, kind="daily").values_list("slug", flat=True))
+        self.assertEqual(
+            remaining,
+            {"2026-03-29-debt-chart", "memory/week-ahead/2026-W15", "2026-04-01"},
+        )
+
+    def test_idempotent(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="NaN-NaN-NaN",
+            title="NaN-NaN-NaN",
+            markdown="# {{date}} ({{weekday}})\n",
+        )
+        self._run_cleanup()
+        self._run_cleanup()  # second pass must be a no-op, not an error
+        self.assertFalse(Document.objects.filter(tenant=self.tenant, slug="NaN-NaN-NaN").exists())
+
+
+class PathValidationDateValidityTest(TestCase):
+    """validate_kind_slug (the runtime/agent write boundary) must reject daily
+    slugs that are ISO-shaped but not real calendar dates, matching the frontend
+    isISODate() and the console _validate_slug()."""
+
+    def test_rejects_impossible_calendar_dates(self):
+        from apps.journal.path_validation import validate_kind_slug
+
+        self.assertIsNotNone(validate_kind_slug("daily", "2026-02-30"))
+        self.assertIsNotNone(validate_kind_slug("daily", "2026-13-01"))
+        self.assertIsNotNone(validate_kind_slug("daily", "NaN-NaN-NaN"))
+
+    def test_accepts_real_dates(self):
+        from apps.journal.path_validation import validate_kind_slug
+
+        self.assertIsNone(validate_kind_slug("daily", "2026-02-28"))
+        self.assertIsNone(validate_kind_slug("daily", "2024-02-29"))  # leap year

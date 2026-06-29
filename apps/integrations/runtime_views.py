@@ -1407,7 +1407,17 @@ class RuntimeJournalContextView(APIView):
 
         cutoff = (_tenant_now(tenant) - timedelta(days=days)).date()
 
-        recent_docs = Document.objects.filter(tenant=tenant, kind="daily", slug__gte=str(cutoff)).order_by("slug")
+        # slug__gte is a TEXT comparison and daily slugs are ISO dates. A
+        # non-date daily slug like "NaN-NaN-NaN" sorts ABOVE every real date
+        # ("N" > digits in ASCII), so it would slip past the cutoff into the
+        # agent's recent-notes context. Constrain to real YYYY-MM-DD slugs
+        # (mirrors path_validation.DAILY_SLUG_RE) so only genuine daily notes
+        # reach the assistant.
+        recent_docs = (
+            Document.objects.filter(tenant=tenant, kind="daily", slug__gte=str(cutoff))
+            .filter(slug__regex=r"^\d{4}-\d{2}-\d{2}$")
+            .order_by("slug")
+        )
 
         memory_doc = Document.objects.filter(tenant=tenant, kind="memory", slug="long-term").first()
 
@@ -2028,6 +2038,11 @@ class RuntimeJournalSearchView(APIView):
 
         from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 
+        # Content-based full-text search is intentionally NOT slug-filtered by
+        # date: a mis-kinded daily with real content (e.g. an old
+        # "<date>-debt-chart") must stay findable. Empty pre-guard stubs rank ~0
+        # and are removed by migration 0020. Only the date-windowed CONTEXT
+        # bundle filters daily slugs (see RuntimeJournalContextView).
         qs = Document.objects.filter(tenant=tenant)
         if kind:
             qs = qs.filter(kind=kind)

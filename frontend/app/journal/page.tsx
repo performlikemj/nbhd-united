@@ -7,32 +7,31 @@ import { DocumentView } from "@/components/journal/document-view";
 import { useSidebarTreeQuery } from "@/lib/queries";
 import { fetchDocument } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
+import { isISODate, todayISO } from "@/lib/journal-date";
 
-function todayISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/**
+ * Parse the URL hash (`#<kind>` or `#<kind>/<slug>`) into the active document.
+ * A bare `#daily`, an empty slug, or any non-ISO-date daily slug falls back to
+ * today — so the day-navigation arrows never run shiftISODate on a non-date
+ * string and mint a "NaN-NaN-NaN" slug.
+ */
+function parseHash(): { kind: string; slug: string } {
+  if (typeof window === "undefined") return { kind: "daily", slug: todayISO() };
+  const hash = window.location.hash.slice(1);
+  const parts = hash ? hash.split("/") : [];
+  const kind = parts[0] || "daily";
+  let slug = parts.length >= 2 ? parts.slice(1).join("/") : "";
+  if (kind === "daily") {
+    if (!isISODate(slug)) slug = todayISO();
+  } else if (!slug) {
+    slug = kind;
+  }
+  return { kind, slug };
 }
 
 export default function JournalPage() {
-  const [activeKind, setActiveKind] = useState(() => {
-    if (typeof window === "undefined") return "daily";
-    const hash = window.location.hash.slice(1);
-    if (hash) {
-      const parts = hash.split("/");
-      if (parts.length >= 1) return parts[0];
-    }
-    return "daily";
-  });
-  const [activeSlug, setActiveSlug] = useState(() => {
-    if (typeof window === "undefined") return todayISO();
-    const hash = window.location.hash.slice(1);
-    if (hash) {
-      const parts = hash.split("/");
-      if (parts.length >= 2) return parts.slice(1).join("/");
-      if (parts.length === 1) return parts[0];
-    }
-    return todayISO();
-  });
+  const [activeKind, setActiveKind] = useState(() => parseHash().kind);
+  const [activeSlug, setActiveSlug] = useState(() => parseHash().slug);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [viewKey, setViewKey] = useState(0);

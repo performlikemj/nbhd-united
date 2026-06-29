@@ -19,6 +19,7 @@ import {
   useAppendDocumentMutation,
 } from "@/lib/queries";
 import { fetchDocument } from "@/lib/api";
+import { shiftISODate, todayISO } from "@/lib/journal-date";
 
 // TipTap (+ tiptap-markdown, extensions, ProseMirror) is a heavy chunk that
 // only matters once the user starts editing — load it on demand so the
@@ -45,18 +46,6 @@ const EditorToolbar = dynamic(
   () => editorModule().then((m) => m.EditorToolbar),
   { ssr: false },
 );
-
-function todayISO(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
-function shiftDate(dateStr: string, days: number): string {
-  const [y, m, d] = dateStr.split("-").map(Number);
-  const date = new Date(y, m - 1, d);
-  date.setDate(date.getDate() + days);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
-}
 
 interface DocumentViewProps {
   kind: string;
@@ -275,7 +264,7 @@ export function DocumentView({ kind, slug, onNavigate, onToggleSidebar }: Docume
   // Prefetch previous day
   useEffect(() => {
     if (kind !== "daily") return;
-    const prevSlug = shiftDate(slug, -1);
+    const prevSlug = shiftISODate(slug, -1);
     void queryClient.prefetchQuery({
       queryKey: ["document", kind, prevSlug],
       queryFn: () => fetchDocument(kind, prevSlug),
