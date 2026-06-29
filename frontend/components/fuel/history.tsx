@@ -6,7 +6,7 @@ import { useWorkoutsQuery } from "@/lib/queries";
 import type { DistanceUnit, FuelWorkout, WorkoutCategory } from "@/lib/types";
 import { SkelBar } from "@/components/ui/skeleton";
 import { CATEGORIES, CATEGORY_IDS } from "./category-meta";
-import { kmToDisplay, useDistanceUnit } from "./use-distance-unit";
+import { kmToDisplay, paceToDisplay, useDistanceUnit } from "./use-distance-unit";
 
 interface HistoryProps {
   onOpenWorkout: (id: string) => void;
@@ -112,7 +112,8 @@ function summaryChips(w: FuelWorkout, unit: DistanceUnit): string[] {
   if (w.category === "cardio") {
     return [
       d.distance_km && `${kmToDisplay(d.distance_km as number, unit)} ${unit}`,
-      d.pace && `${d.pace}/${unit}`,
+      // Pace is canonical per-km; convert to the user's unit (not just relabel).
+      typeof d.pace === "string" && paceToDisplay(d.pace, unit) && `${paceToDisplay(d.pace, unit)}/${unit}`,
       d.avg_hr && `${d.avg_hr} bpm`,
     ].filter(Boolean) as string[];
   }

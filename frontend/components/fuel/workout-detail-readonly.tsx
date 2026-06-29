@@ -24,7 +24,7 @@
 import type { WorkoutCategory } from "@/lib/types";
 
 import { kgToDisplay, useWeightUnit } from "./use-weight-unit";
-import { elevationLabel, kmToDisplay, metersToDisplay, useDistanceUnit } from "./use-distance-unit";
+import { elevationLabel, kmToDisplay, metersToDisplay, paceToDisplay, useDistanceUnit } from "./use-distance-unit";
 
 const MAX_TOP_LEVEL_ITEMS = 6;
 const MAX_SETS_PER_ITEM = 6;
@@ -295,8 +295,8 @@ function CardioStatsReadOnly({ detail }: { detail: Record<string, unknown> }) {
   const storedElevM = typeof detail.elevation === "number" ? (detail.elevation as number) : null;
   const elevationDisplay = storedElevM != null ? metersToDisplay(storedElevM, unit) : null;
 
-  const pace = detail.pace;
-  const paceDisplay = pace == null ? null : String(pace);
+  // Pace is stored canonical per-km; convert to the user's unit (not just relabel).
+  const paceDisplay = paceToDisplay(typeof detail.pace === "string" ? detail.pace : null, unit);
 
   const avgHr = typeof detail.avg_hr === "number" ? (detail.avg_hr as number) : null;
   const avgPower = typeof detail.avg_power === "number" ? (detail.avg_power as number) : null;

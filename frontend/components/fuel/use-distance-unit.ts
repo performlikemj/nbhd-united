@@ -57,3 +57,41 @@ export function displayToMeters(value: number, unit: DistanceUnit): number {
 export function elevationLabel(unit: DistanceUnit): string {
   return unit === "mi" ? "ft" : "m";
 }
+
+/** Parse an "M:SS" pace string into total seconds, or null if not MM:SS shape. */
+export function parsePaceSeconds(mmss: string | null | undefined): number | null {
+  if (!mmss) return null;
+  const m = mmss.trim().match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const secs = parseInt(m[2], 10);
+  if (secs >= 60) return null;
+  return parseInt(m[1], 10) * 60 + secs;
+}
+
+function formatPaceSeconds(total: number): string {
+  const s = Math.max(0, Math.round(total));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
+/**
+ * Convert a canonical per-KILOMETER "M:SS" pace into the display unit's "M:SS".
+ *
+ * Pace is time-per-distance, so km→mi MULTIPLIES by km-per-mile (covering a mile
+ * takes ~1.609× the time of a km) — the INVERSE of the distance conversion. The
+ * bug this guards against was relabeling "/km"→"/mi" without scaling the value
+ * (a 7:08/km run displayed as "7:08 /mi"). Anything that isn't MM:SS (descriptive
+ * "tempo", in-progress input) passes through untouched. Returns null when absent.
+ */
+export function paceToDisplay(canonicalPerKm: string | null | undefined, unit: DistanceUnit): string | null {
+  if (canonicalPerKm == null || canonicalPerKm === "") return null;
+  const secs = parsePaceSeconds(canonicalPerKm);
+  if (secs == null) return canonicalPerKm;
+  return unit === "mi" ? formatPaceSeconds(secs * MI_TO_KM) : formatPaceSeconds(secs);
+}
+
+/** Convert a display-unit "M:SS" pace back into canonical per-km "M:SS" for storage. */
+export function displayToPace(shown: string, unit: DistanceUnit): string {
+  const secs = parsePaceSeconds(shown);
+  if (secs == null) return shown.trim();
+  return unit === "mi" ? formatPaceSeconds(secs / MI_TO_KM) : formatPaceSeconds(secs);
+}
