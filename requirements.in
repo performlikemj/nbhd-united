@@ -29,7 +29,7 @@ pgvector
 google-genai>=2.10.0    # Gemini TTS — Core pillar meditation render (apps/core/render.py)
 
 # PII redaction (outgoing LLM traffic)
-presidio-analyzer>=2.2    # Pattern recognizers only (credit card Luhn, IBAN checksum)
+presidio-analyzer>=2.2.363    # Pattern recognizers only (credit card Luhn, IBAN checksum)
 # Neural PII detection: lakshyakh93/deberta_finetuned_pii loaded via
 # vanilla PyTorch CPU. We deliberately do NOT route through
 # `optimum.onnxruntime`: the prior INT8-quantized ONNX path produced

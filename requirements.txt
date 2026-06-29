@@ -92,6 +92,7 @@ click==8.3.1
     # via
     #   litellm
     #   pip-tools
+    #   presidio-analyzer
     #   typer
 cloudpathlib==0.23.0
     # via weasel
@@ -273,12 +274,13 @@ murmurhash==1.0.15
     #   thinc
 networkx==3.6.1
     # via torch
-numpy==2.5.0
+numpy==2.4.6
     # via
     #   blis
     #   contourpy
     #   matplotlib
     #   pgvector
+    #   presidio-analyzer
     #   spacy
     #   thinc
     #   transformers
@@ -343,7 +345,7 @@ packaging==26.0
     #   wheel
 pgvector==0.4.2
     # via -r requirements.in
-phonenumbers==9.0.26
+phonenumbers==9.0.33
     # via presidio-analyzer
 pillow==12.1.1
     # via
@@ -355,7 +357,7 @@ preshed==3.0.13
     # via
     #   spacy
     #   thinc
-presidio-analyzer==2.2.362
+presidio-analyzer==2.2.363
     # via -r requirements.in
 propcache==0.4.1
     # via
@@ -471,7 +473,7 @@ sniffio==1.3.1
     #   composio-client
     #   google-genai
     #   openai
-spacy==3.8.14
+spacy==3.8.13
     # via presidio-analyzer
 spacy-legacy==3.0.12
     # via spacy
