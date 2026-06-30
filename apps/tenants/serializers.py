@@ -3,7 +3,6 @@
 from zoneinfo import available_timezones
 
 from django.conf import settings
-from django.contrib.auth import authenticate
 from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.exceptions import AuthenticationFailed
@@ -226,15 +225,34 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         return token
 
     def validate(self, attrs):
-        self.user = authenticate(
-            request=self.context.get("request"),
-            username=attrs.get("email", ""),
-            password=attrs.get("password", ""),
-        )
-        if self.user is None or not self.user.is_active:
-            raise AuthenticationFailed(
-                self.error_messages["no_active_account"],
-                "no_active_account",
-            )
+        # Resolve the account by EMAIL, not by the ``username`` column. The
+        # stock ``authenticate(username=email)`` only matched users whose
+        # ``username`` happened to equal their email, so any account created
+        # with a different username — the Telegram path's ``tg_<chat_id>``, an
+        # admin-made user, or anyone who later changes their email — was
+        # silently locked out of web login with this exact "no active account"
+        # error (indistinguishable from a wrong password). Looking up by
+        # ``email__iexact`` removes that whole class of footgun and makes the
+        # match case-insensitive, consistent with signup's dupe check and the
+        # password-reset flow.
+        email = (attrs.get("email") or "").strip()
+        password = attrs.get("password") or ""
+        # email is app-unique but carries no DB constraint, so order
+        # deterministically — a stray duplicate must never make *which* account
+        # logs in depend on arbitrary row order.
+        user = User.objects.filter(email__iexact=email).order_by("date_joined", "id").first() if email else None
+        # Always run one password hash for an existing user *before* the
+        # is_active gate (and a dummy hash when the user is missing) so response
+        # timing never reveals whether an email is unregistered, registered, or
+        # merely deactivated. Mirrors Django's ModelBackend, which hashes first
+        # and checks is_active second; a naive ``is_active or check_password``
+        # short-circuits the hash for inactive accounts and leaks them by timing.
+        if user is None:
+            User().set_password(password)
+            raise AuthenticationFailed(self.error_messages["no_active_account"], "no_active_account")
+        password_ok = user.check_password(password)
+        if not password_ok or not user.is_active:
+            raise AuthenticationFailed(self.error_messages["no_active_account"], "no_active_account")
+        self.user = user
         refresh = self.get_token(self.user)
         return {"refresh": str(refresh), "access": str(refresh.access_token)}
