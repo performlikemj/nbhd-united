@@ -3,6 +3,7 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -45,8 +46,12 @@ class TenantModelTest(TestCase):
             create_tenant(display_name="User2", telegram_chat_id=333)
 
 
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "auth-login-test"}}
+)
 class AuthLoginTest(TestCase):
     def setUp(self):
+        cache.clear()  # login is throttled; isolate per-test throttle state
         self.email = "login@example.com"
         self.password = "testpass123"
         User.objects.create_user(
@@ -128,6 +133,41 @@ class AuthLoginTest(TestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertNotIn("access", response.json())
+
+
+@override_settings(
+    CACHES={"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "login-throttle-test"}}
+)
+class LoginThrottleTest(TestCase):
+    """Login must rate-limit credential guessing (per-IP + per-email)."""
+
+    def setUp(self):
+        cache.clear()
+        self.email = "throttle@example.com"
+        User.objects.create_user(username=self.email, email=self.email, password="testpass123")
+
+    def tearDown(self):
+        cache.clear()
+
+    def _login(self, email, password="wrongpass"):
+        return self.client.post(
+            "/api/v1/auth/login/",
+            {"email": email, "password": password},
+            content_type="application/json",
+        )
+
+    def test_per_email_throttle_returns_429(self):
+        # LoginEmailThrottle = 10/minute; the 11th attempt for the same email is 429.
+        for _ in range(10):
+            self.assertEqual(self._login(self.email).status_code, 401)
+        self.assertEqual(self._login(self.email).status_code, 429)
+
+    def test_per_ip_throttle_returns_429(self):
+        # LoginIpThrottle = 30/minute; across distinct emails (so the per-email
+        # cap never trips first), the 31st attempt from one IP is 429.
+        for i in range(30):
+            self._login(f"ip-probe-{i}@example.com")
+        self.assertEqual(self._login("ip-probe-final@example.com").status_code, 429)
 
 
 class AuthLogoutTest(TestCase):
