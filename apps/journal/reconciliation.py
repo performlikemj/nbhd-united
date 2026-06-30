@@ -22,6 +22,8 @@ from datetime import date
 from typing import Any
 from uuid import UUID
 
+from django.db.models import Case, IntegerField, Value, When
+
 from apps.journal.models import Goal, PendingTaskAction, Task
 from apps.tenants.models import Tenant
 
@@ -44,9 +46,24 @@ def gather_reconciliation_context(tenant: Tenant) -> dict[str, list[dict[str, An
     tasks = list(
         Task.objects.filter(
             tenant=tenant,
-            status__in=[Task.Status.OPEN, Task.Status.IN_PROGRESS],
+            # DEFERRED included: a snoozed task the user later finishes (and
+            # journals) must be a reconciliation candidate so it can be
+            # auto-closed. Without it, deferred tasks were invisible here and
+            # got nagged forever in the daily briefing.
+            status__in=[Task.Status.OPEN, Task.Status.IN_PROGRESS, Task.Status.DEFERRED],
         )
-        .order_by("due_date", "-updated_at")
+        # Keep active (open/in-progress) ahead of deferred before the
+        # MAX_TASKS_IN_CONTEXT slice: deferred tasks keep their (usually past)
+        # due_date, so without this a large deferred backlog could push open
+        # tasks out of the window the LLM reconciles against.
+        .annotate(
+            _defer_rank=Case(
+                When(status=Task.Status.DEFERRED, then=Value(1)),
+                default=Value(0),
+                output_field=IntegerField(),
+            )
+        )
+        .order_by("_defer_rank", "due_date", "-updated_at")
         .values("id", "title", "status", "due_date", "parent_goal_id", "parent_task_id")[:MAX_TASKS_IN_CONTEXT]
     )
     goals = list(

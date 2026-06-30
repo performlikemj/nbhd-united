@@ -59,6 +59,35 @@ class GatherReconciliationContextTest(TestCase):
         self.assertEqual(len(ctx["open_tasks"]), 1)
         self.assertEqual(ctx["open_tasks"][0]["title"], "A's task")
 
+    def test_includes_deferred_tasks(self):
+        # A deferred (snoozed) task must be a reconciliation candidate so a later
+        # journal "I did it" can auto-close it — the gap behind tasks getting
+        # nagged forever after being snoozed.
+        tenant = _make_tenant("deferred@x.test")
+        Task.objects.create(tenant=tenant, title="Email Stefhen", status=Task.Status.DEFERRED)
+
+        ctx = gather_reconciliation_context(tenant)
+
+        self.assertEqual([t["title"] for t in ctx["open_tasks"]], ["Email Stefhen"])
+
+    def test_complete_closes_a_deferred_task(self):
+        # End of the loop: a deferred task can actually be completed (not just
+        # surfaced) when the journal evidence says so.
+        tenant = _make_tenant("deferred-complete@x.test")
+        task = Task.objects.create(tenant=tenant, title="Email Stefhen", status=Task.Status.DEFERRED)
+
+        pta = apply_task_action(
+            tenant=tenant,
+            task_id=str(task.id),
+            action="complete",
+            evidence="replied to Stefhen today",
+            source_date=date(2026, 6, 29),
+        )
+
+        task.refresh_from_db()
+        self.assertEqual(task.status, Task.Status.DONE)
+        self.assertIsNotNone(pta)
+
 
 class ApplyTaskActionTest(TestCase):
     def setUp(self):
@@ -321,10 +350,7 @@ class ExtractionRunnerReconciliationTest(TestCase):
         with (
             patch("apps.journal.extraction._call_extraction_llm", return_value=fake_llm_response),
             patch("apps.journal.extraction._send_telegram_with_buttons", return_value=1234),
-            patch(
-                "apps.journal.extraction._resolve_delivery_channel",
-                return_value=("telegram", 99999, "fake-token"),
-            ),
+            patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "fake-token", create=True),
             patch("apps.journal.extraction.record_usage"),
             patch("apps.journal.extraction.embed_daily_note", create=True, return_value=0),
         ):

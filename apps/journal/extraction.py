@@ -304,6 +304,38 @@ def _format_task_action_line(action, entity_map: dict | None = None) -> str:
     return f"{emoji} {title} — {verb}"
 
 
+_KIND_EMOJI = {"lesson": "💡", "goal": "🎯", "task": "✅"}
+
+
+def _build_summary_text(
+    items: list[PendingExtraction],
+    task_actions: list | None = None,
+    entity_map: dict | None = None,
+) -> str:
+    """Channel-agnostic plain-text summary of tonight's extractions + reconciliation.
+
+    Shared by the Telegram deliverer and the iOS/app proactive delivery. The
+    interactive Remove/Undo affordances are channel-specific (Telegram inline
+    keyboard / LINE postback) and are added by those deliverers; the app shows
+    the same content as plain text.
+    """
+    task_actions = task_actions or []
+    lines: list[str] = []
+    if items:
+        lines.append("From today's notes, I added:\n")
+        for p in items:
+            emoji = _KIND_EMOJI.get(p.kind, "•")
+            ptext = rehydrate_text(p.text, entity_map) if entity_map else p.text
+            lines.append(f"{emoji} {ptext}")
+    if task_actions:
+        if lines:
+            lines.append("")
+        lines.append("From today's journal, I also updated:\n")
+        for a in task_actions:
+            lines.append(_format_task_action_line(a, entity_map))
+    return "\n".join(lines)
+
+
 def _deliver_summary_telegram(
     bot_token: str,
     chat_id: int,
@@ -319,47 +351,20 @@ def _deliver_summary_telegram(
     """
 
     task_actions = task_actions or []
-    kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}
-    lines = []
-    buttons: list[list[dict]] = []
-
-    if items:
-        lines.append("From today's notes, I added:\n")
-        for p in items:
-            emoji = kind_emoji.get(p.kind, "•")
-            ptext = rehydrate_text(p.text, entity_map) if entity_map else p.text
-            lines.append(f"{emoji} {ptext}")
-            undo_action = f"undo_{p.kind}"
-            buttons.append(
-                [
-                    {
-                        "text": f"Remove: {ptext[:30]}",
-                        "callback_data": f"extract:{undo_action}:{p.id}",
-                    }
-                ]
-            )
-
-    if task_actions:
-        if lines:
-            lines.append("")
-        lines.append("From today's journal, I also updated:\n")
-        for a in task_actions:
-            action_line = _format_task_action_line(a, entity_map)
-            lines.append(action_line)
-            buttons.append(
-                [
-                    {
-                        "text": f"Undo: {action_line[:30]}",
-                        "callback_data": f"task_action:undo:{a.id}",
-                    }
-                ]
-            )
-
     if not (items or task_actions):
         return
 
-    lines.append("\nTap Remove/Undo to revert any item.")
-    text = "\n".join(lines)
+    # Buttons are Telegram-specific (inline keyboard); the text body is shared
+    # with the iOS/app delivery via _build_summary_text.
+    buttons: list[list[dict]] = []
+    for p in items:
+        ptext = rehydrate_text(p.text, entity_map) if entity_map else p.text
+        buttons.append([{"text": f"Remove: {ptext[:30]}", "callback_data": f"extract:undo_{p.kind}:{p.id}"}])
+    for a in task_actions:
+        action_line = _format_task_action_line(a, entity_map)
+        buttons.append([{"text": f"Undo: {action_line[:30]}", "callback_data": f"task_action:undo:{a.id}"}])
+
+    text = _build_summary_text(items, task_actions, entity_map) + "\n\nTap Remove/Undo to revert any item."
 
     msg_id = _send_telegram_with_buttons(bot_token, chat_id, text, buttons)
     if msg_id:
@@ -543,31 +548,6 @@ def _deliver_summary_line(
 # ── Channel resolution ───────────────────────────────────────────────────────
 
 
-def _resolve_delivery_channel(tenant: Tenant) -> tuple[str, str | int | None, str | None]:
-    """Determine delivery channel and credentials.
-
-    Returns (channel, recipient_id, token) where channel is 'telegram' or 'line'.
-    Returns ('none', None, None) if no channel is available.
-    """
-    preferred = getattr(tenant.user, "preferred_channel", "") or "telegram"
-    chat_id = getattr(tenant.user, "telegram_chat_id", None)
-    line_user_id = getattr(tenant.user, "line_user_id", None)
-
-    bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
-    line_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "").strip()
-
-    if preferred == "telegram" and chat_id and bot_token:
-        return "telegram", chat_id, bot_token
-    if preferred == "line" and line_user_id and line_token:
-        return "line", line_user_id, line_token
-    # Fallback to whichever is available
-    if chat_id and bot_token:
-        return "telegram", chat_id, bot_token
-    if line_user_id and line_token:
-        return "line", line_user_id, line_token
-    return "none", None, None
-
-
 # ── Core extraction runner ────────────────────────────────────────────────────
 
 
@@ -605,17 +585,37 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
         reconciling,
     )
 
-    # Resolve delivery channel (Telegram or LINE)
-    channel, recipient_id, channel_token = _resolve_delivery_channel(tenant)
+    # Resolve delivery channel via the canonical resolver (telegram / line / app
+    # / None). An iOS-only tenant (DeviceToken, no Telegram/LINE) resolves to
+    # "app". We do NOT bail when there's no surface: the extraction +
+    # reconciliation must run regardless so tasks stay accurate — only the
+    # summary delivery is channel-specific. Local import avoids a
+    # journal<->router import cycle at module load.
+    from apps.router.cron_delivery import resolve_user_channel
+
+    channel = resolve_user_channel(tenant.user) or "none"
+    recipient_id: str | int | None = None
+    channel_token: str | None = None
+    if channel == "telegram":
+        recipient_id = getattr(tenant.user, "telegram_chat_id", None)
+        channel_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
+    elif channel == "line":
+        recipient_id = getattr(tenant.user, "line_user_id", None)
+        channel_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+    # A messaging channel that resolved by link but has no global token can't
+    # send. Prefer the app (iOS push + ?since feed) when a device is registered;
+    # otherwise no delivery. (We intentionally don't restore the legacy
+    # Telegram<->LINE token fallback — those channels are being retired.)
+    if channel in ("telegram", "line") and not (recipient_id and channel_token):
+        from apps.router.models import DeviceToken
+
+        channel = "app" if DeviceToken.objects.filter(user=tenant.user).exists() else "none"
     logger.info(
         "extraction: tenant=%s channel=%s preferred=%s",
         str(tenant.id)[:8],
         channel,
         getattr(tenant.user, "preferred_channel", "unset"),
     )
-    if channel == "none":
-        logger.warning("extraction: no delivery channel for tenant %s, skipping", str(tenant.id)[:8])
-        return {"lessons": 0, "goals": 0, "tasks": 0, "task_actions": 0, "skipped": "no_channel"}
 
     # Gather reconciliation context (typed-lifecycle tenants only)
     reconciliation_context = gather_reconciliation_context(tenant) if reconciling else None
@@ -756,6 +756,24 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
                     _deliver_summary_telegram(
                         bot_token, chat_id, added_items, task_actions=task_actions, entity_map=tenant.pii_entity_map
                     )
+        elif channel == "app":
+            # iOS/web app: no inline buttons — deliver the same content as a
+            # proactive message. record_proactive_outbound writes the ?since=
+            # feed row AND fires the APNs wake-push (fail-soft, off-thread).
+            from apps.router.proactive_context import record_proactive_outbound
+
+            record_proactive_outbound(
+                tenant=tenant,
+                channel="app",
+                channel_user_id=str(tenant.user_id),
+                message_text=_build_summary_text(added_items, task_actions, tenant.pii_entity_map),
+                job_name="nightly_extraction",
+            )
+        else:  # channel == "none": the work above still ran; nothing to deliver to
+            logger.info(
+                "extraction: tenant=%s extraction/reconciliation ran but no delivery surface — summary not sent",
+                str(tenant.id)[:8],
+            )
     else:
         logger.warning(
             "extraction: tenant=%s zero items after dedup (raw: lessons=%d goals=%d tasks=%d, deltas=%d)",
