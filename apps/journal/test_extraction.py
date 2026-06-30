@@ -182,13 +182,64 @@ class TestRunExtractionForTenant(TestCase):
         result = run_extraction_for_tenant(self.tenant)
         self.assertEqual(result["skipped"], "no_content")
 
+    @patch(
+        "apps.journal.extraction._call_extraction_llm",
+        return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}),
+    )
+    @patch("apps.journal.extraction._deliver_summary_telegram")
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
-    def test_skips_when_no_channel(self):
+    def test_runs_without_channel_no_delivery(self, mock_summary, mock_llm):
+        """No Telegram/LINE/app surface: the extraction + reconciliation still
+        run (so tasks stay accurate) — only the summary delivery is skipped."""
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.line_user_id = None
         self.tenant.user.save(update_fields=["telegram_chat_id", "line_user_id"])
         result = run_extraction_for_tenant(self.tenant)
-        self.assertEqual(result["skipped"], "no_channel")
+        self.assertIsNone(result["skipped"])
+        self.assertEqual(result["lessons"], 1)
+        mock_summary.assert_not_called()
+
+    @patch(
+        "apps.journal.extraction._call_extraction_llm",
+        return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}),
+    )
+    @patch("apps.router.proactive_context.record_proactive_outbound")
+    def test_app_channel_delivers_via_proactive(self, mock_proactive, mock_llm):
+        """iOS-only tenant (DeviceToken, no Telegram/LINE) gets the summary via
+        the app proactive path — and the extraction still runs."""
+        from apps.router.models import DeviceToken
+
+        self.tenant.user.telegram_chat_id = None
+        self.tenant.user.line_user_id = None
+        self.tenant.user.save(update_fields=["telegram_chat_id", "line_user_id"])
+        DeviceToken.objects.create(tenant=self.tenant, user=self.tenant.user, token="a" * 64)
+
+        result = run_extraction_for_tenant(self.tenant)
+
+        self.assertIsNone(result["skipped"])
+        mock_proactive.assert_called_once()
+        kwargs = mock_proactive.call_args.kwargs
+        self.assertEqual(kwargs["channel"], "app")
+        self.assertEqual(kwargs["channel_user_id"], str(self.tenant.user_id))
+        self.assertIn("From today", kwargs["message_text"])
+
+    @patch(
+        "apps.journal.extraction._call_extraction_llm",
+        return_value=(MOCK_EXTRACTION_RESPONSE, {"prompt_tokens": 100, "completion_tokens": 50}),
+    )
+    @patch("apps.router.proactive_context.record_proactive_outbound")
+    @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "", create=True)
+    def test_telegram_linked_but_no_token_falls_back_to_app(self, mock_proactive, mock_llm):
+        """Telegram linked but its global token is unset → can't send. With a
+        registered device, deliver via the app instead of dropping the summary."""
+        from apps.router.models import DeviceToken
+
+        # setUp linked telegram_chat_id=99999; add an iOS device.
+        DeviceToken.objects.create(tenant=self.tenant, user=self.tenant.user, token="b" * 64)
+        result = run_extraction_for_tenant(self.tenant)
+        self.assertIsNone(result["skipped"])
+        mock_proactive.assert_called_once()
+        self.assertEqual(mock_proactive.call_args.kwargs["channel"], "app")
 
 
 class TestExtractionCallbacks(TestCase):
