@@ -74,6 +74,43 @@ class AuthLoginTest(TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_login_by_email_when_username_differs(self):
+        # Footgun regression: a user whose ``username`` != email (e.g. a
+        # Telegram-onboarded ``tg_<chat_id>`` account that later set an email)
+        # must still log in by email. The old ``authenticate(username=email)``
+        # path silently rejected these as "no active account".
+        User.objects.create_user(
+            username="tg_99999",
+            email="kiho@example.com",
+            password="testpass123",
+        )
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "kiho@example.com", "password": "testpass123"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("access", response.json())
+
+    def test_login_email_is_case_insensitive(self):
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": self.email.upper(), "password": self.password},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+    def test_login_blank_email_rejected(self):
+        # Blank email is a bad request (DRF rejects the required field before
+        # auth runs); the key invariant is that it never returns tokens.
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "", "password": "irrelevant"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("access", response.json())
+
 
 class AuthLogoutTest(TestCase):
     def setUp(self):
