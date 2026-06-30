@@ -776,6 +776,64 @@ class ConsumerFuelViewTests(TestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data["activity"], "Push Day")
 
+    def test_manual_create_derives_duration_seconds(self):
+        resp = self.client.post(
+            "/api/v1/fuel/workouts/",
+            {"date": "2026-04-21", "category": "cardio", "activity": "Run", "duration_minutes": 30},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        w = Workout.objects.get(id=resp.data["id"])
+        self.assertEqual(w.duration_seconds, 1800)  # 30 min, kept consistent
+
+    def test_manual_duration_edit_resyncs_seconds(self):
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="cardio",
+            activity="Run",
+            duration_minutes=31,
+            duration_seconds=1841,
+        )
+        resp = self.client.patch(f"/api/v1/fuel/workouts/{w.id}/", {"duration_minutes": 40}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        w.refresh_from_db()
+        self.assertEqual(w.duration_seconds, 2400)  # minutes changed → seconds resync
+
+    def test_note_edit_preserves_precise_seconds(self):
+        # An HK-synced run carries precise seconds; a note-only save re-sends the
+        # same rounded minutes but no seconds — the precision must survive.
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="cardio",
+            activity="Run",
+            duration_minutes=31,
+            duration_seconds=1841,
+        )
+        resp = self.client.patch(
+            f"/api/v1/fuel/workouts/{w.id}/",
+            {"duration_minutes": 31, "notes": "felt strong"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        w.refresh_from_db()
+        self.assertEqual(w.duration_seconds, 1841)  # preserved, not coarsened to 1860
+
+    def test_duration_seconds_range_rejected(self):
+        resp = self.client.post(
+            "/api/v1/fuel/workouts/",
+            {
+                "date": "2026-04-21",
+                "category": "cardio",
+                "activity": "Run",
+                "duration_minutes": 30,
+                "duration_seconds": 999999,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+
     def test_list_workouts(self):
         Workout.objects.create(
             tenant=self.tenant,
@@ -3961,7 +4019,7 @@ class HealthKitSyncTests(TestCase):
         self.assertEqual(w.detail_json["avg_hr"], 152)
         self.assertEqual(w.detail_json["elevation"], 40)  # elevation_m → elevation
         self.assertNotIn("elevation_m", w.detail_json)
-        self.assertEqual(w.detail_json["pace"], "8:03")  # 42min / 5.21km
+        self.assertEqual(w.detail_json["pace"], "8:04")  # 42min / 5.21km, rounded
         self.assertEqual(w.detail_json["_healthkit"]["raw_type"], "running")
         self.assertFalse(w.detail_json["_healthkit"]["matched"])
 
@@ -3996,6 +4054,76 @@ class HealthKitSyncTests(TestCase):
         self.assertEqual(resp.data["results"][0]["status"], "error")
         resp = self._post({"workouts": [self._workout_item(duration_minutes=2000)]})
         self.assertEqual(resp.data["results"][0]["status"], "error")
+
+    # ── seconds precision (exact pace) ─────────────────────────────────
+
+    def test_duration_seconds_drives_precise_pace(self):
+        # The real failing case: 30:41 (1841s) over 4.34 km. Rounded minutes (31)
+        # give 7:09/km; the true seconds give 7:04/km. Pace must use the seconds.
+        item = self._workout_item(
+            external_id="hk-precise",
+            duration_minutes=31,
+            duration_seconds=1841,
+            metrics={"distance_km": 4.34},
+        )
+        resp = self._post({"workouts": [item]})
+        self.assertEqual(resp.data["results"][0]["status"], "created", resp.data)
+        w = Workout.objects.get(tenant=self.tenant, external_id="hk-precise")
+        self.assertEqual(w.duration_seconds, 1841)
+        self.assertEqual(w.duration_minutes, 31)  # rounded display value preserved
+        self.assertEqual(w.detail_json["pace"], "7:04")  # 1841s/4.34km, not 31min
+
+    def test_pace_falls_back_to_minutes_without_seconds(self):
+        # No seconds in the payload (legacy client) → prior behavior, unchanged.
+        item = self._workout_item(
+            external_id="hk-nosecs",
+            duration_minutes=31,
+            metrics={"distance_km": 4.34},
+        )
+        self._post({"workouts": [item]})
+        w = Workout.objects.get(tenant=self.tenant, external_id="hk-nosecs")
+        self.assertIsNone(w.duration_seconds)
+        self.assertEqual(w.detail_json["pace"], "7:09")  # 31min/4.34km, rounded
+
+    def test_inconsistent_duration_seconds_rejected(self):
+        # A seconds value far from the reported minutes can't skew pace — it is
+        # dropped and pace falls back to minutes (defends the derived value).
+        item = self._workout_item(
+            external_id="hk-rogue",
+            duration_minutes=31,
+            duration_seconds=600,
+            metrics={"distance_km": 4.34},
+        )
+        self._post({"workouts": [item]})
+        w = Workout.objects.get(tenant=self.tenant, external_id="hk-rogue")
+        self.assertIsNone(w.duration_seconds)
+        self.assertEqual(w.detail_json["pace"], "7:09")  # minutes, not the rogue 600s
+
+    def test_out_of_range_duration_seconds_ignored(self):
+        for bad in (-5, 0, 999999):
+            item = self._workout_item(
+                external_id=f"hk-oob-{bad}",
+                duration_minutes=31,
+                duration_seconds=bad,
+                metrics={"distance_km": 4.34},
+            )
+            self._post({"workouts": [item]})
+            w = Workout.objects.get(tenant=self.tenant, external_id=f"hk-oob-{bad}")
+            self.assertIsNone(w.duration_seconds)
+            self.assertEqual(w.detail_json["pace"], "7:09")  # falls back to minutes
+
+    def test_planned_complete_stamps_precise_duration_seconds(self):
+        planned = self._planned(duration_minutes=30)
+        item = self._workout_item(
+            duration_minutes=31,
+            duration_seconds=1841,
+            metrics={"distance_km": 4.34},
+        )
+        resp = self._post({"workouts": [item]})
+        self.assertEqual(resp.data["results"][0]["status"], "matched_planned")
+        planned.refresh_from_db()
+        self.assertEqual(planned.duration_seconds, 1841)
+        self.assertEqual(planned.detail_json["pace"], "7:04")
 
     # ── planned-workout auto-complete ──────────────────────────────────
 
