@@ -234,6 +234,13 @@ class Workout(models.Model):
     category = models.CharField(max_length=16, choices=WorkoutCategory.choices)
     activity = models.CharField(max_length=128, help_text="Free-text activity name, e.g. 'Push — Chest & Shoulders'")
     duration_minutes = models.IntegerField(null=True, blank=True)
+    duration_seconds = models.IntegerField(
+        null=True,
+        blank=True,
+        help_text="Precise active duration in seconds (from HealthKit / fine-grained "
+        "entry). When present it drives cardio pace; duration_minutes stays the "
+        "rounded display value. Null for legacy rows synced before seconds capture.",
+    )
     rpe = models.IntegerField(
         null=True,
         blank=True,

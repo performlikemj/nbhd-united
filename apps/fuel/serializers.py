@@ -85,6 +85,7 @@ class WorkoutSerializer(serializers.ModelSerializer):
             "category",
             "activity",
             "duration_minutes",
+            "duration_seconds",
             "rpe",
             "notes",
             "notes_thread",
@@ -122,6 +123,11 @@ class WorkoutSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("RPE must be between 1 and 10.")
         return value
 
+    def validate_duration_seconds(self, value):
+        if value is not None and not (1 <= value <= 86400):
+            raise serializers.ValidationError("duration_seconds out of range (1-86400).")
+        return value
+
     def validate(self, attrs):
         # When scheduled_at is provided without an explicit date, derive date
         # from it in the tenant's local timezone — this keeps day-bucketed
@@ -138,6 +144,30 @@ class WorkoutSerializer(serializers.ModelSerializer):
                 attrs["date"] = attrs["scheduled_at"].date()
         if not attrs.get("date") and not self.instance:
             raise serializers.ValidationError({"date": "Either date or scheduled_at is required."})
+
+        # Keep duration_minutes and duration_seconds consistent for manual
+        # create/edit (the HK sync path sets both precisely, bypassing this
+        # serializer). Minutes is the field every UI edits; derive seconds from
+        # it ONLY when minutes actually changed or an inconsistent seconds was
+        # sent — so a note-only save on an HK-synced run (which re-sends the same
+        # rounded minutes but no seconds) keeps its precise stored seconds.
+        if "duration_minutes" in attrs:
+            mins = attrs["duration_minutes"]
+            secs = attrs.get("duration_seconds")
+            existing = self.instance.duration_minutes if self.instance else None
+            if mins is None:
+                attrs["duration_seconds"] = None
+            elif secs is not None:
+                if abs(secs - mins * 60) > 60:
+                    attrs["duration_seconds"] = mins * 60  # inconsistent → trust minutes
+                # else: keep the finer seconds the client supplied
+            elif mins != existing:
+                attrs["duration_seconds"] = mins * 60  # minutes changed → resync coarse
+            # else: minutes unchanged, no seconds sent → preserve stored precision
+        elif attrs.get("duration_seconds") is not None:
+            # Seconds without minutes (a future fine-grained editor) — backfill the
+            # rounded minutes so day-bucketed views and matching stay correct.
+            attrs["duration_minutes"] = max(1, round(attrs["duration_seconds"] / 60))
 
         # Phase 1 (#593) — same deterministic registry correction the
         # runtime path applies, for frontend-origin create/edit. Local

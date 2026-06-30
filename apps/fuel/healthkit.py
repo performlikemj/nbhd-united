@@ -188,6 +188,17 @@ def _clean_workout(item) -> tuple[dict | None, str | None]:
     if not 1 <= duration <= 1440:
         return None, "duration_minutes out of range (1-1440)"
 
+    # Optional precise active duration (seconds). Only trusted when it's both in
+    # range AND consistent with the required, already-validated minutes — rounding
+    # to the nearest minute is at most ~30s off, so a 60s window admits every
+    # legitimate value while a rogue seconds figure can't skew the derived pace.
+    # Absent/rejected → pace falls back to minutes (prior behavior, no regression).
+    duration_seconds = _safe_int(item.get("duration_seconds"))
+    if duration_seconds is not None and not (
+        1 <= duration_seconds <= 86400 and abs(duration_seconds - duration * 60) <= 60
+    ):
+        duration_seconds = None
+
     raw_type = str(item.get("raw_type") or "").strip()[:64]
     category = str(item.get("category") or "").strip()
     if category not in WorkoutCategory.values:
@@ -214,11 +225,19 @@ def _clean_workout(item) -> tuple[dict | None, str | None]:
     if elevation is not None and 0 <= elevation <= 20000:
         metrics["elevation"] = elevation
     # Derived pace feeds the existing cardio pace trend, which only
-    # reads the 'M:SS'-per-km string convention.
+    # reads the 'M:SS'-per-km string convention. Computed from the precise
+    # seconds when available (exact pace) — else the rounded minutes (a 30:41
+    # run no longer reads 31:00, which inflated pace by ~5s/mi).
     if category == WorkoutCategory.CARDIO and metrics.get("distance_km"):
-        pace_s = duration * 60 / metrics["distance_km"]
+        total_seconds = duration_seconds if duration_seconds is not None else duration * 60
+        pace_s = total_seconds / metrics["distance_km"]
         if pace_s < 6000:
-            metrics["pace"] = f"{int(pace_s // 60)}:{int(pace_s % 60):02d}"
+            # Round to the nearest second, not floor — with exact seconds in hand,
+            # truncation would re-introduce a systematic ~0.5s/km downward bias
+            # (the last lossy step in the chain). divmod after rounding the total
+            # avoids any "M:60" overflow.
+            secs = round(pace_s)
+            metrics["pace"] = f"{secs // 60}:{secs % 60:02d}"
 
     return {
         "external_id": external_id,
@@ -229,6 +248,7 @@ def _clean_workout(item) -> tuple[dict | None, str | None]:
         "started_at": started_at,
         "ended_at": ended_at,
         "duration_minutes": duration,
+        "duration_seconds": duration_seconds,
         "metrics": metrics,
     }, None
 
@@ -311,6 +331,7 @@ def _complete_planned(locked: Workout, clean: dict) -> dict:
 
     locked.status = WorkoutStatus.DONE
     locked.duration_minutes = clean["duration_minutes"]
+    locked.duration_seconds = clean["duration_seconds"]
     locked.detail_json = merged
     locked.external_id = clean["external_id"]
     locked.notes_thread = thread
@@ -319,6 +340,7 @@ def _complete_planned(locked: Workout, clean: dict) -> dict:
         update_fields=[
             "status",
             "duration_minutes",
+            "duration_seconds",
             "detail_json",
             "external_id",
             "notes_thread",
@@ -485,6 +507,7 @@ def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
                         category=clean["category"],
                         activity=clean["activity"],
                         duration_minutes=clean["duration_minutes"],
+                        duration_seconds=clean["duration_seconds"],
                         detail_json=_hk_detail(clean, matched=False),
                     )
                     result = {"external_id": eid, "status": "created", "workout_id": str(workout.id)}
