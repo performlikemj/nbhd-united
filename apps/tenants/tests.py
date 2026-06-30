@@ -111,6 +111,24 @@ class AuthLoginTest(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertNotIn("access", response.json())
 
+    def test_login_inactive_user_rejected(self):
+        # is_active=False must be rejected. The validate() reorder hashes the
+        # password before the is_active gate so inactive accounts can't be
+        # distinguished from wrong-password by response timing.
+        User.objects.create_user(
+            username="inactive@example.com",
+            email="inactive@example.com",
+            password="testpass123",
+            is_active=False,
+        )
+        response = self.client.post(
+            "/api/v1/auth/login/",
+            {"email": "inactive@example.com", "password": "testpass123"},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn("access", response.json())
+
 
 class AuthLogoutTest(TestCase):
     def setUp(self):

@@ -237,14 +237,21 @@ class EmailTokenObtainPairSerializer(TokenObtainPairSerializer):
         # password-reset flow.
         email = (attrs.get("email") or "").strip()
         password = attrs.get("password") or ""
-        user = User.objects.filter(email__iexact=email).first() if email else None
-        # Run a hash even when the user is missing so response timing doesn't
-        # reveal whether an email is registered (mirrors ModelBackend, which
-        # the previous ``authenticate()`` call provided for free).
+        # email is app-unique but carries no DB constraint, so order
+        # deterministically — a stray duplicate must never make *which* account
+        # logs in depend on arbitrary row order.
+        user = User.objects.filter(email__iexact=email).order_by("date_joined", "id").first() if email else None
+        # Always run one password hash for an existing user *before* the
+        # is_active gate (and a dummy hash when the user is missing) so response
+        # timing never reveals whether an email is unregistered, registered, or
+        # merely deactivated. Mirrors Django's ModelBackend, which hashes first
+        # and checks is_active second; a naive ``is_active or check_password``
+        # short-circuits the hash for inactive accounts and leaks them by timing.
         if user is None:
             User().set_password(password)
             raise AuthenticationFailed(self.error_messages["no_active_account"], "no_active_account")
-        if not user.is_active or not user.check_password(password):
+        password_ok = user.check_password(password)
+        if not password_ok or not user.is_active:
             raise AuthenticationFailed(self.error_messages["no_active_account"], "no_active_account")
         self.user = user
         refresh = self.get_token(self.user)
