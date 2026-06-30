@@ -18,11 +18,13 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView
 
 from apps.common.cache import tenant_cache
 
 from .models import Tenant
 from .serializers import EmailTokenObtainPairSerializer, TenantSerializer, UserSerializer
+from .throttling import LoginEmailThrottle, LoginIpThrottle
 
 User = get_user_model()
 
@@ -34,6 +36,19 @@ logger = logging.getLogger(__name__)
 PASSWORD_RESET_RATE_LIMIT_PER_IP = 5
 PASSWORD_RESET_RATE_LIMIT_PER_EMAIL = 3
 PASSWORD_RESET_RATE_LIMIT_WINDOW_SECONDS = 60 * 60  # 1 hour
+
+
+class ThrottledLoginView(TokenObtainPairView):
+    """JWT login with per-IP + per-email rate limiting.
+
+    The stock SimpleJWT ``TokenObtainPairView`` has no throttling, leaving the
+    credential-guessing endpoint unprotected while the password-reset and
+    OAuth-exchange endpoints already throttle. Serializer wiring
+    (``EmailTokenObtainPairSerializer``) still comes from the
+    ``SIMPLE_JWT['TOKEN_OBTAIN_SERIALIZER']`` setting, unchanged.
+    """
+
+    throttle_classes = [LoginIpThrottle, LoginEmailThrottle]
 
 
 def _client_ip(request) -> str:

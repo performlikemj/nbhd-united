@@ -8,6 +8,8 @@ radius.
 
 from __future__ import annotations
 
+import hashlib
+
 from rest_framework.throttling import SimpleRateThrottle
 
 
@@ -123,3 +125,43 @@ class ExchangeMinuteThrottle(SimpleRateThrottle):
         else:
             ident = request.META.get("REMOTE_ADDR", "")
         return self.cache_format % {"scope": self.scope, "ident": ident or "anon"}
+
+
+class LoginIpThrottle(SimpleRateThrottle):
+    """Per-client-IP throttle for the ``AllowAny`` login endpoint — caps how
+    fast one source can guess credentials (credential stuffing). Honours the
+    Container Apps proxy header, matching ``auth_views._client_ip``.
+
+    Rates are deliberately burst-friendly (a minute window, not an hour) so a
+    household-NAT IP or a user fumbling their password isn't locked out for
+    long; tune down if abuse appears.
+    """
+
+    scope = "login_ip"
+    rate = "30/minute"
+
+    def get_cache_key(self, request, view):
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        ident = forwarded.split(",")[0].strip() if forwarded else request.META.get("REMOTE_ADDR", "")
+        return self.cache_format % {"scope": self.scope, "ident": ident or "anon"}
+
+
+class LoginEmailThrottle(SimpleRateThrottle):
+    """Per-email throttle for login — caps guesses against ONE account even when
+    an attacker rotates source IPs (what the per-IP throttle alone misses). The
+    email is hashed so raw addresses never land in cache keys. Minute window
+    keeps it tolerant of a legitimately struggling user.
+    """
+
+    scope = "login_email"
+    rate = "10/minute"
+
+    def get_cache_key(self, request, view):
+        try:
+            email = (request.data.get("email") or "").strip().lower()
+        except Exception:  # noqa: BLE001 — malformed body: skip throttle, the view will 400 it
+            return None
+        if not email:
+            return None
+        ident = hashlib.sha256(email.encode("utf-8")).hexdigest()[:32]
+        return self.cache_format % {"scope": self.scope, "ident": ident}
