@@ -1,0 +1,12 @@
+{
+  "name": "nbhd-site-publishing",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Site publishing plugin for NBHD United subscriber agents",
+  "main": "index.js",
+  "dependencies": {
+    "@azure/identity": "^4.5.0",
+    "@azure/storage-blob": "^12.26.0",
+    "@azure/cosmos": "^4.2.0"
+  }
+}

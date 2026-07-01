@@ -1931,6 +1931,20 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
+    # Site-publishing plugin — conditionally loaded when the tenant has site
+    # publishing enabled. Lets the assistant push portfolio images to the
+    # subscriber's own website (Azure Blob + Cosmos) via the tenant MI. The
+    # tool self-gates on the injected site_config (populated below).
+    if getattr(tenant, "site_publishing_enabled", False):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_SITEPUB_PLUGIN_ID", "nbhd-site-publishing") or "").strip(),
+                str(
+                    getattr(settings, "OPENCLAW_SITEPUB_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-site-publishing") or ""
+                ).strip(),
+            )
+        )
+
     # Insights plugin — trajectory tools (history/drill/compare) over pillar
     # snapshots. Phase 1 only emits Gravity snapshots, so we gate on
     # finance_active (which folds in the GRAVITY_ENABLED platform pause).
@@ -2131,6 +2145,22 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         memory_core_entry = _build_memory_core_plugin_entry(tenant)
         if memory_core_entry is not None:
             plugin_config["entries"]["memory-core"] = memory_core_entry
+
+        # Site-publishing plugin — inject the tenant's site coordinates so the
+        # publish tool knows which Cosmos/Blob to write. Whitelisted to the
+        # plugin's configSchema keys (additionalProperties:false).
+        sitepub_id = str(getattr(settings, "OPENCLAW_SITEPUB_PLUGIN_ID", "nbhd-site-publishing") or "").strip()
+        if sitepub_id and sitepub_id in plugin_config["entries"]:
+            _sc = getattr(tenant, "site_config", None) or {}
+            _sc_keys = (
+                "cosmosEndpoint",
+                "cosmosDatabase",
+                "cosmosContainer",
+                "blobAccount",
+                "blobContainer",
+                "blobPathPrefix",
+            )
+            plugin_config["entries"][sitepub_id]["config"] = {k: _sc[k] for k in _sc_keys if _sc.get(k)}
 
         paths = [ppath for _, ppath in _active_plugins if ppath]
         if paths:
