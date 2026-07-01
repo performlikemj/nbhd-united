@@ -19,14 +19,25 @@ persisted reply within the request.
 
 from __future__ import annotations
 
+import base64
 import secrets
 from unittest.mock import MagicMock, patch
 
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from apps.router.inbound_media import MAX_APP_IMAGE_BYTES
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.tenants.models import Tenant, User
+
+# Magic-valid but tiny image payloads for the ingress tests.
+_JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
+_PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
+_NOT_IMAGE = b"%PDF-1.4\nnot really an image"
+
+
+def _b64(data: bytes) -> str:
+    return base64.b64encode(data).decode()
 
 
 def _make_user() -> User:
@@ -169,6 +180,277 @@ class IOSChatRoutingTest(TestCase):
         anon = APIClient()
         resp = anon.post("/api/v1/chat/messages/", {"text": "hi"}, format="json")
         self.assertIn(resp.status_code, (401, 403))
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class IOSChatImageTest(TestCase):
+    """Inbound image ingress: an app-uploaded photo is stored on the tenant
+    share and referenced from the LLM-bound text via the ``[Photo attached:
+    <path>]`` marker — the same path the Telegram poller uses — with the bytes
+    NEVER inlined in the queue payload. The agent's built-in ``image`` tool then
+    reads the local file (see ``CONTINUITY_image_upload.md``)."""
+
+    _FAKE_STORE = (
+        "/home/node/.openclaw/workspace/media/inbound/photo_test.jpg",
+        "workspace/media/inbound/photo_test.jpg",
+    )
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.router.chat_views.store_inbound_image")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_image_only_turn_stores_and_marks(self, mock_post, mock_store):
+        mock_post.return_value = _ok_chat_response("It's a cat.")
+        mock_store.return_value = self._FAKE_STORE
+
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": _b64(_JPEG_BYTES), "client_msg_id": "img1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertTrue(resp.data["has_image"])
+
+        # Stored exactly once, with the DECODED bytes + the SNIFFED extension
+        # (jpg from magic bytes, not a client-claimed mime).
+        mock_store.assert_called_once()
+        call_args = mock_store.call_args.args
+        self.assertEqual(call_args[1], _JPEG_BYTES)
+        self.assertEqual(call_args[2], "jpg")
+
+        pmsg = PendingMessage.objects.get(tenant=self.tenant, channel=PendingMessage.Channel.IOS)
+        # Container-path marker baked into the LLM-bound text; is_image set so
+        # the row is a forced singleton (marker survives a cold-start burst).
+        self.assertIn(
+            "[Photo attached: /home/node/.openclaw/workspace/media/inbound/photo_test.jpg]",
+            pmsg.payload["message_text"],
+        )
+        self.assertTrue(pmsg.payload["is_image"])
+        # Bytes NEVER ride the payload, and the user-facing excerpt has no marker.
+        self.assertNotIn("image", pmsg.payload)
+        self.assertNotIn("Photo attached", pmsg.user_text)
+
+        # The model records the share-relative path for the turn.
+        turn = AppChatMessage.objects.get(client_msg_id="img1")
+        self.assertEqual(turn.attachment_path, "workspace/media/inbound/photo_test.jpg")
+
+    @patch("apps.router.chat_views.store_inbound_image")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_image_with_caption_preserves_both(self, mock_post, mock_store):
+        mock_post.return_value = _ok_chat_response("ok")
+        mock_store.return_value = self._FAKE_STORE
+
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "what is this?", "image": _b64(_PNG_BYTES), "client_msg_id": "img2"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(mock_store.call_args.args[2], "png")  # sniffed png
+
+        pmsg = PendingMessage.objects.get(tenant=self.tenant)
+        marked = pmsg.payload["message_text"]
+        self.assertIn("[Photo attached:", marked)
+        self.assertIn("what is this?", marked)
+        # Caption is the user-facing excerpt, verbatim.
+        self.assertEqual(pmsg.user_text, "what is this?")
+        self.assertEqual(AppChatMessage.objects.get(client_msg_id="img2").user_text, "what is this?")
+
+    def test_invalid_base64_rejected(self):
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": "!!! definitely not base64 !!!", "client_msg_id": "bad1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "invalid_image")
+        self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_unsupported_type_rejected(self):
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": _b64(_NOT_IMAGE), "client_msg_id": "bad2"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "unsupported_image_type")
+
+    def test_oversized_image_rejected(self):
+        big = b"\xff\xd8\xff" + b"\x00" * (MAX_APP_IMAGE_BYTES + 50_000)
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": _b64(big), "client_msg_id": "big1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "image_too_large")
+
+    def test_neither_text_nor_image_rejected(self):
+        resp = self.client.post("/api/v1/chat/messages/", {"client_msg_id": "none1"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "empty_message")
+
+    @patch("apps.router.chat_views.store_inbound_image")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_idempotent_image_retry_stores_once(self, mock_post, mock_store):
+        mock_post.return_value = _ok_chat_response("ok")
+        mock_store.return_value = self._FAKE_STORE
+
+        body = {"image": _b64(_JPEG_BYTES), "client_msg_id": "dup-img"}
+        first = self.client.post("/api/v1/chat/messages/", body, format="json")
+        self.assertEqual(first.status_code, 201, first.content)
+        second = self.client.post("/api/v1/chat/messages/", body, format="json")
+        # Replay → 200, and the share write happened exactly ONCE.
+        self.assertEqual(second.status_code, 200, second.content)
+        mock_store.assert_called_once()
+        self.assertEqual(AppChatMessage.objects.filter(client_msg_id="dup-img").count(), 1)
+
+    @patch("apps.router.chat_views.check_budget", return_value="personal")
+    @patch("apps.router.chat_views.store_inbound_image")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_over_budget_image_not_stored(self, mock_post, mock_store, _mock_budget):
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": _b64(_JPEG_BYTES), "client_msg_id": "ob1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["error"], "budget_exhausted")
+        # The budget gate precedes the share write and the wake — no I/O, no send.
+        mock_store.assert_not_called()
+        mock_post.assert_not_called()
+        self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 0)
+
+    @patch("apps.router.chat_views.store_inbound_image", side_effect=RuntimeError("share down"))
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_store_failure_degrades_to_text_turn(self, mock_post, mock_store):
+        mock_post.return_value = _ok_chat_response("ok")
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "look at this", "image": _b64(_JPEG_BYTES), "client_msg_id": "sf1"},
+            format="json",
+        )
+        # The turn is NOT dropped: it's delivered as text and the agent is told
+        # the photo failed (mirrors the poller's >5 MB fallback).
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertFalse(resp.data["has_image"])
+        pmsg = PendingMessage.objects.get(tenant=self.tenant)
+        self.assertIn("couldn't be processed", pmsg.payload["message_text"])
+        self.assertIn("look at this", pmsg.payload["message_text"])
+        # Still a singleton (the bytes were valid; only the write failed).
+        self.assertTrue(pmsg.payload["is_image"])
+        self.assertEqual(AppChatMessage.objects.get(client_msg_id="sf1").attachment_path, "")
+
+    def test_oversized_body_rejected_early(self):
+        # DRF's JSON parser bypasses DATA_UPLOAD_MAX_MEMORY_SIZE, so the view
+        # guards Content-Length before materializing the body (OOM defense).
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": "A" * 2_400_000, "client_msg_id": "huge1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 413)
+        self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 0)
+
+    @patch("apps.router.chat_views.store_inbound_image")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_line_wrapped_base64_accepted(self, mock_post, mock_store):
+        # RFC 2045 line-wrapped base64 (embedded newlines) must still decode.
+        mock_post.return_value = _ok_chat_response("ok")
+        mock_store.return_value = self._FAKE_STORE
+        raw = _b64(_JPEG_BYTES)
+        wrapped = raw[:8] + "\n" + raw[8:]
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": wrapped, "client_msg_id": "wrap1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        mock_store.assert_called_once()
+
+    @patch("apps.router.chat_views.store_inbound_image")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_retry_with_corrupt_image_replays(self, mock_post, mock_store):
+        # Idempotency runs BEFORE image decode: a retry with a known id must
+        # replay the stored turn even if the resent image body is now corrupt.
+        mock_post.return_value = _ok_chat_response("ok")
+        mock_store.return_value = self._FAKE_STORE
+        first = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": _b64(_JPEG_BYTES), "client_msg_id": "rr1"},
+            format="json",
+        )
+        self.assertEqual(first.status_code, 201, first.content)
+        second = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": "!!! corrupt !!!", "client_msg_id": "rr1"},
+            format="json",
+        )
+        self.assertEqual(second.status_code, 200, second.content)  # replay, not 400
+        mock_store.assert_called_once()  # not re-stored
+
+    @patch("apps.pii.redactor.redact_user_message", return_value="REDACTED")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_coalesce_excerpt_is_redacted(self, mock_post, _mock_redact):
+        # The queue-row excerpt feeds the coalesced-batch rebuild, so it must be
+        # REDACTED (a raw excerpt would leak PII to the model on a cold-start
+        # burst). The verbatim text stays on AppChatMessage for the display feed.
+        mock_post.return_value = _ok_chat_response("ok")
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "my number is 555-1234", "client_msg_id": "red1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        pmsg = PendingMessage.objects.get(tenant=self.tenant)
+        self.assertEqual(pmsg.user_text, "REDACTED")
+        self.assertEqual(AppChatMessage.objects.get(client_msg_id="red1").user_text, "my number is 555-1234")
+
+    def test_image_row_is_forced_singleton(self):
+        # A coalesced batch rebuilds content from row.user_text (no marker), so
+        # an image row MUST stay a singleton or the photo is silently dropped.
+        from apps.router.pending_queue import _claim_pending_batch_for_key
+
+        key = "thread-x"
+        img = PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=key,
+            payload={"message_text": "[Photo attached: /p.jpg]\nlook", "is_image": True},
+        )
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=key,
+            payload={"message_text": "and this too"},
+        )
+        batch, info = _claim_pending_batch_for_key(self.tenant, PendingMessage.Channel.IOS, key, 30.0)
+        self.assertEqual([m.id for m in batch], [img.id])  # text NOT folded in
+        self.assertEqual(info, {})
+
+    def test_text_head_breaks_before_image_tail(self):
+        from apps.router.pending_queue import _claim_pending_batch_for_key
+
+        key = "thread-y"
+        head = PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=key,
+            payload={"message_text": "first"},
+        )
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=key,
+            payload={"message_text": "[Photo attached: /p.jpg]\nsecond", "is_image": True},
+        )
+        batch, _info = _claim_pending_batch_for_key(self.tenant, PendingMessage.Channel.IOS, key, 30.0)
+        # The batch ends at the image boundary: only the text head is claimed.
+        self.assertEqual([m.id for m in batch], [head.id])
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")

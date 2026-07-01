@@ -623,6 +623,15 @@ class AppChatMessage(models.Model):
         default="",
         help_text="Machine-readable error reason when status=error (e.g. 'budget_exhausted').",
     )
+    attachment_path = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Workspace-relative path of an inbound image stored on the tenant "
+        "share (e.g. 'workspace/media/inbound/photo_ab12cd34.jpg'); empty for text-only "
+        "turns. The agent reads it via the '[Photo attached: <container-path>]' marker "
+        "baked into the queued message_text — the bytes never ride the queue payload.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     replied_at = models.DateTimeField(null=True, blank=True)
     waking_at = models.DateTimeField(

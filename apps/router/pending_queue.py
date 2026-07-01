@@ -429,6 +429,25 @@ def _row_is_voice(msg: PendingMessage) -> bool:
     return bool(payload.get("is_voice"))
 
 
+def _row_is_image(msg: PendingMessage) -> bool:
+    """A row is "image" if its payload carries ``is_image=True``.
+
+    Image rows are forced singletons for a load-bearing reason: the
+    ``[Photo attached: <path>]`` marker lives in ``payload.message_text``,
+    but a coalesced batch (``len > 1``) rebuilds content from each row's
+    ``user_text`` — which carries NO marker (see ``_build_batch_chat_content``).
+    Folding an image row into a coalesced batch would therefore silently drop
+    the photo. Keeping it singular keeps the marker on the wire.
+    """
+    payload = msg.payload or {}
+    return bool(payload.get("is_image"))
+
+
+def _row_is_singleton_media(msg: PendingMessage) -> bool:
+    """Rows that must never fold into a coalesced text batch (voice + image)."""
+    return _row_is_voice(msg) or _row_is_image(msg)
+
+
 def _claim_pending_batch_for_key(
     tenant: Tenant,
     channel: str,
@@ -455,12 +474,13 @@ def _claim_pending_batch_for_key(
       - Always starts with the oldest unleased PENDING row.
       - Subsequent contiguous rows are folded in as long as they are
         fresh (under stale threshold), under the attempts cap, and not
-        voice. The batch breaks at the first row that fails any of
-        these — that row stays PENDING and gets handled on the next
-        drain tick.
-      - Voice rows are always singletons: if the head row is voice, the
-        batch is ``[voice_row]``; otherwise voice rows in the tail end
-        the batch.
+        singleton media (voice/image). The batch breaks at the first row
+        that fails any of these — that row stays PENDING and gets handled
+        on the next drain tick.
+      - Voice/image rows are always singletons: if the head row is one,
+        the batch is ``[that_row]``; otherwise such a row in the tail ends
+        the batch (its marker-bearing message_text must not be coalesced
+        away — see ``_row_is_image``).
 
     All claim + lease writes happen inside one
     ``SELECT ... FOR UPDATE SKIP LOCKED`` transaction so a concurrent
@@ -522,20 +542,20 @@ def _claim_pending_batch_for_key(
             head.save(update_fields=["delivery_in_flight_until"])
             return ([], {"stale_head": head})
 
-        # Voice head → singleton batch (voice is never coalesced).
-        if _row_is_voice(head):
+        # Voice/image head → singleton batch (singleton media is never coalesced).
+        if _row_is_singleton_media(head):
             head.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
             head.save(update_fields=["delivery_in_flight_until"])
             return ([head], {})
 
-        # Build a contiguous head batch of fresh, under-cap, non-voice rows.
+        # Build a contiguous head batch of fresh, under-cap, non-singleton-media rows.
         batch: list[PendingMessage] = [head]
         for row in rows[1:]:
             if row.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
                 break
             if row.created_at < stale_cutoff:
                 break
-            if _row_is_voice(row):
+            if _row_is_singleton_media(row):
                 break
             batch.append(row)
 

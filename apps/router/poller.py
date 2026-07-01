@@ -571,15 +571,16 @@ class TelegramPoller:
     def _upload_photo_to_workspace(self, tenant: Tenant, message: dict) -> str | None:
         """Download photo from Telegram and upload to tenant's workspace.
 
-        Returns the workspace-relative file path, or None on failure.
+        Returns the container-mounted file path (for the agent's image tool),
+        or None on failure.
         """
         photo_data_url = self._download_photo(message)
         if not photo_data_url:
             return None
 
         try:
-            # Extract binary from data URL
-            # Format: data:image/jpg;base64,<data>
+            # Extract binary + extension from the data URL
+            # (data:image/<ext>;base64,<data>).
             header, b64data = photo_data_url.split(",", 1)
             ext = "jpg"
             if "png" in header:
@@ -591,21 +592,13 @@ class TelegramPoller:
 
             photo_bytes = base64.b64decode(b64data)
 
-            # Generate unique filename
-            import hashlib
+            # Shared storage chokepoint — same filename scheme + container path
+            # as the iOS ingress (see apps/router/inbound_media.py).
+            from apps.router.inbound_media import store_inbound_image
 
-            name_hash = hashlib.sha256(photo_bytes[:1024]).hexdigest()[:8]
-            filename = f"photo_{name_hash}.{ext}"
-            workspace_path = f"workspace/media/inbound/{filename}"
-            local_path = f"/home/node/.openclaw/workspace/media/inbound/{filename}"
-
-            # Upload to tenant's file share
-            from apps.orchestrator.azure_client import upload_workspace_file_binary
-
-            tenant_id = str(tenant.id)
-            upload_workspace_file_binary(tenant_id, workspace_path, photo_bytes)
-            logger.info("Uploaded photo to %s for tenant %s", workspace_path, tenant_id[:8])
-            return local_path
+            container_path, workspace_path = store_inbound_image(str(tenant.id), photo_bytes, ext)
+            logger.info("Uploaded photo to %s for tenant %s", workspace_path, str(tenant.id)[:8])
+            return container_path
 
         except Exception:
             logger.exception("Failed to upload photo to workspace")
@@ -994,7 +987,10 @@ class TelegramPoller:
         if self._is_new_session(tenant):
             message_text = self._build_session_context(tenant, message_text)
 
-        self._forward_to_container(chat_id, tenant, message_text, raw_user_text=raw_user_text)
+        # ``had_photo`` (not just a successful upload) forces a singleton: both
+        # the "[Photo attached: …]" and the ">5 MB" fallback markers live only
+        # in message_text and must survive a cold-start coalesce.
+        self._forward_to_container(chat_id, tenant, message_text, raw_user_text=raw_user_text, is_image=had_photo)
 
     # ── Contextual recall ──────────────────────────────────────────────────
 
@@ -1327,6 +1323,7 @@ class TelegramPoller:
         tenant: Tenant,
         message_text: str,
         raw_user_text: str | None = None,
+        is_image: bool = False,
     ) -> None:
         """Pre-process the message and enqueue it on the per-tenant
         serialization queue.
@@ -1434,15 +1431,23 @@ class TelegramPoller:
         # follow-up; not blocking the warm-tenant serialization fix.
         self._send_typing(chat_id)
 
+        payload = {
+            "message_text": message_text,
+            "user_param": user_param,
+            "user_timezone": user_tz,
+        }
+        if is_image:
+            # Force a singleton batch: the [Photo attached: <path>] marker lives
+            # ONLY in message_text, but a coalesced batch rebuilds content from
+            # each row's user_text (no marker) — so a coalesced photo turn would
+            # silently drop the image. Mirrors the iOS ingress + is_voice.
+            payload["is_image"] = True
+
         enqueue_message_for_tenant(
             tenant=tenant,
             channel="telegram",
             channel_user_id=str(chat_id),
-            payload={
-                "message_text": message_text,
-                "user_param": user_param,
-                "user_timezone": user_tz,
-            },
+            payload=payload,
             user_text_excerpt=raw_user_text,
         )
 

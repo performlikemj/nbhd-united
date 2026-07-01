@@ -276,6 +276,49 @@ class TelegramPollerForwardTest(TestCase):
             container_fqdn="oc-test.internal",
         )
 
+    @staticmethod
+    def _completions_resp():
+        resp = MagicMock()
+        resp.is_success = True
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {"choices": [{"message": {"content": "ok"}}], "usage": {}}
+        return resp
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_photo_forward_is_marked_is_image_singleton(self, mock_post):
+        # A Telegram photo carries its [Photo attached: <path>] marker ONLY in
+        # message_text; coalescing rebuilds from user_text (no marker). So the
+        # row must be flagged is_image → forced singleton, or a cold-start burst
+        # drops the photo. Regression for the adversarial-review HIGH finding.
+        from apps.router.models import PendingMessage
+        from apps.router.pending_queue import _row_is_singleton_media
+
+        mock_post.return_value = self._completions_resp()
+        self.poller._forward_to_container(
+            123,
+            self.tenant,
+            "[Photo attached: /home/node/.openclaw/workspace/media/inbound/photo_x.jpg]\nlook",
+            raw_user_text="look",
+            is_image=True,
+        )
+        row = PendingMessage.objects.filter(tenant=self.tenant, channel="telegram").first()
+        self.assertIsNotNone(row)
+        self.assertTrue(row.payload.get("is_image"))
+        self.assertTrue(_row_is_singleton_media(row))
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_text_forward_is_not_flagged_is_image(self, mock_post):
+        from apps.router.models import PendingMessage
+        from apps.router.pending_queue import _row_is_singleton_media
+
+        mock_post.return_value = self._completions_resp()
+        self.poller._forward_to_container(123, self.tenant, "just text")
+        row = PendingMessage.objects.filter(tenant=self.tenant, channel="telegram").first()
+        self.assertIsNotNone(row)
+        self.assertNotIn("is_image", row.payload)
+        self.assertFalse(_row_is_singleton_media(row))
+
     @patch("apps.router.pending_queue.httpx.post")
     def test_forward_via_chat_completions(self, mock_post):
         # The queue's drain makes several POSTs: a Telegram typing pulse,

@@ -34,6 +34,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.billing.services import check_budget
+from apps.router.inbound_media import (
+    MAX_APP_IMAGE_BYTES,
+    decode_and_validate_image,
+    store_inbound_image,
+)
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.router.pending_queue import enqueue_message_for_tenant
 from apps.router.services import build_chat_context_marker, build_datetime_context
@@ -44,6 +49,13 @@ logger = logging.getLogger(__name__)
 # Upper bound on a single inbound chat message. Generous for a chat UI but
 # bounded so a pathological payload can't bloat the queue row / prompt.
 _MAX_CHARS = 8000
+
+# Hard ceiling on the raw request body. DRF's JSONParser reads the request
+# stream directly, bypassing Django's DATA_UPLOAD_MAX_MEMORY_SIZE, so without
+# this an authenticated client could POST a multi-hundred-MB base64 "image" and
+# OOM the shared control plane. Sized to admit a max image (base64 ≈ 4/3) plus
+# the JSON envelope + an 8k caption, and nothing beyond that.
+_MAX_REQUEST_BODY_BYTES = MAX_APP_IMAGE_BYTES * 4 // 3 + 300_000
 
 # Upper bound on a recorded on-device reply. On-device models are small and
 # their replies short; anything longer is truncated rather than rejected so
@@ -200,16 +212,35 @@ def _serialize_message(msg: AppChatMessage) -> dict:
         # — drives the in-app "thinking" state and the iOS-27 Live Activity.
         "phase": msg.phase,
         "phase_detail": msg.phase_detail,
+        # True when the user's turn carried an inbound image (stored on the
+        # share; the raw path is internal and not exposed). Lets a polling
+        # client render an image bubble for the turn.
+        "has_image": bool(msg.attachment_path),
     }
 
 
-def enqueue_tenant_turn(*, tenant, user, text: str, thread: ChatThread, client_msg_id: str):
+def enqueue_tenant_turn(
+    *,
+    tenant,
+    user,
+    text: str,
+    thread: ChatThread,
+    client_msg_id: str,
+    image: bytes | None = None,
+    image_ext: str = "jpg",
+):
     """Create a PENDING ``AppChatMessage`` and enqueue a Tier-3 OpenClaw turn.
 
     The single chokepoint for "route this ask to the full tenant agent": used by
     both the normal ``ChatMessageView`` POST and the Tier-2 fast-responder
     escalation path (``apps.router.siri_views``). Idempotent on
     ``client_msg_id`` and budget-gated, exactly once.
+
+    ``image`` (optional, already-decoded+validated bytes) is stored on the
+    tenant share and referenced from the LLM-bound text via the same
+    ``[Photo attached: <path>]`` marker the Telegram poller uses — the bytes
+    never ride the queue payload. Storing happens AFTER the idempotency + budget
+    gates so a replay or an over-budget turn does no share I/O.
 
     Returns ``(turn, created)`` — ``created`` is True only when a fresh PENDING
     turn was enqueued (so the caller can pick 201 vs 200). A budget-exhausted
@@ -255,6 +286,28 @@ def enqueue_tenant_turn(*, tenant, user, text: str, thread: ChatThread, client_m
         return turn, False
 
     user_tz = getattr(user, "timezone", None) or "UTC"
+
+    # Inbound image: persist the bytes on the tenant share and decorate the
+    # LLM-bound text with the same [Photo attached: <path>] marker the Telegram
+    # poller uses, so the agent's built-in ``image`` tool reads the local file.
+    # The marker is NOT PII and is NOT part of the user's displayed text, so it
+    # is assembled separately from (and never fed through) redaction. If the
+    # store fails we degrade to a text turn with a "couldn't process" marker —
+    # mirrors the poller's >5 MB fallback — rather than dropping the turn.
+    image_marker = ""
+    if image:
+        try:
+            container_path, workspace_path = store_inbound_image(str(tenant.id), image, image_ext)
+            AppChatMessage.objects.filter(pk=turn.pk).update(attachment_path=workspace_path)
+            turn.attachment_path = workspace_path
+            image_marker = f"[Photo attached: {container_path}]\n"
+        except Exception:
+            logger.exception(
+                "enqueue_tenant_turn: image store failed for tenant %s — degrading to a text turn",
+                str(tenant.id)[:8],
+            )
+            image_marker = "[The user attached a photo but it couldn't be processed — ask them to resend it.]\n"
+
     # PII redaction for outgoing LLM-provider traffic. Redact the bare user
     # text BEFORE prepending the datetime/chat markers (redacting the
     # assembled body makes the NER detector misfire on the structural
@@ -267,22 +320,38 @@ def enqueue_tenant_turn(*, tenant, user, text: str, thread: ChatThread, client_m
     from apps.pii.redactor import redact_user_message
 
     redacted_text = redact_user_message(text, tenant)
+    # A photo with no caption still needs SOMETHING for the agent to act on.
+    llm_text = redacted_text or ("(the user sent a photo with no caption)" if image else "")
     # Decorate like the other channels: current-time marker + the
-    # "this is a chat turn, don't pre-load workspace docs" marker.
-    message_text = build_datetime_context(user_tz) + build_chat_context_marker() + redacted_text
+    # "this is a chat turn, don't pre-load workspace docs" marker + any photo
+    # marker, then the user's (redacted) text.
+    message_text = build_datetime_context(user_tz) + build_chat_context_marker() + image_marker + llm_text
+
+    payload = {
+        "message_text": message_text,
+        "user_param": _thread_user_param(thread),
+        "user_timezone": user_tz,
+        "client_msg_id": client_msg_id,
+        "thread_id": str(thread.id),
+    }
+    if image:
+        # Force a singleton batch: a coalesced batch (cold-start burst) rebuilds
+        # content from row.user_text, which carries no [Photo attached] marker —
+        # so a coalesced image turn would lose the photo. Mirrors is_voice.
+        payload["is_image"] = True
 
     enqueue_message_for_tenant(
         tenant=tenant,
         channel=PendingMessage.Channel.IOS,
         channel_user_id=str(thread.id),
-        payload={
-            "message_text": message_text,
-            "user_param": _thread_user_param(thread),
-            "user_timezone": user_tz,
-            "client_msg_id": client_msg_id,
-            "thread_id": str(thread.id),
-        },
-        user_text_excerpt=text,
+        payload=payload,
+        # REDACTED excerpt on the queue row: a coalesced batch rebuilds the
+        # LLM-bound content from row.user_text (see pending_queue), so a raw
+        # excerpt would leak unredacted PII to the model on a cold-start burst.
+        # The verbatim text is preserved on AppChatMessage.user_text (persisted
+        # above) which is what the ?since= display feed reads — mirrors the
+        # Telegram poller, which also stores a redacted excerpt.
+        user_text_excerpt=redacted_text,
     )
     ChatThread.objects.filter(id=thread.id).update(last_active_at=timezone.now())
     return turn, True
@@ -392,27 +461,51 @@ class ChatMessageView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Bound the raw body BEFORE DRF materializes it (the request.data access
+        # below). DRF's JSONParser reads the request stream directly, bypassing
+        # Django's DATA_UPLOAD_MAX_MEMORY_SIZE, so an unbounded base64 image body
+        # could OOM the shared control plane. Content-Length is trusted only to
+        # reject early; an absent/chunked length still falls back to Django's
+        # capped ``.body`` when request.data is parsed.
+        try:
+            declared_len = int(request.META.get("CONTENT_LENGTH") or 0)
+        except (TypeError, ValueError):
+            declared_len = 0
+        if declared_len > _MAX_REQUEST_BODY_BYTES:
+            return Response({"error": "image_too_large"}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+
         if not isinstance(request.data, dict):
             return Response({"error": "invalid_body"}, status=status.HTTP_400_BAD_REQUEST)
 
-        text = str(request.data.get("text") or "").strip()
-        if not text:
-            return Response({"error": "empty_message"}, status=status.HTTP_400_BAD_REQUEST)
-        if len(text) > _MAX_CHARS:
-            return Response({"error": "message_too_long"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Idempotency: a client-supplied stable id makes retries safe.
+        # Idempotency FIRST: a retry carrying a known client_msg_id must replay
+        # the existing turn (200) WITHOUT re-validating or re-storing its image,
+        # so a photo is written to the share exactly once even if the client
+        # resends a re-encoded body. This also precedes thread validation — a
+        # now-stale/invalid thread_id on a retry must replay, not 404.
         client_msg_id = str(request.data.get("client_msg_id") or "").strip() or uuid.uuid4().hex
         if len(client_msg_id) > _CLIENT_MSG_ID_MAX:
             return Response({"error": "invalid_client_msg_id"}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Idempotency MUST precede thread validation: a retry carrying the same
-        # client_msg_id but a now-stale/invalid thread_id must replay the existing
-        # turn (200), not 404. (enqueue_tenant_turn re-checks too, but only after
-        # a thread is resolved — so the early replay has to live here.)
         existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
         if existing:
             return Response(_serialize_message(existing), status=status.HTTP_200_OK)
+
+        text = str(request.data.get("text") or "").strip()
+
+        # Optional inbound image (base64 / data URL). Decode + validate up front
+        # so a malformed payload is a 400 before any enqueue; the actual share
+        # write is deferred to enqueue_tenant_turn (after the budget gate).
+        image_bytes, image_ext, image_err = decode_and_validate_image(
+            request.data.get("image"), max_bytes=MAX_APP_IMAGE_BYTES
+        )
+        if image_err:
+            return Response({"error": image_err}, status=status.HTTP_400_BAD_REQUEST)
+
+        # A photo with no caption is a valid turn — require text OR an image.
+        if not text and image_bytes is None:
+            return Response({"error": "empty_message"}, status=status.HTTP_400_BAD_REQUEST)
+        if len(text) > _MAX_CHARS:
+            return Response({"error": "message_too_long"}, status=status.HTTP_400_BAD_REQUEST)
 
         thread = _resolve_thread(request, tenant)
         if thread is None:
@@ -424,6 +517,8 @@ class ChatMessageView(APIView):
             text=text,
             thread=thread,
             client_msg_id=client_msg_id,
+            image=image_bytes,
+            image_ext=image_ext or "jpg",
         )
         http = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(_serialize_message(turn), status=http)
