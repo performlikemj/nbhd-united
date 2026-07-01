@@ -1,0 +1,40 @@
+{
+  "id": "nbhd-site-publishing",
+  "name": "NBHD Site Publishing",
+  "description": "Publish portfolio images to the subscriber's own website (Azure Blob + Cosmos DB) using the tenant's managed identity.",
+  "contracts": {
+    "tools": [
+      "publish_portfolio_image"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "cosmosEndpoint": {
+        "type": "string",
+        "description": "Cosmos DB account endpoint URL that the live site reads from."
+      },
+      "cosmosDatabase": {
+        "type": "string",
+        "description": "Cosmos database name (e.g. KihokoPortfolio)."
+      },
+      "cosmosContainer": {
+        "type": "string",
+        "description": "Cosmos container name the site reads (e.g. Portfolio)."
+      },
+      "blobAccount": {
+        "type": "string",
+        "description": "Storage account name (no URL, e.g. kihokoblob)."
+      },
+      "blobContainer": {
+        "type": "string",
+        "description": "Blob container name for image files (e.g. media)."
+      },
+      "blobPathPrefix": {
+        "type": "string",
+        "description": "Optional blob path prefix for uploads. Default: projects/portfolio"
+      }
+    }
+  }
+}

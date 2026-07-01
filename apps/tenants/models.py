@@ -602,6 +602,24 @@ class Tenant(models.Model):
         help_text="Enable the Core mindfulness pillar (on-demand guided meditations)",
     )
 
+    # Site publishing module — lets the assistant push portfolio images to the
+    # subscriber's own website (Azure Blob + Cosmos) via the tenant managed
+    # identity. Gated per tenant in config_generator; the plugin self-gates on
+    # site_config, so a flagged-but-unconfigured tenant just gets an inert tool.
+    site_publishing_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable the assistant to publish images to the subscriber's own website",
+    )
+    site_config = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text=(
+            "Per-tenant website publishing targets for the nbhd-site-publishing "
+            "plugin. Keys: cosmosEndpoint, cosmosDatabase, cosmosContainer, "
+            "blobAccount, blobContainer, blobPathPrefix."
+        ),
+    )
+
     # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
     # "finance"), values are ISO-8601 timestamps of successful welcome
     # delivery. The welcome prompt instructs the agent to call
