@@ -8,6 +8,7 @@ import { Starfield } from "@/components/landing/starfield";
 import { SiteFooter } from "@/components/site-footer";
 import { ConstellationLines } from "@/components/landing/constellation-lines";
 import { SynapseNetwork } from "@/components/landing/synapse-network";
+import { AppStoreBadge } from "@/components/app-store-badge";
 
 const steps = [
   {
@@ -126,7 +127,8 @@ export default function LandingPage() {
 
           <p className="animate-reveal-3 mx-auto max-w-2xl text-lg font-light leading-relaxed text-c-text-muted md:text-xl">
             A private AI companion that listens, learns, and helps you
-            grow&nbsp;&mdash; through natural conversation on Telegram and LINE.
+            grow&nbsp;&mdash; through natural conversation, right from your
+            phone.
           </p>
 
           <div className="animate-reveal-4 flex flex-col items-center justify-center gap-4 pt-4 sm:flex-row">
@@ -142,6 +144,13 @@ export default function LandingPage() {
             >
               Sign in
             </Link>
+          </div>
+
+          <div className="animate-reveal-4 flex flex-col items-center gap-3 pt-2">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.25em] text-c-text-muted/70">
+              Now on iPhone
+            </span>
+            <AppStoreBadge height={52} />
           </div>
         </div>
 
@@ -214,7 +223,7 @@ export default function LandingPage() {
           <h2 className="font-headline text-[clamp(2rem,4vw+0.5rem,3.25rem)] font-bold tracking-tight text-c-text">
             Your constellation is waiting.
           </h2>
-          <div className="flex justify-center">
+          <div className="flex flex-col items-center gap-6">
             <Link
               href="/signup"
               className="glow-purple group relative inline-flex min-h-[44px] items-center overflow-hidden rounded-lg bg-c-purple px-12 py-5 text-lg font-bold text-white transition-all duration-300 hover:scale-105"
@@ -222,6 +231,7 @@ export default function LandingPage() {
               <span className="relative z-10">Get started</span>
               <div className="absolute inset-0 translate-y-full bg-white/10 transition-transform duration-300 group-hover:translate-y-0" />
             </Link>
+            <AppStoreBadge height={48} />
           </div>
         </div>
       </section>

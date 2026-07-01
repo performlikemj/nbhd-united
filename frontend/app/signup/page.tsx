@@ -44,7 +44,7 @@ export default function SignupPage() {
       }
       try {
         const me = await fetchMe();
-        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active" || (!me.tenant.user.telegram_chat_id && !me.line_user_id);
+        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active";
         router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
       } catch {
         router.push("/onboarding");
@@ -80,9 +80,8 @@ export default function SignupPage() {
             Begin your journey
           </h2>
           <p className="mt-2 text-center text-sm text-white/45 leading-relaxed">
-            Your private AI companion, delivered through{" "}
-            <span className="text-white/65">Telegram</span> or{" "}
-            <span className="text-white/65">LINE</span>. 7-day free trial.
+            Your private AI companion, in the{" "}
+            <span className="text-white/65">NBHD app</span>. 7-day free trial.
           </p>
 
           <form onSubmit={handleSubmit} className="mt-7 space-y-4">

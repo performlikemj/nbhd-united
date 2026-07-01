@@ -1,27 +1,22 @@
 "use client";
 
+import { useState } from "react";
+
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 import { PersonaScene } from "@/components/onboarding/persona-scene";
-import { MessagingScene } from "@/components/onboarding/messaging-scene";
+import { AppScene } from "@/components/onboarding/app-scene";
 import { LaunchSequence } from "@/components/onboarding/launch-sequence";
 import { SectionCardSkeleton } from "@/components/skeleton";
-import {
-  useMeQuery,
-  useTelegramStatusQuery,
-  useLineStatusQuery,
-} from "@/lib/queries";
+import { useMeQuery } from "@/lib/queries";
 
 export default function OnboardingPage() {
   const { data: me, isLoading } = useMeQuery();
   const tenant = me?.tenant;
   const hasTenant = Boolean(tenant);
-
-  const { data: telegramStatus } = useTelegramStatusQuery(hasTenant);
-  const { data: lineStatus } = useLineStatusQuery(hasTenant);
-
-  const isTelegramLinked = Boolean(tenant?.user.telegram_chat_id) || Boolean(telegramStatus?.linked);
-  const isLineLinked = Boolean(lineStatus?.linked);
-  const messagingLinked = isTelegramLinked || isLineLinked;
+  // Local-only gate: the "get the app" step no longer requires linking a
+  // messaging channel, so completion is a one-tap Continue rather than a
+  // server-side flag. Reloading simply shows the step again — harmless.
+  const [appStepDone, setAppStepDone] = useState(false);
 
   if (isLoading) {
     return (
@@ -33,12 +28,12 @@ export default function OnboardingPage() {
     );
   }
 
-  // Determine which scene to show
-  let scene: "persona" | "messaging" | "launch";
+  // Determine which scene to show: persona (no tenant) → app download → launch.
+  let scene: "persona" | "app" | "launch";
   if (!hasTenant) {
     scene = "persona";
-  } else if (!messagingLinked) {
-    scene = "messaging";
+  } else if (!appStepDone) {
+    scene = "app";
   } else {
     scene = "launch";
   }
@@ -46,7 +41,7 @@ export default function OnboardingPage() {
   return (
     <OnboardingShell>
       {scene === "persona" && <PersonaScene />}
-      {scene === "messaging" && <MessagingScene />}
+      {scene === "app" && <AppScene onContinue={() => setAppStepDone(true)} />}
       {scene === "launch" && <LaunchSequence />}
     </OnboardingShell>
   );

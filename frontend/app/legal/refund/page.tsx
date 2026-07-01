@@ -4,7 +4,7 @@ export default function RefundPage() {
   return (
     <LegalPage
       title="Refund & Cancellation Policy"
-      lastUpdated="February 13, 2026"
+      lastUpdated="July 1, 2026"
     >
       <h2>1. Cancellation</h2>
       <p>
@@ -38,7 +38,7 @@ export default function RefundPage() {
       <h2>4. 48-Hour Exception</h2>
       <p>
         If you subscribed within the last 48 hours and have not used the AI
-        assistant (no messages sent via Telegram or LINE), you may request a full refund
+        assistant (no messages sent to the assistant), you may request a full refund
         by emailing{" "}
         <a href="mailto:mj@bywayofmj.com">mj@bywayofmj.com</a>. We will
         review your request and process the refund within 5 business days if

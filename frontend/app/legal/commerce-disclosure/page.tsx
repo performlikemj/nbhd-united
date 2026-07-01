@@ -4,7 +4,7 @@ export default function CommerceDisclosurePage() {
   return (
     <LegalPage
       title="Commerce Disclosure"
-      lastUpdated="February 20, 2026"
+      lastUpdated="July 1, 2026"
     >
       <p className="text-ink-faint italic">
         特定商取引法に基づく表記
@@ -77,8 +77,8 @@ export default function CommerceDisclosurePage() {
 
       <h2>Operating Environment (動作環境)</h2>
       <p>
-        Neighborhood United is a web-based service accessible via modern web browsers
-        (Chrome, Safari, Firefox, Edge). The Telegram or LINE messaging app is required for
+        Neighborhood United is accessible via the NBHD app for iPhone and via modern web
+        browsers (Chrome, Safari, Firefox, Edge). An internet connection is required for
         AI assistant communication.
       </p>
     </LegalPage>

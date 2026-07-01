@@ -2,7 +2,7 @@ import { LegalPage } from "@/components/legal-page";
 
 export default function PrivacyPage() {
   return (
-    <LegalPage title="Privacy Policy" lastUpdated="May 4, 2026">
+    <LegalPage title="Privacy Policy" lastUpdated="July 1, 2026">
       <h2>1. Our Commitment to Privacy</h2>
       <p>
         A personal AI assistant should know enough about you to be useful, and
@@ -21,8 +21,9 @@ export default function PrivacyPage() {
           provided during registration.
         </li>
         <li>
-          <strong>Telegram chat ID & LINE user ID</strong> — used to link your messaging account
-          and deliver AI assistant messages.
+          <strong>Messaging channel identifier</strong> — if you connect a
+          messaging channel, we store its account identifier to link your
+          account and deliver AI assistant messages.
         </li>
         <li>
           <strong>Usage metrics</strong> — message counts and feature usage to
@@ -56,8 +57,9 @@ export default function PrivacyPage() {
           subscription billing.
         </li>
         <li>
-          <strong>Telegram & LINE</strong> — receive messages you send and deliver
-          assistant responses.
+          <strong>Messaging providers</strong> — if you connect a messaging
+          channel, its provider receives the messages you send and delivers
+          your assistant&apos;s responses.
         </li>
         <li>
           <strong>AI model providers</strong> (Anthropic, OpenRouter, and others)
@@ -101,7 +103,7 @@ export default function PrivacyPage() {
           layer.
         </li>
         <li>
-          <strong>Your direct messages</strong> in Telegram or LINE. These are
+          <strong>Your direct messages</strong> to your assistant. These are
           sent to the provider unmodified, because the assistant needs your
           literal words to respond meaningfully — replacing names and contact
           details in your own message with placeholders degrades responses.

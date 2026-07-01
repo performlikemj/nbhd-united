@@ -1,17 +1,15 @@
 "use client";
 
 /**
- * The "your meditation is ready" notification — mirrors the channel ping the
- * backend sends on render completion (Telegram/LINE). Slides in top-right.
+ * The "your meditation is ready" notification — mirrors the push the backend
+ * sends on render completion. Slides in top-right.
  */
 export function CoreToast({
   title,
-  channel = "Telegram",
   onPlay,
   onDismiss,
 }: {
   title: string;
-  channel?: string;
   onPlay: () => void;
   onDismiss: () => void;
 }) {
@@ -27,9 +25,9 @@ export function CoreToast({
           boxShadow: "0 0 14px rgba(78,205,196,0.45)",
         }}
       >
-        <span className="absolute -bottom-1 -right-1 grid h-4 w-4 place-items-center rounded-full border-2 border-[#10151b] bg-[#229ED9]">
-          <svg viewBox="0 0 24 24" className="h-2 w-2" fill="#fff" aria-hidden>
-            <path d="M21.6 2.4 2.3 10.1c-1 .4-1 1.8.1 2.1l5 1.5 1.9 6c.3.8 1.3 1 1.9.3l2.6-2.6 4.7 3.5c.7.5 1.7.1 1.9-.8L23.4 4c.2-1.1-.8-2-1.8-1.6Z" />
+        <span className="absolute -bottom-1 -right-1 grid h-4 w-4 place-items-center rounded-full border-2 border-[#10151b] bg-signal">
+          <svg viewBox="0 0 24 24" className="h-2.5 w-2.5" fill="#0b0f13" aria-hidden>
+            <path d="M12 22a2.2 2.2 0 0 0 2.2-2.2H9.8A2.2 2.2 0 0 0 12 22Zm6.4-6.2V11a6.4 6.4 0 0 0-4.9-6.2V4.3a1.5 1.5 0 0 0-3 0v.5A6.4 6.4 0 0 0 5.6 11v4.8L4 17.4v.8h16v-.8Z" />
           </svg>
         </span>
       </span>
@@ -37,7 +35,7 @@ export function CoreToast({
       <div className="min-w-0 flex-1">
         <p className="text-[13px] font-semibold text-ink">Your ten minutes is ready</p>
         <p className="mt-0.5 truncate text-[11px] text-ink-faint">
-          {title} · via {channel}
+          {title}
         </p>
       </div>
 
