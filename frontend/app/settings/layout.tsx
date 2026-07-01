@@ -15,7 +15,6 @@ import {
   fetchPATs,
   fetchPersonas,
   fetchPreferences,
-  fetchTelegramStatus,
   fetchTenant,
   fetchUsageHistory,
   fetchUsageSummary,
@@ -132,7 +131,6 @@ export default function SettingsLayout({ children }: { children: ReactNode }) {
         break;
       case "/settings/integrations":
         void queryClient.prefetchQuery({ queryKey: ["integrations"], queryFn: fetchIntegrations });
-        void queryClient.prefetchQuery({ queryKey: ["telegram-status"], queryFn: fetchTelegramStatus });
         break;
       case "/settings/connected-apps":
         void queryClient.prefetchQuery({ queryKey: ["pats"], queryFn: fetchPATs });

@@ -32,8 +32,7 @@ export default function LoginPage() {
       }
       try {
         const me = await fetchMe();
-        const messagingLinked = Boolean(me.tenant?.user.telegram_chat_id) || Boolean(me.line_user_id);
-        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active" || !messagingLinked;
+        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active";
         router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
       } catch {
         router.push("/onboarding");

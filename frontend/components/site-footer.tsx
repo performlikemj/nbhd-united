@@ -2,6 +2,8 @@
 
 import Link from "next/link";
 
+import { APP_STORE_URL } from "@/components/app-store-badge";
+
 export function SiteFooter() {
   return (
     <footer role="contentinfo" className="mt-auto border-t border-border bg-surface/50">
@@ -10,6 +12,14 @@ export function SiteFooter() {
           Neighborhood United
         </Link>
         <nav aria-label="Footer links" className="flex flex-wrap items-center gap-4 text-xs text-ink-faint">
+          <a
+            href={APP_STORE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="transition hover:text-ink-muted"
+          >
+            iOS App
+          </a>
           <Link href="/legal/terms" className="transition hover:text-ink-muted">
             Terms of Service
           </Link>

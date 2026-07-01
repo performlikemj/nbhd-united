@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { ConstellationProgress } from "./constellation-progress";
+import { AppStoreBadge } from "@/components/app-store-badge";
 import { useProvisioningStatusQuery, useRetryProvisioningMutation } from "@/lib/queries";
 
 const TIPS = [
@@ -64,13 +65,16 @@ export function LaunchSequence() {
 
       {/* CTA when ready */}
       {isReady ? (
-        <button
-          type="button"
-          onClick={() => router.push("/journal")}
-          className="mt-12 glow-purple rounded-full bg-[#7C6BF0] px-10 py-3.5 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-95"
-        >
-          Start exploring
-        </button>
+        <div className="mt-12 flex flex-col items-center gap-5">
+          <button
+            type="button"
+            onClick={() => router.push("/journal")}
+            className="glow-purple rounded-full bg-[#7C6BF0] px-10 py-3.5 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-95"
+          >
+            Start exploring
+          </button>
+          <AppStoreBadge height={48} />
+        </div>
       ) : (
         <>
           {/* Retry button after 90s */}

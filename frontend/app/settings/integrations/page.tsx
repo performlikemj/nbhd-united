@@ -9,22 +9,16 @@ import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import {
   useDisconnectIntegrationMutation,
-  useGenerateTelegramLinkMutation,
-  useGenerateLineLinkMutation,
   useIntegrationsQuery,
-  useLineStatusQuery,
   useOAuthAuthorizeMutation,
-  useTelegramStatusQuery,
   useTenantQuery,
-  useUnlinkLineMutation,
-  useUnlinkTelegramMutation,
   useUpdateFinanceSettingsMutation,
   useUpdateFuelSettingsMutation,
   useUpdateCoreSettingsMutation,
   useFuelProfileQuery,
 } from "@/lib/queries";
-import type { TelegramLinkResponse, LineLinkResponse } from "@/lib/api";
 import { ServiceIcon } from "@/components/service-icon";
+import { AppStoreBadge } from "@/components/app-store-badge";
 import { ErrorBoundary } from "@/components/error-boundary";
 
 const providers: { key: string; label: string; description?: string }[] = [
@@ -40,189 +34,20 @@ const providers: { key: string; label: string; description?: string }[] = [
   },
 ];
 
-function TelegramCard() {
-  const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
-  // Always fetch status — not just after generating a link. Fast 3s polling
-  // only while a pairing QR/deep-link is on screen; 15s otherwise.
-  const { data: status } = useTelegramStatusQuery(true, !!linkData);
-  const generateLink = useGenerateTelegramLinkMutation();
-  const unlinkMutation = useUnlinkTelegramMutation();
-
-  const linked = status?.linked ?? false;
-
-  const handleConnect = async () => {
-    try {
-      const data = await generateLink.mutateAsync();
-      setLinkData(data);
-    } catch {
-      // handled by mutation
-    }
-  };
-
+function AppCard() {
   return (
     <article className="rounded-panel border border-border bg-surface-elevated p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <ServiceIcon provider="telegram" />
-          <h3 className="text-base font-medium">Telegram</h3>
-        </div>
-        <StatusPill status={linked ? "active" : "pending"} />
+      <div className="flex items-center gap-2">
+        <span className="text-base" aria-hidden="true">◇</span>
+        <h3 className="text-base font-medium">NBHD for iPhone</h3>
       </div>
-
-      {linked ? (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">
-            {status?.telegram_username ? `Connected as @${status.telegram_username}` : "Connected"}
-          </p>
-          <div className="mt-4">
-            <button
-              className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
-              type="button"
-              disabled={unlinkMutation.isPending}
-              onClick={() => unlinkMutation.mutate()}
-            >
-              {unlinkMutation.isPending ? "Unlinking..." : "Unlink"}
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">Not connected yet.</p>
-
-          {!linkData && (
-            <div className="mt-4">
-              <button
-                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
-                type="button"
-                disabled={generateLink.isPending}
-                onClick={handleConnect}
-              >
-                {generateLink.isPending ? "Generating..." : "Connect"}
-              </button>
-            </div>
-          )}
-
-          {linkData && (
-            <div className="mt-3 space-y-3">
-              <p className="text-sm text-ink-muted">Scan the QR code or tap the link:</p>
-              <div className="flex items-start gap-4">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={linkData.qr_code}
-                  alt="Telegram QR Code"
-                  className="h-32 w-32 rounded-panel border border-border"
-                />
-                <a
-                  href={linkData.deep_link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-block rounded-full bg-[#0088cc] px-4 py-2 text-sm text-white transition hover:bg-[#0077b5]"
-                >
-                  Open in Telegram
-                </a>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </article>
-  );
-}
-
-function LineCard() {
-  const [linkData, setLinkData] = useState<LineLinkResponse | null>(null);
-  // 3s polling only while the pairing QR/deep-link is visible; 15s otherwise.
-  const { data: status } = useLineStatusQuery(true, !!linkData);
-  const generateLink = useGenerateLineLinkMutation();
-  const unlinkMutation = useUnlinkLineMutation();
-
-  const linked = status?.linked ?? false;
-
-  const handleConnect = async () => {
-    try {
-      const data = await generateLink.mutateAsync();
-      setLinkData(data);
-    } catch {
-      // handled by mutation
-    }
-  };
-
-  return (
-    <article className="rounded-panel border border-border bg-surface-elevated p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <ServiceIcon provider="line" />
-          <h3 className="text-base font-medium">LINE</h3>
-        </div>
-        <StatusPill status={linked ? "active" : "pending"} />
+      <p className="mt-2 text-sm text-ink-muted">
+        Talk to your assistant on the go — voice notes, photos, and daily
+        check-ins, right from your phone.
+      </p>
+      <div className="mt-4">
+        <AppStoreBadge height={44} />
       </div>
-
-      {linked ? (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">
-            {status?.line_display_name ? `Connected as ${status.line_display_name}` : "Connected"}
-          </p>
-          <div className="mt-4">
-            <button
-              className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45"
-              type="button"
-              disabled={unlinkMutation.isPending}
-              onClick={() => unlinkMutation.mutate()}
-            >
-              {unlinkMutation.isPending ? "Unlinking..." : "Unlink"}
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">Not connected yet.</p>
-
-          {!linkData && (
-            <div className="mt-4">
-              <button
-                className="rounded-full border border-[#06C755] px-3 py-1.5 text-sm text-[#06C755] hover:bg-[#06C755]/10 disabled:cursor-not-allowed disabled:opacity-45"
-                type="button"
-                disabled={generateLink.isPending}
-                onClick={handleConnect}
-              >
-                {generateLink.isPending ? "Generating..." : "Connect LINE"}
-              </button>
-            </div>
-          )}
-
-          {linkData && (
-            <div className="mt-3 space-y-3">
-              <div className="rounded-panel border border-[#06C755]/20 bg-[#06C755]/5 p-3">
-                <p className="text-sm font-medium text-ink">How to connect:</p>
-                <ol className="mt-1.5 list-inside list-decimal space-y-1 text-sm text-ink-muted">
-                  <li>Tap <strong>&quot;Open in LINE&quot;</strong> below (or scan the QR code)</li>
-                  <li>LINE will open with a message ready to send</li>
-                  <li>Tap <strong>Send</strong> — that&apos;s it!</li>
-                </ol>
-              </div>
-              <div className="flex items-start gap-4">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={linkData.qr_code}
-                  alt="LINE QR Code"
-                  className="h-32 w-32 rounded-panel border border-border"
-                />
-                <div className="flex flex-col gap-2">
-                  <a
-                    href={linkData.deep_link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-block rounded-full bg-[#06C755] px-4 py-2 text-center text-sm text-white transition hover:bg-[#05b04d]"
-                  >
-                    Open in LINE
-                  </a>
-                  <p className="text-xs text-ink-muted">Link expires in 15 minutes</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
     </article>
   );
 }
@@ -558,12 +383,7 @@ function IntegrationsContent() {
         </p>
       )}
 
-      <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Telegram settings.</p>}>
-        <TelegramCard />
-      </ErrorBoundary>
-      <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load LINE settings.</p>}>
-        <LineCard />
-      </ErrorBoundary>
+      <AppCard />
       <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Gravity settings.</p>}>
         <GravityCard />
       </ErrorBoundary>

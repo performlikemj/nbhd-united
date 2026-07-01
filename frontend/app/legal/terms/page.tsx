@@ -2,11 +2,12 @@ import { LegalPage } from "@/components/legal-page";
 
 export default function TermsPage() {
   return (
-    <LegalPage title="Terms of Service" lastUpdated="February 13, 2026">
+    <LegalPage title="Terms of Service" lastUpdated="July 1, 2026">
       <h2>1. Service Description</h2>
       <p>
         Neighborhood United (&ldquo;we,&rdquo; &ldquo;us,&rdquo; &ldquo;our&rdquo;) provides a private AI-powered assistant
-        delivered via Telegram or LINE. Our service includes a dedicated AI agent that
+        available through the NBHD app for iPhone and the web dashboard, along with
+        any messaging channel you choose to connect. Our service includes a dedicated AI agent that
         responds to your messages in a private chat. The service is
         offered on a subscription basis. Current pricing is available on our website and during checkout.
       </p>
@@ -80,8 +81,8 @@ export default function TermsPage() {
       </p>
       <ul>
         <li>
-          <strong>Telegram & LINE</strong> — used as the messaging interface for your
-          AI assistant.
+          <strong>Messaging providers</strong> — if you connect a messaging
+          channel, it serves as an interface for your AI assistant.
         </li>
         <li>
           <strong>Stripe</strong> — used for payment processing and subscription

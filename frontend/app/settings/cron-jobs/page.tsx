@@ -845,11 +845,6 @@ export default function SettingsCronJobsPage() {
                         </div>
                         <div className="flex items-center gap-2">
                           <StatusPill status={job.enabled ? "active" : "paused"} />
-                          {job.delivery?.mode !== "none" && job.delivery?.channel ? (
-                            <span className="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
-                              {job.delivery.channel}
-                            </span>
-                          ) : null}
                           <span className="rounded-full bg-surface-hover px-2.5 py-0.5 text-xs text-ink-muted">
                             {(job.foreground ?? true) ? "Foreground" : "Background"}
                           </span>
