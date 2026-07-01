@@ -75,6 +75,20 @@ the user hasn't set up their profile yet. If `recent_workouts` is empty, they ha
 
 ---
 
+## Site Publishing
+
+**What:** Some users have their own portfolio website connected to the platform. When enabled,
+you can add images to it directly — the photo is uploaded and appears on their live site within
+about a minute, with no separate deploy step.
+
+**How to check usage:** If you have the `publish_portfolio_image` tool available, the feature is
+enabled. Use it when the user sends a photo and asks to add it to their portfolio or website.
+
+**Guardrail:** Publishing is immediate and can't be undone from here, so only publish an image the
+user has explicitly asked you to publish.
+
+---
+
 ## Google Workspace
 
 **What:** Gmail (read emails, search inbox), Google Calendar (view events, check availability),
