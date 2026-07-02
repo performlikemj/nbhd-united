@@ -138,3 +138,47 @@ def send_ios_relaunch_campaign_task() -> dict:
         stdout=buf,
     )
     return {"output": buf.getvalue()[-2000:]}
+
+
+def send_comeback_campaign_task() -> dict:
+    """QStash-dispatched wrapper around ``send_promo_campaign`` — the July 2026
+    comeback win-back (free trial extension + App Store).
+
+    Zero-arg by contract (QStash MCP body passthrough is unreliable), so the
+    campaign constants are inlined. Distinct from the prior sends in two ways:
+
+      - ``audience="comeback"`` widens the cohort to *every* onboarded,
+        has-messaged tenant that is ACTIVE or SUSPENDED — deliberately
+        including paid-then-lapsed tenants (SUSPENDED with a retained
+        stripe_subscription_id) that the earlier trial-only audience dropped.
+        Redeeming now also restores the runtime for those suspended tenants
+        (see restore_tenant_runtime), so a lapsed subscriber who claims the
+        offer gets a working container, not silence.
+      - the ``email/comeback_2026_07`` template carries the new structure
+        (offer-first hero, App Store block, personality + privacy sections)
+        and every marketing send now sets List-Unsubscribe headers, so this
+        blast has a real unsubscribe path the prior ones lacked.
+
+    Re-running is safe: ``get_or_create(code=...)`` reuses the campaign row, but
+    the send loop re-queries the LIVE audience each run and emails that (the
+    ``audience_snapshot`` on the row is a frozen first-run audit only, not the
+    send list) — so users who entered the eligible state after the first run
+    also get the mail. Double-redemption is blocked at the view layer by
+    ``unique_together(campaign, user)``. Opted-out users are excluded.
+    """
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    buf = StringIO()
+    call_command(
+        "send_promo_campaign",
+        code="comeback-2026-07",
+        kind="trial_extension",
+        days=14,
+        valid_until="2026-07-20T00:00:00+00:00",
+        template_base="email/comeback_2026_07/email",
+        audience="comeback",
+        stdout=buf,
+    )
+    return {"output": buf.getvalue()[-2000:]}

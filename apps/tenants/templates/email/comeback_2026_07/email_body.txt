@@ -1,0 +1,54 @@
+{% autoescape off %}TWO WEEKS FREE. ONE TAP.
+
+No card, no checkout. Your trial starts the moment you tap.
+
+  Start two weeks free:
+  {{ promo_url }}
+
+Why the two weeks? Since you left, we've done real work on your
+assistant — how its personality grows with you, and serious fixes to
+how we protect your privacy. We'd rather you feel the difference than
+read about it, so the next two weeks are on us.
+
+NOW ON YOUR IPHONE
+Your assistant now lives in a proper iPhone app — not just a browser
+tab or a Telegram thread. It's the best way to use it now, and where
+new things land first. Download it, sign in, and pick up where you
+left off.
+
+  Download on the App Store:
+  https://apps.apple.com/us/app/nbhd/id6779158519
+
+AN ASSISTANT THAT GROWS WITH YOU
+Your assistant isn't a blank slate every time anymore. Through your
+conversations it develops its own personality, remembers what matters
+to you, and builds on it. That identity holds — it doesn't reset. The
+more it learns how you work and what you're reaching for, the more
+genuinely useful it gets. An assistant that grows with you, and helps
+you grow.
+
+THE PRIVACY STORY, TOLD STRAIGHT
+Here's the honest version. Before your messages ever reach the AI, we
+strip out personal information — that's a core design choice, not an
+add-on. Recently that shield got overzealous: it started redacting
+harmless things like workout numbers, treating "benched 225" like it
+was your home address. A bug could also scramble parts of a message
+before the assistant saw it, so conversations felt broken. To be clear
+about what this was not: nothing leaked, and no one's information was
+exposed. The failure was our own protection being too aggressive and
+buggy — getting in the way of the experience it exists to protect. We
+found it, fixed it, and tested the fix against real conversations
+before shipping it.
+
+Good through {{ valid_until|date:"F j, Y" }}.
+
+  Start two weeks free:
+  {{ promo_url }}
+
+— NBHD United
+neighborhoodunited.org
+
+No longer want these emails? Unsubscribe: {{ unsubscribe_url }}
+If the button doesn't open, paste this link into your browser:
+{{ promo_url }}
+{% endautoescape %}
