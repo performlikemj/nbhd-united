@@ -633,6 +633,18 @@ class Tenant(models.Model):
         help_text="Per-feature welcome-delivery timestamps (e.g. {'fuel': '2026-05-07T...', 'finance': ...})",
     )
 
+    # Rollback capture for the sentinel-split SOUL.md/IDENTITY.md migration.
+    # ``backfill_identity_growth`` stores each container tenant's pre-migration
+    # SOUL/IDENTITY verbatim under ``identity_growth['pre_migration_snapshot']``
+    # ({'soul': ..., 'identity': ..., 'captured_at': iso}) BEFORE the first
+    # managed-region push, so a bad splice can be reverted from Postgres truth.
+    identity_growth = models.JSONField(
+        null=True,
+        blank=True,
+        default=dict,
+        help_text="Identity rollback + growth snapshots for SOUL.md/IDENTITY.md (see backfill_identity_growth).",
+    )
+
     # BYO subscription mode — Phase 1 gates Anthropic Claude Pro/Max CLI
     # behind this flag. After fleet rollout (PR #434, 2026-05-02) the default
     # is True; existing rows are flipped via migration 0051. Newly provisioned
