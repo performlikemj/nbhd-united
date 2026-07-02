@@ -72,9 +72,28 @@ class RuntimeContainerStartedView(APIView):
             return tenant_or_resp
         tenant = tenant_or_resp
 
+        # Self-heal AGENTS.md on every boot: re-assert the authoritative render
+        # (persona + per-tenant gates + Gravity) to the file share. AGENTS.md is
+        # seed-once at boot from a provision-time env snapshot that goes stale, so
+        # this converges the share to the current render within seconds of ANY
+        # restart — including tenants still on the pre-seed-once OpenClaw image.
+        # Runs for ALL tenants (before the postgres-canonical gate). Writes the
+        # share only (no revision / no restart) and must never fail the hook.
+        agents_md_refreshed = False
+        try:
+            from apps.orchestrator.services import reassert_agents_md
+
+            agents_md_refreshed = reassert_agents_md(tenant)
+        except Exception:
+            logger.exception("RuntimeContainerStartedView: AGENTS.md re-assert failed for tenant %s", tenant_id)
+
         if not getattr(tenant, "postgres_cron_canonical", False):
             return Response(
-                {"skipped": True, "reason": "tenant not on postgres-canonical flow"},
+                {
+                    "skipped": True,
+                    "reason": "tenant not on postgres-canonical flow",
+                    "agents_md_refreshed": agents_md_refreshed,
+                },
                 status=status.HTTP_200_OK,
             )
 
@@ -85,7 +104,10 @@ class RuntimeContainerStartedView(APIView):
         except Exception as exc:
             logger.exception("RuntimeContainerStartedView: regenerate failed for tenant %s", tenant_id)
             return Response(
-                {"error": "regenerate_failed", "detail": str(exc)},
+                {"error": "regenerate_failed", "detail": str(exc), "agents_md_refreshed": agents_md_refreshed},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
-        return Response({"ok": True, **summary}, status=status.HTTP_200_OK)
+        return Response(
+            {"ok": True, "agents_md_refreshed": agents_md_refreshed, **summary},
+            status=status.HTTP_200_OK,
+        )

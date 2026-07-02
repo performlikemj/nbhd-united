@@ -34,12 +34,24 @@ if [ -d "$NBHD_MANAGED_SKILLS_SRC" ]; then
     fi
 fi
 
-# AGENTS.md — always overwritten (system-controlled)
-# Prefer persona-rendered content from env var; fall back to static template
-if [ -n "${NBHD_AGENTS_MD:-}" ]; then
-    printf '%s\n' "$NBHD_AGENTS_MD" > "$NBHD_MANAGED_AGENTS_DST"
-elif [ -f "$NBHD_MANAGED_AGENTS_TEMPLATE" ]; then
-    cp "$NBHD_MANAGED_AGENTS_TEMPLATE" "$NBHD_MANAGED_AGENTS_DST"
+# AGENTS.md — SEED-ONCE, then the file share is authoritative.
+# NBHD_AGENTS_MD is a provision-time snapshot that goes STALE the instant Django
+# re-renders persona / per-tenant gates / Gravity and writes the fresh copy to
+# the share (update_tenant_config -> upload_workspace_file 'workspace/AGENTS.md',
+# and the container-started hook re-asserts it on every boot). The old
+# always-overwrite-from-env reverted EVERY restart back to that stale snapshot,
+# silently dropping persona + gate changes. So seed only when the share has no
+# usable copy (first boot, or a 0-byte file from an interrupted write) and never
+# clobber a real share copy. System-control is preserved: Django overwrites the
+# share on every config-apply AND on every boot via the container-started hook,
+# so a tenant/agent can't permanently corrupt AGENTS.md. Mirrors the seed-once
+# guards used for skill-templates.md and SOUL.md/IDENTITY.md below.
+if [ ! -s "$NBHD_MANAGED_AGENTS_DST" ]; then
+    if [ -n "${NBHD_AGENTS_MD:-}" ]; then
+        printf '%s\n' "$NBHD_AGENTS_MD" > "$NBHD_MANAGED_AGENTS_DST"
+    elif [ -f "$NBHD_MANAGED_AGENTS_TEMPLATE" ]; then
+        cp "$NBHD_MANAGED_AGENTS_TEMPLATE" "$NBHD_MANAGED_AGENTS_DST"
+    fi
 fi
 
 # Skill templates.md — seed from env var ONLY when the file share has no copy
