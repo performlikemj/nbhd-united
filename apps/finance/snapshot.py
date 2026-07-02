@@ -24,6 +24,10 @@ def create_monthly_snapshots(snapshot_date: date | None = None) -> int:
     if snapshot_date is None:
         snapshot_date = date.today().replace(day=1)
 
+    # Coarse ORM filter, then the authoritative per-tenant gate. ``finance_active``
+    # is a PROPERTY (stored flag AND ``settings.GRAVITY_ENABLED``), not a DB column,
+    # so it can't live in ``.filter()``. Checking it here means the platform-wide
+    # Gravity pause suppresses snapshots of real debt data — the privacy contract.
     tenants = Tenant.objects.filter(
         finance_enabled=True,
         status=Tenant.Status.ACTIVE,
@@ -31,6 +35,8 @@ def create_monthly_snapshots(snapshot_date: date | None = None) -> int:
 
     created_count = 0
     for tenant in tenants:
+        if not tenant.finance_active:
+            continue
         try:
             # _create_snapshot_for_tenant returns None on the duplicate-skip and
             # no-accounts-skip paths. Only count rows actually written so the

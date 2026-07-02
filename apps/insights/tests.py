@@ -264,6 +264,17 @@ class SnapshotGravityWeeklyTaskTests(TestCase):
         self.assertEqual(counts["written"], 0)
         self.assertEqual(PillarSnapshot.objects.count(), 0)
 
+    @override_settings(GRAVITY_ENABLED=False)
+    def test_skips_all_tenants_when_gravity_paused(self):
+        # Privacy contract: while the platform-wide Gravity kill switch is off,
+        # a finance_enabled tenant must NOT get a debt-derived snapshot written.
+        from .tasks import _eligible_finance_tenants
+
+        self.assertNotIn(self.tenant, list(_eligible_finance_tenants()))
+        counts = snapshot_gravity_weekly_task()
+        self.assertEqual(counts["written"], 0)
+        self.assertEqual(PillarSnapshot.objects.count(), 0)
+
 
 class InsightsApiTests(TestCase):
     def setUp(self):
