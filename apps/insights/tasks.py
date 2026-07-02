@@ -32,12 +32,21 @@ def _eligible_finance_tenants():
     Skips hibernated tenants — waking them just for a snapshot would trigger
     an image-refresh cascade with cost, and we'd rather accept history gaps
     than thrash the fleet weekly.
+
+    Yields only tenants whose authoritative ``finance_active`` gate is on.
+    That property is stored-flag AND ``settings.GRAVITY_ENABLED``; it's not a
+    DB column, so we coarse-filter in the ORM and check the property per-tenant
+    in Python (mirrors ``synthesis.py``). This keeps the platform-wide Gravity
+    pause from writing debt-derived snapshots.
     """
-    return Tenant.objects.filter(
+    qs = Tenant.objects.filter(
         finance_enabled=True,
         status=Tenant.Status.ACTIVE,
         hibernated_at__isnull=True,
     )
+    for tenant in qs.iterator():
+        if tenant.finance_active:
+            yield tenant
 
 
 def snapshot_gravity_weekly_task() -> dict[str, int]:
@@ -54,7 +63,7 @@ def snapshot_gravity_weekly_task() -> dict[str, int]:
     written = 0
     skipped = 0
     errored = 0
-    for tenant in _eligible_finance_tenants().iterator():
+    for tenant in _eligible_finance_tenants():
         try:
             already = PillarSnapshot.objects.filter(
                 tenant=tenant,

@@ -21,8 +21,11 @@ ENV NODE_ENV=production
 ENV NODE_OPTIONS="--max-old-space-size=512 --dns-result-order=ipv4first --no-network-family-autoselection"
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates bsdmainutils \
+    && apt-get install -y --no-install-recommends git ca-certificates bsdmainutils curl \
     && rm -rf /var/lib/apt/lists/*
+# curl is used by entrypoint.sh to fire the container-started + BYO pre-warm
+# hooks back at the Django control plane; without it those hooks silently
+# no-op (the known "curl is MISSING from the image" bug).
 # bsdmainutils provides `script(1)`, used by entrypoint.sh to fake a TTY
 # around `openclaw models auth login` (its CLI handler hard-checks
 # `process.stdin.isTTY` — see `auth-BQuNQ6PP.js:362`).

@@ -4566,6 +4566,139 @@ class FuelTrendsDigestTests(TestCase):
         self.assertNotIn("via Apple Health", body)
 
 
+class FuelDepthServiceTests(TestCase):
+    """all_time_prs / monthly_volume_12mo / open_goals — the year-deep summary."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Depth Test", telegram_chat_id=800047)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+
+    def _done(self, days_ago, minutes=60, category="strength"):
+        from apps.common.tenant_tz import tenant_today
+
+        return Workout.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant) - timedelta(days=days_ago),
+            status="done",
+            category=category,
+            activity=category.title(),
+            duration_minutes=minutes,
+        )
+
+    def _pr(self, exercise, value, days_ago, metric="est_1rm"):
+        from apps.common.tenant_tz import tenant_today
+
+        from .models import PersonalRecord
+
+        workout = self._done(days_ago)
+        return PersonalRecord.objects.create(
+            tenant=self.tenant,
+            workout=workout,
+            exercise_name=exercise,
+            category="strength",
+            value=Decimal(str(value)),
+            metric=metric,
+            date=tenant_today(self.tenant) - timedelta(days=days_ago),
+        )
+
+    def test_all_time_prs_not_windowed_to_28_days(self):
+        # A PR from 200 days ago is invisible to weekly_trends (28d window) but
+        # must show in the lifetime list — that's the whole point.
+        from .services import all_time_prs, weekly_trends
+
+        self._pr("Deadlift", 180, days_ago=200)
+        self._pr("Bench", 100, days_ago=3)
+
+        recent_names = {pr["exercise_name"] for pr in weekly_trends(self.tenant)["recent_prs"]}
+        self.assertIn("Bench", recent_names)
+        self.assertNotIn("Deadlift", recent_names)  # outside the 28d window
+
+        prs = all_time_prs(self.tenant)
+        names = {p["exercise"] for p in prs}
+        self.assertIn("Deadlift", names)  # lifetime list keeps it
+        self.assertIn("Bench", names)
+        # Newest-first ordering + trimmed decimal rendering.
+        self.assertEqual(prs[0]["exercise"], "Bench")
+        self.assertEqual(prs[0]["value"], "100")
+
+    def test_all_time_prs_capped_at_limit(self):
+        from .services import all_time_prs
+
+        for i in range(25):
+            self._pr(f"Lift{i}", 50 + i, days_ago=i)
+        self.assertEqual(len(all_time_prs(self.tenant)), 20)
+
+    def test_monthly_volume_12mo_shape_and_aggregation(self):
+        from .services import monthly_volume_12mo
+
+        # Both on today's date so the assertion can't straddle a month boundary
+        # when the suite runs on the 1st.
+        self._done(days_ago=0, minutes=60)
+        self._done(days_ago=0, minutes=30)
+        self._done(days_ago=400)  # >12 months ago — excluded
+
+        data = monthly_volume_12mo(self.tenant)
+        self.assertEqual(len(data), 12)  # always 12 datapoints, zero-filled
+        # Last entry is the current month; carries this month's two sessions.
+        current = data[-1]
+        self.assertEqual(current["sessions"], 2)
+        self.assertEqual(current["minutes"], 90)
+        # Months are unique and chronological (oldest first).
+        months = [d["month"] for d in data]
+        self.assertEqual(months, sorted(months))
+        self.assertEqual(len(set(months)), 12)
+
+    def test_open_goals_excludes_achieved(self):
+        from django.utils import timezone
+
+        from .models import FuelGoal
+        from .services import open_goals
+
+        FuelGoal.objects.create(
+            tenant=self.tenant,
+            exercise_name="Squat",
+            target_value=Decimal("140"),
+            target_date=date(2026, 12, 1),
+        )
+        FuelGoal.objects.create(
+            tenant=self.tenant,
+            exercise_name="Done Goal",
+            target_value=Decimal("100"),
+            achieved_at=timezone.now(),
+        )
+        goals = open_goals(self.tenant)
+        self.assertEqual(len(goals), 1)
+        self.assertEqual(goals[0]["exercise"], "Squat")
+        self.assertEqual(goals[0]["target_value"], "140")
+        self.assertEqual(goals[0]["target_date"], "2026-12-01")
+
+    @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+    def test_summary_view_carries_depth_fields(self):
+        from .models import FuelGoal
+
+        seed_internal_key(self.tenant)
+        self._pr("Deadlift", 200, days_ago=100)
+        FuelGoal.objects.create(
+            tenant=self.tenant,
+            exercise_name="Squat",
+            target_value=Decimal("150"),
+        )
+        client = APIClient()
+        resp = client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            HTTP_X_NBHD_INTERNAL_KEY="test-internal-key",
+            HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIn("all_time_prs", body)
+        self.assertIn("monthly_volume_12mo", body)
+        self.assertIn("open_goals", body)
+        self.assertEqual(len(body["monthly_volume_12mo"]), 12)
+        self.assertEqual(body["open_goals"][0]["exercise"], "Squat")
+
+
 class FuelScheduleWindowTests(TestCase):
     """render_fuel schedule window: recent + today + upcoming, each with status."""
 

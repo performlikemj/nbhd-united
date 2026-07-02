@@ -1466,6 +1466,23 @@ class SnapshotServiceTests(TestCase):
         self.assertEqual(count, 0)
         self.assertEqual(FinanceSnapshot.objects.count(), 0)
 
+    @override_settings(GRAVITY_ENABLED=False)
+    def test_skips_tenants_when_gravity_paused(self):
+        # Privacy contract: the platform-wide Gravity kill switch (GRAVITY_ENABLED
+        # off) must suppress snapshots even for a finance_enabled tenant with real
+        # accounts. A snapshot here would persist debt data during the pause.
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="CC",
+            current_balance=Decimal("9999"),
+        )
+        from .snapshot import create_monthly_snapshots
+
+        count = create_monthly_snapshots(date(2026, 4, 1))
+        self.assertEqual(count, 0)
+        self.assertEqual(FinanceSnapshot.objects.count(), 0)
+
     def test_aggregates_previous_month_payments(self):
         account = FinanceAccount.objects.create(
             tenant=self.tenant,

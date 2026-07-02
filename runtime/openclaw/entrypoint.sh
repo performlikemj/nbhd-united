@@ -247,14 +247,21 @@ PROXY_PID=$!
             sleep 2
         done
         URL="${NBHD_API_BASE_URL%/}/api/cron/runtime/${NBHD_TENANT_ID}/container-started/"
+        # -sS keeps curl quiet on success but still prints its error to stderr
+        # (visible in container logs); we also capture the exit code so a silent
+        # failure is impossible. Fire-and-forget + non-fatal by design.
         curl -sS -X POST -m 10 \
             -H "X-NBHD-Internal-Key: ${NBHD_INTERNAL_API_KEY}" \
             -H "X-NBHD-Tenant-Id: ${NBHD_TENANT_ID}" \
             -H "Content-Length: 0" \
             "$URL" \
-            >/dev/null 2>&1 \
-            && echo "[entrypoint] container-started hook OK" \
-            || echo "[entrypoint] container-started hook failed (non-fatal)" >&2
+            >/dev/null
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo "[entrypoint] container-started hook OK"
+        else
+            echo "[entrypoint] container-started hook failed rc=$rc (non-fatal)" >&2
+        fi
     fi
 ) &
 
@@ -295,16 +302,20 @@ PROXY_PID=$!
         # isolated session/log file — invisible from the user's history.
         # Generous timeout (180s) because the first claude spawn IS the
         # slow path we're warming up.
-        if curl -sS -m 180 \
+        # -sS surfaces curl's own error to stderr; rc capture guarantees the
+        # outcome is logged either way. Non-fatal — never blocks the gateway.
+        curl -sS -m 180 \
             -H "Authorization: Bearer ${NBHD_INTERNAL_API_KEY}" \
             -H "Content-Type: application/json" \
             -H "X-Channel: warmup" \
             --data '{"model":"openclaw","user":"__nbhd_byo_warmup__","messages":[{"role":"user","content":"[warmup ping — reply with the single word OK and stop. Do not load any context, do not call any tools, do not write to memory or daily notes.]"}]}' \
             "http://127.0.0.1:18789/v1/chat/completions" \
-            >/dev/null 2>&1; then
+            >/dev/null
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
             echo "[entrypoint] BYO claude-cli pre-warm OK"
         else
-            echo "[entrypoint] BYO claude-cli pre-warm failed (non-fatal)" >&2
+            echo "[entrypoint] BYO claude-cli pre-warm failed rc=$rc (non-fatal)" >&2
         fi
     fi
 ) &

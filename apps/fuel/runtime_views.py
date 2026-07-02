@@ -610,10 +610,16 @@ class RuntimeFuelSummaryView(APIView):
         # Computed 4-week aggregates (volume, frequency-by-activity, recency,
         # recent PRs) so a deep-dive answers off trends, not just the raw row
         # list above — the same digest the always-on USER.md fuel section shows.
-        from .services import weekly_trends
+        from .services import all_time_prs, monthly_volume_12mo, open_goals, weekly_trends
 
         trends = weekly_trends(tenant)
 
+        # Deeper history + typed goals so the assistant's view matches the app's
+        # (which shows a full year), not just the 28-day ``trends`` window:
+        #   • all_time_prs        — lifetime PR list (same as the human PR feed)
+        #   • monthly_volume_12mo — 12 months of session/volume datapoints
+        #   • open_goals          — the user's typed FuelGoal targets
+        # All three are kept compact because this payload enters model context.
         return Response(
             {
                 "recent_workouts": recent_data,
@@ -623,6 +629,9 @@ class RuntimeFuelSummaryView(APIView):
                 "latest_sleep": sleep_data,
                 "latest_resting_hr": rhr_data,
                 "trends": trends,
+                "all_time_prs": all_time_prs(tenant),
+                "monthly_volume_12mo": monthly_volume_12mo(tenant),
+                "open_goals": open_goals(tenant),
                 "profile": profile_data,
             }
         )
