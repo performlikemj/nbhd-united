@@ -80,6 +80,11 @@ SYSTEM_CRONS = [
     # to PillarSnapshot. Feeds the assistant's history/drill/compare tools.
     # Skips hibernated tenants; idempotent per ISO week.
     ("snapshot-gravity-weekly", "0 5 * * 0", "/api/cron/trigger/snapshot_gravity_weekly/"),
+    # Weekly Sunday 05:10 UTC — write per-tenant Fuel / Core / Journal
+    # snapshots to PillarSnapshot (companion to the Gravity snapshot above).
+    # Each pillar gated on its enablement flag; Journal is always-on. Offset
+    # 10 min after the Gravity snapshot to spread the iterate-all-tenants load.
+    ("snapshot-pillars-weekly", "10 5 * * 0", "/api/cron/trigger/snapshot_pillars_weekly/"),
     # Monthly on 1st at 06:00 UTC — write FinanceSnapshot for every
     # finance-enabled active tenant. Idempotent per (tenant, date).
     # Powers the /api/v1/finance/snapshots/ endpoint (monthly debt/savings
