@@ -706,6 +706,57 @@ def update_tenant_config(tenant_id: str) -> None:
     logger.info("Updated OpenClaw config for tenant %s", tenant_id)
 
 
+def reassert_agents_md(tenant, *, only_if_changed: bool = True) -> bool:
+    """Re-render AGENTS.md and write it to the tenant's file share.
+
+    AGENTS.md is seed-once from the ``NBHD_AGENTS_MD`` env var at boot (see
+    ``runtime/openclaw/entrypoint.sh``); the file share is the authoritative
+    copy. This is the reusable render → compare → upload primitive that keeps
+    the share current:
+      - the container-started hook (``RuntimeContainerStartedView``) calls it on
+        every boot, self-healing the share after ANY restart (crash / manual /
+        canary) and mitigating tenants still on the pre-seed-once image.
+    (The ``refresh_persona_agents_md`` management command renders/uploads
+    AGENTS.md directly for one-shot fleet convergence; wire it through this
+    primitive later to dedupe.)
+
+    It writes ONLY to the file share — it does NOT touch the container env var
+    and does NOT create a new revision, so it never restarts the container.
+    (OpenClaw re-reads AGENTS.md per session, so a share write takes effect on
+    the next session without a restart.) Returns True iff it wrote a fresh copy.
+    """
+    if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+        return False
+
+    from apps.orchestrator.azure_client import download_workspace_file, upload_workspace_file
+    from apps.orchestrator.personas import render_workspace_files
+
+    persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
+    rendered = render_workspace_files(persona_key, tenant=tenant).get("NBHD_AGENTS_MD", "")
+    if not rendered:
+        return False
+
+    if only_if_changed:
+        try:
+            current = download_workspace_file(str(tenant.id), "workspace/AGENTS.md")
+        except Exception:
+            # A read error (e.g. Azure ARM throttling during a fleet-restart
+            # storm) must NOT force a write — skip this cycle. The next boot
+            # retries and the seed-once entrypoint keeps the share authoritative.
+            # (download_workspace_file returns None for a genuinely missing file,
+            # which correctly falls through to the write below.)
+            logger.warning("reassert_agents_md: read of current AGENTS.md failed for %s; skipping", tenant.id)
+            return False
+        # Tolerate the trailing-newline diff between an env-seeded printf file
+        # and a Django-written file.
+        if (current or "").strip() == rendered.strip():
+            return False
+
+    upload_workspace_file(str(tenant.id), "workspace/AGENTS.md", rendered)
+    logger.info("Re-asserted AGENTS.md to file share for tenant %s", tenant.id)
+    return True
+
+
 def deprovision_tenant(tenant_id: str) -> None:
     """Full deprovisioning flow."""
     tenant = Tenant.objects.get(id=tenant_id)
