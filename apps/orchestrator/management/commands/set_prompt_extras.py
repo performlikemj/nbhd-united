@@ -5,7 +5,7 @@ Prompt extras are canary-scoped additions to the base workspace files (e.g.,
 ``User.preferences['prompt_extras'][<section>]``. They are concatenated to
 the base content by ``apps.orchestrator.personas.render_workspace_files``.
 
-Known sections: ``agents_md``.
+Known sections: ``agents_md``, ``soul_md``, ``identity_md``.
 
 Usage:
 
@@ -35,7 +35,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from apps.tenants.models import Tenant
 
-_KNOWN_SECTIONS = {"agents_md"}
+_KNOWN_SECTIONS = {"agents_md", "soul_md", "identity_md"}
 
 
 class Command(BaseCommand):
