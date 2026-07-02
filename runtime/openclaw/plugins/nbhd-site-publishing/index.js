@@ -51,9 +51,11 @@ module.exports = function register(api) {
   api.registerTool(wrap({
     name: "publish_portfolio_image",
     description:
-      "Publish an image to the user's own portfolio website. Uploads the image and creates " +
-      "the portfolio entry so it appears live on their site within about a minute. Use this " +
-      "when the user sends a photo and asks to add it to their portfolio or website.",
+      "Publish ONE image to the subscriber's own portfolio website. Call this whenever the user " +
+      "sends one or more images and asks to add, publish, or update them on their site, portfolio, " +
+      "website, or gallery — exactly once per image (N images = N calls), passing `image_path` and " +
+      "a `title`. Never tell the user an image is live, added, or published unless this call " +
+      "returned success this turn; do not claim a publish you did not actually make.",
     parameters: {
       type: "object",
       required: ["image_path", "title"],
