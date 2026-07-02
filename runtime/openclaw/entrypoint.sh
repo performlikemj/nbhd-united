@@ -66,11 +66,13 @@ if [ -n "${NBHD_SKILL_TEMPLATES_MD:-}" ] && [ -z "$SKILL_TEMPLATES_STASH" ]; the
     fi
 fi
 
-# SOUL.md, IDENTITY.md — seed once from env var, don't overwrite
-if [ -n "${NBHD_SOUL_MD:-}" ] && [ ! -f "$OPENCLAW_WORKSPACE_PATH/SOUL.md" ]; then
+# SOUL.md, IDENTITY.md — seed once from env var, don't overwrite. Use [ ! -s ]
+# (not [ ! -f ]) so a 0-byte file left by an interrupted write gets reseeded,
+# matching the AGENTS.md / skill-templates.md corruption-recovery guard above.
+if [ -n "${NBHD_SOUL_MD:-}" ] && [ ! -s "$OPENCLAW_WORKSPACE_PATH/SOUL.md" ]; then
     printf '%s\n' "$NBHD_SOUL_MD" > "$OPENCLAW_WORKSPACE_PATH/SOUL.md"
 fi
-if [ -n "${NBHD_IDENTITY_MD:-}" ] && [ ! -f "$OPENCLAW_WORKSPACE_PATH/IDENTITY.md" ]; then
+if [ -n "${NBHD_IDENTITY_MD:-}" ] && [ ! -s "$OPENCLAW_WORKSPACE_PATH/IDENTITY.md" ]; then
     printf '%s\n' "$NBHD_IDENTITY_MD" > "$OPENCLAW_WORKSPACE_PATH/IDENTITY.md"
 fi
 

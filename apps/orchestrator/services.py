@@ -611,7 +611,7 @@ def update_tenant_config(tenant_id: str) -> None:
     # so updates propagate without needing container env var changes.
     try:
         from .azure_client import upload_workspace_file
-        from .personas import render_workspace_files, render_workspace_rules
+        from .personas import get_persona, render_workspace_files, render_workspace_rules
 
         persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
         workspace_files = render_workspace_files(persona_key, tenant=tenant)
@@ -638,30 +638,65 @@ def update_tenant_config(tenant_id: str) -> None:
         guide_key = "NBHD_DOC_PLATFORM_GUIDE" if tenant.feature_tips_enabled else "NBHD_DOC_PLATFORM_GUIDE_SILENT"
         file_map_overwrite[guide_key] = "workspace/docs/platform-guide.md"
 
-        # Agent-owned after first seed — never overwrite. Mirrors the
-        # `[ ! -f ]` guards in runtime/openclaw/entrypoint.sh: SOUL.md and
-        # IDENTITY.md are seeded once at provision and then belong to the
-        # tenant's assistant. Overwriting them here would silently wipe any
-        # evolution the agent has done.
-        file_map_seed_once = {
-            "NBHD_SOUL_MD": "workspace/SOUL.md",
-            "NBHD_IDENTITY_MD": "workspace/IDENTITY.md",
-        }
-
         for env_key, file_path in file_map_overwrite.items():
             content = workspace_files.get(env_key, "")
             if content:
                 upload_workspace_file(str(tenant.id), file_path, content)
 
-        for env_key, file_path in file_map_seed_once.items():
-            content = workspace_files.get(env_key, "")
-            if content:
-                upload_workspace_file(
-                    str(tenant.id),
+        # SOUL.md / IDENTITY.md — sentinel-split merge-push. The platform-managed
+        # region (top, between the markers) is re-asserted on every config apply;
+        # the agent's growth region below the END marker is preserved verbatim.
+        # This replaces the old seed-once upload: seed-once froze the baseline at
+        # provision time, so persona/voice changes never reached existing tenants
+        # and a genuinely custom soul could still be clobbered by a stray render.
+        # FAIL-CLOSED on read error (mirrors reassert_agents_md): a failed read of
+        # the current share file must never risk overwriting the growth region, so
+        # we skip that file this cycle rather than write blind.
+        from .azure_client import download_workspace_file
+        from .identity_merge import (
+            IDENTITY_BEGIN_MARKER,
+            IDENTITY_END_MARKER,
+            SOUL_BEGIN_MARKER,
+            SOUL_END_MARKER,
+            growth_seed_line,
+            is_known_platform_identity,
+            is_known_platform_soul,
+            splice_identity_file,
+        )
+
+        seed = growth_seed_line(get_persona(persona_key)["identity"]["name"])
+        identity_specs = (
+            ("NBHD_SOUL_MD", "workspace/SOUL.md", SOUL_BEGIN_MARKER, SOUL_END_MARKER, is_known_platform_soul),
+            (
+                "NBHD_IDENTITY_MD",
+                "workspace/IDENTITY.md",
+                IDENTITY_BEGIN_MARKER,
+                IDENTITY_END_MARKER,
+                is_known_platform_identity,
+            ),
+        )
+        for env_key, file_path, begin_marker, end_marker, is_legacy in identity_specs:
+            managed = workspace_files.get(env_key, "")
+            if not managed:
+                continue
+            try:
+                current = download_workspace_file(str(tenant.id), file_path)
+            except Exception:
+                logger.warning(
+                    "update_tenant_config: read of %s failed for tenant %s; skipping identity merge-push",
                     file_path,
-                    content,
-                    skip_if_exists=True,
+                    tenant_id,
                 )
+                continue
+            merged = splice_identity_file(
+                current,
+                managed,
+                seed,
+                begin_marker=begin_marker,
+                end_marker=end_marker,
+                is_legacy_platform=is_legacy,
+            )
+            upload_workspace_file(str(tenant.id), file_path, merged)
 
         # Upload all rule templates to workspace/rules/ — referenced by AGENTS.md
         # for on-demand loading. Auto-discovers all .md files in templates/openclaw/rules/.
@@ -755,6 +790,91 @@ def reassert_agents_md(tenant, *, only_if_changed: bool = True) -> bool:
     upload_workspace_file(str(tenant.id), "workspace/AGENTS.md", rendered)
     logger.info("Re-asserted AGENTS.md to file share for tenant %s", tenant.id)
     return True
+
+
+def reassert_identity_files(
+    tenant,
+    *,
+    files: tuple[str, ...] = ("soul", "identity"),
+    only_if_changed: bool = True,
+) -> dict[str, bool]:
+    """Re-assert the managed SOUL.md / IDENTITY.md regions to the file share.
+
+    Generalises :func:`reassert_agents_md` for the sentinel-split identity files:
+    for each requested file it renders the current managed region, reads the
+    share copy, splices (managed region replaced, growth region below the END
+    marker preserved verbatim), and writes back ONLY when the composed content
+    differs. Share-only write — no revision, no restart.
+
+    FAIL-CLOSED on read error (mirrors :func:`reassert_agents_md`): a failed read
+    must never risk clobbering the growth region, so that file is skipped this
+    cycle. Called from the container-started hook on every boot to converge the
+    share after any restart. Returns ``{"soul": bool, "identity": bool}`` where
+    True means a fresh copy was written this call.
+    """
+    result = {key: False for key in files}
+    if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+        return result
+
+    from apps.orchestrator.azure_client import download_workspace_file, upload_workspace_file
+    from apps.orchestrator.identity_merge import (
+        IDENTITY_BEGIN_MARKER,
+        IDENTITY_END_MARKER,
+        SOUL_BEGIN_MARKER,
+        SOUL_END_MARKER,
+        growth_seed_line,
+        is_known_platform_identity,
+        is_known_platform_soul,
+        splice_identity_file,
+    )
+    from apps.orchestrator.personas import get_persona, render_workspace_files
+
+    persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
+    rendered = render_workspace_files(persona_key, tenant=tenant)
+    seed = growth_seed_line(get_persona(persona_key)["identity"]["name"])
+
+    specs = {
+        "soul": ("NBHD_SOUL_MD", "workspace/SOUL.md", SOUL_BEGIN_MARKER, SOUL_END_MARKER, is_known_platform_soul),
+        "identity": (
+            "NBHD_IDENTITY_MD",
+            "workspace/IDENTITY.md",
+            IDENTITY_BEGIN_MARKER,
+            IDENTITY_END_MARKER,
+            is_known_platform_identity,
+        ),
+    }
+
+    for key in files:
+        if key not in specs:
+            continue
+        env_key, file_path, begin_marker, end_marker, is_legacy = specs[key]
+        managed = rendered.get(env_key, "")
+        if not managed:
+            continue
+        try:
+            current = download_workspace_file(str(tenant.id), file_path)
+        except Exception:
+            logger.warning(
+                "reassert_identity_files: read of %s failed for tenant %s; skipping",
+                file_path,
+                tenant.id,
+            )
+            continue
+        expected = splice_identity_file(
+            current,
+            managed,
+            seed,
+            begin_marker=begin_marker,
+            end_marker=end_marker,
+            is_legacy_platform=is_legacy,
+        )
+        if only_if_changed and (current or "").strip() == expected.strip():
+            continue
+        upload_workspace_file(str(tenant.id), file_path, expected)
+        result[key] = True
+        logger.info("Re-asserted %s to file share for tenant %s", file_path, tenant.id)
+
+    return result
 
 
 def deprovision_tenant(tenant_id: str) -> None:
