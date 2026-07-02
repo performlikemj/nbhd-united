@@ -905,22 +905,65 @@ class ComposeAuthoringTests(SimpleTestCase):
         self.assertEqual(cc.call_count, 2)
 
     def test_falls_back_when_primary_transport_errors(self):
-        with patch(
-            "apps.core.compose.chat_completion",
-            side_effect=[RuntimeError("502 upstream"), self._ok(json.dumps(_valid_manifest()))],
-        ) as cc:
+        # Primary transport-errors on BOTH its attempt and its one transient
+        # retry, so it's truly abandoned and the next model answers. (502 is
+        # transient → the retry fires; patch sleep so the test doesn't wait.)
+        with (
+            patch("apps.core.compose.time.sleep"),
+            patch(
+                "apps.core.compose.chat_completion",
+                side_effect=[
+                    RuntimeError("502 upstream"),
+                    RuntimeError("502 upstream"),
+                    self._ok(json.dumps(_valid_manifest())),
+                ],
+            ) as cc,
+        ):
             out = compose.author_manifest({})
         self.assertEqual(render.validate_manifest(out), [])
-        self.assertEqual(cc.call_count, 2)
+        self.assertEqual(cc.call_count, 3)  # primary attempt + retry, then fallback
+
+    def test_transient_error_retried_once_on_same_model(self):
+        # A single transient hiccup on the primary is recovered by the one
+        # backed-off retry — no fallback needed, the primary itself succeeds.
+        with (
+            patch("apps.core.compose.time.sleep") as sleep,
+            patch(
+                "apps.core.compose.chat_completion",
+                side_effect=[RuntimeError("read timeout"), self._ok(json.dumps(_valid_manifest()))],
+            ) as cc,
+        ):
+            out = compose.author_manifest({})
+        self.assertEqual(render.validate_manifest(out), [])
+        self.assertEqual(cc.call_count, 2)  # attempt + retry, same model
+        sleep.assert_called_once()  # backoff before the retry
+
+    def test_content_failure_is_not_retried(self):
+        # A non-transient failure (unparseable content) must NOT trigger the
+        # same-model retry — it falls straight through to the next candidate.
+        with (
+            patch("apps.core.compose.time.sleep") as sleep,
+            patch(
+                "apps.core.compose.chat_completion",
+                side_effect=[self._ok("not json {"), self._ok(json.dumps(_valid_manifest()))],
+            ) as cc,
+        ):
+            out = compose.author_manifest({})
+        self.assertEqual(render.validate_manifest(out), [])
+        self.assertEqual(cc.call_count, 2)  # one call per model, no retry
+        sleep.assert_not_called()
 
     def test_terminal_error_carries_every_candidate_reason(self):
         # All three candidates fail differently → the raised reason names each, so
         # session.error is diagnosable (not just the last candidate's failure).
+        # The 3rd candidate transient-errors on both its attempt and its retry
+        # (503 is transient); patch sleep so the backoff doesn't wait.
         over = json.dumps(_over_segmented_manifest())
         with (
+            patch("apps.core.compose.time.sleep"),
             patch(
                 "apps.core.compose.chat_completion",
-                side_effect=[self._ok(over), self._ok("not json"), RuntimeError("503")],
+                side_effect=[self._ok(over), self._ok("not json"), RuntimeError("503"), RuntimeError("503")],
             ),
             self.assertRaises(compose.ComposeError) as ctx,
         ):
@@ -1172,3 +1215,194 @@ class MeditationSignalGatheringTests(TestCase):
     def test_format_signals_universal_fallback_when_empty(self):
         rendered = compose._format_signals({"tenant_id": "x"})
         self.assertIn("little specific signal this week", rendered)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 9. Richer signals — active goals + consent-scoped fuel summary
+# ═════════════════════════════════════════════════════════════════════
+
+
+class RicherSignalsTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Richer", telegram_chat_id=900900)
+
+    def test_gathers_active_goal_titles_only(self):
+        from apps.journal.models import Goal
+
+        Goal.objects.create(tenant=self.tenant, title="Run a 5k", description="secret plan", status=Goal.Status.ACTIVE)
+        Goal.objects.create(tenant=self.tenant, title="Finished thing", status=Goal.Status.ACHIEVED)
+        signals = services.gather_meditation_signals(self.tenant)
+        self.assertIn("active_goals", signals)
+        self.assertIn("Run a 5k", signals["active_goals"])
+        self.assertNotIn("Finished thing", signals["active_goals"])  # only ACTIVE
+        # Titles only — the description must not leak into the signal payload.
+        self.assertNotIn("secret plan", " ".join(signals["active_goals"]))
+
+    def test_fuel_summary_only_when_fuel_enabled(self):
+        from apps.fuel.models import Workout, WorkoutStatus
+
+        Workout.objects.create(tenant=self.tenant, date=date.today(), status=WorkoutStatus.DONE)
+        # Fuel disabled → no fuel signal even though a workout exists.
+        self.tenant.fuel_enabled = False
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.assertNotIn("fuel_summary", services.gather_meditation_signals(self.tenant))
+        # Fuel enabled → the one-line summary appears.
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        signals = services.gather_meditation_signals(self.tenant)
+        self.assertIn("fuel_summary", signals)
+        self.assertIn("1 workout", signals["fuel_summary"])
+
+    def test_fuel_summary_absent_when_no_recent_workouts(self):
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.assertNotIn("fuel_summary", services.gather_meditation_signals(self.tenant))
+
+    def test_format_signals_renders_goals_and_fuel(self):
+        rendered = compose._format_signals(
+            {"active_goals": ["Run a 5k"], "fuel_summary": "They completed 3 workouts in the last 7 days."}
+        )
+        self.assertIn("Run a 5k", rendered)
+        self.assertIn("working toward", rendered)
+        self.assertIn("3 workouts", rendered)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 10. Onboarding advancement (profile save → in_progress; first ready → completed)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class OnboardingAdvancementTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Onboarding", telegram_chat_id=901000)
+
+    def test_advance_is_forward_only_and_idempotent(self):
+        profile = CoreProfile.objects.create(tenant=self.tenant)  # pending
+        self.assertTrue(services.advance_core_onboarding(profile, "in_progress"))
+        self.assertEqual(profile.onboarding_status, "in_progress")
+        # Idempotent: advancing to a lower/equal rank is a no-op.
+        self.assertFalse(services.advance_core_onboarding(profile, "pending"))
+        self.assertFalse(services.advance_core_onboarding(profile, "in_progress"))
+        self.assertEqual(profile.onboarding_status, "in_progress")
+
+    def test_declined_is_never_auto_advanced(self):
+        profile = CoreProfile.objects.create(tenant=self.tenant, onboarding_status="declined")
+        self.assertFalse(services.advance_core_onboarding(profile, "completed"))
+        self.assertEqual(profile.onboarding_status, "declined")
+
+    def test_profile_patch_advances_pending_to_in_progress(self):
+        client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user).access_token
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        # get_or_create leaves it pending; the PATCH (a save) advances it.
+        CoreProfile.objects.create(tenant=self.tenant)
+        resp = client.patch("/api/v1/core/profile/", {"additional_context": "help me wind down"}, format="json")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["onboarding_status"], "in_progress")
+
+    @override_settings(GEMINI_API_KEY="test-key", API_BASE_URL="https://api.example.test")
+    def test_first_ready_meditation_completes_onboarding(self):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.save(update_fields=["status"])
+        CoreProfile.objects.create(tenant=self.tenant, onboarding_status="in_progress")
+        session = MeditationSession.objects.create(
+            tenant=self.tenant, date=date.today(), status=MeditationStatus.PENDING, manifest=_valid_manifest()
+        )
+        with (
+            patch.object(render, "render_manifest_to_audio", return_value=_fake_result()),
+            patch.object(services, "upload_workspace_file_binary"),
+            patch.object(services, "notify_meditation_ready"),
+        ):
+            services.render_meditation(session)
+        profile = CoreProfile.objects.get(tenant=self.tenant)
+        self.assertEqual(profile.onboarding_status, "completed")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 11. Feedback PATCH endpoint (thumbs + short note, tenant-scoped)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class MeditationFeedbackViewTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Feedback", telegram_chat_id=901100)
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user).access_token
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.session = MeditationSession.objects.create(
+            tenant=self.tenant, date=date.today(), status=MeditationStatus.READY, title="Calm"
+        )
+
+    def _url(self, sid=None):
+        return f"/api/v1/core/sessions/{sid or self.session.id}/"
+
+    def test_patch_sets_feedback_and_stamps_time(self):
+        resp = self.client.patch(
+            self._url(), {"user_feedback": "liked", "feedback_note": "  the silences helped  "}, format="json"
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.user_feedback, "liked")
+        self.assertEqual(self.session.feedback_note, "the silences helped")  # trimmed
+        self.assertIsNotNone(self.session.feedback_at)
+
+    def test_patch_cannot_touch_readonly_fields(self):
+        resp = self.client.patch(
+            self._url(),
+            {"user_feedback": "disliked", "status": "failed", "title": "hacked", "audio_url": "http://evil"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.user_feedback, "disliked")
+        self.assertEqual(self.session.status, MeditationStatus.READY)  # unchanged
+        self.assertEqual(self.session.title, "Calm")  # unchanged
+        self.assertEqual(self.session.audio_url, "")  # unchanged
+
+    def test_invalid_feedback_value_rejected(self):
+        resp = self.client.patch(self._url(), {"user_feedback": "amazing"}, format="json")
+        self.assertEqual(resp.status_code, 400)
+
+    def test_put_is_not_allowed(self):
+        resp = self.client.put(self._url(), {"user_feedback": "liked"}, format="json")
+        self.assertEqual(resp.status_code, 405)
+
+    def test_cannot_patch_another_tenants_session(self):
+        other = create_tenant(display_name="Other", telegram_chat_id=901101)
+        other_session = MeditationSession.objects.create(
+            tenant=other, date=date.today(), status=MeditationStatus.READY, title="Theirs"
+        )
+        resp = self.client.patch(self._url(other_session.id), {"user_feedback": "liked"}, format="json")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_patch_requires_auth(self):
+        resp = APIClient().patch(self._url(), {"user_feedback": "liked"}, format="json")
+        self.assertEqual(resp.status_code, 401)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 12. Compose failure is logged to platform_logs (fleet visibility)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class ComposeFailureLoggingTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Compose Log", telegram_chat_id=901200)
+
+    def test_compose_error_records_platform_issue(self):
+        from apps.platform_logs.models import PlatformIssueLog
+
+        session = MeditationSession.objects.create(
+            tenant=self.tenant, date=date.today(), status=MeditationStatus.PENDING
+        )
+        with (
+            patch.object(compose, "author_manifest", side_effect=compose.ComposeError("all models down")),
+            patch.object(services, "render_meditation") as mock_render,
+        ):
+            services.compose_meditation(session)
+        mock_render.assert_not_called()
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.FAILED)
+        issues = PlatformIssueLog.objects.filter(tenant=self.tenant, tool_name="core_compose")
+        self.assertEqual(issues.count(), 1)
+        self.assertIn("all models down", issues.first().detail)

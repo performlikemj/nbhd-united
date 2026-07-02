@@ -1631,3 +1631,15 @@ export function updateCoreProfile(
     body: JSON.stringify(data),
   });
 }
+
+// Leave feedback on a rendered sit (thumbs + optional short note). Only the
+// feedback fields are writable server-side; everything else is ignored.
+export function submitMeditationFeedback(
+  id: string,
+  data: { user_feedback?: string; feedback_note?: string },
+): Promise<import("@/lib/types").MeditationSession> {
+  return apiFetch<import("@/lib/types").MeditationSession>(`/api/v1/core/sessions/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}

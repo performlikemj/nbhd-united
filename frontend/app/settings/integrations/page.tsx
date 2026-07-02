@@ -290,7 +290,8 @@ function CoreCard() {
           </div>
           <p className="mt-1 text-sm text-ink-muted">
             On-demand guided meditations — your assistant composes a quiet ten
-            minutes from your week, then voices it aloud.
+            minutes from your journal, goals, and recent activity, then voices it
+            aloud.
           </p>
           {enabled && !restarting && !error && (
             <p className="mt-2 text-xs text-ink-muted">
