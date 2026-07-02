@@ -827,3 +827,91 @@ def weekly_trends_digest(tenant) -> str:
 
         lines.append("- PRs: " + ", ".join(_fmt_pr(pr) for pr in t["recent_prs"]))
     return "\n".join(lines)
+
+
+def _fmt_decimal(val) -> str:
+    """Render a Decimal without trailing ``.00`` — ``75.00`` → ``"75"``."""
+    return f"{val:.0f}" if val == val.to_integral_value() else f"{val}"
+
+
+def all_time_prs(tenant, limit: int = 20) -> list[dict]:
+    """Personal records newest-first, capped — the same lifetime list the human
+    PR feed (:class:`~apps.fuel.views.PRFeedView`) shows.
+
+    Unlike ``weekly_trends()['recent_prs']`` this is NOT windowed to 28 days, so
+    the assistant can reference lifetime bests. Compact by design (it enters
+    model context): one row per PR, four fields.
+    """
+    from .models import PersonalRecord
+
+    rows = PersonalRecord.objects.filter(tenant=tenant).order_by("-date", "-created_at")[:limit]
+    return [
+        {
+            "exercise": pr.exercise_name,
+            "value": _fmt_decimal(pr.value),
+            "metric": pr.metric,
+            "date": str(pr.date),
+        }
+        for pr in rows
+    ]
+
+
+def monthly_volume_12mo(tenant) -> list[dict]:
+    """12 monthly datapoints (oldest→newest) of session count + total minutes.
+
+    Gives the assistant a *year* of load history instead of only the 4 weeks
+    ``weekly_trends`` covers. Months with no completed workouts are emitted as
+    zeros so the trend line is honest. Tenant-local month boundaries.
+    """
+    from dateutil.relativedelta import relativedelta
+    from django.db.models import Count, Sum
+    from django.db.models.functions import TruncMonth
+
+    from apps.common.tenant_tz import tenant_today
+
+    from .models import Workout, WorkoutStatus
+
+    today = tenant_today(tenant)
+    # First day of the month 11 months ago → 12 months inclusive of this one.
+    first_month = today.replace(day=1) - relativedelta(months=11)
+
+    rows = (
+        Workout.objects.filter(
+            tenant=tenant,
+            status=WorkoutStatus.DONE,
+            date__gte=first_month,
+            date__lte=today,
+        )
+        .annotate(m=TruncMonth("date"))
+        .values("m")
+        .annotate(sessions=Count("id"), minutes=Sum("duration_minutes"))
+    )
+    by_month = {r["m"].strftime("%Y-%m"): (r["sessions"] or 0, r["minutes"] or 0) for r in rows}
+
+    out = []
+    for i in range(12):
+        key = (first_month + relativedelta(months=i)).strftime("%Y-%m")
+        sessions, minutes = by_month.get(key, (0, 0))
+        out.append({"month": key, "sessions": sessions, "minutes": minutes})
+    return out
+
+
+def open_goals(tenant) -> list[dict]:
+    """The user's not-yet-achieved fitness goals — exercise, target, deadline.
+
+    Wires the human-typed ``FuelGoal`` rows to the assistant for the first time
+    so it can program toward them. Compact: unachieved goals only, few fields.
+    Dated goals sort first (soonest deadline), undated last.
+    """
+    from .models import FuelGoal
+
+    rows = FuelGoal.objects.filter(tenant=tenant, achieved_at__isnull=True).order_by("target_date", "-created_at")
+    return [
+        {
+            "exercise": g.exercise_name,
+            "metric": g.metric,
+            "target_value": _fmt_decimal(g.target_value),
+            "target_date": str(g.target_date) if g.target_date else None,
+        }
+        for g in rows
+    ]
