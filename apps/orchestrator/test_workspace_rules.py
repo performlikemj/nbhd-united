@@ -111,8 +111,10 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
     )
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
-    def test_soul_and_identity_use_skip_if_exists(
+    @patch("apps.orchestrator.azure_client.download_workspace_file", return_value=None)
+    def test_soul_and_identity_use_merge_push(
         self,
+        _mock_download_workspace_file,
         mock_upload_workspace_file,
         _mock_update_crons,
         _mock_audit,
@@ -120,31 +122,39 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         _mock_config_to_json,
         _mock_upload_config,
     ):
-        """SOUL.md and IDENTITY.md must be uploaded with skip_if_exists=True so a
-        config refresh never overwrites agent-evolved soul/identity content.
-        Mirrors the `[ ! -f ]` guard in runtime/openclaw/entrypoint.sh.
+        """SOUL.md and IDENTITY.md are merge-pushed (read current → splice →
+        upload), NOT skip_if_exists. The managed region is re-asserted every
+        config apply while the agent's growth region is preserved; a fresh share
+        (download → None) writes the managed baseline + growth seed.
         """
+        from apps.orchestrator import identity_merge as im
         from apps.orchestrator.services import update_tenant_config
 
         update_tenant_config(str(self.tenant.id))
 
-        seed_once_paths = {"workspace/SOUL.md", "workspace/IDENTITY.md"}
-        seen_seed_once: dict[str, bool] = {}
+        identity_paths = {"workspace/SOUL.md", "workspace/IDENTITY.md"}
+        seen: dict[str, dict] = {}
         for call in mock_upload_workspace_file.call_args_list:
             file_path = call.args[1] if len(call.args) > 1 else call.kwargs.get("file_path")
-            if file_path in seed_once_paths:
-                seen_seed_once[file_path] = call.kwargs.get("skip_if_exists", False)
+            if file_path in identity_paths:
+                seen[file_path] = {
+                    "content": call.args[2] if len(call.args) > 2 else call.kwargs.get("content", ""),
+                    "skip": call.kwargs.get("skip_if_exists", False),
+                }
 
         self.assertEqual(
-            set(seen_seed_once.keys()),
-            seed_once_paths,
-            f"Expected SOUL.md and IDENTITY.md to be uploaded, got {set(seen_seed_once.keys())}",
+            set(seen.keys()),
+            identity_paths,
+            f"Expected SOUL.md and IDENTITY.md to be merge-pushed, got {set(seen.keys())}",
         )
-        for path, skip_flag in seen_seed_once.items():
-            self.assertTrue(
-                skip_flag,
-                f"{path} must be uploaded with skip_if_exists=True (got {skip_flag})",
-            )
+        # Must NOT use skip_if_exists anymore — the merge preserves growth instead.
+        for path, info in seen.items():
+            self.assertFalse(info["skip"], f"{path} must merge-push, not skip-if-exists")
+
+        # A fresh share writes the managed region (markers present) + growth seed.
+        self.assertTrue(seen["workspace/SOUL.md"]["content"].startswith(im.SOUL_BEGIN_MARKER))
+        self.assertIn("This space is yours", seen["workspace/SOUL.md"]["content"])
+        self.assertTrue(seen["workspace/IDENTITY.md"]["content"].startswith(im.IDENTITY_BEGIN_MARKER))
 
         # Sanity: AGENTS.md and rules must still be unconditional overwrites
         for call in mock_upload_workspace_file.call_args_list:
@@ -154,3 +164,41 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
                     call.kwargs.get("skip_if_exists", False),
                     f"{file_path} must overwrite, not skip-if-exists",
                 )
+
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
+    @patch("apps.orchestrator.services.config_to_json", return_value="{}")
+    @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
+    @patch("apps.orchestrator.services._audit_and_log")
+    @patch(
+        "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
+        return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
+    )
+    @patch("apps.orchestrator.azure_client.upload_workspace_file")
+    @patch("apps.orchestrator.azure_client.download_workspace_file")
+    def test_identity_read_error_fails_closed(
+        self,
+        mock_download_workspace_file,
+        mock_upload_workspace_file,
+        _mock_update_crons,
+        _mock_audit,
+        _mock_generate_config,
+        _mock_config_to_json,
+        _mock_upload_config,
+    ):
+        """A read failure on SOUL/IDENTITY must skip the write (fail-closed) —
+        never blindly overwrite an unreadable growth region — while AGENTS.md
+        (which does not read the identity share) still uploads.
+        """
+        from apps.orchestrator.services import update_tenant_config
+
+        mock_download_workspace_file.side_effect = RuntimeError("azure throttled")
+
+        update_tenant_config(str(self.tenant.id))
+
+        uploaded_paths = [
+            call.args[1] if len(call.args) > 1 else call.kwargs.get("file_path", "")
+            for call in mock_upload_workspace_file.call_args_list
+        ]
+        self.assertNotIn("workspace/SOUL.md", uploaded_paths)
+        self.assertNotIn("workspace/IDENTITY.md", uploaded_paths)
+        self.assertIn("workspace/AGENTS.md", uploaded_paths)
