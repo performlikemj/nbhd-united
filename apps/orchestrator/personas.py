@@ -204,6 +204,147 @@ def render_soul_md(persona_key: str) -> str:
     )
 
 
+def _load_soul_template_body() -> str | None:
+    """Load the SOUL baseline body: repo template first, then env, then Key Vault.
+
+    The repo template (``templates/openclaw/SOUL.md``) is the sentinel-split
+    managed region with a ``{{PERSONA_SOUL_TRAITS}}`` placeholder; the env /
+    Key Vault fallbacks are bare baseline bodies that get wrapped in markers by
+    :func:`render_soul_managed`.
+    """
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "templates",
+        "openclaw",
+        "SOUL.md",
+    )
+    try:
+        with open(path) as f:
+            return f.read()
+    except FileNotFoundError:
+        pass
+    env_template = os.environ.get("NBHD_SOUL_MD_TEMPLATE")
+    if env_template:
+        return env_template
+    return _load_soul_from_key_vault()
+
+
+def _hardcoded_soul_complete(traits: str) -> str:
+    """The historical ``render_soul_md`` hardcoded fallback shape (traits inline)."""
+    return (
+        "# Soul\n\n## Core Truths\n\n"
+        f"{traits}\n\n"
+        "## Boundaries\n\n"
+        "- Protect user privacy above all else.\n"
+        "- Never share user data or conversation content with anyone.\n"
+        "- Require explicit approval before taking any external action.\n"
+        "- Maintain quality — don't send messages you wouldn't want to receive.\n\n"
+        "## Continuity\n\n"
+        "- Learn from conversations and update your understanding over time.\n"
+        "- If you notice a pattern, name it. If something changes, note it.\n"
+        "- Your memory files are yours to maintain — keep them honest and useful.\n"
+    )
+
+
+def render_soul_managed(persona_key: str, tenant=None) -> str:
+    """Render the platform-managed SOUL.md region (sentinel markers included).
+
+    This is the region the platform re-asserts; the agent's growth region below
+    the END marker is produced only at merge time (see
+    :mod:`apps.orchestrator.identity_merge`), never here. Persona ``soul_traits``
+    fill the ``## Your Persona`` area, and per-tenant
+    ``prompt_extras['soul_md']`` are appended INSIDE the managed region.
+    """
+    from apps.orchestrator.identity_merge import (
+        SOUL_BEGIN_MARKER,
+        SOUL_END_MARKER,
+        SOUL_PRECEDENCE_LINE,
+    )
+
+    persona = get_persona(persona_key)
+    traits = persona["soul_traits"].strip()
+
+    source = _load_soul_template_body()
+    if source and SOUL_BEGIN_MARKER in source:
+        # Full managed template (repo file) — just fill the persona placeholder.
+        managed = source.replace("{{PERSONA_SOUL_TRAITS}}", traits)
+    else:
+        if source is None:
+            source = _hardcoded_soul_complete(traits)
+        inner = source.strip()
+        if "## Your Persona" not in inner and "## Core Truths" not in inner:
+            inner = f"{inner}\n\n## Your Persona\n\n{traits}"
+        managed = "\n".join([SOUL_BEGIN_MARKER, "", inner, "", SOUL_PRECEDENCE_LINE, "", SOUL_END_MARKER, ""])
+
+    extras = _get_tenant_prompt_extras(tenant, "soul_md")
+    if extras:
+        managed = managed.replace(SOUL_END_MARKER, f"{extras}\n\n{SOUL_END_MARKER}")
+    return managed.strip() + "\n"
+
+
+def _load_identity_template_body() -> str | None:
+    """Load the IDENTITY baseline body from the repo template (or None)."""
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+        "templates",
+        "openclaw",
+        "IDENTITY.md",
+    )
+    try:
+        with open(path) as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
+def render_identity_managed(persona_key: str, tenant=None) -> str:
+    """Render the platform-managed IDENTITY.md region (sentinel markers included).
+
+    Persona name/creature/vibe/emoji fill the placeholders; per-tenant
+    ``prompt_extras['identity_md']`` are appended INSIDE the managed region. The
+    agent's growth region below the END marker is produced only at merge time.
+    """
+    from apps.orchestrator.identity_merge import (
+        IDENTITY_BEGIN_MARKER,
+        IDENTITY_END_MARKER,
+        IDENTITY_PRECEDENCE_LINE,
+    )
+
+    persona = get_persona(persona_key)
+    identity = persona["identity"]
+
+    source = _load_identity_template_body()
+    if source and IDENTITY_BEGIN_MARKER in source:
+        managed = source
+    else:
+        inner = (
+            source.strip()
+            if source
+            else (
+                "# {{PERSONA_NAME}}\n\n"
+                "**Name:** {{PERSONA_NAME}}\n"
+                "**Creature:** {{PERSONA_CREATURE}}\n"
+                "**Vibe:** {{PERSONA_VIBE}}\n"
+                "**Emoji:** {{PERSONA_EMOJI}}"
+            )
+        )
+        managed = "\n".join(
+            [IDENTITY_BEGIN_MARKER, "", inner, "", IDENTITY_PRECEDENCE_LINE, "", IDENTITY_END_MARKER, ""]
+        )
+
+    managed = (
+        managed.replace("{{PERSONA_NAME}}", identity["name"])
+        .replace("{{PERSONA_CREATURE}}", identity["creature"])
+        .replace("{{PERSONA_VIBE}}", identity["vibe"])
+        .replace("{{PERSONA_EMOJI}}", identity["emoji"])
+    )
+
+    extras = _get_tenant_prompt_extras(tenant, "identity_md")
+    if extras:
+        managed = managed.replace(IDENTITY_END_MARKER, f"{extras}\n\n{IDENTITY_END_MARKER}")
+    return managed.strip() + "\n"
+
+
 def _load_agents_md_from_key_vault() -> str | None:
     """Attempt to load AGENTS.md template from Azure Key Vault.
 
@@ -256,30 +397,36 @@ def _load_agents_md_from_template_file() -> str | None:
 def render_agents_md(persona_key: str) -> str:
     """Render AGENTS.md content for a persona.
 
-    Resolution order:
-    1. Key Vault secret (AZURE_KV_SECRET_AGENTS_MD) — highest priority
-    2. NBHD_AGENTS_MD_TEMPLATE env var
-    3. Repo template file (templates/openclaw/AGENTS.md)
+    Resolution order (repo file first, so AGENTS body changes ship via CI):
+    1. Repo template file (templates/openclaw/AGENTS.md) — highest priority
+    2. NBHD_AGENTS_MD_TEMPLATE env var (fallback)
+    3. Key Vault secret (AZURE_KV_SECRET_AGENTS_MD) (fallback)
     4. Hardcoded fallback
+
+    The repo template is verified to be a superset of the live Key Vault
+    template (``nbhd-agents-md-template``) before this flip — see the PR-2
+    integrator notes. Preferring the repo file means the merged persona-voice
+    work (#985/#986/#997) actually reaches the fleet, instead of being shadowed
+    by an older Key Vault snapshot that used to win here.
 
     All templates support {{PERSONA_PERSONALITY}} placeholder.
     """
     persona = get_persona(persona_key)
 
-    # 1. Try Key Vault
-    kv_template = _load_agents_md_from_key_vault()
-    if kv_template:
-        return kv_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
+    # 1. Try repo template file (ships via CI)
+    file_template = _load_agents_md_from_template_file()
+    if file_template:
+        return file_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
 
     # 2. Try env var
     env_template = os.environ.get("NBHD_AGENTS_MD_TEMPLATE")
     if env_template:
         return env_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
 
-    # 3. Try repo template file
-    file_template = _load_agents_md_from_template_file()
-    if file_template:
-        return file_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
+    # 3. Try Key Vault (emergency hot-patch override only if the repo file is absent)
+    kv_template = _load_agents_md_from_key_vault()
+    if kv_template:
+        return kv_template.replace("{{PERSONA_PERSONALITY}}", persona["agents_personality"])
     # Fallback: hardcoded version
     return (
         f"# NBHD United — Your AI Assistant\n"
@@ -449,7 +596,8 @@ def _get_tenant_prompt_extras(tenant, section: str) -> str:
 
     This is the hook for canary-style per-tenant prompt overrides without a
     schema migration. Populate via the ``set_prompt_extras`` management
-    command. Known sections: ``agents_md``.
+    command. Known sections: ``agents_md``, ``soul_md``, ``identity_md`` (the
+    latter two are spliced INSIDE the managed SOUL/IDENTITY region).
 
     Unknown or malformed values are silently ignored (returns "").
     """
@@ -480,8 +628,11 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     """
     result = {
         "NBHD_AGENTS_MD": render_agents_md(persona_key),
-        "NBHD_SOUL_MD": render_soul_md(persona_key),
-        "NBHD_IDENTITY_MD": render_identity_md(persona_key),
+        # Sentinel-split managed regions — the platform re-asserts these; the
+        # agent's growth region below the END marker is merged in at write time
+        # by apps.orchestrator.identity_merge (never produced here).
+        "NBHD_SOUL_MD": render_soul_managed(persona_key, tenant),
+        "NBHD_IDENTITY_MD": render_identity_managed(persona_key, tenant),
     }
     agents_extras = _get_tenant_prompt_extras(tenant, "agents_md")
     if agents_extras:

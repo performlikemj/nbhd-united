@@ -87,12 +87,24 @@ class RuntimeContainerStartedView(APIView):
         except Exception:
             logger.exception("RuntimeContainerStartedView: AGENTS.md re-assert failed for tenant %s", tenant_id)
 
+        # Self-heal SOUL.md / IDENTITY.md the same way: re-assert the managed
+        # region (persona baseline) to the share, preserving the agent's growth
+        # region below the END marker. Fail-closed per file, never fatal.
+        identity_files_refreshed: dict[str, bool] = {}
+        try:
+            from apps.orchestrator.services import reassert_identity_files
+
+            identity_files_refreshed = reassert_identity_files(tenant)
+        except Exception:
+            logger.exception("RuntimeContainerStartedView: identity re-assert failed for tenant %s", tenant_id)
+
         if not getattr(tenant, "postgres_cron_canonical", False):
             return Response(
                 {
                     "skipped": True,
                     "reason": "tenant not on postgres-canonical flow",
                     "agents_md_refreshed": agents_md_refreshed,
+                    "identity_files_refreshed": identity_files_refreshed,
                 },
                 status=status.HTTP_200_OK,
             )
@@ -104,10 +116,20 @@ class RuntimeContainerStartedView(APIView):
         except Exception as exc:
             logger.exception("RuntimeContainerStartedView: regenerate failed for tenant %s", tenant_id)
             return Response(
-                {"error": "regenerate_failed", "detail": str(exc), "agents_md_refreshed": agents_md_refreshed},
+                {
+                    "error": "regenerate_failed",
+                    "detail": str(exc),
+                    "agents_md_refreshed": agents_md_refreshed,
+                    "identity_files_refreshed": identity_files_refreshed,
+                },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         return Response(
-            {"ok": True, "agents_md_refreshed": agents_md_refreshed, **summary},
+            {
+                "ok": True,
+                "agents_md_refreshed": agents_md_refreshed,
+                "identity_files_refreshed": identity_files_refreshed,
+                **summary,
+            },
             status=status.HTTP_200_OK,
         )
