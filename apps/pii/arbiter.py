@@ -34,6 +34,7 @@ from django.utils import timezone
 from apps.billing.constants import DEEPSEEK_MODEL
 from apps.common.openrouter import chat_completion
 from apps.pii.entity_registry import canonical_key, coerce
+from apps.pii.redactor import _is_degenerate_span
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,11 @@ def _entries_to_judge(tenant: Any) -> list[dict[str, Any]]:
         coerced = coerce(entry)
         name = coerced.get("name", "")
         if not name:
+            continue
+        if _is_degenerate_span(name):
+            # Degenerate rows (single letters, punctuation) are handled by the
+            # redactor's own guard; sending them to the LLM would waste calls
+            # on a foregone "not PII" verdict.
             continue
         if coerced.get("arbiter_judged_at"):
             continue

@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from apps.pii.config import DEBERTA_LABEL_MAP, TIER_POLICIES
+from apps.pii.config import DEBERTA_LABEL_MAP, LABEL_SCORE_OVERRIDES, TIER_POLICIES
 from apps.pii.entity_registry import (
     canonical_key as _canonical_key,
 )
@@ -41,6 +41,239 @@ logger = logging.getLogger(__name__)
 
 # Matches placeholders like [PERSON_1], [EMAIL_ADDRESS_3]
 _PLACEHOLDER_RE = re.compile(r"\[([A-Z_]+)_(\d+)\]")
+
+# A bare lift number, rep/set count, or number+unit token. Fitness logs are
+# the dominant false-positive source for the contextual (PERSON/LOCATION)
+# labels: "benched 225", "squatted 140kg", "5x5 at 315 lbs". These are never
+# identifying PII. Anchored fullmatch against the stripped span, case-
+# insensitive. NOT applied to PHONE_NUMBER/CREDIT_CARD/IBAN/EMAIL — those come
+# from checksum/pattern recognizers and legitimately contain digit runs.
+_NUMERIC_OR_UNIT_RE = re.compile(
+    r"""
+    ^(
+        \d{1,4}(\.\d+)?                                              # bare number: 82, 140.5
+        (\s?(kg|kgs|lb|lbs|reps?|sets?|km|mi|min|sec|hrs?|bpm|cal|kcal))?  # optional unit
+        | x\d+                                                       # x10
+        | \d{1,4}x\d+                                                # 5x5, 3x12
+    )$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Exercise / gym vocabulary the DeBERTa model mislabels as PERSON (e.g.
+# "deadlift" → STREET, "Spider Curls" → PERSON) or LOCATION. Matched against
+# the full span, lowercased + stripped. Seeded from the prod false positives
+# plus the canonical lift catalogue; generous on purpose — a suppressed gym
+# term is a non-event, a leaked one is the bug we're fixing. A real person who
+# happens to be named one of these is vanishingly unlikely and the arbiter can
+# still promote genuine names it sees in context.
+_FITNESS_VOCAB = frozenset(
+    {
+        # Compound lifts
+        "deadlift",
+        "deadlifts",
+        "romanian deadlift",
+        "romanian deadlifts",
+        "squat",
+        "squats",
+        "front squat",
+        "front squats",
+        "back squat",
+        "back squats",
+        "bulgarian split squat",
+        "bulgarian split squats",
+        "split squat",
+        "split squats",
+        "front foot-elevated split squat",
+        "front foot-elevated split squats",
+        "bench press",
+        "bench",
+        "incline bench press",
+        "incline dumbbell press",
+        "overhead press",
+        "ohp",
+        "military press",
+        "push press",
+        "hip thrust",
+        "hip thrusts",
+        "glute bridge",
+        "glute bridges",
+        "leg press",
+        "hack squat",
+        "clean",
+        "power clean",
+        "clean and jerk",
+        "snatch",
+        # Accessory / isolation
+        "lat pulldown",
+        "lat pulldowns",
+        "pulldown",
+        "pulldowns",
+        "row",
+        "rows",
+        "barbell row",
+        "barbell rows",
+        "dumbbell row",
+        "dumbbell rows",
+        "pendlay row",
+        "pendlay rows",
+        "cable row",
+        "cable rows",
+        "curl",
+        "curls",
+        "bicep curl",
+        "bicep curls",
+        "hammer curl",
+        "hammer curls",
+        "spider curl",
+        "spider curls",
+        "preacher curl",
+        "preacher curls",
+        "tricep extension",
+        "tricep extensions",
+        "skullcrusher",
+        "skullcrushers",
+        "dip",
+        "dips",
+        "pushup",
+        "pushups",
+        "push-up",
+        "push-ups",
+        "pullup",
+        "pullups",
+        "pull-up",
+        "pull-ups",
+        "chinup",
+        "chinups",
+        "chin-up",
+        "chin-ups",
+        "lunge",
+        "lunges",
+        "walking lunge",
+        "walking lunges",
+        "calf raise",
+        "calf raises",
+        "leg raise",
+        "leg raises",
+        "box jump",
+        "box jumps",
+        "broad jump",
+        "broad jumps",
+        "pallof press",
+        "pallof",
+        "pec deck",
+        "face pull",
+        "face pulls",
+        "lateral raise",
+        "lateral raises",
+        "front raise",
+        "front raises",
+        "shrug",
+        "shrugs",
+        "fly",
+        "flyes",
+        "flies",
+        "plank",
+        "planks",
+        "burpee",
+        "burpees",
+        "kettlebell swing",
+        "kettlebell swings",
+        "mountain climber",
+        "mountain climbers",
+        "situp",
+        "situps",
+        "sit-up",
+        "sit-ups",
+        "crunch",
+        "crunches",
+        "russian twist",
+        "russian twists",
+        # General terms / supplements / equipment
+        "bodyweight",
+        "cardio",
+        "treadmill",
+        "elliptical",
+        "rower",
+        "spin",
+        "warmup",
+        "warm-up",
+        "warm up",
+        "cooldown",
+        "cool-down",
+        "cool down",
+        "superset",
+        "supersets",
+        "dropset",
+        "dropsets",
+        "amrap",
+        "emom",
+        "rep",
+        "reps",
+        "set",
+        "sets",
+        "pr",
+        "one rep max",
+        "1rm",
+        "rpe",
+        "creatine",
+        "protein",
+        "whey",
+        "bcaa",
+        "pre-workout",
+        "preworkout",
+        "dumbbell",
+        "dumbbells",
+        "barbell",
+        "kettlebell",
+        "kettlebells",
+        "cable",
+    }
+)
+
+
+def _is_degenerate_span(text: str) -> bool:
+    """True for spans too short or too featureless to be real PII.
+
+    A stripped span under 3 chars, or one with no letter and no digit, is
+    almost always a mis-detected fragment (a single letter, ``_``, ``[``,
+    ``az``). Dropping these regardless of type is safe: Presidio's checksummed
+    matches (credit cards, IBANs) are always ≥ 8 chars, so a real financial
+    hit never trips this. This is also why the degenerate prod entity-map rows
+    are skipped rather than deleted — the row stays for historical rehydration,
+    it just stops driving redaction.
+    """
+    stripped = (text or "").strip()
+    if len(stripped) < 3:
+        return True
+    return not any(ch.isalpha() or ch.isdigit() for ch in stripped)
+
+
+def _is_numeric_or_unit_span(text: str) -> bool:
+    """True when the stripped span is a bare number or number+unit token."""
+    return bool(_NUMERIC_OR_UNIT_RE.match((text or "").strip()))
+
+
+def _sub_outside_placeholders(text: str, pattern: re.Pattern, replacement: str) -> str:
+    """Apply ``pattern.sub(replacement, …)`` only to the parts of ``text`` that
+    are NOT already ``[TYPE_N]`` placeholders.
+
+    Step 1's entity substitution runs a regex per stored name over the whole
+    working string. Without this guard a stored name containing a capital
+    letter or ``_`` (or a degenerate ``[`` / ``_`` row) rewrites the interior
+    of a placeholder minted by an earlier iteration, exploding one token into
+    nested garbage (``[CRYPTO_ADDRESS_16]'m`` etc.). Splitting on the
+    placeholder pattern and substituting only in the gaps extends the
+    ``_hit_inside_placeholder`` invariant to Step 1.
+    """
+    out_parts: list[str] = []
+    last = 0
+    for m in _PLACEHOLDER_RE.finditer(text):
+        out_parts.append(pattern.sub(replacement, text[last : m.start()]))
+        out_parts.append(m.group(0))  # placeholder kept verbatim
+        last = m.end()
+    out_parts.append(pattern.sub(replacement, text[last:]))
+    return "".join(out_parts)
 
 
 def _hit_inside_placeholder(hit: DetectedEntity, ranges: list[tuple[int, int]]) -> bool:
@@ -315,8 +548,17 @@ def _redact_user_message(
             # stops driving redaction. This is how the user clears
             # accumulated NER bloat without breaking stored text.
             continue
+        if _is_degenerate_span(original):
+            # Degenerate stored names (single letters, "az", "_", "[") were
+            # mis-minted by NER and match everywhere — including inside the
+            # placeholders this loop emits — garbling the whole message. Skip
+            # them here (no data migration); the row stays for rehydration.
+            continue
         pattern = re.compile(re.escape(original), re.IGNORECASE)
-        out = pattern.sub(placeholder, out)
+        # Substitute only outside existing placeholders so a stored name that
+        # contains a capital letter or ``_`` can never rewrite a placeholder's
+        # interior (the Bug A nested-explosion class).
+        out = _sub_outside_placeholders(out, pattern, placeholder)
 
     # Step 2: Run detection on the (partially redacted) text for NEW entities.
     # Per-type counters for newly-minted placeholders are derived later from a
@@ -344,7 +586,7 @@ def _redact_user_message(
                     allow_names.add(parts[0])
 
     results = _detect_pii(out, entities, score_threshold)
-    results = _filter_results(results, out, allow_names, denylist=denylist)
+    results = _filter_results(results, out, allow_names, denylist=denylist, tenant=tenant)
 
     # Drop NER hits that fall inside an existing placeholder. Some models
     # (lakshyakh93/deberta_finetuned_pii in particular) classify tokens
@@ -600,9 +842,15 @@ def _detect_pii(
         model_results = []
 
     for ent in model_results:
-        if ent["score"] < score_threshold:
+        raw_label = ent["entity_group"]
+        # A detection must clear both the tier threshold and any per-label
+        # override (checked against the RAW label, before it is collapsed by
+        # DEBERTA_LABEL_MAP — e.g. PIN requires ≥0.7 while everything else
+        # rides the 0.5 tier threshold).
+        effective_threshold = max(score_threshold, LABEL_SCORE_OVERRIDES.get(raw_label, 0.0))
+        if ent["score"] < effective_threshold:
             continue
-        entity_type = DEBERTA_LABEL_MAP.get(ent["entity_group"])
+        entity_type = DEBERTA_LABEL_MAP.get(raw_label)
         if entity_type and entity_type in entities:
             # Trim leading/trailing whitespace from span boundaries —
             # aggregation_strategy="simple" can include boundary spaces
@@ -725,7 +973,7 @@ def _redact(
                     allow_names = allow_names | {parts[0]}
 
     results = _detect_pii(text, entities, score_threshold)
-    results = _filter_results(results, text, allow_names, denylist=denylist)
+    results = _filter_results(results, text, allow_names, denylist=denylist, tenant=tenant)
 
     if not results:
         return text, entity_map
@@ -767,12 +1015,31 @@ def _redact(
     return out, entity_map
 
 
+def _log_skip(tenant: object | None, result: DetectedEntity, reason: str, span_len: int) -> None:
+    """Debug telemetry when a mint-time guard suppresses a detection.
+
+    Mirrors the ``pii_mint`` line's shape (tenant, type, score, span_len) and
+    the same rule: NEVER log the span text — these logs ship to Azure Log
+    Analytics in cleartext and the whole point of this module is to keep PII
+    out of them. span_len is a coarse, non-reversible shape signal.
+    """
+    logger.debug(
+        "pii_skip tenant=%s type=%s reason=%s score=%.3f span_len=%d",
+        getattr(tenant, "id", "?"),
+        result.entity_type,
+        reason,
+        result.score,
+        span_len,
+    )
+
+
 def _filter_results(
     results: list,
     text: str,
     allow_names: set[str],
     *,
     denylist: dict[str, Any] | None = None,
+    tenant: object | None = None,
 ) -> list:
     """Remove false positives and deduplicate overlapping spans.
 
@@ -782,6 +1049,10 @@ def _filter_results(
     regardless of entity type, so the same denylist entry suppresses
     both PERSON and LOCATION false positives without the user having
     to think about which type the model assigned.
+
+    Also applies the mint-time guards (degenerate span, bare
+    number/unit, fitness vocabulary) that keep NER false positives from
+    minting a placeholder. ``tenant`` is used only for skip telemetry.
     """
     filtered = []
     for result in results:
@@ -797,6 +1068,24 @@ def _filter_results(
         # Skip tenant-denylisted spans (manually flagged as non-PII).
         if _is_denied(denylist, matched_text):
             continue
+
+        # Degenerate spans (single letters, punctuation) are never real PII,
+        # regardless of the label the model assigned.
+        if _is_degenerate_span(matched_text):
+            _log_skip(tenant, result, "degenerate", len(matched_text))
+            continue
+
+        # Numeric and fitness-vocabulary guards apply ONLY to the loosely
+        # typed contextual labels. PHONE_NUMBER/CREDIT_CARD/IBAN/EMAIL come
+        # from checksum/pattern recognizers and legitimately contain digits or
+        # short tokens, so we must not soften them here.
+        if result.entity_type in ("LOCATION", "PERSON"):
+            if _is_numeric_or_unit_span(matched_text):
+                _log_skip(tenant, result, "numeric", len(matched_text))
+                continue
+            if matched_lower in _FITNESS_VOCAB:
+                _log_skip(tenant, result, "fitness_vocab", len(matched_text))
+                continue
 
         filtered.append(result)
 

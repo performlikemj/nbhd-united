@@ -55,6 +55,9 @@ INSTALLED_APPS = [
     "apps.byo_models",
     "apps.insights",
     "apps.common",
+    # apps.pii is a library module (no models); registered so its management
+    # commands (denylist_degenerate_pii) are discoverable.
+    "apps.pii",
 ]
 
 MIDDLEWARE = [
