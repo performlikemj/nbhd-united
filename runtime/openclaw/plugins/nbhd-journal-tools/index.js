@@ -1293,7 +1293,7 @@ export default function register(api) {
   // DATABASE UPDATES, not prose edits — so completed goals don't linger in
   // context as if they were still active.
 
-  const PILLAR_ENUM = ["gravity", "fuel", "core", "lessons", "journal", "constellation"];
+  const PILLAR_ENUM = ["gravity", "fuel", "core", "lessons", "journal", "constellation", "horizons"];
 
   api.registerTool(wrap({
       name: "nbhd_goal_create",

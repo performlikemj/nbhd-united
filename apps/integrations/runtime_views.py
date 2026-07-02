@@ -2755,32 +2755,47 @@ _FUEL_KEYWORDS = frozenset(
 
 # Direction-touching claims — the kind of thing where a confirmed North Star is
 # the relevant frame ("thinking of quitting X", "should I take this job",
-# "not sure this is the right path"). When any of these fire, ALL confirmed
-# purposes surface even without a token overlap, so the agent can weigh the
-# decision against the user's stated direction.
-_DIRECTION_KEYWORDS = frozenset(
+# "not sure this is the right path"). When triggered, ALL confirmed purposes
+# surface even without a token overlap, so the agent can weigh the decision
+# against the user's stated direction. Detection is two-tier: STRONG words are
+# precise enough to fire alone; WEAK words are everyday vocabulary ("should",
+# "job", "change") that only signal direction in combination — requiring two
+# distinct weak hits keeps "I should buy milk" from surfacing the North Star
+# on every reconcile.
+_DIRECTION_STRONG = frozenset(
     {
         "quit",
         "quitting",
         "resign",
         "resigning",
-        "leave",
-        "leaving",
-        "job",
         "career",
-        "path",
         "purpose",
         "meaning",
         "direction",
-        "future",
         "dream",
         "calling",
         "vocation",
-        "move",
-        "moving",
         "relocate",
         "relocating",
         "pivot",
+        "regret",
+        "fulfilled",
+        "fulfilling",
+        "unfulfilled",
+        "longterm",
+        "priorities",
+        "reconsider",
+    }
+)
+_DIRECTION_WEAK = frozenset(
+    {
+        "leave",
+        "leaving",
+        "job",
+        "path",
+        "future",
+        "move",
+        "moving",
         "change",
         "changing",
         "decision",
@@ -2788,15 +2803,8 @@ _DIRECTION_KEYWORDS = frozenset(
         "choosing",
         "should",
         "worth",
-        "regret",
-        "fulfilled",
-        "fulfilling",
-        "unfulfilled",
         "stuck",
         "lost",
-        "longterm",
-        "priorities",
-        "reconsider",
     }
 )
 
@@ -2867,7 +2875,9 @@ class RuntimeReconcileScanView(APIView):
         tokens = _reconcile_tokenize(claim)
         finance_triggered = any(t in _FINANCE_KEYWORDS for t in tokens)
         fuel_triggered = any(t in _FUEL_KEYWORDS for t in tokens)
-        direction_triggered = any(t in _DIRECTION_KEYWORDS for t in tokens)
+        direction_triggered = any(t in _DIRECTION_STRONG for t in tokens) or (
+            len({t for t in tokens if t in _DIRECTION_WEAK}) >= 2
+        )
 
         candidates: list[dict] = []
 
