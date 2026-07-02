@@ -95,12 +95,37 @@ def redeem_promo(request):
         _record_redemption(campaign, user, PromoRedemption.Outcome.NO_TENANT, new_trial_ends_at=None)
         return _redirect("invalid")
 
-    # Defensive: a paying subscriber shouldn't have been emailed in the
-    # first place (audience filter excludes them), but if they end up
-    # here, don't perturb their billing state by setting is_trial=True.
-    if tenant.stripe_subscription_id:
+    # A genuinely-active paying subscriber shouldn't be flipped to trial.
+    # But a SUSPENDED tenant keeps a *retained* stripe_subscription_id even
+    # though it isn't paying — nonpayment suspension deliberately holds onto
+    # the sub id for fast reactivation (billing.services.handle_invoice_
+    # payment_failed). Those paid-then-lapsed tenants are exactly who the
+    # comeback offer targets, so let them redeem (extend + restore runtime).
+    # Only the ACTIVE-with-subscription case is a real paying subscriber to
+    # protect from a trial flip.
+    if tenant.status != Tenant.Status.SUSPENDED and tenant.stripe_subscription_id:
         _record_redemption(campaign, user, PromoRedemption.Outcome.ALREADY_SUBSCRIBED, new_trial_ends_at=None)
         return _redirect("active_subscription")
+
+    # Remember whether we're reactivating a nonpayment-suspended tenant
+    # *before* we flip the status below — it drives the runtime restore.
+    was_suspended = tenant.status == Tenant.Status.SUSPENDED
+
+    # A paid-then-lapsed SUSPENDED tenant still carries the dead Stripe
+    # subscription id it was suspended with. We MUST clear it as part of
+    # granting the trial (same atomic write below), because leaving it set
+    # would permanently defeat trial expiry: `_unentitled_active_tenants()`
+    # excludes any tenant with `stripe_subscription_id > ""` from the
+    # expire-trials sweep, and `Tenant.has_entitlement` short-circuits True
+    # whenever a sub id is present — so the tenant would keep free service
+    # forever after trial_ends_at passes. Retaining the id buys nothing:
+    # invoice.payment_succeeded / subscription.updated are unhandled no-ops,
+    # so no automatic reactivation depends on it. A genuine re-subscription
+    # later flows through handle_checkout_completed, which writes a fresh sub
+    # id cleanly. We log the cleared id prominently so the rare
+    # suspended-but-actually-paying edge case can be reconciled by hand from
+    # the Stripe dashboard.
+    cleared_sub_id = tenant.stripe_subscription_id if (was_suspended and tenant.stripe_subscription_id) else ""
 
     # Apply the extension. trial_ends_at = max(now, existing) + days.
     now = timezone.now()
@@ -128,7 +153,11 @@ def redeem_promo(request):
             tenant.trial_ends_at = new_trial_ends_at
             tenant.is_trial = True
             tenant.status = Tenant.Status.ACTIVE
-            tenant.save(update_fields=["trial_ends_at", "is_trial", "status", "updated_at"])
+            update_fields = ["trial_ends_at", "is_trial", "status", "updated_at"]
+            if cleared_sub_id:
+                tenant.stripe_subscription_id = ""
+                update_fields.append("stripe_subscription_id")
+            tenant.save(update_fields=update_fields)
     except Exception:
         logger.exception(
             "Promo redemption tenant update failed — campaign=%s user=%s",
@@ -140,6 +169,51 @@ def redeem_promo(request):
         # otherwise block the retry.
         redemption.delete()
         return _redirect("invalid")
+
+    if cleared_sub_id:
+        # Prominent audit line: if this tenant was in fact still paying via
+        # Stripe (rare — it was SUSPENDED, so it shouldn't be), reconcile the
+        # cleared subscription id manually from the Stripe dashboard.
+        logger.info(
+            "Promo redemption CLEARED dead stripe_subscription_id — campaign=%s tenant=%s user=%s "
+            "cleared_sub_id=%s (granted %d-day trial; reconcile in Stripe if this sub was still live)",
+            campaign.code,
+            tenant.id,
+            user.id,
+            cleared_sub_id,
+            campaign.extension_days,
+        )
+
+    # Runtime restore for reactivated tenants. Flipping DB state to ACTIVE
+    # is not enough for a nonpayment-suspended tenant — its container sits
+    # at 0 replicas with crons disabled, so without this they'd click the
+    # offer, message the bot, and get silence. ``restore_tenant_runtime``
+    # (the extracted Stripe-reactivation sequence) scales the container back
+    # up and resumes crons. It never raises — it swallows Azure failures and
+    # returns False — but the page must succeed regardless, so we also guard
+    # defensively. On failure we mark the tenant hibernated: the next inbound
+    # message then routes through ``handle_hibernated_message`` →
+    # ``wake_hibernated_tenant``, which scales the container to 1 and
+    # schedules cron resume, so the user self-heals on first contact.
+    if was_suspended:
+        from apps.billing.services import restore_tenant_runtime
+
+        try:
+            restored = restore_tenant_runtime(tenant)
+        except Exception:
+            logger.exception(
+                "Promo redemption — restore_tenant_runtime raised for tenant %s",
+                tenant.id,
+            )
+            restored = False
+
+        if not restored:
+            Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+            logger.warning(
+                "Promo redemption — runtime restore failed for tenant %s; marked "
+                "hibernated so the next inbound message wakes the container",
+                tenant.id,
+            )
 
     logger.info(
         "Promo redemption applied — campaign=%s user=%s new_trial_ends_at=%s",

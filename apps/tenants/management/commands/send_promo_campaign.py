@@ -30,7 +30,7 @@ from __future__ import annotations
 import logging
 
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMultiAlternatives
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 from django.template.loader import render_to_string
@@ -40,8 +40,13 @@ from django.utils.http import urlencode
 from apps.tenants.models import Tenant, User
 from apps.tenants.promo_models import PromoCampaign
 from apps.tenants.promo_signing import make_promo_token
+from apps.tenants.unsubscribe_signing import make_unsubscribe_token
 
 logger = logging.getLogger(__name__)
+
+# Audience modes selectable via --audience.
+AUDIENCE_DEFAULT = "default"
+AUDIENCE_COMEBACK = "comeback"
 
 
 class Command(BaseCommand):
@@ -80,6 +85,19 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--audience",
+            default=AUDIENCE_DEFAULT,
+            choices=[AUDIENCE_DEFAULT, AUDIENCE_COMEBACK],
+            help=(
+                "Audience selector. 'default' (unchanged): active-trial + "
+                "suspended-never-subscribed. 'comeback': every onboarded, "
+                "has-messaged tenant that is ACTIVE or SUSPENDED — deliberately "
+                "includes paid-then-lapsed (SUSPENDED with a retained "
+                "stripe_subscription_id) and excludes never-onboarded / "
+                "never-messaged shells. Opted-out users are excluded from both."
+            ),
+        )
+        parser.add_argument(
             "--dry-run",
             action="store_true",
             help="Print audience + would-send addresses without creating the campaign or sending.",
@@ -93,6 +111,7 @@ class Command(BaseCommand):
         days: int,
         valid_until: str,
         template_base: str,
+        audience: str,
         dry_run: bool,
         **opts,
     ):
@@ -100,32 +119,14 @@ class Command(BaseCommand):
         if valid_until_dt is None:
             raise CommandError(f"Invalid --valid-until: {valid_until!r}")
 
-        # Audience filter:
-        #   - active trial: status=ACTIVE AND is_trial=True
-        #   - suspended trial-expired-never-subscribed:
-        #       status=SUSPENDED AND stripe_subscription_id=""
-        # Excludes paying subscribers, never-onboarded (no tenant),
-        # deleted, and the platform owner.
         owner_email = (getattr(settings, "PLATFORM_OWNER_EMAIL", "") or "").strip().lower()
-        audience_qs = (
-            User.objects.filter(tenant__isnull=False)
-            .filter(
-                Q(tenant__status=Tenant.Status.ACTIVE, tenant__is_trial=True)
-                | Q(tenant__status=Tenant.Status.SUSPENDED, tenant__stripe_subscription_id="")
-            )
-            .exclude(email="")
-            .select_related("tenant")
-        )
-        if owner_email:
-            audience_qs = audience_qs.exclude(email__iexact=owner_email)
+        audience_qs = self._build_audience_qs(audience, owner_email)
 
-        audience = list(audience_qs)
-        self.stdout.write(
-            f"Audience: {len(audience)} user(s) (active trial + suspended-never-subscribed, excluding owner)"
-        )
+        audience_users = list(audience_qs)
+        self.stdout.write(f"Audience[{audience}]: {len(audience_users)} user(s) (excluding owner + opted-out)")
 
         if dry_run:
-            for user in audience:
+            for user in audience_users:
                 self.stdout.write(
                     f"  [dry-run] would email {user.email} "
                     f"(tenant.status={user.tenant.status}, is_trial={user.tenant.is_trial})"
@@ -142,8 +143,9 @@ class Command(BaseCommand):
                 "extension_days": days,
                 "valid_until": valid_until_dt,
                 "audience_snapshot": {
-                    "user_ids": [str(u.id) for u in audience],
-                    "captured_at_count": len(audience),
+                    "user_ids": [str(u.id) for u in audience_users],
+                    "captured_at_count": len(audience_users),
+                    "audience_mode": audience,
                 },
             },
         )
@@ -156,15 +158,17 @@ class Command(BaseCommand):
         email_failed = 0
         frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
 
-        for user in audience:
+        for user in audience_users:
             token = make_promo_token(campaign.code, user.id)
             qs = urlencode({"code": campaign.code, "token": token})
             promo_url = f"{frontend_url}/promo/redeem?{qs}"
+            unsubscribe_url = self._unsubscribe_url(user)
 
             try:
                 self._send_promo_email(
                     user,
                     promo_url=promo_url,
+                    unsubscribe_url=unsubscribe_url,
                     valid_until=campaign.valid_until,
                     template_base=template_base,
                 )
@@ -182,10 +186,65 @@ class Command(BaseCommand):
         if email_failed:
             self.stdout.write(self.style.ERROR(f"Email failed: {email_failed}"))
 
-    def _send_promo_email(self, user: User, *, promo_url: str, valid_until=None, template_base: str) -> None:
+    def _build_audience_qs(self, audience: str, owner_email: str):
+        """Return the User queryset for the requested audience mode.
+
+        Both modes require a tenant, a non-empty email, and exclude the
+        platform owner and anyone who has opted out of marketing email
+        (``User.email_opt_out``).
+
+        - ``default`` (unchanged): active trial (ACTIVE + is_trial) OR
+          suspended-never-subscribed (SUSPENDED + empty
+          stripe_subscription_id). Excludes paying subscribers.
+        - ``comeback``: every onboarded, has-messaged tenant that is
+          ACTIVE or SUSPENDED. Deliberately *includes* paid-then-lapsed
+          tenants (SUSPENDED with a retained stripe_subscription_id) that
+          the default filter drops, and *excludes* never-onboarded /
+          never-messaged shells.
+        """
+        base = User.objects.filter(tenant__isnull=False).exclude(email="").exclude(email_opt_out=True)
+
+        if audience == AUDIENCE_COMEBACK:
+            audience_qs = base.filter(
+                tenant__onboarding_complete=True,
+                tenant__last_message_at__isnull=False,
+                tenant__status__in=[Tenant.Status.ACTIVE, Tenant.Status.SUSPENDED],
+            )
+        else:
+            audience_qs = base.filter(
+                Q(tenant__status=Tenant.Status.ACTIVE, tenant__is_trial=True)
+                | Q(tenant__status=Tenant.Status.SUSPENDED, tenant__stripe_subscription_id="")
+            )
+
+        if owner_email:
+            audience_qs = audience_qs.exclude(email__iexact=owner_email)
+
+        return audience_qs.select_related("tenant")
+
+    def _unsubscribe_url(self, user: User) -> str:
+        """Build the per-user one-click unsubscribe URL.
+
+        Points at the backend Django view (``API_BASE_URL``), not the
+        static frontend — the view renders its own confirmation page and
+        is the RFC 8058 ``List-Unsubscribe-Post`` target.
+        """
+        api_base = (getattr(settings, "API_BASE_URL", "") or "http://localhost:8000").rstrip("/")
+        token = make_unsubscribe_token(user.id)
+        return f"{api_base}/api/v1/tenants/unsubscribe/{token}/"
+
+    def _send_promo_email(
+        self,
+        user: User,
+        *,
+        promo_url: str,
+        unsubscribe_url: str,
+        valid_until=None,
+        template_base: str,
+    ) -> None:
         context = {
             "display_name": getattr(user, "display_name", None) or "there",
             "promo_url": promo_url,
+            "unsubscribe_url": unsubscribe_url,
             # Render the redemption deadline from the campaign row so the copy
             # can never drift from the actual expiry (the original templates
             # hardcoded "June 6, 2026" and went stale).
@@ -194,11 +253,21 @@ class Command(BaseCommand):
         subject = render_to_string(f"{template_base}_subject.txt", context).strip()
         text_body = render_to_string(f"{template_base}_body.txt", context)
         html_body = render_to_string(f"{template_base}_body.html", context)
-        send_mail(
+
+        # EmailMultiAlternatives (not send_mail) so we can attach the
+        # RFC 2369 / RFC 8058 list-unsubscribe headers. Gmail / Yahoo show a
+        # native "Unsubscribe" affordance for these and weigh their presence
+        # for deliverability — the prior blast had no unsubscribe path and
+        # landed 0 redemptions (spam suspected).
+        message = EmailMultiAlternatives(
             subject=subject,
-            message=text_body,
+            body=text_body,
             from_email=None,
-            recipient_list=[user.email],
-            html_message=html_body,
-            fail_silently=False,
+            to=[user.email],
+            headers={
+                "List-Unsubscribe": f"<{unsubscribe_url}>",
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            },
         )
+        message.attach_alternative(html_body, "text/html")
+        message.send(fail_silently=False)

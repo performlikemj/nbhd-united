@@ -83,6 +83,12 @@ TASK_MAP = {
     # privacy-zdr-2026 blast closed with 0 redemptions). Zero-arg; fire via a
     # QStash publish to /api/cron/trigger/send_ios_relaunch_campaign/.
     "send_ios_relaunch_campaign": "apps.tenants.tasks.send_ios_relaunch_campaign_task",
+    # Comeback win-back (July 2026) — free trial extension + App Store, sent to
+    # the wider onboarded-and-once-active cohort (audience="comeback", includes
+    # paid-then-lapsed). Redemption restores suspended-tenant runtime and the
+    # send carries List-Unsubscribe headers. Zero-arg; fire via a QStash publish
+    # to /api/cron/trigger/send_comeback_campaign/.
+    "send_comeback_campaign": "apps.tenants.tasks.send_comeback_campaign_task",
     # Operator-fired preview of the campaign emails — accepts
     # {"kwargs": {"kind": 1|2, "to": "<email>", "display_name": "..."}}
     # in the QStash body. Used pre-launch to sanity-check rendered HTML

@@ -90,6 +90,20 @@ class User(AbstractUser):
         ),
     )
 
+    # Marketing-email opt-out. Set by the one-click unsubscribe view
+    # (apps/tenants/unsubscribe_views.py). Every promo/campaign send
+    # excludes opted-out users. This governs bulk marketing sends only —
+    # transactional mail (password reset, provisioning status) ignores it.
+    email_opt_out = models.BooleanField(
+        default=False,
+        help_text="True if the user unsubscribed from marketing/campaign emails.",
+    )
+    email_opt_out_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the user unsubscribed (null if still subscribed).",
+    )
+
     class Meta:
         db_table = "users"
 

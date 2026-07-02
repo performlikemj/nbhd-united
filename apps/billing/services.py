@@ -296,6 +296,128 @@ def check_budget(tenant: Tenant) -> str:
     return ""
 
 
+def restore_tenant_runtime(tenant: Tenant) -> bool:
+    """Bring a suspended/hibernated tenant's runtime back online.
+
+    Scales the container to a single replica, queues any config apply
+    missed while suspended, re-enables the disabled crons (via QStash so
+    the resume fires after the gateway is ready), and eagerly syncs cron
+    rows from seed to close the reactivation drift window.
+
+    Extracted verbatim from the Stripe reactivation path (this is what the
+    ``should_wake`` branch of ``handle_checkout_completed`` used to run
+    inline) so the promo-comeback redemption view can reuse the *identical*
+    sequence: a nonpayment-suspended tenant that redeems the offer needs its
+    container scaled back up and crons resumed, otherwise it would message
+    the bot and get silence. Refactor, not behaviour change — the Stripe
+    path calls this and behaves exactly as before.
+
+    Idempotent: ``scale_container_app`` treats an already-min_replicas=1
+    container (409 ResourceExistsError) as success, and the config apply /
+    ``resume_tenant_crons`` / cron-row refresh are all no-ops when nothing
+    changed.
+
+    Returns ``True`` when the container scale-up succeeded (the config /
+    cron follow-ups are best-effort and only logged on failure, matching
+    the original inline behaviour); ``False`` when there is no container to
+    scale or the scale-up itself raised — the caller decides the fallback
+    (the Stripe path logs and continues; the redeem view marks the tenant
+    hibernated so the next inbound message self-heals via
+    ``wake_hibernated_tenant``).
+    """
+    from apps.cron.publish import publish_task
+
+    if not tenant.container_id:
+        return False
+
+    try:
+        from apps.orchestrator.azure_client import scale_container_app
+
+        scale_container_app(tenant.container_id, min_replicas=1, max_replicas=1)
+        logger.info("Woke container %s for reactivated tenant %s", tenant.container_id, tenant.id)
+
+        # Apply pending config updates missed during hibernation
+        try:
+            tenant.refresh_from_db(fields=["config_version", "pending_config_version"])
+            if tenant.pending_config_version > tenant.config_version:
+                publish_task("apply_single_tenant_config", str(tenant.id))
+                logger.info("Queued config apply for reactivated tenant %s", tenant.id)
+        except Exception:
+            logger.exception("Failed to queue config apply for tenant %s", tenant.id)
+
+        # Re-enable cron jobs that were disabled during suspension. The
+        # container just started waking and its gateway is not listening
+        # yet (cold-start typically 30-60s), so we cannot call
+        # ``resume_tenant_crons`` synchronously here — every reactivation
+        # would 502 inside the webhook handler and the crons would stay
+        # disabled until the hourly reconcile sweep caught the
+        # ``enabled``-field drift. See issue #540. Delay the resume via
+        # QStash so it fires after the gateway is ready, and let QStash
+        # retries cover any residual cold-start.
+        try:
+            publish_task(
+                "resume_tenant_crons",
+                str(tenant.id),
+                idempotency_key=f"resume-crons-{tenant.id}",
+                delay_seconds=30,
+            )
+            logger.info(
+                "Queued resume_tenant_crons for reactivated tenant %s (delay=30s)",
+                tenant.id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to enqueue resume_tenant_crons for tenant %s — "
+                "hourly reconcile_tenant_crons sweep is the safety net",
+                tenant.id,
+            )
+
+        # Eagerly sync cron payloads against Postgres-canonical. Suspended
+        # tenants don't run apply_pending_configs (they're filtered out by
+        # the ACTIVE-status gate), so any drift accumulated before
+        # suspension stays frozen in OpenClaw runtime. PR #532's Layer 2
+        # diff would catch it lazily at the next post-reactivation sweep,
+        # but that's up to an hour of "first cron fire might silently
+        # error at preflight." Doing it here eagerly closes the window —
+        # the canary 2026-05-12 incident had Evening Check-in failing for
+        # multiple days because the stale `payload.model` was never
+        # caught at reactivation time.
+        try:
+            from apps.orchestrator.services import refresh_system_cron_rows_from_seed
+
+            drift_result = refresh_system_cron_rows_from_seed(tenant)
+            logger.info(
+                "Reactivation cron-row refresh for tenant %s: created=%d updated=%d preserved_custom=%d",
+                tenant.id,
+                drift_result.get("created", 0),
+                drift_result.get("updated", 0),
+                drift_result.get("preserved_custom", 0),
+            )
+            # Postgres-row saves fire the post_save signal, which
+            # enqueues ``regenerate_tenant_crons`` on a 30s debounce.
+            # The reconciler pushes payload/schedule drift to OpenClaw.
+            # If the refresh is a no-op (the common case — rows already
+            # match seed because suspension only touched the gateway),
+            # the signal does not fire; in that path the explicit
+            # ``resume_tenant_crons`` enqueue above is what re-enables
+            # the disabled crons, and the hourly reconcile sweep is
+            # the residual safety net.
+        except Exception:
+            # Don't block reactivation on a refresh failure. The next
+            # apply_pending_configs sweep is the safety net.
+            logger.exception(
+                "Reactivation cron-row refresh failed for tenant %s — "
+                "next apply_pending_configs sweep will catch drift",
+                tenant.id,
+            )
+        return True
+    except Exception:
+        logger.exception(
+            "Failed to wake container %s for tenant %s — may need re-provisioning", tenant.container_id, tenant.id
+        )
+        return False
+
+
 def handle_checkout_completed(session_data: dict) -> None:
     """Handle Stripe checkout.session.completed webhook (subscription mode)."""
     from apps.cron.publish import publish_task
@@ -361,91 +483,8 @@ def handle_checkout_completed(session_data: dict) -> None:
         logger.info("Tenant %s already provisioning for current subscription", tenant.id)
         return
 
-    if should_wake and tenant.container_id:
-        try:
-            from apps.orchestrator.azure_client import scale_container_app
-
-            scale_container_app(tenant.container_id, min_replicas=1, max_replicas=1)
-            logger.info("Woke container %s for reactivated tenant %s", tenant.container_id, tenant.id)
-
-            # Apply pending config updates missed during hibernation
-            try:
-                tenant.refresh_from_db(fields=["config_version", "pending_config_version"])
-                if tenant.pending_config_version > tenant.config_version:
-                    publish_task("apply_single_tenant_config", str(tenant.id))
-                    logger.info("Queued config apply for reactivated tenant %s", tenant.id)
-            except Exception:
-                logger.exception("Failed to queue config apply for tenant %s", tenant.id)
-
-            # Re-enable cron jobs that were disabled during suspension. The
-            # container just started waking and its gateway is not listening
-            # yet (cold-start typically 30-60s), so we cannot call
-            # ``resume_tenant_crons`` synchronously here — every reactivation
-            # would 502 inside the webhook handler and the crons would stay
-            # disabled until the hourly reconcile sweep caught the
-            # ``enabled``-field drift. See issue #540. Delay the resume via
-            # QStash so it fires after the gateway is ready, and let QStash
-            # retries cover any residual cold-start.
-            try:
-                publish_task(
-                    "resume_tenant_crons",
-                    str(tenant.id),
-                    idempotency_key=f"resume-crons-{tenant.id}",
-                    delay_seconds=30,
-                )
-                logger.info(
-                    "Queued resume_tenant_crons for reactivated tenant %s (delay=30s)",
-                    tenant.id,
-                )
-            except Exception:
-                logger.exception(
-                    "Failed to enqueue resume_tenant_crons for tenant %s — "
-                    "hourly reconcile_tenant_crons sweep is the safety net",
-                    tenant.id,
-                )
-
-            # Eagerly sync cron payloads against Postgres-canonical. Suspended
-            # tenants don't run apply_pending_configs (they're filtered out by
-            # the ACTIVE-status gate), so any drift accumulated before
-            # suspension stays frozen in OpenClaw runtime. PR #532's Layer 2
-            # diff would catch it lazily at the next post-reactivation sweep,
-            # but that's up to an hour of "first cron fire might silently
-            # error at preflight." Doing it here eagerly closes the window —
-            # the canary 2026-05-12 incident had Evening Check-in failing for
-            # multiple days because the stale `payload.model` was never
-            # caught at reactivation time.
-            try:
-                from apps.orchestrator.services import refresh_system_cron_rows_from_seed
-
-                drift_result = refresh_system_cron_rows_from_seed(tenant)
-                logger.info(
-                    "Reactivation cron-row refresh for tenant %s: created=%d updated=%d preserved_custom=%d",
-                    tenant.id,
-                    drift_result.get("created", 0),
-                    drift_result.get("updated", 0),
-                    drift_result.get("preserved_custom", 0),
-                )
-                # Postgres-row saves fire the post_save signal, which
-                # enqueues ``regenerate_tenant_crons`` on a 30s debounce.
-                # The reconciler pushes payload/schedule drift to OpenClaw.
-                # If the refresh is a no-op (the common case — rows already
-                # match seed because suspension only touched the gateway),
-                # the signal does not fire; in that path the explicit
-                # ``resume_tenant_crons`` enqueue above is what re-enables
-                # the disabled crons, and the hourly reconcile sweep is
-                # the residual safety net.
-            except Exception:
-                # Don't block reactivation on a refresh failure. The next
-                # apply_pending_configs sweep is the safety net.
-                logger.exception(
-                    "Reactivation cron-row refresh failed for tenant %s — "
-                    "next apply_pending_configs sweep will catch drift",
-                    tenant.id,
-                )
-        except Exception:
-            logger.exception(
-                "Failed to wake container %s for tenant %s — may need re-provisioning", tenant.container_id, tenant.id
-            )
+    if should_wake:
+        restore_tenant_runtime(tenant)
 
     if should_provision:
         publish_task("provision_tenant", str(tenant.id))

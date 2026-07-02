@@ -10,6 +10,7 @@ from .runtime_views import (
     RuntimeWelcomeMarkView,
 )
 from .telegram_views import telegram_generate_link, telegram_status, telegram_unlink
+from .unsubscribe_views import unsubscribe
 from .views import (
     AvailableModelsView,
     CancelDeletionView,
@@ -80,6 +81,11 @@ urlpatterns = [
     # HMAC token in the URL carries the authorization. See
     # apps/tenants/promo_views.py and promo_signing.py.
     path("promos/redeem/", redeem_promo, name="promo-redeem"),
+    # One-click marketing-email unsubscribe — unauthenticated, the per-user
+    # HMAC token in the path carries the authorization. GET renders a
+    # confirmation page; POST is the RFC 8058 List-Unsubscribe-Post target.
+    # See apps/tenants/unsubscribe_views.py and unsubscribe_signing.py.
+    path("unsubscribe/<str:token>/", unsubscribe, name="email-unsubscribe"),
     path("heartbeat/", HeartbeatConfigView.as_view(), name="heartbeat-config"),
     path("delete-account/", DeleteAccountView.as_view(), name="delete-account"),
     path("cancel-deletion/", CancelDeletionView.as_view(), name="cancel-deletion"),

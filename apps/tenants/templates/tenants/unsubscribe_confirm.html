@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark" />
+  <title>{% if confirmed %}Unsubscribed{% else %}Unsubscribe{% endif %} — NBHD United</title>
+  <style>
+    html, body { margin: 0; padding: 0; }
+    body {
+      background-color: #0b0f13;
+      color: #e2e8f0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .card {
+      max-width: 480px;
+      width: calc(100% - 48px);
+      text-align: center;
+      border: 1px solid rgba(226, 232, 240, 0.10);
+      border-radius: 16px;
+      padding: 48px 32px;
+    }
+    .stars { font-size: 13px; letter-spacing: 0.9em; color: rgba(226, 232, 240, 0.32); margin: 0 0 28px 0; }
+    h1 {
+      font-family: Georgia, 'Times New Roman', serif;
+      font-style: italic;
+      font-weight: 400;
+      font-size: 34px;
+      line-height: 1.1;
+      margin: 0 0 16px 0;
+      color: #e2e8f0;
+    }
+    p { font-size: 15px; line-height: 1.65; color: rgba(226, 232, 240, 0.78); margin: 0 0 12px 0; }
+    .muted { font-size: 12px; color: rgba(226, 232, 240, 0.42); margin-top: 28px; }
+    a { color: #4ECDC4; text-decoration: none; }
+    form { margin: 28px 0 0 0; }
+    button {
+      appearance: none;
+      -webkit-appearance: none;
+      cursor: pointer;
+      background-color: #7C6BF0;
+      color: #ffffff;
+      border: 0;
+      border-radius: 999px;
+      font-family: inherit;
+      font-size: 15px;
+      font-weight: 700;
+      padding: 14px 36px;
+      letter-spacing: 0.01em;
+    }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <p class="stars">&#10022; &middot; &middot; &#10023;</p>
+    {% if confirmed %}
+      <h1>You're unsubscribed.</h1>
+      <p>We won't send you any more campaign or marketing emails{% if display_name and display_name != "there" %}, {{ display_name }}{% endif %}.</p>
+      <p>Account and service notices (like password resets) will still reach you.</p>
+      <p class="muted">Changed your mind? Reach out any time at <a href="https://neighborhoodunited.org">neighborhoodunited.org</a>.</p>
+    {% else %}
+      <h1>Unsubscribe?</h1>
+      <p>Stop receiving campaign and marketing emails from NBHD United{% if display_name and display_name != "there" %}, {{ display_name }}{% endif %}? Account and service notices (like password resets) will still reach you.</p>
+      <form method="post" action="">
+        <button type="submit">Unsubscribe</button>
+      </form>
+    {% endif %}
+  </main>
+</body>
+</html>
