@@ -647,7 +647,23 @@ export interface HorizonsTopicSignal {
   register_scope: "topic" | "pillar" | null;
 }
 
+export type NorthStarStatus = "proposed" | "confirmed" | "evolving" | "retired";
+
+export interface HorizonsNorthStar {
+  id: string;
+  // "purpose" → a Purpose row (confirm/retire via the purposes API);
+  // "extraction" → a nightly purpose-hypothesis card (approve/dismiss via the
+  // extractions API). The frontend branches confirm/reject on this.
+  source: "purpose" | "extraction";
+  statement: string;
+  pillars: string[];
+  status: NorthStarStatus;
+  origin: string;
+  created_at: string;
+}
+
 export interface HorizonsData {
+  north_star: HorizonsNorthStar[];
   goals: HorizonsGoal[];
   pending_extractions: HorizonsPendingExtraction[];
   weekly_pulse: HorizonsWeeklyPulse[];

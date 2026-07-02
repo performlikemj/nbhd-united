@@ -293,6 +293,31 @@ export function dismissExtraction(id: string): Promise<{ id: string; status: str
   return apiFetch<{ id: string; status: string }>(`/api/v1/journal/extractions/${id}/dismiss/`, { method: "POST" });
 }
 
+// North Star (Purpose) — the direction above goals. User-authored purposes are
+// created confirmed; confirming/retiring an assistant-proposed one is a status
+// PATCH. All invalidate the Horizons query so the North Star card updates.
+export function createPurpose(
+  statement: string,
+  pillars?: string[],
+): Promise<import("@/lib/types").HorizonsNorthStar> {
+  return apiFetch<import("@/lib/types").HorizonsNorthStar>("/api/v1/journal/purposes/", {
+    method: "POST",
+    body: JSON.stringify({ statement, pillars: pillars ?? [] }),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+export function updatePurpose(
+  id: string,
+  patch: { statement?: string; status?: import("@/lib/types").NorthStarStatus; pillars?: string[] },
+): Promise<import("@/lib/types").HorizonsNorthStar> {
+  return apiFetch<import("@/lib/types").HorizonsNorthStar>(`/api/v1/journal/purposes/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 // Assistant insights — the assistant's memory of patterns it has noticed.
 // Confirm and refute mutate AssistantInsight rows on the backend; both
 // invalidate the Horizons query so the card flips status in place.
