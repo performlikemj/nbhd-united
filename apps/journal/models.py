@@ -218,6 +218,12 @@ class PendingExtraction(models.Model):
         LESSON = "lesson", "Lesson"
         GOAL = "goal", "Goal"
         TASK = "task", "Task"
+        # A North Star hypothesis the nightly extractor proposes from
+        # cross-pillar evidence. Unlike goal/task cards it is NOT auto-added;
+        # it lands as ``status=PENDING`` and only becomes a confirmed Purpose
+        # when the user approves it (consent-first). "purpose" fits the 16-char
+        # ``kind`` column.
+        PURPOSE = "purpose", "Purpose hypothesis"
 
     class Status(models.TextChoices):
         PENDING = "pending", "Pending"
@@ -309,6 +315,17 @@ class Goal(models.Model):
         null=True,
         blank=True,
     )
+    # The North Star this goal serves, if any. Optional — most goals have no
+    # explicit purpose link; the field lets a confirmed Purpose gather the
+    # goals that move the user toward it. SET_NULL so retiring/deleting a
+    # Purpose never cascades away the goal itself.
+    purpose = models.ForeignKey(
+        "Purpose",
+        on_delete=models.SET_NULL,
+        related_name="goals",
+        null=True,
+        blank=True,
+    )
     target_date = models.DateField(null=True, blank=True)
     achieved_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -343,6 +360,79 @@ class Goal(models.Model):
     def abandon(self) -> None:
         self.status = self.Status.ABANDONED
         self.save(update_fields=["status", "updated_at"])
+
+
+class Purpose(models.Model):
+    """A user's North Star — a durable statement of direction or purpose.
+
+    The layer above goals: goals are *what* the user is pursuing; a Purpose is
+    *why* — the long-horizon direction those goals serve ("build a life where
+    my work funds time with my kids", "become someone others can lean on").
+
+    Consent-first by construction. The assistant may *propose* a purpose
+    (``status=PROPOSED``, ``origin=ASSISTANT_PROPOSED``) but a Purpose only
+    becomes ``CONFIRMED`` after the user explicitly agrees — never inferred
+    silently into a hard fact. ``EVOLVING`` marks a confirmed purpose the user
+    is actively reshaping; ``RETIRED`` preserves history without deleting.
+
+    Only ``CONFIRMED`` (and ``EVOLVING``) purposes surface in USER.md's North
+    Star section and the session/cron grounding — a proposal is a question, not
+    a fact, so it never grounds the assistant's reasoning until the user says
+    yes.
+    """
+
+    class Status(models.TextChoices):
+        PROPOSED = "proposed", "Proposed"
+        CONFIRMED = "confirmed", "Confirmed"
+        EVOLVING = "evolving", "Evolving"
+        RETIRED = "retired", "Retired"
+
+    class Origin(models.TextChoices):
+        ASSISTANT_PROPOSED = "assistant_proposed", "Assistant proposed"
+        USER_CREATED = "user_created", "User created"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="purposes")
+    statement = models.TextField()
+    # List of pillar slugs this purpose spans (see apps.insights.pillars.Pillar).
+    # A North Star is usually cross-pillar — that breadth is what distinguishes
+    # it from a single-pillar goal.
+    pillars = models.JSONField(default=list, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.PROPOSED)
+    origin = models.CharField(max_length=24, choices=Origin.choices, default=Origin.USER_CREATED)
+    # List of {kind, ref, note} evidence dicts grounding an assistant proposal
+    # (e.g. {"kind": "journal", "ref": "2026-06-30", "note": "..."}). Empty for
+    # user-created purposes.
+    evidence = models.JSONField(default=list, blank=True)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    retired_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "journal_purposes"
+        ordering = ["-updated_at"]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:purpose:{self.statement[:32]}"
+
+    def confirm(self) -> None:
+        from django.utils import timezone
+
+        self.status = self.Status.CONFIRMED
+        if self.confirmed_at is None:
+            self.confirmed_at = timezone.now()
+        self.save(update_fields=["status", "confirmed_at", "updated_at"])
+
+    def retire(self) -> None:
+        from django.utils import timezone
+
+        self.status = self.Status.RETIRED
+        self.retired_at = timezone.now()
+        self.save(update_fields=["status", "retired_at", "updated_at"])
 
 
 class Task(models.Model):

@@ -19,7 +19,19 @@ from .lifecycle_views import (
     TaskListCreateView,
     TaskReopenView,
 )
+from .purpose_views import (
+    PurposeDetailView,
+    PurposeListCreateView,
+)
 from .query_views import JournalQueryView
+from .runtime_purpose_views import (
+    RuntimePurposeConfirmView,
+    RuntimePurposeLinkGoalView,
+    RuntimePurposeListView,
+    RuntimePurposeProposeView,
+    RuntimePurposeRetireView,
+    RuntimePurposeUpdateView,
+)
 from .status_views import JournalStatusView
 from .views import (
     DailyNoteEntryDetailView,
@@ -56,6 +68,9 @@ urlpatterns = [
     path("goals/<uuid:goal_id>/", GoalDetailView.as_view(), name="goal-detail"),
     path("goals/<uuid:goal_id>/achieve/", GoalAchieveView.as_view(), name="goal-achieve"),
     path("goals/<uuid:goal_id>/abandon/", GoalAbandonView.as_view(), name="goal-abandon"),
+    # ── North Star (Purpose) — session-auth console reads/writes ─────────
+    path("purposes/", PurposeListCreateView.as_view(), name="purpose-list-create"),
+    path("purposes/<uuid:purpose_id>/", PurposeDetailView.as_view(), name="purpose-detail"),
     # ── Legacy endpoints (kept for backward compatibility) ───────────────
     path("", JournalEntryListCreateView.as_view(), name="journal-list-create"),
     path("<uuid:entry_id>/", JournalEntryDetailView.as_view(), name="journal-detail"),
@@ -80,5 +95,36 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/query/",
         JournalQueryView.as_view(),
         name="runtime-journal-query",
+    ),
+    # ── North Star (Purpose) — internal-auth runtime endpoints (OC plugin) ──
+    path(
+        "runtime/<uuid:tenant_id>/purposes/",
+        RuntimePurposeListView.as_view(),
+        name="runtime-purpose-list",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/purposes/propose/",
+        RuntimePurposeProposeView.as_view(),
+        name="runtime-purpose-propose",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/purposes/<uuid:purpose_id>/",
+        RuntimePurposeUpdateView.as_view(),
+        name="runtime-purpose-update",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/purposes/<uuid:purpose_id>/confirm/",
+        RuntimePurposeConfirmView.as_view(),
+        name="runtime-purpose-confirm",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/purposes/<uuid:purpose_id>/retire/",
+        RuntimePurposeRetireView.as_view(),
+        name="runtime-purpose-retire",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/purposes/<uuid:purpose_id>/link-goal/",
+        RuntimePurposeLinkGoalView.as_view(),
+        name="runtime-purpose-link-goal",
     ),
 ]
