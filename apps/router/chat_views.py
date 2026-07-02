@@ -42,6 +42,7 @@ from apps.router.inbound_media import (
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.router.pending_queue import enqueue_message_for_tenant
 from apps.router.services import build_chat_context_marker, build_datetime_context
+from apps.tenants.models import Tenant
 from apps.tenants.throttling import ChatContextHourThrottle, ChatLocalTurnHourThrottle
 
 logger = logging.getLogger(__name__)
@@ -354,6 +355,13 @@ def enqueue_tenant_turn(
         user_text_excerpt=redacted_text,
     )
     ChatThread.objects.filter(id=thread.id).update(last_active_at=timezone.now())
+    # iOS is a first-class channel for the idle-hibernation freshness signal:
+    # without this stamp the sweep sees an iOS-only tenant as permanently idle
+    # (canary sat 8 days stale) and check_cron_wake_idle's "did the user
+    # message during this wake" test can never pass — so the container gets
+    # hibernated out from under an active conversation. Mirrors the poller
+    # channels' stamp in wake_on_message.py.
+    Tenant.objects.filter(id=tenant.id).update(last_message_at=timezone.now())
     return turn, True
 
 

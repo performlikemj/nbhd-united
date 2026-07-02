@@ -1136,3 +1136,35 @@ class IOSDrainDropPushTest(TestCase):
         self.assertEqual(turn.status, "error")
         self.assertEqual(turn.error, "stale")
         mock_notify.assert_called_once_with(self.tenant, ["s1"])
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class IOSChatFreshnessStampTest(TestCase):
+    """iOS chat turns must stamp tenants.last_message_at — it is the idle-
+    hibernation freshness signal, and before this stamp an iOS-only tenant
+    looked permanently idle (hibernated mid-conversation)."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_chat_post_updates_last_message_at(self, mock_post):
+        from django.utils import timezone
+
+        mock_post.return_value = _ok_chat_response()
+        self.assertIsNone(self.tenant.last_message_at)
+
+        before = timezone.now()
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "good morning", "client_msg_id": "stamp1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+        self.tenant.refresh_from_db()
+        self.assertIsNotNone(self.tenant.last_message_at)
+        self.assertGreaterEqual(self.tenant.last_message_at, before)

@@ -27,7 +27,10 @@ echo "Starting gunicorn..."
 # - max-requests recycles each worker after ~1000 requests (±100 jitter so
 #   they don't all recycle simultaneously) — bounds the long-tail memory
 #   growth that drove the May 24 SIGKILL incident.
+# -c gunicorn.conf.py: post_worker_init warms the PII model at worker boot so
+#   it never cold-loads inside a user's chat POST (8-114s measured in-request).
 gunicorn config.wsgi:application \
+  -c gunicorn.conf.py \
   --bind 0.0.0.0:8000 \
   --worker-class gthread \
   --workers 2 \
