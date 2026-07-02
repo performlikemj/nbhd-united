@@ -13,7 +13,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -289,3 +289,63 @@ class RecordUsageIsSystemTests(TestCase):
         )
         after = Tenant.objects.filter(id=self.tenant.id).values_list("tokens_this_month", flat=True).first()
         self.assertEqual(after, before + 150)
+
+
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True, OPENROUTER_API_KEY="test-key")
+class BuildContextCrossPillarTests(TestCase):
+    """`_build_context` now carries other pillars' snapshots + all-pillar insights."""
+
+    def setUp(self):
+        self.now = datetime(2026, 5, 21, 12, 0, 0, tzinfo=UTC)
+        self.tenant = _enable_finance(create_tenant(display_name="CtxXP", telegram_chat_id=901500))
+
+    def test_context_includes_cross_pillar_snapshot_and_insight(self):
+        from apps.insights.models import PillarSnapshot as Snap
+        from apps.insights.synthesis import _build_context
+
+        fuel_topic, _ = TopicRegistry.objects.get_or_create(
+            pillar=Pillar.FUEL.value,
+            slug="exercise",
+            defaults={
+                "display_name": "Exercise",
+                "status": TopicRegistry.Status.CANONICAL,
+            },
+        )
+        Snap.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.FUEL.value,
+            ts=self.now - timedelta(days=2),
+            granularity=Snap.Granularity.WEEKLY,
+            payload={"totals": {"workouts_7d": 4, "minutes_7d": 200}},
+        )
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.FUEL.value,
+            topic=fuel_topic,
+            statement="you train hardest on Mondays",
+        )
+
+        ctx = _build_context(self.tenant, now=self.now)
+        self.assertTrue(ctx["has_data"])
+        cross_pillars = {c["pillar"] for c in ctx["cross_pillar"]}
+        self.assertIn(Pillar.FUEL.value, cross_pillars)
+        insight_pillars = {i["pillar"] for i in ctx["insights"]}
+        self.assertIn(Pillar.FUEL.value, insight_pillars)
+
+    def test_cross_pillar_only_data_still_has_signal(self):
+        # A finance-active tenant with no Gravity data but a Journal snapshot
+        # should still have has_data=True (reflection proceeds, not no_data).
+        from apps.insights.models import PillarSnapshot as Snap
+        from apps.insights.synthesis import _build_context
+
+        Snap.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.JOURNAL.value,
+            ts=self.now - timedelta(days=1),
+            granularity=Snap.Granularity.WEEKLY,
+            payload={"totals": {"entries_7d": 5, "active_goals": 2}},
+        )
+        ctx = _build_context(self.tenant, now=self.now)
+        self.assertTrue(ctx["has_data"])
+        self.assertEqual(ctx["snapshots"], [])
+        self.assertEqual({c["pillar"] for c in ctx["cross_pillar"]}, {Pillar.JOURNAL.value})

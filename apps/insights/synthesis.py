@@ -92,6 +92,10 @@ The reflection has two parts in one short reply:
      about; if nothing fits, fall back to discretionary.
    - The wrapped statement should be about *this user* (not generic advice), should
      be falsifiable (they can confirm or correct), and should be a single observation.
+   - Gravity (finance) is the default focus. If the "Other pillars" data shows a
+     clearly stronger pattern this week, you may instead observe that pillar and
+     prefix the slug with it: `[[insight:fuel/exercise]]`, `[[insight:core/practice]]`,
+     `[[insight:journal/mood]]`. One marker total, whichever pillar is strongest.
 
 Voice register comes from the user's stated preference. If the prefs say `gentle`,
 phrase the observation as a question / hypothesis. If `direct`, state it plainly.
@@ -169,11 +173,11 @@ def generate_weekly_reflection(tenant: Tenant, *, now: datetime | None = None) -
 
     # The most recent open insight created in this run is the one this
     # reflection birthed. (We don't pass the slug through; resolve it from
-    # the latest open row for this tenant scoped to gravity.)
+    # the latest open row for this tenant — any pillar, since a cross-pillar
+    # marker like [[insight:fuel/exercise]] files outside Gravity.)
     latest = (
         AssistantInsight.objects.filter(
             tenant=tenant,
-            pillar=Pillar.GRAVITY.value,
             status=AssistantInsight.Status.OPEN,
         )
         .order_by("-created_at")
@@ -242,7 +246,15 @@ def _iso_week_monday(iso_year: int, iso_week: int) -> date:
 
 
 def _build_context(tenant: Tenant, *, now: datetime) -> dict[str, Any]:
-    """Gather the last week's Gravity signal for the synthesis prompt."""
+    """Gather the last week's signal for the synthesis prompt.
+
+    Gravity is still the primary lens (this task only runs for finance_active
+    tenants), but the context now also carries the latest snapshot of every
+    other pillar the tenant has data for, and the assistant's insight memory
+    across ALL pillars — so the reflection can notice a cross-pillar pattern
+    and file it under the right pillar, and won't repeat something it already
+    remembers in another pillar.
+    """
     week_ago = now - timedelta(days=7)
     four_weeks_ago = now - timedelta(days=28)
 
@@ -255,10 +267,32 @@ def _build_context(tenant: Tenant, *, now: datetime) -> dict[str, Any]:
         .order_by("-ts")
         .values("ts", "payload")[:6]
     )
+
+    # Latest snapshot per non-Gravity pillar within the window. A snapshot only
+    # exists if the pillar was enabled when it was written, so this inherently
+    # respects per-tenant enablement without re-reading the flags.
+    cross_pillar: list[dict[str, Any]] = []
+    seen_pillars: set[str] = set()
+    for snap in (
+        PillarSnapshot.objects.filter(tenant=tenant, ts__gte=four_weeks_ago)
+        .exclude(pillar=Pillar.GRAVITY.value)
+        .order_by("pillar", "-ts")
+        .values("pillar", "ts", "payload")
+    ):
+        if snap["pillar"] in seen_pillars:
+            continue
+        seen_pillars.add(snap["pillar"])
+        cross_pillar.append(
+            {
+                "pillar": snap["pillar"],
+                "ts": snap["ts"],
+                "totals": (snap.get("payload") or {}).get("totals", {}),
+            }
+        )
+
     recent_insights = list(
         AssistantInsight.objects.filter(
             tenant=tenant,
-            pillar=Pillar.GRAVITY.value,
             status__in=[AssistantInsight.Status.OPEN, AssistantInsight.Status.CONFIRMED],
             created_at__gte=four_weeks_ago,
         )
@@ -271,14 +305,16 @@ def _build_context(tenant: Tenant, *, now: datetime) -> dict[str, Any]:
         topic__isnull=True,
     ).first()
 
-    has_data = bool(recent_snapshots) or bool(recent_insights)
+    has_data = bool(recent_snapshots) or bool(recent_insights) or bool(cross_pillar)
     return {
         "has_data": has_data,
         "week_ago": week_ago.date().isoformat(),
         "now": now.date().isoformat(),
         "snapshots": recent_snapshots,
+        "cross_pillar": cross_pillar,
         "insights": [
             {
+                "pillar": ins.pillar,
                 "topic": ins.topic.display_name if ins.topic else "",
                 "statement": ins.statement,
                 "status": ins.status,
@@ -298,15 +334,21 @@ def _format_context_for_prompt(context: dict[str, Any]) -> str:
     lines.append(f"Voice prefs: tone={context['voice_pref']['tone']} volume={context['voice_pref']['volume']}")
     lines.append(f"Reflection window: {context['week_ago']} through {context['now']}")
     if context["snapshots"]:
-        lines.append("\nRecent weekly snapshots (most recent first):")
+        lines.append("\nRecent weekly Gravity snapshots (most recent first):")
         for snap in context["snapshots"]:
             ts = snap["ts"].date().isoformat() if hasattr(snap["ts"], "date") else str(snap["ts"])
             totals = (snap.get("payload") or {}).get("totals", {})
             lines.append(f"- {ts}: {totals}")
+    if context.get("cross_pillar"):
+        lines.append("\nOther pillars — latest snapshot (context; only reflect if the pattern is strong):")
+        for snap in context["cross_pillar"]:
+            ts = snap["ts"].date().isoformat() if hasattr(snap["ts"], "date") else str(snap["ts"])
+            lines.append(f"- {snap['pillar']} @ {ts}: {snap.get('totals', {})}")
     if context["insights"]:
         lines.append("\nOpen/confirmed insights from the past few weeks (for context, do not repeat):")
         for ins in context["insights"]:
-            lines.append(f"- ({ins['status']}, {ins['topic']}): {ins['statement']}")
+            pillar = ins.get("pillar", "")
+            lines.append(f"- ({ins['status']}, {pillar}/{ins['topic']}): {ins['statement']}")
     blob = "\n".join(lines)
     if len(blob) > _MAX_INPUT_CONTEXT_CHARS:
         blob = blob[:_MAX_INPUT_CONTEXT_CHARS] + "\n…(truncated)"
