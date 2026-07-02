@@ -788,3 +788,329 @@ class PIIEngineImportSmokeTest(TestCase):
         # Module-level imports only; the heavy model load is gated behind
         # ``get_pii_pipeline()`` so import-time work stays cheap.
         from apps.pii.engine import get_pii_pipeline  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# PII false-positive fixes (Bug A garbling + Bug B fitness false positives)
+# ---------------------------------------------------------------------------
+
+
+def _fake_pipeline(hits):
+    """Build a stand-in for the HF token-classification pipeline.
+
+    ``hits`` is a list of ``(raw_label, word, score)``. Positions are resolved
+    by locating ``word`` in the text so tests read naturally. Returns the dict
+    shape the real pipeline emits (``entity_group``/``word``/``score``/
+    ``start``/``end``) so ``_detect_pii`` exercises the real label-map +
+    threshold + score-override logic.
+    """
+
+    def _run(text):
+        out = []
+        for raw_label, word, score in hits:
+            idx = text.find(word)
+            if idx < 0:
+                continue
+            out.append(
+                {
+                    "entity_group": raw_label,
+                    "word": word,
+                    "score": score,
+                    "start": idx,
+                    "end": idx + len(word),
+                }
+            )
+        return out
+
+    return _run
+
+
+def _assert_clean_placeholders(testcase, text):
+    """Every ``[`` in ``text`` must open a well-formed ``[TYPE_N]`` token.
+
+    Catches the Bug A nested-explosion class (``[CRYPTO_ADDRESS_16]'m`` /
+    ``[[PERSON_2]]``) where a substitution rewrote a placeholder's interior.
+    """
+    from apps.pii.redactor import _PLACEHOLDER_RE
+
+    # Number of well-formed placeholders must equal the number of '[' chars,
+    # so there are no stray/partial brackets left behind.
+    testcase.assertEqual(text.count("["), len(_PLACEHOLDER_RE.findall(text)), f"garbled placeholders in {text!r}")
+    testcase.assertNotIn("[[", text)
+    testcase.assertNotIn("]]", text)
+
+
+class BugAGarbleRegressionTest(TestCase):
+    """Degenerate entity-map rows (single letters, ``_``, ``[``, ``az``) must
+    not garble messages. Bug A: Step 1 substituted these everywhere, including
+    inside placeholders it had just emitted, exploding a message into dozens of
+    nested tokens. No ONNX model needed — NER is mocked to return nothing so we
+    isolate the Step-1 entity-map pass.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Test User", telegram_chat_id=910001)
+
+    def test_all_degenerate_rows_leave_message_untouched(self):
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {
+            "[CRYPTO_ADDRESS_16]": "I",
+            "[ACCOUNT_18]": "_",
+            "[EMAIL_ADDRESS_2]": "[",
+            "[CRYPTO_ADDRESS_19]": "u",
+            "[IBAN_CODE_1]": "az",
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        message = "I'm at the gym. I want you to update my workout"
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            result = redact_user_message(message, self.tenant)
+
+        # With NER returning nothing and every stored row degenerate, the
+        # message must come back byte-for-byte identical.
+        self.assertEqual(result, message)
+
+    def test_legit_row_survives_alongside_degenerate_rows(self):
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {
+            "[PERSON_5]": "Sautai",
+            "[CRYPTO_ADDRESS_16]": "I",
+            "[ACCOUNT_18]": "_",
+            "[CRYPTO_ADDRESS_19]": "u",
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            result = redact_user_message("I met Sautai at the gym", self.tenant)
+
+        # Legit entity still redacts; degenerate rows are inert; no nesting.
+        self.assertEqual(result, "I met [PERSON_5] at the gym")
+        _assert_clean_placeholders(self, result)
+
+
+class Step1PlaceholderProtectionTest(TestCase):
+    """Step 1 must never rewrite the interior of an existing placeholder, even
+    when a (non-degenerate) stored name coincides with placeholder text.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Test User", telegram_chat_id=910002)
+
+    def test_stored_name_matching_placeholder_text_does_not_corrupt(self):
+        from apps.pii.redactor import redact_user_message
+
+        # Stored name "PERSON" (6 chars, not degenerate) would, without the
+        # split-on-placeholder guard, rewrite the "PERSON" inside [PERSON_1].
+        self.tenant.pii_entity_map = {
+            "[LOCATION_9]": "PERSON",
+            "[PERSON_1]": "Sarah",
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        message = "Meeting with [PERSON_1] about the plan"
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            result = redact_user_message(message, self.tenant)
+
+        # The pre-existing placeholder is preserved verbatim.
+        self.assertIn("[PERSON_1]", result)
+        _assert_clean_placeholders(self, result)
+
+
+class MintGuardUnitTest(TestCase):
+    """Unit coverage for the three mint-time guards in ``_filter_results``."""
+
+    def test_degenerate_guard_drops_short_and_punctuation_spans(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        for text, etype in [("I", "CRYPTO_ADDRESS"), ("az", "IBAN_CODE"), ("_", "ACCOUNT"), ("[", "PERSON")]:
+            results = [DetectedEntity(etype, 0, len(text), 0.99)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
+    def test_degenerate_guard_keeps_checksummed_financial_spans(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        text = "4111111111111111"  # 16-digit, ≥3 chars, has digits
+        results = [DetectedEntity("CREDIT_CARD", 0, len(text), 1.0)]
+        self.assertEqual(len(_filter_results(results, text, set())), 1)
+
+    def test_numeric_guard_drops_bare_numbers_and_units_for_location_person(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        for text, etype in [
+            ("225", "LOCATION"),
+            ("140kg", "LOCATION"),
+            ("82", "PERSON"),
+            ("5x5", "LOCATION"),
+            ("315 lbs", "LOCATION"),
+            ("x10", "PERSON"),
+        ]:
+            results = [DetectedEntity(etype, 0, len(text), 0.8)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
+    def test_numeric_guard_does_not_apply_to_financial_types(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # A digit run typed PHONE_NUMBER/etc. must survive — only LOCATION and
+        # PERSON get the numeric guard.
+        text = "5551234"
+        results = [DetectedEntity("PHONE_NUMBER", 0, len(text), 0.9)]
+        self.assertEqual(len(_filter_results(results, text, set())), 1)
+
+    def test_numeric_guard_keeps_real_place_names(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        text = "Tokyo"
+        results = [DetectedEntity("LOCATION", 0, len(text), 0.9)]
+        self.assertEqual(len(_filter_results(results, text, set())), 1)
+
+    def test_fitness_vocab_guard_drops_exercise_terms(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        for text in ["deadlift", "Romanian Deadlifts", "Spider Curls", "bench press", "creatine"]:
+            results = [DetectedEntity("PERSON", 0, len(text), 0.9)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
+    def test_fitness_vocab_guard_keeps_real_names(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        text = "Sarah"
+        results = [DetectedEntity("PERSON", 0, len(text), 0.9)]
+        self.assertEqual(len(_filter_results(results, text, set())), 1)
+
+
+class FitnessFalsePositiveTest(TestCase):
+    """Bug B: lift numbers / exercise names must not redact, but real PII in
+    the same message still does. NER is mocked at the pipeline level so the
+    label-map (BUILDINGNUMBER dropped) and the guards both run for real.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Test User", telegram_chat_id=910003)
+
+    def _redact(self, message, hits):
+        from apps.pii.redactor import redact_user_message
+
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=_fake_pipeline(hits)),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            return redact_user_message(message, self.tenant)
+
+    def test_lift_numbers_not_redacted(self):
+        # BUILDINGNUMBER is now dropped by the label map entirely.
+        result = self._redact("I benched 225", [("BUILDINGNUMBER", "225", 0.707)])
+        self.assertEqual(result, "I benched 225")
+
+    def test_weight_with_unit_not_redacted(self):
+        # STREET → LOCATION, then the numeric+unit guard drops "140kg".
+        result = self._redact("squatted 140kg today", [("STREET", "140kg", 0.764)])
+        self.assertEqual(result, "squatted 140kg today")
+
+    def test_marginal_pin_number_not_redacted(self):
+        result = self._redact("my weight is 82kg", [("PIN", "82", 0.542)])
+        self.assertEqual(result, "my weight is 82kg")
+
+    def test_exercise_name_and_rep_scheme_not_redacted(self):
+        # FULLNAME is a real DeBERTa label that maps to PERSON — the vocab
+        # guard, not the label map, is what suppresses "Romanian Deadlifts".
+        result = self._redact(
+            "did Romanian Deadlifts 5x5 at 315 lbs",
+            [("FULLNAME", "Romanian Deadlifts", 0.85), ("STREET", "315 lbs", 0.7)],
+        )
+        self.assertEqual(result, "did Romanian Deadlifts 5x5 at 315 lbs")
+
+    def test_real_name_still_redacts_alongside_lift_number(self):
+        result = self._redact(
+            "tell John Smith I benched 225",
+            [("FULLNAME", "John Smith", 0.9), ("BUILDINGNUMBER", "225", 0.707)],
+        )
+        self.assertNotIn("John Smith", result)
+        self.assertIn("[PERSON_1]", result)
+        self.assertIn("225", result)  # lift number untouched
+
+
+class PinScoreOverrideTest(TestCase):
+    """PIN keeps redacting, but only at ≥0.7 (the LABEL_SCORE_OVERRIDES entry),
+    so marginal ~0.5 hits on lift numbers no longer fire.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Test User", telegram_chat_id=910004)
+
+    def _redact(self, message, hits):
+        from apps.pii.redactor import redact_user_message
+
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=_fake_pipeline(hits)),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            return redact_user_message(message, self.tenant)
+
+    def test_pin_below_override_not_redacted(self):
+        result = self._redact("my PIN is 4821", [("PIN", "4821", 0.6)])
+        self.assertEqual(result, "my PIN is 4821")
+
+    def test_pin_above_override_redacted_as_password(self):
+        result = self._redact("my PIN is 4821", [("PIN", "4821", 0.8)])
+        self.assertNotIn("4821", result)
+        self.assertIn("[PASSWORD_1]", result)
+
+
+class DenylistDegenerateCommandTest(TestCase):
+    """``denylist_degenerate_pii`` durably denylists ONLY the Bug-A culprits
+    (single-char + punctuation-only spans), keeps all entity-map rows for
+    rehydration, and never denylists 2-char alnum spans or legit names.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Test User", telegram_chat_id=910005)
+        self.tenant.pii_entity_map = {
+            "[CRYPTO_ADDRESS_16]": "I",  # single char → culprit
+            "[ACCOUNT_18]": "_",  # punctuation-only → culprit
+            "[EMAIL_ADDRESS_2]": "[",  # punctuation-only → culprit
+            "[IBAN_CODE_1]": "az",  # 2-char alnum → NOT durably denylisted
+            "[PERSON_7]": "Li",  # legit 2-char surname → NOT denylisted
+            "[PERSON_5]": "Sautai",  # legit name → untouched
+        }
+        self.tenant.pii_denylist = {}
+        self.tenant.save(update_fields=["pii_entity_map", "pii_denylist"])
+
+    def test_dry_run_writes_nothing(self):
+        import io
+
+        from django.core.management import call_command
+
+        out = io.StringIO()
+        call_command("denylist_degenerate_pii", stdout=out)
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.pii_denylist, {})
+        self.assertIn("DRY-RUN", out.getvalue())
+
+    def test_apply_denylists_only_bug_a_culprits_and_keeps_map(self):
+        import io
+
+        from django.core.management import call_command
+
+        from apps.pii.entity_registry import get_name
+
+        out = io.StringIO()
+        call_command("denylist_degenerate_pii", "--apply", stdout=out)
+
+        self.tenant.refresh_from_db()
+        # Single-char + punctuation-only culprits ARE denylisted.
+        self.assertIn("i", self.tenant.pii_denylist)
+        self.assertIn("_", self.tenant.pii_denylist)
+        self.assertIn("[", self.tenant.pii_denylist)
+        self.assertEqual(self.tenant.pii_denylist["i"]["reason"], "degenerate")
+        # 2-char alnum ("az") and legit 2-char surname ("Li") must NOT be
+        # durably denylisted — that would suppress the name forever.
+        self.assertNotIn("az", self.tenant.pii_denylist)
+        self.assertNotIn("li", self.tenant.pii_denylist)
+        self.assertNotIn("sautai", self.tenant.pii_denylist)
+        # entity_map rows are ALL KEPT so historical placeholders rehydrate.
+        self.assertEqual(len(self.tenant.pii_entity_map), 6)
+        self.assertEqual(get_name(self.tenant.pii_entity_map["[PERSON_5]"]), "Sautai")
+        self.assertEqual(get_name(self.tenant.pii_entity_map["[PERSON_7]"]), "Li")

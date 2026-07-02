@@ -36,7 +36,11 @@ DEBERTA_LABEL_MAP = {
     "STREET": "LOCATION",
     "STREETADDRESS": "LOCATION",
     "SECONDARYADDRESS": "LOCATION",
-    "BUILDINGNUMBER": "LOCATION",
+    # BUILDINGNUMBER omitted on purpose: a bare building number is
+    # indistinguishable from a lift weight/rep count ("benched 225",
+    # "squatted 140") and fired [LOCATION_N] over fitness logs fleet-wide.
+    # Street and city names still redact via STREET/STREETADDRESS/CITY, which
+    # carry the actual identifying token; the number alone is not load-bearing.
     "CITY": "LOCATION",
     "STATE": "LOCATION",
     "COUNTY": "LOCATION",
@@ -79,6 +83,17 @@ DEBERTA_LABEL_MAP = {
     # SEX, SEXTYPE. We intentionally drop those — they're context, not
     # identifying PII. (NUMBER in particular fires on credit-card digits
     # we already catch via Presidio's Luhn-validated CreditCardRecognizer.)
+}
+
+# Per-label minimum-score overrides, keyed by the model's RAW label (checked
+# before DEBERTA_LABEL_MAP collapses it). A detection must clear both the
+# tier's ``score_threshold`` AND any override here. Used to keep a label whose
+# true positives are high-confidence but whose false positives cluster just
+# above the global threshold — e.g. PIN fires near 0.5 on bare lift numbers,
+# but a real "my PIN is 4821" lands well above 0.7, so the override keeps
+# genuine PINs redacting while dropping the marginal fitness-number hits.
+LABEL_SCORE_OVERRIDES = {
+    "PIN": 0.7,
 }
 
 TIER_POLICIES = {
