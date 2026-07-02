@@ -4,11 +4,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BreathingOrb } from "@/components/core/breathing-orb";
 import { CoreAudioPlayer } from "@/components/core/audio-player";
+import { CoreContextPanel } from "@/components/core/context-panel";
 import { CoreStats } from "@/components/core/core-stats";
 import { CoreToast } from "@/components/core/core-toast";
+import { MeditationFeedback } from "@/components/core/meditation-feedback";
 import { MeditationLibrary } from "@/components/core/meditation-library";
 import { PhaseTimeline } from "@/components/core/phase-timeline";
-import { PHASES, computeCoreStats, dayKeyInTz, toMeditation, type Meditation } from "@/lib/core";
+import { PHASES, computeCoreStats, dayKeyInTz, friendlyFailure, toMeditation, type Meditation } from "@/lib/core";
 import { composeMeditation, fetchMeditation, fetchMeditations } from "@/lib/api";
 import { useMeQuery } from "@/lib/queries";
 import type { MeditationSession } from "@/lib/types";
@@ -58,6 +60,18 @@ export default function CorePage() {
   const todayKey = dayKeyInTz(new Date(), tz);
   const today = useMemo(() => library.find((m) => m.date === todayKey) ?? null, [library, todayKey]);
   const hasToday = today !== null;
+  // The raw session behind today's sit — carries the feedback fields the mapped
+  // `Meditation` shape drops. Used to seed + persist the feedback control.
+  const todaySession = useMemo(
+    () => (today ? (sessions.find((s) => s.id === today.id) ?? null) : null),
+    [sessions, today],
+  );
+
+  // Fold a feedback-updated session back into local state so the control stays
+  // in sync (and a later render doesn't clobber the just-saved signal).
+  const onFeedbackSaved = useCallback((updated: MeditationSession) => {
+    setSessions((prev) => prev.map((s) => (s.id === updated.id ? updated : s)));
+  }, []);
 
   // Guards an in-flight poll loop so it can be cancelled on unmount / re-compose.
   const pollRef = useRef<{ active: boolean }>({ active: false });
@@ -133,7 +147,9 @@ export default function CorePage() {
           if (session.status === "failed") {
             pollRef.current.active = false;
             setPhase("failed");
-            setError("Your meditation couldn't be composed just now. Please try again in a moment.");
+            // Surface a specific, gentle reason (from the server's error) instead
+            // of a generic line — no silent hang, no raw error dump.
+            setError(friendlyFailure(session.error));
             return;
           }
         }
@@ -214,9 +230,9 @@ export default function CorePage() {
           <span className="text-ink-muted">whenever you need it.</span>
         </h1>
         <p className="mt-4 max-w-[560px] text-sm leading-relaxed text-ink-muted">
-          Your assistant composes a guided meditation from what it&rsquo;s learned about your week
-          &mdash; the words, the pacing, where the silences fall &mdash; then voices it aloud. Nothing
-          runs, and nothing&rsquo;s billed, until you press the orb.
+          Your assistant composes a guided meditation drawn from your journal, your goals, your recent
+          activity, and anything you share below &mdash; the words, the pacing, where the silences fall
+          &mdash; then voices it aloud. Nothing runs, and nothing&rsquo;s billed, until you press the orb.
         </p>
       </header>
 
@@ -249,8 +265,8 @@ export default function CorePage() {
               <p className="mt-8 text-[10px] uppercase tracking-[0.22em] text-ink-faint">Today · on demand</p>
               <h2 className="mt-2 font-display text-2xl italic text-ink sm:text-3xl">Compose today&rsquo;s sit</h2>
               <p className="mx-auto mt-4 max-w-[430px] text-sm leading-relaxed text-ink-muted">
-                Press the orb and your assistant writes a fresh ten minutes from your week, then reads it
-                to you &mdash; pauses and all.
+                Press the orb and your assistant writes a fresh ten minutes from your journal, goals, and
+                recent days, then reads it to you &mdash; pauses and all.
               </p>
               <p className="mt-5 font-mono text-[11px] text-ink-faint">
                 Composed in the background · <span className="text-signal">then yours to replay free</span>, anytime
@@ -286,6 +302,14 @@ export default function CorePage() {
               <div className="mt-9 w-full max-w-[540px]">
                 <PhaseTimeline phases={PHASES} />
               </div>
+              {todaySession && (
+                <MeditationFeedback
+                  sessionId={todaySession.id}
+                  initialFeedback={todaySession.user_feedback}
+                  initialNote={todaySession.feedback_note}
+                  onSaved={onFeedbackSaved}
+                />
+              )}
             </>
           )}
 
@@ -306,6 +330,9 @@ export default function CorePage() {
         Prefer it ready each morning? A daily auto-compose is coming as an opt-in setting &mdash; for now,
         press the orb whenever you want a sit.
       </p>
+
+      {/* ── Consent channel: what you'd like your meditations to hold ── */}
+      <CoreContextPanel />
 
       {/* ── Stats ── */}
       <div className="mb-12">

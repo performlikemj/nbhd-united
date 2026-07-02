@@ -94,7 +94,10 @@ export interface MeditationSession {
   ogg_url: string;
   duration_ms: number | null;
   ambient_bed: string;
-  user_feedback: string;
+  error: string; // populated when status === "failed" — a short reason
+  user_feedback: string; // "" | "liked" | "disliked" | "skipped"
+  feedback_note: string;
+  feedback_at: string | null;
   created_at: string;
   updated_at: string;
 }

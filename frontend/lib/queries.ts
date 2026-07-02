@@ -123,6 +123,8 @@ import {
   updateBodyWeight,
   updateFuelSettings,
   updateCoreSettings,
+  fetchCoreProfile,
+  updateCoreProfile,
   fetchFuelProfile,
   updateFuelProfile,
   fetchWorkoutTemplates,
@@ -1498,6 +1500,29 @@ export function useUpdateCoreSettingsMutation() {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["tenant"] });
+    },
+  });
+}
+
+export function useCoreProfileQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["core-profile"],
+    queryFn: fetchCoreProfile,
+    staleTime: 10 * 60_000,
+    enabled: isLoggedIn() && !!tenant?.core_enabled,
+  });
+}
+
+export function useUpdateCoreProfileMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: updateCoreProfile,
+    onSuccess: (profile) => {
+      qc.setQueryData(["core-profile"], profile);
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["core-profile"] });
     },
   });
 }

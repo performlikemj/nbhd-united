@@ -79,6 +79,25 @@ function relativeDateLabel(dateKey: string, tz: string): string {
   return new Date(y, (m || 1) - 1, d || 1).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/**
+ * A gentle, honest sentence for a failed sit, mapped from the server's
+ * technical `error` string. Keeps the warmth (no raw error dumps) while being
+ * specific enough that the user isn't left with a silent hang.
+ */
+export function friendlyFailure(error?: string | null): string {
+  const e = (error ?? "").toLowerCase();
+  if (e.includes("tts_quota") || e.includes("rate")) {
+    return "The voice service is busy right now. Give it a few minutes, then press the orb to try again.";
+  }
+  if (e.includes("compose_error") || e.includes("manifest")) {
+    return "I couldn't quite find the words this time. Press the orb to try again in a moment.";
+  }
+  if (e.includes("gemini_api_key") || e.includes("not configured")) {
+    return "Something on our side isn't set up right for voicing your sit. Please try again shortly.";
+  }
+  return "Your meditation couldn't be composed just now. Please try again in a moment.";
+}
+
 /** API session row → the UI's Meditation shape. `tz` is the tenant's IANA zone. */
 export function toMeditation(s: MeditationSession, tz: string): Meditation {
   return {
