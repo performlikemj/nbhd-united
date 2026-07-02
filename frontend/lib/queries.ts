@@ -58,8 +58,10 @@ import {
   setPreferredChannel,
   approveExtraction,
   confirmInsight,
+  createPurpose,
   dismissExtraction,
   refuteInsight,
+  updatePurpose,
   completeTask,
   reopenTask,
   fetchHorizons,
@@ -278,6 +280,33 @@ export function useDismissExtractionMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: dismissExtraction,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["horizons"] });
+    },
+  });
+}
+
+export function useCreatePurposeMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ statement, pillars }: { statement: string; pillars?: string[] }) =>
+      createPurpose(statement, pillars),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["horizons"] });
+    },
+  });
+}
+
+export function useUpdatePurposeMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      patch,
+    }: {
+      id: string;
+      patch: { statement?: string; status?: import("@/lib/types").NorthStarStatus; pillars?: string[] };
+    }) => updatePurpose(id, patch),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["horizons"] });
     },

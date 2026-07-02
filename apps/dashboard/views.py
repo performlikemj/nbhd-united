@@ -248,7 +248,8 @@ class HorizonsView(APIView):
             reverse=True,
         )[:20]
 
-        # 2. Pending goal/task extractions (exclude expired)
+        # 2. Pending goal/task extractions (exclude expired). Purpose
+        # hypotheses render as their own North Star card below, not here.
         pending = list(
             PendingExtraction.objects.filter(
                 tenant=tenant,
@@ -363,8 +364,54 @@ class HorizonsView(APIView):
             .order_by("-created_at")[:20]
         )
 
+        # 7. North Star — the direction above goals. One unified list the
+        # Horizons card renders: confirmed/evolving Purpose rows plus anything
+        # still awaiting the user's yes/no (proposed Purpose rows the assistant
+        # created live, and nightly purpose-hypothesis cards). ``source`` tells
+        # the frontend which confirm/reject path to call. Local import — see
+        # feedback_local_reimport_pattern memory.
+        from apps.journal.models import Purpose
+
+        north_star = [
+            {
+                "id": str(p.id),
+                "source": "purpose",
+                "statement": p.statement,
+                "pillars": p.pillars or [],
+                "status": p.status,
+                "origin": p.origin,
+                "created_at": p.created_at.isoformat(),
+            }
+            for p in Purpose.objects.filter(
+                tenant=tenant,
+                status__in=[
+                    Purpose.Status.CONFIRMED,
+                    Purpose.Status.EVOLVING,
+                    Purpose.Status.PROPOSED,
+                ],
+            ).order_by("-updated_at")[:20]
+        ]
+        for card in PendingExtraction.objects.filter(
+            tenant=tenant,
+            kind=PendingExtraction.Kind.PURPOSE,
+            status=PendingExtraction.Status.PENDING,
+            expires_at__gte=timezone.now(),
+        ).order_by("-created_at")[:10]:
+            north_star.append(
+                {
+                    "id": str(card.id),
+                    "source": "extraction",
+                    "statement": card.text,
+                    "pillars": card.tags or [],
+                    "status": "proposed",
+                    "origin": "assistant_proposed",
+                    "created_at": card.created_at.isoformat(),
+                }
+            )
+
         return Response(
             {
+                "north_star": north_star,
                 "goals": [
                     {
                         "id": str(g["id"]),

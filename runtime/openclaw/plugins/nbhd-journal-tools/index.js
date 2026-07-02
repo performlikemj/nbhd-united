@@ -1293,7 +1293,7 @@ export default function register(api) {
   // DATABASE UPDATES, not prose edits — so completed goals don't linger in
   // context as if they were still active.
 
-  const PILLAR_ENUM = ["gravity", "fuel", "core", "lessons", "journal", "constellation"];
+  const PILLAR_ENUM = ["gravity", "fuel", "core", "lessons", "journal", "constellation", "horizons"];
 
   api.registerTool(wrap({
       name: "nbhd_goal_create",
@@ -1472,6 +1472,183 @@ export default function register(api) {
         const payload = await callRuntime(api, {
           path: tenantPath(api, `/goals/${encodeURIComponent(goalId)}/`),
           method: "GET",
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── North Star (Purpose) ─────────────────────────────────────────────
+  // The direction ABOVE goals — the user's long-horizon "why". CONSENT-FIRST:
+  // the assistant may PROPOSE a North Star (as a question) but must NEVER
+  // confirm one the user hasn't explicitly agreed to in conversation. A
+  // proposed purpose stays invisible to the always-on context until confirmed.
+  // Trigger cue: reach for these when the user talks about direction, meaning,
+  // "why am I doing this", long-term life goals, a major life/career decision,
+  // or what they want their life to add up to.
+
+  const PURPOSE_STATUS_ENUM = ["proposed", "confirmed", "evolving", "retired"];
+
+  api.registerTool(wrap({
+      name: "nbhd_purpose_list",
+      description:
+        "List the user's North Star purposes — the direction ABOVE goals. Filter by status (proposed/confirmed/evolving/retired). Call this BEFORE stating anything about the user's overall direction or purpose, and before proposing a new one (so you don't duplicate an existing North Star). Confirmed/evolving ones are also always visible in your loaded context.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          status: { type: "string", enum: PURPOSE_STATUS_ENUM },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const query = {};
+        const s = asTrimmedString(input.status);
+        if (s) query.status = s;
+        const payload = await callRuntime(api, {
+          path: journalPath(api, "/purposes/"),
+          method: "GET",
+          query,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_purpose_propose",
+      description:
+        "Propose a North Star — a long-horizon statement of the user's DIRECTION or purpose, the 'why' above their goals. Creates it as status=proposed ONLY: a proposal is a QUESTION, not a fact, and does not surface as a confirmed direction until the user agrees. Use SPARINGLY — at most about once a week — and only when a consistent thread spans MULTIPLE pillars. After proposing, put it to the user as a question ('It feels like a lot of what you're doing points toward X — does that ring true as a North Star?') and only call nbhd_purpose_confirm once they explicitly say yes. Never assert a purpose the user hasn't confirmed. Trigger cue: user talks about direction, meaning, why they're doing this, long-term/life goals, or a major life decision.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          statement: { type: "string", description: "The North Star statement, phrased as the user's direction." },
+          pillars: {
+            type: "array",
+            items: { type: "string", enum: PILLAR_ENUM },
+            description: "Pillar slugs this direction spans — a North Star is usually cross-pillar (2+).",
+          },
+          evidence: {
+            type: "array",
+            items: { type: "object" },
+            description: "Optional list of {kind, ref, note} signals that suggest this direction.",
+          },
+        },
+        required: ["statement"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const statement = asTrimmedString(input.statement);
+        if (!statement) throw new Error("statement is required");
+        const body = { statement };
+        if (Array.isArray(input.pillars)) body.pillars = input.pillars;
+        if (Array.isArray(input.evidence)) body.evidence = input.evidence;
+        const payload = await callRuntime(api, {
+          path: journalPath(api, "/purposes/propose/"),
+          method: "POST",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_purpose_confirm",
+      description:
+        "Confirm a proposed North Star as the user's real direction. CONSENT GATE: only call this AFTER the user has EXPLICITLY agreed in conversation — you must pass user_confirmed=true, and the endpoint rejects the call without it. Never confirm on a maybe, a silence, or your own inference. Once confirmed, the North Star becomes part of the user's always-on context and grounds future planning.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          purpose_id: { type: "string", description: "Purpose UUID (from nbhd_purpose_list or nbhd_purpose_propose)." },
+          user_confirmed: {
+            type: "boolean",
+            description: "MUST be true, and only set it after the user has explicitly agreed in conversation.",
+          },
+        },
+        required: ["purpose_id", "user_confirmed"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const purposeId = asTrimmedString(input.purpose_id);
+        if (!purposeId) throw new Error("purpose_id is required");
+        const payload = await callRuntime(api, {
+          path: journalPath(api, `/purposes/${encodeURIComponent(purposeId)}/confirm/`),
+          method: "POST",
+          body: { user_confirmed: input.user_confirmed === true },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_purpose_update",
+      description:
+        "Update a North Star — refine the statement or pillars, or mark a confirmed one as 'evolving' when the user is actively reshaping their direction. PATCH semantics (only included fields change). This CANNOT confirm a proposed purpose — use nbhd_purpose_confirm (with the user's explicit yes) for that. To retire a direction the user has moved past, set status='retired' (non-destructive; preserved for history).",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          purpose_id: { type: "string", description: "Purpose UUID." },
+          statement: { type: "string" },
+          pillars: { type: "array", items: { type: "string", enum: PILLAR_ENUM } },
+          evidence: { type: "array", items: { type: "object" } },
+          status: { type: "string", enum: ["evolving", "confirmed"], description: "Only 'evolving' (or re-affirming 'confirmed') — cannot promote a proposal." },
+        },
+        required: ["purpose_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const purposeId = asTrimmedString(input.purpose_id);
+        if (!purposeId) throw new Error("purpose_id is required");
+        const body = {};
+        for (const k of ["statement", "status"]) {
+          const v = asTrimmedString(input[k]);
+          if (v) body[k] = v;
+        }
+        if (Array.isArray(input.pillars)) body.pillars = input.pillars;
+        if (Array.isArray(input.evidence)) body.evidence = input.evidence;
+        const payload = await callRuntime(api, {
+          path: journalPath(api, `/purposes/${encodeURIComponent(purposeId)}/`),
+          method: "PATCH",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  api.registerTool(wrap({
+      name: "nbhd_purpose_link_goal",
+      description:
+        "Link a goal to a North Star so the direction gathers the goals that move the user toward it. Use when a goal the user is pursuing clearly serves a confirmed purpose. Both must belong to this user.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          purpose_id: { type: "string", description: "Purpose UUID." },
+          goal_id: { type: "string", description: "Goal UUID to attach." },
+        },
+        required: ["purpose_id", "goal_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const purposeId = asTrimmedString(input.purpose_id);
+        const goalId = asTrimmedString(input.goal_id);
+        if (!purposeId) throw new Error("purpose_id is required");
+        if (!goalId) throw new Error("goal_id is required");
+        const payload = await callRuntime(api, {
+          path: journalPath(api, `/purposes/${encodeURIComponent(purposeId)}/link-goal/`),
+          method: "POST",
+          body: { goal_id: goalId },
         });
         return renderPayload(payload);
       },

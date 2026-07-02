@@ -2,6 +2,7 @@
 
 import { GoalCard } from "@/components/goal-card";
 import { HorizonsSection } from "@/components/horizons/horizons-section";
+import { NorthStarSection } from "@/components/horizons/north-star-section";
 import { TopicSignalsSection } from "@/components/horizons/topic-signals-section";
 import { InsightCard } from "@/components/insight-card";
 import { MomentumStrip } from "@/components/momentum-strip";
@@ -81,6 +82,9 @@ export default function HorizonsPage() {
           Your goals, your momentum.
         </p>
       </div>
+
+      {/* North Star — the direction above goals */}
+      <NorthStarSection items={data.north_star ?? []} delay={80} />
 
       {/* Momentum — full width */}
       <HorizonsSection title="Momentum" subtitle="Last 30 days" delay={100}>

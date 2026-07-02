@@ -170,6 +170,41 @@ def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
     return "Added to your tasks! ✅", None
 
 
+def _approve_purpose(pending: PendingExtraction) -> tuple[str, None]:
+    """Materialize an approved purpose-hypothesis card into a confirmed Purpose.
+
+    Approving a North Star card IS the user's explicit assent, so the created
+    Purpose is ``CONFIRMED`` (not merely proposed) with ``origin=assistant_
+    proposed`` — the assistant surfaced it, the user endorsed it. Pillars are
+    carried from the card's ``tags``; the source date is recorded as evidence.
+    Idempotent-ish: a second approval of the same card would create a duplicate,
+    but ``ExtractionApproveView`` only acts on ``status=PENDING`` cards, so the
+    status flip guards re-entry.
+    """
+    from apps.journal.models import Purpose
+
+    pillars = [p for p in (pending.tags or []) if isinstance(p, str) and p.strip()]
+    evidence = []
+    if pending.source_date:
+        evidence.append(
+            {
+                "kind": "extraction",
+                "ref": pending.source_date.isoformat(),
+                "note": "Nightly cross-pillar hypothesis, confirmed by user.",
+            }
+        )
+    Purpose.objects.create(
+        tenant=pending.tenant,
+        statement=pending.text.strip(),
+        pillars=pillars,
+        origin=Purpose.Origin.ASSISTANT_PROPOSED,
+        status=Purpose.Status.CONFIRMED,
+        confirmed_at=timezone.now(),
+        evidence=evidence,
+    )
+    return "Set as your North Star. ✨", None
+
+
 # ── Undo actions ─────────────────────────────────────────────────────────────
 
 

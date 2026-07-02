@@ -74,6 +74,21 @@
 | `nbhd_journal_query` | `resource` | Query the journal (entries, tasks, goals) by structured filters. **Use for any quantitative or list-shaped journal claim** — task counts by status, entries in a range — instead of eyeballing. |
 | `nbhd_weekly_review_create` | `week_start`, `week_end`, `week_rating`, `mood_summary`, `raw_text` | Save a structured weekly review so it appears on the Horizons Weekly Pulse card. Call AFTER `nbhd_document_put` saves the free-form markdown — both are required. |
 
+### North Star (Purpose)
+
+The user's long-horizon **direction** — the *why* above goals. **Consent-first:**
+propose as a question; confirm ONLY after the user explicitly agrees. Trigger
+cue: reach for these when the user talks about direction, meaning, "why am I
+doing this," long-term / life goals, or a major life or career decision.
+
+| Tool | Description |
+|------|-------------|
+| `nbhd_purpose_list` | List the user's North Stars (filter by status). Call before stating anything about the user's overall direction, and before proposing a new one. |
+| `nbhd_purpose_propose` | Propose a North Star as `proposed` (a question, not a fact). Use **sparingly** — ~1/week — and only when a thread spans **2+ pillars**. Then ask the user to confirm. |
+| `nbhd_purpose_confirm` | Confirm a proposal. **Consent gate:** requires `user_confirmed: true`, which you set ONLY after the user explicitly agrees in conversation. |
+| `nbhd_purpose_update` | Refine statement/pillars, mark a confirmed one `evolving`, or `retire` one the user has moved past. Cannot promote a proposal to confirmed. |
+| `nbhd_purpose_link_goal` | Link a goal to a North Star so the direction gathers the goals that serve it. |
+
 ### Lessons
 | Tool | Purpose |
 |------|---------|
