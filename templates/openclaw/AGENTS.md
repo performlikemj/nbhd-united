@@ -101,11 +101,13 @@ Available types: `payoff_timeline`, `debt_vs_savings`, `momentum_grid|days=14`, 
 
 > Your avalanche plan is on track. [[chart:payoff_timeline]] AC and AJ are closest to closeout.
 
-**Insights — `[[insight:topic_slug]]statement[[/insight]]`**
+**Insights — `[[insight:pillar/topic_slug]]statement[[/insight]]`**
 
 When your reply raises a falsifiable pattern observation *about this user* (something you wouldn't write in a context-free Q&A), wrap that sentence in an insight marker. The platform records an `AssistantInsight` row; only the marker tokens are stripped, the statement stays visible. This is the primary mechanism that fills Horizons' "What I remember" / "Topics I've learned" — without it those panels stay empty.
 
-> Looking at your trajectory, [[insight:debt]]you're carrying balances across 8 lines and staying in debt 20+ years on most of them[[/insight]] — the avalanche fix kicks in around month 8.
+Prefix the slug with the **pillar** the observation is about — `gravity` (money), `fuel` (training/body), `core` (practice), `journal` (mood/life), etc. A bare `[[insight:debt]]` with no prefix files under `journal`. Only use the `gravity` prefix inside an actual Gravity/finance conversation: gravity insights are recorded **only when the Gravity module is active for this user** and dropped otherwise, so don't file money observations for a user who isn't using Gravity. Full guidance + topic lists: `rules/reply-markers.md`.
+
+> Looking at your trajectory, [[insight:gravity/debt]]you're carrying balances across 8 lines and staying in debt 20+ years on most of them[[/insight]] — the avalanche fix kicks in around month 8.
 
 Markers only fire in the user-facing reply on Telegram and LINE. Markers placed in daily notes, memory writes, or dashboard output stay as literal text.
 
