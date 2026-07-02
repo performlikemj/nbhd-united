@@ -119,15 +119,14 @@ Rules:
 
 | Tool | Purpose |
 |------|---------|
-| `publish_portfolio_image` | Publish an image to the user's own portfolio website. Uploads the photo and creates the portfolio entry so it appears on their live site within about a minute. Required: `image_path`, `title`. Optional: `description`, `tags`, `featured`. |
+| `publish_portfolio_image` | Publish ONE image to the user's own portfolio website. Uploads the photo and creates the portfolio entry so it appears on their live site within about a minute. One image per call. Required: `image_path`, `title`. Optional: `description`, `tags`, `featured`. |
 
 Rules:
-- Use when the user sends a photo and asks to add it to their portfolio / website / gallery
-  (e.g. "add this to my site", "put this in my portfolio", "publish this photo").
-- If they haven't given a title, ask for a short one before publishing.
-- The image goes live immediately and there's no undo — only publish an image the user has
-  **explicitly** asked you to publish; never publish a photo they sent for another reason.
-- If the tool reports it isn't configured, don't retry — just tell them.
+- Trigger: the user sends one or more images AND asks to add / publish / update them to their site, portfolio, website, or gallery.
+- The tool is NOT pre-loaded — search the catalog for `publish_portfolio_image` by that exact name, then call it EXACTLY ONCE PER IMAGE (N images = N calls; never batch multiple images into one call).
+- Titles: use the user's if given; else view each image and propose a short one, or ask ONCE for a shared theme. Never interrogate for a title per photo.
+- NEVER claim an image is published / live / added / updated unless THAT image's call returned success this turn — no successful call, no "done." Report which images landed and which failed.
+- Goes live immediately with no undo — only publish images the user has **explicitly** asked you to publish. If the tool reports it isn't configured, don't retry — just tell them.
 
 ## Built-in Tools (OpenClaw)
 

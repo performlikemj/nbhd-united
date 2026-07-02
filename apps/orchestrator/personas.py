@@ -487,6 +487,34 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     if agents_extras:
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + agents_extras
 
+    # Site publishing gate — behavioral, per-tenant. Only tenants with their own
+    # website connected (site_publishing_enabled) load the publish_portfolio_image
+    # tool, so the imperative cue that makes the agent actually CALL it — rather
+    # than confabulate "done" — is gated the same way (reconcile-gate style; under
+    # toolSearch a passive note doesn't make the model reach for the tool: proven,
+    # the agent cataloged the tool but never called it until this gate landed).
+    # Placed BEFORE the larger Gravity block so that if AGENTS.md exceeds the
+    # bootstrap char budget, this critical anti-confabulation gate is not the tail
+    # that gets silently truncated.
+    if tenant is not None and getattr(tenant, "site_publishing_enabled", False):
+        site_publish_gate = (
+            "## Portfolio publish gate\n\n"
+            "If the user sends one or more images AND asks to add / publish / put / update them "
+            "on their site, portfolio, website, or gallery → search the tool catalog for "
+            "`publish_portfolio_image` by name and call it FIRST, before replying, exactly ONCE "
+            "PER IMAGE. It is NOT pre-loaded; you must find it via toolSearch, then call it — "
+            "three photos means three calls. Do not skip the call.\n\n"
+            "Pass per call: `image_path` and `title` (both required). If the user gave no title, "
+            "view the image and propose a short one yourself, OR ask ONCE for a shared theme "
+            "across all the images — never interrogate for a title per photo.\n\n"
+            "NEVER tell the user an image is added / published / live / updated unless THAT "
+            "image's `publish_portfolio_image` call returned success THIS turn. No successful "
+            'call → no "done." Report exactly which images landed and which did not; name any '
+            "that failed and retry or ask. If a call reports that publishing isn't configured, "
+            "do NOT retry — tell the user site publishing isn't set up yet."
+        )
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + site_publish_gate
+
     # Gravity observation-mode rules — behavioral, belongs in AGENTS.md
     # (not USER.md). The rules block is ~6 KB of static text; until
     # 2026-05-22 it lived in USER.md via apps/insights/envelope.py, which
@@ -500,6 +528,7 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         result["NBHD_AGENTS_MD"] = (
             result["NBHD_AGENTS_MD"] + "\n\n## Gravity Observation Mode\n\n" + render_observation_mode_rules(tenant)
         )
+
     # Load static reference docs
     for key, filename in _WORKSPACE_DOCS.items():
         content = _load_doc_template(filename)
