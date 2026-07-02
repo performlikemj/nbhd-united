@@ -87,6 +87,20 @@ class TopicResolverTests(TestCase):
         self.assertEqual(topic.pillar, Pillar.GRAVITY.value)
         self.assertEqual(topic.pk, self.canonical.pk)
 
+    def test_same_slug_coexists_across_pillars(self):
+        # Uniqueness is scoped to (pillar, slug) — TopicRegistry is a GLOBAL
+        # taxonomy (no tenant FK), so two pillars can each hold the same slug
+        # without colliding. Cross-pillar topics must never merge.
+        gravity_dining = resolve_topic(Pillar.GRAVITY.value, "dining")
+        fuel_dining = resolve_topic(Pillar.FUEL.value, "dining")
+        self.assertEqual(gravity_dining.slug, "dining")
+        self.assertEqual(fuel_dining.slug, "dining")
+        self.assertNotEqual(gravity_dining.pk, fuel_dining.pk)
+        self.assertEqual(gravity_dining.pillar, Pillar.GRAVITY.value)
+        self.assertEqual(fuel_dining.pillar, Pillar.FUEL.value)
+        # Same slug, two distinct rows.
+        self.assertEqual(TopicRegistry.objects.filter(slug="dining").count(), 2)
+
     def test_non_canonical_slug_does_not_match(self):
         TopicRegistry.objects.create(
             pillar=Pillar.GRAVITY.value,
@@ -323,8 +337,14 @@ class InsightsApiTests(TestCase):
         self.assertEqual(resp.json()["count"], 0)
 
     def test_history_rejects_invalid_pillar(self):
-        resp = self.client.get("/api/v1/insights/history/?pillar=fuel")
+        resp = self.client.get("/api/v1/insights/history/?pillar=not_a_pillar")
         self.assertEqual(resp.status_code, 404)
+
+    def test_history_accepts_non_gravity_pillar(self):
+        # Pillars beyond Gravity are queryable now (empty history, not 404).
+        resp = self.client.get("/api/v1/insights/history/?pillar=fuel")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["count"], 0)
 
     def test_history_rejects_invalid_window(self):
         resp = self.client.get("/api/v1/insights/history/?pillar=gravity&window=garbage")
@@ -442,10 +462,18 @@ class RuntimeInsightsViewTests(TestCase):
 
     def test_runtime_history_rejects_invalid_pillar(self):
         resp = self.client.get(
-            self._history_url(query="?pillar=fuel"),
+            self._history_url(query="?pillar=not_a_pillar"),
             **self._headers(),
         )
         self.assertEqual(resp.status_code, 404)
+
+    def test_runtime_history_accepts_non_gravity_pillar(self):
+        resp = self.client.get(
+            self._history_url(query="?pillar=core"),
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["count"], 0)
 
     def test_runtime_history_rejects_invalid_window(self):
         resp = self.client.get(
@@ -640,10 +668,19 @@ class Phase2EndpointTests(TestCase):
     def test_record_rejects_invalid_pillar(self):
         resp = self.jwt_client.post(
             "/api/v1/insights/insights/record/",
-            data={"pillar": "fuel", "topic": "sleep_quality", "statement": "."},
+            data={"pillar": "not_a_pillar", "topic": "sleep_quality", "statement": "."},
             format="json",
         )
         self.assertEqual(resp.status_code, 404)
+
+    def test_record_accepts_non_gravity_pillar(self):
+        resp = self.jwt_client.post(
+            "/api/v1/insights/insights/record/",
+            data={"pillar": "fuel", "topic": "sleep_quality", "statement": "you sleep less near deadlines"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.json()["pillar"], "fuel")
 
     def test_record_rejects_missing_statement(self):
         resp = self.jwt_client.post(
@@ -1082,10 +1119,19 @@ class Phase3EndpointTests(TestCase):
     def test_set_voice_pref_rejects_invalid_pillar(self):
         resp = self.client_jwt.post(
             "/api/v1/insights/voice-prefs/set/",
-            data={"pillar": "fuel", "topic": "sleep_quality", "register_offset": 1},
+            data={"pillar": "not_a_pillar", "topic": "sleep_quality", "register_offset": 1},
             format="json",
         )
         self.assertEqual(resp.status_code, 404)
+
+    def test_set_voice_pref_accepts_non_gravity_pillar(self):
+        resp = self.client_jwt.post(
+            "/api/v1/insights/voice-prefs/set/",
+            data={"pillar": "fuel", "topic": "sleep_quality", "register_offset": 1},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["pillar"], "fuel")
 
     def test_list_voice_prefs_isolates_tenant(self):
         UserVoicePref.objects.create(
