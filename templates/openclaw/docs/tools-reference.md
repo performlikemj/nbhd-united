@@ -71,8 +71,8 @@
 | Tool | Required params | Purpose |
 |------|----------------|---------|
 | `nbhd_current_status` | none | Authoritative as-of-now snapshot: open tasks, active goals, and finance payment obligations. Use when the user asks "where am I at" / "what's on my plate". |
-| `nbhd_journal_query` | (filters) | Query the journal (entries, tasks, goals) by structured filters. **Use for any quantitative or list-shaped journal claim** — task counts by status, entries in a range — instead of eyeballing. |
-| `nbhd_weekly_review_create` | (see tool) | Save a structured weekly review so it appears on the Horizons Weekly Pulse card. Call AFTER `nbhd_document_put` saves the free-form markdown — both are required. |
+| `nbhd_journal_query` | `resource` | Query the journal (entries, tasks, goals) by structured filters. **Use for any quantitative or list-shaped journal claim** — task counts by status, entries in a range — instead of eyeballing. |
+| `nbhd_weekly_review_create` | `week_start`, `week_end`, `week_rating`, `mood_summary`, `raw_text` | Save a structured weekly review so it appears on the Horizons Weekly Pulse card. Call AFTER `nbhd_document_put` saves the free-form markdown — both are required. |
 
 ### Lessons
 | Tool | Purpose |
@@ -158,7 +158,7 @@ Rules:
 ### Plans (multi-week programs)
 | Tool | Required params | Purpose |
 |------|----------------|---------|
-| `nbhd_fuel_create_plan` | `name` | **Use whenever the user asks to make / build / design / lay out / fill out a plan, program, routine, or schedule.** You supply the WEEKLY CADENCE (`schedule_json`, weekday 0=Mon..6=Sun); the backend assigns calendar dates in the user's timezone — never compute weekdays yourself. Check `nbhd_fuel_summary` for an existing active plan first. |
+| `nbhd_fuel_create_plan` | `name`, `weeks`, `days_per_week`, `schedule_json` | **Use whenever the user asks to make / build / design / lay out / fill out a plan, program, routine, or schedule.** You supply the WEEKLY CADENCE (`schedule_json`, weekday 0=Mon..6=Sun); the backend assigns calendar dates in the user's timezone — never compute weekdays yourself. Check `nbhd_fuel_summary` for an existing active plan first. |
 | `nbhd_fuel_update_plan` | `plan_id` | Change a plan's name, status (active/paused/completed/archived), notes, or schedule. Schedule/weeks changes regenerate future planned workouts; per-workout customizations are preserved when (date, activity) still matches. |
 | `nbhd_fuel_delete_plan` | `plan_id` | Delete a plan and all future planned workouts (completed workouts are preserved, unlinked). **Always confirm first.** |
 
@@ -176,15 +176,15 @@ Rules:
 
 | Tool | Required params | Purpose |
 |------|----------------|---------|
-| `nbhd_finance_add_account` | `nickname`, `account_type` | Add or update a debt/savings account (upserts by nickname). Credit cards, loans, savings, etc. |
+| `nbhd_finance_add_account` | `nickname`, `account_type`, `current_balance` | Add or update a debt/savings account (upserts by nickname). Credit cards, loans, savings, etc. |
 | `nbhd_finance_list_accounts` | none | List accounts with balances, rates, payment info. `archived_only=true` to see archived (for restore); `include_archived=true` for everything. |
-| `nbhd_finance_record_payment` | `nickname`, `amount` | Record a payment toward an account (auto-updates balance). Fuzzy-matches by nickname. |
-| `nbhd_finance_update_balance` | `nickname`, `balance` | Directly set a new statement balance ("my Chase card is now $3,800"). |
-| `nbhd_finance_archive_account` | `nickname` | Hide an account from the dashboard/totals/payoff while preserving history (duplicate, stale, paid-off). Not a delete. |
-| `nbhd_finance_unarchive_account` | `nickname` | Restore an archived account back into dashboard + totals. |
-| `nbhd_finance_calculate_payoff` | none | Compare snowball / avalanche / hybrid payoff strategies (timelines, total interest, schedules). **When the user confirms a strategy, set `save=true`** so the plan lands on the Gravity dashboard. |
+| `nbhd_finance_record_payment` | `account_nickname`, `amount` | Record a payment toward an account (auto-updates balance). Fuzzy-matches by nickname. |
+| `nbhd_finance_update_balance` | `account_nickname`, `new_balance` | Directly set a new statement balance ("my Chase card is now $3,800"). |
+| `nbhd_finance_archive_account` | `account_nickname` | Hide an account from the dashboard/totals/payoff while preserving history (duplicate, stale, paid-off). Not a delete. |
+| `nbhd_finance_unarchive_account` | `account_nickname` | Restore an archived account back into dashboard + totals. |
+| `nbhd_finance_calculate_payoff` | `monthly_budget` | Compare snowball / avalanche / hybrid payoff strategies (timelines, total interest, schedules). **When the user confirms a strategy, set `save=true`** so the plan lands on the Gravity dashboard. |
 | `nbhd_finance_summary` | none | Complete overview: total debt, total savings, accounts, active plan, monthly minimums. Prefer `nbhd_gravity_query` for slices. |
-| `nbhd_gravity_query` | (filters) | **Query the ledger for any quantitative finance claim** — debt totals, payment history, payoff progress. Use instead of reciting numbers from memory. |
+| `nbhd_gravity_query` | `resource` (accounts/transactions/plan) | **Query the ledger for any quantitative finance claim** — debt totals, payment history, payoff progress. Use instead of reciting numbers from memory. |
 
 ## Insights Tools (`nbhd-insights-tools` plugin — only loaded when Gravity/finance is enabled)
 
@@ -194,11 +194,11 @@ Rules:
 |------|----------------|---------|
 | `nbhd_insights_history` | `pillar` | List recent pillar snapshots over a window to reason about trajectory ("how has debt trended over 8 weeks?"). Newest-first with full payloads. Currently `pillar='gravity'`. |
 | `nbhd_insights_snapshot` | `snapshot_id` | Fetch one snapshot's full payload after history identifies a period to dig into. |
-| `nbhd_insights_compare` | `a_id`, `b_id` | Compare two snapshots; returns a signed `totals_delta` (b − a) for "what changed between then and now?". |
+| `nbhd_insights_compare` | `pillar`, `period_a`, `period_b` | Compare two snapshots; returns a signed `totals_delta` (b − a) for "what changed between then and now?". |
 | `nbhd_insights_baseline` | `pillar`, `topic` | Rolling baseline stats (mean, stdev, latest_z, trend, freshness) for a topic. Check **before** deciding a pattern is anomalous (`|latest_z|`>~1.5 hints anomaly — weigh against context). |
 | `nbhd_insights_signals` | `pillar`, `topic` | Structured signals for judging which voice register to use this turn (data state, calibration counts, intent, user override, hard_floors). **You** pick the register; never exceed `hard_floors`. |
 | `nbhd_insights_list` | none | List AssistantInsight rows you previously recorded — your own memory. **Check before raising a new observation** so you don't repeat a refuted one. Filter by pillar/topic/status. |
-| `nbhd_insights_record` | `pillar`, `topic`, `observation` | Record an observation you just raised (status starts 'open'). Use `evidence_refs` to point at supporting snapshots. Skip noise — single-week blips, <10% deltas. |
+| `nbhd_insights_record` | `pillar`, `topic`, `statement` | Record an observation you just raised — `statement` is your phrased interpretation (status starts 'open'). Use `evidence_refs` to point at supporting snapshots. Skip noise — single-week blips, <10% deltas. |
 | `nbhd_insights_confirm` | `insight_id` | Mark an insight confirmed when the user agrees. Idempotent. |
 | `nbhd_insights_refute` | `insight_id` | Mark an insight refuted when the user corrects you — the row stays so you don't re-raise it. Be quick to refute. |
 | `nbhd_insights_voice_pref_set` | `pillar`, `register_offset` | Persist the user's EXPLICIT voice override ("just tell me about dining" → +1; "be more cautious on debt" → −1). Only on explicit request, never inference. |
