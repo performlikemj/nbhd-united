@@ -128,7 +128,17 @@ class MeditationSession(models.Model):
         max_length=16,
         blank=True,
         default="",
-        help_text="Optional user signal, e.g. 'liked', 'skipped'.",
+        help_text="Optional user signal, e.g. 'liked', 'disliked', 'skipped'.",
+    )
+    feedback_note = models.TextField(
+        blank=True,
+        default="",
+        help_text="Optional free-text the user leaves about this sit (what landed, what didn't).",
+    )
+    feedback_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the user last left feedback on this sit.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

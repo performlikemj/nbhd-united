@@ -18,7 +18,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from apps.core import compose, render
-from apps.core.models import CoreProfile, MeditationSession, MeditationStatus
+from apps.core.models import CoreOnboardingStatus, CoreProfile, MeditationSession, MeditationStatus
 from apps.orchestrator.azure_client import upload_workspace_file_binary
 from apps.tenants.models import Tenant
 
@@ -29,6 +29,41 @@ logger = logging.getLogger(__name__)
 # bypass the SMB text-sanitize chokepoint, which is correct for mp3/ogg.
 _MEDITATION_DIR = "workspace/meditations"
 _READY_JOB_NAME = "_core:ready"
+
+# Forward-only onboarding ladder. DECLINED is off-ladder (a user opt-out we never
+# auto-override). pending → in_progress (they engaged: saved a profile) →
+# completed (they landed a first meditation). See advance_core_onboarding.
+_ONBOARDING_RANK = {
+    CoreOnboardingStatus.PENDING: 0,
+    CoreOnboardingStatus.IN_PROGRESS: 1,
+    CoreOnboardingStatus.COMPLETED: 2,
+}
+
+
+def advance_core_onboarding(profile: CoreProfile, target: str) -> bool:
+    """Idempotently move a CoreProfile forward through onboarding.
+
+    Never regresses (a higher status is left alone), never touches a DECLINED
+    profile (an explicit opt-out), and is a no-op when already at/past ``target``.
+    Returns True only when it actually advanced. Best-effort at call sites: the
+    onboarding status is a nicety, never worth failing a save/render over.
+    """
+    if profile.onboarding_status == CoreOnboardingStatus.DECLINED:
+        return False
+    if _ONBOARDING_RANK.get(target, 0) <= _ONBOARDING_RANK.get(profile.onboarding_status, 0):
+        return False
+    profile.onboarding_status = target
+    profile.save(update_fields=["onboarding_status", "updated_at"])
+    return True
+
+
+def _advance_onboarding_on_ready(tenant: Tenant) -> None:
+    """A first successful (ready) meditation completes onboarding. Best-effort."""
+    try:
+        profile, _created = CoreProfile.objects.get_or_create(tenant=tenant)
+        advance_core_onboarding(profile, CoreOnboardingStatus.COMPLETED)
+    except Exception:
+        logger.debug("core onboarding advance-on-ready failed", exc_info=True)
 
 
 def gather_meditation_signals(tenant: Tenant) -> dict:
@@ -86,7 +121,59 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
             signals["recent_notes"] = snippets
     except Exception:
         logger.debug("gather_meditation_signals: daily-note read failed", exc_info=True)
+    try:
+        goals = _active_goal_titles(tenant)
+        if goals:
+            signals["active_goals"] = goals
+    except Exception:
+        logger.debug("gather_meditation_signals: goals read failed", exc_info=True)
+    # Fuel is consent-scoped: only surface a recent-activity line when the tenant
+    # has Fuel enabled (the same enablement gate the Fuel plugin/UI honor).
+    if getattr(tenant, "fuel_enabled", False):
+        try:
+            fuel = _recent_fuel_summary(tenant)
+            if fuel:
+                signals["fuel_summary"] = fuel
+        except Exception:
+            logger.debug("gather_meditation_signals: fuel read failed", exc_info=True)
+    # TODO(purpose): when the North Star (Purpose) layer lands, fold the user's
+    # active purpose/north-star (title only, consent-scoped) in here so the sit
+    # can gently orient toward it. Do NOT import the Purpose model yet — it is
+    # built in a parallel branch; wire this once that model is on main.
     return signals
+
+
+def _active_goal_titles(tenant: Tenant, *, limit: int = 5) -> list[str]:
+    """Titles of the user's active journal goals (titles only — no descriptions).
+
+    Bounded and title-only on purpose: the guide gets the shape of what they're
+    working toward without a data dump. Best-effort; the caller swallows failures.
+    """
+    from apps.journal.models import Goal
+
+    titles = (
+        Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE)
+        .order_by("-updated_at")
+        .values_list("title", flat=True)[:limit]
+    )
+    return [t.strip()[:120] for t in titles if (t or "").strip()]
+
+
+def _recent_fuel_summary(tenant: Tenant, *, days: int = 7) -> str:
+    """One gentle line about the user's recent training (consent-scoped to Fuel).
+
+    Counts completed workouts in the tenant-local last-``days`` window. Returns a
+    single short sentence (never a per-workout dump), or "" when nothing to say.
+    """
+    from apps.common.tenant_tz import tenant_today
+    from apps.fuel.models import Workout, WorkoutStatus
+
+    since = tenant_today(tenant) - timedelta(days=days)
+    done = Workout.objects.filter(tenant=tenant, status=WorkoutStatus.DONE, date__gte=since).count()
+    if not done:
+        return ""
+    unit = "workout" if done == 1 else "workouts"
+    return f"They completed {done} {unit} in the last {days} days."
 
 
 def _recent_note_snippets(tenant: Tenant, *, days: int = 7, limit: int = 3, cap: int = 220) -> list[str]:
@@ -129,6 +216,7 @@ def compose_meditation(session: MeditationSession) -> None:
     except compose.ComposeError as exc:
         logger.warning("compose_meditation: session %s authoring failed: %s", sid[:8], str(exc)[:160])
         _fail(session, f"compose_error: {exc}")
+        _log_compose_failure(session.tenant, str(exc))
         return
 
     session.manifest = manifest
@@ -289,6 +377,10 @@ def render_meditation(session: MeditationSession) -> None:
         result.failed_count,
     )
 
+    # A first successful sit completes Core onboarding (idempotent, best-effort —
+    # a failure here must never touch the already-stored render).
+    _advance_onboarding_on_ready(session.tenant)
+
     # Observability: the manifest is rejected pre-render when its ESTIMATE blows
     # past the target, but TTS length varies — flag a ready sit that still ran
     # long against its target so a drift in the composer is visible in logs.
@@ -315,6 +407,28 @@ def _fail(session: MeditationSession, message: str) -> None:
     session.status = MeditationStatus.FAILED
     session.error = message[:480]
     _save_session(session, ["status", "error", "updated_at"])
+
+
+def _log_compose_failure(tenant: Tenant, reason: str) -> None:
+    """Record a terminal compose failure to platform_logs for fleet visibility.
+
+    Core's compose has a history of quiet failures; surfacing each terminal one
+    (every model in the chain failed) as a PlatformIssueLog row makes the rate
+    actionable instead of invisible. Best-effort — never breaks the compose path.
+    """
+    try:
+        from apps.platform_logs.models import PlatformIssueLog
+
+        PlatformIssueLog.objects.create(
+            tenant=tenant,
+            category=PlatformIssueLog.Category.OTHER,
+            severity=PlatformIssueLog.Severity.MEDIUM,
+            tool_name="core_compose",
+            summary="Core meditation compose failed (every model in the chain)"[:500],
+            detail=reason[:2000],
+        )
+    except Exception:
+        logger.debug("core compose: platform-log record failed", exc_info=True)
 
 
 def _save_session(session: MeditationSession, update_fields: list[str]) -> None:

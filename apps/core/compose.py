@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from django.conf import settings
 
@@ -42,6 +43,23 @@ DEFAULT_COMPOSE_MODEL = GEMMA_MODEL
 _FALLBACK_COMPOSE_MODELS = [DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL]
 _MAX_OUTPUT_TOKENS = 3000  # headroom: holistic manifests carry many explicit-silence segments
 _LLM_TIMEOUT_S = 60
+# A transient hiccup (timeout / 429 / 5xx) on the FIRST attempt of a model gets
+# ONE retry after a short backoff before we give up on that model and fall to the
+# next. Content failures (unparseable / invalid manifest) are NOT retried — a
+# retry can't fix bad content, so we fall straight through to the next model.
+_RETRY_BACKOFF_S = 2.0
+_TRANSIENT_MARKERS = (
+    "429",
+    "500",
+    "502",
+    "503",
+    "504",
+    "timeout",
+    "timed out",
+    "connection",
+    "temporarily",
+    "rate limit",
+)
 
 # Rough per-phase time budgets (seconds) for the ~10-min arc — guidance the model
 # paces toward and a fallback when it omits one. The model now OWNS the allocation
@@ -173,6 +191,14 @@ def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_
             "actively revisiting) — let these gently shape the heart of the sit:"
         )
         lines.extend(_constellation_line(s) for s in stars[:4])
+    goals = signals.get("active_goals") or []
+    if goals:
+        lines.append(
+            "What they're actively working toward (their stated goals — hold these gently, don't recite them):"
+        )
+        lines.extend(f"- {g}" for g in goals[:5])
+    if signals.get("fuel_summary"):
+        lines.append(f"Recent movement: {signals['fuel_summary']}")
     if signals.get("last_meditation_theme"):
         lines.append(f"Their last meditation's theme (vary from it): {signals['last_meditation_theme']}")
     if signals.get("additional_context"):
@@ -251,15 +277,39 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
+def _is_transient(exc: Exception) -> bool:
+    """A transport hiccup worth one retry (timeout / rate-limit / 5xx), vs. a hard
+    failure (bad content, auth) where a retry can't help."""
+    return any(marker in str(exc).lower() for marker in _TRANSIENT_MARKERS)
+
+
+def _call_model(model_id: str, messages: list, api_key: str, body: dict) -> tuple[dict, str]:
+    """One model's chat_completion with a single transient-error retry + backoff.
+
+    Content problems fall through to the caller unretried (the next model handles
+    them); only a transient transport error triggers the one backed-off retry.
+    """
+    try:
+        return chat_completion(model_id, messages, api_key=api_key, timeout=_LLM_TIMEOUT_S, **body)
+    except Exception as exc:  # noqa: BLE001 — decide retry vs. propagate
+        if not _is_transient(exc):
+            raise
+        logger.info("compose: transient error on %s (%s) — one retry after backoff", model_id, str(exc)[:120])
+        time.sleep(_RETRY_BACKOFF_S)
+        return chat_completion(model_id, messages, api_key=api_key, timeout=_LLM_TIMEOUT_S, **body)
+
+
 def author_manifest(signals: dict, *, voice: str = "", model: str = "") -> dict:
     """Author a validated render manifest from raw signals via the LLM chain.
 
     Tries each model in ``_compose_models`` in order; the first whose response
-    parses, normalizes, AND passes ``render.validate_manifest`` wins. A candidate
-    that fails transport, returns unparseable JSON, returns valid JSON that isn't a
-    manifest object, or returns a structurally-invalid manifest is logged and the
-    next candidate is tried. Raises ``ComposeError`` if the key is missing or every
-    candidate fails (carrying every candidate's failure reason for diagnosis).
+    parses, normalizes, AND passes ``render.validate_manifest`` wins. Each model
+    gets ONE backed-off retry on a transient transport error (timeout / 429 / 5xx)
+    before it's abandoned. A candidate that fails transport (after its retry),
+    returns unparseable JSON, returns valid JSON that isn't a manifest object, or
+    returns a structurally-invalid manifest is logged and the next candidate is
+    tried. Raises ``ComposeError`` if the key is missing or every candidate fails
+    (carrying every candidate's failure reason for diagnosis).
     """
     api_key = getattr(settings, "OPENROUTER_API_KEY", "") or ""
     if not api_key:
@@ -284,7 +334,7 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "") -> dict:
 
     for model_id in candidates:
         try:
-            data, _used = chat_completion(model_id, messages, api_key=api_key, timeout=_LLM_TIMEOUT_S, **body)
+            data, _used = _call_model(model_id, messages, api_key, body)
             content = _strip_code_fences((data["choices"][0]["message"]["content"] or "").strip())
         except Exception as exc:  # noqa: BLE001 — record + fall through to the next model
             _record(model_id, f"LLM call failed: {str(exc)[:160]}")

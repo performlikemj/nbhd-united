@@ -3,13 +3,14 @@
 import logging
 
 from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
-from rest_framework.generics import ListAPIView, RetrieveAPIView
+from rest_framework.generics import ListAPIView, RetrieveUpdateAPIView
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import CoreProfile, MeditationSession, MeditationStatus
+from .models import CoreOnboardingStatus, CoreProfile, MeditationSession, MeditationStatus
 from .serializers import CoreProfileSerializer, MeditationSessionSerializer
 
 _logger = logging.getLogger(__name__)
@@ -161,7 +162,15 @@ class CoreProfileView(APIView):
         serializer = CoreProfileSerializer(profile, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(serializer.data)
+
+        # Saving the profile is an act of engagement — advance a still-pending
+        # onboarding to in_progress (idempotent, forward-only, never touches a
+        # DECLINED profile). The previous advancing path (runtime views) was
+        # never called, so onboarding_status was frozen at "pending" fleet-wide.
+        from .services import advance_core_onboarding
+
+        advance_core_onboarding(profile, CoreOnboardingStatus.IN_PROGRESS)
+        return Response(CoreProfileSerializer(profile).data)
 
 
 class MeditationSessionListView(ListAPIView):
@@ -183,18 +192,33 @@ class MeditationSessionListView(ListAPIView):
         return qs
 
 
-class MeditationSessionDetailView(RetrieveAPIView):
-    """GET a single meditation by id (tenant-scoped)."""
+class MeditationSessionDetailView(RetrieveUpdateAPIView):
+    """GET a single meditation by id (tenant-scoped); PATCH the feedback signals.
+
+    Only the feedback fields (``user_feedback``, ``feedback_note``) are writable
+    — the serializer marks everything else read-only, so a PATCH can only ever
+    touch feedback. PUT is disabled; feedback is a partial update. ``feedback_at``
+    is stamped server-side whenever a feedback field is submitted.
+    """
 
     permission_classes = [IsAuthenticated]
     serializer_class = MeditationSessionSerializer
     lookup_field = "id"
+    http_method_names = ["get", "patch", "head", "options"]
 
     def get_queryset(self):
         tenant = getattr(self.request.user, "tenant", None)
         if not tenant:
             return MeditationSession.objects.none()
         return MeditationSession.objects.filter(tenant=tenant)
+
+    def perform_update(self, serializer):
+        # Stamp when the user actually left a feedback signal (either field), so
+        # the timestamp reflects real feedback, not an incidental save.
+        extra = {}
+        if "user_feedback" in serializer.validated_data or "feedback_note" in serializer.validated_data:
+            extra["feedback_at"] = timezone.now()
+        serializer.save(**extra)
 
 
 class CoreComposeView(APIView):
