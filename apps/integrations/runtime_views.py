@@ -1476,6 +1476,26 @@ class RuntimeJournalContextView(APIView):
 
         constellation_data = build_constellation_context(tenant, days=days)
 
+        # North Star — confirmed/evolving purposes give the agent the user's
+        # stated DIRECTION at session start, the frame above goals/tasks. Only
+        # confirmed (+evolving) surface: a proposed hypothesis is a question the
+        # user hasn't answered, so it must not ground the agent's reasoning.
+        # Local import — see feedback_local_reimport_pattern memory.
+        from apps.journal.models import Purpose
+
+        north_star = [
+            {
+                "id": str(p.id),
+                "statement": p.statement,
+                "pillars": p.pillars or [],
+                "status": p.status,
+            }
+            for p in Purpose.objects.filter(
+                tenant=tenant,
+                status__in=[Purpose.Status.CONFIRMED, Purpose.Status.EVOLVING],
+            ).order_by("-updated_at")[:10]
+        ]
+
         response_data = {
             "tenant_id": str(tenant.id),
             "recent_notes": notes_data,
@@ -1484,6 +1504,8 @@ class RuntimeJournalContextView(APIView):
             "days_back": days,
             "backbone": backbone_data,
         }
+        if north_star:
+            response_data["north_star"] = north_star
         if constellation_data:
             response_data["constellation"] = constellation_data
 
@@ -2731,6 +2753,53 @@ _FUEL_KEYWORDS = frozenset(
     }
 )
 
+# Direction-touching claims — the kind of thing where a confirmed North Star is
+# the relevant frame ("thinking of quitting X", "should I take this job",
+# "not sure this is the right path"). When any of these fire, ALL confirmed
+# purposes surface even without a token overlap, so the agent can weigh the
+# decision against the user's stated direction.
+_DIRECTION_KEYWORDS = frozenset(
+    {
+        "quit",
+        "quitting",
+        "resign",
+        "resigning",
+        "leave",
+        "leaving",
+        "job",
+        "career",
+        "path",
+        "purpose",
+        "meaning",
+        "direction",
+        "future",
+        "dream",
+        "calling",
+        "vocation",
+        "move",
+        "moving",
+        "relocate",
+        "relocating",
+        "pivot",
+        "change",
+        "changing",
+        "decision",
+        "choose",
+        "choosing",
+        "should",
+        "worth",
+        "regret",
+        "fulfilled",
+        "fulfilling",
+        "unfulfilled",
+        "stuck",
+        "lost",
+        "longterm",
+        "priorities",
+        "reconsider",
+    }
+)
+
 
 def _reconcile_tokenize(text: str) -> list[str]:
     """Lowercase, split on non-alphanumeric, drop stopwords and length<3."""
@@ -2771,7 +2840,7 @@ class RuntimeReconcileScanView(APIView):
 
     def get(self, request, tenant_id):
         from apps.fuel.models import BodyWeightLog, Workout, WorkoutStatus
-        from apps.journal.models import Goal, Task
+        from apps.journal.models import Goal, Purpose, Task
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
@@ -2798,8 +2867,46 @@ class RuntimeReconcileScanView(APIView):
         tokens = _reconcile_tokenize(claim)
         finance_triggered = any(t in _FINANCE_KEYWORDS for t in tokens)
         fuel_triggered = any(t in _FUEL_KEYWORDS for t in tokens)
+        direction_triggered = any(t in _DIRECTION_KEYWORDS for t in tokens)
 
         candidates: list[dict] = []
+
+        # ── North Star (Purpose) ─────────────────────────────────────
+        # Confirmed/evolving purposes are the frame for direction-touching
+        # claims. Surfaced on a token overlap with the statement OR whenever a
+        # direction keyword fires (a claim like "thinking of quitting my job"
+        # may share no tokens with "build a life around my family" yet is
+        # exactly the moment to weigh it against the North Star). Purposes are
+        # few per tenant, so always scanned like goals/tasks.
+        confirmed_purposes = Purpose.objects.filter(
+            tenant=tenant,
+            status__in=[Purpose.Status.CONFIRMED, Purpose.Status.EVOLVING],
+        )[:20]
+        for purpose in confirmed_purposes:
+            score, matched = _reconcile_match_score(tokens, purpose.statement)
+            if score == 0 and not direction_triggered:
+                continue
+            pillars = [str(p) for p in (purpose.pillars or []) if str(p).strip()]
+            candidates.append(
+                {
+                    "kind": "purpose",
+                    "id": str(purpose.id),
+                    "title": purpose.statement[:80],
+                    "pillar": pillars[0] if pillars else None,
+                    "status": purpose.status,
+                    "score": score + (1 if direction_triggered else 0),
+                    "matched_tokens": matched or (["(direction-keyword)"] if direction_triggered else []),
+                    "current_state": {
+                        "statement": purpose.statement[:280],
+                        "pillars": pillars,
+                        "status": purpose.status,
+                    },
+                    "update_tools": [
+                        "nbhd_purpose_update",
+                        "nbhd_purpose_link_goal",
+                    ],
+                }
+            )
 
         # ── Goals ────────────────────────────────────────────────────
         active_goals = Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE)[:50]
@@ -3003,6 +3110,7 @@ class RuntimeReconcileScanView(APIView):
                 "triggered": {
                     "finance": finance_triggered,
                     "fuel": fuel_triggered,
+                    "direction": direction_triggered,
                 },
                 "count": len(candidates),
                 "candidates": candidates,

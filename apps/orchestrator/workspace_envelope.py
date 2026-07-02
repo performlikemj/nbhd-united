@@ -57,8 +57,9 @@ _OPENCLAW_DEFAULT_USER_MD = "# USER.md - User Profile\n\n- Name:\n- Preferred ad
 
 _SYNTHESIS_HINT = (
     "_Treat the sections below as a coherent snapshot. When responding, "
-    "consider how Goals, Open tasks, Fuel, Finance, Core, and recent Journal "
-    "interact — don't reason about them as siloed lists._"
+    "consider how the North Star, Goals, Open tasks, Fuel, Finance, Core, and "
+    "recent Journal interact — weigh choices against the North Star when one is "
+    "set, and don't reason about them as siloed lists._"
 )
 
 

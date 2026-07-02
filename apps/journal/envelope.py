@@ -312,3 +312,58 @@ def render_recent_journal(tenant: Tenant, *, limit: int = 3, preview_chars: int 
         lines.append(f"- **{title}**: {preview}")
 
     return "\n".join(lines)
+
+
+# ── North Star (Purpose) ──────────────────────────────────────────────────
+#
+# The direction ABOVE goals. Rendered HIGH (order=11, just under Profile=10 and
+# above Goals=20) because a confirmed purpose is the frame the rest of the
+# snapshot should be read against. Import co-located with its sole use so the
+# lint-on-Edit import reaper doesn't strip it (E402 is ignored project-wide).
+from apps.journal.models import Purpose
+
+
+@register_section(
+    key="north_star",
+    heading="## North Star",
+    enabled=lambda t: True,
+    refresh_on=(Purpose,),
+    order=11,
+)
+def render_north_star(tenant: Tenant, *, max_chars: int = 600) -> str:
+    """CONFIRMED (+evolving) purposes only — one line each, hard-capped.
+
+    A *proposed* purpose is a question the user hasn't answered yet, so it never
+    appears here — surfacing it would let an un-consented hypothesis ground the
+    assistant's reasoning. Returns ``""`` when the tenant has no confirmed North
+    Star so the render loop emits no empty heading.
+    """
+    purposes = list(
+        Purpose.objects.filter(
+            tenant=tenant,
+            status__in=[Purpose.Status.CONFIRMED, Purpose.Status.EVOLVING],
+        ).order_by("-updated_at")
+    )
+    if not purposes:
+        return ""
+
+    lines: list[str] = []
+    running = 0
+    for p in purposes:
+        statement = (p.statement or "").strip().splitlines()[0].strip() if (p.statement or "").strip() else ""
+        if not statement:
+            continue
+        pillars = [str(x) for x in (p.pillars or []) if str(x).strip()]
+        suffix = f" [{', '.join(pillars)}]" if pillars else ""
+        if p.status == Purpose.Status.EVOLVING:
+            suffix += " _(evolving)_"
+        line = f"→ {statement}{suffix}"
+        if running + len(line) > max_chars:
+            remaining = len(purposes) - len(lines)
+            if remaining > 0:
+                lines.append(f"_(+{remaining} more — see Horizons)_")
+            break
+        lines.append(line)
+        running += len(line) + 1
+
+    return "\n".join(lines)
