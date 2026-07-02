@@ -567,6 +567,10 @@ class ExtractionApproveView(APIView):
                 _approve_goal(pending)
             elif pending.kind == PendingExtraction.Kind.TASK:
                 _approve_task(pending)
+            elif pending.kind == PendingExtraction.Kind.PURPOSE:
+                from apps.router.extraction_callbacks import _approve_purpose
+
+                _approve_purpose(pending)
             elif pending.kind == PendingExtraction.Kind.LESSON:
                 from apps.router.extraction_callbacks import _approve_lesson
 

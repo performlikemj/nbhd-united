@@ -55,7 +55,8 @@ Return ONLY valid JSON matching this schema:
 {
   "lessons": [{"text": "...", "context": "where/how this insight arose", "confidence": "high|medium", "tags": ["..."]}],
   "goals":   [{"text": "...", "confidence": "high|medium"}],
-  "tasks":   [{"text": "...", "confidence": "high|medium"}]
+  "tasks":   [{"text": "...", "confidence": "high|medium"}],
+  "purpose_hypotheses": [{"statement": "...", "pillars": ["...", "..."], "evidence": "cross-pillar signals that point to this direction", "confidence": "high|medium"}]
 }
 
 Rules:
@@ -70,6 +71,7 @@ Rules:
 - Goals: things the user wants to build, ship, or achieve (multi-day/week scope).
 - Tasks: specific near-term action items with clear completion criteria.
 - Ignore small talk, routine status updates, and things that are purely observational with no insight.
+- purpose_hypotheses: a North Star is the user's long-horizon DIRECTION or PURPOSE — the "why" ABOVE goals (e.g. "build a life where my work funds real time with my kids", "become someone my community can lean on"). Propose AT MOST ONE, and ONLY when the journal shows a consistent thread spanning TWO OR MORE pillars (work/gravity + fuel + family, etc.) — a single-pillar aspiration is a goal, not a North Star. "pillars" MUST list 2+ pillar slugs from: gravity, fuel, core, lessons, constellation, horizons, journal. This is RARE — most nights return []. Never force it. Frame the statement as a tentative hypothesis the user will confirm or reject, not an assertion.
 - Return empty arrays if nothing qualifies. Never force output.
 - Keep each item concise (1-2 sentences max).
 """
@@ -207,6 +209,22 @@ def _is_duplicate(tenant: Tenant, kind: str, text: str) -> bool:
         if shorter and shorter in longer:
             return True
     return False
+
+
+def _recent_purpose_card_exists(tenant: Tenant) -> bool:
+    """Keep North Star proposals sparse (~1/week, per the AGENTS.md directive).
+
+    Skip proposing a new purpose hypothesis when one is still pending or was
+    proposed in the last 7 days — the nightly extractor runs every night, but a
+    North Star is a rare, high-stakes suggestion that should never spam the
+    user. A confirmed purpose does NOT block further proposals: the user can
+    hold more than one North Star.
+    """
+    cutoff = timezone.now() - timedelta(days=7)
+    base = PendingExtraction.objects.filter(tenant=tenant, kind=PendingExtraction.Kind.PURPOSE)
+    recent = base.filter(created_at__gte=cutoff).exists()
+    still_pending = base.filter(status=PendingExtraction.Status.PENDING).exists()
+    return recent or still_pending
 
 
 def _existing_lesson_duplicate(tenant: Tenant, text: str) -> bool:
@@ -723,6 +741,36 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
         _approve_task(pending)
         added_items.append(pending)
         counts["tasks"] += 1
+
+    # Purpose hypotheses — a North Star proposal. UNLIKE goals/tasks these are
+    # NOT auto-added: a direction the user hasn't endorsed must not become a
+    # fact. At most one per night, cross-pillar evidence required, and kept
+    # sparse (~1/week) via _recent_purpose_card_exists. Lands as a PENDING card
+    # the user confirms/edits/rejects on the Horizons page — approval creates a
+    # confirmed Purpose (see ExtractionApproveView + _approve_purpose).
+    purpose_cards = 0
+    for item in extracted.get("purpose_hypotheses", [])[:1]:
+        statement = (item.get("statement") or "").strip()
+        pillars = [p for p in (item.get("pillars") or []) if isinstance(p, str) and p.strip()]
+        if not statement or len(statement) < 20:
+            continue
+        if len({p.strip() for p in pillars}) < 2:
+            continue  # cross-pillar evidence is required for a North Star
+        if _recent_purpose_card_exists(tenant):
+            break  # already proposed recently — stay sparse
+        PendingExtraction.objects.create(
+            tenant=tenant,
+            kind=PendingExtraction.Kind.PURPOSE,
+            text=statement,
+            tags=pillars,
+            confidence=item.get("confidence", "medium"),
+            expires_at=expires_at,
+            status=PendingExtraction.Status.PENDING,  # awaits explicit user assent
+            source_date=today,
+        )
+        purpose_cards += 1
+        break
+    counts["purpose_hypotheses"] = purpose_cards
 
     # Reconciliation deltas — typed-lifecycle tenants only. Apply state
     # changes the LLM proposed against existing open Tasks / active Goals
