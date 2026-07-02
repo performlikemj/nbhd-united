@@ -53,7 +53,7 @@ class ExtractAndRecordInsightsTests(TestCase):
 
     def test_single_marker_writes_row_and_strips_tokens(self):
         text = "Looking at your trajectory, [[insight:debt]]you stay in debt for decades[[/insight]] — fixable."
-        out = extract_and_record_insights(text, tenant=self.tenant)
+        out = extract_and_record_insights(text, tenant=self.tenant, pillar=Pillar.GRAVITY.value)
         self.assertEqual(out, "Looking at your trajectory, you stay in debt for decades — fixable.")
         rows = self._insights()
         self.assertEqual(len(rows), 1)
@@ -67,7 +67,7 @@ class ExtractAndRecordInsightsTests(TestCase):
             "[[insight:debt]]carrying 8 lines, 20+ year payoff[[/insight]] and "
             "[[insight:dining]]dining ran 1.8x baseline[[/insight]]."
         )
-        out = extract_and_record_insights(text, tenant=self.tenant)
+        out = extract_and_record_insights(text, tenant=self.tenant, pillar=Pillar.GRAVITY.value)
         self.assertEqual(out, "carrying 8 lines, 20+ year payoff and dining ran 1.8x baseline.")
         rows = self._insights()
         self.assertEqual(len(rows), 2)
@@ -93,7 +93,7 @@ class ExtractAndRecordInsightsTests(TestCase):
             defaults={"source": TopicAlias.Source.SEED},
         )
         text = "[[insight:eating out]]you order Friday night every week[[/insight]]"
-        extract_and_record_insights(text, tenant=self.tenant)
+        extract_and_record_insights(text, tenant=self.tenant, pillar=Pillar.GRAVITY.value)
         rows = self._insights()
         self.assertEqual(rows[0]["topic_id"], self.dining.id)
 
@@ -148,3 +148,73 @@ class ExtractAndRecordInsightsTests(TestCase):
         # Original tenant has zero insights; other tenant has one.
         self.assertEqual(AssistantInsight.objects.filter(tenant=self.tenant).count(), 0)
         self.assertEqual(AssistantInsight.objects.filter(tenant=other).count(), 1)
+
+
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
+class MarkerPillarParsingTests(TestCase):
+    """The optional ``<pillar>/`` prefix in the marker's topic spec."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="PillarMarkers", telegram_chat_id=900910)
+
+    def _rows(self):
+        return list(AssistantInsight.objects.filter(tenant=self.tenant).select_related("topic").order_by("created_at"))
+
+    def test_no_prefix_defaults_to_journal(self):
+        # No marker prefix and no explicit pillar arg → the neutral journal
+        # default (NOT gravity — that was the misfiling bug).
+        extract_and_record_insights(
+            "[[insight:mood]]you write more on rough days[[/insight]]",
+            tenant=self.tenant,
+        )
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].pillar, Pillar.JOURNAL.value)
+        self.assertEqual(rows[0].topic.pillar, Pillar.JOURNAL.value)
+        self.assertEqual(rows[0].topic.slug, "mood")
+
+    def test_pillar_prefix_files_under_named_pillar(self):
+        extract_and_record_insights(
+            "[[insight:fuel/exercise]]you train hardest on Mondays[[/insight]]",
+            tenant=self.tenant,
+        )
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].pillar, Pillar.FUEL.value)
+        self.assertEqual(rows[0].topic.pillar, Pillar.FUEL.value)
+        self.assertEqual(rows[0].topic.slug, "exercise")
+
+    def test_prefix_overrides_caller_default(self):
+        # A marker's own prefix wins over the caller-supplied pillar default.
+        extract_and_record_insights(
+            "[[insight:fuel/sleep_quality]]your sleep dips before deadlines[[/insight]]",
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+        )
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].pillar, Pillar.FUEL.value)
+
+    def test_junk_pillar_falls_back_to_default_and_keeps_whole_slug(self):
+        # "notapillar" is not canonical → the whole "notapillar/x" becomes the
+        # slug under the default pillar (journal). Nothing is misfiled; the
+        # topic is auto-proposed for ops.
+        extract_and_record_insights(
+            "[[insight:notapillar/whatever]]some observation[[/insight]]",
+            tenant=self.tenant,
+        )
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].pillar, Pillar.JOURNAL.value)
+        # resolve_topic slugifies "notapillar/whatever" → "notapillar_whatever"
+        self.assertEqual(rows[0].topic.slug, "notapillar_whatever")
+        self.assertEqual(rows[0].topic.status, TopicRegistry.Status.PROPOSED)
+
+    def test_explicit_pillar_arg_used_when_no_prefix(self):
+        extract_and_record_insights(
+            "[[insight:debt]]you carry a balance every month[[/insight]]",
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+        )
+        rows = self._rows()
+        self.assertEqual(rows[0].pillar, Pillar.GRAVITY.value)

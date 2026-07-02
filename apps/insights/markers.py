@@ -2,15 +2,21 @@
 
 The assistant emits ``[[insight:topic_slug]]statement[[/insight]]`` markers
 inline in its replies (see ``templates/openclaw/rules/reply-markers.md``).
-This module:
+The topic spec optionally carries a pillar prefix —
+``[[insight:<pillar>/<slug>]]`` (e.g. ``[[insight:fuel/sleep_quality]]``) —
+so a single fleet-wide reply path can file insights against the right pillar
+instead of forcing everything into one. This module:
 
 1. Finds every marker in the outbound text.
-2. Resolves ``topic_slug`` via ``apps.insights.topic_resolver``. An unknown
-   slug becomes a ``proposed`` ``TopicRegistry`` row, same path the agent
-   would take through ``nbhd_insights_record`` with a novel slug.
-3. Writes an ``AssistantInsight`` row with ``status='open'``.
-4. Returns the text with the marker tokens stripped — the statement
-   stays in the user-facing reply; only ``[[insight:slug]]`` and
+2. Parses an optional ``<pillar>/`` prefix off the topic spec. A recognised
+   canonical pillar wins; anything else (missing prefix, unknown pillar name,
+   stray ``/``) falls back safely to the caller-supplied ``pillar`` default.
+3. Resolves the ``slug`` via ``apps.insights.topic_resolver`` under the chosen
+   pillar. An unknown slug becomes a ``proposed`` ``TopicRegistry`` row, same
+   path the agent would take through ``nbhd_insights_record`` with a novel slug.
+4. Writes an ``AssistantInsight`` row with ``status='open'``.
+5. Returns the text with the marker tokens stripped — the statement
+   stays in the user-facing reply; only ``[[insight:...]]`` and
    ``[[/insight]]`` are removed.
 
 This is invoked from every outbound message path (Telegram poller,
@@ -25,12 +31,23 @@ import logging
 import re
 
 from apps.insights.models import AssistantInsight
+from apps.insights.pillars import Pillar
 from apps.insights.topic_resolver import resolve_topic
 
 logger = logging.getLogger(__name__)
 
-# Marker syntax: [[insight:slug_or_natural_string]]statement[[/insight]]
-# - slug: any non-bracket text — resolve_topic handles slugification and
+# Canonical pillar set — the authoritative enum, not a hand-maintained list.
+_CANONICAL_PILLARS = frozenset(Pillar.values)
+
+# Neutral default when neither the marker nor the caller names a pillar.
+# Deliberately NOT "gravity": a fleet-wide reply marker with no pillar segment
+# is far more likely to be about the user's life/journal context than finance,
+# and misfiling everything as gravity was the bug this parsing fixes.
+DEFAULT_MARKER_PILLAR = Pillar.JOURNAL.value
+
+# Marker syntax: [[insight:<pillar>/<slug>]]statement[[/insight]] where the
+# ``<pillar>/`` prefix is optional.
+# - topic spec: any non-bracket text — resolve_topic handles slugification and
 #   falls back to alias / proposed creation, so a "natural" string the
 #   agent typed (e.g. "eating out") still resolves correctly.
 # - statement: non-greedy across newlines (.*? + DOTALL) so multi-line
@@ -46,18 +63,39 @@ INSIGHT_MARKER_RE = re.compile(
 _MAX_STATEMENT_LEN = 1000
 
 
+def _split_pillar_slug(raw: str, *, default_pillar: str) -> tuple[str, str]:
+    """Split a marker topic spec into ``(pillar, slug)``.
+
+    Supports the pillar-qualified form ``pillar/slug``. When the segment before
+    the first ``/`` is a canonical pillar, that pillar wins and the remainder is
+    the slug. Otherwise the whole string is the slug under ``default_pillar`` —
+    so a stray ``/`` or an unknown pillar name never *misfiles* the insight; it
+    just becomes part of the proposed topic that ops can reassign later.
+    """
+    default = default_pillar if default_pillar in _CANONICAL_PILLARS else DEFAULT_MARKER_PILLAR
+    if "/" in raw:
+        head, _, tail = raw.partition("/")
+        head = head.strip().lower()
+        tail = tail.strip()
+        if head in _CANONICAL_PILLARS and tail:
+            return head, tail
+    return default, raw
+
+
 def extract_and_record_insights(
     text: str,
     *,
     tenant,
-    pillar: str = "gravity",
+    pillar: str = DEFAULT_MARKER_PILLAR,
 ) -> str:
     """Extract every insight marker from ``text``, write rows, return cleaned text.
 
-    ``pillar`` defaults to ``gravity`` because Phase 2 / Phase 3 only target
-    that pillar today; markers in non-Gravity contexts still resolve and write
-    but will need a ``pillar=`` override at the call site once Fuel / Core
-    extend the rules.
+    ``pillar`` is the fallback pillar for markers that don't carry their own
+    ``<pillar>/`` prefix. It defaults to ``journal`` (a neutral, always-on
+    pillar) so a generic chat reply path no longer misfiles every observation
+    as ``gravity``. Callers with a known context (e.g. the Gravity weekly
+    reflection) pass an explicit ``pillar=``; a marker's own prefix always wins
+    over this default.
 
     Failure handling: any individual marker that fails to record (DB error,
     topic-resolver exception) is logged and stripped from the text without
@@ -68,28 +106,30 @@ def extract_and_record_insights(
         return text
 
     def _replace(match: re.Match[str]) -> str:
-        slug = (match.group(1) or "").strip()
+        raw = (match.group(1) or "").strip()
         statement = (match.group(2) or "").strip()
-        if not slug or not statement:
+        if not raw or not statement:
             # Malformed marker — just strip silently. Logging would be noisy
             # if the agent occasionally writes a placeholder.
             return statement
         if len(statement) > _MAX_STATEMENT_LEN:
             statement = statement[:_MAX_STATEMENT_LEN].rstrip()
 
+        marker_pillar, slug = _split_pillar_slug(raw, default_pillar=pillar)
         try:
-            topic = resolve_topic(pillar, slug)
+            topic = resolve_topic(marker_pillar, slug)
             AssistantInsight.objects.create(
                 tenant=tenant,
-                pillar=pillar,
+                pillar=marker_pillar,
                 topic=topic,
                 statement=statement,
                 status=AssistantInsight.Status.OPEN,
             )
         except Exception:
             logger.exception(
-                "insight marker recording failed (tenant=%s slug=%s)",
+                "insight marker recording failed (tenant=%s pillar=%s slug=%s)",
                 str(getattr(tenant, "id", "?"))[:8],
+                marker_pillar,
                 slug,
             )
         # Always strip the marker tokens, regardless of write success.
