@@ -34,7 +34,7 @@ from django.utils import timezone
 from apps.billing.constants import DEEPSEEK_FLASH_MODEL
 from apps.billing.services import record_usage
 from apps.common.openrouter import chat_completion
-from apps.insights.markers import extract_and_record_insights
+from apps.insights.markers import extract_and_record_insights_with_ids
 from apps.insights.models import AssistantInsight, PillarSnapshot, UserVoicePref
 from apps.insights.pillars import Pillar
 from apps.journal.models import Document
@@ -166,25 +166,21 @@ def generate_weekly_reflection(tenant: Tenant, *, now: datetime | None = None) -
         result.skipped = "no_reflection"
         return result
 
-    # Extract insight marker → AssistantInsight row + strip marker tokens
-    # from the prose. Re-uses PR #645's extractor so the source-of-truth
-    # for insight recording stays in one place.
-    cleaned_text = extract_and_record_insights(reply_text, tenant=tenant, pillar=Pillar.GRAVITY.value)
-
-    # The most recent open insight created in this run is the one this
-    # reflection birthed. (We don't pass the slug through; resolve it from
-    # the latest open row for this tenant — any pillar, since a cross-pillar
-    # marker like [[insight:fuel/exercise]] files outside Gravity.)
-    latest = (
-        AssistantInsight.objects.filter(
-            tenant=tenant,
-            status=AssistantInsight.Status.OPEN,
-        )
-        .order_by("-created_at")
-        .first()
+    # Extract insight marker → AssistantInsight row + strip marker tokens from
+    # the prose. Use the ids-returning variant so we attribute this reflection
+    # to the insight(s) IT created. A "latest open row for tenant" query would
+    # race a concurrent live reply path writing an insight (any pillar) for the
+    # same tenant between the extract call and the query, mis-attributing
+    # result.insight_id to a statement this reflection never made.
+    cleaned_text, created_insight_ids = extract_and_record_insights_with_ids(
+        reply_text, tenant=tenant, pillar=Pillar.GRAVITY.value
     )
-    if latest is not None:
-        result.insight_id = str(latest.id)
+
+    # The last marker this run created is the reflection's headline insight.
+    # (A cross-pillar marker like [[insight:fuel/exercise]] files outside
+    # Gravity but is still one this reflection birthed.)
+    if created_insight_ids:
+        result.insight_id = created_insight_ids[-1]
 
     # Render the reflection prose as a Document(kind=WEEKLY) so it shows up
     # in Horizons' Weekly Pulse via the existing HorizonsWeeklyDocument fallback

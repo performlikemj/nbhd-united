@@ -24,7 +24,7 @@ WITH this block:
 
 When your reply raises a falsifiable pattern observation *about this user* (something you wouldn't write in a context-free Q&A), wrap that sentence in an insight marker. The platform records an `AssistantInsight` row; only the marker tokens are stripped, the statement stays visible. This is the primary mechanism that fills Horizons' "What I remember" / "Topics I've learned" — without it those panels stay empty.
 
-Prefix the slug with the **pillar** the observation is about — `gravity` (money), `fuel` (training/body), `core` (practice), `journal` (mood/life), etc. A bare `[[insight:debt]]` with no prefix files under `journal` unless you're already in a Gravity conversation, so name the pillar when it isn't finance. Full guidance + topic lists: `rules/reply-markers.md`.
+Prefix the slug with the **pillar** the observation is about — `gravity` (money), `fuel` (training/body), `core` (practice), `journal` (mood/life), etc. A bare `[[insight:debt]]` with no prefix files under `journal`. Only use the `gravity` prefix inside an actual Gravity/finance conversation: gravity insights are recorded **only when the Gravity module is active for this user** and dropped otherwise, so don't file money observations for a user who isn't using Gravity. Full guidance + topic lists: `rules/reply-markers.md`.
 
 > Looking at your trajectory, [[insight:gravity/debt]]you're carrying balances across 8 lines and staying in debt 20+ years on most of them[[/insight]] — the avalanche fix kicks in around month 8.
 ```

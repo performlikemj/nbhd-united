@@ -86,6 +86,51 @@ class GenerateWeeklyReflectionTests(TestCase):
         self.assertEqual(ins.status, "open")
 
     @patch("apps.insights.synthesis._call_synthesis_llm")
+    def test_insight_id_attributes_only_reflections_own_insight(self, mock_llm):
+        # Regression: a concurrent live reply writing a NEWER open insight in a
+        # different pillar between the reflection's extract call and attribution
+        # must not steal result.insight_id. The old "latest open row for tenant"
+        # query would mis-attribute; the created-ids path is immune.
+        from apps.insights.markers import extract_and_record_insights_with_ids as real_extract
+
+        self._seed_some_signal()
+        mock_llm.return_value = (
+            "Reflection prose. [[insight:debt]]you tread water on principal[[/insight]]",
+            {"prompt_tokens": 50, "completion_tokens": 25},
+        )
+        concurrent = {}
+
+        def _wrapper(text, *, tenant, pillar):
+            cleaned, ids = real_extract(text, tenant=tenant, pillar=pillar)
+            # Simulate a concurrent chat reply landing a newer OPEN insight in
+            # another pillar right after this reflection recorded its own.
+            journal_topic, _ = TopicRegistry.objects.get_or_create(
+                pillar=Pillar.JOURNAL.value,
+                slug="mood",
+                defaults={"display_name": "Mood", "status": TopicRegistry.Status.CANONICAL},
+            )
+            row = AssistantInsight.objects.create(
+                tenant=tenant,
+                pillar=Pillar.JOURNAL.value,
+                topic=journal_topic,
+                statement="concurrent chat insight",
+                status=AssistantInsight.Status.OPEN,
+            )
+            concurrent["id"] = str(row.id)
+            return cleaned, ids
+
+        with patch("apps.insights.synthesis.extract_and_record_insights_with_ids", side_effect=_wrapper):
+            result = generate_weekly_reflection(self.tenant, now=self.now)
+
+        self.assertEqual(result.skipped, "")
+        self.assertIsNotNone(result.insight_id)
+        # The reflection's own Gravity insight, NOT the newer concurrent journal one.
+        self.assertNotEqual(result.insight_id, concurrent["id"])
+        ins = AssistantInsight.objects.get(id=result.insight_id)
+        self.assertEqual(ins.pillar, Pillar.GRAVITY.value)
+        self.assertEqual(ins.statement, "you tread water on principal")
+
+    @patch("apps.insights.synthesis._call_synthesis_llm")
     def test_records_usage_with_is_system_true(self, mock_llm):
         self._seed_some_signal()
         mock_llm.return_value = (

@@ -20,6 +20,12 @@ from apps.tenants.services import create_tenant
 class ExtractAndRecordInsightsTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Markers", telegram_chat_id=900900)
+        # These tests exercise the Gravity write path; gravity insights only
+        # persist for a finance-active tenant (test settings keep
+        # GRAVITY_ENABLED=True, so flipping the flag is enough). The refusal
+        # path for non-finance tenants is covered by GravityFinanceGateTests.
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
         # Seed migration 0002 already creates the canonical Gravity topics;
         # use get_or_create as a defensive primer for any topic the tests
         # touch directly so the assertions don't depend on seed ordering.
@@ -156,6 +162,9 @@ class MarkerPillarParsingTests(TestCase):
 
     def setUp(self):
         self.tenant = create_tenant(display_name="PillarMarkers", telegram_chat_id=900910)
+        # One test here files a gravity insight, which requires finance_active.
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
 
     def _rows(self):
         return list(AssistantInsight.objects.filter(tenant=self.tenant).select_related("topic").order_by("created_at"))
@@ -218,3 +227,78 @@ class MarkerPillarParsingTests(TestCase):
         )
         rows = self._rows()
         self.assertEqual(rows[0].pillar, Pillar.GRAVITY.value)
+
+
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
+class GravityFinanceGateTests(TestCase):
+    """Gravity insight markers are gated on ``Tenant.finance_active``.
+
+    ``rules/reply-markers.md`` teaches the gravity taxonomy to every assistant
+    fleet-wide, so a gravity-prefixed marker can surface for a tenant who never
+    enabled the finance module. ``finance_active`` is the authoritative kill
+    switch for Gravity data — such a marker must be refused (no row written),
+    while the statement still stays in the user-facing reply.
+    """
+
+    def setUp(self):
+        # Default tenant: finance_enabled=False → finance_active=False even with
+        # GRAVITY_ENABLED=True in test settings.
+        self.tenant = create_tenant(display_name="NoFinance", telegram_chat_id=900920)
+
+    def _rows(self):
+        return list(AssistantInsight.objects.filter(tenant=self.tenant).order_by("created_at"))
+
+    def _enable_finance(self):
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+
+    def test_gravity_prefix_refused_for_non_finance_tenant(self):
+        text = "You mentioned money — [[insight:gravity/dining]]you eat out when stressed[[/insight]]."
+        out = extract_and_record_insights(text, tenant=self.tenant)
+        # Statement stays visible; marker tokens stripped.
+        self.assertEqual(out, "You mentioned money — you eat out when stressed.")
+        # Nothing persisted — the Gravity kill switch held.
+        self.assertEqual(self._rows(), [])
+
+    def test_gravity_default_pillar_refused_for_non_finance_tenant(self):
+        # Even when the caller default is gravity, a bare marker under a
+        # non-finance tenant writes nothing.
+        text = "[[insight:debt]]you carry balances for years[[/insight]]"
+        out = extract_and_record_insights(text, tenant=self.tenant, pillar=Pillar.GRAVITY.value)
+        self.assertEqual(out, "you carry balances for years")
+        self.assertEqual(self._rows(), [])
+
+    def test_with_ids_returns_empty_when_gravity_refused(self):
+        from apps.insights.markers import extract_and_record_insights_with_ids
+
+        text = "[[insight:gravity/dining]]you eat out when stressed[[/insight]]"
+        cleaned, ids = extract_and_record_insights_with_ids(text, tenant=self.tenant)
+        self.assertEqual(cleaned, "you eat out when stressed")
+        self.assertEqual(ids, [])
+        self.assertEqual(self._rows(), [])
+
+    def test_non_gravity_marker_still_records_for_non_finance_tenant(self):
+        # The gate is gravity-specific: journal / fuel / etc. still record.
+        text = "[[insight:fuel/exercise]]you train hardest on Mondays[[/insight]]"
+        extract_and_record_insights(text, tenant=self.tenant)
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].pillar, Pillar.FUEL.value)
+
+    def test_gravity_marker_recorded_for_finance_active_tenant(self):
+        self._enable_finance()
+        text = "[[insight:gravity/dining]]you eat out when stressed[[/insight]]"
+        extract_and_record_insights(text, tenant=self.tenant)
+        rows = self._rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].pillar, Pillar.GRAVITY.value)
+
+    @override_settings(GRAVITY_ENABLED=False)
+    def test_gravity_refused_when_platform_kill_switch_off(self):
+        # finance_enabled=True but the platform-wide GRAVITY_ENABLED kill switch
+        # is off → finance_active=False → gravity marker still refused.
+        self._enable_finance()
+        text = "[[insight:gravity/dining]]you eat out when stressed[[/insight]]"
+        out = extract_and_record_insights(text, tenant=self.tenant)
+        self.assertEqual(out, "you eat out when stressed")
+        self.assertEqual(self._rows(), [])
