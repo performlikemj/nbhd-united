@@ -42,6 +42,38 @@
 | `nbhd_journal_search` | Full-text search across all journal documents |
 | `nbhd_reconcile_scan` | **Conversational gate function** — call BEFORE replying when the user reports a concrete action (payment, workout, completed task, weight change, etc.). Returns active goals + open tasks + finance accounts + fuel rows filtered against the `claim`, each annotated with which typed write tool to call. See AGENTS.md "Conversational reconcile gate". Never call for questions, planning, or small talk. |
 
+### Goals (durable intentions with a target outcome)
+> Goals are the long-horizon "what I want to achieve"; tasks are the actionable steps. Do NOT use `nbhd_document_put` with kind='goal' (deprecated). **Call `nbhd_goal_list` BEFORE stating any goal-related fact** — never recite goals from memory.
+
+| Tool | Required params | Purpose |
+|------|----------------|---------|
+| `nbhd_goal_create` | `title` | Create a durable intention. Good: "Achieve debt-free status on student loans". Bad (those are tasks): "Pay April loan payment". Optional `pillar`, `target`, `target_date`, `parent_goal_id`. |
+| `nbhd_goal_update` | `goal_id` | PATCH a goal's title/description/target/target_date/pillar/parent. For status use achieve/abandon. |
+| `nbhd_goal_achieve` | `goal_id` | Mark achieved (status=achieved, achieved_at=now) when the user confirms or you observe it reached. |
+| `nbhd_goal_abandon` | `goal_id` | Mark abandoned — the user decided not to pursue it. Preserves the row for history (not a delete). |
+| `nbhd_goal_list` | none | List goals; filter by `status` (active/achieved/abandoned/expired), `pillar`, `parent_goal_id`. |
+| `nbhd_goal_get` | `goal_id` | Fetch one goal with full details. |
+
+### Tasks (actionable items — reminders, follow-ups, todos)
+> **`nbhd_task_create` is the PREFERRED tool for ANY actionable item the user mentions** — "remind me to X", "I should Y", "don't forget Z" — even in casual chat. Prefer it over `nbhd_daily_note_append`. **Call `nbhd_task_list` BEFORE stating any task status.** Never record current values (balances, totals) in a task — pass `related_ref` to point at the source-of-truth row instead.
+
+| Tool | Required params | Purpose |
+|------|----------------|---------|
+| `nbhd_task_create` | `title` | Capture an actionable item as a queryable row. Optional `pillar`, `due_date`, `parent_goal_id`, `related_ref`. |
+| `nbhd_task_update` | `task_id` | PATCH title/description/pillar/due_date/parent/related_ref. For status use complete/skip/defer. |
+| `nbhd_task_complete` | `task_id` | Mark done (status=done, completed_at=now) — updates source of truth instead of adding stale "✅" prose. |
+| `nbhd_task_skip` | `task_id` | Mark skipped — the user decided not to do it. |
+| `nbhd_task_defer` | `task_id` | Mark deferred — the user is postponing it. |
+| `nbhd_task_list` | none | List tasks; filter by `status` (open/in_progress/done/skipped/deferred), `pillar`, `parent_goal_id`, `due_before`, `due_after`. |
+| `nbhd_task_get` | `task_id` | Fetch one task with full details. |
+
+### Status & structured queries
+| Tool | Required params | Purpose |
+|------|----------------|---------|
+| `nbhd_current_status` | none | Authoritative as-of-now snapshot: open tasks, active goals, and finance payment obligations. Use when the user asks "where am I at" / "what's on my plate". |
+| `nbhd_journal_query` | (filters) | Query the journal (entries, tasks, goals) by structured filters. **Use for any quantitative or list-shaped journal claim** — task counts by status, entries in a range — instead of eyeballing. |
+| `nbhd_weekly_review_create` | (see tool) | Save a structured weekly review so it appears on the Horizons Weekly Pulse card. Call AFTER `nbhd_document_put` saves the free-form markdown — both are required. |
+
 ### Lessons
 | Tool | Purpose |
 |------|---------|
@@ -102,18 +134,76 @@ Rules:
 
 ## Fuel Tools (`nbhd-fuel-tools` plugin — only loaded when Fuel is enabled)
 
-| Tool | Purpose |
-|------|---------|
-| `nbhd_fuel_summary` | Get recent workouts, planned workouts, body weight, and fitness profile. Call at session start for context. |
-| `nbhd_fuel_log_workout` | Log a workout. Only `activity` is required — infer category from the name, default to today and status "done". |
-| `nbhd_fuel_log_body_weight` | Log body weight (upserts by date). |
-| `nbhd_fuel_update_profile` | Update fitness profile progressively — send any subset of fields during onboarding. |
+### Read / context
+| Tool | Required params | Purpose |
+|------|----------------|---------|
+| `nbhd_fuel_summary` | none | Fitness context in one call: recent workouts, planned workouts, latest body weight, fitness profile, **all-time PRs, 12-month monthly volume, and the user's open Fuel goals**. Call at the start of fitness conversations. **Trigger:** any general "how's my training going", goal, or PR question. |
+| `nbhd_fuel_audit` | none | **Prefer over `nbhd_fuel_summary`** when the user asks for a workout, asks what's planned, wants to schedule, or signals they're training right now ("I'm at the gym", "about to lift", "between sets"). Adds today's plan, next-14-day workouts, live cron state, and duplicate/orphan conflict detection. If `conflicts.duplicate_fires` is non-empty, surface and STOP. |
+
+### Logging
+| Tool | Required params | Purpose |
+|------|----------------|---------|
+| `nbhd_fuel_log_workout` | `activity` | Log a workout from natural language — infer category from the name, default to today + status "done". Don't interrogate. |
+| `nbhd_fuel_log_body_weight` | `weight_kg` | Log body weight (upserts by date). |
+| `nbhd_fuel_log_sleep` | `duration_hours` | Log sleep duration (upserts by date). Include `quality` (1-5) if the user mentions how they slept. |
+| `nbhd_fuel_update_profile` | (any subset) | Update fitness profile progressively — send any subset of fields during onboarding. |
+
+### Corrections & deletes (always confirm before deleting)
+| Tool | Required params | Purpose |
+|------|----------------|---------|
+| `nbhd_fuel_update_workout` | `workout_id` | Correct a logged workout — wrong date/exercise, planned→done, adjust rpe. Send only changed fields. Get `workout_id` from `nbhd_fuel_summary` or the log response. |
+| `nbhd_fuel_delete_workout` | `workout_id` | Remove a workout entirely (duplicates, mistakes). **Confirm with the user first.** |
+| `nbhd_fuel_delete_body_weight` | `date` (YYYY-MM-DD) | Delete a body-weight entry by date. **Confirm first.** |
+
+### Plans (multi-week programs)
+| Tool | Required params | Purpose |
+|------|----------------|---------|
+| `nbhd_fuel_create_plan` | `name` | **Use whenever the user asks to make / build / design / lay out / fill out a plan, program, routine, or schedule.** You supply the WEEKLY CADENCE (`schedule_json`, weekday 0=Mon..6=Sun); the backend assigns calendar dates in the user's timezone — never compute weekdays yourself. Check `nbhd_fuel_summary` for an existing active plan first. |
+| `nbhd_fuel_update_plan` | `plan_id` | Change a plan's name, status (active/paused/completed/archived), notes, or schedule. Schedule/weeks changes regenerate future planned workouts; per-workout customizations are preserved when (date, activity) still matches. |
+| `nbhd_fuel_delete_plan` | `plan_id` | Delete a plan and all future planned workouts (completed workouts are preserved, unlinked). **Always confirm first.** |
 
 Rules:
 - When logging from natural language, infer as much as possible — don't interrogate
 - "deadlift 75kg 3x5" → single call with `category=strength`, `detail_json` with exercises/sets
 - Always confirm what was logged with a brief message
+- Never present a dated plan as prose — always use `nbhd_fuel_create_plan` so the backend owns the dates
+- `nbhd_fuel_summary` now carries a **full year** of history (all-time PRs, 12-month volume) plus the user's **typed goals** — reference them instead of asking the user to restate; see `rules/fuel.md`
 - See `rules/fuel.md` for onboarding flow and profile-aware recommendations
+
+## Finance / Gravity Tools (`nbhd-finance-tools` plugin — only loaded when Gravity/finance is enabled)
+
+> This plugin is absent unless the tenant has Gravity on **and** the platform-wide `GRAVITY_ENABLED` gate is on. If these tools aren't in your available list, finance is paused — do not reference debt/savings data. **Prefer `nbhd_gravity_query` for any specific slice**; `nbhd_finance_summary` returns a fixed snapshot kept for backward compatibility.
+
+| Tool | Required params | Purpose |
+|------|----------------|---------|
+| `nbhd_finance_add_account` | `nickname`, `account_type` | Add or update a debt/savings account (upserts by nickname). Credit cards, loans, savings, etc. |
+| `nbhd_finance_list_accounts` | none | List accounts with balances, rates, payment info. `archived_only=true` to see archived (for restore); `include_archived=true` for everything. |
+| `nbhd_finance_record_payment` | `nickname`, `amount` | Record a payment toward an account (auto-updates balance). Fuzzy-matches by nickname. |
+| `nbhd_finance_update_balance` | `nickname`, `balance` | Directly set a new statement balance ("my Chase card is now $3,800"). |
+| `nbhd_finance_archive_account` | `nickname` | Hide an account from the dashboard/totals/payoff while preserving history (duplicate, stale, paid-off). Not a delete. |
+| `nbhd_finance_unarchive_account` | `nickname` | Restore an archived account back into dashboard + totals. |
+| `nbhd_finance_calculate_payoff` | none | Compare snowball / avalanche / hybrid payoff strategies (timelines, total interest, schedules). **When the user confirms a strategy, set `save=true`** so the plan lands on the Gravity dashboard. |
+| `nbhd_finance_summary` | none | Complete overview: total debt, total savings, accounts, active plan, monthly minimums. Prefer `nbhd_gravity_query` for slices. |
+| `nbhd_gravity_query` | (filters) | **Query the ledger for any quantitative finance claim** — debt totals, payment history, payoff progress. Use instead of reciting numbers from memory. |
+
+## Insights Tools (`nbhd-insights-tools` plugin — only loaded when Gravity/finance is enabled)
+
+> Gated identically to the finance plugin (`GRAVITY_ENABLED` + tenant Gravity on). These let you reason about trajectory (snapshots over time), track your own recorded observations, and calibrate voice register.
+
+| Tool | Required params | Purpose |
+|------|----------------|---------|
+| `nbhd_insights_history` | `pillar` | List recent pillar snapshots over a window to reason about trajectory ("how has debt trended over 8 weeks?"). Newest-first with full payloads. Currently `pillar='gravity'`. |
+| `nbhd_insights_snapshot` | `snapshot_id` | Fetch one snapshot's full payload after history identifies a period to dig into. |
+| `nbhd_insights_compare` | `a_id`, `b_id` | Compare two snapshots; returns a signed `totals_delta` (b − a) for "what changed between then and now?". |
+| `nbhd_insights_baseline` | `pillar`, `topic` | Rolling baseline stats (mean, stdev, latest_z, trend, freshness) for a topic. Check **before** deciding a pattern is anomalous (`|latest_z|`>~1.5 hints anomaly — weigh against context). |
+| `nbhd_insights_signals` | `pillar`, `topic` | Structured signals for judging which voice register to use this turn (data state, calibration counts, intent, user override, hard_floors). **You** pick the register; never exceed `hard_floors`. |
+| `nbhd_insights_list` | none | List AssistantInsight rows you previously recorded — your own memory. **Check before raising a new observation** so you don't repeat a refuted one. Filter by pillar/topic/status. |
+| `nbhd_insights_record` | `pillar`, `topic`, `observation` | Record an observation you just raised (status starts 'open'). Use `evidence_refs` to point at supporting snapshots. Skip noise — single-week blips, <10% deltas. |
+| `nbhd_insights_confirm` | `insight_id` | Mark an insight confirmed when the user agrees. Idempotent. |
+| `nbhd_insights_refute` | `insight_id` | Mark an insight refuted when the user corrects you — the row stays so you don't re-raise it. Be quick to refute. |
+| `nbhd_insights_voice_pref_set` | `pillar`, `register_offset` | Persist the user's EXPLICIT voice override ("just tell me about dining" → +1; "be more cautious on debt" → −1). Only on explicit request, never inference. |
+| `nbhd_insights_voice_pref_list` | none | List current voice-pref overrides ("what register are you using on X?"). |
+| `nbhd_yesterdays_signals` | none | Cross-pillar snapshot of yesterday's activity (Fuel workouts, Journal entries/energy, Lessons) with `notable_gaps` hints. Tenant-tz-aware. Use before a signal-driven Personal Question or Heartbeat nudge. |
 
 ## Site Publishing Tools (`nbhd-site-publishing` plugin — only loaded when the user's website is connected)
 
