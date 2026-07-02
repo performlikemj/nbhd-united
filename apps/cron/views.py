@@ -210,6 +210,11 @@ TASK_MAP = {
     # assistant's history/drill/compare tools. Skips hibernated tenants;
     # idempotent per ISO week. See apps.insights.snapshots.compute_gravity_snapshot.
     "snapshot_gravity_weekly": "apps.insights.tasks.snapshot_gravity_weekly_task",
+    # Weekly Fuel / Core / Journal snapshots — companion to the Gravity task
+    # above. Each pillar gated on its enablement flag (Journal always-on) +
+    # status=ACTIVE + not-hibernated; idempotent per ISO week per pillar.
+    # See apps.insights.snapshots.compute_{fuel,core,journal}_snapshot.
+    "snapshot_pillars_weekly": "apps.insights.tasks.snapshot_pillars_weekly_task",
     # Phase 4 weekly reflection — hourly dispatcher fires Django-side
     # synthesis for each tenant whose local time is Sunday 09:00.
     # Bills to platform (record_usage is_system=True), not user quota.

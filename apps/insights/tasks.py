@@ -182,3 +182,126 @@ def weekly_gravity_reflection_task() -> dict[str, int]:
 
     logger.info("weekly_gravity_reflection_task done: %s", counts)
     return counts
+
+
+# ── Per-pillar weekly snapshots (Fuel / Core / Journal) ──────────────
+#
+# Gravity keeps its own task (snapshot_gravity_weekly_task) so its
+# finance_active gating stays independently owned. These three pillars each
+# gate on their own enablement flag (Journal is always-on), plus status=ACTIVE
+# and not-hibernated — same "accept history gaps over waking the fleet" stance
+# as Gravity.
+
+
+def _eligible_fuel_tenants():
+    """Active, non-hibernated tenants with Fuel enabled."""
+    return Tenant.objects.filter(
+        fuel_enabled=True,
+        status=Tenant.Status.ACTIVE,
+        hibernated_at__isnull=True,
+    )
+
+
+def _eligible_core_tenants():
+    """Active, non-hibernated tenants with Core enabled."""
+    return Tenant.objects.filter(
+        core_enabled=True,
+        status=Tenant.Status.ACTIVE,
+        hibernated_at__isnull=True,
+    )
+
+
+def _eligible_journal_tenants():
+    """Every active, non-hibernated tenant — Journal has no per-tenant flag."""
+    return Tenant.objects.filter(
+        status=Tenant.Status.ACTIVE,
+        hibernated_at__isnull=True,
+    )
+
+
+def _write_weekly_snapshots(pillar_value, tenants, compute_fn, *, now, week_start, week_end):
+    """Write one weekly PillarSnapshot per eligible tenant. Idempotent per ISO week.
+
+    Returns (written, skipped_existing, errored).
+    """
+    written = skipped = errored = 0
+    for tenant in tenants.iterator():
+        try:
+            already = PillarSnapshot.objects.filter(
+                tenant=tenant,
+                pillar=pillar_value,
+                granularity=PillarSnapshot.Granularity.WEEKLY,
+                ts__gte=week_start,
+                ts__lt=week_end,
+            ).exists()
+            if already:
+                skipped += 1
+                continue
+            payload = compute_fn(tenant)
+            PillarSnapshot.objects.create(
+                tenant=tenant,
+                pillar=pillar_value,
+                ts=now,
+                granularity=PillarSnapshot.Granularity.WEEKLY,
+                payload=payload,
+            )
+            written += 1
+        except Exception:
+            errored += 1
+            logger.exception("weekly %s snapshot failed for tenant %s", pillar_value, tenant.id)
+    return written, skipped, errored
+
+
+def snapshot_pillars_weekly_task() -> dict[str, int]:
+    """Write weekly Fuel / Core / Journal ``PillarSnapshot`` rows for eligible tenants.
+
+    Each pillar is gated on its own enablement (``fuel_enabled`` / ``core_enabled``;
+    Journal is always-on) plus ``status=ACTIVE`` and not-hibernated. Idempotent
+    per ISO week per pillar, so a re-run mid-week is safe.
+
+    Returns per-pillar {written, skipped, errored} counts so the QStash trigger
+    log shows what happened.
+    """
+    from .snapshots import compute_core_snapshot, compute_fuel_snapshot, compute_journal_snapshot
+
+    now = datetime.now(UTC)
+    week_start, week_end = _iso_week_bounds(now)
+
+    fw, fs, fe = _write_weekly_snapshots(
+        Pillar.FUEL.value,
+        _eligible_fuel_tenants(),
+        compute_fuel_snapshot,
+        now=now,
+        week_start=week_start,
+        week_end=week_end,
+    )
+    cw, cs, ce = _write_weekly_snapshots(
+        Pillar.CORE.value,
+        _eligible_core_tenants(),
+        compute_core_snapshot,
+        now=now,
+        week_start=week_start,
+        week_end=week_end,
+    )
+    jw, js, je = _write_weekly_snapshots(
+        Pillar.JOURNAL.value,
+        _eligible_journal_tenants(),
+        compute_journal_snapshot,
+        now=now,
+        week_start=week_start,
+        week_end=week_end,
+    )
+
+    counts = {
+        "fuel_written": fw,
+        "fuel_skipped": fs,
+        "fuel_errored": fe,
+        "core_written": cw,
+        "core_skipped": cs,
+        "core_errored": ce,
+        "journal_written": jw,
+        "journal_skipped": js,
+        "journal_errored": je,
+    }
+    logger.info("snapshot_pillars_weekly_task done: %s", counts)
+    return counts

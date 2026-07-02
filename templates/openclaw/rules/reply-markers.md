@@ -40,13 +40,27 @@ Available types:
 
 ## `[[insight:topic_slug]]statement[[/insight]]` — record an observation
 
-When a Gravity reply *raises a pattern observation about the user* — anything you wouldn't write in a context-free Q&A reply because it requires knowing this user's specific trajectory — wrap that observation in an insight marker. The platform extracts it, resolves the topic slug, and writes an `AssistantInsight` row with `status='open'`. The statement stays visible to the user; only the marker tokens (`[[insight:...]]` and `[[/insight]]`) are stripped from what they see.
+When any reply *raises a pattern observation about the user* — anything you wouldn't write in a context-free Q&A reply because it requires knowing this user's specific trajectory — wrap that observation in an insight marker. The platform extracts it, resolves the topic slug, and writes an `AssistantInsight` row with `status='open'`. The statement stays visible to the user; only the marker tokens (`[[insight:...]]` and `[[/insight]]`) are stripped from what they see.
 
 This is the **primary mechanism for filling Horizons' "What I remember" and "Topics I've learned" surfaces** — without insights getting recorded, those panels stay empty.
 
-Syntax: `[[insight:topic_slug]]observation statement[[/insight]]`
+Syntax: `[[insight:topic_slug]]observation statement[[/insight]]`, or with an explicit pillar: `[[insight:pillar/topic_slug]]observation statement[[/insight]]`.
 
-- `topic_slug` should be a canonical Gravity topic — `dining`, `debt`, `savings`, `subscriptions`, `discretionary`, `fixed_expenses`, `income`, `large_purchases`. If you use a novel slug, the platform auto-proposes it for ops review.
+### Pick the pillar
+
+Insights live under a **pillar** (the area of life the observation is about). Prefix the slug with the pillar and a slash so the observation is filed correctly:
+
+- `gravity` — money: `dining`, `debt`, `savings`, `subscriptions`, `discretionary`, `fixed_expenses`, `income`, `large_purchases` — **finance/Gravity only**: gravity insights are recorded solely when the Gravity module is active for this user; for anyone else a `gravity/` marker is dropped (the statement still shows, nothing is stored)
+- `fuel` — training & body: `exercise`, `sleep_quality`, `sleep_quantity`, `hydration`, `meals`, `energy_level`, `alcohol`, `caffeine`
+- `core` — mindfulness/practice: e.g. `practice`, `stress`, `focus`
+- `journal` — mood, reflection, goals, day-to-day life: e.g. `mood`, `motivation`, `relationships`
+- `constellation`, `horizons`, `lessons` — the corresponding surfaces
+
+Examples: `[[insight:gravity/debt]]…[[/insight]]`, `[[insight:fuel/exercise]]…[[/insight]]`, `[[insight:core/practice]]…[[/insight]]`.
+
+**If you omit the `pillar/` prefix, the insight is filed under `journal`** (the neutral, always-on default) unless the surface you're replying from already sets a pillar. When an observation clearly belongs to a specific area, name that pillar so the memory lands where it belongs. Only reach for `gravity` inside an actual Gravity/finance conversation — the platform records gravity insights **only when the Gravity module is active for this user** and silently drops a `gravity/` marker for everyone else, so don't file money observations for a user who isn't using Gravity. If you use a pillar name the platform doesn't recognise, the whole thing is treated as a topic slug under the default pillar and auto-proposed for ops review — nothing is lost, but it's better to name a real pillar.
+
+- `topic_slug` (the part after any `pillar/`) is the topic within that pillar. If you use a novel slug, the platform auto-proposes it for ops review.
 - `statement` is what you'd say if asked *"what pattern do you notice about this user on this topic?"* It should be:
   - **About the user**, not generic advice (`you stay in debt for decades` ✅, not `loans take a long time to pay off` ❌)
   - **Falsifiable** — the user can confirm or correct it

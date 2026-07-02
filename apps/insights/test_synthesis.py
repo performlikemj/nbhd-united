@@ -13,7 +13,7 @@ Covers:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -84,6 +84,51 @@ class GenerateWeeklyReflectionTests(TestCase):
         self.assertEqual(ins.statement, "you're treading water on principal while interest accrues")
         self.assertEqual(ins.topic_id, self.debt.id)
         self.assertEqual(ins.status, "open")
+
+    @patch("apps.insights.synthesis._call_synthesis_llm")
+    def test_insight_id_attributes_only_reflections_own_insight(self, mock_llm):
+        # Regression: a concurrent live reply writing a NEWER open insight in a
+        # different pillar between the reflection's extract call and attribution
+        # must not steal result.insight_id. The old "latest open row for tenant"
+        # query would mis-attribute; the created-ids path is immune.
+        from apps.insights.markers import extract_and_record_insights_with_ids as real_extract
+
+        self._seed_some_signal()
+        mock_llm.return_value = (
+            "Reflection prose. [[insight:debt]]you tread water on principal[[/insight]]",
+            {"prompt_tokens": 50, "completion_tokens": 25},
+        )
+        concurrent = {}
+
+        def _wrapper(text, *, tenant, pillar):
+            cleaned, ids = real_extract(text, tenant=tenant, pillar=pillar)
+            # Simulate a concurrent chat reply landing a newer OPEN insight in
+            # another pillar right after this reflection recorded its own.
+            journal_topic, _ = TopicRegistry.objects.get_or_create(
+                pillar=Pillar.JOURNAL.value,
+                slug="mood",
+                defaults={"display_name": "Mood", "status": TopicRegistry.Status.CANONICAL},
+            )
+            row = AssistantInsight.objects.create(
+                tenant=tenant,
+                pillar=Pillar.JOURNAL.value,
+                topic=journal_topic,
+                statement="concurrent chat insight",
+                status=AssistantInsight.Status.OPEN,
+            )
+            concurrent["id"] = str(row.id)
+            return cleaned, ids
+
+        with patch("apps.insights.synthesis.extract_and_record_insights_with_ids", side_effect=_wrapper):
+            result = generate_weekly_reflection(self.tenant, now=self.now)
+
+        self.assertEqual(result.skipped, "")
+        self.assertIsNotNone(result.insight_id)
+        # The reflection's own Gravity insight, NOT the newer concurrent journal one.
+        self.assertNotEqual(result.insight_id, concurrent["id"])
+        ins = AssistantInsight.objects.get(id=result.insight_id)
+        self.assertEqual(ins.pillar, Pillar.GRAVITY.value)
+        self.assertEqual(ins.statement, "you tread water on principal")
 
     @patch("apps.insights.synthesis._call_synthesis_llm")
     def test_records_usage_with_is_system_true(self, mock_llm):
@@ -289,3 +334,63 @@ class RecordUsageIsSystemTests(TestCase):
         )
         after = Tenant.objects.filter(id=self.tenant.id).values_list("tokens_this_month", flat=True).first()
         self.assertEqual(after, before + 150)
+
+
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True, OPENROUTER_API_KEY="test-key")
+class BuildContextCrossPillarTests(TestCase):
+    """`_build_context` now carries other pillars' snapshots + all-pillar insights."""
+
+    def setUp(self):
+        self.now = datetime(2026, 5, 21, 12, 0, 0, tzinfo=UTC)
+        self.tenant = _enable_finance(create_tenant(display_name="CtxXP", telegram_chat_id=901500))
+
+    def test_context_includes_cross_pillar_snapshot_and_insight(self):
+        from apps.insights.models import PillarSnapshot as Snap
+        from apps.insights.synthesis import _build_context
+
+        fuel_topic, _ = TopicRegistry.objects.get_or_create(
+            pillar=Pillar.FUEL.value,
+            slug="exercise",
+            defaults={
+                "display_name": "Exercise",
+                "status": TopicRegistry.Status.CANONICAL,
+            },
+        )
+        Snap.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.FUEL.value,
+            ts=self.now - timedelta(days=2),
+            granularity=Snap.Granularity.WEEKLY,
+            payload={"totals": {"workouts_7d": 4, "minutes_7d": 200}},
+        )
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.FUEL.value,
+            topic=fuel_topic,
+            statement="you train hardest on Mondays",
+        )
+
+        ctx = _build_context(self.tenant, now=self.now)
+        self.assertTrue(ctx["has_data"])
+        cross_pillars = {c["pillar"] for c in ctx["cross_pillar"]}
+        self.assertIn(Pillar.FUEL.value, cross_pillars)
+        insight_pillars = {i["pillar"] for i in ctx["insights"]}
+        self.assertIn(Pillar.FUEL.value, insight_pillars)
+
+    def test_cross_pillar_only_data_still_has_signal(self):
+        # A finance-active tenant with no Gravity data but a Journal snapshot
+        # should still have has_data=True (reflection proceeds, not no_data).
+        from apps.insights.models import PillarSnapshot as Snap
+        from apps.insights.synthesis import _build_context
+
+        Snap.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.JOURNAL.value,
+            ts=self.now - timedelta(days=1),
+            granularity=Snap.Granularity.WEEKLY,
+            payload={"totals": {"entries_7d": 5, "active_goals": 2}},
+        )
+        ctx = _build_context(self.tenant, now=self.now)
+        self.assertTrue(ctx["has_data"])
+        self.assertEqual(ctx["snapshots"], [])
+        self.assertEqual({c["pillar"] for c in ctx["cross_pillar"]}, {Pillar.JOURNAL.value})

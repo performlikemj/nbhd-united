@@ -94,9 +94,23 @@ class YesterdaysSignalsEmptyTenantTests(TestCase):
         # have never logged anything, which is different from "stopped logging".
         self.assertEqual(signals["notable_gaps"], [])
 
-    def test_core_pillar_is_omitted_not_null(self):
+    def test_core_pillar_zeroed_for_empty_tenant(self):
+        # Core now has a data model, so it's included (zeroed), not omitted.
         signals = compute(self.tenant, now=self.now)
-        self.assertNotIn("core", signals)
+        self.assertIn("core", signals)
+        self.assertEqual(signals["core"]["yesterday"]["sessions"], 0)
+        self.assertEqual(signals["core"]["today_so_far"]["sessions"], 0)
+        self.assertIsNone(signals["core"]["days_since_last_session"])
+
+    def test_gravity_omitted_when_not_finance_active(self):
+        # Default tenant isn't finance_active → the Gravity block stays out.
+        signals = compute(self.tenant, now=self.now)
+        self.assertNotIn("gravity", signals)
+
+    def test_journal_carries_goals_and_tasks_keys(self):
+        signals = compute(self.tenant, now=self.now)
+        self.assertEqual(signals["journal"]["active_goals"], 0)
+        self.assertEqual(signals["journal"]["yesterday"]["tasks_completed"], 0)
 
 
 class YesterdaysSignalsActiveTenantTests(TestCase):
@@ -288,5 +302,62 @@ class RuntimeYesterdaysSignalsEndpointTests(TestCase):
         self.assertIn("fuel", body)
         self.assertIn("journal", body)
         self.assertIn("lessons", body)
+        self.assertIn("core", body)
         self.assertIn("notable_gaps", body)
-        self.assertNotIn("core", body)
+        # Gravity is opt-in — absent for a non-finance-active tenant.
+        self.assertNotIn("gravity", body)
+
+
+class YesterdaysSignalsCoreAndGravityTests(TestCase):
+    def setUp(self):
+        self.tenant = _make_tenant(chat_id=900_050)
+        self.now = datetime(2026, 5, 23, 9, 0, tzinfo=zoneinfo.ZoneInfo("UTC"))
+        self.yesterday = date(2026, 5, 22)
+        self.today = date(2026, 5, 23)
+
+    def test_core_sessions_counted(self):
+        from apps.core.models import MeditationSession, MeditationStatus
+
+        MeditationSession.objects.create(tenant=self.tenant, date=self.yesterday, status=MeditationStatus.READY)
+        MeditationSession.objects.create(tenant=self.tenant, date=self.today, status=MeditationStatus.DELIVERED)
+        # A pending sit should not count.
+        MeditationSession.objects.create(tenant=self.tenant, date=self.today, status=MeditationStatus.PENDING)
+
+        signals = compute(self.tenant, now=self.now)
+        self.assertEqual(signals["core"]["yesterday"]["sessions"], 1)
+        self.assertEqual(signals["core"]["today_so_far"]["sessions"], 1)
+        self.assertEqual(signals["core"]["days_since_last_session"], 1)
+
+    def test_core_quiet_gap_flagged(self):
+        from apps.core.models import MeditationSession, MeditationStatus
+
+        MeditationSession.objects.create(tenant=self.tenant, date=date(2026, 5, 10), status=MeditationStatus.DELIVERED)
+        signals = compute(self.tenant, now=self.now)
+        gaps = signals["notable_gaps"]
+        self.assertTrue(any(g.startswith("core_quiet_") for g in gaps))
+
+    def test_gravity_block_present_and_counts_only_when_finance_active(self):
+        from apps.finance.models import FinanceAccount, FinanceTransaction
+
+        Tenant.objects.filter(pk=self.tenant.pk).update(finance_enabled=True)
+        self.tenant.refresh_from_db()
+        account = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type=FinanceAccount.AccountType.CHECKING,
+            nickname="Everyday",
+            current_balance="1000.00",
+        )
+        FinanceTransaction.objects.create(
+            tenant=self.tenant,
+            account=account,
+            transaction_type=FinanceTransaction.TransactionType.PAYMENT,
+            amount="42.00",
+            date=self.yesterday,
+        )
+
+        signals = compute(self.tenant, now=self.now)
+        self.assertIn("gravity", signals)
+        self.assertEqual(signals["gravity"]["yesterday"]["transactions"], 1)
+        self.assertEqual(signals["gravity"]["days_since_last_transaction"], 1)
+        # Counts only — never amounts (privacy).
+        self.assertNotIn("amount", signals["gravity"]["yesterday"])

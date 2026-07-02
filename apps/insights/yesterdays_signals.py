@@ -12,7 +12,11 @@ cross-pillar, day-scoped, no topic.
 Design notes:
 - Backend returns raw evidence + cheap threshold flags (``notable_gaps``).
   The LLM weighs them. See ``feedback_llm_not_formula_for_judgment``.
-- Core pillar omitted: no data model yet.
+- Core pillar included (MeditationSession) — its data model landed with the
+  Core mindfulness pillar.
+- Gravity (finance) is included only when ``tenant.finance_active`` and only as
+  counts (no amounts) — the authoritative kill switch stays honored and no
+  finance detail leaks into a cross-pillar prompt.
 - Tenant-tz-aware "yesterday" so a workout logged at 11pm local doesn't
   fall on the wrong day after the UTC roll-over.
 """
@@ -33,6 +37,7 @@ from apps.tenants.models import Tenant
 NOTABLE_JOURNAL_DARK_DAYS = 3
 NOTABLE_FUEL_QUIET_DAYS = 5
 NOTABLE_ENERGY_STALE_DAYS = 7
+NOTABLE_CORE_QUIET_DAYS = 5
 
 
 def _tenant_tz(tenant: Tenant) -> zoneinfo.ZoneInfo:
@@ -63,6 +68,7 @@ def compute(tenant: Tenant, *, now: datetime | None = None) -> dict[str, Any]:
     fuel = _fuel_signals(tenant, today=today, yesterday=yesterday, tz=tz)
     journal = _journal_signals(tenant, today=today, yesterday=yesterday)
     lessons = _lessons_signals(tenant, yesterday=yesterday, tz=tz)
+    core = _core_signals(tenant, today=today, yesterday=yesterday)
 
     notable_gaps: list[str] = []
     if journal["days_since_last_entry"] is not None and journal["days_since_last_entry"] >= NOTABLE_JOURNAL_DARK_DAYS:
@@ -72,16 +78,26 @@ def compute(tenant: Tenant, *, now: datetime | None = None) -> dict[str, Any]:
     last_energy = journal.get("last_energy_reading")
     if last_energy and last_energy["days_ago"] >= NOTABLE_ENERGY_STALE_DAYS:
         notable_gaps.append(f"energy_stale_{last_energy['days_ago']}_days")
+    if core["days_since_last_session"] is not None and core["days_since_last_session"] >= NOTABLE_CORE_QUIET_DAYS:
+        notable_gaps.append(f"core_quiet_{core['days_since_last_session']}_days")
 
-    return {
+    result = {
         "as_of": now_local.isoformat(),
         "today_date": today.isoformat(),
         "yesterday_date": yesterday.isoformat(),
         "fuel": fuel,
         "journal": journal,
         "lessons": lessons,
+        "core": core,
         "notable_gaps": notable_gaps,
     }
+
+    # Gravity is opt-in and privacy-gated: only surface it when the kill switch
+    # is on, and only as counts (never amounts) so no finance detail leaks.
+    if getattr(tenant, "finance_active", False):
+        result["gravity"] = _gravity_signals(tenant, today=today, yesterday=yesterday)
+
+    return result
 
 
 def _fuel_signals(tenant: Tenant, *, today: date, yesterday: date, tz: zoneinfo.ZoneInfo) -> dict[str, Any]:
@@ -123,13 +139,69 @@ def _journal_signals(tenant: Tenant, *, today: date, yesterday: date) -> dict[st
             "days_ago": (today - last_energy_entry.date).days,
         }
 
+    # Typed Goal / Task lifecycle — active goals the user is steering toward and
+    # what they closed out yesterday. Local import per feedback_local_reimport_pattern.
+    from apps.journal.models import Goal, Task
+
+    active_goals = Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).count()
+    tasks_completed_yesterday = Task.objects.filter(
+        tenant=tenant,
+        status=Task.Status.DONE,
+        completed_at__date=yesterday,
+    ).count()
+
     return {
         "yesterday": {
             "entries": yesterday_count,
             "energy": yesterday_energy,
+            "tasks_completed": tasks_completed_yesterday,
         },
         "days_since_last_entry": days_since_last,
         "last_energy_reading": last_energy_reading,
+        "active_goals": active_goals,
+    }
+
+
+def _core_signals(tenant: Tenant, *, today: date, yesterday: date) -> dict[str, Any]:
+    """Core (mindfulness) day-scoped signals — completed sits by ``date``.
+
+    Local import per feedback_local_reimport_pattern.
+    """
+    from apps.core.models import MeditationSession, MeditationStatus
+
+    done_states = [MeditationStatus.READY, MeditationStatus.DELIVERED]
+    sessions = MeditationSession.objects.filter(tenant=tenant, status__in=done_states)
+
+    sessions_yesterday = sessions.filter(date=yesterday).count()
+    sessions_today = sessions.filter(date=today).count()
+
+    last_date = sessions.filter(date__lt=today).order_by("-date").values_list("date", flat=True).first()
+    days_since_last = (today - last_date).days if last_date else None
+
+    return {
+        "yesterday": {"sessions": sessions_yesterday},
+        "today_so_far": {"sessions": sessions_today},
+        "days_since_last_session": days_since_last,
+    }
+
+
+def _gravity_signals(tenant: Tenant, *, today: date, yesterday: date) -> dict[str, Any]:
+    """Gravity (finance) day-scoped signals — COUNTS ONLY, never amounts.
+
+    Only ever called when ``tenant.finance_active`` is True (see ``compute``).
+    Local import per feedback_local_reimport_pattern.
+    """
+    from apps.finance.models import FinanceTransaction
+
+    txns = FinanceTransaction.objects.filter(tenant=tenant)
+    txns_yesterday = txns.filter(date=yesterday).count()
+
+    last_date = txns.filter(date__lt=today).order_by("-date").values_list("date", flat=True).first()
+    days_since_last = (today - last_date).days if last_date else None
+
+    return {
+        "yesterday": {"transactions": txns_yesterday},
+        "days_since_last_transaction": days_since_last,
     }
 
 

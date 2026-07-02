@@ -39,7 +39,13 @@ from .pillars import Pillar
 from .signals import compute_signals
 from .topic_resolver import resolve_topic
 
-ALLOWED_PILLARS = {Pillar.GRAVITY.value}
+# Every canonical pillar is queryable now that snapshotters exist beyond
+# Gravity (Fuel / Core / Journal weekly snapshots + cross-pillar insight
+# markers). Pillars without a snapshot pipeline still resolve — their history
+# is simply empty and baseline/signals report ``supported=false`` /
+# ``sample_size=0`` rather than 404. Derived from the enum so a new pillar is
+# never accidentally gated out.
+ALLOWED_PILLARS = set(Pillar.values)
 DEFAULT_WINDOW = "12w"
 MAX_WINDOW_DAYS = 365 * 2  # 2 years
 _WINDOW_RE = re.compile(r"^(\d+)([wdm])$")
