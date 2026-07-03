@@ -33,6 +33,21 @@ _pattern_recognizers = None
 # weights. See apps/pii/config.py for the label → entity-type mapping.
 _HF_MODEL_REPO = "lakshyakh93/deberta_finetuned_pii"
 
+# Presidio's PhoneRecognizer emits a flat 0.4 score for every match regardless
+# of how strong the libphonenumber validation was — that sits *below* our 0.5
+# tier threshold, so wired as-is it would suppress every phone number. The real
+# gate is phonenumbers' VALID leniency (the recognizer's default): it only
+# matches strings that parse as a valid number for one of the configured
+# regions, which is why bare lift/rep/PIN digit-runs ("5x5 at 315",
+# "door code 7391", "PIN 4821") never match. So we lift the emitted score above
+# threshold to let validated phone numbers redact. See config.py score_threshold.
+_PHONE_RECOGNIZER_SCORE = 0.85
+
+# National-format phone numbers we validate, in addition to any international
+# (+CC) number — libphonenumber matches those regardless of the region list.
+# Covers the tenant base (US/GB/JP) plus common international correspondents.
+_PHONE_SUPPORTED_REGIONS = ("US", "GB", "JP", "CA", "AU", "DE", "FR", "IN", "BR", "IL")
+
 # Model path — override with PII_MODEL_PATH env var.
 # Docker: /app/pii-model (downloaded at build time).
 # Local dev: pii-model/ in project root, or auto-downloads from HuggingFace.
@@ -98,6 +113,8 @@ def get_pattern_recognizers():
     - CREDIT_CARD: Luhn checksum validation
     - IBAN_CODE: Country-format + checksum validation
     - EMAIL_ADDRESS: Regex fallback (catches emails the model misses)
+    - PHONE_NUMBER: libphonenumber VALID-leniency validation (the DeBERTa
+      model detects phones only inconsistently, so common formats leaked)
     """
     global _pattern_recognizers
     if _pattern_recognizers is None:
@@ -105,12 +122,19 @@ def get_pattern_recognizers():
             CreditCardRecognizer,
             EmailRecognizer,
             IbanRecognizer,
+            PhoneRecognizer,
         )
+
+        phone_recognizer = PhoneRecognizer(supported_regions=_PHONE_SUPPORTED_REGIONS)
+        # Override Presidio's flat 0.4 so validated numbers clear the tier
+        # threshold; libphonenumber validation is the real gate (see constant).
+        phone_recognizer.SCORE = _PHONE_RECOGNIZER_SCORE
 
         _pattern_recognizers = {
             "CREDIT_CARD": CreditCardRecognizer(),
             "IBAN_CODE": IbanRecognizer(),
             "EMAIL_ADDRESS": EmailRecognizer(),
+            "PHONE_NUMBER": phone_recognizer,
         }
-        logger.info("Presidio pattern recognizers initialized (credit card, IBAN, email)")
+        logger.info("Presidio pattern recognizers initialized (credit card, IBAN, email, phone)")
     return _pattern_recognizers
