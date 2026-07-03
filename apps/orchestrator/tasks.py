@@ -130,35 +130,72 @@ def resume_tenant_crons_task(tenant_id: str) -> dict:
     return result
 
 
+def _stamp_config_applied(tenant_id: str) -> bool:
+    """Advance ``config_version`` to ``pending_config_version`` + stamp applied_model.
+
+    Shared by ``apply_single_tenant_config_task`` and, after the image bump,
+    ``apply_single_tenant_image_task``. Stamps only when the tenant is still
+    ACTIVE with a container — mirroring the write guard in
+    ``update_tenant_config``, which silently skips the file-share write
+    otherwise. Advancing ``config_version`` when no write happened would falsely
+    mark the change applied and strand it, since every re-queue path
+    (apply_pending_configs, billing reactivation, idle-wake reconcile, manual
+    force_apply) gates on ``pending > config``.
+
+    Returns ``True`` when the stamp landed (a real write is presumed to have
+    happened), ``False`` when it was skipped so the caller can leave
+    ``pending_config_version`` ahead for the natural re-queue paths to retry.
+    A no-op advance when ``pending == config`` (image-stale but config-current
+    tenants) is harmless.
+    """
+    from django.db import models as db_models
+    from django.utils import timezone as tz
+
+    from apps.tenants.models import Tenant
+
+    tenant = Tenant.objects.filter(id=tenant_id).first()
+    if not tenant or tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+        return False
+
+    Tenant.objects.filter(id=tenant_id).update(
+        config_version=db_models.F("pending_config_version"),
+        config_refreshed_at=tz.now(),
+        applied_model=tenant.preferred_model,
+        applied_model_at=tz.now(),
+    )
+    return True
+
+
 def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = False) -> None:
     """Apply pending config for a single tenant (enqueued by apply-pending-configs).
 
+    Only tenants whose image is ALREADY current reach this task — a plain
+    file-share config write (model swap, cron-prompt edit) that the running
+    image already understands. Tenants that also need an image bump are routed
+    to ``apply_single_tenant_image_task`` instead, which updates the image
+    FIRST and writes the config afterwards (see that task for why the order
+    matters).
+
     Two-stage flow:
       1. Regenerate ``openclaw.json`` and write it to the file share.
-      2. Advance ``config_version`` and stamp ``applied_model``. The
-         file write IS the apply — the running OpenClaw process picks
-         the new config up on its next restart. Image swaps already
-         restart; config-only changes (model swap, cron prompt edits)
-         take effect on the next container warmup. Hibernated tenants
-         pick up the file at wake.
+      2. Advance ``config_version`` and stamp ``applied_model`` — but only when
+         a real write happened (``_stamp_config_applied`` mirrors the
+         ACTIVE/container guard in ``update_tenant_config``).
 
-    Why no live hot-reload: OpenClaw 2026.5.7 only exposes config-mutation
-    actions (``config.apply`` / ``config.patch`` / ``restart``) through
-    its agent-scoped ``/tools/invoke`` registry, which strips the
-    ``gateway`` tool when ``tools.deny`` contains it (the policy pipeline
-    is shared between agent context and HTTP). The legacy
-    ``gateway.reload`` action does not exist in 2026.5.7 — calls 404'd
-    fleet-wide and would have raised ``Unknown action: reload`` even if
-    the registry passed them through. See issue #541.
+    Config takes effect on the container's next read of the share. Contrary to
+    the original 2026.5.7 assumption that a changed config was inert until the
+    next restart, the fleet now runs OpenClaw 2026.5.28, which re-reads the
+    changed ``openclaw.json`` on the share and validates it live. That is
+    exactly why a config referencing image-version-specific plugin dirs must
+    never be written ahead of the image that provides them (incident
+    2026-07-03) — the routing above keeps such configs out of this task.
+    Hibernated tenants pick up the file at wake.
 
     The ``_is_followup_retry`` arg is kept for compatibility with any
     in-flight QStash deliveries enqueued by the previous reload-loop
     code path; it is accepted but no longer drives any retry behavior.
     """
     import logging
-
-    from django.db import models as db_models
-    from django.utils import timezone as tz
 
     from apps.tenants.models import Tenant
 
@@ -179,33 +216,18 @@ def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = F
 
     tenant.refresh_from_db()
 
-    # update_tenant_config silently returns WITHOUT writing the file share
-    # when the tenant is not ACTIVE or has lost its container_id (see
-    # services.py update_tenant_config guard). If the tenant became
-    # SUSPENDED / lost its container between this task's version gate and the
-    # write, advancing config_version here would falsely mark the change
-    # applied and strand it — apply_pending_configs, billing reactivation,
-    # idle-wake reconcile, and even manual force_apply all gate on
-    # pending > config, so none would ever retry. Mirror the write guard:
-    # only stamp the version when a real write actually happened. Leaving
-    # pending_config_version > config_version lets the natural re-queue paths
-    # retry once the tenant is ACTIVE again.
-    if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+    # Stamp config_version only when a real write happened. update_tenant_config
+    # silently skips the file-share write when the tenant is no longer ACTIVE or
+    # has lost its container; stamping anyway would falsely mark the change
+    # applied and strand it.
+    if not _stamp_config_applied(tenant_id):
         logger.info(
-            "Config write skipped for tenant %s (status=%s, container=%s) — "
+            "Config write skipped for tenant %s (not ACTIVE / no container) — "
             "leaving pending_config_version ahead for retry",
             str(tenant_id)[:8],
-            tenant.status,
-            bool(tenant.container_id),
         )
         return
 
-    Tenant.objects.filter(id=tenant_id).update(
-        config_version=db_models.F("pending_config_version"),
-        config_refreshed_at=tz.now(),
-        applied_model=tenant.preferred_model,
-        applied_model_at=tz.now(),
-    )
     if tenant.hibernated_at:
         logger.info(
             "Config written for hibernated tenant %s — wake will pick it up",
@@ -213,7 +235,7 @@ def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = F
         )
     else:
         logger.info(
-            "Config written for tenant %s — next container restart picks it up",
+            "Config written for tenant %s — next container read picks it up",
             str(tenant_id)[:8],
         )
 
@@ -221,10 +243,22 @@ def apply_single_tenant_config_task(tenant_id: str, _is_followup_retry: bool = F
 def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
     """Update a single tenant's container image (enqueued by apply-pending-configs).
 
-    Three-phase flow to prevent cron loss on restart:
+    Ordered flow — IMAGE BEFORE CONFIG:
       1. Snapshot current crons from the running container → PostgreSQL
       2. Update the container image (triggers restart, wipes SQLite)
-      3. Schedule a delayed restore from the snapshot
+      3. Write the tenant's config against the NEW image's schema + stamp
+         ``config_version``
+      4. Schedule a delayed cron restore from the snapshot
+
+    Why image before config (incident 2026-07-03): the regenerated config can
+    reference plugin dirs / features that exist ONLY in the new image. The
+    fleet runs OpenClaw 2026.5.28, which re-reads a changed ``openclaw.json``
+    on the share live (not only at restart), so writing the new config while
+    the OLD image is still the active revision makes that image reject it
+    ("plugin path not found") and swap in ``openclaw.json.last-good`` — leaving
+    even the new image booting on stale config. ``apply_pending_configs`` routes
+    config-pending image-stale tenants here (skipping the immediate config
+    write) precisely so this task can order the two writes correctly.
     """
     import logging
 
@@ -242,6 +276,20 @@ def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
 
     if tenant.hibernated_at:
         logger.info("Skipping image update for hibernated tenant %s", tenant_id[:8])
+        return
+
+    # Idempotency: a duplicate QStash delivery (signature retry, re-enqueue)
+    # must not re-push an image the tenant is already running. Re-bumping the
+    # same tag derives the same Azure revision suffix and can wedge a
+    # single-revision Container App ("revision with suffix already exists").
+    # The caller already filters to container_image_tag != desired_tag; this is
+    # the defense-in-depth guard at the task boundary.
+    if tenant.container_image_tag == desired_tag:
+        logger.info(
+            "apply_single_tenant_image: tenant %s already on %s — skipping (idempotent)",
+            tenant_id[:8],
+            desired_tag,
+        )
         return
 
     # Phase 1: Snapshot current cron state before the restart wipes SQLite.
@@ -295,22 +343,33 @@ def apply_single_tenant_image_task(tenant_id: str, desired_tag: str) -> None:
         logger.exception("apply_single_tenant_image failed for %s", tenant_id)
         return
 
-    # Regenerate the config against the new schema version so the file share
-    # matches the image we just deployed. The config task enqueued alongside
-    # this one (batch 1 of apply_pending_configs) ran against the OLD
-    # openclaw_version, so its output is the wrong schema for the new image.
-    if version_changed:
-        try:
-            from apps.orchestrator.services import update_tenant_config
+    # Now that the container is running the new image, (re)generate the
+    # tenant's config against the new schema and write it to the file share.
+    # This is deliberately AFTER update_container_image — see the incident note
+    # in this task's docstring. We regenerate UNCONDITIONALLY (not just when
+    # openclaw_version changed) because a same-version image rebuild can still
+    # add plugin dirs the config now references.
+    config_written = False
+    try:
+        from apps.orchestrator.services import update_tenant_config
 
-            update_tenant_config(tenant_id)
-            logger.info(
-                "apply_single_tenant_image: regenerated config for %s after version sync -> %s",
-                tenant_id[:8],
-                new_version,
-            )
-        except Exception:
-            logger.exception("apply_single_tenant_image: config regen failed for %s", tenant_id)
+        update_tenant_config(tenant_id)
+        config_written = True
+        logger.info(
+            "apply_single_tenant_image: wrote config for %s after image -> %s",
+            tenant_id[:8],
+            desired_tag,
+        )
+    except Exception:
+        logger.exception("apply_single_tenant_image: config write failed for %s", tenant_id)
+
+    # Stamp config_version only after a real write, mirroring
+    # apply_single_tenant_config_task — so a config the operator queued
+    # alongside this image bump is marked applied here and not re-written by
+    # the next apply_pending_configs cycle. If the write raised, leave
+    # pending_config_version ahead for the natural re-queue to retry.
+    if config_written:
+        _stamp_config_applied(tenant_id)
 
     # Phase 3: Schedule post-restart cron restore (90s for container startup).
     from apps.cron.publish import publish_task as publish_qstash_task

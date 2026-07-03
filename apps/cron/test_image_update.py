@@ -67,6 +67,9 @@ class ApplyPendingConfigsImageTests(TestCase):
         _mock_verify,
     ):
         now = timezone.now()
+        # Config-pending AND on a stale image: routed to the image task ONLY —
+        # the image task writes this tenant's config after the restart, so no
+        # separate immediate config write is enqueued.
         _create_tenant_with_state(
             user_suffix=1,
             pending_config_version=1,
@@ -87,13 +90,14 @@ class ApplyPendingConfigsImageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.json()
-        self.assertEqual(body["config_enqueued"], 1)
+        # Tenant 1's config is folded into its image task, so no config task.
+        self.assertEqual(body["config_enqueued"], 0)
         self.assertEqual(body["image_enqueued"], 2)
         self.assertEqual(body["image_failed"], 0)
 
         config_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_config")
         image_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_image")
-        self.assertEqual(len(config_calls), 1)
+        self.assertEqual(len(config_calls), 0)
         self.assertEqual(len(image_calls), 2)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
@@ -154,19 +158,21 @@ class ApplyPendingConfigsImageTests(TestCase):
         _mock_verify,
     ):
         now = timezone.now()
+        # Both already on the desired image → pure config-pending, so both get
+        # a plain config task collected into the batch.
         _create_tenant_with_state(
             user_suffix=1,
             pending_config_version=1,
             config_version=0,
             last_message_at=now - timedelta(minutes=20),
-            container_image_tag="oldtag",
+            container_image_tag="abc123",
         )
         _create_tenant_with_state(
             user_suffix=2,
             pending_config_version=1,
             config_version=0,
             last_message_at=now - timedelta(minutes=20),
-            container_image_tag="oldtag",
+            container_image_tag="abc123",
         )
 
         response = self.client.post("/api/v1/cron/apply-pending-configs/")
@@ -185,16 +191,18 @@ class ApplyPendingConfigsImageTests(TestCase):
         _mock_verify,
     ):
         now = timezone.now()
+        # One pure config-pending tenant (config task) + one stale-image tenant
+        # (image task) so the all-failed reporting is exercised for both kinds.
         _create_tenant_with_state(
             user_suffix=1,
             pending_config_version=1,
             config_version=0,
             last_message_at=now - timedelta(minutes=20),
-            container_image_tag="oldtag",
+            container_image_tag="abc123",
         )
         _create_tenant_with_state(
             user_suffix=2,
-            pending_config_version=1,
+            pending_config_version=0,
             config_version=0,
             last_message_at=now - timedelta(minutes=20),
             container_image_tag="oldtag",
@@ -206,9 +214,9 @@ class ApplyPendingConfigsImageTests(TestCase):
         body = response.json()
         # Batch is all-or-nothing — on failure, all counts go to *_failed.
         self.assertEqual(body["config_enqueued"], 0)
-        self.assertEqual(body["config_failed"], 2)
+        self.assertEqual(body["config_failed"], 1)
         self.assertEqual(body["image_enqueued"], 0)
-        self.assertEqual(body["image_failed"], 2)
+        self.assertEqual(body["image_failed"], 1)
         self.assertEqual(body["batch_enqueued"], 0)
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
@@ -286,3 +294,67 @@ class ApplyPendingConfigsImageTests(TestCase):
 
         image_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_image")
         self.assertEqual(len(image_calls), 1)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
+    def test_config_pending_image_stale_tenant_gets_image_task_only(
+        self,
+        mock_batch,
+        _mock_verify,
+    ):
+        """A tenant that is BOTH config-pending and on a stale image gets an
+        image task ONLY. Its config is written by apply_single_tenant_image_task
+        AFTER the restart, so an immediate config write — which would land on
+        the still-running old image (incident 2026-07-03) — is skipped.
+        """
+        now = timezone.now()
+        _create_tenant_with_state(
+            user_suffix=1,
+            pending_config_version=2,
+            config_version=1,
+            last_message_at=now - timedelta(minutes=20),
+            container_image_tag="oldtag",
+        )
+
+        response = self.client.post("/api/v1/cron/apply-pending-configs/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["image_enqueued"], 1)
+        self.assertEqual(body["config_enqueued"], 0)
+
+        config_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_config")
+        image_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_image")
+        self.assertEqual(len(config_calls), 0)
+        self.assertEqual(len(image_calls), 1)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.cron.publish.publish_batch", side_effect=_batch_return_len)
+    def test_config_pending_image_current_tenant_gets_config_task_only(
+        self,
+        mock_batch,
+        _mock_verify,
+    ):
+        """A config-pending tenant already on the desired image gets a plain
+        config task (unchanged behavior) and no image task.
+        """
+        now = timezone.now()
+        _create_tenant_with_state(
+            user_suffix=1,
+            pending_config_version=2,
+            config_version=1,
+            last_message_at=now - timedelta(minutes=20),
+            container_image_tag="abc123",
+        )
+
+        response = self.client.post("/api/v1/cron/apply-pending-configs/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["config_enqueued"], 1)
+        self.assertEqual(body["image_enqueued"], 0)
+
+        config_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_config")
+        image_calls = _extract_batch_tasks(mock_batch, "apply_single_tenant_image")
+        self.assertEqual(len(config_calls), 1)
+        self.assertEqual(len(image_calls), 0)
