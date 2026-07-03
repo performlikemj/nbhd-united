@@ -1260,6 +1260,64 @@ class ConsumerFinanceViewTests(TestCase):
         self.assertEqual(response.json()["nickname"], "New Card")
         self.assertEqual(FinanceAccount.objects.count(), 1)
 
+    def test_accounts_list_q_name_search_case_insensitive(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Chase Sapphire",
+            current_balance=Decimal("3000"),
+        )
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="savings",
+            nickname="Emergency Fund",
+            current_balance=Decimal("5000"),
+        )
+        response = self.client.get("/api/v1/finance/accounts/?q=chase")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual([a["nickname"] for a in body], ["Chase Sapphire"])
+        # Stable UUID id the EntityQuery keys on is present.
+        self.assertIn("id", body[0])
+
+    def test_accounts_list_q_scoped_to_tenant(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Shared Name",
+            current_balance=Decimal("100"),
+        )
+        FinanceAccount.objects.create(
+            tenant=self.other_tenant,
+            account_type="credit_card",
+            nickname="Shared Name",
+            current_balance=Decimal("999"),
+        )
+        response = self.client.get("/api/v1/finance/accounts/?q=shared")
+        self.assertEqual(len(response.json()), 1)
+
+    def test_accounts_list_q_no_match_returns_empty(self):
+        FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname="Chase Sapphire",
+            current_balance=Decimal("3000"),
+        )
+        response = self.client.get("/api/v1/finance/accounts/?q=zzz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), [])
+
+    def test_accounts_list_q_capped_at_20(self):
+        for i in range(25):
+            FinanceAccount.objects.create(
+                tenant=self.tenant,
+                account_type="credit_card",
+                nickname=f"Card {i:02d}",
+                current_balance=Decimal("10"),
+            )
+        response = self.client.get("/api/v1/finance/accounts/?q=card")
+        self.assertEqual(len(response.json()), 20)
+
     def test_account_patch(self):
         account = FinanceAccount.objects.create(
             tenant=self.tenant,

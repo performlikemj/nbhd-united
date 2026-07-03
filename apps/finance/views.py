@@ -22,9 +22,18 @@ from .serializers import (
 )
 from .services import AccountNotFound, record_transaction, resolve_account
 
+# Cap for the ``?q=`` nickname search path — keeps a Siri/Shortcuts
+# disambiguation picker (EntityQuery) bounded.
+_ACCOUNT_SEARCH_LIMIT = 20
+
 
 class FinanceAccountListView(APIView):
-    """GET: list accounts. POST: create account."""
+    """GET: list accounts (optional ``?q=`` nickname search). POST: create account.
+
+    ``?q=`` does a case-insensitive nickname search (capped) for the Siri
+    EntityQuery / Shortcuts disambiguation picker. Only applied when present;
+    the unfiltered list stays full so the web/iOS enumeration paths don't truncate.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -37,6 +46,9 @@ class FinanceAccountListView(APIView):
             accounts = FinanceAccount.objects.filter(tenant=tenant, is_active=False)
         else:
             accounts = FinanceAccount.objects.filter(tenant=tenant, is_active=True)
+        q = (request.query_params.get("q") or "").strip()
+        if q:
+            accounts = accounts.filter(nickname__icontains=q).order_by("nickname")[:_ACCOUNT_SEARCH_LIMIT]
         serializer = FinanceAccountSerializer(accounts, many=True)
         return Response(serializer.data)
 
