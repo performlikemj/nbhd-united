@@ -196,18 +196,19 @@ class Command(BaseCommand):
         - ``default`` (unchanged): active trial (ACTIVE + is_trial) OR
           suspended-never-subscribed (SUSPENDED + empty
           stripe_subscription_id). Excludes paying subscribers.
-        - ``comeback``: every onboarded, has-messaged tenant that is
-          ACTIVE or SUSPENDED. Deliberately *includes* paid-then-lapsed
-          tenants (SUSPENDED with a retained stripe_subscription_id) that
-          the default filter drops, and *excludes* never-onboarded /
-          never-messaged shells.
+        - ``comeback``: every onboarded tenant that is ACTIVE or SUSPENDED.
+          Deliberately *includes* paid-then-lapsed tenants (SUSPENDED with a
+          retained stripe_subscription_id) that the default filter drops, and
+          onboarded tenants who never sent a message (``last_message_at`` is
+          NULL) — the owner decided 2026-07-03 to reach every onboarded
+          account, including those few completed-onboarding-but-silent
+          tenants. Only never-onboarded shells are excluded.
         """
         base = User.objects.filter(tenant__isnull=False).exclude(email="").exclude(email_opt_out=True)
 
         if audience == AUDIENCE_COMEBACK:
             audience_qs = base.filter(
                 tenant__onboarding_complete=True,
-                tenant__last_message_at__isnull=False,
                 tenant__status__in=[Tenant.Status.ACTIVE, Tenant.Status.SUSPENDED],
             )
         else:
