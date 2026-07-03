@@ -114,10 +114,24 @@ class ComebackAudienceTest(TestCase):
         self._run()
         self.assertEqual(self._recipients(), set())
 
-    def test_excludes_never_messaged(self):
-        _make_user(email="quiet@test.com", has_messaged=False)
+    def test_includes_onboarded_never_messaged(self):
+        # Owner decision 2026-07-03: onboarded-but-never-messaged tenants are
+        # now in the comeback audience (last_message_at IS NULL no longer gates).
+        _make_user(email="quiet@test.com", status=Tenant.Status.ACTIVE, has_messaged=False)
         self._run()
-        self.assertEqual(self._recipients(), set())
+        self.assertEqual(self._recipients(), {"quiet@test.com"})
+
+    def test_includes_suspended_never_messaged(self):
+        # A SUSPENDED onboarded tenant that never sent a message is included too.
+        _make_user(
+            email="silent@test.com",
+            status=Tenant.Status.SUSPENDED,
+            is_trial=False,
+            stripe_sub="sub_x",
+            has_messaged=False,
+        )
+        self._run()
+        self.assertEqual(self._recipients(), {"silent@test.com"})
 
     def test_excludes_opted_out(self):
         _make_user(email="gone@test.com", opted_out=True)
@@ -138,11 +152,12 @@ class ComebackAudienceTest(TestCase):
         _make_user(email="lapsed@test.com", status=Tenant.Status.SUSPENDED, is_trial=False, stripe_sub="sub_1")
         _make_user(email="hib@test.com", status=Tenant.Status.ACTIVE, hibernated=True)
         _make_user(email="raw@test.com", onboarding_complete=False)
+        # Onboarded but never messaged — now INCLUDED (owner decision 2026-07-03).
         _make_user(email="quiet@test.com", has_messaged=False)
         _make_user(email="gone@test.com", opted_out=True)
         _make_user(email="owner@nbhd.test")
         self._run()
-        self.assertEqual(self._recipients(), {"lapsed@test.com", "hib@test.com"})
+        self.assertEqual(self._recipients(), {"lapsed@test.com", "hib@test.com", "quiet@test.com"})
 
     def test_snapshot_freeze_records_mode(self):
         _make_user(email="a@test.com")
