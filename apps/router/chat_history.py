@@ -152,7 +152,15 @@ def _app_rows(m, main_thread_id):
         out.append(
             _row(
                 row_id=f"app:{m.id}:1",
-                created_at=m.created_at,
+                # Sort the reply by when it LANDED, not when the user asked.
+                # Stamped with the user-turn's created_at, a slow reply (12-165s
+                # observed) that completes after an interleaved cron/proactive
+                # row has already advanced a client's since-cursor falls BEHIND
+                # the strictly-monotonic watermark and is never served — a
+                # permanent drop for any client relying on the since feed
+                # (second device, reinstall, or a device whose in-flight poll
+                # died in the background).
+                created_at=m.replied_at or m.created_at,
                 role="assistant",
                 text=m.reply_text,
                 source="app",
@@ -269,8 +277,26 @@ def build_since_page(tenant, main_thread_id: str, *, cursor: str | None, limit: 
     # deferred attr touched on a union row reloads it lazily), and every column
     # here is small — the texts are the bulk and we need those anyway — so the
     # saved bytes are dwarfed by the round trip we drop.
+    # The app table's window must ALSO admit rows whose reply landed after the
+    # watermark: the assistant half sorts by replied_at (see _app_rows), and a
+    # slow reply completing after an interleaved cron advanced the cursor lives
+    # on a row whose created_at is already BEHIND the watermark — a pure
+    # created_at window would never fetch it and the reply would be permanently
+    # unservable through this feed.
+    from django.db.models import Q
+
     app_qs = AppChatMessage.objects.filter(tenant=tenant)
-    for m in _page_slice(app_qs, after_dt, fetch):
+    app_forward = app_qs.filter(Q(created_at__gt=after_dt) | Q(replied_at__gt=after_dt)).order_by("created_at", "id")[
+        :fetch
+    ]
+    if after_dt == _EPOCH:
+        app_slice = list(app_forward)
+    else:
+        app_boundary = app_qs.filter(Q(created_at=after_dt) | Q(replied_at=after_dt))
+        # all=False: a row can match boundary on one timestamp and forward on
+        # the other; the deduping union keeps it single.
+        app_slice = list(app_boundary.union(app_forward))
+    for m in app_slice:
         candidates.extend(_app_rows(m, main_thread_id))
 
     conv_qs = ConversationTurn.objects.filter(tenant=tenant)
