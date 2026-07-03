@@ -1,0 +1,274 @@
+[
+  {
+    "id": "fuel-001",
+    "pillar": "fuel",
+    "text": "I benched 225 today",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-002",
+    "pillar": "fuel",
+    "text": "squatted 140kg today",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-003",
+    "pillar": "fuel",
+    "text": "deadlift 405",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-004",
+    "pillar": "fuel",
+    "text": "my weight is 82kg",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-006",
+    "pillar": "fuel",
+    "text": "3x12 romanian deadlifts at 60kg",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-008",
+    "pillar": "fuel",
+    "text": "did spider curls and hammer curls to failure",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-009",
+    "pillar": "fuel",
+    "text": "pallof press 3 sets, torso angle felt strong",
+    "expect": "clean"
+  },
+  {
+    "id": "tasks-001",
+    "pillar": "tasks",
+    "text": "Mark the task \"What task are there\" as done.",
+    "expect": "clean"
+  },
+  {
+    "id": "tasks-004",
+    "pillar": "tasks",
+    "text": "Mark \"Rest day\" as complete.",
+    "expect": "clean"
+  },
+  {
+    "id": "goals-001",
+    "pillar": "goals",
+    "text": "My Goal this quarter is to bench bodyweight for reps.",
+    "expect": "clean"
+  },
+  {
+    "id": "goals-003",
+    "pillar": "goals",
+    "text": "My main Goal is to run a sub-4 marathon by fall.",
+    "expect": "clean"
+  },
+  {
+    "id": "scheduling-001",
+    "pillar": "scheduling",
+    "text": "Let's meet Tuesday at 3pm JST.",
+    "expect": "clean"
+  },
+  {
+    "id": "scheduling-002",
+    "pillar": "scheduling",
+    "text": "Move the standup to Wed-Fri at 9am.",
+    "expect": "clean"
+  },
+  {
+    "id": "scheduling-003",
+    "pillar": "scheduling",
+    "text": "Sat Mar 28 works for the long run.",
+    "expect": "clean"
+  },
+  {
+    "id": "journal-003",
+    "pillar": "journal",
+    "text": "I've been reflecting on how much I've grown this year.",
+    "expect": "clean"
+  },
+  {
+    "id": "acronym-002",
+    "pillar": "acronym",
+    "text": "I'm based in the US but travel a lot.",
+    "expect": "clean"
+  },
+  {
+    "id": "acronym-003",
+    "pillar": "acronym",
+    "text": "Flying to LA next week for the conference.",
+    "expect": "clean"
+  },
+  {
+    "id": "acronym-005",
+    "pillar": "acronym",
+    "text": "It's 3pm JST right now.",
+    "expect": "clean"
+  },
+  {
+    "id": "finance-001",
+    "pillar": "finance",
+    "text": "Spent $42 at FedEx shipping the package.",
+    "expect": "clean"
+  },
+  {
+    "id": "control-001",
+    "pillar": "control",
+    "text": "Email my coach at jordan.rivera@example.com about the deload.",
+    "expect": [
+      {
+        "span": "jordan.rivera@example.com",
+        "type": "EMAIL_ADDRESS"
+      }
+    ]
+  },
+  {
+    "id": "control-004",
+    "pillar": "control",
+    "text": "Forward the invoice to billing@acme-fitness.co.uk.",
+    "expect": [
+      {
+        "span": "billing@acme-fitness.co.uk",
+        "type": "EMAIL_ADDRESS"
+      }
+    ]
+  },
+  {
+    "id": "control-009",
+    "pillar": "control",
+    "text": "My physio Dr. Marcus Delgado cleared me to squat again.",
+    "expect": [
+      {
+        "span": "Marcus Delgado",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "id": "control-015",
+    "pillar": "control",
+    "text": "The new gym is at 221B Baker Street, near the station.",
+    "expect": [
+      {
+        "span": "221B Baker Street",
+        "type": "LOCATION"
+      }
+    ]
+  },
+  {
+    "id": "control-018",
+    "pillar": "control",
+    "text": "My locker PIN is 4821, don't lose it.",
+    "expect": [
+      {
+        "span": "4821",
+        "type": "PASSWORD"
+      }
+    ]
+  },
+  {
+    "id": "control-022",
+    "pillar": "control",
+    "text": "Charged the shoes to 5555 5555 5555 4444 by mistake.",
+    "expect": [
+      {
+        "span": "5555 5555 5555 4444",
+        "type": "CREDIT_CARD"
+      }
+    ]
+  },
+  {
+    "id": "control-025",
+    "pillar": "control",
+    "text": "My IBAN is GB82WEST12345698765432 for the transfer.",
+    "expect": [
+      {
+        "span": "GB82WEST12345698765432",
+        "type": "IBAN_CODE"
+      }
+    ]
+  },
+  {
+    "id": "control-026",
+    "pillar": "control",
+    "text": "Loop in Hannah Berger at hannah.berger@example.com on the plan.",
+    "expect": [
+      {
+        "span": "Hannah Berger",
+        "type": "PERSON"
+      },
+      {
+        "span": "hannah.berger@example.com",
+        "type": "EMAIL_ADDRESS"
+      }
+    ]
+  },
+  {
+    "id": "control-006",
+    "pillar": "control",
+    "text": "Call the studio at +1-415-555-0142 to book the class.",
+    "expect": [
+      {
+        "span": "+1-415-555-0142",
+        "type": "PHONE_NUMBER"
+      }
+    ]
+  },
+  {
+    "id": "control-084",
+    "pillar": "control",
+    "text": "Contact my dietitian at nina.holm@example.dk anytime.",
+    "expect": [
+      {
+        "span": "nina.holm@example.dk",
+        "type": "EMAIL_ADDRESS"
+      }
+    ]
+  },
+  {
+    "id": "control-007",
+    "pillar": "control",
+    "text": "My trainer's cell is (212) 555-0173, text before 8am.",
+    "expect": [
+      {
+        "span": "(212) 555-0173",
+        "type": "PHONE_NUMBER"
+      }
+    ]
+  },
+  {
+    "id": "control-040",
+    "pillar": "control",
+    "text": "My number is 415-555-0188 if the app logs me out.",
+    "expect": [
+      {
+        "span": "415-555-0188",
+        "type": "PHONE_NUMBER"
+      }
+    ]
+  },
+  {
+    "id": "control-039",
+    "pillar": "control",
+    "text": "Ring the front desk on +44 20 7946 0958.",
+    "expect": [
+      {
+        "span": "+44 20 7946 0958",
+        "type": "PHONE_NUMBER"
+      }
+    ]
+  },
+  {
+    "id": "control-068",
+    "pillar": "control",
+    "text": "Text +81 90-1234-5678 when the class is confirmed.",
+    "expect": [
+      {
+        "span": "+81 90-1234-5678",
+        "type": "PHONE_NUMBER"
+      }
+    ]
+  }
+]

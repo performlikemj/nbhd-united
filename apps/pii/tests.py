@@ -1069,7 +1069,10 @@ class Step1PlaceholderProtectionTest(TestCase):
 
 
 class MintGuardUnitTest(TestCase):
-    """Unit coverage for the three mint-time guards in ``_filter_results``."""
+    """Unit coverage for the mint-time guards in ``_filter_results``:
+    degenerate span, numeric/unit, fitness vocab (exact + token), common-word
+    stoplist (always + sentence-start name-collision), and date/ISO-week.
+    """
 
     def test_degenerate_guard_drops_short_and_punctuation_spans(self):
         from apps.pii.redactor import DetectedEntity, _filter_results
@@ -1127,6 +1130,86 @@ class MintGuardUnitTest(TestCase):
 
         text = "Sarah"
         results = [DetectedEntity("PERSON", 0, len(text), 0.9)]
+        self.assertEqual(len(_filter_results(results, text, set())), 1)
+
+    def test_fitness_token_guard_drops_partial_and_multiword_spans(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # Spans where the whole string never matches ``_FITNESS_VOCAB`` exactly
+        # but a single token gives it away as an exercise note.
+        for text in ["inyasa flow", "glute bridge march", "pallof hold", "pec deck flys", "max bench"]:
+            results = [DetectedEntity("LOCATION", 0, len(text), 0.97)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
+    def test_fitness_token_guard_keeps_non_fitness_spans(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # No fitness token → a real place name survives the token check.
+        text = "Baker Street"
+        results = [DetectedEntity("LOCATION", 0, len(text), 0.9)]
+        self.assertEqual(len(_filter_results(results, text, set())), 1)
+
+    def test_common_word_guard_drops_imperatives_abbrevs_and_ops_nouns(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        for text, etype in [
+            ("Rename", "PERSON"),
+            ("Felt", "PERSON"),
+            ("Steady", "PERSON"),
+            ("Mindful", "PERSON"),
+            ("JST", "PERSON"),  # timezone
+            ("Mar", "PERSON"),  # month abbrev
+            ("cron", "PERSON"),
+            ("canary", "LOCATION"),
+            ("staging", "PERSON"),
+        ]:
+            results = [DetectedEntity(etype, 0, len(text), 0.95)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
+    def test_common_word_guard_drops_mark_task_imperative(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # "Mark task" opens the text: mark (name-collision, at start) + task
+        # (always) are both stoplisted → dropped.
+        text = 'Mark task "info gathering" as blocked.'
+        results = [DetectedEntity("LOCATION", 0, len("Mark task"), 0.83)]
+        self.assertEqual(_filter_results(results, text, set()), [])
+
+    def test_name_collision_guard_suppresses_only_at_sentence_start(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # "Max" opening the text is an imperative ("Max effort…") → dropped.
+        start_text = "Max effort on the last rep."
+        results = [DetectedEntity("PERSON", 0, 3, 0.98)]
+        self.assertEqual(_filter_results(results, start_text, set()), [])
+
+        # "Max" mid-sentence could be a first name → kept.
+        mid_text = "Tell Max about the plan."
+        idx = mid_text.find("Max")
+        results = [DetectedEntity("PERSON", idx, idx + 3, 0.98)]
+        self.assertEqual(len(_filter_results(results, mid_text, set())), 1)
+
+    def test_name_collision_guard_keeps_full_name_at_start(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # A collision word followed by a real surname is a genuine name → kept
+        # even at sentence start (not every token is stoplisted).
+        text = "Max Verstappen won the race."
+        results = [DetectedEntity("PERSON", 0, len("Max Verstappen"), 0.98)]
+        self.assertEqual(len(_filter_results(results, text, set())), 1)
+
+    def test_date_like_guard_drops_iso_week_and_dates(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        for text in ["2026-W25", "2026-06-30", "2026-06", "6/30/2026"]:
+            results = [DetectedEntity("LOCATION", 0, len(text), 0.99)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
+    def test_date_like_guard_keeps_street_address(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        text = "221B Baker Street"
+        results = [DetectedEntity("LOCATION", 0, len(text), 0.9)]
         self.assertEqual(len(_filter_results(results, text, set())), 1)
 
 
@@ -1206,6 +1289,52 @@ class PinScoreOverrideTest(TestCase):
         result = self._redact("my PIN is 4821", [("PIN", "4821", 0.8)])
         self.assertNotIn("4821", result)
         self.assertIn("[PASSWORD_1]", result)
+
+
+class PhoneRecognizerTest(TestCase):
+    """The Presidio PhoneRecognizer backstop: the DeBERTa model detects phones
+    only inconsistently, so common formats leaked. libphonenumber VALID
+    validation catches them without firing on lift/rep/PIN digit-runs.
+
+    The neural model is mocked to empty so only the pattern recognizers run —
+    fast and hermetic, and it isolates the phone recognizer's behaviour.
+    """
+
+    def _phone_hits(self, text):
+        from apps.pii.config import TIER_POLICIES
+        from apps.pii.redactor import _detect_pii
+
+        policy = TIER_POLICIES["starter"]
+        with patch("apps.pii.engine.get_pii_pipeline", return_value=_fake_pipeline([])):
+            hits = _detect_pii(text, policy["entities"], policy["score_threshold"])
+        return [h for h in hits if h.entity_type == "PHONE_NUMBER"]
+
+    def test_phone_recognizer_is_registered(self):
+        from apps.pii.engine import get_pattern_recognizers
+
+        self.assertIn("PHONE_NUMBER", get_pattern_recognizers())
+
+    def test_common_phone_formats_detected_above_threshold(self):
+        for text in [
+            "My trainer's cell is (212) 555-0173, text before 8am.",
+            "My number is 415-555-0188 if the app logs me out.",
+            "Ring the front desk on +44 20 7946 0958.",
+            "Text +81 90-1234-5678 when the class is confirmed.",
+            "Call the studio at +1-415-555-0142 to book the class.",
+        ]:
+            self.assertTrue(self._phone_hits(text), f"phone not detected in {text!r}")
+
+    def test_phone_recognizer_ignores_lift_numbers_and_codes(self):
+        # The libphonenumber validator must reject fitness/code digit-runs so
+        # the backstop never re-introduces the numeric false positives.
+        for text in [
+            "5x5 at 315 today",
+            "The gym door code is 7391 after hours.",
+            "my weight is 82kg",
+            "Safe combination is 0724 if you need my passport.",
+            "3x12 romanian deadlifts at 60kg",
+        ]:
+            self.assertEqual(self._phone_hits(text), [], f"false phone hit in {text!r}")
 
 
 class DenylistDegenerateCommandTest(TestCase):

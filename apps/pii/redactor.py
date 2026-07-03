@@ -231,6 +231,230 @@ _FITNESS_VOCAB = frozenset(
     }
 )
 
+# Single fitness words for a TOKEN-level check: the model frequently mislabels
+# multi-word or partial exercise phrases where the whole span never matches
+# ``_FITNESS_VOCAB`` exactly ("vinyasa flow" arrives as 'inyasa flow', "glute
+# bridge march", "pallof hold", "pec deck flys", "max bench"). If ANY token in a
+# LOCATION/PERSON span is one of these, the span is an exercise note, not PII.
+# Curated to fitness-only words with no plausible name/place collision — an
+# ambiguous common word ("row", "set", "clean", "max") is deliberately left out
+# so this never suppresses a real name or address that merely contains it.
+_FITNESS_TOKENS = frozenset(
+    {
+        "vinyasa",
+        "yoga",
+        "pilates",
+        "flow",
+        "glute",
+        "glutes",
+        "pallof",
+        "pec",
+        "pecs",
+        "deck",
+        "flys",
+        "flyes",
+        "bench",
+        "deadlift",
+        "deadlifts",
+        "squat",
+        "squats",
+        "lunge",
+        "lunges",
+        "burpee",
+        "burpees",
+        "plank",
+        "planks",
+        "curls",
+        "shrug",
+        "shrugs",
+        "superset",
+        "supersets",
+        "dropset",
+        "dropsets",
+        "amrap",
+        "emom",
+        "treadmill",
+        "elliptical",
+        "creatine",
+        "kettlebell",
+        "kettlebells",
+        "dumbbell",
+        "dumbbells",
+        "barbell",
+        "skullcrusher",
+        "skullcrushers",
+        "preworkout",
+    }
+)
+
+# Multi-word exercise phrases matched exactly (lowercased span). Kept separate
+# from ``_FITNESS_TOKENS`` for phrases whose only distinctive token is unsafe to
+# add bare — e.g. "glute bridge march" (the 'march' token collides with the
+# month, so we match the whole phrase instead of adding 'march').
+_FITNESS_PHRASES = frozenset(
+    {
+        "glute bridge march",
+        "glute bridge marches",
+    }
+)
+
+# Common words the DeBERTa model tags as PERSON/LOCATION at high confidence
+# because they open a sentence in imperative/adjective position. None are
+# personal PII: NBHD console verbs/nouns, weekday + month abbreviations, and
+# timezone abbreviations. Applied token-wise to LOCATION/PERSON spans — a span
+# is dropped only when EVERY token is a stoplist word, so a real name that
+# merely starts with one ("Mark Delgado") is untouched.
+_COMMON_WORD_STOPLIST = frozenset(
+    {
+        # NBHD console app nouns / imperatives
+        "goal",
+        "rest",
+        "open",
+        "main",
+        "task",
+        "plan",
+        "note",
+        "focus",
+        "steady",
+        "felt",
+        "rename",
+        "done",
+        "mindful",
+        # infra / ops nouns that recur in operator chatter
+        "cron",
+        "canary",
+        "can",
+        "staging",
+        "prod",
+        # weekday abbreviations ("sat" -> name-collision set below)
+        "mon",
+        "tue",
+        "tues",
+        "wed",
+        "weds",
+        "thu",
+        "thur",
+        "thurs",
+        "fri",
+        "sun",
+        # month abbreviations ("may" excluded — collides with the modal verb)
+        "jan",
+        "feb",
+        "mar",
+        "apr",
+        "jun",
+        "jul",
+        "aug",
+        "sep",
+        "sept",
+        "oct",
+        "nov",
+        "dec",
+        # timezone abbreviations
+        "jst",
+        "utc",
+        "gmt",
+        "est",
+        "edt",
+        "cst",
+        "cdt",
+        "mst",
+        "mdt",
+        "pst",
+        "pdt",
+        "cet",
+        "cest",
+        "bst",
+        "ist",
+        "aest",
+    }
+)
+
+# Words that ARE real first names ("Mark task…", "Max effort…", "Sat with…")
+# and so are stoplisted ONLY when they open the text (imperative position). Mid-
+# sentence they are left alone, and even at the start a following non-stoplist
+# token ("Max Verstappen") keeps the span, so genuine names survive.
+_NAME_COLLISION_STOPLIST = frozenset(
+    {
+        "mark",
+        "max",
+        "sat",
+        "don",
+        "art",
+        "will",
+        "grace",
+        "joy",
+    }
+)
+
+# Splits a lowercased span into alphabetic tokens for the fitness / common-word
+# guards ("pec deck flys" -> ['pec', 'deck', 'flys']).
+_ALPHA_TOKEN_RE = re.compile(r"[^a-z]+")
+
+# ISO date / ISO-week / slash-date spans the model tags as LOCATION (ZIPCODE
+# collapses to LOCATION too) — e.g. "2026-W25" @0.99, "2026-06-30". Anchored
+# fullmatch so a real address containing digits is never caught.
+_DATE_LIKE_RE = re.compile(
+    r"""
+    ^(
+        \d{4}-W\d{1,2}              # ISO week: 2026-W25
+      | \d{4}-\d{2}-\d{2}           # ISO date: 2026-06-30
+      | \d{4}-\d{2}                 # year-month: 2026-06
+      | \d{4}/\d{1,2}/\d{1,2}       # 2026/6/30
+      | \d{1,2}/\d{1,2}/\d{2,4}     # 6/30/2026
+    )$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _span_tokens(matched_lower: str) -> list[str]:
+    """Alphabetic tokens of a lowercased span (digits/punct are separators)."""
+    return [t for t in _ALPHA_TOKEN_RE.split(matched_lower) if t]
+
+
+def _is_fitness_span(matched_lower: str) -> bool:
+    """True when a span is an exercise note, not PII.
+
+    Whole-span exact match against the canonical vocab / phrase sets, plus a
+    token-level check so partial or multi-word spans ("glute bridge march",
+    'inyasa flow') still suppress. Only tokens ≥3 chars count, to avoid a stray
+    two-letter fragment tripping the guard.
+    """
+    if matched_lower in _FITNESS_VOCAB or matched_lower in _FITNESS_PHRASES:
+        return True
+    return any(len(t) >= 3 and t in _FITNESS_TOKENS for t in _span_tokens(matched_lower))
+
+
+def _at_sentence_start(text: str, start: int) -> bool:
+    """True when ``start`` is the first token of the text or of a sentence.
+
+    Used to gate the name-collision stoplist: "Mark task…" (imperative) vs
+    "…met Mark" (a name). Leading quotes/brackets/dashes before the span are
+    treated as still sentence-initial.
+    """
+    prefix = text[:start].rstrip(" \t\r\n\"'“”‘’([{-—–:")
+    return prefix == "" or prefix[-1] in ".!?…"
+
+
+def _is_common_word_span(matched_lower: str, at_sentence_start: bool) -> bool:
+    """True when every token of a span is a stoplisted common word.
+
+    General stoplist words always count; name-collision words count only when
+    the span opens the sentence. Requiring ALL tokens to be stoplisted keeps a
+    real name that merely begins with a collision word ("Max Verstappen").
+    """
+    tokens = _span_tokens(matched_lower)
+    if not tokens:
+        return False
+    for token in tokens:
+        if token in _COMMON_WORD_STOPLIST:
+            continue
+        if at_sentence_start and token in _NAME_COLLISION_STOPLIST:
+            continue
+        return False
+    return True
+
 
 def _is_degenerate_span(text: str) -> bool:
     """True for spans too short or too featureless to be real PII.
@@ -1093,8 +1317,14 @@ def _filter_results(
             if _is_numeric_or_unit_span(matched_text):
                 _log_skip(tenant, result, "numeric", len(matched_text))
                 continue
-            if matched_lower in _FITNESS_VOCAB:
+            if _is_fitness_span(matched_lower):
                 _log_skip(tenant, result, "fitness_vocab", len(matched_text))
+                continue
+            if _is_common_word_span(matched_lower, _at_sentence_start(text, result.start)):
+                _log_skip(tenant, result, "common_word", len(matched_text))
+                continue
+            if result.entity_type == "LOCATION" and _DATE_LIKE_RE.match(matched_text):
+                _log_skip(tenant, result, "date_like", len(matched_text))
                 continue
 
         filtered.append(result)

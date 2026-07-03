@@ -342,6 +342,19 @@ jobs:
             ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
             -c "import os, torch; assert '+cpu' in torch.__version__, f'torch is not the CPU build: {torch.__version__}'; from transformers import AutoModelForTokenClassification; files = os.listdir('/app/pii-model'); assert any(f.endswith(('.bin', '.safetensors')) for f in files), f'no model weights in /app/pii-model: {files}'; print('PII smoke OK:', torch.__version__, '| weights:', [f for f in files if f.endswith(('.bin', '.safetensors'))])"
 
+          # Golden-set regression guard: run the REAL detect+filter chain over
+          # apps/pii/golden_set.json against the model baked into the image.
+          # Every control span must redact and every clean phrase must stay
+          # untouched — catches a detection/guard regression before deploy.
+          docker run --rm --entrypoint python \
+            -e DJANGO_SETTINGS_MODULE=config.settings.development \
+            -e SECRET_KEY=ci-golden-check \
+            -e DEBUG=False \
+            -e ALLOWED_HOSTS='*' \
+            -e DATABASE_URL=postgres://u:p@localhost:5432/db \
+            ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
+            -m apps.pii.golden_check
+
       - name: Build and push OpenClaw runtime image
         run: |
           # Immutable, human-readable tag: <oc-version>-<short-sha>, where the
