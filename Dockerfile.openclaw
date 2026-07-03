@@ -54,6 +54,7 @@ COPY runtime/openclaw/plugins/nbhd-insights-tools /opt/nbhd/plugins/nbhd-insight
 COPY runtime/openclaw/plugins/nbhd-settings-tools /opt/nbhd/plugins/nbhd-settings-tools
 COPY runtime/openclaw/plugins/nbhd-routing-context /opt/nbhd/plugins/nbhd-routing-context
 COPY runtime/openclaw/plugins/nbhd-activity-stream /opt/nbhd/plugins/nbhd-activity-stream
+COPY runtime/openclaw/plugins/nbhd-stream-progress /opt/nbhd/plugins/nbhd-stream-progress
 COPY runtime/openclaw/plugins/nbhd-automation-tools /opt/nbhd/plugins/nbhd-automation-tools
 COPY runtime/openclaw/plugins/nbhd-cron-enforcement /opt/nbhd/plugins/nbhd-cron-enforcement
 COPY runtime/openclaw/plugins/nbhd-site-publishing /opt/nbhd/plugins/nbhd-site-publishing

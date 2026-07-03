@@ -1895,6 +1895,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             str(getattr(settings, "OPENCLAW_ACTIVITY_STREAM_PLUGIN_ID", "") or "").strip(),
             str(getattr(settings, "OPENCLAW_ACTIVITY_STREAM_PLUGIN_PATH", "") or "").strip(),
         ),
+        # Stream-progress producer — per-step partial assistant text
+        # (pseudo-streaming). Same opt-in shape as activity-stream: ID defaults to
+        # "" → filtered out by the `if pid` guard until enabled. See base.py.
+        (
+            str(getattr(settings, "OPENCLAW_STREAM_PROGRESS_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_STREAM_PROGRESS_PLUGIN_PATH", "") or "").strip(),
+        ),
     ]
     # Reddit plugin — conditionally loaded only when tenant has an active Reddit connection
     from apps.integrations.models import Integration as _Integration

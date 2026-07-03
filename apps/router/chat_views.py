@@ -213,6 +213,13 @@ def _serialize_message(msg: AppChatMessage) -> dict:
         # — drives the in-app "thinking" state and the iOS-27 Live Activity.
         "phase": msg.phase,
         "phase_detail": msg.phase_detail,
+        # Per-step partial assistant text (pseudo-streaming). Cumulative
+        # text-so-far, keyed by a monotonic seq; the client renders it while the
+        # turn is pending and switches to reply_text once status flips to ready.
+        # Exposed only while pending — a ready/error row reports '' / 0 (the
+        # partial is cleared with the final reply anyway).
+        "partial_text": msg.partial_text if msg.status == AppChatMessage.Status.PENDING else "",
+        "partial_seq": msg.partial_seq if msg.status == AppChatMessage.Status.PENDING else 0,
         # True when the user's turn carried an inbound image (stored on the
         # share; the raw path is internal and not exposed). Lets a polling
         # client render an image bubble for the turn.
@@ -722,6 +729,29 @@ class ChatReadView(APIView):
         return _no_store(Response({"unread": 0}, status=status.HTTP_200_OK))
 
 
+_MAX_PARTIAL_TEXT_CHARS = 32000
+
+
+def _parse_partial(data: dict) -> tuple[str | None, int | None]:
+    """Parse the optional partial-text stream fields off a progress POST.
+
+    Returns ``(text, seq)`` where both are non-None only when the post carries a
+    valid partial: ``text`` is a string (truncated to 32k chars, matching the
+    plugin's cap) and ``seq`` is a positive int. Any missing/malformed field
+    yields ``(None, None)`` — the caller treats that as "no partial in this event".
+    """
+    raw_text = data.get("text")
+    if not isinstance(raw_text, str):
+        return None, None
+    try:
+        seq = int(data.get("seq"))
+    except (TypeError, ValueError):
+        return None, None
+    if seq <= 0:
+        return None, None
+    return raw_text[:_MAX_PARTIAL_TEXT_CHARS], seq
+
+
 class ChatProgressEventView(APIView):
     """POST (internal, container → control plane): narrate an in-flight turn.
 
@@ -730,6 +760,13 @@ class ChatProgressEventView(APIView):
     journal") → ``composing`` — so a polling client can show what the assistant
     is doing instead of an opaque spinner (and the iOS-27 Siri Live Activity can
     map it to ``progress.localizedDescription``).
+
+    It also accepts optional per-step partial assistant text (``text`` + a
+    monotonic ``seq``, from the nbhd-stream-progress plugin) for pseudo-streaming:
+    the cumulative text-so-far is written to ``partial_text``/``partial_seq`` on
+    the same resolved PENDING row, seq-guarded so an out-of-order/duplicate post
+    can't rewind the stream. A post may carry a phase, a partial, or both; only a
+    post with neither is rejected (400).
 
     Auth: ``X-NBHD-Internal-Key`` + ``X-NBHD-Tenant-Id`` (same internal-runtime
     auth as usage/gate callbacks). Best-effort narration: only a still-``pending``
@@ -763,7 +800,13 @@ class ChatProgressEventView(APIView):
         client_msg_id = str(request.data.get("client_msg_id") or "").strip()
         phase = str(request.data.get("phase") or "").strip()[:24]
         detail = str(request.data.get("detail") or "").strip()[:200]
-        if not phase:
+        # Optional per-step partial assistant text (nbhd-stream-progress plugin).
+        # A text-bearing post carries no phase; a phase-narration post carries no
+        # text. Either is a valid, meaningful event — reject only a post with
+        # NEITHER (preserves the empty-phase 400 for the phase-narration path).
+        partial_text, partial_seq = _parse_partial(request.data)
+        has_partial = partial_text is not None and partial_seq is not None
+        if not phase and not has_partial:
             return Response({"error": "missing_fields"}, status=status.HTTP_400_BAD_REQUEST)
 
         base = AppChatMessage.objects.filter(tenant_id=tenant_id, status=AppChatMessage.Status.PENDING)
@@ -805,5 +848,15 @@ class ChatProgressEventView(APIView):
                 # silently dropped.
                 latest_pk = base.order_by("-created_at").values_list("pk", flat=True).first()
                 qs = base.filter(pk=latest_pk) if latest_pk is not None else base.none()
-        updated = qs.update(phase=phase, phase_detail=detail)
+        # Phase narration overwrites in place (only when a phase was sent — a
+        # text-only post must NOT clobber a live phase with an empty string).
+        updated = 0
+        if phase:
+            updated += qs.update(phase=phase, phase_detail=detail)
+        # Partial text is seq-guarded: only apply when this seq is strictly newer
+        # than what's stored, so an out-of-order or duplicate post can't rewind
+        # the stream. The atomic ``partial_seq__lt`` filter defeats the race
+        # without a read-modify-write.
+        if has_partial:
+            updated += qs.filter(partial_seq__lt=partial_seq).update(partial_text=partial_text, partial_seq=partial_seq)
         return Response({"updated": bool(updated)}, status=status.HTTP_200_OK)

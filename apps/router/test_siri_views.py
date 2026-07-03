@@ -382,3 +382,113 @@ class ChatProgressEventTest(TestCase):
         msg_b.refresh_from_db()
         self.assertEqual(msg_a.phase, "tool")  # in-flight thread narrated (despite being older)
         self.assertEqual(msg_b.phase, "")  # newer-but-queued thread NOT narrated
+
+    # ── per-step partial text (pseudo-streaming) ──────────────────────────
+
+    def _post(self, body):
+        return self.client.post(
+            self._url(),
+            body,
+            format="json",
+            HTTP_X_NBHD_INTERNAL_KEY="test-key",
+            HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
+        )
+
+    def test_partial_text_written_and_exposed_on_poll(self):
+        self._pending()
+        resp = self._post({"client_msg_id": "p1", "text": "Thinking about", "seq": 1})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.data["updated"])
+        turn = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="p1")
+        self.assertEqual(turn.partial_text, "Thinking about")
+        self.assertEqual(turn.partial_seq, 1)
+        # Surfaced on the client-facing poll endpoint while pending.
+        poll = APIClient()
+        poll.force_authenticate(user=self.user)
+        detail = poll.get("/api/v1/chat/messages/p1/")
+        self.assertEqual(detail.data["partial_text"], "Thinking about")
+        self.assertEqual(detail.data["partial_seq"], 1)
+
+    def test_text_only_post_without_phase_accepted(self):
+        # A partial-carrying post has no phase; it must NOT hit the empty-phase
+        # 400, and it must not clobber a live phase with an empty string.
+        turn = self._pending()
+        turn.phase = "thinking"
+        turn.save(update_fields=["phase"])
+        resp = self._post({"client_msg_id": "p1", "text": "hello", "seq": 1})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.data["updated"])
+        turn.refresh_from_db()
+        self.assertEqual(turn.partial_text, "hello")
+        self.assertEqual(turn.phase, "thinking")  # live phase preserved
+
+    def test_stale_and_duplicate_seq_ignored(self):
+        self._pending()
+        self.assertTrue(self._post({"client_msg_id": "p1", "text": "abcde", "seq": 5}).data["updated"])
+        # Stale (lower) seq — ignored, no rewind.
+        resp_stale = self._post({"client_msg_id": "p1", "text": "abc", "seq": 3})
+        self.assertEqual(resp_stale.status_code, 200)
+        self.assertFalse(resp_stale.data["updated"])
+        # Duplicate (equal) seq — ignored.
+        resp_dup = self._post({"client_msg_id": "p1", "text": "abcXX", "seq": 5})
+        self.assertFalse(resp_dup.data["updated"])
+        turn = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="p1")
+        self.assertEqual(turn.partial_text, "abcde")
+        self.assertEqual(turn.partial_seq, 5)
+        # A strictly-newer seq applies.
+        self.assertTrue(self._post({"client_msg_id": "p1", "text": "abcdefgh", "seq": 6}).data["updated"])
+        turn.refresh_from_db()
+        self.assertEqual(turn.partial_text, "abcdefgh")
+        self.assertEqual(turn.partial_seq, 6)
+
+    def test_partial_text_truncated_to_32k(self):
+        self._pending()
+        self._post({"client_msg_id": "p1", "text": "x" * 40000, "seq": 1})
+        turn = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="p1")
+        self.assertEqual(len(turn.partial_text), 32000)
+
+    def test_invalid_or_missing_seq_ignores_partial(self):
+        # text without a valid positive seq carries no applyable partial; with no
+        # phase either, the post is the empty 400.
+        self._pending()
+        self.assertEqual(self._post({"client_msg_id": "p1", "text": "hi", "seq": 0}).status_code, 400)
+        self.assertEqual(self._post({"client_msg_id": "p1", "text": "hi", "seq": "nope"}).status_code, 400)
+        turn = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="p1")
+        self.assertEqual(turn.partial_text, "")
+        self.assertEqual(turn.partial_seq, 0)
+
+    def test_partial_not_exposed_after_terminal(self):
+        # Serializer gates partial_text/seq on PENDING — a ready row reports '' / 0
+        # regardless of any DB residue.
+        turn = self._pending()
+        turn.partial_text = "leftover stream"
+        turn.partial_seq = 9
+        turn.status = AppChatMessage.Status.READY
+        turn.reply_text = "final"
+        turn.save(update_fields=["partial_text", "partial_seq", "status", "reply_text"])
+        poll = APIClient()
+        poll.force_authenticate(user=self.user)
+        detail = poll.get("/api/v1/chat/messages/p1/")
+        self.assertEqual(detail.data["partial_text"], "")
+        self.assertEqual(detail.data["partial_seq"], 0)
+
+    @override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
+    def test_final_reply_clears_partial_text(self):
+        from apps.router.pending_queue import _store_ios_turn_reply
+
+        turn = self._pending()
+        turn.partial_text = "partial so far"
+        turn.partial_seq = 4
+        turn.save(update_fields=["partial_text", "partial_seq"])
+        pm = PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(self.thread.id),
+            payload={"message_text": "hi", "client_msg_id": "p1"},
+            delivery_status=PendingMessage.Status.PENDING,
+        )
+        _store_ios_turn_reply(self.tenant, [pm], "here is the final answer")
+        turn.refresh_from_db()
+        self.assertEqual(turn.status, AppChatMessage.Status.READY)
+        self.assertEqual(turn.reply_text, "here is the final answer")
+        self.assertEqual(turn.partial_text, "")
