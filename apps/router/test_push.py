@@ -425,15 +425,20 @@ class NotifyReplyReadyTest(TestCase):
 
     @override_settings(**_APNS_SETTINGS)
     def test_ready_push_carries_absolute_unread_badge(self):
-        # A READY reply that landed after the (null → epoch) read cursor is one
-        # unread item → the push rides badge=1.
+        # An opted-in user (has stamped a read cursor): a READY reply that landed
+        # after that cursor is one unread item → the push rides badge=1.
+        from datetime import timedelta
+
         from django.utils import timezone
 
         from apps.router.models import AppChatMessage
         from apps.router.push_views import notify_app_reply_ready
 
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
-        AppChatMessage.objects.filter(pk=self.msg.pk).update(replied_at=timezone.now())
+        now = timezone.now()
+        # Opt in: the client has stamped a read cursor before the reply landed.
+        type(self.user).objects.filter(pk=self.user.pk).update(chat_last_read_at=now - timedelta(hours=1))
+        AppChatMessage.objects.filter(pk=self.msg.pk).update(replied_at=now)
 
         captured = {}
 
@@ -447,16 +452,49 @@ class NotifyReplyReadyTest(TestCase):
         self.assertEqual(captured["badge"], 1)
 
     @override_settings(**_APNS_SETTINGS)
+    def test_never_read_user_gets_no_badge(self):
+        # A user who has never stamped a read cursor (chat_last_read_at is NULL —
+        # e.g. an already-shipped iOS build that has no /chat/read/ and can't
+        # clear an icon badge) must get NO badge key at all, so the OS never pins
+        # a count the app can't clear.
+        from django.utils import timezone
+
+        from apps.router.models import AppChatMessage
+        from apps.router.push_views import notify_app_reply_ready
+
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        AppChatMessage.objects.filter(pk=self.msg.pk).update(replied_at=timezone.now())
+        self.assertIsNone(self.user.chat_last_read_at)  # never stamped
+
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_ready(self.tenant, ["r1"], "here you go")
+
+        # None → send_push omits the aps.badge key (verified separately in
+        # ApnsSenderTest.test_badge_zero_is_sent_but_none_is_omitted).
+        self.assertIsNone(captured["badge"])
+
+    @override_settings(**_APNS_SETTINGS)
     def test_error_push_carries_badge_reflecting_other_unread(self):
         # An error turn produces no readable reply (not itself counted), but the
         # error push still carries the ABSOLUTE unread badge — here 1, from a
-        # separate READY reply the user hasn't read.
+        # separate READY reply the (opted-in) user hasn't read.
+        from datetime import timedelta
+
         from django.utils import timezone
 
         from apps.router.models import AppChatMessage
         from apps.router.push_views import notify_app_reply_error
 
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        now = timezone.now()
+        # Opt in: the client has stamped a read cursor before the earlier reply.
+        type(self.user).objects.filter(pk=self.user.pk).update(chat_last_read_at=now - timedelta(hours=1))
         AppChatMessage.objects.create(
             tenant=self.tenant,
             user=self.user,
@@ -465,7 +503,7 @@ class NotifyReplyReadyTest(TestCase):
             user_text="q",
             reply_text="an earlier answer",
             status=AppChatMessage.Status.READY,
-            replied_at=timezone.now(),
+            replied_at=now,
         )
 
         captured = {}

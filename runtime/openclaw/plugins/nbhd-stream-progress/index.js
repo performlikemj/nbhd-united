@@ -12,9 +12,11 @@
  * that partial text instead of waiting for the whole reply.
  *
  * The hook event carries only the OpenClaw run (not the inbound client_msg_id),
- * so the POST omits client_msg_id and the control plane writes it to the tenant's
- * in-flight turn (turns are serialized per container; only app/Siri turns create
- * the row it updates — a Telegram/LINE turn is a harmless no-op there). The
+ * so the POST omits client_msg_id and the control plane attributes the partial
+ * text to the app/Siri turn that currently holds a live in-flight drain lease
+ * (turns are serialized per container). A Telegram/LINE turn holds no such
+ * app-channel lease, so its partial POST attributes to no row — a harmless
+ * no-op, never bleeding another channel's reply into an app turn's stream. The
  * control plane seq-guards the write so an out-of-order/duplicate POST can't
  * rewind the stream.
  *

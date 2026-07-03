@@ -3,8 +3,9 @@
 * ``POST /api/v1/chat/read/`` stamps the per-user read cursor and returns 0.
 * ``_compute_unread_count`` — READY replies after the cursor + proactive/cron
   pushes after it, with the exactly-at-timestamp boundary (strictly greater),
-  the empty-reply / non-terminal exclusions, and the never-read recent-window
-  cap.
+  the empty-reply / non-terminal exclusions, the never-read → None opt-in gate
+  (shipped builds that can't clear a badge get no badge), and the dormant
+  (older-than-window) cursor floor cap.
 """
 
 from __future__ import annotations
@@ -151,11 +152,22 @@ class UnreadCountTest(TestCase):
         )
         self.assertEqual(_compute_unread_count(self.user), 3)
 
-    def test_never_read_counts_only_recent_window(self):
-        # No read cursor at all → count from the window floor, not from epoch, so
-        # ancient history can't balloon the badge.
+    def test_never_read_yields_none_no_badge(self):
+        # No read cursor at all → the client has NOT opted into server-owned
+        # badging (e.g. an already-shipped iOS build with no /chat/read/, which
+        # can't clear an icon badge). Return None so NO badge key rides the push
+        # and the OS never pins a count the app can't clear.
         self.assertIsNone(self.user.chat_last_read_at)
         now = timezone.now()
-        self._reply(replied_at=now - _UNREAD_WINDOW - timedelta(days=1))  # outside window
+        self._reply(replied_at=now - timedelta(days=1))  # a recent unread reply
+        self.assertIsNone(_compute_unread_count(self.user))
+
+    def test_dormant_cursor_floored_to_window(self):
+        # An OPTED-IN user (has stamped a cursor) who then went dormant far longer
+        # than the window: count from the window floor, not from the ancient
+        # cursor, so old history can't balloon the badge.
+        now = timezone.now()
+        self._set_cursor(now - _UNREAD_WINDOW - timedelta(days=10))  # cursor older than the window
+        self._reply(replied_at=now - _UNREAD_WINDOW - timedelta(days=1))  # outside window → floored out
         self._reply(replied_at=now - timedelta(days=1))  # inside window → counted
         self.assertEqual(_compute_unread_count(self.user), 1)

@@ -810,6 +810,11 @@ class ChatProgressEventView(APIView):
             return Response({"error": "missing_fields"}, status=status.HTTP_400_BAD_REQUEST)
 
         base = AppChatMessage.objects.filter(tenant_id=tenant_id, status=AppChatMessage.Status.PENDING)
+        # Whether the resolved row is a DETERMINISTIC match for the turn this
+        # event belongs to. Partial assistant TEXT is attributed only when this
+        # holds; the low-sensitivity phase spinner may still ride the best-effort
+        # newest-PENDING fallback below.
+        partial_attributable = True
         if client_msg_id:
             qs = base.filter(client_msg_id=client_msg_id)
         else:
@@ -843,11 +848,17 @@ class ChatProgressEventView(APIView):
             if in_flight_oldest is not None:
                 qs = base.filter(thread_id=in_flight_oldest.thread_id)
             else:
-                # No live lease matched (lease expired / narrow race) — fall back
-                # to the newest PENDING row so a real progress event is never
-                # silently dropped.
+                # No live IOS lease matched (lease expired / narrow race) — fall
+                # back to the newest PENDING row so a real PHASE event is never
+                # silently dropped. But do NOT attribute partial reply TEXT here:
+                # without a live IOS lease the turn ACTUALLY in flight may be a
+                # Telegram/LINE turn (which creates no AppChatMessage row), and
+                # writing its cumulative reply into an unrelated PENDING app row
+                # would surface another channel's private reply as this turn's
+                # streaming text. Phase-only on the fallback.
                 latest_pk = base.order_by("-created_at").values_list("pk", flat=True).first()
                 qs = base.filter(pk=latest_pk) if latest_pk is not None else base.none()
+                partial_attributable = False
         # Phase narration overwrites in place (only when a phase was sent — a
         # text-only post must NOT clobber a live phase with an empty string).
         updated = 0
@@ -857,6 +868,6 @@ class ChatProgressEventView(APIView):
         # than what's stored, so an out-of-order or duplicate post can't rewind
         # the stream. The atomic ``partial_seq__lt`` filter defeats the race
         # without a read-modify-write.
-        if has_partial:
+        if has_partial and partial_attributable:
             updated += qs.filter(partial_seq__lt=partial_seq).update(partial_text=partial_text, partial_seq=partial_seq)
         return Response({"updated": bool(updated)}, status=status.HTTP_200_OK)

@@ -492,3 +492,39 @@ class ChatProgressEventTest(TestCase):
         self.assertEqual(turn.status, AppChatMessage.Status.READY)
         self.assertEqual(turn.reply_text, "here is the final answer")
         self.assertEqual(turn.partial_text, "")
+
+    def test_no_client_msg_id_partial_dropped_on_fallback_but_phase_narrates(self):
+        # Cross-channel bleed guard: with NO client_msg_id and NO live IOS lease
+        # (the newest-PENDING fallback), the turn actually in flight may be a
+        # Telegram/LINE turn — writing its reply text into an unrelated PENDING
+        # app row would surface another channel's private reply as this turn's
+        # stream. So the low-sensitivity PHASE still narrates on the fallback, but
+        # the partial reply TEXT is DROPPED.
+        turn = self._pending()
+        resp = self._post({"phase": "composing", "text": "secret from another channel", "seq": 1})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.data["updated"])  # phase applied
+        turn.refresh_from_db()
+        self.assertEqual(turn.phase, "composing")  # phase narrates on fallback
+        self.assertEqual(turn.partial_text, "")  # partial text NOT attributed
+        self.assertEqual(turn.partial_seq, 0)
+
+    def test_no_client_msg_id_partial_written_with_in_flight_lease(self):
+        # The happy path the plugin actually rides: no client_msg_id, but the
+        # in-flight app turn's thread holds a live drain lease → the partial text
+        # attributes deterministically to that thread's PENDING row.
+        turn = self._pending()
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(self.thread.id),
+            payload={"message_text": "hi"},
+            delivery_status=PendingMessage.Status.PENDING,
+            delivery_in_flight_until=timezone.now() + timedelta(seconds=120),
+        )
+        resp = self._post({"text": "streaming so far", "seq": 1})  # no client_msg_id
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertTrue(resp.data["updated"])
+        turn.refresh_from_db()
+        self.assertEqual(turn.partial_text, "streaming so far")
+        self.assertEqual(turn.partial_seq, 1)
