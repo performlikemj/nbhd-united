@@ -104,6 +104,17 @@ class User(AbstractUser):
         help_text="When the user unsubscribed (null if still subscribed).",
     )
 
+    # Server read-cursor for the in-app chat, stamped by POST /api/v1/chat/read/.
+    # Drives the server-authoritative APNs unread badge: an assistant reply or a
+    # proactive/cron push after this instant is "unread". Null = never read (the
+    # badge then counts only a recent window, not the whole history).
+    chat_last_read_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the user last marked the in-app chat read (POST /chat/read/). "
+        "The APNs unread badge counts assistant replies / proactive pushes after this.",
+    )
+
     class Meta:
         db_table = "users"
 

@@ -90,6 +90,7 @@ def send_push(
     extra: dict | None = None,
     collapse_id: str | None = None,
     content_available: bool = False,
+    badge: int | None = None,
 ) -> dict:
     """Send one alert to each device token on the matching APNs host. Never raises.
 
@@ -102,6 +103,11 @@ def send_push(
     ``collapse_id`` sets ``apns-collapse-id`` so APNs coalesces repeat pushes for
     the same turn on the device (a re-fired drain replaces, never stacks). Apple
     caps it at 64 bytes — it is truncated to fit.
+
+    ``badge`` (when not None) sets ``aps.badge`` to a server-computed ABSOLUTE
+    unread count for the icon badge. Absolute (not a delta) so it self-corrects
+    any drift; ``0`` clears the icon. iOS has no API to read the badge back, so
+    the server must own the count and ride it on every visible alert push.
 
     ``content_available`` adds ``content-available: 1`` to the ``aps`` block: a
     *hybrid* push (visible alert + a best-effort silent wake) so a backgrounded
@@ -145,7 +151,11 @@ def send_push(
         client.close()
         return result
 
+    # NOTE: ``aps`` here is the TOP-LEVEL payload; the real APNs aps block is the
+    # nested ``aps["aps"]`` dict — custom keys go at the top level, aps keys inside.
     aps: dict = {"aps": {"alert": {"title": title, "body": body}, "sound": "default"}}
+    if badge is not None:
+        aps["aps"]["badge"] = int(badge)
     if content_available:
         # Hybrid push: a visible alert AND a best-effort silent background wake.
         # Valid alongside apns-push-type=alert (set below).

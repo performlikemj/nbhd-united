@@ -699,6 +699,29 @@ class ChatMessageDetailView(APIView):
         return _no_store(Response(_serialize_message(turn)))
 
 
+class ChatReadView(APIView):
+    """POST: mark the in-app chat read up to now → clears the APNs unread badge.
+
+    Stamps ``user.chat_last_read_at = now`` (the server read-cursor the badge
+    count is computed against), so the NEXT alert push rides an absolute unread
+    count of 0. The iOS app calls this when chat becomes visible, alongside
+    clearing the local icon badge. Same JWT-authed consumer surface as
+    ``ChatMessageView``. Returns ``{"unread": 0}`` (0 by definition right after a
+    stamp).
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        # Stamp via an UPDATE (not model.save) so we touch only this column — no
+        # read-modify-write race against a concurrent write to other User fields.
+        type(request.user).objects.filter(pk=request.user.pk).update(chat_last_read_at=timezone.now())
+        return _no_store(Response({"unread": 0}, status=status.HTTP_200_OK))
+
+
 class ChatProgressEventView(APIView):
     """POST (internal, container → control plane): narrate an in-flight turn.
 

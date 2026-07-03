@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import timedelta
 
 from django.utils import timezone
 from rest_framework import status
@@ -42,6 +43,11 @@ _GENERIC_BODY = "Your reply is ready — tap to read."
 # model reply). Never carries the machine reason — nothing diagnostic on the
 # lock screen.
 _ERROR_BODY = "Your assistant couldn't finish that — tap to try again."
+
+# Badge count window: a never-read (or long-dormant) user's icon badge counts
+# only recently-arrived unread items, not their whole history — an index-friendly
+# bound that keeps the number glanceable and the query cheap.
+_UNREAD_WINDOW = timedelta(days=30)
 
 
 def _markdown_to_plain_prose(text: str) -> str:
@@ -238,6 +244,50 @@ def _notify_turn(tenant, client_msg_ids, *, body: str, content_available: bool) 
         logger.warning("push: notify turn failed (non-fatal)", exc_info=True)
 
 
+def _compute_unread_count(user) -> int:
+    """Server-authoritative ABSOLUTE unread count for ``user``'s iOS icon badge.
+
+    Unread = READY assistant replies whose (non-empty) reply landed after the
+    read cursor + proactive/cron sends that fired an APNs push after it. The read
+    cursor is ``user.chat_last_read_at`` (stamped by POST /chat/read/); a
+    never-read (or long-dormant) user counts only ``_UNREAD_WINDOW`` of recent
+    items so the badge never balloons to the whole history and the query stays
+    bounded to a tenant's recent rows. Absolute (not a delta) so any drift
+    self-corrects on the next push. Fail-soft: any error yields 0 rather than
+    blocking the push.
+    """
+    try:
+        from apps.router.models import AppChatMessage, ProactiveOutbound
+
+        tenant = getattr(user, "tenant", None)
+        if tenant is None:
+            return 0
+        floor = timezone.now() - _UNREAD_WINDOW
+        last_read = getattr(user, "chat_last_read_at", None)
+        # Never-read or read longer ago than the window → count from the window
+        # floor (index-friendly cap); otherwise from the actual read instant.
+        cursor = last_read if (last_read and last_read > floor) else floor
+
+        replies = (
+            AppChatMessage.objects.filter(
+                tenant=tenant,
+                user=user,
+                status=AppChatMessage.Status.READY,
+                replied_at__gt=cursor,
+            )
+            .exclude(reply_text="")
+            .count()
+        )
+        # ``notified_at`` is set only when an APNs push was fired for the row, so
+        # this counts exactly the proactive/cron sends that produced a visible
+        # alert after the read cursor.
+        proactive = ProactiveOutbound.objects.filter(tenant=tenant, notified_at__gt=cursor).count()
+        return replies + proactive
+    except Exception:
+        logger.warning("push: unread count failed (non-fatal)", exc_info=True)
+        return 0
+
+
 def _push_to_user_devices(
     user,
     *,
@@ -263,6 +313,11 @@ def _push_to_user_devices(
     if not rows:
         return
 
+    # Every user-visible alert push (reply-ready, error, proactive) carries the
+    # absolute unread count so the app icon badge stays correct without the app
+    # ever reading it back. Computed once per push, after the has-devices guard.
+    badge = _compute_unread_count(user)
+
     by_env: dict[str, list[str]] = {}
     for r in rows:
         by_env.setdefault(r["environment"], []).append(r["token"])
@@ -278,6 +333,7 @@ def _push_to_user_devices(
             collapse_id=collapse_id,
             content_available=content_available,
             extra=extra,
+            badge=badge,
         )
         stale.extend(res.get("unregistered") or [])
     if stale:

@@ -220,6 +220,45 @@ class ApnsSenderTest(TestCase):
         self.assertNotIn("apns-collapse-id", kwargs["headers"])
         self.assertNotIn("content-available", kwargs["json"]["aps"])
 
+    @override_settings(**_APNS_SETTINGS)
+    @patch("apps.common.apns._provider_jwt", return_value="jwt")
+    @patch("apps.common.apns._http2_client")
+    def test_badge_lands_inside_the_nested_aps_block(self, mock_factory, _jwt):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        fake.__exit__.return_value = False
+        fake.post.return_value = MagicMock(status_code=200)
+        mock_factory.return_value = fake
+
+        from apps.common.apns import send_push
+
+        send_push([_VALID_TOKEN], title="NBHD", body="hi", badge=3)
+        _args, kwargs = fake.post.call_args
+        # badge is an aps key — it must sit in the NESTED aps dict, not top level.
+        self.assertEqual(kwargs["json"]["aps"]["badge"], 3)
+        self.assertNotIn("badge", kwargs["json"])  # not a stray top-level key
+
+    @override_settings(**_APNS_SETTINGS)
+    @patch("apps.common.apns._provider_jwt", return_value="jwt")
+    @patch("apps.common.apns._http2_client")
+    def test_badge_zero_is_sent_but_none_is_omitted(self, mock_factory, _jwt):
+        fake = MagicMock()
+        fake.__enter__.return_value = fake
+        fake.__exit__.return_value = False
+        fake.post.return_value = MagicMock(status_code=200)
+        mock_factory.return_value = fake
+
+        from apps.common.apns import send_push
+
+        # badge=0 rides the push (clears the icon) — 0 is not "absent".
+        send_push([_VALID_TOKEN], title="t", body="b", badge=0)
+        _args, kwargs = fake.post.call_args
+        self.assertEqual(kwargs["json"]["aps"]["badge"], 0)
+        # No badge arg → no badge key at all (leaves the current icon untouched).
+        send_push([_VALID_TOKEN], title="t", body="b")
+        _args, kwargs = fake.post.call_args
+        self.assertNotIn("badge", kwargs["json"]["aps"])
+
 
 class NotifyReplyReadyTest(TestCase):
     def setUp(self):
@@ -383,6 +422,62 @@ class NotifyReplyReadyTest(TestCase):
         self.assertEqual(captured["collapse_id"], "r1")  # turn's client_msg_id
         self.assertTrue(captured["content_available"])
         self.assertEqual(captured["extra"], {"client_msg_id": "r1"})
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_ready_push_carries_absolute_unread_badge(self):
+        # A READY reply that landed after the (null → epoch) read cursor is one
+        # unread item → the push rides badge=1.
+        from django.utils import timezone
+
+        from apps.router.models import AppChatMessage
+        from apps.router.push_views import notify_app_reply_ready
+
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        AppChatMessage.objects.filter(pk=self.msg.pk).update(replied_at=timezone.now())
+
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_ready(self.tenant, ["r1"], "here you go")
+
+        self.assertEqual(captured["badge"], 1)
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_error_push_carries_badge_reflecting_other_unread(self):
+        # An error turn produces no readable reply (not itself counted), but the
+        # error push still carries the ABSOLUTE unread badge — here 1, from a
+        # separate READY reply the user hasn't read.
+        from django.utils import timezone
+
+        from apps.router.models import AppChatMessage
+        from apps.router.push_views import notify_app_reply_error
+
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=self.thread,
+            client_msg_id="earlier",
+            user_text="q",
+            reply_text="an earlier answer",
+            status=AppChatMessage.Status.READY,
+            replied_at=timezone.now(),
+        )
+
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return {"sent": 1, "failed": 0, "unregistered": [], "skipped": None}
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_app_reply_error(self.tenant, ["r1"])
+
+        self.assertEqual(captured["badge"], 1)
 
     @override_settings(**_APNS_SETTINGS)
     def test_idempotent_no_double_push_on_redrain(self):
