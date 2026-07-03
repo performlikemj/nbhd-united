@@ -81,6 +81,200 @@ class SiriStatusTest(TestCase):
         self.assertEqual(resp.data["snapshot_md"], "REAL NAME state")
         mock_rehydrate.assert_called_once()
 
+    @patch("apps.orchestrator.workspace_envelope.render_context_digest", return_value="## Goals\n- ship it")
+    def test_response_includes_spoken_field(self, _digest):
+        resp = self.client.get("/api/v1/siri/status/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIn("spoken", resp.data)
+        self.assertIsInstance(resp.data["spoken"], str)
+        self.assertTrue(resp.data["spoken"])
+
+    @patch("apps.orchestrator.workspace_envelope.render_context_digest", return_value="## Goals\n- ship it")
+    def test_spoken_never_carries_markdown_or_tool_names(self, _digest):
+        # Even though the digest (snapshot_md) is full of markdown, directives,
+        # and tool calls, the spoken field must be clean — this is the exact TTS
+        # failure mode we are fixing.
+        from apps.journal.models import Goal, Task
+
+        Task.objects.create(tenant=self.tenant, title="pay [PERSON_1] back", status=Task.Status.OPEN)
+        Goal.objects.create(tenant=self.tenant, title="run a marathon", status=Goal.Status.ACTIVE)
+        resp = self.client.get("/api/v1/siri/status/")
+        spoken = resp.data["spoken"]
+        for forbidden in ("#", "*", "`", "_", "nbhd_", "[[", "{status", "[PERSON_", "→"):
+            self.assertNotIn(forbidden, spoken, f"spoken leaked {forbidden!r}: {spoken!r}")
+
+
+class SiriSpokenComposerTest(TestCase):
+    """Unit coverage for the deterministic, speech-safe status composer."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+
+    def _spoken(self) -> str:
+        from apps.router.siri_spoken import compose_spoken_status
+
+        return compose_spoken_status(self.tenant)
+
+    def test_empty_state_is_all_clear(self):
+        spoken = self._spoken()
+        self.assertIn("caught up", spoken.lower())
+
+    def test_counts_open_tasks_and_active_goals(self):
+        from apps.journal.models import Goal, Task
+
+        for i in range(13):
+            Task.objects.create(tenant=self.tenant, title=f"t{i}", status=Task.Status.OPEN)
+        for i in range(2):
+            Goal.objects.create(tenant=self.tenant, title=f"g{i}", status=Goal.Status.ACTIVE)
+        spoken = self._spoken()
+        self.assertIn("13 open tasks", spoken)
+        self.assertIn("2 active goals", spoken)
+
+    def test_singular_pluralization(self):
+        from apps.journal.models import Task
+
+        Task.objects.create(tenant=self.tenant, title="only one", status=Task.Status.OPEN)
+        spoken = self._spoken()
+        self.assertIn("1 open task.", spoken)
+        self.assertNotIn("1 open tasks", spoken)
+
+    def test_due_this_week_counted(self):
+        from datetime import timedelta
+
+        from django.utils import timezone as tz
+
+        from apps.journal.models import Task
+
+        Task.objects.create(
+            tenant=self.tenant,
+            title="soon",
+            status=Task.Status.OPEN,
+            due_date=tz.now().date() + timedelta(days=2),
+        )
+        Task.objects.create(
+            tenant=self.tenant,
+            title="later",
+            status=Task.Status.OPEN,
+            due_date=tz.now().date() + timedelta(days=30),
+        )
+        spoken = self._spoken()
+        self.assertIn("1 is due this week", spoken)
+
+    def test_planned_workouts_gated_on_fuel_enabled(self):
+        from datetime import timedelta
+
+        from django.utils import timezone as tz
+
+        from apps.fuel.models import Workout, WorkoutCategory, WorkoutStatus
+
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=tz.now().date() + timedelta(days=1),
+            activity="Push day",
+            category=WorkoutCategory.STRENGTH,
+            status=WorkoutStatus.PLANNED,
+        )
+        # Fuel disabled → no workout sentence.
+        self.tenant.fuel_enabled = False
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.assertNotIn("workout", self._spoken().lower())
+        # Fuel enabled → surfaced.
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.assertIn("1 workout planned this week", self._spoken())
+
+    @override_settings(GRAVITY_ENABLED=True)
+    def test_payoff_plan_spoken_when_finance_active(self):
+        from datetime import date
+        from decimal import Decimal
+
+        from apps.finance.models import PayoffPlan
+
+        PayoffPlan.objects.create(
+            tenant=self.tenant,
+            strategy=PayoffPlan.Strategy.SNOWBALL,
+            monthly_budget=Decimal("500.00"),
+            total_debt=Decimal("10000.00"),
+            total_interest=Decimal("1000.00"),
+            payoff_months=24,
+            payoff_date=date(2028, 1, 1),
+            is_active=True,
+        )
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+        spoken = self._spoken()
+        self.assertIn("payoff plan is active", spoken)
+        # Never speak dollar amounts.
+        self.assertNotIn("$", spoken)
+        self.assertNotIn("10000", spoken)
+
+    @override_settings(GRAVITY_ENABLED=False)
+    def test_finance_silent_when_gravity_paused(self):
+        from datetime import date
+        from decimal import Decimal
+
+        from apps.finance.models import PayoffPlan
+
+        PayoffPlan.objects.create(
+            tenant=self.tenant,
+            strategy=PayoffPlan.Strategy.SNOWBALL,
+            monthly_budget=Decimal("500.00"),
+            total_debt=Decimal("10000.00"),
+            total_interest=Decimal("1000.00"),
+            payoff_months=24,
+            payoff_date=date(2028, 1, 1),
+            is_active=True,
+        )
+        self.tenant.finance_enabled = True
+        self.tenant.save(update_fields=["finance_enabled"])
+        # finance_active folds in the GRAVITY kill switch — paused → silent.
+        self.assertNotIn("payoff", self._spoken().lower())
+
+    def test_north_star_set_when_confirmed_purpose(self):
+        from apps.journal.models import Purpose
+
+        Purpose.objects.create(
+            tenant=self.tenant,
+            statement="build a life where my work funds time with my kids",
+            status=Purpose.Status.CONFIRMED,
+        )
+        spoken = self._spoken()
+        self.assertIn("North Star is set", spoken)
+        # The statement itself (may carry PII) is never spoken.
+        self.assertNotIn("kids", spoken)
+
+    def test_proposed_purpose_not_spoken(self):
+        from apps.journal.models import Purpose
+
+        Purpose.objects.create(
+            tenant=self.tenant,
+            statement="a hypothesis the user has not confirmed",
+            status=Purpose.Status.PROPOSED,
+        )
+        self.assertNotIn("North Star", self._spoken())
+
+    def test_length_capped(self):
+        from apps.journal.models import Goal, Task
+
+        for i in range(200):
+            Task.objects.create(tenant=self.tenant, title=f"task number {i}", status=Task.Status.OPEN)
+        for i in range(200):
+            Goal.objects.create(tenant=self.tenant, title=f"goal number {i}", status=Goal.Status.ACTIVE)
+        from apps.router.siri_spoken import SPOKEN_MAX_CHARS
+
+        self.assertLessEqual(len(self._spoken()), SPOKEN_MAX_CHARS)
+
+    def test_no_markdown_or_tool_names_in_output(self):
+        from apps.journal.models import Goal, Purpose, Task
+
+        Task.objects.create(tenant=self.tenant, title="**bold** task", status=Task.Status.OPEN)
+        Goal.objects.create(tenant=self.tenant, title="# heading goal", status=Goal.Status.ACTIVE)
+        Purpose.objects.create(tenant=self.tenant, statement="dir", status=Purpose.Status.CONFIRMED)
+        spoken = self._spoken()
+        for forbidden in ("#", "*", "`", "nbhd_", "[[", "{"):
+            self.assertNotIn(forbidden, spoken)
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class SiriRespondTest(TestCase):

@@ -124,10 +124,24 @@ class SiriQuickStatusView(APIView):
         from django.utils import timezone
 
         snapshot = _rehydrated_snapshot(tenant, max_chars=_SIRI_CONTEXT_CHARS)
+        # ``snapshot_md`` is the LLM-facing digest (markdown, internal directives,
+        # tool-call instructions) — safe for a model, NOT for a speech surface.
+        # ``spoken`` is a deterministic, speech-safe summary the client can hand
+        # straight to Siri's TTS. See ``siri_spoken.compose_spoken_status``.
+        from apps.router.siri_spoken import compose_spoken_status
+
+        try:
+            spoken = compose_spoken_status(tenant)
+        except Exception:
+            # A spoken-composer failure must never break the status endpoint —
+            # fall back to a safe generic so Siri still says something sane.
+            logger.exception("siri: spoken status compose failed (non-fatal)")
+            spoken = "Here's your current status."
         return _no_store(
             Response(
                 {
                     "snapshot_md": snapshot,
+                    "spoken": spoken,
                     "generated_at": timezone.now().isoformat(),
                 }
             )
