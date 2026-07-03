@@ -554,7 +554,17 @@ def _redact_user_message(
             # placeholders this loop emits — garbling the whole message. Skip
             # them here (no data migration); the row stays for rehydration.
             continue
-        pattern = re.compile(re.escape(original), re.IGNORECASE)
+        # Word-boundary-aware substitution: a stored 3+ char fragment must
+        # never rewrite the interior of a longer word ("don" ⊄ "done",
+        # "end" ⊄ "weekend"). A ``\b`` only asserts correctly when adjacent
+        # to a word char, so anchor each edge only when the name's edge
+        # character is itself alphanumeric/underscore — names with punctuation
+        # edges (emails, trailing ".") keep matching against neighbouring
+        # punctuation as before.
+        esc = re.escape(original)
+        left = r"\b" if (original[:1].isalnum() or original[:1] == "_") else ""
+        right = r"\b" if (original[-1:].isalnum() or original[-1:] == "_") else ""
+        pattern = re.compile(left + esc + right, re.IGNORECASE)
         # Substitute only outside existing placeholders so a stored name that
         # contains a capital letter or ``_`` can never rewrite a placeholder's
         # interior (the Bug A nested-explosion class).

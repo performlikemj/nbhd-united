@@ -414,6 +414,156 @@ class CaseInsensitiveMergeTests(TestCase):
         self.assertEqual(session._inverted_ci["sautai"][1], "[PERSON_5]")
 
 
+class WordBoundarySubstitutionTests(TestCase):
+    """Prod bug (2026-07-03, owner's tenant): the Step 1 known-entity pass
+    substituted stored names by naked substring, so legacy mis-minted 3+ char
+    fragments in the entity map ("don", "end", "open", "Rest") rewrote the
+    INTERIOR of longer words. "Mark the task ... as done." was delivered as
+    "[PERSON_335] the task ... as [PERSON_467]e." because "don" ⊂ "done".
+
+    The fix makes the Step 1 pattern word-boundary aware (``\\b`` on each
+    alphanumeric/underscore edge). These tests patch ``_detect_pii`` to []
+    so only the Step 1 known-entity pass runs — the exact code path the fix
+    touches — and need no ONNX model.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Test User", telegram_chat_id=606060)
+
+    def test_prod_repro_interior_don_in_done_not_rewritten(self):
+        # Exact production repro. Map holds the mis-minted "don" fragment plus
+        # a standalone "Mark". Only the leading standalone "Mark" redacts;
+        # "done." at the end must be delivered byte-for-byte.
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {
+            "[PERSON_335]": "Mark",
+            "[PERSON_467]": "don",
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            result = redact_user_message('Mark the task "What task are there" as done.', self.tenant)
+
+        self.assertEqual(result, '[PERSON_335] the task "What task are there" as done.')
+        self.assertIn("done.", result)
+        self.assertNotIn("[PERSON_467]", result)
+
+    def test_interior_fragments_never_rewrite_longer_words(self):
+        # Each of these fragments is a legacy false-positive in the tenant map.
+        # None may touch the interior of the word that contains it.
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": "end",
+            "[PERSON_2]": "open",
+            "[PERSON_3]": "main",
+            "[PERSON_4]": "Rest",
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            for phrase in ("the weekend", "reopen the domain", "restaurant", "the mainframe"):
+                result = redact_user_message(phrase, self.tenant)
+                self.assertEqual(result, phrase, f"interior match corrupted {phrase!r}")
+                self.assertNotIn("[PERSON_", result)
+
+    def test_standalone_occurrence_still_redacts(self):
+        # Boundary-awareness must not break the intended behavior: a stored
+        # name that appears as a whole word still redacts.
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": "end",
+            "[PERSON_2]": "open",
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            result = redact_user_message("open the door at the end", self.tenant)
+
+        self.assertIn("[PERSON_2]", result)  # standalone "open"
+        self.assertIn("[PERSON_1]", result)  # standalone "end"
+        self.assertNotIn("open", result)
+        self.assertNotIn(" end", result.replace("[PERSON_1]", ""))
+
+    def test_punctuation_edge_span_email_still_substitutes(self):
+        # An entity whose edges are alnum but body contains punctuation
+        # (email) must still substitute — \b sits on the alnum edges and the
+        # dots/@ are literal.
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {"[EMAIL_ADDRESS_1]": "jane.doe84@example.com"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            result = redact_user_message("write to jane.doe84@example.com today", self.tenant)
+
+        self.assertIn("[EMAIL_ADDRESS_1]", result)
+        self.assertNotIn("jane.doe84", result)
+
+    def test_non_alnum_edge_name_no_boundary_breakage(self):
+        # A stored name ending in "." — the right edge is punctuation, so no
+        # \b is anchored there (a \b adjacent to a non-word char would never
+        # match). Substitution must still work.
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Dr."}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            result = redact_user_message("saw Dr. today", self.tenant)
+
+        self.assertIn("[PERSON_1]", result)
+        self.assertNotIn("Dr.", result)
+
+    def test_hyphenated_and_apostrophe_names_redact_standalone_only(self):
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": "O'Brien",
+            "[PERSON_2]": "Jean-Luc",
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            standalone = redact_user_message("met O'Brien and Jean-Luc", self.tenant)
+            self.assertIn("[PERSON_1]", standalone)
+            self.assertIn("[PERSON_2]", standalone)
+
+            # "Jean-Luc" must not rewrite the interior of "Jean-Luca".
+            interior = redact_user_message("this is Jean-Luca", self.tenant)
+            self.assertEqual(interior, "this is Jean-Luca")
+            self.assertNotIn("[PERSON_2]", interior)
+
+    def test_case_insensitive_standalone_redacts_interior_untouched(self):
+        # "DON" as a whole word redacts (IGNORECASE); "DONE" is untouched
+        # because the boundary after "don" fails against the trailing "e".
+        from apps.pii.redactor import redact_user_message
+
+        self.tenant.pii_entity_map = {"[PERSON_1]": "don"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            self.assertIn("[PERSON_1]", redact_user_message("DON called", self.tenant))
+            self.assertEqual(redact_user_message("I am DONE", self.tenant), "I am DONE")
+
+    def test_round_trip_redact_then_rehydrate_preserves_original(self):
+        # redact (Step 1 only) → rehydrate must return the original text for
+        # all the boundary cases: the interior word survives untouched and the
+        # standalone name round-trips through its placeholder.
+        from apps.pii.redactor import redact_user_message
+
+        entity_map = {"[PERSON_335]": "Mark", "[PERSON_467]": "don"}
+        self.tenant.pii_entity_map = entity_map
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        original = 'Mark the task "What task are there" as done.'
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            redacted = redact_user_message(original, self.tenant)
+        self.assertEqual(rehydrate_text(redacted, entity_map), original)
+
+
 class DenylistTests(TestCase):
     """Tenant-level deny lever for the NER over-detection class
     (Issue #660). Users mark "goal" / "calendar" / "🏆 wins" as
