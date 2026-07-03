@@ -1168,3 +1168,72 @@ class IOSChatFreshnessStampTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertIsNotNone(self.tenant.last_message_at)
         self.assertGreaterEqual(self.tenant.last_message_at, before)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class SinceFeedLateReplyTest(TestCase):
+    """A slow assistant reply must not fall behind the since-cursor.
+
+    The reply row used to sort by the USER turn's created_at. If a cron or
+    proactive row landed (and was served, advancing the client's cursor)
+    while the turn was still pending, the reply — completing later but
+    stamped earlier — fell behind the strictly-monotonic watermark and was
+    never served. The reply now sorts by replied_at."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_reply_landing_after_served_interleaved_row_is_still_served(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from apps.router.models import ProactiveOutbound
+
+        t0 = timezone.now() - timedelta(minutes=5)
+        main = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
+        turn = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=main,
+            client_msg_id="slowturn",
+            user_text="hello?",
+            status=AppChatMessage.Status.PENDING,
+        )
+        AppChatMessage.objects.filter(id=turn.id).update(created_at=t0)
+
+        # An interleaved proactive row lands AFTER the user turn, while the
+        # reply is still pending; the client fetches and its cursor advances
+        # past it.
+        nudge = ProactiveOutbound.objects.create(
+            tenant=self.tenant,
+            channel=ProactiveOutbound.Channel.TELEGRAM,
+            channel_user_id="u1",
+            message_text="don't forget your workout",
+            job_name="morning-briefing",
+        )
+        ProactiveOutbound.objects.filter(id=nudge.id).update(created_at=t0 + timedelta(minutes=1))
+        first = self.client.get("/api/v1/chat/messages/", {"limit": "50"})
+        self.assertEqual(first.status_code, 200, first.content)
+        cursor = first.data["cursor"]
+        texts = [r["text"] for r in first.data["messages"]]
+        self.assertIn("don't forget your workout", texts)
+
+        # The slow reply completes AFTER the cursor advanced past the nudge.
+        AppChatMessage.objects.filter(id=turn.id).update(
+            status=AppChatMessage.Status.READY,
+            reply_text="here I am — sorry for the wait",
+            replied_at=t0 + timedelta(minutes=2),
+        )
+
+        nxt = self.client.get("/api/v1/chat/messages/", {"since": cursor, "limit": "50"})
+        self.assertEqual(nxt.status_code, 200, nxt.content)
+        texts = [r["text"] for r in nxt.data["messages"]]
+        self.assertIn(
+            "here I am — sorry for the wait",
+            texts,
+            "late-landing reply fell behind the since watermark and was dropped",
+        )
