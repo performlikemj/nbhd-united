@@ -750,7 +750,8 @@ class ImageUpdateCronRestoreTest(TestCase):
     @patch("apps.cron.publish.publish_task")
     @patch("apps.orchestrator.azure_client.update_container_image")
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
-    def test_image_update_snapshots_crons_before_restart(self, mock_gw, mock_update, mock_publish):
+    @patch("apps.orchestrator.services.update_tenant_config")
+    def test_image_update_snapshots_crons_before_restart(self, mock_cfg, mock_gw, mock_update, mock_publish):
         """Pre-image snapshot should save cron jobs to the database."""
         from apps.orchestrator.tasks import apply_single_tenant_image_task
 
@@ -773,7 +774,8 @@ class ImageUpdateCronRestoreTest(TestCase):
     @patch("apps.cron.publish.publish_task")
     @patch("apps.orchestrator.azure_client.update_container_image")
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
-    def test_image_update_schedules_restore_task(self, mock_gw, mock_update, mock_publish):
+    @patch("apps.orchestrator.services.update_tenant_config")
+    def test_image_update_schedules_restore_task(self, mock_cfg, mock_gw, mock_update, mock_publish):
         """After image update, a delayed restore_crons_after_image_update should be queued."""
         from apps.orchestrator.tasks import apply_single_tenant_image_task
 

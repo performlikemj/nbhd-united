@@ -490,29 +490,31 @@ def apply_pending_configs(request):
     )
     evaluated = query.count()
 
-    # Publish tasks in two batches:
-    # Batch 1: config updates + cron seeds (safe, no restarts)
-    # Batch 2: image updates (triggers container restarts — delayed 30s
-    #          so config writes complete before containers read the file)
+    # Two disjoint work sets, each self-contained per tenant:
+    #   Image set — tenants on a stale image. apply_single_tenant_image_task
+    #     updates the container image and THEN writes the tenant's config
+    #     against the new image's schema (image before config — see the
+    #     incident note on that task). These tenants are EXCLUDED from the
+    #     immediate config write below: writing their new config while the OLD
+    #     image is still the active revision is exactly what broke a tenant on
+    #     2026-07-03 (old image rejected a config referencing a
+    #     new-image-only plugin dir and fell back to openclaw.json.last-good).
+    #   Config set — config-pending tenants NOT getting an image update. A plain
+    #     file-share write (model swap, cron-prompt edit) the running image
+    #     already understands.
     from apps.cron.publish import publish_batch
 
     config_tasks: list[tuple[str, tuple, dict]] = []
     image_tasks: list[tuple[str, tuple, dict]] = []
 
-    # 1. Config updates for idle tenants with pending changes
-    config_count = 0
-    for tenant in query:
-        config_tasks.append(("apply_single_tenant_config", (str(tenant.id),), {}))
-        config_count += 1
-
-    # 2. Image updates for tenants on stale image. Same cron_wake_at guard
-    # as hibernate_idle_tenants_task — pushing a new image triggers a
-    # revision update that terminates the running container, which would
-    # kill an about-to-fire scheduled cron in the wake-for-cron window.
-    # Wake_hibernated_tenant already refreshes to current OPENCLAW_IMAGE_TAG
-    # at wake time, so genuinely-stale cron-woken tenants don't exist in
-    # practice; skipping them here is just defense-in-depth for the rare
-    # edge case where a fleet bump lands between wake and apply-pending.
+    # 1. Image updates for tenants on a stale image. Same cron_wake_at guard
+    # as hibernate_idle_tenants_task — pushing a new image triggers a revision
+    # update that terminates the running container, which would kill an
+    # about-to-fire scheduled cron in the wake-for-cron window.
+    # Wake_hibernated_tenant already refreshes to current OPENCLAW_IMAGE_TAG at
+    # wake time, so genuinely-stale cron-woken tenants don't exist in practice;
+    # skipping them here is just defense-in-depth for the rare edge case where a
+    # fleet bump lands between wake and apply-pending.
     desired_tag = getattr(settings, "OPENCLAW_IMAGE_TAG", "latest")
     image_count = 0
     image_skipped_imminent_cron = 0
@@ -555,11 +557,26 @@ def apply_pending_configs(request):
             image_tasks.append(("apply_single_tenant_image", (str(tenant.id), desired_tag), {}))
             image_count += 1
 
+    # Tenants receiving an image update this cycle. Their config is written by
+    # the image task AFTER the restart, so they must NOT also get an immediate
+    # config write (which would land on the still-running old image) or a cron
+    # seed (the post-image reseed handles that).
+    image_tenant_ids = {t_id for _, (t_id, _), _ in image_tasks}
+
+    # 2. Config updates for idle config-pending tenants NOT getting an image
+    # update this cycle (image-update tenants are covered by their image task's
+    # own post-restart config write).
+    config_count = 0
+    for tenant in query:
+        if str(tenant.id) in image_tenant_ids:
+            continue
+        config_tasks.append(("apply_single_tenant_config", (str(tenant.id),), {}))
+        config_count += 1
+
     # 3. Re-seed cron jobs for entitled, active (non-hibernated) tenants that
     #    are NOT about to get an image update. Image updates restart the
     #    container (wiping SQLite), so seeding now is wasted work — the
     #    post-image reseed in apply_single_tenant_image_task handles them.
-    stale_image_tenant_ids = {t_id for _, (t_id, _), _ in image_tasks}
     active_tenants_with_containers = (
         Tenant.entitled_active()
         .filter(
@@ -570,25 +587,28 @@ def apply_pending_configs(request):
 
     cron_seed_count = 0
     for tenant_id in active_tenants_with_containers:
-        if str(tenant_id) in stale_image_tenant_ids:
+        if str(tenant_id) in image_tenant_ids:
             continue  # post-image reseed will handle this tenant
         config_tasks.append(("seed_cron_jobs", (str(tenant_id),), {}))
         cron_seed_count += 1
 
-    # Batch 1: config + cron seeds (no restarts, safe to run immediately)
+    # Publish both sets immediately. They are disjoint per tenant, and each
+    # image task orders its own image-then-config write internally, so no
+    # cross-batch delay is needed. (The previous 30s delay on the image batch
+    # assumed config had to land BEFORE the restart — the inverted assumption
+    # that caused the 2026-07-03 incident.)
     enqueued = 0
+    try:
+        if image_tasks:
+            enqueued += publish_batch(image_tasks)
+    except Exception:
+        logger.exception("Batch publish failed for image tasks")
+
     try:
         if config_tasks:
             enqueued += publish_batch(config_tasks)
     except Exception:
         logger.exception("Batch publish failed for config tasks")
-
-    # Batch 2: image updates delayed 30s so configs land before restart
-    try:
-        if image_tasks:
-            enqueued += publish_batch(image_tasks, delay_seconds=30)
-    except Exception:
-        logger.exception("Batch publish failed for image tasks")
 
     all_tasks = config_tasks + image_tasks
     success = enqueued == len(all_tasks) if all_tasks else True
