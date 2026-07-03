@@ -1586,10 +1586,14 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         # `_app_rows` / the digest both suppress an assistant row when reply_text
         # is empty, so no duplicate is rendered.
         rep_id = client_ids[-1]
+        # Clear partial_text: the final reply supersedes any pseudo-streamed
+        # text-so-far, and the row is leaving 'pending' where the partial is
+        # meaningful.
         AppChatMessage.objects.filter(tenant=tenant, client_msg_id=rep_id).update(
             reply_text=text,
             status=AppChatMessage.Status.READY,
             replied_at=now,
+            partial_text="",
         )
         other_ids = [cid for cid in client_ids if cid != rep_id]
         if other_ids:
@@ -1597,6 +1601,7 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
                 reply_text="",
                 status=AppChatMessage.Status.READY,
                 replied_at=now,
+                partial_text="",
             )
         # Notify the device the reply landed (closes the fire-and-forget gap for
         # Siri-escalated / backgrounded turns). No-op unless APNs is configured;
@@ -1609,6 +1614,7 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
             status=AppChatMessage.Status.ERROR,
             error="empty_response",
             replied_at=now,
+            partial_text="",
         )
         # An empty terminal reply is still a turn the user is waiting on — push a
         # generic 'couldn't finish' so a backgrounded / Siri-escalated turn
@@ -1627,6 +1633,7 @@ def _store_ios_turn_error(tenant: Tenant, batch: list[PendingMessage], reason: s
         status=AppChatMessage.Status.ERROR,
         error=reason,
         replied_at=timezone.now(),
+        partial_text="",
     )
     # Notify the device the turn ended in error (e.g. budget exhausted on a
     # Siri-escalated / backgrounded turn). Generic body, idempotent, fail-open.

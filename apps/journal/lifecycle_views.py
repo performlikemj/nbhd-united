@@ -23,6 +23,11 @@ from rest_framework.views import APIView
 
 from .document_views import _get_tenant
 
+# Cap for the ``?q=`` name search path — keeps a Siri/Shortcuts disambiguation
+# picker (EntityQuery) bounded. Only applied when ``q`` is present; the
+# unfiltered list stays full so the web/iOS enumeration paths don't truncate.
+_ENTITY_SEARCH_LIMIT = 20
+
 
 def _parse_iso_date(raw, field_name):
     """Parse a YYYY-MM-DD query param, or return None. Raise ValueError if malformed."""
@@ -185,11 +190,14 @@ class GoalAbandonView(APIView):
 
 class TaskListCreateView(APIView):
     """GET /api/v1/journal/tasks/ — list the tenant's tasks (filters: status,
-    pillar, parent_goal_id, due_before, due_after). POST — create a task.
+    pillar, parent_goal_id, due_before, due_after, q). POST — create a task.
 
     The detail/transition endpoints (PATCH, complete, reopen) already exist
     above; this adds the collection read + create the connected iOS client and
     web UI need to enumerate and add tasks without going through the agent.
+
+    ``?q=`` does a case-insensitive title search (capped) for the Siri
+    EntityQuery / Shortcuts disambiguation picker.
     """
 
     permission_classes = [IsAuthenticated]
@@ -217,7 +225,11 @@ class TaskListCreateView(APIView):
             qs = qs.filter(due_date__lte=due_before)
         if due_after:
             qs = qs.filter(due_date__gte=due_after)
-        return Response(TaskSerializer(qs.order_by("-updated_at"), many=True).data)
+        qs = qs.order_by("-updated_at")
+        q = (params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(title__icontains=q)[:_ENTITY_SEARCH_LIMIT]
+        return Response(TaskSerializer(qs, many=True).data)
 
     def post(self, request):
         from .lifecycle_serializers import TaskSerializer
@@ -231,7 +243,11 @@ class TaskListCreateView(APIView):
 
 class GoalListCreateView(APIView):
     """GET /api/v1/journal/goals/ — list the tenant's goals (filters: status,
-    pillar, parent_goal_id). POST — create a goal."""
+    pillar, parent_goal_id, q). POST — create a goal.
+
+    ``?q=`` does a case-insensitive title search (capped) for the Siri
+    EntityQuery / Shortcuts disambiguation picker.
+    """
 
     permission_classes = [IsAuthenticated]
 
@@ -252,7 +268,11 @@ class GoalListCreateView(APIView):
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         if parent_goal_id:
             qs = qs.filter(parent_goal_id=parent_goal_id)
-        return Response(GoalSerializer(qs.order_by("-updated_at"), many=True).data)
+        qs = qs.order_by("-updated_at")
+        q = (params.get("q") or "").strip()
+        if q:
+            qs = qs.filter(title__icontains=q)[:_ENTITY_SEARCH_LIMIT]
+        return Response(GoalSerializer(qs, many=True).data)
 
     def post(self, request):
         from .lifecycle_serializers import GoalSerializer

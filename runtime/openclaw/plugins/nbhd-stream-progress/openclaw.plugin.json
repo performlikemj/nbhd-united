@@ -1,0 +1,23 @@
+{
+  "id": "nbhd-stream-progress",
+  "name": "NBHD Stream Progress",
+  "description": "Streams per-step partial assistant text (pseudo-streaming) back to the NBHD control-plane so polling clients can render text as the turn composes instead of waiting for the whole reply.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "tenantId": {
+        "type": "string",
+        "description": "Override tenant ID. Defaults to NBHD_TENANT_ID env var."
+      },
+      "internalApiKey": {
+        "type": "string",
+        "description": "Override internal API key. Defaults to NBHD_INTERNAL_API_KEY env var."
+      }
+    }
+  }
+}

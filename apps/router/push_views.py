@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import timedelta
 
 from django.utils import timezone
 from rest_framework import status
@@ -42,6 +43,11 @@ _GENERIC_BODY = "Your reply is ready — tap to read."
 # model reply). Never carries the machine reason — nothing diagnostic on the
 # lock screen.
 _ERROR_BODY = "Your assistant couldn't finish that — tap to try again."
+
+# Badge count window: a never-read (or long-dormant) user's icon badge counts
+# only recently-arrived unread items, not their whole history — an index-friendly
+# bound that keeps the number glanceable and the query cheap.
+_UNREAD_WINDOW = timedelta(days=30)
 
 
 def _markdown_to_plain_prose(text: str) -> str:
@@ -238,6 +244,62 @@ def _notify_turn(tenant, client_msg_ids, *, body: str, content_available: bool) 
         logger.warning("push: notify turn failed (non-fatal)", exc_info=True)
 
 
+def _compute_unread_count(user) -> int | None:
+    """Server-authoritative ABSOLUTE unread count for ``user``'s iOS icon badge.
+
+    Returns ``None`` — meaning "send NO badge key at all" — for a user who has
+    never stamped a read cursor (``chat_last_read_at is None``). This is the
+    opt-in gate that protects ALREADY-SHIPPED iOS builds: the badge-clearing
+    logic (``setBadgeCount(0)``) and the read-cursor stamp (POST /chat/read/)
+    ship together in a newer app, so a client that has never POSTed /chat/read/
+    has no way to clear an icon badge. Omitting the badge for those users means
+    the OS never pins a count they physically can't clear; the badge lights up
+    only once the client proves it manages the cursor (its first /chat/read/).
+
+    For an opted-in user, unread = READY assistant replies whose (non-empty)
+    reply landed after the read cursor + proactive/cron sends that fired an APNs
+    push after it. A cursor older than ``_UNREAD_WINDOW`` is floored to the
+    window so the badge never balloons to the whole history and the query stays
+    bounded to a tenant's recent rows. Absolute (not a delta) so any drift
+    self-corrects on the next push. Fail-soft: any error yields ``None`` (omit
+    the badge) rather than blocking the push or pinning a possibly-wrong count.
+    """
+    try:
+        from apps.router.models import AppChatMessage, ProactiveOutbound
+
+        tenant = getattr(user, "tenant", None)
+        if tenant is None:
+            return None
+        last_read = getattr(user, "chat_last_read_at", None)
+        # Never-read → the client has not opted into server-owned badging (a
+        # shipped build that can't clear a badge). Send no badge at all.
+        if last_read is None:
+            return None
+        floor = timezone.now() - _UNREAD_WINDOW
+        # Read longer ago than the window → count from the window floor
+        # (index-friendly cap); otherwise from the actual read instant.
+        cursor = last_read if last_read > floor else floor
+
+        replies = (
+            AppChatMessage.objects.filter(
+                tenant=tenant,
+                user=user,
+                status=AppChatMessage.Status.READY,
+                replied_at__gt=cursor,
+            )
+            .exclude(reply_text="")
+            .count()
+        )
+        # ``notified_at`` is set only when an APNs push was fired for the row, so
+        # this counts exactly the proactive/cron sends that produced a visible
+        # alert after the read cursor.
+        proactive = ProactiveOutbound.objects.filter(tenant=tenant, notified_at__gt=cursor).count()
+        return replies + proactive
+    except Exception:
+        logger.warning("push: unread count failed (non-fatal)", exc_info=True)
+        return None
+
+
 def _push_to_user_devices(
     user,
     *,
@@ -263,6 +325,15 @@ def _push_to_user_devices(
     if not rows:
         return
 
+    # Every user-visible alert push (reply-ready, error, proactive) carries the
+    # absolute unread count so the app icon badge stays correct without the app
+    # ever reading it back — but ONLY for a client that has opted into
+    # server-owned badging (it has stamped a read cursor at least once). A
+    # never-read user (e.g. an already-shipped build with no /chat/read/) yields
+    # None, so no badge key rides the push and the OS never pins a count the app
+    # can't clear. Computed once per push, after the has-devices guard.
+    badge = _compute_unread_count(user)
+
     by_env: dict[str, list[str]] = {}
     for r in rows:
         by_env.setdefault(r["environment"], []).append(r["token"])
@@ -278,6 +349,7 @@ def _push_to_user_devices(
             collapse_id=collapse_id,
             content_available=content_available,
             extra=extra,
+            badge=badge,
         )
         stale.extend(res.get("unregistered") or [])
     if stale:

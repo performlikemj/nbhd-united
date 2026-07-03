@@ -659,6 +659,22 @@ class AppChatMessage(models.Model):
         default="",
         help_text="Human-readable detail for the current phase, e.g. 'searching your journal'.",
     )
+    # Per-step partial assistant text (pseudo-streaming) while status=pending. The
+    # nbhd-stream-progress plugin's llm_output/before_agent_finalize hooks POST the
+    # cumulative text-so-far here (seq-guarded, monotonic) so a polling client can
+    # render progressive text instead of waiting for the whole reply. Cleared to ''
+    # when the terminal reply is written; meaningless once status leaves 'pending'.
+    partial_text = models.TextField(
+        blank=True,
+        default="",
+        help_text="Cumulative assistant text-so-far for the in-flight turn (streamed "
+        "per model-call step). Cleared when the final reply is written.",
+    )
+    partial_seq = models.IntegerField(
+        default=0,
+        help_text="Monotonic sequence of the latest partial_text write; a stale/duplicate "
+        "post (seq <= this) is ignored so out-of-order events can't rewind the stream.",
+    )
     notified_at = models.DateTimeField(
         null=True,
         blank=True,

@@ -358,6 +358,18 @@ OPENCLAW_ACTIVITY_STREAM_PLUGIN_PATH = env(
     "OPENCLAW_ACTIVITY_STREAM_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-activity-stream",
 )
+# Stream-progress plugin — per-step partial assistant text (pseudo-streaming) to
+# the same chat/progress endpoint (text + monotonic seq) so a polling client can
+# render text as the turn composes instead of waiting for the whole reply. OPT-IN
+# like activity-stream: ID defaults to "" so it's built into the image but inert
+# (no fleet load) until enabled by setting
+# OPENCLAW_STREAM_PROGRESS_PLUGIN_ID="nbhd-stream-progress" — flip on once the
+# client consumes `partial_text`/`partial_seq`.
+OPENCLAW_STREAM_PROGRESS_PLUGIN_ID = env("OPENCLAW_STREAM_PROGRESS_PLUGIN_ID", default="")
+OPENCLAW_STREAM_PROGRESS_PLUGIN_PATH = env(
+    "OPENCLAW_STREAM_PROGRESS_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-stream-progress",
+)
 COMPOSIO_REDDIT_AUTH_CONFIG_ID = env("COMPOSIO_REDDIT_AUTH_CONFIG_ID", default="")
 
 OPENCLAW_CONTAINER_SECRET_BACKEND = env(

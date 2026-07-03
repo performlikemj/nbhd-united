@@ -185,6 +185,34 @@ class TaskGoalListCreateTests(TestCase):
         resp = self.client.get("/api/v1/journal/tasks/?due_before=nope")
         self.assertEqual(resp.status_code, 400)
 
+    def test_list_tasks_q_name_search_case_insensitive(self):
+        Task.objects.create(tenant=self.tenant, title="Call the Dentist")
+        Task.objects.create(tenant=self.tenant, title="Buy groceries")
+        resp = self.client.get("/api/v1/journal/tasks/?q=dentist")
+        self.assertEqual(resp.status_code, 200)
+        titles = [t["title"] for t in resp.data]
+        self.assertEqual(titles, ["Call the Dentist"])
+        # Every result carries the stable UUID id the EntityQuery keys on.
+        self.assertIn("id", resp.data[0])
+
+    def test_list_tasks_q_no_match_returns_empty(self):
+        Task.objects.create(tenant=self.tenant, title="Call the Dentist")
+        resp = self.client.get("/api/v1/journal/tasks/?q=zzz")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, [])
+
+    def test_list_tasks_q_scoped_to_tenant(self):
+        Task.objects.create(tenant=self.tenant, title="Renew passport")
+        Task.objects.create(tenant=self.other_tenant, title="Renew passport")
+        resp = self.client.get("/api/v1/journal/tasks/?q=passport")
+        self.assertEqual([t["title"] for t in resp.data], ["Renew passport"])
+
+    def test_list_tasks_q_capped_at_20(self):
+        for i in range(25):
+            Task.objects.create(tenant=self.tenant, title=f"Review doc {i}")
+        resp = self.client.get("/api/v1/journal/tasks/?q=review")
+        self.assertEqual(len(resp.data), 20)
+
     def test_get_task_detail(self):
         task = Task.objects.create(tenant=self.tenant, title="read me")
         resp = self.client.get(f"/api/v1/journal/tasks/{task.id}/")
@@ -234,3 +262,22 @@ class TaskGoalListCreateTests(TestCase):
         Goal.objects.create(tenant=self.tenant, title="achieved one", status=Goal.Status.ACHIEVED)
         resp = self.client.get("/api/v1/journal/goals/?status=achieved")
         self.assertEqual([g["title"] for g in resp.data], ["achieved one"])
+
+    def test_list_goals_q_name_search_case_insensitive(self):
+        Goal.objects.create(tenant=self.tenant, title="Run a Marathon")
+        Goal.objects.create(tenant=self.tenant, title="Learn piano")
+        resp = self.client.get("/api/v1/journal/goals/?q=marathon")
+        self.assertEqual([g["title"] for g in resp.data], ["Run a Marathon"])
+        self.assertIn("id", resp.data[0])
+
+    def test_list_goals_q_scoped_to_tenant(self):
+        Goal.objects.create(tenant=self.tenant, title="Save for a house")
+        Goal.objects.create(tenant=self.other_tenant, title="Save for a house")
+        resp = self.client.get("/api/v1/journal/goals/?q=house")
+        self.assertEqual([g["title"] for g in resp.data], ["Save for a house"])
+
+    def test_list_goals_q_capped_at_20(self):
+        for i in range(25):
+            Goal.objects.create(tenant=self.tenant, title=f"Milestone {i}")
+        resp = self.client.get("/api/v1/journal/goals/?q=milestone")
+        self.assertEqual(len(resp.data), 20)

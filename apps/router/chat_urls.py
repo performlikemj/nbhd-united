@@ -10,12 +10,14 @@ from apps.router.chat_views import (
     ChatLocalTurnView,
     ChatMessageDetailView,
     ChatMessageView,
+    ChatReadView,
     ChatThreadListView,
     ChatThreadMessagesView,
 )
 
 urlpatterns = [
     path("messages/", ChatMessageView.as_view(), name="chat-message-create"),
+    path("read/", ChatReadView.as_view(), name="chat-read"),
     path("context/", ChatContextView.as_view(), name="chat-context"),
     path("turns/", ChatLocalTurnView.as_view(), name="chat-local-turn"),
     path(
