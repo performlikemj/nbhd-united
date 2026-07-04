@@ -26,15 +26,19 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
     "en": {
         "budget_exhausted_trial": (
             "You've used your free trial allowance for this month."
-            " New messages are blocked until the next monthly reset."
+            " New messages are blocked until the next monthly reset —"
+            " but you don't have to wait: buy prepaid credit on the Billing page"
+            " to keep chatting right now."
             "{plus_message}"
-            " Open Billing to upgrade at {billing_url}."
+            " Open Billing to top up or upgrade at {billing_url}."
         ),
         "budget_exhausted_paid": (
             "You've hit your monthly budget."
-            " New messages are blocked until the next monthly reset."
+            " New messages are blocked until the next monthly reset —"
+            " but you don't have to wait: buy prepaid credit on the Billing page"
+            " to keep chatting right now."
             "{plus_message}"
-            " Open Billing to upgrade/manage at {billing_url}."
+            " Open Billing to top up, upgrade, or manage at {billing_url}."
         ),
         "budget_unavailable": (
             "We're still in early testing and our platform budget"
@@ -112,12 +116,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "\u4eca\u6708\u306e\u7121\u6599\u30c8\u30e9\u30a4\u30a2\u30eb\u67a0\u3092\u4f7f\u3044\u5207\u308a\u307e\u3057\u305f\u3002"
             "\u6b21\u306e\u6708\u6b21\u30ea\u30bb\u30c3\u30c8\u307e\u3067\u65b0\u3057\u3044\u30e1\u30c3\u30bb\u30fc\u30b8\u306f\u30d6\u30ed\u30c3\u30af\u3055\u308c\u307e\u3059\u3002"
+            "ただし待つ必要はありません。請求ページでプリペイドクレジットを購入すれば、今すぐチャットを続けられます。"
             "{plus_message}"
             "\u30a2\u30c3\u30d7\u30b0\u30ec\u30fc\u30c9\u306f\u3053\u3061\u3089: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "\u6708\u9593\u4e88\u7b97\u306b\u9054\u3057\u307e\u3057\u305f\u3002"
             "\u6b21\u306e\u6708\u6b21\u30ea\u30bb\u30c3\u30c8\u307e\u3067\u65b0\u3057\u3044\u30e1\u30c3\u30bb\u30fc\u30b8\u306f\u30d6\u30ed\u30c3\u30af\u3055\u308c\u307e\u3059\u3002"
+            "ただし待つ必要はありません。請求ページでプリペイドクレジットを購入すれば、今すぐチャットを続けられます。"
             "{plus_message}"
             "\u8acb\u6c42\u30da\u30fc\u30b8\u3067\u30a2\u30c3\u30d7\u30b0\u30ec\u30fc\u30c9/\u7ba1\u7406: {billing_url}"
         ),
@@ -213,12 +219,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Has usado tu asignaci\u00f3n de prueba gratuita de este mes."
             " Los mensajes nuevos est\u00e1n bloqueados hasta el pr\u00f3ximo reinicio mensual."
+            " Pero no tienes que esperar: compra crédito prepago en la página de Facturación para seguir chateando ahora mismo."
             "{plus_message}"
             " Abre Facturaci\u00f3n para actualizar: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Has alcanzado tu presupuesto mensual."
             " Los mensajes nuevos est\u00e1n bloqueados hasta el pr\u00f3ximo reinicio mensual."
+            " Pero no tienes que esperar: compra crédito prepago en la página de Facturación para seguir chateando ahora mismo."
             "{plus_message}"
             " Abre Facturaci\u00f3n para actualizar/gestionar: {billing_url}"
         ),
@@ -251,12 +259,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Vous avez utilis\u00e9 votre allocation d\u2019essai gratuit ce mois-ci."
             " Les nouveaux messages sont bloqu\u00e9s jusqu\u2019au prochain renouvellement mensuel."
+            " Mais pas besoin d'attendre : achetez du crédit prépayé sur la page Facturation pour continuer à discuter tout de suite."
             "{plus_message}"
             " Ouvrez la facturation pour mettre \u00e0 niveau\u00a0: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Vous avez atteint votre budget mensuel."
             " Les nouveaux messages sont bloqu\u00e9s jusqu\u2019au prochain renouvellement mensuel."
+            " Mais pas besoin d'attendre : achetez du crédit prépayé sur la page Facturation pour continuer à discuter tout de suite."
             "{plus_message}"
             " Ouvrez la facturation pour g\u00e9rer votre abonnement\u00a0: {billing_url}"
         ),
@@ -289,12 +299,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Du hast dein kostenloses Testguthaben f\u00fcr diesen Monat aufgebraucht."
             " Neue Nachrichten sind bis zum n\u00e4chsten monatlichen Reset blockiert."
+            " Aber du musst nicht warten: Kaufe Prepaid-Guthaben auf der Abrechnungsseite, um sofort weiterzuschreiben."
             "{plus_message}"
             " \u00d6ffne die Abrechnung zum Upgraden: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Du hast dein monatliches Budget erreicht."
             " Neue Nachrichten sind bis zum n\u00e4chsten monatlichen Reset blockiert."
+            " Aber du musst nicht warten: Kaufe Prepaid-Guthaben auf der Abrechnungsseite, um sofort weiterzuschreiben."
             "{plus_message}"
             " \u00d6ffne die Abrechnung zum Upgraden/Verwalten: {billing_url}"
         ),
@@ -327,12 +339,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Voc\u00ea usou sua cota de teste gratuito deste m\u00eas."
             " Novas mensagens est\u00e3o bloqueadas at\u00e9 a pr\u00f3xima renova\u00e7\u00e3o mensal."
+            " Mas você não precisa esperar: compre crédito pré-pago na página de Faturamento para continuar conversando agora mesmo."
             "{plus_message}"
             " Abra o Faturamento para upgrade: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Voc\u00ea atingiu seu or\u00e7amento mensal."
             " Novas mensagens est\u00e3o bloqueadas at\u00e9 a pr\u00f3xima renova\u00e7\u00e3o mensal."
+            " Mas você não precisa esperar: compre crédito pré-pago na página de Faturamento para continuar conversando agora mesmo."
             "{plus_message}"
             " Abra o Faturamento para upgrade/gerenciamento: {billing_url}"
         ),
@@ -365,12 +379,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "\u60a8\u5df2\u7528\u5b8c\u672c\u6708\u7684\u514d\u8d39\u8bd5\u7528\u989d\u5ea6\u3002"
             "\u5728\u4e0b\u6b21\u6708\u5ea6\u91cd\u7f6e\u4e4b\u524d\uff0c\u65b0\u6d88\u606f\u5c06\u88ab\u62e6\u622a\u3002"
+            "但您无需等待：在计费页面购买预付余额即可立即继续聊天。"
             "{plus_message}"
             "\u6253\u5f00\u8ba1\u8d39\u9875\u9762\u5347\u7ea7: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "\u60a8\u5df2\u8fbe\u5230\u6708\u5ea6\u9884\u7b97\u3002"
             "\u5728\u4e0b\u6b21\u6708\u5ea6\u91cd\u7f6e\u4e4b\u524d\uff0c\u65b0\u6d88\u606f\u5c06\u88ab\u62e6\u622a\u3002"
+            "但您无需等待：在计费页面购买预付余额即可立即继续聊天。"
             "{plus_message}"
             "\u6253\u5f00\u8ba1\u8d39\u9875\u9762\u5347\u7ea7/\u7ba1\u7406: {billing_url}"
         ),
@@ -402,12 +418,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "\uc774\ubc88 \ub2ec \ubb34\ub8cc \uccb4\ud5d8 \ud560\ub2f9\ub7c9\uc744 \ubaa8\ub450 \uc0ac\uc6a9\ud588\uc2b5\ub2c8\ub2e4."
             " \ub2e4\uc74c \uc6d4\ubcc4 \ucd08\uae30\ud654\uae4c\uc9c0 \uc0c8 \uba54\uc2dc\uc9c0\uac00 \ucc28\ub2e8\ub429\ub2c8\ub2e4."
+            "하지만 기다릴 필요 없습니다. 청구 페이지에서 선불 크레딧을 구매하면 지금 바로 대화를 계속할 수 있습니다."
             "{plus_message}"
             " \uc5c5\uadf8\ub808\uc774\ub4dc\ud558\ub824\uba74 \uccad\uad6c \ud398\uc774\uc9c0\ub97c \uc5ec\uc138\uc694: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "\uc6d4\uac04 \uc608\uc0b0\uc5d0 \ub3c4\ub2ec\ud588\uc2b5\ub2c8\ub2e4."
             " \ub2e4\uc74c \uc6d4\ubcc4 \ucd08\uae30\ud654\uae4c\uc9c0 \uc0c8 \uba54\uc2dc\uc9c0\uac00 \ucc28\ub2e8\ub429\ub2c8\ub2e4."
+            "하지만 기다릴 필요 없습니다. 청구 페이지에서 선불 크레딧을 구매하면 지금 바로 대화를 계속할 수 있습니다."
             "{plus_message}"
             " \uc5c5\uadf8\ub808\uc774\ub4dc/\uad00\ub9ac\ud558\ub824\uba74 \uccad\uad6c \ud398\uc774\uc9c0\ub97c \uc5ec\uc138\uc694: {billing_url}"
         ),
@@ -439,12 +457,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Hai esaurito la tua quota di prova gratuita per questo mese."
             " I nuovi messaggi sono bloccati fino al prossimo rinnovo mensile."
+            " Ma non devi aspettare: acquista credito prepagato nella pagina Fatturazione per continuare subito a chattare."
             "{plus_message}"
             " Apri la fatturazione per aggiornare: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Hai raggiunto il tuo budget mensile."
             " I nuovi messaggi sono bloccati fino al prossimo rinnovo mensile."
+            " Ma non devi aspettare: acquista credito prepagato nella pagina Fatturazione per continuare subito a chattare."
             "{plus_message}"
             " Apri la fatturazione per aggiornare/gestire: {billing_url}"
         ),
@@ -477,12 +497,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Je hebt je gratis proeftegoed voor deze maand opgebruikt."
             " Nieuwe berichten zijn geblokkeerd tot de volgende maandelijkse reset."
+            " Maar je hoeft niet te wachten: koop prepaidtegoed op de Factureringspagina om nu meteen door te chatten."
             "{plus_message}"
             " Open Facturering om te upgraden: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Je hebt je maandelijks budget bereikt."
             " Nieuwe berichten zijn geblokkeerd tot de volgende maandelijkse reset."
+            " Maar je hoeft niet te wachten: koop prepaidtegoed op de Factureringspagina om nu meteen door te chatten."
             "{plus_message}"
             " Open Facturering om te upgraden/beheren: {billing_url}"
         ),
@@ -515,12 +537,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "\u0412\u044b \u0438\u0441\u043f\u043e\u043b\u044c\u0437\u043e\u0432\u0430\u043b\u0438 \u0431\u0435\u0441\u043f\u043b\u0430\u0442\u043d\u044b\u0439 \u043f\u0440\u043e\u0431\u043d\u044b\u0439 \u043b\u0438\u043c\u0438\u0442 \u0437\u0430 \u044d\u0442\u043e\u0442 \u043c\u0435\u0441\u044f\u0446."
             " \u041d\u043e\u0432\u044b\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u044b \u0434\u043e \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0435\u0433\u043e \u0435\u0436\u0435\u043c\u0435\u0441\u044f\u0447\u043d\u043e\u0433\u043e \u0441\u0431\u0440\u043e\u0441\u0430."
+            " Но ждать не обязательно: купите предоплаченный кредит на странице оплаты, чтобы продолжить общение прямо сейчас."
             "{plus_message}"
             " \u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u0440\u0430\u0437\u0434\u0435\u043b \u043e\u043f\u043b\u0430\u0442\u044b \u0434\u043b\u044f \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "\u0412\u044b \u0438\u0441\u0447\u0435\u0440\u043f\u0430\u043b\u0438 \u043c\u0435\u0441\u044f\u0447\u043d\u044b\u0439 \u0431\u044e\u0434\u0436\u0435\u0442."
             " \u041d\u043e\u0432\u044b\u0435 \u0441\u043e\u043e\u0431\u0449\u0435\u043d\u0438\u044f \u0437\u0430\u0431\u043b\u043e\u043a\u0438\u0440\u043e\u0432\u0430\u043d\u044b \u0434\u043e \u0441\u043b\u0435\u0434\u0443\u044e\u0449\u0435\u0433\u043e \u0435\u0436\u0435\u043c\u0435\u0441\u044f\u0447\u043d\u043e\u0433\u043e \u0441\u0431\u0440\u043e\u0441\u0430."
+            " Но ждать не обязательно: купите предоплаченный кредит на странице оплаты, чтобы продолжить общение прямо сейчас."
             "{plus_message}"
             " \u041e\u0442\u043a\u0440\u043e\u0439\u0442\u0435 \u0440\u0430\u0437\u0434\u0435\u043b \u043e\u043f\u043b\u0430\u0442\u044b \u0434\u043b\u044f \u043e\u0431\u043d\u043e\u0432\u043b\u0435\u043d\u0438\u044f: {billing_url}"
         ),
@@ -553,12 +577,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "\u0644\u0642\u062f \u0627\u0633\u062a\u062e\u062f\u0645\u062a \u062d\u0635\u0629 \u0627\u0644\u062a\u062c\u0631\u0628\u0629 \u0627\u0644\u0645\u062c\u0627\u0646\u064a\u0629 \u0644\u0647\u0630\u0627 \u0627\u0644\u0634\u0647\u0631."
             " \u0627\u0644\u0631\u0633\u0627\u0626\u0644 \u0627\u0644\u062c\u062f\u064a\u062f\u0629 \u0645\u062d\u0638\u0648\u0631\u0629 \u062d\u062a\u0649 \u0625\u0639\u0627\u062f\u0629 \u0627\u0644\u0636\u0628\u0637 \u0627\u0644\u0634\u0647\u0631\u064a\u0629 \u0627\u0644\u0642\u0627\u062f\u0645\u0629."
+            " لكن لا داعي للانتظار: اشترِ رصيدًا مدفوعًا مسبقًا من صفحة الفواتير لمواصلة الدردشة الآن."
             "{plus_message}"
             " \u0627\u0641\u062a\u062d \u0635\u0641\u062d\u0629 \u0627\u0644\u0641\u0648\u0627\u062a\u064a\u0631 \u0644\u0644\u062a\u0631\u0642\u064a\u0629: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "\u0644\u0642\u062f \u0648\u0635\u0644\u062a \u0625\u0644\u0649 \u0645\u064a\u0632\u0627\u0646\u064a\u062a\u0643 \u0627\u0644\u0634\u0647\u0631\u064a\u0629."
             " \u0627\u0644\u0631\u0633\u0627\u0626\u0644 \u0627\u0644\u062c\u062f\u064a\u062f\u0629 \u0645\u062d\u0638\u0648\u0631\u0629 \u062d\u062a\u0649 \u0625\u0639\u0627\u062f\u0629 \u0627\u0644\u0636\u0628\u0637 \u0627\u0644\u0634\u0647\u0631\u064a\u0629 \u0627\u0644\u0642\u0627\u062f\u0645\u0629."
+            " لكن لا داعي للانتظار: اشترِ رصيدًا مدفوعًا مسبقًا من صفحة الفواتير لمواصلة الدردشة الآن."
             "{plus_message}"
             " \u0627\u0641\u062a\u062d \u0635\u0641\u062d\u0629 \u0627\u0644\u0641\u0648\u0627\u062a\u064a\u0631 \u0644\u0644\u062a\u0631\u0642\u064a\u0629/\u0627\u0644\u0625\u062f\u0627\u0631\u0629: {billing_url}"
         ),
@@ -591,12 +617,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "\u0906\u092a\u0928\u0947 \u0907\u0938 \u092e\u0939\u0940\u0928\u0947 \u0915\u0940 \u092e\u0941\u092b\u094d\u0924 \u091f\u094d\u0930\u093e\u092f\u0932 \u0938\u0940\u092e\u093e \u0915\u093e \u0909\u092a\u092f\u094b\u0917 \u0915\u0930 \u0932\u093f\u092f\u093e \u0939\u0948\u0964"
             " \u0905\u0917\u0932\u0947 \u092e\u093e\u0938\u093f\u0915 \u0930\u093f\u0938\u0947\u091f \u0924\u0915 \u0928\u090f \u0938\u0902\u0926\u0947\u0936 \u092c\u094d\u0932\u0949\u0915 \u0939\u0948\u0902\u0964"
+            " लेकिन आपको इंतज़ार करने की ज़रूरत नहीं: बिलिंग पेज पर प्रीपेड क्रेडिट खरीदें और अभी चैट जारी रखें।"
             "{plus_message}"
             " \u0905\u092a\u0917\u094d\u0930\u0947\u0921 \u0915\u0947 \u0932\u093f\u090f \u092c\u093f\u0932\u093f\u0902\u0917 \u0916\u094b\u0932\u0947\u0902: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "\u0906\u092a\u0915\u093e \u092e\u093e\u0938\u093f\u0915 \u092c\u091c\u091f \u092a\u0942\u0930\u093e \u0939\u094b \u0917\u092f\u093e \u0939\u0948\u0964"
             " \u0905\u0917\u0932\u0947 \u092e\u093e\u0938\u093f\u0915 \u0930\u093f\u0938\u0947\u091f \u0924\u0915 \u0928\u090f \u0938\u0902\u0926\u0947\u0936 \u092c\u094d\u0932\u0949\u0915 \u0939\u0948\u0902\u0964"
+            " लेकिन आपको इंतज़ार करने की ज़रूरत नहीं: बिलिंग पेज पर प्रीपेड क्रेडिट खरीदें और अभी चैट जारी रखें।"
             "{plus_message}"
             " \u0905\u092a\u0917\u094d\u0930\u0947\u0921/\u092a\u094d\u0930\u092c\u0902\u0927\u0928 \u0915\u0947 \u0932\u093f\u090f \u092c\u093f\u0932\u093f\u0902\u0917 \u0916\u094b\u0932\u0947\u0902: {billing_url}"
         ),
@@ -628,12 +656,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Bu ay i\u00e7in \u00fccretsiz deneme hakk\u0131n\u0131z\u0131 kulland\u0131n\u0131z."
             " Yeni mesajlar bir sonraki ayl\u0131k s\u0131f\u0131rlamaya kadar engellendi."
+            " Ama beklemenize gerek yok: hemen sohbete devam etmek için Fatura sayfasından ön ödemeli kredi satın alın."
             "{plus_message}"
             " Y\u00fckseltme i\u00e7in faturay\u0131 a\u00e7\u0131n: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Ayl\u0131k b\u00fct\u00e7enize ula\u015ft\u0131n\u0131z."
             " Yeni mesajlar bir sonraki ayl\u0131k s\u0131f\u0131rlamaya kadar engellendi."
+            " Ama beklemenize gerek yok: hemen sohbete devam etmek için Fatura sayfasından ön ödemeli kredi satın alın."
             "{plus_message}"
             " Y\u00fckseltme/y\u00f6netim i\u00e7in faturay\u0131 a\u00e7\u0131n: {billing_url}"
         ),
@@ -665,12 +695,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "\u0e04\u0e38\u0e13\u0e43\u0e0a\u0e49\u0e2a\u0e34\u0e17\u0e18\u0e34\u0e4c\u0e17\u0e14\u0e25\u0e2d\u0e07\u0e43\u0e0a\u0e49\u0e1f\u0e23\u0e35\u0e02\u0e2d\u0e07\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e19\u0e35\u0e49\u0e2b\u0e21\u0e14\u0e41\u0e25\u0e49\u0e27"
             " \u0e02\u0e49\u0e2d\u0e04\u0e27\u0e32\u0e21\u0e43\u0e2b\u0e21\u0e48\u0e08\u0e30\u0e16\u0e39\u0e01\u0e1a\u0e25\u0e47\u0e2d\u0e01\u0e08\u0e19\u0e01\u0e27\u0e48\u0e32\u0e08\u0e30\u0e23\u0e35\u0e40\u0e0b\u0e47\u0e15\u0e43\u0e19\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e16\u0e31\u0e14\u0e44\u0e1b"
+            " แต่คุณไม่ต้องรอ ซื้อเครดิตแบบเติมเงินได้ที่หน้าการเรียกเก็บเงินเพื่อแชทต่อได้ทันที"
             "{plus_message}"
             " \u0e40\u0e1b\u0e34\u0e14\u0e2b\u0e19\u0e49\u0e32\u0e01\u0e32\u0e23\u0e40\u0e23\u0e35\u0e22\u0e01\u0e40\u0e01\u0e47\u0e1a\u0e40\u0e07\u0e34\u0e19\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e2d\u0e31\u0e1b\u0e40\u0e01\u0e23\u0e14: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "\u0e04\u0e38\u0e13\u0e43\u0e0a\u0e49\u0e07\u0e1a\u0e1b\u0e23\u0e30\u0e21\u0e32\u0e13\u0e23\u0e32\u0e22\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e04\u0e23\u0e1a\u0e41\u0e25\u0e49\u0e27"
             " \u0e02\u0e49\u0e2d\u0e04\u0e27\u0e32\u0e21\u0e43\u0e2b\u0e21\u0e48\u0e08\u0e30\u0e16\u0e39\u0e01\u0e1a\u0e25\u0e47\u0e2d\u0e01\u0e08\u0e19\u0e01\u0e27\u0e48\u0e32\u0e08\u0e30\u0e23\u0e35\u0e40\u0e0b\u0e47\u0e15\u0e43\u0e19\u0e40\u0e14\u0e37\u0e2d\u0e19\u0e16\u0e31\u0e14\u0e44\u0e1b"
+            " แต่คุณไม่ต้องรอ ซื้อเครดิตแบบเติมเงินได้ที่หน้าการเรียกเก็บเงินเพื่อแชทต่อได้ทันที"
             "{plus_message}"
             " \u0e40\u0e1b\u0e34\u0e14\u0e2b\u0e19\u0e49\u0e32\u0e01\u0e32\u0e23\u0e40\u0e23\u0e35\u0e22\u0e01\u0e40\u0e01\u0e47\u0e1a\u0e40\u0e07\u0e34\u0e19\u0e40\u0e1e\u0e37\u0e48\u0e2d\u0e2d\u0e31\u0e1b\u0e40\u0e01\u0e23\u0e14/\u0e08\u0e31\u0e14\u0e01\u0e32\u0e23: {billing_url}"
         ),
@@ -703,12 +735,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "B\u1ea1n \u0111\u00e3 s\u1eed d\u1ee5ng h\u1ebft h\u1ea1n m\u1ee9c d\u00f9ng th\u1eed mi\u1ec5n ph\u00ed trong th\u00e1ng n\u00e0y."
             " Tin nh\u1eafn m\u1edbi s\u1ebd b\u1ecb ch\u1eb7n cho \u0111\u1ebfn l\u1ea7n \u0111\u1eb7t l\u1ea1i h\u00e0ng th\u00e1ng ti\u1ebfp theo."
+            " Nhưng bạn không cần chờ: mua tín dụng trả trước trên trang Thanh toán để tiếp tục trò chuyện ngay."
             "{plus_message}"
             " M\u1edf trang Thanh to\u00e1n \u0111\u1ec3 n\u00e2ng c\u1ea5p: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "B\u1ea1n \u0111\u00e3 \u0111\u1ea1t ng\u00e2n s\u00e1ch h\u00e0ng th\u00e1ng."
             " Tin nh\u1eafn m\u1edbi s\u1ebd b\u1ecb ch\u1eb7n cho \u0111\u1ebfn l\u1ea7n \u0111\u1eb7t l\u1ea1i h\u00e0ng th\u00e1ng ti\u1ebfp theo."
+            " Nhưng bạn không cần chờ: mua tín dụng trả trước trên trang Thanh toán để tiếp tục trò chuyện ngay."
             "{plus_message}"
             " M\u1edf trang Thanh to\u00e1n \u0111\u1ec3 n\u00e2ng c\u1ea5p/qu\u1ea3n l\u00fd: {billing_url}"
         ),
@@ -741,12 +775,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Wykorzysta\u0142e\u015b darmowy okres pr\u00f3bny na ten miesi\u0105c."
             " Nowe wiadomo\u015bci s\u0105 zablokowane do nast\u0119pnego miesi\u0119cznego resetu."
+            " Ale nie musisz czekać: kup przedpłacony kredyt na stronie Płatności, aby kontynuować rozmowę od razu."
             "{plus_message}"
             " Otw\u00f3rz p\u0142atno\u015bci, aby zaktualizowa\u0107: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Osi\u0105gni\u0119to miesi\u0119czny bud\u017cet."
             " Nowe wiadomo\u015bci s\u0105 zablokowane do nast\u0119pnego miesi\u0119cznego resetu."
+            " Ale nie musisz czekać: kup przedpłacony kredyt na stronie Płatności, aby kontynuować rozmowę od razu."
             "{plus_message}"
             " Otw\u00f3rz p\u0142atno\u015bci, aby zaktualizowa\u0107/zarz\u0105dza\u0107: {billing_url}"
         ),
@@ -779,12 +815,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Anda telah menggunakan jatah uji coba gratis bulan ini."
             " Pesan baru diblokir hingga reset bulanan berikutnya."
+            " Tapi Anda tidak perlu menunggu: beli kredit prabayar di halaman Tagihan untuk lanjut mengobrol sekarang."
             "{plus_message}"
             " Buka Tagihan untuk upgrade: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Anda telah mencapai anggaran bulanan."
             " Pesan baru diblokir hingga reset bulanan berikutnya."
+            " Tapi Anda tidak perlu menunggu: beli kredit prabayar di halaman Tagihan untuk lanjut mengobrol sekarang."
             "{plus_message}"
             " Buka Tagihan untuk upgrade/kelola: {billing_url}"
         ),
@@ -817,12 +855,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Anda telah menggunakan peruntukan percubaan percuma bulan ini."
             " Mesej baharu disekat sehingga set semula bulanan seterusnya."
+            " Tetapi anda tidak perlu menunggu: beli kredit prabayar di halaman Bil untuk terus berbual sekarang."
             "{plus_message}"
             " Buka Bil untuk naik taraf: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Anda telah mencapai bajet bulanan."
             " Mesej baharu disekat sehingga set semula bulanan seterusnya."
+            " Tetapi anda tidak perlu menunggu: beli kredit prabayar di halaman Bil untuk terus berbual sekarang."
             "{plus_message}"
             " Buka Bil untuk naik taraf/urus: {billing_url}"
         ),
@@ -855,12 +895,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Nagamit mo na ang libreng trial allowance mo ngayong buwan."
             " Naka-block ang mga bagong mensahe hanggang sa susunod na buwanang reset."
+            " Pero hindi mo kailangang maghintay: bumili ng prepaid credit sa Billing page para magpatuloy sa pag-chat ngayon."
             "{plus_message}"
             " Buksan ang Billing para mag-upgrade: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Naabot mo na ang buwanang budget."
             " Naka-block ang mga bagong mensahe hanggang sa susunod na buwanang reset."
+            " Pero hindi mo kailangang maghintay: bumili ng prepaid credit sa Billing page para magpatuloy sa pag-chat ngayon."
             "{plus_message}"
             " Buksan ang Billing para mag-upgrade/mag-manage: {billing_url}"
         ),
@@ -893,12 +935,14 @@ ERROR_MESSAGES: dict[str, dict[str, str]] = {
         "budget_exhausted_trial": (
             "Umetumia mgawo wako wa majaribio ya bure kwa mwezi huu."
             " Ujumbe mpya umezuiwa hadi upya wa mwezi ujao."
+            " Lakini huna haja ya kusubiri: nunua salio la kulipia mapema kwenye ukurasa wa Bili ili kuendelea kupiga gumzo sasa."
             "{plus_message}"
             " Fungua Bili kuboresha: {billing_url}"
         ),
         "budget_exhausted_paid": (
             "Umefika bajeti yako ya mwezi."
             " Ujumbe mpya umezuiwa hadi upya wa mwezi ujao."
+            " Lakini huna haja ya kusubiri: nunua salio la kulipia mapema kwenye ukurasa wa Bili ili kuendelea kupiga gumzo sasa."
             "{plus_message}"
             " Fungua Bili kuboresha/kusimamia: {billing_url}"
         ),

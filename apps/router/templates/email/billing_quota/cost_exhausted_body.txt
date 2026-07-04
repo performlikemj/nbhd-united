@@ -4,6 +4,10 @@ You've reached this month's chat budget ({{ used_dollars }} of {{ cap_dollars }}
 Your assistant will pause chat until {{ reset_date }}, when next month's budget
 resets and it comes back online automatically — no action needed on your end.
 
+Don't want to wait for the reset? You can add prepaid credit and your
+assistant picks right back up:
+  {{ billing_url }}
+
 Things that still work in the meantime:
   • Anything you've already scheduled and stored stays as it is
   • Your journal and memory aren't affected

@@ -109,9 +109,27 @@ Tested width: 600px. Mobile breakpoint: 600px.
               <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
                 Your assistant's worked through about <span style="color: #4ECDC4; font-weight: 600;">{{ used_pct }}%</span> of this month's chat budget — <span style="font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; color: rgba(226,232,240,0.92); font-size: 14px;">{{ used_dollars }}</span> of <span style="font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; color: rgba(226,232,240,0.92); font-size: 14px;">{{ cap_dollars }}</span>.
               </p>
-              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
-                If you hit the full cap, chat pauses until <span style="color: rgba(226,232,240,0.92); font-weight: 500;">{{ reset_date }}</span>, when next month's budget resets and your assistant comes back online automatically. You don't need to do anything.
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                If you hit the full cap, chat pauses until <span style="color: rgba(226,232,240,0.92); font-weight: 500;">{{ reset_date }}</span>, when next month's budget resets and your assistant comes back online automatically. You don't need to do anything to ride it out.
               </p>
+              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
+                Prefer not to pause? You can add prepaid credit anytime and keep chatting past this month's budget.
+              </p>
+            </td>
+          </tr>
+
+          <!-- CTA: add prepaid credit -->
+          <tr>
+            <td class="px-page" align="left" style="padding: 24px 48px 0 48px;">
+              <!--[if mso]>
+              <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{ billing_url }}" style="height:44px;v-text-anchor:middle;width:210px;" arcsize="16%" strokecolor="#7C6BF0" fillcolor="#7C6BF0">
+                <w:anchorlock/>
+                <center style="color:#ffffff;font-family:'Space Grotesk',Arial,sans-serif;font-size:14px;font-weight:700;">Add prepaid credit</center>
+              </v:roundrect>
+              <![endif]-->
+              <!--[if !mso]><!-- -->
+              <a href="{{ billing_url }}" style="display: inline-block; background: #7C6BF0; color: #ffffff; font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; font-weight: 700; line-height: 44px; text-align: center; text-decoration: none; padding: 0 28px; border-radius: 10px;">Add prepaid credit&nbsp;&rarr;</a>
+              <!--<![endif]-->
             </td>
           </tr>
 

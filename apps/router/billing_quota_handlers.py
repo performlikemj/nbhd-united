@@ -30,6 +30,7 @@ import logging
 from datetime import date
 from decimal import Decimal
 
+from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.template.loader import render_to_string
 from django.utils import timezone
@@ -93,6 +94,10 @@ def _build_context(tenant: Tenant) -> dict:
         "cap_dollars": _format_dollars(cap),
         "used_pct": pct,
         "reset_date": _format_reset_date(),
+        # Links to /settings/billing, which hosts the prepaid-credit packs
+        # (CreditsCard). Lets a capped tenant top up and keep chatting now
+        # instead of only waiting for the monthly reset.
+        "billing_url": f"{getattr(settings, 'FRONTEND_URL', '').rstrip('/')}/settings/billing",
     }
 
 

@@ -589,16 +589,6 @@ export function fetchTransparency(): Promise<TransparencyData> {
   return apiFetch<TransparencyData>("/api/v1/billing/usage/transparency/");
 }
 
-export function updateDonationPreference(data: {
-  donation_enabled?: boolean;
-  donation_percentage?: number;
-}): Promise<{ donation_enabled: boolean; donation_percentage: number }> {
-  return apiFetch("/api/v1/billing/donation-preference/", {
-    method: "PATCH",
-    body: JSON.stringify(data),
-  });
-}
-
 export function updatePreferredModel(preferred_model: string): Promise<{ preferred_model: string; model_tier: string }> {
   return apiFetch("/api/v1/tenants/settings/preferred-model/", {
     method: "PATCH",

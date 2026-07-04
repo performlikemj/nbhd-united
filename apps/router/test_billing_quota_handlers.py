@@ -60,6 +60,16 @@ class ApproachingEmailTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertIsNotNone(self.tenant.cost_warn_sent_at)
 
+    def test_includes_prepaid_credit_cta(self):
+        # The 90% warning surfaces the prepaid-credit top-up so a tenant can
+        # keep chatting instead of only waiting for the monthly reset.
+        send_cost_approaching_email(self.tenant)
+        msg = mail.outbox[0]
+        html = next(c for c, mt in (msg.alternatives or []) if mt == "text/html")
+        for body in (msg.body, html):
+            self.assertIn("prepaid credit", body)
+            self.assertIn("/settings/billing", body)
+
     def test_idempotent_on_re_call(self):
         self.assertTrue(send_cost_approaching_email(self.tenant))
         mail.outbox = []
@@ -107,6 +117,16 @@ class ExhaustedEmailTest(TestCase):
         self.assertIn(", 20", msg.subject)  # year fragment "20XX"
         self.tenant.refresh_from_db()
         self.assertIsNotNone(self.tenant.cost_exhausted_email_sent_at)
+
+    def test_includes_prepaid_credit_cta(self):
+        # The exhausted notice offers an immediate resume path via prepaid
+        # credit (links to the Billing page's credit packs).
+        send_cost_exhausted_email(self.tenant)
+        msg = mail.outbox[0]
+        html = next(c for c, mt in (msg.alternatives or []) if mt == "text/html")
+        for body in (msg.body, html):
+            self.assertIn("prepaid credit", body)
+            self.assertIn("/settings/billing", body)
 
     def test_idempotent(self):
         send_cost_exhausted_email(self.tenant)

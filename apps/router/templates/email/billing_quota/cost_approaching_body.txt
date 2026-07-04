@@ -6,7 +6,11 @@ this month's chat budget ({{ used_dollars }} of {{ cap_dollars }}).
 If you hit the full cap, chat pauses until {{ reset_date }}, when next month's
 budget resets and your assistant comes back online automatically.
 
-You don't have to do anything. Just letting you know so it's not a surprise.
+You don't have to do anything — just letting you know so it's not a surprise.
+
+Prefer not to wait? You can add prepaid credit anytime to keep chatting past
+this month's budget:
+  {{ billing_url }}
 
 What counts toward this:
   • Conversations with your assistant via Telegram, LINE, or web

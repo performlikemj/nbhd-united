@@ -12,7 +12,6 @@ import {
   ProvisioningStatus,
   RefreshConfigStatus,
   Tenant,
-  TransparencyData,
 } from "@/lib/types";
 import {
   appendToDocument,
@@ -69,7 +68,6 @@ import {
   fetchUsageHistory,
   fetchUsageSummary,
   fetchTransparency,
-  updateDonationPreference,
   updatePreferredModel,
   updateTaskModelPreferences,
   fetchWeeklyReviews,
@@ -350,39 +348,6 @@ export function useTransparencyQuery() {
     queryFn: fetchTransparency,
     staleTime: 5 * 60_000,
     enabled: isLoggedIn(),
-  });
-}
-
-export function useDonationPreferenceMutation() {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: updateDonationPreference,
-    onMutate: async (newData: { donation_enabled?: boolean; donation_percentage?: number }) => {
-      await queryClient.cancelQueries({ queryKey: ["usage-transparency"] });
-      const previous = queryClient.getQueryData<TransparencyData>(["usage-transparency"]);
-      queryClient.setQueryData<TransparencyData>(["usage-transparency"], (old) => {
-        if (!old) return old;
-        // Recompute the server-derived donation_amount client-side so the impact
-        // dollars / meals estimate stay consistent with the optimistic
-        // enabled/percentage change (server: round(surplus * pct/100, 4)).
-        const effectiveEnabled = newData.donation_enabled ?? old.donation_enabled;
-        const effectivePct = newData.donation_percentage ?? old.donation_percentage;
-        const donation_amount =
-          effectiveEnabled && old.surplus > 0
-            ? Math.round(old.surplus * (effectivePct / 100) * 10000) / 10000
-            : 0;
-        return { ...old, ...newData, donation_amount };
-      });
-      return { previous };
-    },
-    onError: (_err, _newData, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(["usage-transparency"], context.previous);
-      }
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: ["usage-transparency"] });
-    },
   });
 }
 
