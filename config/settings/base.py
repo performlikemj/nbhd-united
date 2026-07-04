@@ -544,6 +544,14 @@ SUPABASE_MONTHLY_COST = env.float("SUPABASE_MONTHLY_COST", default=25.0)
 # fair per-tenant DB cost at target scale so donations stay viable before scale.
 INFRA_DB_SHARE_CAP = env.float("INFRA_DB_SHARE_CAP", default=0.50)
 
+# The platform's pledged share of gross subscription revenue that goes to food
+# initiatives. Owner-tunable via env. The donation ledger records
+# `subscription_price * DONATION_REVENUE_PCT / 100` for every paying subscriber
+# each month — a flat percentage of what we actually collect, NOT a surplus
+# calculation (which donated less the more a subscriber used the product and
+# leaned on fragile Azure cost attribution).
+DONATION_REVENUE_PCT = env.float("DONATION_REVENUE_PCT", default=10.0)
+
 # API base URL (for OAuth callback redirects)
 API_BASE_URL = env("API_BASE_URL", default="http://localhost:8000")
 

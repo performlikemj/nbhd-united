@@ -146,6 +146,9 @@ TASK_MAP = {
     "remove_zombie_heartbeats": "apps.orchestrator.tasks.remove_zombie_heartbeats_task",
     # Daily infra cost refresh from Azure billing
     "refresh_infra_costs": "apps.billing.tasks.refresh_infra_costs_task",
+    # Monthly donation ledger — records each paying subscriber's revenue-%
+    # donation for the just-closed month as a pending row (disbursed manually).
+    "snapshot_donations_monthly": "apps.billing.tasks.snapshot_donations_monthly_task",
     # Free-model offer health — pricing + reachability probe; flips the promo
     # on transitions (bumps configs + notifies users).
     "model_health_check": "apps.billing.tasks.model_health_check_task",

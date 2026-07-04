@@ -234,22 +234,32 @@ class TransparencyServiceTest(TestCase):
         expected_surplus = max(0, 12.0 - data["your_actual_cost"] - 4.75)
         self.assertAlmostEqual(data["surplus"], expected_surplus, places=4)
 
-    def test_donation_amount_zero_when_disabled(self):
-        self.tenant.donation_enabled = False
-        self.tenant.save(update_fields=["donation_enabled"])
-        data = get_transparency_data(self.tenant)
-        self.assertEqual(data["donation_amount"], 0.0)
-        self.assertFalse(data["donation_enabled"])
-
-    def test_donation_amount_when_enabled(self):
+    def test_donation_zero_for_non_paying_subscriber(self):
+        # Revenue-% model: donation comes from collected subscription revenue, so a
+        # tenant with no Stripe subscription contributes $0 — regardless of the
+        # (now-vestigial) per-tenant donation toggle/percentage.
+        self.tenant.stripe_subscription_id = ""
         self.tenant.donation_enabled = True
         self.tenant.donation_percentage = 50
-        self.tenant.save(update_fields=["donation_enabled", "donation_percentage"])
+        self.tenant.save(update_fields=["stripe_subscription_id", "donation_enabled", "donation_percentage"])
         data = get_transparency_data(self.tenant)
-        expected = round(data["surplus"] * 0.5, 4)
-        self.assertAlmostEqual(data["donation_amount"], expected, places=4)
+        self.assertEqual(data["donation_amount"], 0.0)
+        # The toggle fields are still returned unchanged for the settings UI.
         self.assertTrue(data["donation_enabled"])
         self.assertEqual(data["donation_percentage"], 50)
+
+    @override_settings(DONATION_REVENUE_PCT=10.0)
+    @mock.patch("apps.billing.usage_services._get_subscription_price", return_value=12.0)
+    def test_donation_is_revenue_pct_for_paying_subscriber(self, _price):
+        # Paying subscriber → donation is a flat % of the subscription price,
+        # independent of usage/surplus and NOT gated by the donation toggle.
+        self.tenant.stripe_subscription_id = "sub_test"
+        self.tenant.is_trial = False
+        self.tenant.donation_enabled = False
+        self.tenant.save(update_fields=["stripe_subscription_id", "is_trial", "donation_enabled"])
+        data = get_transparency_data(self.tenant)
+        # $12 subscription price * 10% pledge = $1.20, even with the toggle off.
+        self.assertAlmostEqual(data["donation_amount"], 1.20, places=4)
 
 
 class DonationPreferenceAPITest(TestCase):
