@@ -464,6 +464,20 @@ class SubscriptionPriceTest(TestCase):
         ):
             self.assertEqual(_get_subscription_price(self.tenant), 12.0)
 
+    def test_failure_is_negative_cached(self):
+        # A Stripe outage must not make every render pay a slow failing call:
+        # the first failure caches the fallback, the second serves it without Stripe.
+        self._link_subscription()
+        with mock.patch(
+            "stripe.Subscription.retrieve",
+            side_effect=Exception("stripe down"),
+        ) as retrieve:
+            first = _get_subscription_price(self.tenant)
+            second = _get_subscription_price(self.tenant)
+        self.assertEqual(first, 12.0)
+        self.assertEqual(second, 12.0)
+        retrieve.assert_called_once()
+
     def test_cache_hit_avoids_second_stripe_call(self):
         self._link_subscription()
         with mock.patch(

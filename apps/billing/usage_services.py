@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 # is an acceptable trade for not calling Stripe per request.
 _SUBSCRIPTION_PRICE_CACHE_TTL = 3600
 
+# Short TTL for negative-caching a *failed* Stripe lookup. Without this, a Stripe
+# outage would make EVERY dashboard render fire a failing API call — and stripe-py's
+# default HTTP timeout is long (tens of seconds) — so the usage page would hang
+# per-render for the outage's duration. Capping at one slow call per subscription
+# per 5 minutes bounds that blast radius while still recovering promptly.
+_SUBSCRIPTION_PRICE_FAILURE_CACHE_TTL = 300
+
 
 def get_month_boundaries(ref: date | None = None) -> tuple[date, date]:
     """Return (first_day, last_day) of the month containing ref."""
@@ -316,11 +323,14 @@ def _fetch_subscription_price_from_stripe(subscription_id: str) -> float | None:
     ``billing/views.py`` uses, robust across stripe-py 14.x/15.x.
     """
     import stripe
-    from django.conf import settings
+
+    # Reuse the webhook module's mode→key resolver so "which key for live vs test"
+    # lives in exactly one place. Function-local import — views.py doesn't import
+    # this module, so there's no cycle, but keep it local to be safe.
+    from .views import _get_stripe_api_key
 
     try:
-        api_key = settings.STRIPE_LIVE_SECRET_KEY if settings.STRIPE_LIVE_MODE else settings.STRIPE_TEST_SECRET_KEY
-        api_key = (api_key or "").strip()
+        api_key = (_get_stripe_api_key() or "").strip()
         if not api_key:
             logger.info("billing: Stripe API key missing — cannot resolve live subscription price")
             return None
@@ -399,8 +409,16 @@ def _get_subscription_price(tenant: Tenant) -> float:
     if cached is not None:
         return float(cached)
 
+    # Negative cache: if a recent lookup for this subscription failed, serve the
+    # fallback without touching Stripe. We store a marker (not the price) so a
+    # setting change during an outage is still honored via the fresh `fallback`.
+    failure_key = f"billing:sub_price_fallback:{subscription_id}"
+    if cache.get(failure_key) is not None:
+        return fallback
+
     price = _fetch_subscription_price_from_stripe(subscription_id)
     if price is None:
+        cache.set(failure_key, True, _SUBSCRIPTION_PRICE_FAILURE_CACHE_TTL)
         logger.info(
             "billing: subscription price fallback for tenant %s (sub=%s) → $%.2f",
             tenant.id,
