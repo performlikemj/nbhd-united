@@ -304,6 +304,19 @@ class Tenant(models.Model):
         help_text="When the cap-exhausted email was last sent (cleared monthly).",
     )
 
+    # Dunning idempotency marker. Holds the Stripe invoice id of the most
+    # recent failed subscription invoice we emailed the user about, so the
+    # "payment failed, we'll retry" notice fires ONCE per invoice rather than
+    # on every automatic-retry ``invoice.payment_failed`` event. Cleared when
+    # the invoice is ultimately paid (reactivation) so a future decline on a
+    # new invoice re-arms the notice.
+    dunning_notice_invoice_id = models.CharField(
+        max_length=255,
+        blank=True,
+        default="",
+        help_text="Stripe invoice id of the last failed invoice we sent a retry-notice email for.",
+    )
+
     # Per-tenant internal API key. When non-empty, internal_auth.py validates
     # the X-NBHD-Internal-Key header against this value instead of the legacy
     # global settings.NBHD_INTERNAL_API_KEY. Restored 2026-05-12 (Phase 1)

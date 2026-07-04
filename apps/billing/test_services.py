@@ -2,12 +2,18 @@
 
 from unittest.mock import patch
 
+from django.core import mail
 from django.test import TestCase
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
-from .services import handle_checkout_completed, handle_invoice_payment_failed, handle_subscription_deleted
+from .services import (
+    handle_checkout_completed,
+    handle_invoice_paid,
+    handle_invoice_payment_failed,
+    handle_subscription_deleted,
+)
 
 
 class BillingWebhookServiceTest(TestCase):
@@ -312,3 +318,144 @@ class BillingWebhookServiceTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.SUSPENDED)
+
+
+class DunningGraceTest(TestCase):
+    """invoice.payment_failed dunning grace: suspend only on terminal decline."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Dunning", telegram_chat_id=525252)
+        self.tenant.stripe_customer_id = "cus_dun"
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.save(update_fields=["stripe_customer_id", "status", "updated_at"])
+        self.tenant.user.email = "dun@example.com"
+        self.tenant.user.save(update_fields=["email"])
+
+    def test_retry_pending_does_not_suspend_and_emails_once(self):
+        payload = {
+            "id": "in_retry_1",
+            "customer": "cus_dun",
+            "next_payment_attempt": 1893456000,
+        }
+        handle_invoice_payment_failed(payload)
+
+        self.tenant.refresh_from_db()
+        # Still active — Stripe has retries pending.
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(self.tenant.dunning_notice_invoice_id, "in_retry_1")
+
+        # A second failed-attempt event for the SAME invoice must not re-email.
+        handle_invoice_payment_failed(payload)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_final_attempt_suspends(self):
+        # No next_payment_attempt → Stripe has given up → suspend.
+        handle_invoice_payment_failed({"id": "in_final", "customer": "cus_dun"})
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.SUSPENDED)
+        # Terminal decline does not send the retry-notice email.
+        self.assertEqual(len(mail.outbox), 0)
+
+
+class InvoicePaidReactivationTest(TestCase):
+    """invoice.paid auto-reactivates a billing-suspended subscriber."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Reactivate", telegram_chat_id=636363)
+        self.tenant.stripe_customer_id = "cus_re"
+        self.tenant.stripe_subscription_id = "sub_re"
+        self.tenant.container_id = "/subscriptions/x/oc-re"
+        self.tenant.save(
+            update_fields=[
+                "stripe_customer_id",
+                "stripe_subscription_id",
+                "container_id",
+                "updated_at",
+            ]
+        )
+
+    @patch("apps.billing.services.restore_tenant_runtime")
+    def test_paid_reactivates_suspended_tenant(self, mock_restore):
+        mock_restore.return_value = True
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.dunning_notice_invoice_id = "in_old"
+        self.tenant.save(update_fields=["status", "dunning_notice_invoice_id", "updated_at"])
+
+        handle_invoice_paid(
+            {
+                "id": "in_paid",
+                "subscription": "sub_re",
+                "customer": "cus_re",
+                "billing_reason": "subscription_cycle",
+            }
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertEqual(self.tenant.dunning_notice_invoice_id, "")
+        # Successful scale-up leaves the idle-hibernation marker cleared.
+        self.assertIsNone(self.tenant.hibernated_at)
+        mock_restore.assert_called_once()
+
+    @patch("apps.billing.services.restore_tenant_runtime")
+    def test_paid_marks_hibernated_when_scale_up_fails(self, mock_restore):
+        # restore_tenant_runtime returns False (no container / scale-up raised).
+        # The tenant must still end ACTIVE, but be marked hibernated so the next
+        # inbound message self-heals via wake_hibernated_tenant instead of
+        # short-circuiting on hibernated_at=None → silent assistant.
+        mock_restore.return_value = False
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.save(update_fields=["status", "updated_at"])
+
+        handle_invoice_paid(
+            {
+                "id": "in_paid",
+                "subscription": "sub_re",
+                "customer": "cus_re",
+                "billing_reason": "subscription_cycle",
+            }
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertIsNotNone(self.tenant.hibernated_at)
+        mock_restore.assert_called_once()
+
+    @patch("apps.billing.services.restore_tenant_runtime")
+    def test_paid_on_active_tenant_is_noop(self, mock_restore):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.save(update_fields=["status", "updated_at"])
+
+        handle_invoice_paid({"id": "in_paid", "subscription": "sub_re", "customer": "cus_re"})
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        mock_restore.assert_not_called()
+
+    @patch("apps.billing.services.restore_tenant_runtime")
+    def test_paid_does_not_wake_pending_deletion_tenant(self, mock_restore):
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.pending_deletion = True
+        self.tenant.save(update_fields=["status", "pending_deletion", "updated_at"])
+
+        handle_invoice_paid({"id": "in_paid", "subscription": "sub_re", "customer": "cus_re"})
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.SUSPENDED)
+        mock_restore.assert_not_called()
+
+    @patch("apps.billing.services.restore_tenant_runtime")
+    def test_non_subscription_invoice_is_ignored(self, mock_restore):
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.save(update_fields=["status", "updated_at"])
+
+        # One-off invoice: no subscription, non-subscription billing_reason.
+        handle_invoice_paid({"id": "in_oneoff", "customer": "cus_re", "billing_reason": "manual"})
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.SUSPENDED)
+        mock_restore.assert_not_called()

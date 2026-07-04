@@ -554,12 +554,71 @@ def handle_subscription_deleted(subscription_data: dict) -> None:
     logger.info("Triggered deprovisioning for tenant %s", tenant.id)
 
 
-def handle_invoice_payment_failed(invoice_data: dict) -> None:
-    """Handle invoice.payment_failed webhook by suspending tenant access.
+def _send_payment_retry_email(tenant: Tenant, invoice_id: str) -> bool:
+    """Send the "payment failed, we'll retry — update your card" email.
 
-    Scales the container to zero replicas to stop burning Azure resources
-    while keeping the container available for fast reactivation if the
-    user pays later.
+    Idempotent per invoice via ``tenant.dunning_notice_invoice_id``: the
+    email fires once for a given failed invoice, not on every automatic
+    Stripe retry that re-emits ``invoice.payment_failed`` for the same
+    invoice. Returns True iff a fresh email was sent.
+
+    Mirrors the send pattern in ``apps.router.billing_quota_handlers``
+    (EmailMultiAlternatives + render_to_string templates, DEFAULT_FROM_EMAIL)
+    and links to the billing settings page rather than minting a portal
+    session so a Stripe API hiccup can't break the notice.
+    """
+    from django.conf import settings
+    from django.core.mail import EmailMultiAlternatives
+    from django.template.loader import render_to_string
+
+    user = getattr(tenant, "user", None)
+    email = (getattr(user, "email", "") or "").strip()
+    if not email:
+        logger.info("dunning: retry email skipped tenant=%s reason=no_email", str(tenant.id)[:8])
+        return False
+
+    # Already notified about THIS invoice — no duplicate on the next retry.
+    if invoice_id and tenant.dunning_notice_invoice_id == invoice_id:
+        return False
+
+    ctx = {
+        "display_name": (getattr(user, "display_name", "") or "").strip() or "there",
+        "billing_url": f"{settings.FRONTEND_URL}/billing",
+    }
+    try:
+        subject = render_to_string("email/dunning/payment_failed_retry_subject.txt", ctx).strip()
+        txt_body = render_to_string("email/dunning/payment_failed_retry_body.txt", ctx)
+        html_body = render_to_string("email/dunning/payment_failed_retry_body.html", ctx)
+        msg = EmailMultiAlternatives(subject=subject, body=txt_body, from_email=None, to=[email])
+        msg.attach_alternative(html_body, "text/html")
+        msg.send(fail_silently=False)
+    except Exception:
+        logger.exception("dunning: retry email send failed to %s", email)
+        return False
+
+    # Record the invoice id so subsequent retries of the same invoice don't
+    # re-email. Bump only this field to avoid clobbering concurrent writes.
+    Tenant.objects.filter(id=tenant.id).update(dunning_notice_invoice_id=invoice_id)
+    tenant.dunning_notice_invoice_id = invoice_id
+    logger.info("dunning: retry email sent tenant=%s invoice=%s", str(tenant.id)[:8], invoice_id)
+    return True
+
+
+def handle_invoice_payment_failed(invoice_data: dict) -> None:
+    """Handle invoice.payment_failed webhook with a dunning grace period.
+
+    Stripe emits this event on *every* automatic-retry attempt, not just the
+    final one. Suspending on the first decline permanently strands a customer
+    whose card later clears on a retry (the ``invoice.paid`` handler reactivates
+    them, but suspending them in the interim needlessly kills their assistant
+    over a transient decline).
+
+    So we only suspend when Stripe has exhausted its retries — i.e. the invoice
+    payload carries no ``next_payment_attempt`` (null/absent = terminal). While
+    retries remain, we keep the tenant running, log it, and email a one-time
+    "payment failed, we'll retry — update your card" notice (idempotent per
+    invoice). Suspension scales the container to zero replicas to stop burning
+    Azure resources while keeping it available for fast reactivation.
     """
     tenant = _find_tenant_for_stripe_event(invoice_data)
     if not tenant:
@@ -569,6 +628,30 @@ def handle_invoice_payment_failed(invoice_data: dict) -> None:
     if tenant.status == Tenant.Status.SUSPENDED:
         logger.info("Tenant %s already paused (payment lapsed)", tenant.id)
         return
+
+    invoice_id = invoice_data.get("id") or ""
+    # ``next_payment_attempt`` is a unix timestamp when Stripe will retry, and
+    # null/absent once it has given up. A pending retry = grace: don't suspend.
+    has_retry_pending = invoice_data.get("next_payment_attempt") not in (None, "", 0)
+    if has_retry_pending:
+        logger.info(
+            "Invoice %s failed for tenant %s but Stripe will retry (next_payment_attempt=%s) "
+            "— holding service, sending retry notice",
+            invoice_id,
+            tenant.id,
+            invoice_data.get("next_payment_attempt"),
+        )
+        try:
+            _send_payment_retry_email(tenant, invoice_id)
+        except Exception:
+            logger.exception("dunning: failed to send retry notice for tenant %s", tenant.id)
+        return
+
+    logger.warning(
+        "Invoice %s failed for tenant %s with no further Stripe retry — suspending",
+        invoice_id,
+        tenant.id,
+    )
 
     # Disable cron jobs before suspending (container must be reachable)
     if tenant.container_fqdn:
@@ -598,3 +681,119 @@ def handle_invoice_payment_failed(invoice_data: dict) -> None:
             logger.info("Hibernated container %s for suspended tenant %s", tenant.container_id, tenant.id)
         except Exception:
             logger.exception("Failed to hibernate container %s for tenant %s", tenant.container_id, tenant.id)
+
+
+def handle_invoice_paid(invoice_data: dict) -> None:
+    """Handle invoice.paid / invoice.payment_succeeded — auto-reactivate.
+
+    When Stripe's automatic dunning retry finally succeeds, the customer has
+    paid but a tenant we suspended on a *terminal* decline would otherwise stay
+    dark forever (only a fresh checkout or portal action woke them). This
+    restores service for a subscription invoice belonging to a billing-suspended
+    tenant.
+
+    Guards / idempotency:
+      - Only subscription invoices reactivate. One-off invoices and credit
+        top-ups (checkout mode=payment, no subscription) are ignored.
+      - Unknown subscription/customer → logged and ignored.
+      - Only a tenant in SUSPENDED status is woken (SUSPENDED is set solely by
+        the billing-failure path, so this never wakes a deliberately
+        deprovisioned/deleted/pending tenant). ACTIVE tenants → no-op.
+      - A tenant queued for deletion (pending_deletion) is never woken.
+      - Container scale-up reuses restore_tenant_runtime, whose Azure ops treat
+        already-in-requested-state (409/ResourceExistsError) as success.
+
+    Exception-safe: any unexpected error is logged, not raised, so a malformed
+    payload can't break the webhook dispatcher.
+    """
+    try:
+        billing_reason = (invoice_data.get("billing_reason") or "").lower()
+        subscription_id = invoice_data.get("subscription") or ""
+        # Subscription invoices carry a ``subscription`` id (and a
+        # ``subscription_*`` billing_reason). Credit top-ups are mode=payment
+        # checkouts with no subscription and must not route here.
+        is_subscription_invoice = bool(subscription_id) or billing_reason.startswith("subscription")
+        if not is_subscription_invoice:
+            logger.info(
+                "invoice.paid: ignoring non-subscription invoice %s (billing_reason=%s)",
+                invoice_data.get("id"),
+                billing_reason or "none",
+            )
+            return
+
+        tenant = _find_tenant_for_stripe_event(invoice_data)
+        if not tenant:
+            logger.info(
+                "invoice.paid: no tenant for subscription=%s customer=%s — ignoring",
+                subscription_id,
+                invoice_data.get("customer"),
+            )
+            return
+
+        if tenant.status != Tenant.Status.SUSPENDED:
+            logger.info(
+                "invoice.paid: tenant %s not suspended (status=%s) — no-op",
+                tenant.id,
+                tenant.status,
+            )
+            return
+
+        if tenant.pending_deletion:
+            logger.info(
+                "invoice.paid: tenant %s is pending deletion — not reactivating",
+                tenant.id,
+            )
+            return
+
+        # Restore billing state and wake the runtime. Mirrors the minimal
+        # correct subset of handle_checkout_completed's SUSPENDED branch.
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.hibernated_at = None  # Clear any idle-hibernation marker
+        tenant.is_trial = False
+        tenant.dunning_notice_invoice_id = ""  # Re-arm the retry notice for a future decline
+        if subscription_id and not tenant.stripe_subscription_id:
+            tenant.stripe_subscription_id = subscription_id
+        customer_id = invoice_data.get("customer") or ""
+        if customer_id and not tenant.stripe_customer_id:
+            tenant.stripe_customer_id = customer_id
+        tenant.save(
+            update_fields=[
+                "status",
+                "hibernated_at",
+                "is_trial",
+                "dunning_notice_invoice_id",
+                "stripe_subscription_id",
+                "stripe_customer_id",
+                "updated_at",
+            ]
+        )
+        logger.info(
+            "invoice.paid: reactivated billing-suspended tenant %s (invoice=%s)",
+            tenant.id,
+            invoice_data.get("id"),
+        )
+
+        # restore_tenant_runtime returns False when there's no container or the
+        # scale-up raised — the caller owns the fallback. Mirror the promo
+        # redeem view: mark the tenant hibernated so the next inbound message
+        # self-heals via wake_hibernated_tenant. Without this a scale-up
+        # failure would leave an ACTIVE tenant with a dead container and
+        # hibernated_at=None, and wake-on-message would short-circuit → silent
+        # assistant for a customer who just paid.
+        try:
+            restored = restore_tenant_runtime(tenant)
+        except Exception:
+            logger.exception("invoice.paid: restore_tenant_runtime raised for tenant %s", tenant.id)
+            restored = False
+
+        if not restored:
+            from django.utils import timezone
+
+            Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+            logger.warning(
+                "invoice.paid: runtime restore failed for tenant %s; marked hibernated "
+                "so the next inbound message wakes the container",
+                tenant.id,
+            )
+    except Exception:
+        logger.exception("invoice.paid: unexpected error handling payload")
