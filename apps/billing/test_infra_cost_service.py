@@ -22,6 +22,7 @@ from django.test import TestCase, override_settings
 from apps.billing.infra_cost_service import (
     _alert_cost_degradation,
     _query_resource_costs,
+    calculate_database_share,
     refresh_infra_costs,
 )
 from apps.billing.models import InfraCostSnapshot
@@ -73,6 +74,22 @@ class RefreshInfraCostsTest(TestCase):
 
     def _snapshot(self):
         return InfraCostSnapshot.objects.get(tenant=self.tenant)
+
+    def _snapshot_for(self, month):
+        return InfraCostSnapshot.objects.get(tenant=self.tenant, month=month)
+
+    def _seed_azure_snapshot(self, month):
+        """A real 'azure' snapshot for a given month (prior-month = pipeline
+        proven; current-month = real data already collected this month)."""
+        return InfraCostSnapshot.objects.create(
+            tenant=self.tenant,
+            month=month,
+            container_cost=Decimal("3.50"),
+            storage_cost=Decimal("0.10"),
+            database_share=Decimal("8.33"),
+            total_cost=Decimal("11.93"),
+            source="azure",
+        )
 
     @patch(f"{MODULE}._alert_cost_degradation")
     @patch(f"{MODULE}._query_resource_costs")
@@ -129,6 +146,129 @@ class RefreshInfraCostsTest(TestCase):
         self.assertEqual(self._snapshot().source, "estimate")
         mock_alert.assert_called_once()
 
+    # --- early-month billing-lag grace (month-rollover false-alarm fix) ---
+
+    @patch(f"{MODULE}.timezone")
+    @patch(f"{MODULE}._alert_cost_degradation")
+    @patch(f"{MODULE}._query_resource_costs")
+    def test_early_month_empty_with_prior_azure_suppresses_alert(self, mock_query, mock_alert, mock_tz):
+        # 1st of the month, Azure hasn't posted July actuals yet (billing lag),
+        # and last month DID produce real data → expected, not a degradation.
+        mock_tz.now.return_value = datetime(2026, 7, 1, 6, 30)
+        self._seed_azure_snapshot(date(2026, 6, 1))
+        mock_query.return_value = {}
+
+        result = refresh_infra_costs()
+
+        self.assertFalse(result["degraded"])
+        self.assertEqual(result["reason"], "early_month_billing_lag")
+        # July snapshot is still written as a conservative estimate placeholder.
+        self.assertEqual(self._snapshot_for(date(2026, 7, 1)).source, "estimate")
+        mock_alert.assert_not_called()
+
+    @patch(f"{MODULE}.timezone")
+    @patch(f"{MODULE}._alert_cost_degradation")
+    @patch(f"{MODULE}._query_resource_costs")
+    def test_early_month_partial_posting_suppresses_alert(self, mock_query, mock_alert, mock_tz):
+        # Non-container resources (Django app / storage account) post first, so
+        # resource_costs is non-empty but has no oc-* containers →
+        # azure_no_container_resources. Still expected billing lag in the window.
+        mock_tz.now.return_value = datetime(2026, 7, 2, 6, 30)
+        self._seed_azure_snapshot(date(2026, 6, 1))
+        mock_query.return_value = {"nbhd-django-westus2": Decimal("5.00")}
+
+        result = refresh_infra_costs()
+
+        self.assertFalse(result["degraded"])
+        self.assertEqual(result["reason"], "early_month_billing_lag")
+        mock_alert.assert_not_called()
+
+    @patch(f"{MODULE}.timezone")
+    @patch(f"{MODULE}._alert_cost_degradation")
+    @patch(f"{MODULE}._query_resource_costs")
+    def test_early_month_without_prior_azure_still_alerts(self, mock_query, mock_alert, mock_tz):
+        # No prior-month Azure data → the pipeline never worked; an empty result
+        # on day 1 is a genuine break, not lag, so it must alert immediately.
+        mock_tz.now.return_value = datetime(2026, 7, 1, 6, 30)
+        mock_query.return_value = {}
+
+        result = refresh_infra_costs()
+
+        self.assertTrue(result["degraded"])
+        self.assertEqual(result["reason"], "azure_returned_empty")
+        mock_alert.assert_called_once()
+
+    @patch(f"{MODULE}.timezone")
+    @patch(f"{MODULE}._alert_cost_degradation")
+    @patch(f"{MODULE}._query_resource_costs")
+    def test_mid_month_empty_still_alerts(self, mock_query, mock_alert, mock_tz):
+        # Past the grace window an empty result is a real degradation.
+        mock_tz.now.return_value = datetime(2026, 7, 15, 6, 30)
+        self._seed_azure_snapshot(date(2026, 6, 1))
+        mock_query.return_value = {}
+
+        result = refresh_infra_costs()
+
+        self.assertTrue(result["degraded"])
+        self.assertEqual(result["reason"], "azure_returned_empty")
+        mock_alert.assert_called_once()
+
+    @patch(f"{MODULE}.timezone")
+    @patch(f"{MODULE}._alert_cost_degradation")
+    @patch(f"{MODULE}._query_resource_costs")
+    def test_no_tenant_match_alerts_even_in_grace_window(self, mock_query, mock_alert, mock_tz):
+        # Resources + containers WERE found, just none matching our tenant — a
+        # naming/config break, not billing lag. Must alert even on the 1st.
+        mock_tz.now.return_value = datetime(2026, 7, 1, 6, 30)
+        self._seed_azure_snapshot(date(2026, 6, 1))
+        mock_query.return_value = {"oc-someone-else": Decimal("2.00")}
+
+        result = refresh_infra_costs()
+
+        self.assertTrue(result["degraded"])
+        self.assertEqual(result["reason"], "azure_no_tenant_match")
+        mock_alert.assert_called_once()
+
+    # --- non-destructive writes: a transient miss must not wipe real data ---
+
+    @patch(f"{MODULE}.timezone")
+    @patch(f"{MODULE}._alert_cost_degradation")
+    @patch(f"{MODULE}._query_resource_costs")
+    def test_transient_empty_preserves_real_azure_row(self, mock_query, mock_alert, mock_tz):
+        # Real Azure data already collected earlier this month; a later empty
+        # return mid-month must keep it, not downgrade to an estimate.
+        mock_tz.now.return_value = datetime(2026, 7, 15, 6, 30)
+        self._seed_azure_snapshot(date(2026, 7, 1))
+        mock_query.return_value = {}
+
+        result = refresh_infra_costs()
+
+        self.assertFalse(result["degraded"])
+        self.assertEqual(result["tenants_preserved_real"], 1)
+        snap = self._snapshot_for(date(2026, 7, 1))
+        self.assertEqual(snap.source, "azure")
+        self.assertEqual(snap.container_cost, Decimal("3.50"))
+        mock_alert.assert_not_called()
+
+    @patch(f"{MODULE}.timezone")
+    @patch(f"{MODULE}._alert_cost_degradation")
+    @patch(f"{MODULE}._query_resource_costs")
+    def test_query_failure_preserves_real_azure_row(self, mock_query, mock_alert, mock_tz):
+        # A hard query failure (e.g. 429) still alerts, but must not overwrite an
+        # already-collected real Azure row back to a flat estimate.
+        mock_tz.now.return_value = datetime(2026, 7, 15, 6, 30)
+        self._seed_azure_snapshot(date(2026, 7, 1))
+        mock_query.side_effect = RuntimeError("(429) Too many requests")
+
+        result = refresh_infra_costs()
+
+        self.assertTrue(result["degraded"])
+        self.assertEqual(result["reason"], "azure_query_failed")
+        mock_alert.assert_called_once()
+        snap = self._snapshot_for(date(2026, 7, 1))
+        self.assertEqual(snap.source, "azure")
+        self.assertEqual(snap.container_cost, Decimal("3.50"))
+
     @override_settings()
     @patch(f"{MODULE}._alert_cost_degradation")
     def test_mock_mode_uses_estimates_without_alert(self, mock_alert):
@@ -153,6 +293,8 @@ class AlertCostDegradationTest(TestCase):
             _alert_cost_degradation("azure_returned_empty", tenants=3)
 
         scope.set_tag.assert_called_once_with("infra_cost_degraded", "azure_returned_empty")
+        # Grouping is set intentionally by reason, not derived from the message.
+        self.assertEqual(scope.fingerprint, ["infra_cost_degraded", "azure_returned_empty"])
         mock_sentry.capture_message.assert_called_once()
         mock_sentry.capture_exception.assert_not_called()
 
@@ -173,3 +315,28 @@ class AlertCostDegradationTest(TestCase):
         # Real (uninitialised in tests) sentry_sdk → no exception, just a log.
         with self.assertLogs(MODULE, level="WARNING"):
             _alert_cost_degradation("azure_no_tenant_match", tenants=1)
+
+
+class CalculateDatabaseShareTest(TestCase):
+    """The per-tenant DB share must be capped so a small fleet isn't overcharged
+    into a structural $0 surplus (no donation ever shows)."""
+
+    def test_small_fleet_capped(self):
+        # $25 / 3 = $8.33 would exceed the $12 price on its own; cap holds it.
+        self.assertEqual(calculate_database_share(3), Decimal("0.5000"))
+
+    def test_single_tenant_capped(self):
+        self.assertEqual(calculate_database_share(1), Decimal("0.5000"))
+
+    def test_zero_tenants_capped(self):
+        # Degenerate N<=0 must not return the whole $25 bill.
+        self.assertEqual(calculate_database_share(0), Decimal("0.5000"))
+
+    def test_large_fleet_below_cap_uses_even_split(self):
+        # $25 / 100 = $0.25 < cap → the real split applies (cap doesn't bind).
+        self.assertEqual(calculate_database_share(100), Decimal("0.2500"))
+
+    @override_settings(INFRA_DB_SHARE_CAP=1.00)
+    def test_cap_is_configurable(self):
+        # $25 / 10 = $2.50 capped to the configured $1.00.
+        self.assertEqual(calculate_database_share(10), Decimal("1.0000"))

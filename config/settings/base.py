@@ -536,6 +536,14 @@ USAGE_DASHBOARD_SUBSCRIPTION_PRICE = env.float(
 )
 SUPABASE_MONTHLY_COST = env.float("SUPABASE_MONTHLY_COST", default=25.0)
 
+# Cap on the per-tenant slice of the shared database bill. An even $cost/N split
+# overcharges a small fleet — at 3 tenants each would carry ~$8.33, which alone
+# exceeds the subscription price and structurally zeroes the open-books surplus
+# (so no donation ever shows). A database instance serves far more tenants than
+# that, so the honest *marginal* per-tenant cost is small; the cap reflects the
+# fair per-tenant DB cost at target scale so donations stay viable before scale.
+INFRA_DB_SHARE_CAP = env.float("INFRA_DB_SHARE_CAP", default=0.50)
+
 # API base URL (for OAuth callback redirects)
 API_BASE_URL = env("API_BASE_URL", default="http://localhost:8000")
 

@@ -173,11 +173,23 @@ def _get_infra_breakdown(tenant: Tenant, month: date) -> dict:
             "source": snapshot.source,
         }
     except InfraCostSnapshot.DoesNotExist:
+        # No snapshot yet (brand-new tenant / before the first cron run). Mirror
+        # the cron's estimate exactly — same container/storage estimates and the
+        # same capped database share — so the transparency figure doesn't jump
+        # when the first snapshot lands.
+        from .infra_cost_service import ESTIMATE_CONTAINER, ESTIMATE_STORAGE, calculate_database_share
+
+        active_count = (
+            Tenant.objects.filter(status="active", container_id__isnull=False).exclude(container_id="").count()
+        )
+        container = float(ESTIMATE_CONTAINER)
+        storage = float(ESTIMATE_STORAGE)
+        db_share = float(calculate_database_share(active_count))
         return {
-            "container": 4.00,
-            "database_share": 0.50,
-            "storage_share": 0.25,
-            "total": 4.75,
+            "container": container,
+            "database_share": db_share,
+            "storage_share": storage,
+            "total": round(container + storage + db_share, 4),
             "source": "estimate",
         }
 
