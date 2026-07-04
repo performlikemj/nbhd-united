@@ -39,7 +39,6 @@ export default function SettingsUsagePage() {
   const platformPercent = 100 - aiPercent - donationPercent;
 
   const PERCENTAGE_OPTIONS = [25, 50, 75, 100] as const;
-  const mealsEstimate = Math.floor(donationAmount / 0.25);
 
   if (isLoading || summaryLoading || transparencyLoading) {
     return (
@@ -308,7 +307,7 @@ export default function SettingsUsagePage() {
               <div>
                 <p className="font-medium">Donate my surplus</p>
                 <p className="mt-1 text-sm text-ink-muted">
-                  Route your unused subscription balance toward feeding children in need.
+                  A portion of NBHD United&apos;s proceeds supports local food initiatives.
                 </p>
               </div>
               <button
@@ -352,24 +351,12 @@ export default function SettingsUsagePage() {
                   </div>
                 </div>
 
-                {surplus > 0 && mealsEstimate > 0 && (
-                  <div className="space-y-1">
-                    <p className="text-sm text-emerald-700 dark:text-emerald-400">
-                      Your surplus this month buys ~{mealsEstimate} meals for children.*
-                    </p>
-                    <p className="text-xs text-ink-muted">
-                      * Based on{" "}
-                      <a
-                        href="https://www.feedingamerica.org/ways-to-give"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="underline hover:text-accent"
-                      >
-                        Feeding America&apos;s estimate
-                      </a>{" "}
-                      that $0.25 can help provide one meal.
-                    </p>
-                  </div>
+                {donationAmount > 0 && (
+                  <p className="text-sm text-ink-muted">
+                    Based on your setting,{" "}
+                    <span className="font-mono text-emerald-700 dark:text-emerald-400">${donationAmount.toFixed(2)}</span>{" "}
+                    of this month&apos;s surplus is earmarked toward the local food initiatives NBHD United supports.
+                  </p>
                 )}
               </div>
             )}

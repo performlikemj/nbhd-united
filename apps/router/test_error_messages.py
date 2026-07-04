@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from django.test import TestCase
 
-from apps.router.error_messages import strip_internal_framing
+from apps.router.error_messages import ERROR_MESSAGES, error_msg, strip_internal_framing
 
 
 class StripInternalFramingTest(TestCase):
@@ -76,3 +76,26 @@ class StripInternalFramingTest(TestCase):
     def test_preserves_internal_newlines_in_user_text(self):
         framed = "[System: just updated. User's message from before the update:]\nline one\n\nline two"
         self.assertEqual(strip_internal_framing(framed), "line one\n\nline two")
+
+
+class BudgetExhaustedTopUpTest(TestCase):
+    """The budget-exhausted messages must surface the prepaid-credit top-up
+    (recovery affordance at the point of failure) in every language — trial
+    and paid tenants alike can top up (CreditCheckoutView has no trial gate)."""
+
+    KEYS = ("budget_exhausted_trial", "budget_exhausted_paid")
+
+    def test_english_mentions_prepaid_credit_and_billing_url(self):
+        for key in self.KEYS:
+            rendered = error_msg("en", key, plus_message="", billing_url="https://app.example/billing")
+            self.assertIn("prepaid credit", rendered)
+            self.assertIn("Billing page", rendered)
+            self.assertIn("https://app.example/billing", rendered)
+
+    def test_every_language_renders_without_leftover_placeholder(self):
+        for lang in ERROR_MESSAGES:
+            for key in self.KEYS:
+                rendered = error_msg(lang, key, plus_message="", billing_url="https://app.example/billing")
+                self.assertNotIn("{", rendered, f"{lang}/{key} left an unrendered placeholder")
+                self.assertNotIn("}", rendered, f"{lang}/{key} left an unrendered placeholder")
+                self.assertIn("https://app.example/billing", rendered)

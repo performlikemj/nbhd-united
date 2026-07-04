@@ -363,8 +363,8 @@ export function useDonationPreferenceMutation() {
       queryClient.setQueryData<TransparencyData>(["usage-transparency"], (old) => {
         if (!old) return old;
         // Recompute the server-derived donation_amount client-side so the impact
-        // dollars / meals estimate stay consistent with the optimistic
-        // enabled/percentage change (server: round(surplus * pct/100, 4)).
+        // dollars stay consistent with the optimistic enabled/percentage change
+        // (server: round(surplus * pct/100, 4)).
         const effectiveEnabled = newData.donation_enabled ?? old.donation_enabled;
         const effectivePct = newData.donation_percentage ?? old.donation_percentage;
         const donation_amount =
