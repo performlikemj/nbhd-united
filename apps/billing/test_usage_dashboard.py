@@ -2,8 +2,10 @@
 
 from datetime import date, timedelta
 from decimal import Decimal
+from unittest import mock
 
-from django.test import TestCase
+from django.core.cache import cache
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -11,7 +13,31 @@ from apps.tenants.services import create_tenant
 
 from .constants import DEEPSEEK_FLASH_DISPLAY, MODEL_RATES
 from .models import UsageRecord
-from .usage_services import get_daily_usage, get_month_boundaries, get_transparency_data, get_usage_summary
+from .usage_services import (
+    _get_subscription_price,
+    get_daily_usage,
+    get_month_boundaries,
+    get_transparency_data,
+    get_usage_summary,
+)
+
+
+def _stripe_subscription(unit_amount, currency="usd", interval="month", interval_count=1):
+    """Build a plain-dict Stripe Subscription (as ``.to_dict()`` would return)."""
+    return {
+        "id": "sub_test",
+        "items": {
+            "data": [
+                {
+                    "price": {
+                        "unit_amount": unit_amount,
+                        "currency": currency,
+                        "recurring": {"interval": interval, "interval_count": interval_count},
+                    }
+                }
+            ]
+        },
+    }
 
 
 class MonthBoundariesTest(TestCase):
@@ -369,3 +395,103 @@ class ConstantsTest(TestCase):
             if rate["input"] == 0 and rate["output"] == 0:
                 continue
             self.assertGreater(rate["output"], rate["input"])
+
+
+@override_settings(
+    USAGE_DASHBOARD_SUBSCRIPTION_PRICE=12.0,
+    STRIPE_LIVE_MODE=False,
+    STRIPE_TEST_SECRET_KEY="sk_test_dummy",
+)
+class SubscriptionPriceTest(TestCase):
+    def setUp(self):
+        cache.clear()
+        self.tenant = create_tenant(display_name="SubPrice", telegram_chat_id=998001)
+
+    def tearDown(self):
+        cache.clear()
+
+    def _link_subscription(self, sub_id="sub_live_123"):
+        self.tenant.stripe_subscription_id = sub_id
+        self.tenant.save(update_fields=["stripe_subscription_id"])
+
+    def test_no_subscription_uses_fallback(self):
+        # Fresh tenants have no stripe_subscription_id — parity with the old flat $12.
+        self.assertEqual(self.tenant.stripe_subscription_id, "")
+        with mock.patch("stripe.Subscription.retrieve") as retrieve:
+            self.assertEqual(_get_subscription_price(self.tenant), 12.0)
+        retrieve.assert_not_called()
+
+    def test_reads_monthly_price_from_stripe(self):
+        self._link_subscription()
+        with mock.patch(
+            "stripe.Subscription.retrieve",
+            return_value=_stripe_subscription(2500),
+        ) as retrieve:
+            price = _get_subscription_price(self.tenant)
+        self.assertEqual(price, 25.0)
+        retrieve.assert_called_once()
+
+    def test_yearly_price_normalized_to_monthly(self):
+        self._link_subscription()
+        with mock.patch(
+            "stripe.Subscription.retrieve",
+            return_value=_stripe_subscription(12000, interval="year"),
+        ):
+            price = _get_subscription_price(self.tenant)
+        self.assertEqual(price, 10.0)
+
+    def test_non_usd_falls_back(self):
+        self._link_subscription()
+        with mock.patch(
+            "stripe.Subscription.retrieve",
+            return_value=_stripe_subscription(2500, currency="eur"),
+        ):
+            self.assertEqual(_get_subscription_price(self.tenant), 12.0)
+
+    def test_unsupported_interval_falls_back(self):
+        self._link_subscription()
+        with mock.patch(
+            "stripe.Subscription.retrieve",
+            return_value=_stripe_subscription(500, interval="week"),
+        ):
+            self.assertEqual(_get_subscription_price(self.tenant), 12.0)
+
+    def test_api_error_falls_back(self):
+        self._link_subscription()
+        with mock.patch(
+            "stripe.Subscription.retrieve",
+            side_effect=Exception("boom"),
+        ):
+            self.assertEqual(_get_subscription_price(self.tenant), 12.0)
+
+    def test_cache_hit_avoids_second_stripe_call(self):
+        self._link_subscription()
+        with mock.patch(
+            "stripe.Subscription.retrieve",
+            return_value=_stripe_subscription(2500),
+        ) as retrieve:
+            first = _get_subscription_price(self.tenant)
+            second = _get_subscription_price(self.tenant)
+        self.assertEqual(first, 25.0)
+        self.assertEqual(second, 25.0)
+        retrieve.assert_called_once()
+
+    def test_handles_stripe_object_with_to_dict(self):
+        # stripe-py returns a StripeObject, not a plain dict — we coerce via to_dict().
+        self._link_subscription()
+        stripe_obj = mock.Mock()
+        stripe_obj.to_dict.return_value = _stripe_subscription(2500)
+        with mock.patch("stripe.Subscription.retrieve", return_value=stripe_obj):
+            price = _get_subscription_price(self.tenant)
+        self.assertEqual(price, 25.0)
+
+    @override_settings(USAGE_DASHBOARD_SUBSCRIPTION_PRICE=15.0)
+    def test_fallback_honors_setting_override(self):
+        self.assertEqual(_get_subscription_price(self.tenant), 15.0)
+
+    def test_missing_api_key_falls_back(self):
+        self._link_subscription()
+        with override_settings(STRIPE_TEST_SECRET_KEY=""):
+            with mock.patch("stripe.Subscription.retrieve") as retrieve:
+                self.assertEqual(_get_subscription_price(self.tenant), 12.0)
+            retrieve.assert_not_called()
