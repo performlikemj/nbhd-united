@@ -35,6 +35,11 @@ SYSTEM_CRONS = [
     ("repair-stale-provisioning", "*/30 * * * *", "/api/cron/trigger/repair_stale_tenant_provisioning/"),
     # Daily at 06:30 UTC — refresh infra costs from Azure billing
     ("refresh-infra-costs", "30 6 * * *", "/api/cron/trigger/refresh_infra_costs/"),
+    # Monthly on the 2nd at 08:00 UTC — record each paying subscriber's
+    # revenue-percentage donation for the just-closed month. Runs on the 2nd (not
+    # the 1st) so the closed month's Stripe invoices have settled past the
+    # billing-lag window.
+    ("snapshot-donations-monthly", "0 8 2 * *", "/api/cron/trigger/snapshot_donations_monthly/"),
     # Hourly at :10 — true up per-tenant `estimated_cost_this_month` and
     # platform `MonthlyBudget.spent_dollars` against OpenRouter provider
     # truth. Offset from :00, :05, :15, :25 so it doesn't collide with

@@ -7,6 +7,15 @@ def refresh_infra_costs_task():
     return refresh_infra_costs()
 
 
+def snapshot_donations_monthly_task():
+    """Record each paying subscriber's revenue-percentage donation for the
+    just-closed month as a pending ``DonationLedger`` row (disbursed manually via
+    the ``reconcile_donations`` command). See ``apps.billing.donation_service``."""
+    from apps.billing.donation_service import snapshot_donations_for_month
+
+    return snapshot_donations_for_month()
+
+
 def reconcile_openrouter_spend_task():
     """Trues up internal usage counters against OpenRouter provider truth.
 

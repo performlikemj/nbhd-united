@@ -270,9 +270,19 @@ def get_transparency_data(tenant: Tenant) -> dict:
     surplus = max(0.0, subscription_price - actual_cost - infra_breakdown["total"])
     surplus = round(surplus, 4)
 
+    # Donation is the platform's revenue pledge: a flat percentage of the real
+    # subscription price for every paying subscriber — NOT surplus-derived (which
+    # donated less the more the product was used) and NOT gated by the per-tenant
+    # donation toggle (the pledge is a platform commitment, see donation_service).
+    # The surplus / cost-breakdown fields above stay for open-books transparency;
+    # `donation_enabled` / `donation_percentage` are still returned unchanged so
+    # the settings UI round-trips, but they no longer drive this figure.
+    from apps.billing.donation_service import _is_paying_subscriber, compute_donation
+
     donation_amount = 0.0
-    if tenant.donation_enabled and surplus > 0:
-        donation_amount = round(surplus * (tenant.donation_percentage / 100), 4)
+    if _is_paying_subscriber(tenant):
+        _, donation, _ = compute_donation(tenant)
+        donation_amount = float(donation)
 
     return {
         "period": {"start": first.isoformat(), "end": last.isoformat()},
