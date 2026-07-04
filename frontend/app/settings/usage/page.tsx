@@ -5,7 +5,7 @@ import { useState } from "react";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton, StatCardSkeleton } from "@/components/skeleton";
 import { StatCard } from "@/components/stat-card";
-import { useDonationPreferenceMutation, useTenantQuery, useTransparencyQuery, useUsageHistoryQuery, useUsageSummaryQuery } from "@/lib/queries";
+import { useTenantQuery, useTransparencyQuery, useUsageHistoryQuery, useUsageSummaryQuery } from "@/lib/queries";
 
 const USAGE_HISTORY_PREVIEW = 5;
 
@@ -24,21 +24,15 @@ export default function SettingsUsagePage() {
   const modelBreakdown = usageSummary?.by_model ?? [];
 
   const [showAllUsage, setShowAllUsage] = useState(false);
-  const donationMutation = useDonationPreferenceMutation();
 
   const aiActualCost = transparency?.your_actual_cost ?? 0;
   const platformCost = transparency?.platform_infra ?? 0;
-  const surplus = transparency?.surplus ?? 0;
   const donationAmount = transparency?.donation_amount ?? 0;
-  const donationEnabled = transparency?.donation_enabled ?? false;
-  const donationPercentage = transparency?.donation_percentage ?? 100;
 
   const splitTotal = Math.max(aiActualCost + platformCost + donationAmount, 0.01);
   const aiPercent = Math.min(100, (aiActualCost / splitTotal) * 100);
   const donationPercent = (donationAmount / splitTotal) * 100;
   const platformPercent = 100 - aiPercent - donationPercent;
-
-  const PERCENTAGE_OPTIONS = [25, 50, 75, 100] as const;
 
   if (isLoading || summaryLoading || transparencyLoading) {
     return (
@@ -205,7 +199,7 @@ export default function SettingsUsagePage() {
               label="Community Impact"
               value={`$${donationAmount.toFixed(2)}`}
               tone="signal"
-              hint={donationEnabled ? `${donationPercentage}% of $${surplus.toFixed(2)} surplus` : "Not opted in yet"}
+              hint={donationAmount > 0 ? "Funded from your subscription" : "—"}
             />
           </div>
 
@@ -303,62 +297,16 @@ export default function SettingsUsagePage() {
           </article>
 
           <article className="rounded-panel border border-emerald-500/25 bg-emerald-500/5 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <p className="font-medium">Donate my surplus</p>
-                <p className="mt-1 text-sm text-ink-muted">
-                  A portion of NBHD United&apos;s proceeds supports local food initiatives.
-                </p>
-              </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={donationEnabled}
-                onClick={() => donationMutation.mutate({ donation_enabled: !donationEnabled })}
-                disabled={donationMutation.isPending}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                  donationEnabled ? "bg-emerald-500" : "bg-border"
-                } ${donationMutation.isPending ? "opacity-50" : ""}`}
-              >
-                <span
-                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                    donationEnabled ? "translate-x-5" : "translate-x-0"
-                  }`}
-                />
-              </button>
-            </div>
-
-            {donationEnabled && (
-              <div className="mt-4 space-y-3">
-                <div className="flex items-center gap-2">
-                  <span className="text-sm text-ink-muted">Percentage of surplus:</span>
-                  <div className="flex gap-1">
-                    {PERCENTAGE_OPTIONS.map((pct) => (
-                      <button
-                        key={pct}
-                        type="button"
-                        onClick={() => donationMutation.mutate({ donation_percentage: pct })}
-                        disabled={donationMutation.isPending}
-                        className={`rounded-md px-3 py-1 text-sm font-mono transition-colors ${
-                          donationPercentage === pct
-                            ? "bg-emerald-500 text-white"
-                            : "bg-border text-ink-muted hover:bg-border/80"
-                        }`}
-                      >
-                        {pct}%
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {donationAmount > 0 && (
-                  <p className="text-sm text-ink-muted">
-                    Based on your setting,{" "}
-                    <span className="font-mono text-emerald-700 dark:text-emerald-400">${donationAmount.toFixed(2)}</span>{" "}
-                    of this month&apos;s surplus is earmarked toward the local food initiatives NBHD United supports.
-                  </p>
-                )}
-              </div>
+            <p className="font-medium">Community giving</p>
+            <p className="mt-1 text-sm text-ink-muted">
+              A portion of NBHD United&apos;s proceeds supports local food initiatives.
+            </p>
+            {donationAmount > 0 && (
+              <p className="mt-3 text-sm text-ink-muted">
+                This month,{" "}
+                <span className="font-mono text-emerald-700 dark:text-emerald-400">${donationAmount.toFixed(2)}</span>{" "}
+                of your subscription is earmarked for the local food initiatives NBHD United supports.
+              </p>
             )}
           </article>
         </div>
