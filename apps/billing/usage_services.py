@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -16,6 +17,20 @@ from .constants import (
     display_name_for_model,
 )
 from .models import MonthlyBudget, UsageRecord
+
+logger = logging.getLogger(__name__)
+
+# Cache TTL for a resolved Stripe subscription price. Prices change rarely and
+# the transparency dashboard renders on every page view, so an hour of staleness
+# is an acceptable trade for not calling Stripe per request.
+_SUBSCRIPTION_PRICE_CACHE_TTL = 3600
+
+# Short TTL for negative-caching a *failed* Stripe lookup. Without this, a Stripe
+# outage would make EVERY dashboard render fire a failing API call — and stripe-py's
+# default HTTP timeout is long (tens of seconds) — so the usage page would hang
+# per-render for the outage's duration. Capping at one slow call per subscription
+# per 5 minutes bounds that blast radius while still recovering promptly.
+_SUBSCRIPTION_PRICE_FAILURE_CACHE_TTL = 300
 
 
 def get_month_boundaries(ref: date | None = None) -> tuple[date, date]:
@@ -280,5 +295,149 @@ def get_transparency_data(tenant: Tenant) -> dict:
     }
 
 
+def _subscription_price_fallback() -> float:
+    """Configured monthly price to use when the live Stripe price is unavailable."""
+    from django.conf import settings
+
+    return float(getattr(settings, "USAGE_DASHBOARD_SUBSCRIPTION_PRICE", 12.0))
+
+
+def _normalize_to_monthly(amount: float, interval: str | None, interval_count: int) -> float | None:
+    """Normalize a recurring price to a monthly USD figure.
+
+    ``amount`` is the per-billing-period price (already in dollars). We only
+    normalize the two intervals this product actually bills on — monthly and
+    yearly (yearly / 12). Anything else (week/day, or an unrecognized interval)
+    returns ``None`` so the caller falls back rather than guess.
+    """
+    if not interval_count or interval_count < 1:
+        interval_count = 1
+    if interval == "month":
+        return amount / interval_count
+    if interval == "year":
+        return amount / (12 * interval_count)
+    return None
+
+
+def _fetch_subscription_price_from_stripe(subscription_id: str) -> float | None:
+    """Return the normalized monthly USD price for a Stripe subscription.
+
+    Returns ``None`` on ANY problem — missing API key, Stripe error/timeout, no
+    line item, non-USD currency, or a non-monthly/yearly interval — so the caller
+    can fall back. Never raises.
+
+    We hit the Stripe API directly (expanding the price) rather than djstripe's
+    local models: djstripe is installed but its tables are NOT webhook-synced in
+    this codebase (the custom handler in ``billing/views.py`` writes ``Tenant``
+    fields, not djstripe records), so those models can't be trusted to be
+    populated. ``Subscription.to_dict()`` coerces the StripeObject (and its
+    nested expansions) to a plain dict — the same boundary
+    ``billing/views.py`` uses, robust across stripe-py 14.x/15.x.
+    """
+    import stripe
+
+    # Reuse the webhook module's mode→key resolver so "which key for live vs test"
+    # lives in exactly one place. Function-local import — views.py doesn't import
+    # this module, so there's no cycle, but keep it local to be safe.
+    from .views import _get_stripe_api_key
+
+    try:
+        api_key = (_get_stripe_api_key() or "").strip()
+        if not api_key:
+            logger.info("billing: Stripe API key missing — cannot resolve live subscription price")
+            return None
+
+        subscription = stripe.Subscription.retrieve(
+            subscription_id,
+            expand=["items.data.price"],
+            api_key=api_key,
+        )
+        data = subscription.to_dict() if hasattr(subscription, "to_dict") else subscription
+
+        items = ((data.get("items") or {}).get("data")) or []
+        if not items:
+            logger.info("billing: subscription %s has no line items — fallback", subscription_id)
+            return None
+
+        price = items[0].get("price") or {}
+        unit_amount = price.get("unit_amount")
+        currency = (price.get("currency") or "").lower()
+        recurring = price.get("recurring") or {}
+        interval = recurring.get("interval")
+        interval_count = recurring.get("interval_count") or 1
+
+        if unit_amount is None:
+            logger.info("billing: subscription %s price has no unit_amount — fallback", subscription_id)
+            return None
+        if currency and currency != "usd":
+            logger.info("billing: subscription %s priced in %s (not USD) — fallback", subscription_id, currency)
+            return None
+
+        monthly = _normalize_to_monthly(float(unit_amount) / 100.0, interval, interval_count)
+        if monthly is None:
+            logger.info(
+                "billing: subscription %s has unsupported interval %r×%s — fallback",
+                subscription_id,
+                interval,
+                interval_count,
+            )
+            return None
+        return round(monthly, 4)
+    except Exception:
+        # Stripe API error, timeout, network blip, malformed payload — anything.
+        # This runs inside a user-facing dashboard render, so we swallow and fall
+        # back rather than 500 the page.
+        logger.info(
+            "billing: failed to resolve subscription price from Stripe (sub=%s) — fallback",
+            subscription_id,
+            exc_info=True,
+        )
+        return None
+
+
 def _get_subscription_price(tenant: Tenant) -> float:
-    return 12.0
+    """Resolve the tenant's monthly subscription price in USD.
+
+    Drives the surplus/donation figures on the transparency dashboard — and an
+    in-flight donation ledger will use it to compute real disbursement amounts —
+    so a wrong number becomes wrong money. Reads the live price from Stripe
+    (cached ~1h per subscription) instead of trusting a hardcoded figure, but
+    NEVER raises: any failure falls back to ``USAGE_DASHBOARD_SUBSCRIPTION_PRICE``.
+
+    Tenants with no ``stripe_subscription_id`` (trials, comped accounts) fall
+    back to the setting, preserving the previous flat-$12 behavior.
+    """
+    from django.core.cache import cache
+
+    fallback = _subscription_price_fallback()
+
+    subscription_id = (tenant.stripe_subscription_id or "").strip()
+    if not subscription_id:
+        # No subscription to price against (trial/comped) — expected, not drift.
+        return fallback
+
+    cache_key = f"billing:sub_price:{subscription_id}"
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return float(cached)
+
+    # Negative cache: if a recent lookup for this subscription failed, serve the
+    # fallback without touching Stripe. We store a marker (not the price) so a
+    # setting change during an outage is still honored via the fresh `fallback`.
+    failure_key = f"billing:sub_price_fallback:{subscription_id}"
+    if cache.get(failure_key) is not None:
+        return fallback
+
+    price = _fetch_subscription_price_from_stripe(subscription_id)
+    if price is None:
+        cache.set(failure_key, True, _SUBSCRIPTION_PRICE_FAILURE_CACHE_TTL)
+        logger.info(
+            "billing: subscription price fallback for tenant %s (sub=%s) → $%.2f",
+            tenant.id,
+            subscription_id,
+            fallback,
+        )
+        return fallback
+
+    cache.set(cache_key, price, _SUBSCRIPTION_PRICE_CACHE_TTL)
+    return price
