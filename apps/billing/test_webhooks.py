@@ -46,6 +46,42 @@ class StripeWebhookViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         mock_handler.assert_called_once_with({"id": "in_test"})
 
+    @patch("apps.billing.views.handle_invoice_paid")
+    @patch("apps.billing.views.stripe.Webhook.construct_event")
+    def test_invoice_paid_event_dispatches(self, mock_construct, mock_handler):
+        mock_construct.return_value = {
+            "type": "invoice.paid",
+            "data": {"object": {"id": "in_paid", "subscription": "sub_1"}},
+        }
+
+        response = self.client.post(
+            "/api/v1/billing/webhook/",
+            data=b"{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_handler.assert_called_once_with({"id": "in_paid", "subscription": "sub_1"})
+
+    @patch("apps.billing.views.handle_invoice_paid")
+    @patch("apps.billing.views.stripe.Webhook.construct_event")
+    def test_invoice_payment_succeeded_event_dispatches(self, mock_construct, mock_handler):
+        mock_construct.return_value = {
+            "type": "invoice.payment_succeeded",
+            "data": {"object": {"id": "in_ps", "subscription": "sub_2"}},
+        }
+
+        response = self.client.post(
+            "/api/v1/billing/webhook/",
+            data=b"{}",
+            content_type="application/json",
+            HTTP_STRIPE_SIGNATURE="sig",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        mock_handler.assert_called_once_with({"id": "in_ps", "subscription": "sub_2"})
+
     @patch("apps.billing.views.stripe.Webhook.construct_event")
     def test_invalid_signature_returns_400(self, mock_construct):
         mock_construct.side_effect = ValueError("bad payload")

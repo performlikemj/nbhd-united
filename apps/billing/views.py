@@ -18,6 +18,7 @@ from .constants import CREDIT_PACKS
 from .credits import credits_state, handle_credit_refund, handle_credit_topup_completed
 from .services import (
     handle_checkout_completed,
+    handle_invoice_paid,
     handle_invoice_payment_failed,
     handle_subscription_deleted,
 )
@@ -186,6 +187,11 @@ def stripe_webhook(request):
             logger.info("Subscription updated: %s", data.get("id"))
         case "invoice.payment_failed":
             handle_invoice_payment_failed(data)
+        case "invoice.paid" | "invoice.payment_succeeded":
+            # A dunning retry (or normal renewal) cleared: reactivate a tenant
+            # we suspended for billing. Idempotent — active tenants no-op, and
+            # non-subscription/credit invoices are ignored inside the handler.
+            handle_invoice_paid(data)
         case _:
             logger.debug("Unhandled Stripe event: %s", event_type)
 

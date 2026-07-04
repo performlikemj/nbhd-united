@@ -1,0 +1,16 @@
+Hi {{ display_name|default:"there" }},
+
+We tried to charge your card for your NBHD United subscription, but the payment
+didn't go through. No need to worry — your assistant is still running, and we'll
+automatically try the charge again over the next few days.
+
+The most common cause is an expired card or a temporary hold from your bank. You
+can update your payment details any time here:
+
+  {{ billing_url }}
+
+If the retries don't succeed, your assistant will pause until payment clears —
+but updating your card now avoids any interruption.
+
+— NBHD United
+neighborhoodunited.org
