@@ -773,6 +773,27 @@ def handle_invoice_paid(invoice_data: dict) -> None:
             invoice_data.get("id"),
         )
 
-        restore_tenant_runtime(tenant)
+        # restore_tenant_runtime returns False when there's no container or the
+        # scale-up raised — the caller owns the fallback. Mirror the promo
+        # redeem view: mark the tenant hibernated so the next inbound message
+        # self-heals via wake_hibernated_tenant. Without this a scale-up
+        # failure would leave an ACTIVE tenant with a dead container and
+        # hibernated_at=None, and wake-on-message would short-circuit → silent
+        # assistant for a customer who just paid.
+        try:
+            restored = restore_tenant_runtime(tenant)
+        except Exception:
+            logger.exception("invoice.paid: restore_tenant_runtime raised for tenant %s", tenant.id)
+            restored = False
+
+        if not restored:
+            from django.utils import timezone
+
+            Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+            logger.warning(
+                "invoice.paid: runtime restore failed for tenant %s; marked hibernated "
+                "so the next inbound message wakes the container",
+                tenant.id,
+            )
     except Exception:
         logger.exception("invoice.paid: unexpected error handling payload")

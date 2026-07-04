@@ -380,6 +380,7 @@ class InvoicePaidReactivationTest(TestCase):
 
     @patch("apps.billing.services.restore_tenant_runtime")
     def test_paid_reactivates_suspended_tenant(self, mock_restore):
+        mock_restore.return_value = True
         self.tenant.status = Tenant.Status.SUSPENDED
         self.tenant.dunning_notice_invoice_id = "in_old"
         self.tenant.save(update_fields=["status", "dunning_notice_invoice_id", "updated_at"])
@@ -396,6 +397,32 @@ class InvoicePaidReactivationTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
         self.assertEqual(self.tenant.dunning_notice_invoice_id, "")
+        # Successful scale-up leaves the idle-hibernation marker cleared.
+        self.assertIsNone(self.tenant.hibernated_at)
+        mock_restore.assert_called_once()
+
+    @patch("apps.billing.services.restore_tenant_runtime")
+    def test_paid_marks_hibernated_when_scale_up_fails(self, mock_restore):
+        # restore_tenant_runtime returns False (no container / scale-up raised).
+        # The tenant must still end ACTIVE, but be marked hibernated so the next
+        # inbound message self-heals via wake_hibernated_tenant instead of
+        # short-circuiting on hibernated_at=None → silent assistant.
+        mock_restore.return_value = False
+        self.tenant.status = Tenant.Status.SUSPENDED
+        self.tenant.save(update_fields=["status", "updated_at"])
+
+        handle_invoice_paid(
+            {
+                "id": "in_paid",
+                "subscription": "sub_re",
+                "customer": "cus_re",
+                "billing_reason": "subscription_cycle",
+            }
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertIsNotNone(self.tenant.hibernated_at)
         mock_restore.assert_called_once()
 
     @patch("apps.billing.services.restore_tenant_runtime")
