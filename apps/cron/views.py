@@ -122,6 +122,8 @@ TASK_MAP = {
     "dedup_lessons": "apps.lessons.tasks.dedup_lessons_task",
     "reseed_lessons": "apps.lessons.tasks.reseed_lessons_task",
     "reseed_lessons_single_tenant": "apps.lessons.tasks.reseed_lessons_single_tenant_task",
+    # Neighborhood: fail-closed share scrub (async, never inline in a request)
+    "scrub_shared_lesson": "apps.friends.tasks.scrub_shared_lesson_task",
     # Hibernate suspended containers (one-off cleanup)
     "hibernate_suspended": "apps.orchestrator.tasks.hibernate_suspended_task",
     # Daily reaper for orphaned tenant containers (oc-* apps with no Tenant

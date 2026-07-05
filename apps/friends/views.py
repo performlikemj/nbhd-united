@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from rest_framework import status
-from rest_framework.exceptions import NotFound, PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -161,3 +161,48 @@ def _invite_result(invite) -> dict:
         "max_uses": invite.max_uses,
         "uses": invite.uses,
     }
+
+
+# ── Share pipeline (approval queue + preview-before-share) ────────────────────
+
+
+class SharePreviewView(FriendsView):
+    """GET /api/v1/friends/shares/preview/?lesson_id=&friendship_id= — the
+    literal, already-scrubbed bytes the neighbor will see. 202 while scrubbing,
+    409 if the scrub failed, 200 with ``redacted_text`` + residuals banner."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        lesson_id = request.query_params.get("lesson_id")
+        friendship_id = request.query_params.get("friendship_id")
+        if not lesson_id or not friendship_id:
+            raise ValidationError("lesson_id and friendship_id are required.")
+        payload, code = services.preview_share(tenant, lesson_id, friendship_id)
+        return Response(payload, status=code)
+
+
+class PendingSharesView(FriendsView):
+    """GET /api/v1/friends/shares/pending/ — the human's approval queue."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        return Response(services.list_pending_shares(tenant))
+
+
+class ShareApproveView(FriendsView):
+    """POST /api/v1/friends/shares/<id>/approve {final_text?} — the ONLY path
+    that creates a grant. Edit → 202 (re-scrub, preview again); ready → 200."""
+
+    def post(self, request, pending_share_id):
+        tenant = self.get_tenant(request)
+        payload, code = services.approve_share(tenant, pending_share_id, final_text=request.data.get("final_text"))
+        return Response(payload, status=code)
+
+
+class ShareRejectView(FriendsView):
+    """POST /api/v1/friends/shares/<id>/reject — no grant, ever."""
+
+    def post(self, request, pending_share_id):
+        tenant = self.get_tenant(request)
+        pending = services.reject_share(tenant, pending_share_id)
+        return Response({"pending_share_id": str(pending.id), "status": pending.status})

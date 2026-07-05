@@ -23,7 +23,9 @@ from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
-from .models import FriendInvite, Friendship, NeighborProfile, compute_pair_key
+from . import access
+from .models import FriendInvite, Friendship, NeighborProfile, PendingShare, SharedLesson, compute_pair_key
+from .scrub import _content_hash
 
 # Handles people can never claim (impersonation / support-desk confusion).
 RESERVED_HANDLES = frozenset({"admin", "nbhd", "neighborhood", "support", "mj"})
@@ -373,3 +375,201 @@ def _notify_wave_received(friendship: Friendship) -> None:
     from .notifications import notify_wave_received
 
     notify_wave_received(friendship)
+
+
+# ── Share pipeline (propose → scrub → preview → approve → freeze → publish) ───
+
+RESIDUALS_BANNER = "We hide names — but not amounts, dates, or company names."
+
+# Mechanical share-never list, independent of the LLM (design §4.7). Lessons in
+# these pillars refuse to share by default; MJ can opt a pillar in later.
+SHARE_BLOCKED_PILLARS = frozenset({"gravity", "core"})
+
+# NOTE: ``lessons.Lesson`` has no ``pillar`` column, so pillar is inferred from
+# tags/an explicit attr as a conservative, over-blocking heuristic. A first-
+# class provenance signal (a pillar field, or finance/core lesson origin) should
+# replace this — flagged for the reviewer. Over-blocking is the safe direction.
+_GRAVITY_MARKERS = frozenset({"gravity", "finance", "money", "debt", "budget", "savings", "loan", "salary", "invoice"})
+_CORE_MARKERS = frozenset({"core", "mindfulness", "meditation", "mental-health", "mental health", "therapy"})
+
+
+def lesson_pillar(lesson) -> str:
+    explicit = getattr(lesson, "pillar", None)
+    if explicit:
+        return str(explicit).lower()
+    tags = {str(t).strip().lower() for t in (getattr(lesson, "tags", None) or [])}
+    if tags & _GRAVITY_MARKERS:
+        return "gravity"
+    if tags & _CORE_MARKERS:
+        return "core"
+    return "lessons"
+
+
+def assert_shareable_pillar(lesson) -> None:
+    if lesson_pillar(lesson) in SHARE_BLOCKED_PILLARS:
+        raise PermissionDenied(
+            "Finance and mindfulness lessons stay private by default — they can't be shared to your Neighborhood."
+        )
+
+
+def _enqueue_scrub(shared_lesson, pending_share_id=None) -> None:
+    from apps.cron.publish import publish_task
+
+    kwargs = {}
+    if pending_share_id is not None:
+        kwargs["pending_share_id"] = str(pending_share_id)
+    publish_task("scrub_shared_lesson", str(shared_lesson.id), **kwargs)
+
+
+def share_lesson(owner_tenant, owner_user, lesson, friendship_id) -> PendingShare:
+    """Human-initiated share intent → a ``PendingShare(proposed_by="user")`` +
+    an ensured ``SharedLesson`` + an enqueued fail-closed scrub. **No grant is
+    created here** — the grant is created only at approve-after-preview (design
+    §3.2: "no preview → no grant" binds every path, including this one)."""
+    if lesson.tenant_id != owner_tenant.id:
+        raise NotFound("No such lesson.")
+    assert_shareable_pillar(lesson)  # mechanical gravity/core block → 403
+    edge = access.assert_neighbors(owner_tenant, friendship_id)  # party + accepted, else 403
+
+    shared_lesson = access.ensure_shared_lesson(lesson, owner_tenant)
+    current_hash = _content_hash(lesson.text or "", lesson.context or "")
+    if shared_lesson.scrub_status != SharedLesson.ScrubStatus.READY or shared_lesson.content_hash != current_hash:
+        access.mark_scrub_pending(shared_lesson)
+        _enqueue_scrub(shared_lesson)  # content_hash drift or first scrub → (re)scrub
+
+    return PendingShare.objects.create(
+        tenant=owner_tenant,
+        source_lesson=lesson,
+        proposed_by="user",
+        target_friendship=edge,
+        status=PendingShare.Status.PENDING,
+        expires_at=timezone.now() + timedelta(days=7),
+    )
+
+
+def preview_share(owner_tenant, lesson_id, friendship_id) -> tuple[dict, int]:
+    """Preview-before-share: the LITERAL ``redacted_text`` the neighbor will see.
+    202 while scrubbing, 409 if the scrub failed (fail-closed), 200 when ready."""
+    edge = access.assert_neighbors(owner_tenant, friendship_id)
+    shared_lesson = access.get_shared_lesson_by_lesson_id(lesson_id, owner_tenant)
+    if shared_lesson is None:
+        raise NotFound("No share in progress for this lesson.")
+    if shared_lesson.scrub_status == SharedLesson.ScrubStatus.PENDING:
+        return {"detail": "Preparing your preview safely — try again in a moment."}, 202
+    if shared_lesson.scrub_status == SharedLesson.ScrubStatus.FAILED:
+        return {"detail": "We couldn't prepare this share safely, so nothing will be shared."}, 409
+    return {
+        "redacted_text": shared_lesson.redacted_text,
+        "redacted_context": shared_lesson.redacted_context,
+        "audience": _audience_label(owner_tenant, edge),
+        "residuals_banner": RESIDUALS_BANNER,
+    }, 200
+
+
+def list_pending_shares(tenant) -> list[dict]:
+    shares = (
+        PendingShare.objects.filter(tenant=tenant, status=PendingShare.Status.PENDING)
+        .select_related("source_lesson", "target_friendship")
+        .order_by("-created_at")
+    )
+    out: list[dict] = []
+    for pending in shares:
+        edge = pending.target_friendship
+        out.append(
+            {
+                "id": str(pending.id),
+                "lesson_id": pending.source_lesson_id,
+                "lesson_preview": (pending.source_lesson.text or "")[:140],
+                "proposed_by": pending.proposed_by,
+                "friendship_id": str(edge.id) if edge else None,
+                "audience": _audience_label(tenant, edge) if edge else None,
+                "created_at": pending.created_at,
+            }
+        )
+    return out
+
+
+def approve_share(tenant, pending_share_id, final_text=None) -> tuple[dict, int]:
+    """Human approve. **The only path that creates a grant.** Idempotent.
+    An edit re-scrubs the edited text fail-closed (returns 202 → preview again →
+    approve); a ready snapshot freezes + publishes the grant."""
+    pending = _load_pending_share(tenant, pending_share_id)
+    if pending.status in (PendingShare.Status.APPROVED, PendingShare.Status.EDITED):
+        return {"pending_share_id": str(pending.id), "status": pending.status}, 200
+    if pending.status != PendingShare.Status.PENDING:
+        raise ValidationError("This share can no longer be approved.")
+    if pending.target_friendship_id is None:
+        raise ValidationError("This share has no audience.")
+
+    shared_lesson = access.get_shared_lesson_by_lesson_id(pending.source_lesson_id, tenant)
+    if shared_lesson is None:
+        raise ValidationError("No prepared snapshot to approve.")
+
+    # Edit → re-scrub the edited text fail-closed, then the human previews +
+    # approves again. This keeps "no preview → no grant" intact for edits too.
+    edited = (final_text or "").strip()
+    if edited and edited != (pending.final_text or "").strip():
+        pending.final_text = edited
+        pending.save(update_fields=["final_text"])
+        access.mark_scrub_pending(shared_lesson)
+        _enqueue_scrub(shared_lesson, pending_share_id=pending.id)
+        return {
+            "pending_share_id": str(pending.id),
+            "status": "rescrubbing",
+            "detail": "We re-scrubbed your edit — preview it, then approve to share.",
+        }, 202
+
+    if shared_lesson.scrub_status == SharedLesson.ScrubStatus.PENDING:
+        return {"detail": "Still preparing this share safely — try again in a moment."}, 202
+    if shared_lesson.scrub_status == SharedLesson.ScrubStatus.FAILED:
+        pending.status = PendingShare.Status.BLOCKED
+        pending.resolved_at = timezone.now()
+        pending.save(update_fields=["status", "resolved_at"])
+        return {"detail": "We couldn't prepare this share safely, so nothing was shared."}, 409
+
+    # READY → freeze + publish (create the grant).
+    grant = access.create_grant(shared_lesson, pending.target_friendship, granted_by=tenant.user)
+    pending.status = PendingShare.Status.EDITED if pending.final_text else PendingShare.Status.APPROVED
+    pending.preview_text = shared_lesson.redacted_text
+    pending.resolved_at = timezone.now()
+    pending.save(update_fields=["status", "preview_text", "resolved_at"])
+    return {"pending_share_id": str(pending.id), "status": pending.status, "grant_id": str(grant.id)}, 200
+
+
+def reject_share(tenant, pending_share_id) -> PendingShare:
+    pending = _load_pending_share(tenant, pending_share_id)
+    if pending.status == PendingShare.Status.PENDING:
+        pending.status = PendingShare.Status.REJECTED
+        pending.resolved_at = timezone.now()
+        pending.save(update_fields=["status", "resolved_at"])
+    return pending
+
+
+def revoke_share(owner_tenant, lesson, grant_id) -> None:
+    """Revoke one share → the spark leaves the neighbor's wormhole + absorb pull
+    instantly (read-through, zero residue)."""
+    grant = access.get_grant(grant_id)
+    if (
+        grant is None
+        or grant.shared_lesson.owner_tenant_id != owner_tenant.id
+        or grant.shared_lesson.source_lesson_id != lesson.id
+    ):
+        raise NotFound("No such share.")
+    access.revoke_grant(grant)
+
+
+def _load_pending_share(tenant, pending_share_id) -> PendingShare:
+    try:
+        pending = PendingShare.objects.select_related("target_friendship").get(id=pending_share_id, tenant=tenant)
+    except (PendingShare.DoesNotExist, ValueError, DjangoValidationError) as exc:
+        raise NotFound("No such share.") from exc
+    return pending
+
+
+def _audience_label(viewer_tenant, edge) -> str:
+    """The neighbor's display name for a friendship edge (owner's view)."""
+    if edge is None:
+        return "a neighbor"
+    other_id = edge.addressee_id if edge.requester_id == viewer_tenant.id else edge.requester_id
+    profile = NeighborProfile.objects.filter(tenant_id=other_id).first()
+    return profile.display_name if profile else "a neighbor"

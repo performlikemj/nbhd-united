@@ -1,6 +1,6 @@
 "use client";
 
-import { CSSProperties, FormEvent, useEffect, useRef, useState } from "react";
+import { CSSProperties, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { ConfirmDialog } from "@/components/journal/confirm-dialog";
 import { IconMore } from "@/components/icons/constellation";
@@ -8,18 +8,24 @@ import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import { emitToast } from "@/components/toast";
+import { fetchSharePreview } from "@/lib/api";
 import { getErrorMessage } from "@/lib/errors";
 import {
   useAcceptWaveMutation,
+  useApprovedLessonsQuery,
+  useApproveShareMutation,
   useBlockWaveMutation,
   useDeclineWaveMutation,
   useNeighborhoodQuery,
   useNeighborProfileQuery,
+  usePendingSharesQuery,
+  useRejectShareMutation,
   useSendWaveMutation,
+  useShareLessonMutation,
   useUnfriendMutation,
   useUpdateNeighborProfileMutation,
 } from "@/lib/queries";
-import type { Neighbor, NeighborProfile } from "@/lib/types";
+import type { Neighbor, NeighborProfile, PendingShare } from "@/lib/types";
 
 // The one place a raw dynamic color is allowed — the avatar hue is a
 // user-chosen 0-359 value, not a design-system token.
@@ -29,17 +35,20 @@ function avatarStyle(hue: number): CSSProperties {
 
 export default function FriendsPage() {
   const { data, isLoading } = useNeighborhoodQuery();
+  const { data: pendingShares = [] } = usePendingSharesQuery();
   const acceptMutation = useAcceptWaveMutation();
   const declineMutation = useDeclineWaveMutation();
   const blockMutation = useBlockWaveMutation();
   const unfriendMutation = useUnfriendMutation();
 
   const [confirmTarget, setConfirmTarget] = useState<Neighbor | null>(null);
+  const [reviewingShare, setReviewingShare] = useState<PendingShare | null>(null);
 
   const neighbors = data?.neighbors ?? [];
   const pendingIncoming = data?.pending_incoming ?? [];
   const pendingOutgoing = data?.pending_outgoing ?? [];
   const hasRequests = pendingIncoming.length > 0 || pendingOutgoing.length > 0;
+  const hasApprovals = pendingShares.length > 0;
 
   const requestUnfriend = (neighbor: Neighbor) => setConfirmTarget(neighbor);
   const confirmUnfriend = () => {
@@ -73,8 +82,37 @@ export default function FriendsPage() {
           </>
         ) : (
           <>
+            {hasApprovals && (
+              <SectionCard title="Approvals" subtitle="Nothing goes out until you say so.">
+                <div className="space-y-2">
+                  {pendingShares.map((share) => (
+                    <div
+                      key={share.id}
+                      className="flex items-start gap-3 rounded-xl border border-border bg-surface/60 p-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-2 text-sm text-ink">{share.lesson_preview}</p>
+                        <p className="mt-1 truncate text-xs text-ink-faint">To {share.audience}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setReviewingShare(share)}
+                        className="min-h-[44px] shrink-0 rounded-full border border-accent/40 bg-accent/10 px-4 text-xs font-semibold text-accent transition hover:bg-accent/20"
+                      >
+                        Review &amp; approve
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </SectionCard>
+            )}
+
             {hasRequests && (
-              <SectionCard title="Requests" subtitle="Waves waiting on a reply.">
+              <SectionCard
+                title="Requests"
+                subtitle="Waves waiting on a reply."
+                delay={hasApprovals ? 80 : 0}
+              >
                 {pendingIncoming.length > 0 && (
                   <div className="space-y-3">
                     {pendingIncoming.map((wave) => {
@@ -152,7 +190,7 @@ export default function FriendsPage() {
             <SectionCard
               title="Neighbors"
               subtitle={`${neighbors.length} ${neighbors.length === 1 ? "neighbor" : "neighbors"}`}
-              delay={hasRequests ? 80 : 0}
+              delay={(hasApprovals ? 80 : 0) + (hasRequests ? 80 : 0)}
             >
               {neighbors.length === 0 ? (
                 <p className="rounded-panel border border-dashed border-border bg-surface/40 p-8 text-center text-sm text-ink-muted">
@@ -175,11 +213,16 @@ export default function FriendsPage() {
               )}
             </SectionCard>
 
+            <ShareLessonCard />
             <WaveForm />
             <ProfileEditor />
           </>
         )}
       </div>
+
+      {reviewingShare && (
+        <SharePreviewModal share={reviewingShare} onClose={() => setReviewingShare(null)} />
+      )}
 
       <ConfirmDialog
         open={confirmTarget !== null}
@@ -518,5 +561,385 @@ function ProfileEditor() {
         </div>
       </div>
     </SectionCard>
+  );
+}
+
+// Chosen share affordance: the constellation lesson graph (app/constellation/page.tsx)
+// is a bespoke hardcoded-hex SVG canvas with its own Inspector panel — not the
+// design-token surface the rest of the app uses — so threading a neighbor
+// picker through it would mean either breaking the token-only rule or bolting
+// on a visually inconsistent overlay. Sharing from here instead keeps the
+// whole trust flow (propose → Approvals → preview → approve) on one page,
+// built entirely from existing tokens/components.
+function ShareLessonCard() {
+  const { data: lessons = [], isLoading: lessonsLoading } = useApprovedLessonsQuery();
+  const { data: neighborhood, isLoading: neighborhoodLoading } = useNeighborhoodQuery();
+  const neighbors = neighborhood?.neighbors ?? [];
+  const shareLessonMutation = useShareLessonMutation();
+
+  const [lessonId, setLessonId] = useState("");
+  const [friendshipId, setFriendshipId] = useState("");
+
+  const canShare = !!lessonId && !!friendshipId && !shareLessonMutation.isPending;
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!lessonId || !friendshipId) return;
+    try {
+      await shareLessonMutation.mutateAsync({ lessonId: Number(lessonId), friendshipId });
+      emitToast("Shared to your approval queue — review & approve it.", "success");
+      setLessonId("");
+      setFriendshipId("");
+    } catch {
+      // Pillar-blocked (403) / missing-field (400) failures already surface
+      // via the default global error toast — see useShareLessonMutation.
+    }
+  };
+
+  if (lessonsLoading || neighborhoodLoading) {
+    return <SectionCardSkeleton lines={2} />;
+  }
+
+  return (
+    <SectionCard
+      title="Share a lesson"
+      subtitle="Pick something you've learned and send it to a neighbor — they only see it once you approve the preview."
+      delay={200}
+    >
+      {lessons.length === 0 ? (
+        <p className="rounded-panel border border-dashed border-border bg-surface/40 p-6 text-center text-sm text-ink-muted">
+          No approved lessons yet &mdash; approve one in your Constellation first.
+        </p>
+      ) : neighbors.length === 0 ? (
+        <p className="rounded-panel border border-dashed border-border bg-surface/40 p-6 text-center text-sm text-ink-muted">
+          Wave to a neighbor first &mdash; you&rsquo;ll be able to share with them once they accept.
+        </p>
+      ) : (
+        <form onSubmit={submit} className="space-y-3">
+          <label className="block">
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Lesson</span>
+            <select
+              value={lessonId}
+              onChange={(e) => setLessonId(e.target.value)}
+              className="mt-1 min-h-[44px] w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none transition focus:border-accent/50"
+            >
+              <option value="">Choose a lesson&hellip;</option>
+              {lessons.map((lesson) => (
+                <option key={lesson.id} value={lesson.id}>
+                  {lesson.text.length > 90 ? `${lesson.text.slice(0, 87)}…` : lesson.text}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="block">
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Neighbor</span>
+            <select
+              value={friendshipId}
+              onChange={(e) => setFriendshipId(e.target.value)}
+              className="mt-1 min-h-[44px] w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none transition focus:border-accent/50"
+            >
+              <option value="">Choose a neighbor&hellip;</option>
+              {neighbors.map((n) => (
+                <option key={n.friendship_id} value={n.friendship_id}>
+                  {n.display_name} (@{n.handle})
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <button
+            type="submit"
+            disabled={!canShare}
+            className="glow-purple min-h-[44px] rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {shareLessonMutation.isPending ? "Sending…" : "Share"}
+          </button>
+        </form>
+      )}
+    </SectionCard>
+  );
+}
+
+// The trust surface: what the neighbor will actually see, verbatim, before
+// anything goes out. Mirrors the bottom-sheet/dialog pattern used by
+// ConfirmDialog / ConnectAnthropicModal (backdrop + sticky footer), so it
+// reads as part of the same design language rather than a bespoke overlay.
+function SharePreviewModal({ share, onClose }: { share: PendingShare; onClose: () => void }) {
+  const approveMutation = useApproveShareMutation();
+  const rejectMutation = useRejectShareMutation();
+
+  const [phase, setPhase] = useState<"loading" | "ready" | "failed">("loading");
+  const [preview, setPreview] = useState<import("@/lib/types").SharePreview | null>(null);
+  const [failureDetail, setFailureDetail] = useState("");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const mountedRef = useRef(true);
+  const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Indirection so the 202 branch can schedule the next poll without the
+  // callback below referencing its own `const` binding (a direct
+  // self-reference there trips the react-hooks self-recursion lint rule).
+  const loadPreviewRef = useRef<() => void>(() => {});
+
+  const loadPreview = useCallback(async () => {
+    try {
+      const result = await fetchSharePreview(share.lesson_id, share.friendship_id);
+      if (!mountedRef.current) return;
+      if (result.status === 200) {
+        setPreview(result.data);
+        setDraft(result.data.redacted_text);
+        setPhase("ready");
+      } else if (result.status === 202) {
+        pollRef.current = setTimeout(() => loadPreviewRef.current(), 2000);
+      } else {
+        setFailureDetail(result.detail);
+        setPhase("failed");
+      }
+    } catch (err) {
+      if (!mountedRef.current) return;
+      setFailureDetail(getErrorMessage(err));
+      setPhase("failed");
+    }
+  }, [share.lesson_id, share.friendship_id]);
+
+  useEffect(() => {
+    loadPreviewRef.current = () => void loadPreview();
+  }, [loadPreview]);
+
+  // Mount-only kickoff — the modal always fully remounts per share (the
+  // parent toggles it through `null` between reviews via onClose), so the
+  // `useState` initial values above already cover the "start loading, no
+  // preview yet" state; this effect only needs to start the fetch chain.
+  useEffect(() => {
+    mountedRef.current = true;
+    (async () => {
+      await loadPreview();
+    })();
+    return () => {
+      mountedRef.current = false;
+      if (pollRef.current) clearTimeout(pollRef.current);
+    };
+  }, [loadPreview]);
+
+  // Esc-to-close — never trapped, matches ConnectAnthropicModal.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const busy = approveMutation.isPending || rejectMutation.isPending;
+
+  const handleApprove = async () => {
+    try {
+      const result = await approveMutation.mutateAsync({ id: share.id, finalText: undefined });
+      if (result.status === 200) {
+        emitToast("Shared with your neighbor.", "success");
+        onClose();
+      } else if (result.status === 202) {
+        // An edit elsewhere (or a re-run) triggered a re-scrub — go back to
+        // polling so the human re-previews before it can publish.
+        setEditing(false);
+        setPhase("loading");
+        void loadPreview();
+      } else {
+        setFailureDetail(result.detail);
+        setPhase("failed");
+      }
+    } catch {
+      // Unexpected failures surface via the default global error toast.
+    }
+  };
+
+  const handleEditSubmit = async () => {
+    try {
+      const result = await approveMutation.mutateAsync({ id: share.id, finalText: draft });
+      if (result.status === 200) {
+        emitToast("Shared with your neighbor.", "success");
+        onClose();
+      } else if (result.status === 202) {
+        setEditing(false);
+        setPhase("loading");
+        void loadPreview();
+      } else {
+        setFailureDetail(result.detail);
+        setPhase("failed");
+      }
+    } catch {
+      // Unexpected failures surface via the default global error toast.
+    }
+  };
+
+  const handleReject = async () => {
+    try {
+      await rejectMutation.mutateAsync(share.id);
+      emitToast("Declined — it won't be sent.", "success");
+      onClose();
+    } catch {
+      // Unexpected failures surface via the default global error toast.
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-end justify-center p-0 sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="share-preview-title"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex max-h-[92vh] w-full flex-col overflow-y-auto rounded-t-2xl border border-border bg-card shadow-panel animate-reveal sm:max-h-[85vh] sm:max-w-lg sm:rounded-2xl"
+      >
+        <div className="flex justify-center pt-2.5 pb-1 sm:hidden">
+          <span className="h-1 w-9 rounded-full bg-border" aria-hidden="true" />
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-3 top-3 z-10 flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full bg-surface/80 text-ink-muted backdrop-blur-md transition hover:bg-surface-hover hover:text-ink sm:right-4 sm:top-4"
+        >
+          <span aria-hidden="true">✕</span>
+        </button>
+
+        <div className="px-6 pb-2 pt-4 sm:p-8 sm:pb-2">
+          <div className="pr-12 sm:pr-14">
+            <h2 id="share-preview-title" className="font-headline text-xl font-bold text-ink sm:text-2xl">
+              Review before it goes out
+            </h2>
+            <p className="mt-1 text-sm text-ink-muted">{share.lesson_preview}</p>
+          </div>
+        </div>
+
+        <div className="flex-1 space-y-5 px-6 pb-6 sm:p-8 sm:pt-4">
+          {phase === "loading" && (
+            <div className="flex flex-col items-center gap-3 py-10 text-center">
+              <span
+                className="h-8 w-8 animate-spin rounded-full border-2 border-accent/30 border-t-accent"
+                aria-hidden="true"
+              />
+              <p className="text-sm text-ink-muted">Preparing your preview safely&hellip;</p>
+            </div>
+          )}
+
+          {phase === "failed" && (
+            <p role="alert" className="rounded-xl border border-rose-border bg-rose-bg px-4 py-3 text-sm text-rose-text">
+              {failureDetail}
+            </p>
+          )}
+
+          {phase === "ready" && preview && !editing && (
+            <>
+              <blockquote className="rounded-xl border border-border bg-surface/60 px-4 py-3 text-sm italic leading-relaxed text-ink">
+                &ldquo;{preview.redacted_text}&rdquo;
+              </blockquote>
+              <p className="text-xs text-ink-muted">
+                This goes to <span className="font-medium text-ink">{preview.audience}</span>.
+              </p>
+              <p className="rounded-xl border border-amber-border/50 bg-amber-bg/40 px-4 py-2.5 text-xs leading-relaxed text-amber-text">
+                {preview.residuals_banner}
+              </p>
+            </>
+          )}
+
+          {phase === "ready" && preview && editing && (
+            <div className="space-y-2">
+              <label
+                htmlFor="share-edit-text"
+                className="block font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint"
+              >
+                Edit before sending
+              </label>
+              <textarea
+                id="share-edit-text"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                rows={5}
+                className="w-full resize-y rounded-xl border border-border bg-surface/60 px-4 py-3 text-sm text-ink outline-none transition focus:border-accent/50"
+              />
+              <p className="text-xs text-ink-faint">
+                Editing re-checks your text for anything we hide before it can be approved.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <div className="sticky bottom-0 border-t border-border bg-surface/95 px-6 py-4 backdrop-blur-md sm:px-8">
+          {phase === "failed" && (
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                className="min-h-[44px] rounded-full border border-border px-5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover"
+              >
+                Close
+              </button>
+            </div>
+          )}
+
+          {phase === "ready" && !editing && (
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-between sm:gap-3">
+              <button
+                type="button"
+                onClick={() => void handleReject()}
+                disabled={busy}
+                className="min-h-[44px] rounded-full border border-rose-border px-5 text-sm font-medium text-rose-text transition hover:bg-rose-bg disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {rejectMutation.isPending ? "Declining…" : "Reject"}
+              </button>
+              <div className="flex flex-col-reverse gap-2 sm:flex-row sm:gap-3">
+                <button
+                  type="button"
+                  onClick={() => setEditing(true)}
+                  disabled={busy}
+                  className="min-h-[44px] rounded-full border border-border px-5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Edit
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleApprove()}
+                  disabled={busy}
+                  className="glow-purple min-h-[44px] rounded-full bg-accent px-5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {approveMutation.isPending ? "Approving…" : "Approve"}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {phase === "ready" && editing && (
+            <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end sm:gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditing(false);
+                  setDraft(preview?.redacted_text ?? "");
+                }}
+                disabled={approveMutation.isPending}
+                className="min-h-[44px] rounded-full border border-border px-5 text-sm font-medium text-ink-muted transition hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleEditSubmit()}
+                disabled={approveMutation.isPending || !draft.trim()}
+                className="glow-purple min-h-[44px] rounded-full bg-accent px-5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {approveMutation.isPending ? "Checking…" : "Save & re-check"}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }

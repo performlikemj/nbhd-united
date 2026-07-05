@@ -117,6 +117,51 @@ class LessonViewSet(viewsets.ModelViewSet):
         lesson.save(update_fields=["status", "approved_at"])
         return Response(LessonSerializer(lesson).data)
 
+    # ── Neighborhood sharing (delegates to apps/friends — never touches the
+    #    SharedLesson / LessonShareGrant managers here; the chokepoint test
+    #    forbids it, so all cross-tenant model access stays in friends.access) ──
+
+    @action(detail=True, methods=["post"], url_path="share")
+    def share(self, request, pk=None):
+        """Human-initiated share of this lesson to a neighbor. Creates a
+        PendingShare + enqueues the fail-closed scrub; the grant is created only
+        at approve-after-preview (POST /api/v1/friends/shares/<id>/approve)."""
+        tenant = getattr(request.user, "tenant", None)
+        if tenant is None or not tenant.friends_enabled:
+            return Response(
+                {"detail": "The Neighborhood is not enabled for this account."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        friendship_id = request.data.get("friendship_id")
+        if not friendship_id:
+            return Response({"detail": "friendship_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        from apps.friends import services
+
+        lesson = self.get_object()
+        pending = services.share_lesson(tenant, request.user, lesson, friendship_id)
+        return Response(
+            {"pending_share_id": str(pending.id), "status": pending.status},
+            status=status.HTTP_201_CREATED,
+        )
+
+    @action(detail=True, methods=["delete"], url_path=r"share/(?P<grant_id>[^/]+)")
+    def revoke_share(self, request, pk=None, grant_id=None):
+        """Revoke one share of this lesson → the spark leaves the neighbor's
+        wormhole + absorb pull instantly (read-through, zero residue)."""
+        tenant = getattr(request.user, "tenant", None)
+        if tenant is None or not tenant.friends_enabled:
+            return Response(
+                {"detail": "The Neighborhood is not enabled for this account."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        from apps.friends import services
+
+        lesson = self.get_object()
+        services.revoke_share(tenant, lesson, grant_id)
+        return Response({"revoked": True})
+
     @action(detail=False, methods=["post"], url_path="refresh")
     def refresh(self, request):
         if not hasattr(request.user, "tenant"):

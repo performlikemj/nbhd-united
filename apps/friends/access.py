@@ -24,11 +24,12 @@ a party (IDOR defeated by construction, design §4.5).
 
 from __future__ import annotations
 
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import PermissionDenied, ValidationError
+from django.utils import timezone
 
 from apps.tenants.models import Tenant
 
-from .models import Friendship, compute_pair_key
+from .models import Friendship, LessonShareGrant, SharedLesson, compute_pair_key
 
 
 def _tenant_id(value):
@@ -94,9 +95,23 @@ def shared_star_qs(viewer_tenant, owner_tenant):
     Reads touch ONLY ``SharedLesson`` (ready) — never ``Lesson``,
     ``LessonConnection``, ``StarJournalEntry``, ``Document``, or ``journal``.
 
-    Lands in PR2 with ``SharedLesson`` + ``LessonShareGrant``.
+    PR2: the friendship-grant path. The circle path lands in PR7.
     """
-    raise NotImplementedError("shared_star_qs lands in PR2 with SharedLesson")
+    viewer_id, owner_id = _tenant_id(viewer_tenant), _tenant_id(owner_tenant)
+    if viewer_id == owner_id:
+        return SharedLesson.objects.none()
+    edge = Friendship.objects.filter(
+        pair_key=compute_pair_key(viewer_id, owner_id),
+        status=Friendship.Status.ACCEPTED,
+    ).first()
+    if edge is None:
+        return SharedLesson.objects.none()
+    return SharedLesson.objects.filter(
+        owner_tenant_id=owner_id,
+        scrub_status=SharedLesson.ScrubStatus.READY,
+        grants__friendship=edge,
+        grants__status=LessonShareGrant.Status.ACTIVE,
+    ).distinct()
 
 
 def assert_can_write(viewer_tenant, target_tenant, *, allow_hibernated: bool = True) -> Tenant:
@@ -120,3 +135,105 @@ def assert_can_write(viewer_tenant, target_tenant, *, allow_hibernated: bool = T
     if not allow_hibernated and target.hibernated_at is not None:
         raise PermissionDenied("Target tenant is hibernated and waking is not allowed here")
     return target
+
+
+# ── SharedLesson + LessonShareGrant data layer ────────────────────────────────
+#
+# The chokepoint (test_access_chokepoint) forbids ``SharedLesson`` /
+# ``LessonShareGrant`` ``.objects`` in every friends module EXCEPT this one, so
+# the share pipeline's reads AND writes to those two models all funnel here.
+# services.py / scrub.py / views.py call these; they never touch the managers
+# directly. (``Lesson`` is still never touched here — snapshots reach the owner's
+# lesson via the ``source_lesson`` FK on a SharedLesson instance.)
+
+
+def get_shared_lesson(shared_lesson_id) -> SharedLesson | None:
+    try:
+        return SharedLesson.objects.select_related("source_lesson", "owner_tenant").get(id=shared_lesson_id)
+    except (SharedLesson.DoesNotExist, ValueError, ValidationError):
+        return None
+
+
+def get_shared_lesson_for_lesson(lesson) -> SharedLesson | None:
+    return SharedLesson.objects.filter(source_lesson=lesson).select_related("source_lesson").first()
+
+
+def get_shared_lesson_by_lesson_id(lesson_id, owner_tenant) -> SharedLesson | None:
+    """The owner's SharedLesson for a lesson id — owner-scoped, so a foreign
+    lesson_id resolves to None (never a cross-tenant read)."""
+    try:
+        return (
+            SharedLesson.objects.filter(source_lesson_id=lesson_id, owner_tenant_id=_tenant_id(owner_tenant))
+            .select_related("source_lesson")
+            .first()
+        )
+    except (ValueError, ValidationError):
+        return None
+
+
+def ensure_shared_lesson(lesson, owner_tenant) -> SharedLesson:
+    """Get-or-create the frozen snapshot for a lesson (OneToOne, pending scrub)."""
+    shared_lesson, _ = SharedLesson.objects.get_or_create(source_lesson=lesson, defaults={"owner_tenant": owner_tenant})
+    return shared_lesson
+
+
+def mark_scrub_pending(shared_lesson) -> None:
+    SharedLesson.objects.filter(id=shared_lesson.id).update(
+        scrub_status=SharedLesson.ScrubStatus.PENDING, scrub_error=""
+    )
+
+
+def save_scrub_ready(shared_lesson, **fields) -> None:
+    """Persist a successful, verified scrub → status=ready."""
+    for key, value in fields.items():
+        setattr(shared_lesson, key, value)
+    shared_lesson.scrub_status = SharedLesson.ScrubStatus.READY
+    shared_lesson.scrub_error = ""
+    shared_lesson.scrubbed_at = timezone.now()
+    shared_lesson.save()
+
+
+def save_scrub_failed(shared_lesson, error: str) -> None:
+    """Fail-closed: never publishable, records why."""
+    shared_lesson.scrub_status = SharedLesson.ScrubStatus.FAILED
+    shared_lesson.scrub_error = (error or "")[:2000]
+    shared_lesson.scrubbed_at = None
+    shared_lesson.save(update_fields=["scrub_status", "scrub_error", "scrubbed_at", "updated_at"])
+
+
+def create_grant(shared_lesson, friendship, granted_by=None) -> LessonShareGrant:
+    """Idempotent ACTIVE grant for (shared_lesson, friendship) — the freeze+publish
+    step. Re-activates a previously-revoked grant rather than duplicating."""
+    grant, created = LessonShareGrant.objects.get_or_create(
+        shared_lesson=shared_lesson,
+        friendship=friendship,
+        defaults={"granted_by": granted_by, "status": LessonShareGrant.Status.ACTIVE},
+    )
+    if not created and grant.status != LessonShareGrant.Status.ACTIVE:
+        grant.status = LessonShareGrant.Status.ACTIVE
+        grant.revoked_at = None
+        grant.granted_by = granted_by
+        grant.save(update_fields=["status", "revoked_at", "granted_by"])
+    return grant
+
+
+def get_grant(grant_id) -> LessonShareGrant | None:
+    try:
+        return LessonShareGrant.objects.select_related("shared_lesson", "shared_lesson__owner_tenant").get(id=grant_id)
+    except (LessonShareGrant.DoesNotExist, ValueError, ValidationError):
+        return None
+
+
+def revoke_grant(grant: LessonShareGrant) -> None:
+    """Revoke one grant → access dies instantly (read-through). Deletes the
+    SharedLesson snapshot when it has no remaining active grants (zero residue)."""
+    if grant.status == LessonShareGrant.Status.ACTIVE:
+        grant.status = LessonShareGrant.Status.REVOKED
+        grant.revoked_at = timezone.now()
+        grant.save(update_fields=["status", "revoked_at"])
+    delete_shared_lesson_if_orphaned(grant.shared_lesson)
+
+
+def delete_shared_lesson_if_orphaned(shared_lesson) -> None:
+    if not LessonShareGrant.objects.filter(shared_lesson=shared_lesson, status=LessonShareGrant.Status.ACTIVE).exists():
+        SharedLesson.objects.filter(id=shared_lesson.id).delete()

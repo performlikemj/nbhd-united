@@ -169,6 +169,12 @@ import {
   fetchNeighborProfile,
   updateNeighborProfile,
   createFriendInvite,
+  fetchLessons,
+  fetchPendingShares,
+  shareLesson,
+  approveShare,
+  rejectShare,
+  revokeShare,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -2065,5 +2071,80 @@ export function useUpdateNeighborProfileMutation() {
 export function useCreateInviteMutation() {
   return useMutation({
     mutationFn: (data: { max_uses?: number; expires_in_days?: number } = {}) => createFriendInvite(data),
+  });
+}
+
+// ── Neighborhood shares (PR2) ────────────────────────────────────────────────
+// propose → scrub → preview → approve → publish. See lib/api.ts for the
+// discriminated 200/202/409 result shapes the preview + approve endpoints
+// return — fetchSharePreview is intentionally NOT wrapped in a query hook
+// here; the preview modal polls it directly and branches on `.status` itself.
+
+export function usePendingSharesQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["pending-shares"],
+    queryFn: fetchPendingShares,
+    staleTime: 30_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+// Approved lessons available to share — powers the lesson picker on the
+// "Share a lesson" card. Gated the same as the rest of Neighborhood.
+export function useApprovedLessonsQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["lessons-approved"],
+    queryFn: () => fetchLessons("approved"),
+    staleTime: 60_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+export function useShareLessonMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lessonId, friendshipId }: { lessonId: number; friendshipId: string }) =>
+      shareLesson(lessonId, friendshipId),
+    // 403 (pillar-blocked) / 400 (missing friendship) surface via the default
+    // global error toast (see app/providers.tsx) — no meta.skipErrorToast,
+    // unlike the wave form, since this action has no inline error slot.
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["pending-shares"] });
+    },
+  });
+}
+
+export function useApproveShareMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, finalText }: { id: string; finalText?: string }) => approveShare(id, finalText),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["pending-shares"] });
+      void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
+  });
+}
+
+export function useRejectShareMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => rejectShare(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["pending-shares"] });
+    },
+  });
+}
+
+export function useRevokeShareMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ lessonId, grantId }: { lessonId: number; grantId: string }) =>
+      revokeShare(lessonId, grantId),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["pending-shares"] });
+      void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
   });
 }
