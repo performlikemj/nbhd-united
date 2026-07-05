@@ -54,6 +54,7 @@ INSTALLED_APPS = [
     "apps.core",
     "apps.byo_models",
     "apps.insights",
+    "apps.friends",
     "apps.common",
     # apps.pii is a library module (no models); registered so its management
     # commands (denylist_degenerate_pii) are discoverable.
