@@ -30,7 +30,17 @@ from django.utils import timezone
 
 from apps.tenants.models import Tenant
 
-from .models import Friendship, LessonShareGrant, NeighborProfile, SharedLesson, WormholeVisit, compute_pair_key
+from .models import (
+    FriendMessage,
+    Friendship,
+    FriendThread,
+    FriendThreadMembership,
+    LessonShareGrant,
+    NeighborProfile,
+    SharedLesson,
+    WormholeVisit,
+    compute_pair_key,
+)
 
 
 def _tenant_id(value):
@@ -435,3 +445,134 @@ def inbound_shared_grants(viewer_tenant, since=None):
     if since is not None:
         qs = qs.filter(created_at__gt=since)
     return qs.order_by("-created_at")
+
+
+# ── Friend chat data layer (FriendMessage confined here; §2.7/§6) ────────────
+
+
+def assert_participant(viewer_tenant, thread_id) -> FriendThread:
+    """Return the FriendThread the viewer is an ACTIVE member of, or raise
+    DRF ``NotFound`` (404 — no-reveal, like the PR1 wave IDOR path). A swapped
+    ``thread_id`` resolves a real row but fails the membership check and 404s
+    without confirming the thread exists. Reads gate on MEMBERSHIP (not edge
+    status), so a blocked/revoked neighbor can still read the history — only
+    SENDS freeze (see services.send_friend_message)."""
+    from rest_framework.exceptions import NotFound
+
+    viewer_id = _tenant_id(viewer_tenant)
+    try:
+        thread = FriendThread.objects.get(id=thread_id)
+    except (FriendThread.DoesNotExist, ValueError, ValidationError) as exc:
+        raise NotFound("No such thread.") from exc
+    is_member = FriendThreadMembership.objects.filter(thread=thread, tenant_id=viewer_id, left_at__isnull=True).exists()
+    if not is_member:
+        raise NotFound("No such thread.")
+    return thread
+
+
+def thread_messages_page(thread, after_seq: int, limit: int) -> list[FriendMessage]:
+    """Ascending page of live messages with ``seq > after_seq`` (the caller has
+    already run :func:`assert_participant`)."""
+    return list(
+        FriendMessage.objects.filter(thread=thread, deleted_at__isnull=True, seq__gt=after_seq)
+        .select_related("sender_tenant")
+        .order_by("seq")[:limit]
+    )
+
+
+def create_friend_message(thread, sender_tenant, sender_user, client_msg_id, text) -> tuple[FriendMessage, bool]:
+    """Idempotent insert on ``(sender_tenant, client_msg_id)`` — an offline-outbox
+    retry returns the existing row. Returns ``(message, created)``."""
+    message, created = FriendMessage.objects.get_or_create(
+        sender_tenant=sender_tenant,
+        client_msg_id=client_msg_id,
+        defaults={"thread": thread, "sender_user": sender_user, "text": text},
+    )
+    return message, created
+
+
+def claim_message_notified(message) -> bool:
+    """Atomic one-push claim: only the first delivery to reach the row returns
+    True (``notified_at__isnull`` makes a re-drain a no-op)."""
+    return (
+        FriendMessage.objects.filter(seq=message.seq, notified_at__isnull=True).update(notified_at=timezone.now()) == 1
+    )
+
+
+def unread_count(thread, last_read_seq: int, viewer_tenant_id) -> int:
+    return (
+        FriendMessage.objects.filter(thread=thread, deleted_at__isnull=True, seq__gt=last_read_seq)
+        .exclude(sender_tenant_id=viewer_tenant_id)
+        .count()
+    )
+
+
+def latest_message(thread) -> FriendMessage | None:
+    return FriendMessage.objects.filter(thread=thread, deleted_at__isnull=True).order_by("-seq").first()
+
+
+def _thread_other_party_id(thread, viewer_id):
+    edge = thread.friendship
+    if edge is None:
+        return None
+    return edge.addressee_id if edge.requester_id == viewer_id else edge.requester_id
+
+
+def chat_absorb_pending_counts(viewer_tenant) -> list[dict]:
+    """Read-only (no cursor advance) — [{thread_id, from_handle, count}] for
+    absorb-enabled threads with un-absorbed messages from the OTHER party. Feeds
+    the envelope POINTER (never message text; USER.md is on the share)."""
+    viewer_id = _tenant_id(viewer_tenant)
+    out: list[dict] = []
+    memberships = FriendThreadMembership.objects.filter(
+        tenant_id=viewer_id, left_at__isnull=True, agent_absorb_enabled=True
+    ).select_related("thread", "thread__friendship")
+    for membership in memberships:
+        count = (
+            FriendMessage.objects.filter(
+                thread=membership.thread, deleted_at__isnull=True, seq__gt=membership.last_absorbed_seq
+            )
+            .exclude(sender_tenant_id=viewer_id)
+            .count()
+        )
+        if count:
+            out.append(
+                {
+                    "thread_id": str(membership.thread_id),
+                    "from_handle": _owner_handle(_thread_other_party_id(membership.thread, viewer_id)),
+                    "count": count,
+                }
+            )
+    return out
+
+
+def absorb_pending_chat(viewer_tenant) -> list[dict]:
+    """Collect un-absorbed messages per absorb-enabled thread from the OTHER
+    party, ADVANCE each membership's ``last_absorbed_seq`` (idempotent cursor),
+    and return raw messages for the caller to redact-fresh + log. FriendMessage
+    access is confined here."""
+    viewer_id = _tenant_id(viewer_tenant)
+    result: list[dict] = []
+    memberships = FriendThreadMembership.objects.filter(
+        tenant_id=viewer_id, left_at__isnull=True, agent_absorb_enabled=True
+    ).select_related("thread", "thread__friendship")
+    for membership in memberships:
+        messages = list(
+            FriendMessage.objects.filter(
+                thread=membership.thread, deleted_at__isnull=True, seq__gt=membership.last_absorbed_seq
+            )
+            .exclude(sender_tenant_id=viewer_id)
+            .select_related("sender_tenant")
+            .order_by("seq")[:20]
+        )
+        if not messages:
+            continue
+        FriendThreadMembership.objects.filter(id=membership.id).update(last_absorbed_seq=messages[-1].seq)
+        result.append(
+            {
+                "thread_id": str(membership.thread_id),
+                "from_id": _thread_other_party_id(membership.thread, viewer_id),
+                "messages": messages,
+            }
+        )
+    return result

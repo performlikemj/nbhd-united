@@ -269,3 +269,75 @@ class AbsorbedPurgeView(FriendsView):
         tenant = self.get_tenant(request)
         item = services.purge_absorbed(tenant, absorbed_item_id)
         return Response({"id": str(item.id), "purged": True})
+
+
+# ── Friend chat (1:1) — poll-is-truth, thread addressed by thread_id only ────
+
+
+class ThreadsView(FriendsView):
+    """GET /api/v1/friends/threads/ — my threads (unread + last message).
+    POST /api/v1/friends/threads/ {friendship_id} — open (get-or-create) a thread."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        return Response(services.list_threads(tenant))
+
+    def post(self, request):
+        tenant = self.get_tenant(request)
+        friendship_id = request.data.get("friendship_id")
+        if not friendship_id:
+            raise ValidationError("friendship_id is required.")
+        thread = services.open_thread(tenant, friendship_id)
+        return Response(
+            {
+                "thread_id": str(thread.id),
+                "friendship_id": str(thread.friendship_id) if thread.friendship_id else None,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ThreadMessagesView(FriendsView):
+    """GET /api/v1/friends/threads/<id>/messages/?since=<cursor>&limit= — keyset feed.
+    POST — send (idempotent client_msg_id)."""
+
+    def get(self, request, thread_id):
+        tenant = self.get_tenant(request)
+        return Response(
+            services.get_thread_messages(
+                tenant, thread_id, request.query_params.get("since"), request.query_params.get("limit")
+            )
+        )
+
+    def post(self, request, thread_id):
+        tenant = self.get_tenant(request)
+        message, created = services.send_friend_message(
+            tenant, request.user, thread_id, request.data.get("client_msg_id", ""), request.data.get("text", "")
+        )
+        return Response(
+            {"public_id": str(message.public_id), "seq": message.seq, "created": created},
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class ThreadReadView(FriendsView):
+    """POST /api/v1/friends/threads/<id>/read/ — advance my last_read_seq."""
+
+    def post(self, request, thread_id):
+        tenant = self.get_tenant(request)
+        return Response(services.mark_thread_read(tenant, thread_id))
+
+
+class ThreadMembershipView(FriendsView):
+    """PATCH /api/v1/friends/threads/<id>/membership/ — toggle muted / agent_absorb_enabled."""
+
+    def patch(self, request, thread_id):
+        tenant = self.get_tenant(request)
+        return Response(
+            services.patch_thread_membership(
+                tenant,
+                thread_id,
+                muted=request.data.get("muted"),
+                agent_absorb_enabled=request.data.get("agent_absorb_enabled"),
+            )
+        )

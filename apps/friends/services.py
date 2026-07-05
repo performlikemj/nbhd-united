@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import secrets
 from collections import Counter
-from datetime import timedelta
+from datetime import UTC, timedelta
 
 from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -32,6 +32,8 @@ from .models import (
     AbsorbedItem,
     FriendInvite,
     Friendship,
+    FriendThread,
+    FriendThreadMembership,
     NeighborProfile,
     PendingShare,
     SharedLesson,
@@ -817,8 +819,29 @@ def neighborhood_context(tenant, since=None) -> dict:
     return {
         "neighbors": _accepted_neighbor_handles(tenant),
         "sparks": sparks,
+        "chat": _absorb_chat(tenant),
         "cursor": latest.isoformat() if latest else None,
     }
+
+
+def _absorb_chat(tenant) -> list[dict]:
+    """The chat absorb read (design §4.6/§6): raw friend-chat text redacted FRESH
+    in the RECIPIENT's session before the agent's LLM sees it (never persisted),
+    the per-thread cursor advanced (idempotent), and a NEUTRAL AbsorbedItem
+    logged per message (label = "Chat with @handle" — a pointer, never the
+    message text). Skipped for threads where agent_absorb_enabled is off."""
+    from apps.pii.redactor import redact_user_message
+
+    highlights: list[dict] = []
+    for entry in access.absorb_pending_chat(tenant):
+        from_handle = _handle_for(entry["from_id"])
+        label = f"Chat with @{from_handle}" if from_handle else "Chat with a neighbor"
+        texts = []
+        for message in entry["messages"]:
+            texts.append(redact_user_message(message.text, tenant))  # fresh redaction, ephemeral
+            _log_absorbed(tenant, AbsorbedItem.SourceKind.FRIEND_MESSAGE, message.public_id, entry["from_id"], label)
+        highlights.append({"thread_id": entry["thread_id"], "from_handle": from_handle, "messages": texts})
+    return highlights
 
 
 def _log_absorbed(tenant, source_kind, source_id, from_tenant_id, label) -> None:
@@ -881,3 +904,119 @@ def _accepted_neighbor_handles(tenant) -> list[str]:
     other_ids = [(r if a == tenant.id else a) for (r, a) in edges]
     handles = NeighborProfile.objects.filter(tenant_id__in=other_ids).values_list("handle", flat=True)
     return sorted(h for h in handles if h)
+
+
+# ── PR5: friend chat 1:1 (control-plane store; FriendMessage access via access.py) ──
+
+
+def open_thread(tenant, friendship_id) -> FriendThread:
+    """Open (get-or-create) the direct thread for an accepted friendship the
+    caller is a party to. Idempotent (uq_direct_thread)."""
+    edge = access.assert_neighbors(tenant, friendship_id)  # accepted party, else PermissionDenied
+    return _get_or_create_direct_thread(tenant, edge)
+
+
+def _get_or_create_direct_thread(tenant, edge) -> FriendThread:
+    thread, _created = FriendThread.objects.get_or_create(
+        friendship=edge, defaults={"kind": FriendThread.Kind.DIRECT, "created_by": tenant}
+    )
+    for party in (edge.requester, edge.addressee):
+        FriendThreadMembership.objects.get_or_create(thread=thread, tenant=party, defaults={"user": party.user})
+    return thread
+
+
+def list_threads(tenant) -> list[dict]:
+    memberships = FriendThreadMembership.objects.filter(tenant=tenant, left_at__isnull=True).select_related(
+        "thread", "thread__friendship"
+    )
+    out: list[dict] = []
+    for membership in memberships:
+        thread = membership.thread
+        other_id = access._thread_other_party_id(thread, tenant.id)
+        profile = NeighborProfile.objects.filter(tenant_id=other_id).first() if other_id else None
+        last = access.latest_message(thread)
+        out.append(
+            {
+                "thread_id": str(thread.id),
+                "friendship_id": str(thread.friendship_id) if thread.friendship_id else None,
+                "display_name": profile.display_name if profile else "Neighbor",
+                "handle": profile.handle if profile else None,
+                "avatar_hue": profile.avatar_hue if profile else 210,
+                "unread": access.unread_count(thread, membership.last_read_seq, tenant.id),
+                "last_message": (last.text[:80] if last else ""),
+                "last_message_at": thread.last_message_at,
+                "muted": membership.muted,
+                "agent_absorb_enabled": membership.agent_absorb_enabled,
+            }
+        )
+    from datetime import datetime
+
+    epoch = datetime.min.replace(tzinfo=UTC)
+    out.sort(key=lambda t: t["last_message_at"] or epoch, reverse=True)
+    return out
+
+
+def send_friend_message(tenant, user, thread_id, client_msg_id, text) -> tuple:
+    """Send a message into a thread the caller is a member of. Idempotent on
+    (sender_tenant, client_msg_id). A blocked/revoked/unfriended edge freezes
+    SENDS (history stays readable via assert_participant, which gates on
+    membership not edge status). Chat is a CONTROL-PLANE store, so a SUSPENDED
+    target is naturally store-only + notify (no container to touch) — we do NOT
+    reject it (design §10); assert_can_write's raise-on-SUSPENDED guards
+    container writes, which chat never does, so we gate on are_neighbors."""
+    thread = access.assert_participant(tenant, thread_id)  # PermissionDenied if not a member
+    text = (text or "").strip()
+    if not text:
+        raise ValidationError("Message text is required.")
+    if not (client_msg_id or "").strip():
+        raise ValidationError("client_msg_id is required.")
+
+    other_id = access._thread_other_party_id(thread, tenant.id)
+    if other_id is not None and not access.are_neighbors(tenant, other_id):
+        raise PermissionDenied("You can't message this neighbor right now.")
+
+    message, created = access.create_friend_message(thread, tenant, user, client_msg_id.strip(), text)
+    if created:
+        FriendThread.objects.filter(id=thread.id).update(last_message_at=timezone.now())
+        _notify_friend_message(message)
+    return message, created
+
+
+def get_thread_messages(tenant, thread_id, cursor, limit) -> dict:
+    from . import feed
+
+    thread = access.assert_participant(tenant, thread_id)
+    items, next_cursor = feed.build_thread_page(tenant, thread, cursor=cursor, limit=limit)
+    return {"messages": items, "next_cursor": next_cursor}
+
+
+def mark_thread_read(tenant, thread_id) -> dict:
+    thread = access.assert_participant(tenant, thread_id)
+    last = access.latest_message(thread)
+    last_seq = last.seq if last else 0
+    if last_seq:
+        FriendThreadMembership.objects.filter(thread=thread, tenant=tenant).update(last_read_seq=last_seq)
+    return {"thread_id": str(thread.id), "last_read_seq": last_seq}
+
+
+def patch_thread_membership(tenant, thread_id, *, muted=None, agent_absorb_enabled=None) -> dict:
+    thread = access.assert_participant(tenant, thread_id)
+    fields = {}
+    if muted is not None:
+        fields["muted"] = bool(muted)
+    if agent_absorb_enabled is not None:
+        fields["agent_absorb_enabled"] = bool(agent_absorb_enabled)
+    if fields:
+        FriendThreadMembership.objects.filter(thread=thread, tenant=tenant).update(**fields)
+    membership = FriendThreadMembership.objects.get(thread=thread, tenant=tenant)
+    return {
+        "thread_id": str(thread.id),
+        "muted": membership.muted,
+        "agent_absorb_enabled": membership.agent_absorb_enabled,
+    }
+
+
+def _notify_friend_message(message) -> None:
+    from .notifications import notify_friend_message
+
+    notify_friend_message(message)

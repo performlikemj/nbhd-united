@@ -1,11 +1,12 @@
 "use client";
 
+import clsx from "clsx";
 import { CSSProperties, FormEvent, useCallback, useEffect, useRef, useState } from "react";
 
 import { ConfirmDialog } from "@/components/journal/confirm-dialog";
 import { IconMore } from "@/components/icons/constellation";
 import { SectionCard } from "@/components/section-card";
-import { SectionCardSkeleton } from "@/components/skeleton";
+import { Skeleton, SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import { emitToast } from "@/components/toast";
 import { fetchSharePreview } from "@/lib/api";
@@ -17,17 +18,38 @@ import {
   useApproveShareMutation,
   useBlockWaveMutation,
   useDeclineWaveMutation,
+  useMarkThreadReadMutation,
   useNeighborhoodQuery,
   useNeighborProfileQuery,
+  useOpenThreadMutation,
+  usePatchMembershipMutation,
   usePendingSharesQuery,
   usePurgeAbsorbedMutation,
   useRejectShareMutation,
+  useSendMessageMutation,
   useSendWaveMutation,
   useShareLessonMutation,
+  useThreadMessagesQuery,
+  useThreadsQuery,
   useUnfriendMutation,
   useUpdateNeighborProfileMutation,
 } from "@/lib/queries";
-import type { Neighbor, NeighborProfile, PendingShare } from "@/lib/types";
+import type { ChatThread, Neighbor, NeighborProfile, PendingShare } from "@/lib/types";
+
+// True while the tab is in the foreground — gates the ~4s message poll so a
+// backgrounded tab (or the panel being closed, which unmounts ThreadView
+// entirely) never keeps hitting a possibly-hibernated tenant container.
+function useDocumentVisible(): boolean {
+  const [visible, setVisible] = useState(
+    () => typeof document === "undefined" || document.visibilityState === "visible",
+  );
+  useEffect(() => {
+    const handler = () => setVisible(document.visibilityState === "visible");
+    document.addEventListener("visibilitychange", handler);
+    return () => document.removeEventListener("visibilitychange", handler);
+  }, []);
+  return visible;
+}
 
 // The one place a raw dynamic color is allowed — the avatar hue is a
 // user-chosen 0-359 value, not a design-system token.
@@ -38,13 +60,16 @@ function avatarStyle(hue: number): CSSProperties {
 export default function FriendsPage() {
   const { data, isLoading } = useNeighborhoodQuery();
   const { data: pendingShares = [] } = usePendingSharesQuery();
+  const { data: threads = [], isLoading: threadsLoading } = useThreadsQuery();
   const acceptMutation = useAcceptWaveMutation();
   const declineMutation = useDeclineWaveMutation();
   const blockMutation = useBlockWaveMutation();
   const unfriendMutation = useUnfriendMutation();
+  const openThreadMutation = useOpenThreadMutation();
 
   const [confirmTarget, setConfirmTarget] = useState<Neighbor | null>(null);
   const [reviewingShare, setReviewingShare] = useState<PendingShare | null>(null);
+  const [openThread, setOpenThread] = useState<ChatThread | null>(null);
 
   const neighbors = data?.neighbors ?? [];
   const pendingIncoming = data?.pending_incoming ?? [];
@@ -56,6 +81,34 @@ export default function FriendsPage() {
   const confirmUnfriend = () => {
     if (confirmTarget) unfriendMutation.mutate(confirmTarget.friendship_id);
     setConfirmTarget(null);
+  };
+
+  // Reuse the thread's own row when one already exists for this neighbor
+  // (accurate muted/agent_absorb_enabled/unread), otherwise open a fresh one
+  // seeded from the neighbor's own profile fields.
+  const handleMessageNeighbor = async (neighbor: Neighbor) => {
+    const existing = threads.find((t) => t.friendship_id === neighbor.friendship_id);
+    if (existing) {
+      setOpenThread(existing);
+      return;
+    }
+    try {
+      const result = await openThreadMutation.mutateAsync({ friendshipId: neighbor.friendship_id });
+      setOpenThread({
+        thread_id: result.thread_id,
+        friendship_id: neighbor.friendship_id,
+        display_name: neighbor.display_name,
+        handle: neighbor.handle,
+        avatar_hue: neighbor.avatar_hue,
+        unread: 0,
+        last_message: "",
+        last_message_at: null,
+        muted: false,
+        agent_absorb_enabled: false,
+      });
+    } catch {
+      // Unexpected failures surface via the default global error toast.
+    }
   };
 
   return (
@@ -190,9 +243,36 @@ export default function FriendsPage() {
             )}
 
             <SectionCard
+              title="Messages"
+              subtitle={
+                threads.length > 0
+                  ? `${threads.length} ${threads.length === 1 ? "conversation" : "conversations"}`
+                  : undefined
+              }
+              delay={(hasApprovals ? 80 : 0) + (hasRequests ? 80 : 0)}
+            >
+              {threadsLoading ? (
+                <div className="space-y-2">
+                  <Skeleton className="h-16 w-full rounded-xl" />
+                  <Skeleton className="h-16 w-full rounded-xl" />
+                </div>
+              ) : threads.length === 0 ? (
+                <p className="rounded-panel border border-dashed border-border bg-surface/40 p-8 text-center text-sm text-ink-muted">
+                  No conversations yet.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {threads.map((thread) => (
+                    <ThreadRow key={thread.thread_id} thread={thread} onOpen={() => setOpenThread(thread)} />
+                  ))}
+                </div>
+              )}
+            </SectionCard>
+
+            <SectionCard
               title="Neighbors"
               subtitle={`${neighbors.length} ${neighbors.length === 1 ? "neighbor" : "neighbors"}`}
-              delay={(hasApprovals ? 80 : 0) + (hasRequests ? 80 : 0)}
+              delay={(hasApprovals ? 80 : 0) + (hasRequests ? 80 : 0) + 80}
             >
               {neighbors.length === 0 ? (
                 <p className="rounded-panel border border-dashed border-border bg-surface/40 p-8 text-center text-sm text-ink-muted">
@@ -209,6 +289,7 @@ export default function FriendsPage() {
                       blocking={
                         blockMutation.isPending && blockMutation.variables === neighbor.friendship_id
                       }
+                      onMessage={() => void handleMessageNeighbor(neighbor)}
                     />
                   ))}
                 </div>
@@ -226,6 +307,8 @@ export default function FriendsPage() {
       {reviewingShare && (
         <SharePreviewModal share={reviewingShare} onClose={() => setReviewingShare(null)} />
       )}
+
+      {openThread && <ThreadView thread={openThread} onClose={() => setOpenThread(null)} />}
 
       <ConfirmDialog
         open={confirmTarget !== null}
@@ -249,11 +332,13 @@ function NeighborRow({
   onRequestUnfriend,
   onBlock,
   blocking,
+  onMessage,
 }: {
   neighbor: Neighbor;
   onRequestUnfriend: () => void;
   onBlock: () => void;
   blocking: boolean;
+  onMessage: () => void;
 }) {
   return (
     <div className="flex items-center gap-3 rounded-xl border border-border bg-surface/60 p-3">
@@ -262,6 +347,13 @@ function NeighborRow({
         <p className="truncate text-sm font-medium text-ink">{neighbor.display_name}</p>
         <p className="truncate text-xs text-ink-faint">@{neighbor.handle}</p>
       </div>
+      <button
+        type="button"
+        onClick={onMessage}
+        className="min-h-[44px] shrink-0 rounded-full border border-accent/40 bg-accent/10 px-4 text-xs font-semibold text-accent transition hover:bg-accent/20"
+      >
+        Message
+      </button>
       <NeighborMenu
         label={`Actions for ${neighbor.display_name}`}
         onUnfriend={onRequestUnfriend}
@@ -269,6 +361,37 @@ function NeighborRow({
         blocking={blocking}
       />
     </div>
+  );
+}
+
+// Row in the "Messages" section's thread list — mirrors NeighborRow's
+// avatar/name/handle layout but adds a last-message preview + unread pill,
+// and the whole row is the tap target (opens the thread) rather than a
+// dedicated action button.
+function ThreadRow({ thread, onOpen }: { thread: ChatThread; onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="flex min-h-[44px] w-full items-center gap-3 rounded-xl border border-border bg-surface/60 p-3 text-left transition hover:bg-surface-hover"
+    >
+      <span className="h-9 w-9 shrink-0 rounded-full" style={avatarStyle(thread.avatar_hue)} aria-hidden />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline gap-2">
+          <p className="truncate text-sm font-medium text-ink">{thread.display_name}</p>
+          {thread.handle && <p className="shrink-0 truncate text-xs text-ink-faint">@{thread.handle}</p>}
+        </div>
+        <p className="truncate text-xs text-ink-muted">{thread.last_message || "Say hello…"}</p>
+      </div>
+      {thread.unread > 0 && (
+        <span
+          className="flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full bg-accent px-1.5 text-[10px] font-semibold text-white"
+          aria-label={`${thread.unread} unread`}
+        >
+          {thread.unread}
+        </span>
+      )}
+    </button>
   );
 }
 
@@ -564,6 +687,174 @@ function ProfileEditor() {
         </div>
       </div>
     </SectionCard>
+  );
+}
+
+// 1:1 chat with one neighbor. A bottom-sheet/dialog overlay — same
+// backdrop+sticky-footer language as SharePreviewModal — rather than a
+// bespoke inline panel, so it reads as part of the same design system.
+// Polls messages every ~4s while mounted and the tab is visible; marks the
+// thread read once per open.
+function ThreadView({ thread, onClose }: { thread: ChatThread; onClose: () => void }) {
+  const visible = useDocumentVisible();
+  const { data: threads = [] } = useThreadsQuery();
+  // Prefer the live row from the thread list (accurate muted/unread) once
+  // it's loaded; fall back to the snapshot passed in when opening.
+  const liveThread = threads.find((t) => t.thread_id === thread.thread_id) ?? thread;
+
+  const { data, isLoading } = useThreadMessagesQuery(thread.thread_id, { active: visible });
+  const sendMutation = useSendMessageMutation(thread.thread_id);
+  const markReadMutation = useMarkThreadReadMutation();
+  const patchMembershipMutation = usePatchMembershipMutation(thread.thread_id);
+
+  const [draft, setDraft] = useState("");
+  const [sendError, setSendError] = useState<string | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const markedReadRef = useRef(false);
+
+  const messages = data?.messages ?? [];
+
+  // Mark read once per opened thread, not on every poll/refetch.
+  useEffect(() => {
+    if (markedReadRef.current) return;
+    markedReadRef.current = true;
+    markReadMutation.mutate(thread.thread_id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [thread.thread_id]);
+
+  // Keep the newest message in view as the list grows.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages.length]);
+
+  // Esc-to-close — never trapped, matches SharePreviewModal.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const submit = async () => {
+    const text = draft.trim();
+    if (!text || sendMutation.isPending) return;
+    setSendError(null);
+    setDraft("");
+    try {
+      await sendMutation.mutateAsync({ text, clientMsgId: crypto.randomUUID() });
+    } catch (err) {
+      setSendError(getErrorMessage(err));
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-end justify-center p-0 sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="thread-view-title"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex h-[88vh] w-full max-h-[92vh] flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-panel animate-reveal sm:h-[600px] sm:max-h-[85vh] sm:max-w-lg sm:rounded-2xl"
+      >
+        <div className="flex justify-center pt-2.5 pb-1 sm:hidden">
+          <span className="h-1 w-9 rounded-full bg-border" aria-hidden="true" />
+        </div>
+
+        <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 sm:px-6">
+          <span className="h-9 w-9 shrink-0 rounded-full" style={avatarStyle(liveThread.avatar_hue)} aria-hidden />
+          <div className="min-w-0 flex-1">
+            <h2 id="thread-view-title" className="truncate font-headline text-base font-bold text-ink">
+              {liveThread.display_name}
+            </h2>
+            {liveThread.handle && <p className="truncate text-xs text-ink-faint">@{liveThread.handle}</p>}
+          </div>
+          <button
+            type="button"
+            onClick={() => patchMembershipMutation.mutate({ muted: !liveThread.muted })}
+            aria-pressed={liveThread.muted}
+            className={clsx(
+              "min-h-[44px] shrink-0 rounded-full border px-3 text-xs font-medium transition",
+              liveThread.muted
+                ? "border-accent/40 bg-accent/10 text-accent"
+                : "border-border text-ink-muted hover:bg-surface-hover hover:text-ink",
+            )}
+          >
+            {liveThread.muted ? "Muted" : "Mute"}
+          </button>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-full text-ink-faint transition hover:bg-surface-hover hover:text-ink"
+          >
+            <span aria-hidden="true">✕</span>
+          </button>
+        </header>
+
+        <div ref={scrollRef} className="flex-1 space-y-2 overflow-y-auto px-4 py-4 sm:px-6">
+          {isLoading && messages.length === 0 ? (
+            <p className="pt-8 text-center text-sm text-ink-muted">Loading&hellip;</p>
+          ) : messages.length === 0 ? (
+            <p className="pt-8 text-center text-sm text-ink-muted">
+              Say hello &mdash; this is the start of your conversation.
+            </p>
+          ) : (
+            messages.map((msg) => (
+              <div key={msg.public_id} className={clsx("flex", msg.mine ? "justify-end" : "justify-start")}>
+                <div
+                  className={clsx(
+                    "max-w-[80%] rounded-2xl px-4 py-2 text-sm leading-relaxed break-words",
+                    msg.mine ? "bg-accent text-white" : "border border-border bg-surface/60 text-ink",
+                  )}
+                >
+                  {msg.text}
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+
+        {sendError && (
+          <p
+            role="alert"
+            className="mx-4 mb-2 shrink-0 rounded-xl border border-rose-border bg-rose-bg px-3 py-2 text-xs text-rose-text sm:mx-6"
+          >
+            {sendError}
+          </p>
+        )}
+
+        <div className="flex shrink-0 items-end gap-2 border-t border-border bg-surface/95 px-4 py-3 backdrop-blur-md sm:px-6">
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submit();
+              }
+            }}
+            rows={1}
+            placeholder="Message…"
+            aria-label="Message"
+            className="max-h-32 min-h-[44px] flex-1 resize-none rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint transition focus:border-accent/50"
+          />
+          <button
+            type="button"
+            onClick={() => void submit()}
+            disabled={!draft.trim() || sendMutation.isPending}
+            className="glow-purple min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Send
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
