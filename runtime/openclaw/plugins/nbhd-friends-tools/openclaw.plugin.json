@@ -1,0 +1,27 @@
+{
+  "id": "nbhd-friends-tools",
+  "name": "NBHD Friends Tools",
+  "description": "Backstage Neighborhood tools: propose a lesson share to a neighbor (proposal only, human-approved) and read neighbors' scrubbed shared sparks. No direct-post tool by design.",
+  "contracts": {
+    "tools": [
+      "nbhd_propose_lesson_share",
+      "nbhd_neighborhood_context"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 60000,
+        "description": "HTTP timeout for NBHD runtime endpoint requests."
+      }
+    }
+  }
+}

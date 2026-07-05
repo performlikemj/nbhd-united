@@ -398,3 +398,40 @@ def adopt_shared_lesson(viewer_tenant, viewer_user, shared_lesson_id):
         star_stage="proto",
     )
     return lesson, True
+
+
+# ── Absorb read side (agent context + envelope) ──────────────────────────────
+#
+# The cross-tenant read that surfaces sparks shared TO the viewer, across ALL
+# owners (not per-owner like shared_star_qs). Lives here because it touches
+# LessonShareGrant/SharedLesson (chokepoint-confined). Returns grants (each
+# carrying its ready shared_lesson + created_at) so callers can log/paginate.
+
+
+def inbound_shared_grants(viewer_tenant, since=None):
+    """Active grants of READY sparks shared TO ``viewer_tenant``, newest first.
+
+    Visibility = an active ``LessonShareGrant`` on an accepted friendship the
+    viewer is a party to, AND ``scrub_status='ready'``. ``since`` (a datetime)
+    filters to grants created after it (the absorb cursor). Returns an EMPTY
+    queryset when the viewer has no accepted edges — never raises.
+    """
+    from django.db.models import Q
+
+    viewer_id = _tenant_id(viewer_tenant)
+    edge_ids = list(
+        Friendship.objects.filter(
+            Q(requester_id=viewer_id) | Q(addressee_id=viewer_id),
+            status=Friendship.Status.ACCEPTED,
+        ).values_list("id", flat=True)
+    )
+    if not edge_ids:
+        return LessonShareGrant.objects.none()
+    qs = LessonShareGrant.objects.filter(
+        status=LessonShareGrant.Status.ACTIVE,
+        friendship_id__in=edge_ids,
+        shared_lesson__scrub_status=SharedLesson.ScrubStatus.READY,
+    ).select_related("shared_lesson", "shared_lesson__owner_tenant")
+    if since is not None:
+        qs = qs.filter(created_at__gt=since)
+    return qs.order_by("-created_at")

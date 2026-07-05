@@ -1113,3 +1113,15 @@ export interface AdoptResult {
   status: string;
   created: boolean;
 }
+
+// ── Absorbed items (PR4) ──────────────────────────────────────────────────
+// A neighbor's spark the tenant's assistant pulled into its own context
+// (e.g. via agent tooling). Surfaced for transparency + a manual purge.
+export interface AbsorbedItem {
+  id: string;
+  source_kind: string;
+  source_id: string;
+  from_handle: string | null;
+  label: string;
+  absorbed_at: string;
+}

@@ -1865,3 +1865,19 @@ export function adoptSpark(sharedLessonId: string): Promise<import("@/lib/types"
     method: "POST",
   });
 }
+
+// ── Absorbed items (PR4) ──────────────────────────────────────────────────
+// Transparency surface for what a neighbor's shared spark the assistant has
+// pulled into its own context (via agent tooling) — and a manual purge.
+
+/** GET /api/v1/friends/absorbed/ — everything the assistant currently holds. */
+export function fetchAbsorbed(): Promise<import("@/lib/types").AbsorbedItem[]> {
+  return apiFetch<import("@/lib/types").AbsorbedItem[]>("/api/v1/friends/absorbed/");
+}
+
+/** POST /api/v1/friends/absorbed/<id>/purge/ — tell the assistant to stop using it. */
+export function purgeAbsorbed(id: string): Promise<void> {
+  return apiFetch<void>(`/api/v1/friends/absorbed/${id}/purge/`, {
+    method: "POST",
+  });
+}
