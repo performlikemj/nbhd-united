@@ -10,11 +10,13 @@ module (or a friends runtime view) touches the cross-tenant model managers
 under ``apps/friends/``.
 
 Why this is load-bearing: Django connects to Postgres as a **BYPASSRLS
-superuser**, so RLS is NOT a tenant backstop today — cross-tenant isolation
-is 100% the Python filters in this module until the PR8 ``FORCE ROW LEVEL
-SECURITY`` role hardening. A single missing edge/tenant filter leaks another
-user's private data with no DB net. Containing that risk to one audited
-module is the entire point.
+superuser** today, so the PR8 ``FORCE ROW LEVEL SECURITY`` policies on
+``shared_lessons`` / ``lesson_share_grants`` / ``friend_messages`` are INERT
+belt-and-suspenders — they start enforcing only if the app connects as a
+non-BYPASSRLS role (run ``manage.py check_friends_rls`` for the live verdict).
+Until then cross-tenant isolation is 100% the Python filters in this module. A
+single missing edge/tenant filter leaks another user's private data with no DB
+net. Containing that risk to one audited module is the entire point.
 
 Addressing is always by opaque ``friendship_id`` / ``thread_id`` /
 ``circle_id``, never a client-supplied ``tenant_id`` — those ids exist only
@@ -24,7 +26,11 @@ a party (IDOR defeated by construction, design §4.5).
 
 from __future__ import annotations
 
+import contextlib
+
+from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db import connection
 from django.db.models import Q
 from django.utils import timezone
 
@@ -49,6 +55,33 @@ from .models import (
 def _tenant_id(value):
     """Accept either a ``Tenant`` instance or a raw id and return the id."""
     return getattr(value, "id", value)
+
+
+@contextlib.contextmanager
+def backstop_service_context():
+    """Mark this connection ``app.service_role`` for the duration, for trusted
+    server-side background work that reads the friends cross-tenant tables
+    OUTSIDE a tenant request (the scrub / position-refresh QStash tasks, the
+    envelope USER.md push thread, the friend-chat push thread). Under the PR8
+    FORCE-RLS policies those tables fail closed on an unset GUC, so without this
+    a background read would see zero rows and the feature would break.
+
+    A no-op when ``FRIENDS_DB_BACKSTOP`` is off, and harmless (inert) while the
+    app role bypasses RLS. On exit it clears ONLY ``app.service_role`` — never
+    ``app.tenant_id`` / ``app.user_id`` — so a middleware-set tenant GUC on an
+    in-request caller survives untouched."""
+    if not getattr(settings, "FRIENDS_DB_BACKSTOP", True):
+        yield
+        return
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(service_role=True)
+    try:
+        yield
+    finally:
+        if connection.connection is not None:
+            with connection.cursor() as cur:
+                cur.execute("SELECT set_config('app.service_role', '', false)")
 
 
 def are_neighbors(a: Tenant, b: Tenant) -> bool:

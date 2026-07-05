@@ -46,6 +46,14 @@ class LessonViewSet(viewsets.ModelViewSet):
             return LessonApprovalSerializer
         return LessonSerializer
 
+    def get_throttles(self):
+        # A share kicks off a real fail-closed DeBERTa scrub; cap it per user/day.
+        if self.action == "share":
+            from apps.friends.throttling import ShareSendDayThrottle
+
+            return [ShareSendDayThrottle()]
+        return super().get_throttles()
+
     def get_queryset(self) -> QuerySet[Lesson]:
         if not hasattr(self.request.user, "tenant"):
             return Lesson.objects.none()
