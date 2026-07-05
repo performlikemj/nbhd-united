@@ -37,6 +37,7 @@ from .models import (
     FriendThreadMembership,
     LessonShareGrant,
     NeighborProfile,
+    SharedGoal,
     SharedLesson,
     WormholeVisit,
     compute_pair_key,
@@ -576,3 +577,64 @@ def absorb_pending_chat(viewer_tenant) -> list[dict]:
             }
         )
     return result
+
+
+# ── Missions (SharedGoal) data layer — SharedGoal.objects confined here ──────
+#
+# Only ``SharedGoal`` is chokepoint-confined (SharedGoalMembership /
+# SharedGoalUpdate / PendingGoalAction are ordinary friends models used freely
+# by services + projection). So the mission's create / read / list / locked-edit
+# funnel here; membership + the append-only update stream do not.
+
+
+def create_mission(creator_tenant, friendship, *, title, description="", pillar="", target=None, target_date=None):
+    return SharedGoal.objects.create(
+        title=title,
+        description=description,
+        pillar=pillar,
+        friendship=friendship,
+        created_by=creator_tenant,
+        target=target or {},
+        target_date=target_date,
+        status=SharedGoal.Status.ACTIVE,
+    )
+
+
+def get_mission(mission_id):
+    try:
+        return SharedGoal.objects.select_related("friendship").get(id=mission_id)
+    except (SharedGoal.DoesNotExist, ValueError, ValidationError):
+        return None
+
+
+def missions_for(tenant):
+    """Active missions the tenant is an active member of, newest first."""
+    return (
+        SharedGoal.objects.filter(memberships__tenant=tenant, memberships__status="active")
+        .distinct()
+        .order_by("-created_at")
+    )
+
+
+def update_mission(mission, *, expected_version, editor_owner, fields):
+    """Optimistic multi-writer edit (Fuel's version/edit-lock pattern). Returns
+    ``(mission, result)`` where result is "ok" | "version_conflict" | "locked"."""
+    fresh = SharedGoal.objects.get(id=mission.id)
+    if expected_version is not None and fresh.version != expected_version:
+        return fresh, "version_conflict"
+    if (
+        fresh.edit_lock_until
+        and fresh.edit_lock_until > timezone.now()
+        and fresh.edit_lock_owner
+        and fresh.edit_lock_owner != editor_owner
+    ):
+        return fresh, "locked"
+    for key, value in fields.items():
+        setattr(fresh, key, value)
+    fresh.version = fresh.version + 1
+    fresh.save()
+    return fresh, "ok"
+
+
+def set_mission_status(mission, status, **extra):
+    SharedGoal.objects.filter(id=mission.id).update(status=status, **extra)

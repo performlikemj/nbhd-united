@@ -341,3 +341,129 @@ class ThreadMembershipView(FriendsView):
                 agent_absorb_enabled=request.data.get("agent_absorb_enabled"),
             )
         )
+
+
+# ── Missions (shared goals + crew projection) ────────────────────────────────
+
+
+def _parse_iso_date(raw):
+    from datetime import date
+
+    if not raw:
+        return None
+    try:
+        return date.fromisoformat(str(raw))
+    except (TypeError, ValueError) as exc:
+        raise ValidationError("Dates must be YYYY-MM-DD.") from exc
+
+
+class MissionsView(FriendsView):
+    """GET /api/v1/friends/missions/ — my missions.
+    POST — create a 1:1 mission on an accepted friendship (creator = owner)."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        return Response(services.list_missions(tenant))
+
+    def post(self, request):
+        tenant = self.get_tenant(request)
+        friendship_id = request.data.get("friendship_id")
+        if not friendship_id:
+            raise ValidationError("friendship_id is required.")
+        mission = services.create_mission(
+            tenant,
+            request.user,
+            friendship_id,
+            title=request.data.get("title", ""),
+            description=request.data.get("description", ""),
+            pillar=request.data.get("pillar", ""),
+            target=request.data.get("target") or {},
+            target_date=_parse_iso_date(request.data.get("target_date")),
+        )
+        return Response({"mission_id": str(mission.id)}, status=status.HTTP_201_CREATED)
+
+
+class MissionDetailView(FriendsView):
+    """GET /api/v1/friends/missions/<id>/ — mission + crew projection.
+    PATCH — optimistic edit (409 on version/lock conflict)."""
+
+    def get(self, request, mission_id):
+        tenant = self.get_tenant(request)
+        return Response(services.get_mission_detail(tenant, mission_id))
+
+    def patch(self, request, mission_id):
+        tenant = self.get_tenant(request)
+        fields = {}
+        if "title" in request.data:
+            fields["title"] = str(request.data.get("title") or "").strip()
+        if "target" in request.data:
+            fields["target"] = request.data.get("target") or {}
+        if "target_date" in request.data:
+            fields["target_date"] = _parse_iso_date(request.data.get("target_date"))
+        payload, code = services.update_mission(
+            tenant, mission_id, expected_version=request.data.get("version"), fields=fields
+        )
+        return Response(payload, status=code)
+
+
+class MissionJoinView(FriendsView):
+    def post(self, request, mission_id):
+        tenant = self.get_tenant(request)
+        return Response(services.join_mission(tenant, request.user, mission_id, request.data.get("commitment", "")))
+
+
+class MissionLeaveView(FriendsView):
+    def post(self, request, mission_id):
+        tenant = self.get_tenant(request)
+        return Response(services.leave_mission(tenant, mission_id))
+
+
+class MissionUpdatesView(FriendsView):
+    """POST /api/v1/friends/missions/<id>/updates/ — a human note/progress/milestone."""
+
+    def post(self, request, mission_id):
+        tenant = self.get_tenant(request)
+        return Response(
+            services.add_mission_update(
+                tenant, request.user, mission_id, request.data.get("kind", "note"), request.data.get("text", "")
+            )
+        )
+
+
+class MissionTasksView(FriendsView):
+    """POST /api/v1/friends/missions/<id>/tasks/ — mint the caller's OWN journal
+    Task linked to the mission + append task_added."""
+
+    def post(self, request, mission_id):
+        tenant = self.get_tenant(request)
+        return Response(
+            services.add_mission_task(
+                tenant,
+                request.user,
+                mission_id,
+                title=request.data.get("title", ""),
+                description=request.data.get("description", ""),
+                due_date=_parse_iso_date(request.data.get("due_date")),
+            ),
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class GoalActionsView(FriendsView):
+    """GET /api/v1/friends/mission-actions/ — my agent-proposed Mission tasks."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        return Response(services.list_pending_goal_actions(tenant))
+
+
+class GoalActionApproveView(FriendsView):
+    def post(self, request, action_id):
+        tenant = self.get_tenant(request)
+        return Response(services.approve_goal_action(tenant, action_id))
+
+
+class GoalActionRejectView(FriendsView):
+    def post(self, request, action_id):
+        tenant = self.get_tenant(request)
+        return Response(services.reject_goal_action(tenant, action_id))

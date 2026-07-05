@@ -31,3 +31,13 @@ def refresh_shared_positions_task(tenant_id: str) -> dict:
     result = refresh_shared_positions(tenant_id)
     logger.info("refresh_shared_positions_task %s → %s", str(tenant_id)[:8], result)
     return result
+
+
+def mission_weekly_digest_task() -> dict:
+    """Weekly Mission huddle — one warm, non-shaming digest per (mission, member,
+    window), idempotent via a compare-and-set cursor (design §7)."""
+    from apps.friends.digest import run_weekly_mission_digest
+
+    result = run_weekly_mission_digest()
+    logger.info("mission_weekly_digest_task → %s", result)
+    return result

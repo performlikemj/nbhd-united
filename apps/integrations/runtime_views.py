@@ -4068,3 +4068,64 @@ class RuntimeNeighborhoodContextView(APIView):
         raw_since = request.query_params.get("since")
         since = parse_datetime(raw_since) if raw_since else None
         return Response(friends_services.neighborhood_context(tenant, since=since))
+
+
+class RuntimeMissionsView(APIView):
+    """GET runtime/<tid>/missions/ — the tid's own Missions + crew projection, so
+    the agent can nudge ITS OWN human toward showing up."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        from apps.friends import services as friends_services
+
+        return Response({"missions": friends_services.runtime_missions(tenant)})
+
+
+class RuntimeProposeMissionTaskView(APIView):
+    """POST runtime/<tid>/missions/<mission_id>/propose-task/ {title, description?,
+    due_date?} — the agent proposes ONE Mission task for ITS OWN human →
+    PendingGoalAction (human-gated). Never writes another human's task: the
+    proposing tid must be an active member, and the task is minted for THAT
+    member only on approve."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id, mission_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        from django.utils.dateparse import parse_date
+
+        from apps.friends import services as friends_services
+
+        data = request.data if isinstance(request.data, dict) else {}
+        raw_due = data.get("due_date")
+        action, created = friends_services.propose_mission_task(
+            tenant,
+            mission_id,
+            title=data.get("title", ""),
+            description=data.get("description", ""),
+            due_date=parse_date(raw_due) if raw_due else None,
+        )
+        return Response(
+            {
+                "pending_goal_action_id": str(action.id),
+                "created": created,
+                "note": "proposal only — your human must approve before it becomes a task",
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )

@@ -1154,3 +1154,74 @@ export interface ChatPage {
   messages: ChatMessage[];
   next_cursor: string | null;
 }
+
+// ── Missions (PR6) ────────────────────────────────────────────────────────
+// Shared goals between accepted neighbors — product name "Mission" (design
+// §2.9). The crew projection is built entirely from control-plane data (never
+// a cross-tenant Task scan); each member's own contribution stays a LOCAL
+// journal.Task on their side. See apps/friends/projection.py.
+export type MissionStatus = "active" | "achieved" | "abandoned" | "expired";
+
+// {metric, unit, cadence, value} — every field optional; a mission can be
+// created with no target at all (a plain "show up together" mission).
+export interface MissionTarget {
+  metric?: string;
+  unit?: string;
+  cadence?: "daily" | "weekly" | string;
+  value?: number;
+}
+
+export interface MissionSummary {
+  mission_id: string;
+  title: string;
+  status: MissionStatus;
+  target: MissionTarget;
+  target_date: string | null;
+  my_commitment: string;
+  version: number;
+}
+
+// One row in a mission's crew projection — handle is null if that member
+// never set a NeighborProfile handle. `showed_up`/`window_days` is the
+// filled-proportion the progress bar renders (window_days is 7 for a daily
+// cadence mission, 28 for weekly — see projection.py).
+export interface MissionMember {
+  handle: string | null;
+  showed_up: number;
+  window_days: number;
+  streak: number;
+  last_activity: string | null;
+  next_step: string | null;
+  commitment: string;
+  is_creator: boolean;
+}
+
+export interface MissionDetail {
+  mission_id: string;
+  title: string;
+  status: MissionStatus;
+  cadence: string;
+  window_days: number;
+  target: MissionTarget;
+  members: MissionMember[];
+  overall_pct: number;
+  description: string;
+  version: number;
+  my_commitment: string;
+  my_role: "owner" | "member";
+}
+
+// An agent-proposed Mission task for the tenant's OWN human (design §2.10) —
+// approving mints the member's own local journal.Task; the agent never writes
+// another human's task.
+export interface PendingGoalAction {
+  id: string;
+  mission_id: string;
+  mission_title: string;
+  suggested: {
+    title: string;
+    description: string;
+    due_date: string | null;
+  };
+  created_at: string;
+}

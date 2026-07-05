@@ -14,17 +14,28 @@ import { getErrorMessage } from "@/lib/errors";
 import {
   useAbsorbedQuery,
   useAcceptWaveMutation,
+  useAddMissionTaskMutation,
+  useAddMissionUpdateMutation,
   useApprovedLessonsQuery,
+  useApproveGoalActionMutation,
   useApproveShareMutation,
   useBlockWaveMutation,
+  useCreateMissionMutation,
   useDeclineWaveMutation,
+  useGoalActionsQuery,
+  useJoinMissionMutation,
+  useLeaveMissionMutation,
   useMarkThreadReadMutation,
+  useMissionDetailQuery,
+  useMissionsQuery,
   useNeighborhoodQuery,
   useNeighborProfileQuery,
   useOpenThreadMutation,
   usePatchMembershipMutation,
+  usePatchMissionMutation,
   usePendingSharesQuery,
   usePurgeAbsorbedMutation,
+  useRejectGoalActionMutation,
   useRejectShareMutation,
   useSendMessageMutation,
   useSendWaveMutation,
@@ -34,7 +45,14 @@ import {
   useUnfriendMutation,
   useUpdateNeighborProfileMutation,
 } from "@/lib/queries";
-import type { ChatThread, Neighbor, NeighborProfile, PendingShare } from "@/lib/types";
+import type {
+  ChatThread,
+  MissionMember,
+  Neighbor,
+  NeighborProfile,
+  PendingGoalAction,
+  PendingShare,
+} from "@/lib/types";
 
 // True while the tab is in the foreground — gates the ~4s message poll so a
 // backgrounded tab (or the panel being closed, which unmounts ThreadView
@@ -70,6 +88,8 @@ export default function FriendsPage() {
   const [confirmTarget, setConfirmTarget] = useState<Neighbor | null>(null);
   const [reviewingShare, setReviewingShare] = useState<PendingShare | null>(null);
   const [openThread, setOpenThread] = useState<ChatThread | null>(null);
+  const [creatingMission, setCreatingMission] = useState(false);
+  const [openMissionId, setOpenMissionId] = useState<string | null>(null);
 
   const neighbors = data?.neighbors ?? [];
   const pendingIncoming = data?.pending_incoming ?? [];
@@ -161,6 +181,8 @@ export default function FriendsPage() {
                 </div>
               </SectionCard>
             )}
+
+            <MissionActionsCard delay={hasApprovals ? 80 : 0} />
 
             {hasRequests && (
               <SectionCard
@@ -296,6 +318,12 @@ export default function FriendsPage() {
               )}
             </SectionCard>
 
+            <MissionsCard
+              delay={(hasApprovals ? 80 : 0) + (hasRequests ? 80 : 0) + 160}
+              onOpenMission={setOpenMissionId}
+              onCreateMission={() => setCreatingMission(true)}
+            />
+
             <ShareLessonCard />
             <WaveForm />
             <ProfileEditor />
@@ -309,6 +337,12 @@ export default function FriendsPage() {
       )}
 
       {openThread && <ThreadView thread={openThread} onClose={() => setOpenThread(null)} />}
+
+      {creatingMission && <CreateMissionModal onClose={() => setCreatingMission(false)} />}
+
+      {openMissionId && (
+        <MissionDetailOverlay missionId={openMissionId} onClose={() => setOpenMissionId(null)} />
+      )}
 
       <ConfirmDialog
         open={confirmTarget !== null}
@@ -913,6 +947,686 @@ function AbsorbedCard() {
         })}
       </div>
     </SectionCard>
+  );
+}
+
+// Agent-proposed Mission tasks (PR6 / design §2.10): the assistant noticed a
+// next step on a shared mission for ITS OWN human and is asking before it
+// lands in the task list. Same hide-when-empty convention as AbsorbedCard.
+function MissionActionsCard({ delay }: { delay: number }) {
+  const { data: actions = [], isLoading } = useGoalActionsQuery();
+  const approveMutation = useApproveGoalActionMutation();
+  const rejectMutation = useRejectGoalActionMutation();
+
+  if (isLoading) {
+    return <SectionCardSkeleton lines={2} />;
+  }
+
+  if (actions.length === 0) {
+    return null;
+  }
+
+  const handleApprove = (action: PendingGoalAction) => {
+    approveMutation.mutate(action.id, {
+      onSuccess: () => emitToast("Added to your tasks.", "success"),
+    });
+  };
+
+  return (
+    <SectionCard
+      title="Mission task proposals"
+      subtitle="Your assistant noticed a next step on a mission — approve to add it to your tasks."
+      delay={delay}
+    >
+      <div className="space-y-2">
+        {actions.map((action) => {
+          const approving = approveMutation.isPending && approveMutation.variables === action.id;
+          const rejecting = rejectMutation.isPending && rejectMutation.variables === action.id;
+          return (
+            <div
+              key={action.id}
+              className="flex items-start gap-3 rounded-xl border border-border bg-surface/60 p-3"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium text-ink">{action.suggested.title}</p>
+                <p className="mt-1 truncate text-xs text-ink-faint">for {action.mission_title}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => rejectMutation.mutate(action.id)}
+                  disabled={approving || rejecting}
+                  className="min-h-[44px] rounded-lg border border-border px-3 text-xs text-ink-muted transition hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {rejecting ? "Declining…" : "Reject"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleApprove(action)}
+                  disabled={approving || rejecting}
+                  className="glow-purple min-h-[44px] rounded-lg bg-accent px-3 text-xs font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {approving ? "Adding…" : "Approve"}
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </SectionCard>
+  );
+}
+
+// Shared goals with a neighbor — showing up together, not against each other.
+// Only title/status/commitment are shown per row: MissionSummary carries no
+// overall_pct (that's only computed in the per-mission detail projection), so
+// a progress hint here would mean an extra fetch per row — not cheap.
+function MissionsCard({
+  delay,
+  onOpenMission,
+  onCreateMission,
+}: {
+  delay: number;
+  onOpenMission: (missionId: string) => void;
+  onCreateMission: () => void;
+}) {
+  const { data: missions = [], isLoading } = useMissionsQuery();
+
+  if (isLoading) {
+    return <SectionCardSkeleton lines={2} />;
+  }
+
+  return (
+    <SectionCard title="Missions" subtitle="Shared goals with a neighbor." delay={delay}>
+      <div className="space-y-3">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onCreateMission}
+            className="min-h-[44px] shrink-0 rounded-full border border-accent/40 bg-accent/10 px-4 text-xs font-semibold text-accent transition hover:bg-accent/20"
+          >
+            New mission
+          </button>
+        </div>
+
+        {missions.length === 0 ? (
+          <p className="rounded-panel border border-dashed border-border bg-surface/40 p-8 text-center text-sm text-ink-muted">
+            No missions yet &mdash; start one with a neighbor.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {missions.map((mission) => (
+              <button
+                key={mission.mission_id}
+                type="button"
+                onClick={() => onOpenMission(mission.mission_id)}
+                className="flex min-h-[44px] w-full items-center gap-3 rounded-xl border border-border bg-surface/60 p-3 text-left transition hover:bg-surface-hover"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-sm font-medium text-ink">{mission.title}</p>
+                    <StatusPill status={mission.status} size="sm" />
+                  </div>
+                  {mission.my_commitment && (
+                    <p className="mt-1 truncate text-xs text-ink-muted">{mission.my_commitment}</p>
+                  )}
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
+// Bottom-sheet/dialog overlay for starting a mission — same backdrop +
+// sticky-footer language as SharePreviewModal/ThreadView.
+function CreateMissionModal({ onClose }: { onClose: () => void }) {
+  const { data: neighborhood } = useNeighborhoodQuery();
+  const neighbors = neighborhood?.neighbors ?? [];
+  const createMutation = useCreateMissionMutation();
+
+  const [friendshipId, setFriendshipId] = useState("");
+  const [title, setTitle] = useState("");
+  const [metric, setMetric] = useState("");
+  const [cadence, setCadence] = useState<"daily" | "weekly">("daily");
+  const [value, setValue] = useState("");
+  const [targetDate, setTargetDate] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  // Esc-to-close — never trapped, matches ThreadView/SharePreviewModal.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const canSubmit = !!friendshipId && !!title.trim() && !createMutation.isPending;
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!friendshipId || !title.trim()) return;
+    setError(null);
+    const target: { metric?: string; cadence?: "daily" | "weekly"; value?: number } = {};
+    if (metric.trim()) target.metric = metric.trim();
+    if (cadence) target.cadence = cadence;
+    if (value.trim() && !Number.isNaN(Number(value))) target.value = Number(value);
+    try {
+      await createMutation.mutateAsync({
+        friendship_id: friendshipId,
+        title: title.trim(),
+        target: Object.keys(target).length > 0 ? target : undefined,
+        target_date: targetDate || undefined,
+      });
+      emitToast("Mission started.", "success");
+      onClose();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-end justify-center p-0 sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="create-mission-title"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex max-h-[92vh] w-full flex-col overflow-y-auto rounded-t-2xl border border-border bg-card shadow-panel animate-reveal sm:max-h-[85vh] sm:max-w-lg sm:rounded-2xl"
+      >
+        <div className="flex justify-center pt-2.5 pb-1 sm:hidden">
+          <span className="h-1 w-9 rounded-full bg-border" aria-hidden="true" />
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-3 top-3 z-10 flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full bg-surface/80 text-ink-muted backdrop-blur-md transition hover:bg-surface-hover hover:text-ink sm:right-4 sm:top-4"
+        >
+          <span aria-hidden="true">✕</span>
+        </button>
+
+        <div className="px-6 pb-2 pt-4 sm:p-8 sm:pb-2">
+          <div className="pr-12 sm:pr-14">
+            <h2 id="create-mission-title" className="font-headline text-xl font-bold text-ink sm:text-2xl">
+              Start a mission
+            </h2>
+            <p className="mt-1 text-sm text-ink-muted">
+              Pick a neighbor and something you&rsquo;ll both show up for.
+            </p>
+          </div>
+        </div>
+
+        {neighbors.length === 0 ? (
+          <p className="mx-6 mb-6 rounded-panel border border-dashed border-border bg-surface/40 p-6 text-center text-sm text-ink-muted sm:mx-8">
+            Wave to a neighbor first &mdash; you&rsquo;ll be able to start a mission with them once they accept.
+          </p>
+        ) : (
+          <form onSubmit={submit} className="flex-1 space-y-4 px-6 pb-6 sm:p-8 sm:pt-4">
+            <label className="block">
+              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Neighbor</span>
+              <select
+                value={friendshipId}
+                onChange={(e) => setFriendshipId(e.target.value)}
+                className="mt-1 min-h-[44px] w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none transition focus:border-accent/50"
+              >
+                <option value="">Choose a neighbor&hellip;</option>
+                {neighbors.map((n) => (
+                  <option key={n.friendship_id} value={n.friendship_id}>
+                    {n.display_name} (@{n.handle})
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="block">
+              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Mission</span>
+              <input
+                type="text"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="Move every day this month"
+                maxLength={200}
+                className="mt-1 w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint transition focus:border-accent/50 min-h-[44px]"
+              />
+            </label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+                  Metric (optional)
+                </span>
+                <input
+                  type="text"
+                  value={metric}
+                  onChange={(e) => setMetric(e.target.value)}
+                  placeholder="workouts"
+                  maxLength={60}
+                  className="mt-1 w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint transition focus:border-accent/50 min-h-[44px]"
+                />
+              </label>
+              <label className="block">
+                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+                  Target value
+                </span>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  value={value}
+                  onChange={(e) => setValue(e.target.value)}
+                  placeholder="5"
+                  className="mt-1 w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint transition focus:border-accent/50 min-h-[44px]"
+                />
+              </label>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Cadence</span>
+                <select
+                  value={cadence}
+                  onChange={(e) => setCadence(e.target.value as "daily" | "weekly")}
+                  className="mt-1 min-h-[44px] w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none transition focus:border-accent/50"
+                >
+                  <option value="daily">Daily</option>
+                  <option value="weekly">Weekly</option>
+                </select>
+              </label>
+              <label className="block">
+                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+                  Target date (optional)
+                </span>
+                <input
+                  type="date"
+                  value={targetDate}
+                  onChange={(e) => setTargetDate(e.target.value)}
+                  className="mt-1 w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none transition focus:border-accent/50 min-h-[44px]"
+                />
+              </label>
+            </div>
+
+            {error && (
+              <p role="alert" className="rounded-xl border border-rose-border bg-rose-bg px-3 py-2 text-xs text-rose-text">
+                {error}
+              </p>
+            )}
+
+            <div className="sticky bottom-0 -mx-6 border-t border-border bg-surface/95 px-6 py-4 backdrop-blur-md sm:-mx-8 sm:px-8">
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                className="glow-purple min-h-[44px] w-full rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+              >
+                {createMutation.isPending ? "Starting…" : "Start mission"}
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// One row in a mission's crew projection — handle + a filled progress bar for
+// showed_up/window_days (token colors only — the accent/border pairing used
+// by the usage-budget bar in settings/usage), streak, and the open next step.
+function MissionMemberRow({ member, isMe }: { member: MissionMember; isMe: boolean }) {
+  const pct =
+    member.window_days > 0
+      ? Math.min(100, Math.round((100 * member.showed_up) / member.window_days))
+      : 0;
+  return (
+    <div className="rounded-xl border border-border bg-surface/60 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <p className="truncate text-sm font-medium text-ink">
+          {isMe ? "You" : member.handle ? `@${member.handle}` : "A neighbor"}
+          {member.is_creator && <span className="ml-1.5 text-xs font-normal text-ink-faint">started it</span>}
+        </p>
+        {member.streak > 0 && (
+          <span className="shrink-0 text-xs text-ink-faint">{member.streak}-day streak</span>
+        )}
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-border">
+        <div className="h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
+      </div>
+      <p className="mt-1.5 text-xs text-ink-faint">
+        {member.showed_up}/{member.window_days} days
+        {member.next_step ? ` · next: ${member.next_step}` : ""}
+      </p>
+    </div>
+  );
+}
+
+// Mission detail — the crew projection + join/leave + a mini add-task form +
+// an updates composer. Same bottom-sheet overlay idiom as ThreadView, with
+// the composer pinned in a footer the same way ThreadView pins its message box.
+function MissionDetailOverlay({ missionId, onClose }: { missionId: string; onClose: () => void }) {
+  const { data: mission, isLoading, isError } = useMissionDetailQuery(missionId);
+  const { data: myProfile } = useNeighborProfileQuery();
+  const joinMutation = useJoinMissionMutation();
+  const leaveMutation = useLeaveMissionMutation();
+  const addUpdateMutation = useAddMissionUpdateMutation();
+  const addTaskMutation = useAddMissionTaskMutation();
+  const patchMutation = usePatchMissionMutation();
+
+  const [justLeft, setJustLeft] = useState(false);
+  const [taskTitle, setTaskTitle] = useState("");
+  const [updateText, setUpdateText] = useState("");
+  const [updateKind, setUpdateKind] = useState<"note" | "progress" | "milestone">("note");
+  const [editing, setEditing] = useState(false);
+  const [editTitle, setEditTitle] = useState("");
+  const [editError, setEditError] = useState<string | null>(null);
+
+  // Seed the edit draft from the server during render (not an effect) so a
+  // background refetch never clobbers active typing — mirrors ProfileEditor.
+  const [seededFrom, setSeededFrom] = useState<string | null>(null);
+  if (mission && mission.mission_id !== seededFrom) {
+    setSeededFrom(mission.mission_id);
+    setEditTitle(mission.title);
+  }
+
+  // Esc-to-close — never trapped, matches ThreadView/SharePreviewModal.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const handleLeave = () => {
+    leaveMutation.mutate(missionId, {
+      onSuccess: () => {
+        emitToast("Left the mission.", "success");
+        setJustLeft(true);
+      },
+    });
+  };
+
+  const handleJoin = () => {
+    joinMutation.mutate(
+      { id: missionId },
+      {
+        onSuccess: () => {
+          emitToast("Back in.", "success");
+          setJustLeft(false);
+        },
+      },
+    );
+  };
+
+  const submitTask = async (e: FormEvent) => {
+    e.preventDefault();
+    const trimmed = taskTitle.trim();
+    if (!trimmed || addTaskMutation.isPending) return;
+    try {
+      await addTaskMutation.mutateAsync({ id: missionId, data: { title: trimmed } });
+      setTaskTitle("");
+      emitToast("Added to your tasks.", "success");
+    } catch {
+      // Unexpected failures surface via the default global error toast.
+    }
+  };
+
+  const submitUpdate = async () => {
+    const trimmed = updateText.trim();
+    if (!trimmed || addUpdateMutation.isPending) return;
+    try {
+      await addUpdateMutation.mutateAsync({ id: missionId, data: { kind: updateKind, text: trimmed } });
+      setUpdateText("");
+    } catch {
+      // Unexpected failures surface via the default global error toast.
+    }
+  };
+
+  const submitEdit = async () => {
+    if (!mission) return;
+    setEditError(null);
+    try {
+      const result = await patchMutation.mutateAsync({
+        id: missionId,
+        data: { version: mission.version, title: editTitle.trim() },
+      });
+      if (result.status === 200) {
+        setEditing(false);
+        emitToast("Mission updated.", "success");
+      } else {
+        setEditError(result.detail);
+      }
+    } catch (err) {
+      setEditError(getErrorMessage(err));
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-end justify-center p-0 sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mission-detail-title"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex h-[88vh] w-full max-h-[92vh] flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-panel animate-reveal sm:h-[640px] sm:max-h-[85vh] sm:max-w-lg sm:rounded-2xl"
+      >
+        <div className="flex justify-center pt-2.5 pb-1 sm:hidden">
+          <span className="h-1 w-9 rounded-full bg-border" aria-hidden="true" />
+        </div>
+
+        <header className="flex shrink-0 items-start gap-3 border-b border-border px-4 py-3 sm:px-6">
+          <div className="min-w-0 flex-1">
+            {editing ? (
+              <input
+                type="text"
+                value={editTitle}
+                onChange={(e) => setEditTitle(e.target.value)}
+                maxLength={200}
+                aria-label="Mission title"
+                className="w-full rounded-lg border border-border bg-surface/60 px-3 py-1.5 text-base font-bold text-ink outline-none focus:border-accent/50"
+              />
+            ) : (
+              <h2 id="mission-detail-title" className="truncate font-headline text-base font-bold text-ink">
+                {mission?.title ?? "Mission"}
+              </h2>
+            )}
+            {mission && (
+              <div className="mt-1 flex items-center gap-2">
+                <StatusPill status={mission.status} size="sm" />
+                <span className="text-xs text-ink-faint">
+                  {mission.my_role === "owner" ? "You started this" : "Shared mission"}
+                </span>
+              </div>
+            )}
+          </div>
+          {mission && !editing && (
+            <button
+              type="button"
+              onClick={() => setEditing(true)}
+              className="min-h-[44px] shrink-0 rounded-full border border-border px-3 text-xs text-ink-muted transition hover:bg-surface-hover hover:text-ink"
+            >
+              Edit
+            </button>
+          )}
+          {editing && (
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditing(false);
+                  setEditTitle(mission?.title ?? "");
+                  setEditError(null);
+                }}
+                className="min-h-[44px] rounded-full border border-border px-3 text-xs text-ink-muted transition hover:bg-surface-hover"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void submitEdit()}
+                disabled={patchMutation.isPending || !editTitle.trim()}
+                className="glow-purple min-h-[44px] rounded-full bg-accent px-3 text-xs font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {patchMutation.isPending ? "Saving…" : "Save"}
+              </button>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-full text-ink-faint transition hover:bg-surface-hover hover:text-ink"
+          >
+            <span aria-hidden="true">✕</span>
+          </button>
+        </header>
+
+        <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-6">
+          {editError && (
+            <p role="alert" className="rounded-xl border border-rose-border bg-rose-bg px-3 py-2 text-xs text-rose-text">
+              {editError}
+            </p>
+          )}
+
+          {isLoading && !mission ? (
+            <p className="pt-8 text-center text-sm text-ink-muted">Loading&hellip;</p>
+          ) : isError || !mission ? (
+            <p className="pt-8 text-center text-sm text-ink-muted">
+              This mission isn&rsquo;t available right now.
+            </p>
+          ) : (
+            <>
+              {mission.description && (
+                <p className="text-sm leading-relaxed text-ink-muted">{mission.description}</p>
+              )}
+
+              <div>
+                <div className="flex items-center justify-between text-xs text-ink-faint">
+                  <span>Crew progress</span>
+                  <span>{mission.overall_pct}%</span>
+                </div>
+                <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-border">
+                  <div
+                    className="h-full rounded-full bg-accent"
+                    style={{ width: `${Math.min(100, Math.max(0, mission.overall_pct))}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {mission.members.map((member, i) => (
+                  <MissionMemberRow
+                    key={member.handle ?? `member-${i}`}
+                    member={member}
+                    isMe={!!myProfile && !!member.handle && member.handle === myProfile.handle}
+                  />
+                ))}
+              </div>
+
+              <div className="rounded-xl border border-border bg-surface/60 p-3">
+                {justLeft ? (
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-xs text-ink-muted">You left this mission.</p>
+                    <button
+                      type="button"
+                      onClick={handleJoin}
+                      disabled={joinMutation.isPending}
+                      className="glow-purple min-h-[44px] shrink-0 rounded-full bg-accent px-4 text-xs font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {joinMutation.isPending ? "Rejoining…" : "Rejoin"}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="min-w-0 flex-1 truncate text-xs text-ink-muted">
+                      {mission.my_commitment || "No commitment set yet."}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleLeave}
+                      disabled={leaveMutation.isPending}
+                      className="min-h-[44px] shrink-0 rounded-full border border-border px-4 text-xs text-ink-muted transition hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {leaveMutation.isPending ? "Leaving…" : "Leave"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              <form onSubmit={submitTask} className="space-y-2">
+                <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+                  Add a task
+                </span>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={taskTitle}
+                    onChange={(e) => setTaskTitle(e.target.value)}
+                    placeholder="Next step…"
+                    maxLength={256}
+                    aria-label="Task title"
+                    className="min-h-[44px] flex-1 rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint transition focus:border-accent/50"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!taskTitle.trim() || addTaskMutation.isPending}
+                    className="min-h-[44px] shrink-0 rounded-full border border-accent/40 bg-accent/10 px-4 text-xs font-semibold text-accent transition hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    Add
+                  </button>
+                </div>
+              </form>
+            </>
+          )}
+        </div>
+
+        {mission && (
+          <div className="flex shrink-0 items-end gap-2 border-t border-border bg-surface/95 px-4 py-3 backdrop-blur-md sm:px-6">
+            <select
+              value={updateKind}
+              onChange={(e) => setUpdateKind(e.target.value as "note" | "progress" | "milestone")}
+              aria-label="Update type"
+              className="min-h-[44px] shrink-0 rounded-xl border border-border bg-surface/60 px-2 text-xs text-ink outline-none transition focus:border-accent/50"
+            >
+              <option value="note">Note</option>
+              <option value="progress">Progress</option>
+              <option value="milestone">Milestone</option>
+            </select>
+            <textarea
+              value={updateText}
+              onChange={(e) => setUpdateText(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void submitUpdate();
+                }
+              }}
+              rows={1}
+              placeholder="Share an update…"
+              aria-label="Update"
+              className="max-h-32 min-h-[44px] flex-1 resize-none rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint transition focus:border-accent/50"
+            />
+            <button
+              type="button"
+              onClick={() => void submitUpdate()}
+              disabled={!updateText.trim() || addUpdateMutation.isPending}
+              className="glow-purple min-h-[44px] shrink-0 rounded-full bg-accent px-5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Post
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

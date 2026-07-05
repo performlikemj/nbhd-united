@@ -90,6 +90,11 @@ SYSTEM_CRONS = [
     # Each pillar gated on its enablement flag; Journal is always-on. Offset
     # 10 min after the Gravity snapshot to spread the iterate-all-tenants load.
     ("snapshot-pillars-weekly", "10 5 * * 0", "/api/cron/trigger/snapshot_pillars_weekly/"),
+    # Weekly Sunday 06:00 UTC — the Neighborhood Mission huddle. One warm,
+    # non-shaming digest per (mission, member, iso-week); idempotent via a
+    # compare-and-set on SharedGoalMembership.last_digest_window so a re-run
+    # never double-nudges. Delivered through each member's own send-to-user seam.
+    ("mission-weekly-digest", "0 6 * * 0", "/api/cron/trigger/mission_weekly_digest/"),
     # Monthly on 1st at 06:00 UTC — write FinanceSnapshot for every
     # finance-enabled active tenant. Idempotent per (tenant, date).
     # Powers the /api/v1/finance/snapshots/ endpoint (monthly debt/savings

@@ -191,4 +191,51 @@ export default function register(api) {
     }),
     { optional: true },
   );
+
+  // ── Mission context (the user's shared goals + crew progress) ────────────
+  api.registerTool(wrap({
+      name: "nbhd_mission_context",
+      description:
+        "Read the user's active Missions (shared goals with neighbors) and the crew's progress this week — per-member showed-up counts, streaks, each member's next step, and overall %. Use it to help YOUR human show up; you never act for another person and never message the group.",
+      parameters: { type: "object", additionalProperties: false, properties: {} },
+      async execute() {
+        const payload = await callRuntime(api, { path: tenantPath(api, "/missions/"), method: "GET" });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Propose a Mission task (proposal only — the human approves) ───────────
+  api.registerTool(wrap({
+      name: "nbhd_propose_mission_task",
+      description:
+        "PROPOSE ONE task for the USER toward a Mission they're part of. This creates a PROPOSAL only — it becomes the user's task only after they approve. You propose tasks for YOUR OWN human only, never for another member.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          mission_id: { type: "string", description: "The Mission id (from nbhd_mission_context)." },
+          title: { type: "string", description: "A short, concrete task the user can do toward the goal." },
+          description: { type: "string", description: "Optional extra detail." },
+          due_date: { type: "string", description: "Optional YYYY-MM-DD due date." },
+        },
+        required: ["mission_id", "title"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/missions/${encodeURIComponent(asTrimmedString(input.mission_id))}/propose-task/`),
+          method: "POST",
+          body: {
+            title: asTrimmedString(input.title),
+            description: asTrimmedString(input.description),
+            due_date: asTrimmedString(input.due_date),
+          },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
 }

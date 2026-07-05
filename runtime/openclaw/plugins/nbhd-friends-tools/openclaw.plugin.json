@@ -5,7 +5,9 @@
   "contracts": {
     "tools": [
       "nbhd_propose_lesson_share",
-      "nbhd_neighborhood_context"
+      "nbhd_neighborhood_context",
+      "nbhd_mission_context",
+      "nbhd_propose_mission_task"
     ]
   },
   "configSchema": {

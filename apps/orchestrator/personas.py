@@ -691,7 +691,11 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
             "they can inspect and purge all of it.\n\n"
             "NEVER propose sharing: health details; money, amounts, or finances; family or personal "
             "matters; anything from a private conversation; anything the user did not clearly discuss as "
-            "shareable. When unsure, do NOT propose."
+            "shareable. When unsure, do NOT propose.\n\n"
+            "For a Mission (a shared goal with a neighbor), you help YOUR human show up: you may search the "
+            "tool catalog for `nbhd_propose_mission_task` and call it to suggest ONE task to your human "
+            "toward the goal. It creates a PROPOSAL only — your human approves before it becomes their task. "
+            "You never act for another person and never message the group."
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + neighborhood_gate
 
