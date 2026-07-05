@@ -175,6 +175,7 @@ import {
   approveShare,
   rejectShare,
   revokeShare,
+  fetchWormholes,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -1896,6 +1897,19 @@ export function useNeighborProfileQuery() {
     queryKey: ["neighbor-profile"],
     queryFn: fetchNeighborProfile,
     staleTime: 10 * 60_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+// Warp targets for the constellation game's rim. Gated on BOTH login and
+// friends_enabled. Deliberately NOT persisted (see lib/query-persist.ts): a
+// wormhole set changes with grants/revocations, so it stays session-only.
+export function useWormholesQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["wormholes"],
+    queryFn: fetchWormholes,
+    staleTime: 30_000,
     enabled: isLoggedIn() && !!tenant?.friends_enabled,
   });
 }

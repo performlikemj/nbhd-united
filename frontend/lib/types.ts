@@ -1070,3 +1070,46 @@ export interface SharePreview {
   audience: string;
   residuals_banner: string;
 }
+
+// ── Wormholes & warp (PR3) ────────────────────────────────────────────────────
+// A wormhole gate = one accepted neighbor with ≥1 spark shared to me. Placement
+// is deterministic client-side from a stable hash of friendship_id (never stored
+// server-side). `new_since_last_visit` drives the "new" glow + chime.
+export interface Wormhole {
+  friendship_id: string;
+  display_name: string;
+  handle: string | null;
+  avatar_hue: number; // 0-359 — tints the gate + the friend galaxy
+  spark_count: number;
+  new_since_last_visit: number;
+}
+
+// A star in a neighbor's SHARED constellation. Distinct from GalaxyStar: the id
+// is a NAMESPACED string (`f:<friendship_id>:<shared_lesson_id>`), it carries no
+// game state / journal / tutoring fields, and the raw shared_lesson_id is
+// surfaced so "bring it home" can POST adopt without re-parsing the id.
+export interface FriendStar {
+  id: string;
+  shared_lesson_id: string;
+  text: string;
+  tags: string[];
+  cluster_id: number | null;
+  cluster_label: string;
+  star_stage: "proto" | "ignited" | "radiant" | "supernova";
+  x: number | null;
+  y: number | null;
+}
+
+export interface FriendGalaxyData {
+  stars: FriendStar[];
+  edges: never[]; // omitted for MVP (one less leak surface)
+  clusters: { id: number; label: string; count: number; tags: string[] }[];
+}
+
+// POST /api/v1/friends/shares/<id>/adopt/ — the souvenir lands as a PENDING
+// lesson in MY tenant. 201 on create, 200 on an idempotent repeat.
+export interface AdoptResult {
+  lesson_id: number;
+  status: string;
+  created: boolean;
+}

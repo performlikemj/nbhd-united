@@ -5,6 +5,7 @@ import { useEffect, useRef } from "react";
 import "./constellation-game.css";
 import type { GalaxyData } from "@/lib/constellation-game/encounter-logic";
 import { mountGalaxyGame } from "@/lib/constellation-game/galaxy-scene";
+import type { Wormhole } from "@/lib/types";
 
 /**
  * Mounts the Phaser galaxy game (canvas) plus its DOM overlay shell. This whole
@@ -13,8 +14,20 @@ import { mountGalaxyGame } from "@/lib/constellation-game/galaxy-scene";
  *
  * The overlay markup carries the `cg-*` ids the scene drives; the scene queries
  * them within this subtree (no global ids), so they can't collide with the app.
+ *
+ * `wormholes` + `initialWarp` (the ?friend= deep-link) drive the Neighborhood
+ * warp layer (PR3): empty/undefined unless friends_enabled, so the game is
+ * identical to before for everyone else.
  */
-export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
+export function ConstellationGame({
+  galaxy,
+  wormholes,
+  initialWarp,
+}: {
+  galaxy: GalaxyData;
+  wormholes?: Wormhole[];
+  initialWarp?: string | null;
+}) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -22,10 +35,14 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
     const host = canvasRef.current;
     const root = rootRef.current;
     if (!host || !root) return;
-    const game = mountGalaxyGame(host, root, galaxy);
+    const game = mountGalaxyGame(host, root, galaxy, { wormholes, initialWarp });
     return () => {
       game.destroy(true);
     };
+    // wormholes/initialWarp are read once at mount; remounting the whole game on
+    // every wormholes refetch would tear down flight state, so they're
+    // intentionally omitted from deps (the game pulls fresh friend galaxies live).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [galaxy]);
 
   return (
@@ -138,6 +155,33 @@ export function ConstellationGame({ galaxy }: { galaxy: GalaxyData }) {
           <div className="cg-tutor-actions">
             <button id="cg-tutor-skip" type="button">Skip phase</button>
             <button id="cg-tutor-end" type="button">End session</button>
+          </div>
+        </div>
+      </div>
+
+      {/* ── Wormholes & warp (PR3) — friend-galaxy chrome, shown only while the
+          co-resident FriendGalaxyScene is active (.cg-in-friend on the root) ── */}
+      {/* one-shot warp bloom (matches the WarpIn accent glow on the play page) */}
+      <div id="cg-warp-flash" className="cg-warp-flash" aria-hidden="true" />
+      {/* banner naming whose galaxy you're in, tinted by their hue */}
+      <div id="cg-friend-banner" className="cg-friend-banner" role="status" />
+      {/* always-visible return-home beacon */}
+      <button id="cg-return-home" className="cg-return-home" type="button">↩ Return home</button>
+      {/* land button (touch) inside a friend galaxy */}
+      <button id="cg-friend-land-btn" className="cg-land-btn cg-friend-land-btn" type="button">🛸 Land here</button>
+      {/* read-only spark sheet — title / text / tags + "bring it home" (adopt) */}
+      <div id="cg-friend-sheet" className="cg-overlay cg-friend-sheet" role="dialog" aria-modal="true" aria-labelledby="cg-fs-text">
+        <div className="cg-card">
+          <div className="cg-row">
+            <span className="cg-badge cg-fs-badge">shared spark</span>
+            <span className="cg-cluster" id="cg-fs-cluster">—</span>
+          </div>
+          <h1 id="cg-fs-text">—</h1>
+          <div className="cg-tags" id="cg-fs-tags" />
+          <p className="cg-fs-note">A read-only visit — nothing here changes their galaxy.</p>
+          <div className="cg-actions">
+            <button id="cg-fs-adopt" className="cg-primary" type="button">✦ Bring it home</button>
+            <button id="cg-fs-close" type="button">Back to flight</button>
           </div>
         </div>
       </div>

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import re
 import secrets
+from collections import Counter
 from datetime import timedelta
 
 from django.core.exceptions import ValidationError as DjangoValidationError
@@ -22,6 +23,8 @@ from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+
+from apps.tenants.models import Tenant
 
 from . import access
 from .models import FriendInvite, Friendship, NeighborProfile, PendingShare, SharedLesson, compute_pair_key
@@ -573,3 +576,124 @@ def _audience_label(viewer_tenant, edge) -> str:
     other_id = edge.addressee_id if edge.requester_id == viewer_tenant.id else edge.requester_id
     profile = NeighborProfile.objects.filter(tenant_id=other_id).first()
     return profile.display_name if profile else "a neighbor"
+
+
+# ── Wormholes & warp (PR3) ────────────────────────────────────────────────────
+
+
+def list_wormholes(viewer_tenant) -> list[dict]:
+    """Warp targets for the home galaxy: one gate per accepted neighbor with ≥1
+    active+ready spark shared to the viewer. Addressed only by ``friendship_id``
+    — never a neighbor's tenant_id. Gate placement is deterministic client-side
+    from a stable hash of ``friendship_id``; the payload carries the neighbor's
+    identity, spark count, and the "new since last visit" glow count.
+    """
+    targets = access.wormhole_targets(viewer_tenant)
+    owner_ids = [t["owner_id"] for t in targets]
+    profiles = {p.tenant_id: p for p in NeighborProfile.objects.filter(tenant_id__in=owner_ids)}
+    out: list[dict] = []
+    for target in targets:
+        profile = profiles.get(target["owner_id"])
+        out.append(
+            {
+                "friendship_id": str(target["friendship"].id),
+                "display_name": profile.display_name if profile else "Neighbor",
+                "handle": profile.handle if profile else None,
+                "avatar_hue": profile.avatar_hue if profile else 210,
+                "spark_count": target["spark_count"],
+                "new_since_last_visit": target["new_since_last_visit"],
+            }
+        )
+    out.sort(key=lambda w: (w["display_name"] or "").lower())
+    return out
+
+
+def friend_galaxy(viewer_tenant, friendship_id) -> dict:
+    """The neighbor's SHARED constellation as the exact ``GalaxyData`` shape the
+    game consumes (``{stars, edges, clusters}``), built server-side from
+    ``SharedLesson`` snapshots via the audited accessor — READ-ONLY.
+
+    Only ``ready`` + active-granted snapshots are returned (``shared_star_qs``);
+    the raw ``Lesson`` corpus, connections, and star journals are never touched.
+    Star ids are namespaced ``f:<friendship_id>:<shared_lesson_id>`` so they can
+    never collide with home-galaxy ``Lesson`` PKs or be replayed against
+    owner-scoped endpoints. Edges are OMITTED for MVP (one less leak surface);
+    clusters are derived from the shared subset's ``cluster_label`` values only.
+    """
+    edge = access.assert_neighbors(viewer_tenant, friendship_id)  # party + accepted, else 403
+    owner_id = access.other_party_id(edge, viewer_tenant)
+    snapshots = list(access.shared_star_qs(viewer_tenant, owner_id))
+
+    # Synthesize a stable integer cluster_id per distinct non-empty label within
+    # the shared subset (SharedLesson carries a scrubbed label, not a numeric id).
+    labels = sorted({s.cluster_label for s in snapshots if s.cluster_label})
+    label_to_id = {label: idx for idx, label in enumerate(labels)}
+
+    stars = []
+    for snap in snapshots:
+        cluster_id = label_to_id.get(snap.cluster_label) if snap.cluster_label else None
+        stars.append(
+            {
+                "id": f"f:{friendship_id}:{snap.id}",
+                "shared_lesson_id": str(snap.id),
+                "text": snap.redacted_text,
+                "tags": list(snap.tags or []),
+                "cluster_id": cluster_id,
+                "cluster_label": snap.cluster_label,
+                "star_stage": snap.star_stage or "proto",
+                "x": snap.position_x,
+                "y": snap.position_y,
+            }
+        )
+
+    counts: dict[str, int] = {}
+    tag_bags: dict[str, list] = {}
+    for snap in snapshots:
+        if not snap.cluster_label:
+            continue
+        counts[snap.cluster_label] = counts.get(snap.cluster_label, 0) + 1
+        tag_bags.setdefault(snap.cluster_label, []).extend(snap.tags or [])
+    clusters = [
+        {
+            "id": label_to_id[label],
+            "label": label,
+            "count": counts.get(label, 0),
+            "tags": [tag for tag, _n in Counter(tag_bags.get(label, [])).most_common(3)],
+        }
+        for label in labels
+    ]
+    return {"stars": stars, "edges": [], "clusters": clusters}
+
+
+def mark_wormhole_visited(viewer_tenant, friendship_id) -> dict:
+    """Advance the viewer's ``WormholeVisit`` watermark for a friendship (kills
+    the "new since last visit" glow). Party + accepted checked via the accessor."""
+    edge = access.assert_neighbors(viewer_tenant, friendship_id)
+    visit = access.upsert_wormhole_visit(viewer_tenant, edge)
+    return {"friendship_id": str(edge.id), "last_visited_at": visit.last_visited_at}
+
+
+def adopt_spark(viewer_tenant, viewer_user, shared_lesson_id) -> tuple[dict, int]:
+    """Souvenir: bring a neighbor's spark home as a PENDING lesson in the viewer's
+    own tenant (design §8). Idempotent per snapshot. 201 on create, 200 on an
+    existing adopt; 400 when adopting your own snapshot; 403 with no active grant.
+    """
+    try:
+        lesson, created = access.adopt_shared_lesson(viewer_tenant, viewer_user, shared_lesson_id)
+    except ValueError:
+        raise ValidationError("You can't bring home your own spark — it's already in your galaxy.")
+    return (
+        {"lesson_id": lesson.id, "status": lesson.status, "created": created},
+        201 if created else 200,
+    )
+
+
+def refresh_shared_positions(tenant_id) -> dict:
+    """QStash task body: copy-forward a tenant's current lesson coords onto their
+    ready shared snapshots (coords only). Debounced after a constellation
+    recluster (see apps/lessons/clustering.refresh_constellation)."""
+    tenant = Tenant.objects.filter(id=tenant_id).first()
+    if tenant is None:
+        return {"updated": 0, "reason": "no such tenant"}
+    updated = access.refresh_shared_positions_for_owner(tenant)
+    return {"updated": updated}

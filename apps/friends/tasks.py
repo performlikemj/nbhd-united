@@ -19,3 +19,15 @@ def scrub_shared_lesson_task(shared_lesson_id: str, pending_share_id: str | None
     result = scrub_shared_lesson(shared_lesson_id, pending_share_id=pending_share_id)
     logger.info("scrub_shared_lesson_task %s → %s", str(shared_lesson_id)[:8], result.get("reason"))
     return result
+
+
+def refresh_shared_positions_task(tenant_id: str) -> dict:
+    """Coords-only copy-forward of a tenant's lesson positions onto their ready
+    shared snapshots (design §8). Debounced: enqueued after the lessons app
+    finishes a constellation recluster. Carries no lesson content in its return.
+    """
+    from apps.friends.services import refresh_shared_positions
+
+    result = refresh_shared_positions(tenant_id)
+    logger.info("refresh_shared_positions_task %s → %s", str(tenant_id)[:8], result)
+    return result
