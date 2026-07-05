@@ -17,6 +17,7 @@ import re
 import secrets
 from datetime import timedelta
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q
 from django.utils import timezone
@@ -278,7 +279,9 @@ def _load_edge_for_party(tenant, friendship_id) -> Friendship:
     isn't a party (no-reveal for both cases)."""
     try:
         edge = Friendship.objects.select_related("requester", "addressee").get(id=friendship_id)
-    except (Friendship.DoesNotExist, ValueError, ValidationError) as exc:
+    except (Friendship.DoesNotExist, ValueError, DjangoValidationError, ValidationError) as exc:
+        # DjangoValidationError: a malformed UUID reaches here from callback
+        # paths (the console URLs are <uuid:>-guarded, callbacks are not).
         raise NotFound("No such wave.") from exc
     if tenant.id not in (edge.requester_id, edge.addressee_id):
         raise NotFound("No such wave.")

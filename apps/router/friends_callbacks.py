@@ -12,6 +12,7 @@ import logging
 
 import requests
 from django.conf import settings
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import JsonResponse
 
 from apps.tenants.models import Tenant
@@ -72,7 +73,10 @@ def handle_friend_callback(update: dict, tenant: Tenant) -> JsonResponse:
 
     try:
         edge = Friendship.objects.filter(id=friendship_id).first()
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, DjangoValidationError):
+        # Forged/garbled callback data (Telegram callback_query.data is
+        # client-controlled) — Django raises ValidationError on a malformed
+        # UUID; never let it 500 the webhook.
         edge = None
     if edge is None or edge.addressee_id != tenant.id:
         return _answer_callback(callback_id, "This wave is no longer available.")
@@ -104,7 +108,7 @@ def handle_friend_line_postback(tenant: Tenant, data: str) -> str:
     action, friendship_id = parts[1], parts[2]
     try:
         edge = Friendship.objects.filter(id=friendship_id).first()
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, DjangoValidationError):
         edge = None
     if edge is None or edge.addressee_id != tenant.id:
         return "That wave is no longer available."

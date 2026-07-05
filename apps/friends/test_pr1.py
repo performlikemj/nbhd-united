@@ -355,6 +355,22 @@ class CallbackHandlerTest(TestCase):
         self.assertEqual(self.edge.status, "accepted")
         self.assertIn("neighbors", reply.lower())
 
+    def test_forged_malformed_uuid_never_500s(self):
+        """callback_query.data is client-controlled: a forged
+        ``friend:accept:not-a-uuid`` raises DjangoValidationError from the UUID
+        coercion and must be answered gracefully, never 500 the webhook."""
+        from apps.router.friends_callbacks import handle_friend_callback, handle_friend_line_postback
+
+        update = self._update("accept")
+        update["callback_query"]["data"] = "friend:accept:not-a-uuid"
+        resp = handle_friend_callback(update, self.b)
+        self.assertEqual(resp.status_code, 200)
+        self.edge.refresh_from_db()
+        self.assertEqual(self.edge.status, "pending")  # untouched
+
+        reply = handle_friend_line_postback(self.b, "friend:accept:not-a-uuid")
+        self.assertIn("no longer available", reply.lower())
+
 
 class HandleValidationServiceTest(TestCase):
     def setUp(self):
