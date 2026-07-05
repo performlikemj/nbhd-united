@@ -1351,6 +1351,11 @@ class LineWebhookView(View):
             self._handle_lesson_postback(tenant, data)
             return
 
+        # Wave (friend-request) accept/decline callbacks
+        if data.startswith("friend:"):
+            self._handle_friend_postback(tenant, data)
+            return
+
         # Generic button forwards spawn a real AI turn, so they must clear the
         # same suspension + budget pre-flight gate as a typed message — otherwise
         # a tapped button skips the gate a typed message enforces and can land a
@@ -1572,6 +1577,21 @@ class LineWebhookView(View):
             _send_line_status_bubble(tenant, message, tone=tone)
         except Exception:
             logger.exception("Error handling task_action postback: %s", data)
+
+    @staticmethod
+    def _handle_friend_postback(tenant, data: str) -> None:
+        """Handle wave accept/decline from LINE postback (friend:<action>:<uuid>).
+
+        LINE has no message-edit API, so we resolve the wave via the shared
+        handler and push a plain-text confirmation follow-up."""
+        from apps.router.friends_callbacks import handle_friend_line_postback
+
+        try:
+            reply = handle_friend_line_postback(tenant, data)
+            if reply:
+                _send_line_follow_up(tenant, reply)
+        except Exception:
+            logger.exception("Error handling friend postback: %s", data)
 
     @staticmethod
     def _handle_lesson_postback(tenant, data: str) -> None:

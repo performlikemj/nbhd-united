@@ -33,6 +33,10 @@ const tones: Record<string, StyleTuple> = {
   in_progress: { bg: "var(--status-sky-bg)", text: "var(--status-sky-text)" },
   rescheduled: { bg: "var(--status-violet-bg)", text: "var(--status-violet-text)" },
   rest: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
+  // Friendship statuses (Neighborhood) — pending + revoked reuse the tones above.
+  accepted: { bg: "var(--status-emerald-bg)", text: "var(--status-emerald-text)" },
+  declined: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
+  blocked: { bg: "var(--status-rose-bg)", text: "var(--status-rose-text)" },
 };
 
 const fallbackTone: StyleTuple = {

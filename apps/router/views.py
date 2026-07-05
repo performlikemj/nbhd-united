@@ -235,6 +235,10 @@ def telegram_webhook(request):
             from apps.router.task_action_callbacks import handle_task_action_callback
 
             return handle_task_action_callback(update, tenant)
+        if callback_data.startswith("friend:"):
+            from apps.router.friends_callbacks import handle_friend_callback
+
+            return handle_friend_callback(update, tenant)
 
     # Unknown/inactive users are guided through onboarding.
     if not tenant:

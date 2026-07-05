@@ -1633,3 +1633,68 @@ export function submitMeditationFeedback(
     body: JSON.stringify(data),
   });
 }
+
+// ── Neighborhood (Friends) ───────────────────────────────────────────────────
+// All addressed by friendship_id — never a tenant_id — per apps/friends/urls.py.
+export function fetchNeighborhood(): Promise<import("@/lib/types").NeighborhoodData> {
+  return apiFetch<import("@/lib/types").NeighborhoodData>("/api/v1/friends/");
+}
+
+export function sendWave(data: {
+  handle: string;
+  note?: string;
+}): Promise<import("@/lib/types").WaveResult> {
+  return apiFetch<import("@/lib/types").WaveResult>("/api/v1/friends/waves/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function acceptWave(friendshipId: string): Promise<import("@/lib/types").FriendshipStatusResult> {
+  return apiFetch<import("@/lib/types").FriendshipStatusResult>(
+    `/api/v1/friends/waves/${friendshipId}/accept/`,
+    { method: "POST" },
+  );
+}
+
+export function declineWave(friendshipId: string): Promise<import("@/lib/types").FriendshipStatusResult> {
+  return apiFetch<import("@/lib/types").FriendshipStatusResult>(
+    `/api/v1/friends/waves/${friendshipId}/decline/`,
+    { method: "POST" },
+  );
+}
+
+export function blockWave(friendshipId: string): Promise<import("@/lib/types").FriendshipStatusResult> {
+  return apiFetch<import("@/lib/types").FriendshipStatusResult>(
+    `/api/v1/friends/waves/${friendshipId}/block/`,
+    { method: "POST" },
+  );
+}
+
+export function unfriend(friendshipId: string): Promise<import("@/lib/types").FriendshipStatusResult> {
+  return apiFetch<import("@/lib/types").FriendshipStatusResult>(`/api/v1/friends/${friendshipId}/`, {
+    method: "DELETE",
+  });
+}
+
+export function fetchNeighborProfile(): Promise<import("@/lib/types").NeighborProfile> {
+  return apiFetch<import("@/lib/types").NeighborProfile>("/api/v1/friends/profile/");
+}
+
+export function updateNeighborProfile(
+  data: Partial<import("@/lib/types").NeighborProfile>,
+): Promise<import("@/lib/types").NeighborProfile> {
+  return apiFetch<import("@/lib/types").NeighborProfile>("/api/v1/friends/profile/", {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+}
+
+export function createFriendInvite(
+  data: { max_uses?: number; expires_in_days?: number } = {},
+): Promise<import("@/lib/types").FriendInvite> {
+  return apiFetch<import("@/lib/types").FriendInvite>("/api/v1/friends/invites/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}

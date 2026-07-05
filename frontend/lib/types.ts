@@ -76,6 +76,7 @@ export interface Tenant {
   fuel_enabled: boolean;
   core_enabled: boolean;
   byo_models_enabled: boolean;
+  friends_enabled: boolean;
 }
 
 // Core (mindfulness) pillar — generated guided meditations.
@@ -981,4 +982,66 @@ export interface CreditsResponse {
   included_remaining: string | null; // null = unlimited
   packs: CreditPack[];
   recent_entries: CreditLedgerEntry[];
+}
+
+// ── Neighborhood (Friends) ───────────────────────────────────────────────────
+// Addressed only by friendship_id — the backend never returns a neighbor's
+// tenant_id (see apps/friends/views.py _wave_result / list_neighborhood).
+export type NeighborStatus = "pending" | "accepted" | "declined" | "blocked" | "revoked";
+
+export interface NeighborProfile {
+  handle: string;
+  display_name: string;
+  bio: string;
+  avatar_hue: number; // 0-359
+}
+
+export interface Neighbor {
+  friendship_id: string;
+  display_name: string;
+  handle: string;
+  avatar_hue: number;
+  status: NeighborStatus;
+  since: string;
+}
+
+export interface PendingWave {
+  friendship_id: string;
+  display_name: string;
+  handle: string;
+  avatar_hue: number;
+  note: string;
+  created_at: string;
+}
+
+export interface NeighborhoodData {
+  profile: NeighborProfile | null;
+  neighbors: Neighbor[];
+  pending_incoming: PendingWave[];
+  pending_outgoing: PendingWave[];
+}
+
+// Response shape shared by the accept/decline/block and unfriend endpoints.
+export interface FriendshipStatusResult {
+  friendship_id: string;
+  status: NeighborStatus;
+}
+
+// POST /api/v1/friends/waves/ response — the other party's public profile +
+// the resulting edge status (200 if it resolved an existing edge, e.g. waving
+// back accepts immediately; 201 if a new pending wave was created).
+export interface WaveResult {
+  friendship_id: string;
+  status: NeighborStatus;
+  display_name: string;
+  handle: string;
+  avatar_hue: number;
+}
+
+export interface FriendInvite {
+  token: string;
+  url: string;
+  expires_at: string;
+  max_uses: number;
+  uses: number;
 }
