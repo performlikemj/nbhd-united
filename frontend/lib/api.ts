@@ -1698,3 +1698,140 @@ export function createFriendInvite(
     body: JSON.stringify(data),
   });
 }
+
+// ── Neighborhood shares (PR2) ────────────────────────────────────────────────
+// propose → scrub → preview → approve → publish.
+
+export function shareLesson(
+  lessonId: number,
+  friendshipId: string,
+): Promise<{ pending_share_id: string; status: string }> {
+  return apiFetch<{ pending_share_id: string; status: string }>(`/api/v1/lessons/${lessonId}/share/`, {
+    method: "POST",
+    body: JSON.stringify({ friendship_id: friendshipId }),
+  });
+}
+
+export function fetchPendingShares(): Promise<import("@/lib/types").PendingShare[]> {
+  return apiFetch<import("@/lib/types").PendingShare[]>("/api/v1/friends/shares/pending/");
+}
+
+/**
+ * Same auth/refresh handling as apiFetch above, but never throws on a
+ * "successful failure" status (202 "still scrubbing", 409 "can't share") —
+ * it hands the status back so the share-preview poll and the approve flow
+ * can branch on it directly instead of parsing a thrown error's `.status`.
+ */
+async function apiFetchStatus<T>(
+  path: string,
+  init?: RequestInit,
+): Promise<{ status: number; data: T }> {
+  let accessToken = getAccessToken();
+
+  if (accessToken && getRefreshToken() && isTokenExpiringSoon(accessToken)) {
+    try {
+      accessToken = await getDedupedRefresh();
+    } catch {
+      // Proceed with the stale token; a 401 below is handled the same way.
+    }
+  }
+
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(init?.headers as Record<string, string> ?? {}),
+  };
+  if (accessToken) {
+    headers["Authorization"] = `Bearer ${accessToken}`;
+  }
+
+  let response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+
+  if (response.status === 401 && getRefreshToken()) {
+    try {
+      const newToken = await getDedupedRefresh();
+      headers["Authorization"] = `Bearer ${newToken}`;
+      response = await fetch(`${API_BASE}${path}`, { ...init, headers });
+    } catch {
+      // Fall through — response is still the original 401.
+    }
+  }
+
+  if (response.status === 204) {
+    return { status: response.status, data: undefined as T };
+  }
+
+  let data: unknown;
+  try {
+    data = await response.json();
+  } catch {
+    data = undefined;
+  }
+  return { status: response.status, data: data as T };
+}
+
+export type SharePreviewResult =
+  | { status: 200; data: import("@/lib/types").SharePreview }
+  | { status: 202 | 409; detail: string };
+
+// GET /api/v1/friends/shares/preview/ — 200 once the scrub is ready, 202
+// while it's still running (poll again), 409 if the scrub failed outright.
+export async function fetchSharePreview(
+  lessonId: number,
+  friendshipId: string,
+): Promise<SharePreviewResult> {
+  const qs = new URLSearchParams({ lesson_id: String(lessonId), friendship_id: friendshipId });
+  const { status, data } = await apiFetchStatus<
+    import("@/lib/types").SharePreview & { detail?: string }
+  >(`/api/v1/friends/shares/preview/?${qs.toString()}`);
+
+  if (status === 200) return { status, data: data as import("@/lib/types").SharePreview };
+  if (status === 202 || status === 409) {
+    return { status, detail: data?.detail ?? "Something went wrong." };
+  }
+  const err = new Error(data?.detail ?? `Request failed: ${status}`);
+  (err as Error & { status: number }).status = status;
+  throw err;
+}
+
+export interface ApproveShareSuccess {
+  pending_share_id: string;
+  status: string;
+  grant_id: string;
+}
+
+export type ApproveShareResult =
+  | { status: 200; data: ApproveShareSuccess }
+  | { status: 202 | 409; detail: string };
+
+// POST /api/v1/friends/shares/<id>/approve/ — 200 publishes immediately, 202
+// means an edited `final_text` triggered a re-scrub (go back to preview/poll
+// before it can be approved again), 409 means the scrub failed.
+export async function approveShare(id: string, finalText?: string): Promise<ApproveShareResult> {
+  const { status, data } = await apiFetchStatus<ApproveShareSuccess & { detail?: string }>(
+    `/api/v1/friends/shares/${id}/approve/`,
+    {
+      method: "POST",
+      body: JSON.stringify(finalText !== undefined ? { final_text: finalText } : {}),
+    },
+  );
+
+  if (status === 200) return { status, data: data as ApproveShareSuccess };
+  if (status === 202 || status === 409) {
+    return { status, detail: data?.detail ?? "Something went wrong." };
+  }
+  const err = new Error(data?.detail ?? `Request failed: ${status}`);
+  (err as Error & { status: number }).status = status;
+  throw err;
+}
+
+export function rejectShare(id: string): Promise<{ pending_share_id: string; status: string }> {
+  return apiFetch<{ pending_share_id: string; status: string }>(`/api/v1/friends/shares/${id}/reject/`, {
+    method: "POST",
+  });
+}
+
+export function revokeShare(lessonId: number, grantId: string): Promise<{ revoked: boolean }> {
+  return apiFetch<{ revoked: boolean }>(`/api/v1/lessons/${lessonId}/share/${grantId}/`, {
+    method: "DELETE",
+  });
+}

@@ -1045,3 +1045,28 @@ export interface FriendInvite {
   max_uses: number;
   uses: number;
 }
+
+// ── Neighborhood shares (PR2) ────────────────────────────────────────────────
+// The propose → scrub → preview → approve → publish pipeline. Every share is
+// addressed by friendship_id + lesson id (see the header note above) — never
+// a raw tenant id.
+export interface PendingShare {
+  id: string;
+  lesson_id: number;
+  lesson_preview: string;
+  proposed_by: string;
+  friendship_id: string;
+  audience: string;
+  created_at: string;
+}
+
+// What the neighbor will actually see, already redacted. `residuals_banner`
+// is the exact caution copy the backend wants shown next to it — always
+// render this value rather than hardcoding the copy here, so wording changes
+// server-side don't need a frontend redeploy.
+export interface SharePreview {
+  redacted_text: string;
+  redacted_context: string;
+  audience: string;
+  residuals_banner: string;
+}

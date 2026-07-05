@@ -187,15 +187,18 @@ class AssertCanWriteTest(TestCase):
             access.assert_can_write(self.a, self.b, allow_hibernated=False)
 
 
-class SharedStarQsStubTest(TestCase):
-    """The stub carries its full contract but must not silently return data
-    before PR2 wires the real query."""
+class SharedStarQsTest(TestCase):
+    """PR2 wired the real query; for non-neighbors it returns an EMPTY queryset
+    (never raises into a data leak). Full visibility is covered in test_pr2."""
 
-    def test_raises_not_implemented(self):
+    def test_non_neighbors_get_empty(self):
         a = _make_tenant("ssq_a")
         b = _make_tenant("ssq_b")
-        with self.assertRaises(NotImplementedError):
-            access.shared_star_qs(a, b)
+        self.assertEqual(access.shared_star_qs(a, b).count(), 0)
+
+    def test_self_gets_empty(self):
+        a = _make_tenant("ssq_self")
+        self.assertEqual(access.shared_star_qs(a, a).count(), 0)
 
 
 class EnvelopeSectionTest(TestCase):

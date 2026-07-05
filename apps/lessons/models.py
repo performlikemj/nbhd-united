@@ -36,6 +36,7 @@ class Lesson(models.Model):
             ("reflection", "Reflection"),
             ("article", "Article/Reading"),
             ("experience", "Life Experience"),
+            ("shared", "Adopted from a neighbor"),
         ],
     )
     source_ref = models.CharField(

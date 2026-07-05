@@ -50,10 +50,15 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 FRIENDS_DIR = REPO_ROOT / "apps" / "friends"
 ACCESS_MODULE = FRIENDS_DIR / "access.py"
 
-# Friends runtime views live here (design §3.5). Scanning the whole module is
-# safe: only the four CROSS_TENANT_MODELS trip it, so the file's unrelated
-# ``.objects`` usage (Lesson, Tenant, …) is untouched.
-RUNTIME_VIEW_FILES = [REPO_ROOT / "apps" / "integrations" / "runtime_views.py"]
+# Friends runtime views live here (design §3.5). The lessons ViewSet grew a
+# ``share`` / ``revoke_share`` action in PR2 that must delegate to
+# apps/friends/services — never query the cross-tenant managers directly.
+# Scanning the whole module is safe: only the four CROSS_TENANT_MODELS trip it,
+# so each file's unrelated ``.objects`` usage (Lesson, Tenant, …) is untouched.
+RUNTIME_VIEW_FILES = [
+    REPO_ROOT / "apps" / "integrations" / "runtime_views.py",
+    REPO_ROOT / "apps" / "lessons" / "views.py",
+]
 
 
 def _manager_accesses(source: str) -> set[str]:
@@ -134,10 +139,10 @@ class AccessChokepointTest(SimpleTestCase):
         self.assertEqual(
             offenders,
             [],
-            "A runtime view queries a cross-tenant friends model directly. "
-            "Runtime endpoints are per-tenant-keyed; cross-tenant data must be "
-            "brokered by Django through apps/friends/access.py after the edge "
-            f"check. Offenders: {offenders}",
+            "A runtime view or the lessons share action queries a cross-tenant "
+            "friends model directly. These must delegate to apps/friends/services "
+            "(which routes every SharedLesson / LessonShareGrant query through "
+            f"apps/friends/access.py). Offenders: {offenders}",
         )
 
     def test_accessor_module_present(self):

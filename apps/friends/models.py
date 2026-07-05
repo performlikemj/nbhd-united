@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.contrib.postgres.fields import ArrayField
 from django.db import models
 
 from apps.tenants.models import Tenant, User
@@ -140,3 +141,147 @@ class FriendInvite(models.Model):
 
     def __str__(self) -> str:
         return f"invite:{self.token[:8]}…"
+
+
+class SharedLesson(models.Model):
+    """A FROZEN, PII-scrubbed snapshot of one ``Lesson``, safe to show ANY
+    neighbor. NO rehydration map is ever attached — the recipient must be
+    structurally unable to un-scrub it (design §2.4).
+
+    One scrub serves every audience (the neutralized text carries no
+    per-recipient info), so this is OneToOne on the source lesson and
+    friend-agnostic. WHO may see it is a separate concern (``LessonShareGrant``).
+    Every ``.objects`` query for this model lives in :mod:`apps.friends.access`
+    (chokepoint-enforced).
+    """
+
+    class ScrubStatus(models.TextChoices):
+        PENDING = "pending", "Scrub pending"
+        READY = "ready", "Scrubbed & publishable"
+        FAILED = "failed", "Blocked (fail-closed)"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_lesson = models.OneToOneField("lessons.Lesson", on_delete=models.CASCADE, related_name="shared_snapshot")
+    owner_tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="shared_lessons")
+
+    # ── FROZEN, NEUTRALIZED payload (every [TYPE_N] → a generic word; NO map) ──
+    redacted_text = models.TextField(blank=True)
+    redacted_context = models.TextField(blank=True)
+    tags = ArrayField(models.CharField(max_length=100), default=list)  # allowlisted safe subset
+    cluster_label = models.CharField(max_length=200, blank=True)  # scrubbed
+
+    # ── Snapshot galaxy geometry (owner's tenant-local coords, COPIED at freeze) ──
+    position_x = models.FloatField(null=True, blank=True)
+    position_y = models.FloatField(null=True, blank=True)
+    star_stage = models.CharField(max_length=20, default="proto")
+
+    # ── Fail-closed scrub lifecycle ──
+    content_hash = models.CharField(max_length=64, blank=True)  # sha256(text+ctx) → drift → re-scrub
+    scrub_status = models.CharField(max_length=10, choices=ScrubStatus.choices, default=ScrubStatus.PENDING)
+    scrub_model_version = models.CharField(max_length=40, blank=True)  # NER model version → re-scrub sweep
+    scrub_error = models.TextField(blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    scrubbed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "shared_lessons"
+        indexes = [models.Index(fields=["owner_tenant", "scrub_status"])]
+
+    def __str__(self) -> str:
+        return f"shared_lesson:{self.id} ({self.scrub_status})"
+
+
+class LessonShareGrant(models.Model):
+    """WHO may see a ``SharedLesson``. Exactly one audience per row. Revocation
+    is per-grant — flip status=revoked and access dies instantly with zero
+    residue (read-through model, design §2.5).
+
+    PR2 ships the ``friendship`` audience only; the ``circle`` FK + the full
+    ``friendship XOR circle`` XOR constraint land in PR7. The named constraint
+    below is intentionally kept so PR7 widens it (condition change) rather than
+    introducing a new one. Every ``.objects`` query lives in
+    :mod:`apps.friends.access` (chokepoint-enforced).
+    """
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        REVOKED = "revoked", "Revoked"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    shared_lesson = models.ForeignKey(SharedLesson, on_delete=models.CASCADE, related_name="grants")
+    friendship = models.ForeignKey(
+        Friendship, on_delete=models.CASCADE, null=True, blank=True, related_name="lesson_grants"
+    )
+    granted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="+")
+    status = models.CharField(max_length=8, choices=Status.choices, default=Status.ACTIVE)
+    created_at = models.DateTimeField(auto_now_add=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "lesson_share_grants"
+        constraints = [
+            # PR7: widen to Q(friendship__isnull=False) ^ Q(circle__isnull=False).
+            models.CheckConstraint(
+                condition=models.Q(friendship__isnull=False),
+                name="grant_exactly_one_audience",
+            ),
+            # Partial-unique per audience → one grant per (lesson, friendship).
+            models.UniqueConstraint(
+                fields=["shared_lesson", "friendship"],
+                name="uq_grant_friendship",
+                condition=models.Q(friendship__isnull=False),
+            ),
+        ]
+        indexes = [models.Index(fields=["friendship", "status"])]
+
+    def __str__(self) -> str:
+        return f"grant:{self.id} ({self.status})"
+
+
+class PendingShare(models.Model):
+    """Agent proposes / human approves a share (design §2.6). The agent writes
+    ``proposed_by="agent", status="pending"`` and can NEVER flip it to approved
+    — a human approve is the only path that creates a ``LessonShareGrant``.
+
+    MVP: ``source_lesson`` is REQUIRED (an existing star only; the
+    propose-share-NEW path is deferred). ``target_circle`` lands in PR7.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPROVED = "approved", "Approved"
+        EDITED = "edited", "Edited & approved"
+        REJECTED = "rejected", "Rejected"
+        EXPIRED = "expired", "Expired"
+        BLOCKED = "blocked", "Blocked (scrub failed)"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        Tenant, on_delete=models.CASCADE, related_name="pending_shares"
+    )  # author's HUMAN approves
+    source_lesson = models.ForeignKey("lessons.Lesson", on_delete=models.CASCADE, related_name="pending_shares")
+    proposed_by = models.CharField(max_length=8, default="agent")  # agent | user
+    source_context = models.TextField(blank=True)  # agent's private "why" — never egressed
+    preview_text = models.TextField(blank=True)  # convenience mirror of the scrubbed text at approve time
+    final_text = models.TextField(blank=True)  # what the human actually approved (post-edit)
+    target_friendship = models.ForeignKey(Friendship, on_delete=models.CASCADE, null=True, blank=True)
+
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    telegram_message_id = models.BigIntegerField(null=True, blank=True)
+    line_message_token = models.CharField(max_length=120, blank=True)
+    notified_at = models.DateTimeField(null=True, blank=True)  # APNs one-push claim
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField()  # +7d, like PendingExtraction
+
+    class Meta:
+        db_table = "pending_shares"
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["target_friendship", "status"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"pending_share:{self.id} ({self.status})"
