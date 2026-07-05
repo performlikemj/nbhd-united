@@ -1881,3 +1881,63 @@ export function purgeAbsorbed(id: string): Promise<void> {
     method: "POST",
   });
 }
+
+// ── Friend chat (PR5) ──────────────────────────────────────────────────────
+// 1:1 threads between accepted neighbors — every call addressed by
+// thread_id, never a raw tenant_id. Trailing slashes required.
+
+/** GET /api/v1/friends/threads/ — every thread the tenant is a member of. */
+export function fetchThreads(): Promise<import("@/lib/types").ChatThread[]> {
+  return apiFetch<import("@/lib/types").ChatThread[]>("/api/v1/friends/threads/");
+}
+
+/** POST /api/v1/friends/threads/ — open (or fetch) the 1:1 thread for a friendship. */
+export function openThread(
+  friendshipId: string,
+): Promise<{ thread_id: string; friendship_id: string }> {
+  return apiFetch<{ thread_id: string; friendship_id: string }>("/api/v1/friends/threads/", {
+    method: "POST",
+    body: JSON.stringify({ friendship_id: friendshipId }),
+  });
+}
+
+/** GET /api/v1/friends/threads/<id>/messages/ — a page of messages, newest-cursor first. */
+export function fetchThreadMessages(
+  threadId: string,
+  since?: string,
+): Promise<import("@/lib/types").ChatPage> {
+  const qs = new URLSearchParams({ limit: "50" });
+  if (since) qs.set("since", since);
+  return apiFetch<import("@/lib/types").ChatPage>(
+    `/api/v1/friends/threads/${threadId}/messages/?${qs.toString()}`,
+  );
+}
+
+export function sendThreadMessage(
+  threadId: string,
+  data: { client_msg_id: string; text: string },
+): Promise<{ public_id: string; seq: number; created: boolean }> {
+  return apiFetch<{ public_id: string; seq: number; created: boolean }>(
+    `/api/v1/friends/threads/${threadId}/messages/`,
+    { method: "POST", body: JSON.stringify(data) },
+  );
+}
+
+export function markThreadRead(
+  threadId: string,
+): Promise<{ thread_id: string; last_read_seq: number }> {
+  return apiFetch<{ thread_id: string; last_read_seq: number }>(
+    `/api/v1/friends/threads/${threadId}/read/`,
+    { method: "POST" },
+  );
+}
+
+export function patchThreadMembership(
+  threadId: string,
+  data: { muted?: boolean; agent_absorb_enabled?: boolean },
+): Promise<{ thread_id: string; muted: boolean; agent_absorb_enabled: boolean }> {
+  return apiFetch<{ thread_id: string; muted: boolean; agent_absorb_enabled: boolean }>(
+    `/api/v1/friends/threads/${threadId}/membership/`,
+    { method: "PATCH", body: JSON.stringify(data) },
+  );
+}

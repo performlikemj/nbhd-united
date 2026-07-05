@@ -6,6 +6,8 @@ import { isLoggedIn } from "@/lib/auth";
 import {
   AbsorbedItem,
   AuthUser,
+  ChatPage,
+  ChatThread,
   CronJob,
   Integration,
   Neighbor,
@@ -179,6 +181,12 @@ import {
   fetchWormholes,
   fetchAbsorbed,
   purgeAbsorbed,
+  fetchThreads,
+  openThread,
+  fetchThreadMessages,
+  sendThreadMessage,
+  markThreadRead,
+  patchThreadMembership,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -2201,6 +2209,118 @@ export function usePurgeAbsorbedMutation() {
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["absorbed"] });
+    },
+  });
+}
+
+// ── Friend chat (PR5) ────────────────────────────────────────────────────────
+// 1:1 threads between accepted neighbors. Gated the same as the rest of
+// Neighborhood. Deliberately NOT in query-persist.ts's allowlist — replaying
+// a stale chat feed from localStorage on reload is actively wrong, not just
+// stale (see the Absorbed/Wormholes precedent above).
+
+export function useThreadsQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["friend-threads"],
+    queryFn: fetchThreads,
+    staleTime: 15_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+// Messages for one open thread. `active` = the thread panel is mounted AND
+// the tab is visible — same function-form refetchInterval contract as
+// useTelegramStatusQuery above, so a backgrounded tab (or a closed panel)
+// doesn't keep polling a possibly-hibernated tenant container every 4s.
+export function useThreadMessagesQuery(threadId: string | null, opts: { active: boolean }) {
+  return useQuery({
+    queryKey: ["friend-messages", threadId],
+    queryFn: () => fetchThreadMessages(threadId as string),
+    enabled: isLoggedIn() && !!threadId,
+    staleTime: 0,
+    refetchInterval: (query) => {
+      if (!threadId) return false;
+      if (query.state.status === "error") return false;
+      return opts.active ? 4000 : false;
+    },
+    refetchIntervalInBackground: false,
+  });
+}
+
+export function useOpenThreadMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ friendshipId }: { friendshipId: string }) => openThread(friendshipId),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["friend-threads"] });
+    },
+  });
+}
+
+// Optimistic send: the outgoing message appears immediately under a
+// client-generated id, then `onSettled` reconciles against the server
+// (success replaces it with the canonical row; failure's `onError` rolls it
+// back). `meta.skipErrorToast` — the composer renders the failure inline
+// instead of a global toast, same convention as useSendWaveMutation.
+export function useSendMessageMutation(threadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ text, clientMsgId }: { text: string; clientMsgId: string }) =>
+      sendThreadMessage(threadId, { client_msg_id: clientMsgId, text }),
+    meta: { skipErrorToast: true },
+    onMutate: async ({ text, clientMsgId }: { text: string; clientMsgId: string }) => {
+      await qc.cancelQueries({ queryKey: ["friend-messages", threadId] });
+      const previous = qc.getQueryData<ChatPage>(["friend-messages", threadId]);
+      const optimisticMessage = {
+        public_id: `pending-${clientMsgId}`,
+        seq: Number.MAX_SAFE_INTEGER,
+        text,
+        mine: true,
+        created_at: new Date().toISOString(),
+      };
+      qc.setQueryData<ChatPage>(["friend-messages", threadId], (old) =>
+        old
+          ? { ...old, messages: [...old.messages, optimisticMessage] }
+          : { messages: [optimisticMessage], next_cursor: null },
+      );
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["friend-messages", threadId], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["friend-messages", threadId] });
+      // Refreshes last_message/last_message_at on the thread list row.
+      void qc.invalidateQueries({ queryKey: ["friend-threads"] });
+    },
+  });
+}
+
+export function useMarkThreadReadMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (threadId: string) => markThreadRead(threadId),
+    onSuccess: (_data, threadId) => {
+      qc.setQueryData<ChatThread[]>(["friend-threads"], (old) =>
+        old ? old.map((t) => (t.thread_id === threadId ? { ...t, unread: 0 } : t)) : old,
+      );
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["friend-threads"] });
+    },
+  });
+}
+
+export function usePatchMembershipMutation(threadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { muted?: boolean; agent_absorb_enabled?: boolean }) =>
+      patchThreadMembership(threadId, data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["friend-threads"] });
     },
   });
 }

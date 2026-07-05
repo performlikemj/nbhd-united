@@ -27,7 +27,8 @@ from django.db.models.signals import post_delete, post_save
 from apps.orchestrator.envelope_registry import register_section
 from apps.tenants.models import Tenant
 
-from .models import AbsorbedItem, Friendship, LessonShareGrant, NeighborProfile
+from . import access
+from .models import AbsorbedItem, FriendMessage, Friendship, LessonShareGrant, NeighborProfile
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +44,14 @@ _MAX_SPARKS = 5
     # absorber) correctly; Friendship no-ops (no single tenant); LessonShareGrant
     # no-ops in the universal receiver and is handled by the explicit receiver
     # below.
-    refresh_on=(Friendship, LessonShareGrant, AbsorbedItem),
+    refresh_on=(Friendship, LessonShareGrant, AbsorbedItem, FriendMessage),
     order=63,
 )
 def render_neighborhood(tenant: Tenant) -> str:
     """TIGHT (≤~1KB): accepted neighbor handles + up to 5 newest un-purged
-    absorbed sparks (title + @handle). Never raises."""
+    absorbed sparks (title + @handle) + a chat POINTER (thread + @handle + count,
+    NEVER message text — USER.md is written to the share file, so raw friend text
+    must stay out; the agent pulls the redacted text at turn time). Never raises."""
     try:
         edges = Friendship.objects.filter(
             Q(requester=tenant) | Q(addressee=tenant), status=Friendship.Status.ACCEPTED
@@ -64,7 +67,8 @@ def render_neighborhood(tenant: Tenant) -> str:
                 source_kind=AbsorbedItem.SourceKind.SHARED_LESSON,
             ).order_by("-absorbed_at")[:_MAX_SPARKS]
         )
-        if not handles and not sparks:
+        chat_counts = access.chat_absorb_pending_counts(tenant)[:2]
+        if not handles and not sparks and not chat_counts:
             return ""
 
         lines: list[str] = []
@@ -83,6 +87,11 @@ def render_neighborhood(tenant: Tenant) -> str:
                 who = handle_by_id.get(spark.from_tenant_id)
                 title = (spark.label or "a shared spark").strip()[:100]
                 lines.append(f"- {title}" + (f" — @{who}" if who else ""))
+        if chat_counts:
+            lines.append("New neighborhood messages (call nbhd_neighborhood_context to read them):")
+            for entry in chat_counts:
+                who = entry.get("from_handle")
+                lines.append(f"- {entry['count']} new from @{who}" if who else f"- {entry['count']} new messages")
         return "\n".join(lines)
     except Exception:  # noqa: BLE001 — an envelope section must never break a turn
         logger.warning("render_neighborhood failed for tenant %s", getattr(tenant, "id", "?"), exc_info=True)
@@ -125,6 +134,26 @@ def _refresh_recipient_on_grant(sender, instance, **kwargs) -> None:
         logger.warning("grant recipient refresh receiver failed", exc_info=True)
 
 
-# weak=False so the receiver lives for the process lifetime (mirrors the registry).
+def _refresh_on_friend_message(sender, instance, **kwargs) -> None:
+    """Refresh the OTHER participants' USER.md when a friend message lands (the
+    sender doesn't need a refresh for their own message). Same two-party gap as
+    grants: FriendMessage has ``sender_tenant`` but the party who needs the
+    refresh is the recipient. Defensive: never raises."""
+    try:
+        from .models import FriendThreadMembership
+
+        recipient_ids = (
+            FriendThreadMembership.objects.filter(thread_id=instance.thread_id, left_at__isnull=True)
+            .exclude(tenant_id=instance.sender_tenant_id)
+            .values_list("tenant_id", flat=True)
+        )
+        for tenant_id in recipient_ids:
+            _schedule_recipient_push(tenant_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("friend message refresh receiver failed", exc_info=True)
+
+
+# weak=False so the receivers live for the process lifetime (mirrors the registry).
 post_save.connect(_refresh_recipient_on_grant, sender=LessonShareGrant, weak=False)
 post_delete.connect(_refresh_recipient_on_grant, sender=LessonShareGrant, weak=False)
+post_save.connect(_refresh_on_friend_message, sender=FriendMessage, weak=False)

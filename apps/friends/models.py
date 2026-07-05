@@ -354,3 +354,88 @@ class AbsorbedItem(models.Model):
 
     def __str__(self) -> str:
         return f"absorbed:{self.tenant_id}:{self.source_kind}:{self.source_id}"
+
+
+class FriendThread(models.Model):
+    """A cross-tenant 1:1 chat thread (design §2.7). ``router.ChatThread`` is
+    tenant-FK'd + ``is_main``-per-tenant, so it actively forbids a cross-tenant
+    thread — hence a new control-plane table. Circle threads land in PR7."""
+
+    class Kind(models.TextChoices):
+        DIRECT = "direct", "1:1"
+        CIRCLE = "circle", "Circle"  # PR7
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    kind = models.CharField(max_length=8, choices=Kind.choices, default=Kind.DIRECT)
+    friendship = models.ForeignKey(Friendship, on_delete=models.CASCADE, null=True, blank=True, related_name="thread")
+    title = models.CharField(max_length=160, blank=True)
+    created_by = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="threads_started")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_message_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        db_table = "friend_threads"
+        constraints = [
+            # One direct thread per edge (PR7 adds circle threads under kind=circle).
+            models.UniqueConstraint(
+                fields=["friendship"], name="uq_direct_thread", condition=models.Q(friendship__isnull=False)
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"thread:{self.id} ({self.kind})"
+
+
+class FriendThreadMembership(models.Model):
+    """A tenant's membership in a FriendThread. Carries the per-member absorb +
+    read cursors and the mute/absorb toggles."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    thread = models.ForeignKey(FriendThread, on_delete=models.CASCADE, related_name="memberships")
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="thread_memberships")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="+")
+    role = models.CharField(max_length=8, default="member")  # member | admin
+    muted = models.BooleanField(default=False)  # mute APNs nudges
+    agent_absorb_enabled = models.BooleanField(default=True)  # mute MY agent's absorption of THIS thread
+    last_read_seq = models.BigIntegerField(default=0)  # unread counts
+    last_absorbed_seq = models.BigIntegerField(default=0)  # idempotent agent-absorb cursor
+    joined_at = models.DateTimeField(auto_now_add=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "friend_thread_memberships"
+        constraints = [models.UniqueConstraint(fields=["thread", "tenant"], name="uq_thread_member")]
+        indexes = [models.Index(fields=["tenant", "left_at"])]
+
+    def __str__(self) -> str:
+        return f"member:{self.thread_id}:{self.tenant_id}"
+
+
+class FriendMessage(models.Model):
+    """Plain human-authored text (design §2.7/§4.6). NOT agent-scrubbed — a human
+    chose these words for another human (consent by typing); it carries no
+    per-tenant ``[PERSON_N]`` placeholders. Absorption into each member's agent
+    applies THAT tenant's own egress redaction fresh. Every ``.objects`` query
+    is confined to :mod:`apps.friends.access` (chokepoint)."""
+
+    seq = models.BigAutoField(primary_key=True)  # monotonic → cheap keyset tiebreaker
+    public_id = models.UUIDField(default=uuid.uuid4, editable=False, unique=True)  # client-facing id
+    thread = models.ForeignKey(FriendThread, on_delete=models.CASCADE, related_name="messages")
+    sender_tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="+")
+    sender_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="+")
+    client_msg_id = models.CharField(max_length=64)  # offline-outbox idempotency
+    text = models.TextField()
+    notified_at = models.DateTimeField(null=True, blank=True)  # coarse one-push claim (isnull→now)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    edited_at = models.DateTimeField(null=True, blank=True)
+    deleted_at = models.DateTimeField(null=True, blank=True)  # self-delete / moderation
+
+    class Meta:
+        db_table = "friend_messages"
+        constraints = [
+            models.UniqueConstraint(fields=["sender_tenant", "client_msg_id"], name="uq_friend_msg_idem"),
+        ]
+        indexes = [models.Index(fields=["thread", "created_at", "seq"])]  # keyset feed
+
+    def __str__(self) -> str:
+        return f"msg:{self.seq}:{self.thread_id}"

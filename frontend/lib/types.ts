@@ -1125,3 +1125,32 @@ export interface AbsorbedItem {
   label: string;
   absorbed_at: string;
 }
+
+// ── Friend chat (PR5) ──────────────────────────────────────────────────────
+// 1:1 threads between accepted neighbors, addressed by thread_id — never a
+// raw tenant_id. See apps/friends/views.py chat endpoints.
+export interface ChatThread {
+  thread_id: string;
+  friendship_id: string | null;
+  display_name: string;
+  handle: string | null;
+  avatar_hue: number;
+  unread: number;
+  last_message: string;
+  last_message_at: string | null;
+  muted: boolean;
+  agent_absorb_enabled: boolean;
+}
+
+export interface ChatMessage {
+  public_id: string;
+  seq: number;
+  text: string;
+  mine: boolean;
+  created_at: string;
+}
+
+export interface ChatPage {
+  messages: ChatMessage[];
+  next_cursor: string | null;
+}

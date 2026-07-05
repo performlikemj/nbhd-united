@@ -16,6 +16,10 @@ from .views import (
     ShareApproveView,
     SharePreviewView,
     ShareRejectView,
+    ThreadMembershipView,
+    ThreadMessagesView,
+    ThreadReadView,
+    ThreadsView,
     UnfriendView,
     WaveCreateView,
     WaveRespondView,
@@ -49,6 +53,11 @@ urlpatterns = [
     path("shares/<uuid:shared_lesson_id>/adopt/", AdoptShareView.as_view(), name="friends-share-adopt"),
     path("absorbed/", AbsorbedListView.as_view(), name="friends-absorbed"),
     path("absorbed/<uuid:absorbed_item_id>/purge/", AbsorbedPurgeView.as_view(), name="friends-absorbed-purge"),
+    # Friend chat (1:1)
+    path("threads/", ThreadsView.as_view(), name="friends-threads"),
+    path("threads/<uuid:thread_id>/messages/", ThreadMessagesView.as_view(), name="friends-thread-messages"),
+    path("threads/<uuid:thread_id>/read/", ThreadReadView.as_view(), name="friends-thread-read"),
+    path("threads/<uuid:thread_id>/membership/", ThreadMembershipView.as_view(), name="friends-thread-membership"),
     # Wormholes / warp (read-only). The <friendship_id>/galaxy/ and /visited/
     # routes sit ABOVE the bare <friendship_id>/ unfriend catch-all so they win.
     path("wormholes/", WormholesView.as_view(), name="friends-wormholes"),

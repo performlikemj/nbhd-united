@@ -173,3 +173,59 @@ def notify_wave_received(friendship: Friendship) -> bool:
     except Exception:
         logger.exception("notify_wave_received failed for friendship %s", getattr(friendship, "id", "?"))
         return False
+
+
+# ---------------------------------------------------------------------------
+# Friend chat push (APNs wake nudge; poll is truth)
+# ---------------------------------------------------------------------------
+
+
+def _deliver_friend_push(message) -> None:
+    """Synchronous core (tests call this directly). One push per message via an
+    atomic notified_at claim; skips muted memberships; no-op when APNs is
+    unconfigured. Never raises."""
+    try:
+        from apps.common.apns import apns_configured
+
+        if not apns_configured():
+            return
+        from apps.router.push_views import _push_to_user_devices
+
+        from . import access
+        from .models import FriendThreadMembership
+
+        if not access.claim_message_notified(message):
+            return  # a re-drain lost the claim — already pushed
+        recipients = (
+            FriendThreadMembership.objects.filter(thread_id=message.thread_id, left_at__isnull=True, muted=False)
+            .exclude(tenant_id=message.sender_tenant_id)
+            .select_related("user")
+        )
+        sender = NeighborProfile.objects.filter(tenant_id=message.sender_tenant_id).first()
+        name = sender.display_name if sender else "A neighbor"
+        for membership in recipients:
+            _push_to_user_devices(
+                membership.user,
+                body=f"New message from {name}",
+                thread_id=str(message.thread_id),
+                collapse_id=f"friend-{message.thread_id}",
+                content_available=True,
+            )
+    except Exception:
+        logger.exception("friend push failed for message %s", getattr(message, "seq", "?"))
+
+
+def notify_friend_message(message) -> None:
+    """Dispatch the friend-chat push OFF the request thread (never block the send
+    on APNs). Defensive; the recipient's ``?since=`` poll is the source of truth."""
+    import threading
+
+    from django.db import transaction
+
+    def _run():
+        _deliver_friend_push(message)
+
+    if getattr(settings, "NBHD_DISABLE_BACKGROUND_THREADS", False):
+        transaction.on_commit(_run)
+    else:
+        transaction.on_commit(lambda: threading.Thread(target=_run, daemon=True).start())
