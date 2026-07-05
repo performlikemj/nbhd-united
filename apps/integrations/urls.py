@@ -39,8 +39,10 @@ from .runtime_views import (
     RuntimeLessonPendingView,
     RuntimeLessonSearchView,
     RuntimeMemorySyncView,
+    RuntimeMissionsView,
     RuntimeNeighborhoodContextView,
     RuntimeProfileUpdateView,
+    RuntimeProposeMissionTaskView,
     RuntimeProposeShareView,
     RuntimeReconcileScanView,
     RuntimeSessionMarkProcessedView,
@@ -208,6 +210,16 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/neighborhood/context/",
         RuntimeNeighborhoodContextView.as_view(),
         name="runtime-neighborhood-context",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/missions/",
+        RuntimeMissionsView.as_view(),
+        name="runtime-missions",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/missions/<uuid:mission_id>/propose-task/",
+        RuntimeProposeMissionTaskView.as_view(),
+        name="runtime-propose-mission-task",
     ),
     # Constellation enriched notes — galaxy notes, star reflections, tutoring signals
     path(

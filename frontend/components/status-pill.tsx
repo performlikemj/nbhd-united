@@ -37,6 +37,9 @@ const tones: Record<string, StyleTuple> = {
   accepted: { bg: "var(--status-emerald-bg)", text: "var(--status-emerald-text)" },
   declined: { bg: "var(--status-slate-bg)", text: "var(--status-slate-text)" },
   blocked: { bg: "var(--status-rose-bg)", text: "var(--status-rose-text)" },
+  // Mission statuses (Neighborhood) — active/expired reuse the tones above;
+  // abandoned falls through to the neutral slate default (non-shaming).
+  achieved: { bg: "var(--status-emerald-bg)", text: "var(--status-emerald-text)" },
 };
 
 const fallbackTone: StyleTuple = {

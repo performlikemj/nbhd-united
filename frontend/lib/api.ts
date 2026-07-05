@@ -1941,3 +1941,129 @@ export function patchThreadMembership(
     { method: "PATCH", body: JSON.stringify(data) },
   );
 }
+
+// ── Missions (PR6) ────────────────────────────────────────────────────────
+// Shared goals between accepted neighbors. Trailing slashes required, same
+// as the rest of apps/friends/urls.py.
+
+/** GET /api/v1/friends/missions/ — my missions (active memberships only). */
+export function fetchMissions(): Promise<import("@/lib/types").MissionSummary[]> {
+  return apiFetch<import("@/lib/types").MissionSummary[]>("/api/v1/friends/missions/");
+}
+
+/** POST /api/v1/friends/missions/ — create a 1:1 mission on an accepted friendship. */
+export function createMission(data: {
+  friendship_id: string;
+  title: string;
+  description?: string;
+  target?: import("@/lib/types").MissionTarget;
+  target_date?: string;
+}): Promise<{ mission_id: string }> {
+  return apiFetch<{ mission_id: string }>("/api/v1/friends/missions/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+/** GET /api/v1/friends/missions/<id>/ — mission + crew projection. */
+export function fetchMissionDetail(id: string): Promise<import("@/lib/types").MissionDetail> {
+  return apiFetch<import("@/lib/types").MissionDetail>(`/api/v1/friends/missions/${id}/`);
+}
+
+export interface PatchMissionSuccess {
+  mission_id: string;
+  version: number;
+  title: string;
+}
+
+export type PatchMissionResult =
+  | { status: 200; data: PatchMissionSuccess }
+  | { status: 409; detail: string; version?: number };
+
+/**
+ * PATCH /api/v1/friends/missions/<id>/ — optimistic edit. Same status-aware
+ * contract as approveShare above: 200 applies the edit, 409 means a
+ * version/lock conflict — the caller shows `detail` and asks the user to
+ * refresh rather than clobbering someone else's concurrent write.
+ */
+export async function patchMission(
+  id: string,
+  data: {
+    version: number;
+    title?: string;
+    target?: import("@/lib/types").MissionTarget;
+    target_date?: string | null;
+  },
+): Promise<PatchMissionResult> {
+  const { status, data: body } = await apiFetchStatus<
+    PatchMissionSuccess & { detail?: string; version?: number }
+  >(`/api/v1/friends/missions/${id}/`, {
+    method: "PATCH",
+    body: JSON.stringify(data),
+  });
+
+  if (status === 200) return { status, data: body as PatchMissionSuccess };
+  if (status === 409) {
+    return { status, detail: body?.detail ?? "Something went wrong.", version: body?.version };
+  }
+  const err = new Error(body?.detail ?? `Request failed: ${status}`);
+  (err as Error & { status: number }).status = status;
+  throw err;
+}
+
+export function joinMission(
+  id: string,
+  commitment?: string,
+): Promise<{ mission_id: string; status: string }> {
+  return apiFetch<{ mission_id: string; status: string }>(`/api/v1/friends/missions/${id}/join/`, {
+    method: "POST",
+    body: JSON.stringify(commitment ? { commitment } : {}),
+  });
+}
+
+export function leaveMission(id: string): Promise<{ mission_id: string; status: string }> {
+  return apiFetch<{ mission_id: string; status: string }>(`/api/v1/friends/missions/${id}/leave/`, {
+    method: "POST",
+  });
+}
+
+export function addMissionUpdate(
+  id: string,
+  data: { kind: "note" | "progress" | "milestone"; text: string },
+): Promise<{ id: string; kind: string }> {
+  return apiFetch<{ id: string; kind: string }>(`/api/v1/friends/missions/${id}/updates/`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function addMissionTask(
+  id: string,
+  data: { title: string; description?: string; due_date?: string },
+): Promise<{ task_id: string; title: string }> {
+  return apiFetch<{ task_id: string; title: string }>(`/api/v1/friends/missions/${id}/tasks/`, {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+/** GET /api/v1/friends/mission-actions/ — my agent-proposed Mission tasks. */
+export function fetchGoalActions(): Promise<import("@/lib/types").PendingGoalAction[]> {
+  return apiFetch<import("@/lib/types").PendingGoalAction[]>("/api/v1/friends/mission-actions/");
+}
+
+export function approveGoalAction(
+  id: string,
+): Promise<{ action_id: string; status: string; task_id: string }> {
+  return apiFetch<{ action_id: string; status: string; task_id: string }>(
+    `/api/v1/friends/mission-actions/${id}/approve/`,
+    { method: "POST" },
+  );
+}
+
+export function rejectGoalAction(id: string): Promise<{ action_id: string; status: string }> {
+  return apiFetch<{ action_id: string; status: string }>(
+    `/api/v1/friends/mission-actions/${id}/reject/`,
+    { method: "POST" },
+  );
+}

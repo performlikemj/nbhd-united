@@ -28,7 +28,15 @@ from apps.orchestrator.envelope_registry import register_section
 from apps.tenants.models import Tenant
 
 from . import access
-from .models import AbsorbedItem, FriendMessage, Friendship, LessonShareGrant, NeighborProfile
+from .models import (
+    AbsorbedItem,
+    FriendMessage,
+    Friendship,
+    LessonShareGrant,
+    NeighborProfile,
+    SharedGoalMembership,
+    SharedGoalUpdate,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +106,41 @@ def render_neighborhood(tenant: Tenant) -> str:
         return ""
 
 
+@register_section(
+    key="missions",
+    heading="## Missions",
+    enabled=lambda t: getattr(t, "friends_enabled", False),
+    # SharedGoalMembership's tenant FK refreshes the member; SharedGoalUpdate is
+    # additionally handled by the explicit all-members receiver below (a crew
+    # member's activity changes everyone's crew line).
+    refresh_on=(SharedGoalMembership, SharedGoalUpdate),
+    order=64,
+)
+def render_missions(tenant: Tenant) -> str:
+    """TIGHT: active missions + this member's commitment + one crew-progress line.
+    Never raises."""
+    try:
+        from . import projection
+
+        memberships = list(
+            SharedGoalMembership.objects.filter(
+                tenant=tenant, status="active", shared_goal__status="active"
+            ).select_related("shared_goal")[:3]
+        )
+        if not memberships:
+            return ""
+        lines: list[str] = []
+        for membership in memberships:
+            goal = membership.shared_goal
+            pct = projection.build_mission_status(goal)["overall_pct"]
+            commit = f"you: {membership.commitment}" if membership.commitment else "you: showing up"
+            lines.append(f"- {goal.title} — {commit}; crew {pct}% this window")
+        return "\n".join(lines)
+    except Exception:  # noqa: BLE001 — an envelope section must never break a turn
+        logger.warning("render_missions failed for tenant %s", getattr(tenant, "id", "?"), exc_info=True)
+        return ""
+
+
 # ── Explicit recipient refresh for LessonShareGrant (the two-party gap) ──────
 
 
@@ -153,7 +196,22 @@ def _refresh_on_friend_message(sender, instance, **kwargs) -> None:
         logger.warning("friend message refresh receiver failed", exc_info=True)
 
 
+def _refresh_mission_crew(sender, instance, **kwargs) -> None:
+    """A crew member's activity changes everyone's crew line — refresh ALL active
+    members' USER.md (the registry's tenant-FK receiver would only refresh the
+    update's author). Defensive: never raises."""
+    try:
+        member_ids = SharedGoalMembership.objects.filter(
+            shared_goal_id=instance.shared_goal_id, status="active"
+        ).values_list("tenant_id", flat=True)
+        for tenant_id in member_ids:
+            _schedule_recipient_push(tenant_id)
+    except Exception:  # noqa: BLE001
+        logger.warning("mission crew refresh receiver failed", exc_info=True)
+
+
 # weak=False so the receivers live for the process lifetime (mirrors the registry).
 post_save.connect(_refresh_recipient_on_grant, sender=LessonShareGrant, weak=False)
 post_delete.connect(_refresh_recipient_on_grant, sender=LessonShareGrant, weak=False)
 post_save.connect(_refresh_on_friend_message, sender=FriendMessage, weak=False)
+post_save.connect(_refresh_mission_crew, sender=SharedGoalUpdate, weak=False)

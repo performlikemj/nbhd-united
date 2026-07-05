@@ -9,3 +9,8 @@ class FriendsConfig(AppConfig):
         # Register the Neighborhood envelope section in the envelope registry.
         # Signal handlers are auto-wired by ``register_section``.
         import apps.friends.envelope  # noqa: F401
+
+        # Wire the journal.Task → Mission completion linkage receiver.
+        from apps.friends import task_links
+
+        task_links.connect()

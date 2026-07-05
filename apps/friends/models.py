@@ -439,3 +439,119 @@ class FriendMessage(models.Model):
 
     def __str__(self) -> str:
         return f"msg:{self.seq}:{self.thread_id}"
+
+
+class SharedGoal(models.Model):
+    """A cross-tenant shared goal — product name **Mission** (design §2.9). NOT a
+    stretched ``journal.Goal`` (RLS + same-tenant validate() forbid a cross-tenant
+    FK). Each member's contribution stays as their OWN local ``journal.Task`` rows
+    linked by ``Task.related_ref`` — zero schema change to journal.Task.
+
+    Every ``SharedGoal.objects`` query lives in :mod:`apps.friends.access`
+    (chokepoint). PR6 ships the ``friendship`` audience (1:1 missions); the
+    ``circle`` FK + circle missions land in PR7."""
+
+    class Status(models.TextChoices):
+        ACTIVE = "active", "Active"
+        ACHIEVED = "achieved", "Achieved"
+        ABANDONED = "abandoned", "Abandoned"
+        EXPIRED = "expired", "Expired"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=200)
+    description = models.TextField(blank=True)
+    pillar = models.CharField(max_length=20, blank=True)
+    friendship = models.ForeignKey(Friendship, on_delete=models.SET_NULL, null=True, blank=True)  # 1:1 mission
+    created_by = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="missions_created")
+    target = models.JSONField(default=dict)  # {metric, unit, cadence:"daily", value:10000}
+    target_date = models.DateField(null=True, blank=True)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.ACTIVE)
+    # Object-level multi-writer safety = Fuel's optimistic concurrency (Workout pattern).
+    version = models.PositiveIntegerField(default=0)
+    edit_lock_until = models.DateTimeField(null=True, blank=True)
+    edit_lock_owner = models.CharField(max_length=64, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    achieved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "shared_goals"
+
+    def __str__(self) -> str:
+        return f"mission:{self.id} ({self.status})"
+
+
+class SharedGoalMembership(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    shared_goal = models.ForeignKey(SharedGoal, on_delete=models.CASCADE, related_name="memberships")
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="mission_memberships")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="+")
+    role = models.CharField(max_length=8, default="member")  # owner | member
+    status = models.CharField(max_length=8, default="active")  # invited | active | left
+    commitment = models.CharField(max_length=200, blank=True)  # "what I'll do"
+    # Idempotency for the weekly digest — compare-and-set per (member, iso-week).
+    last_digest_window = models.CharField(max_length=24, blank=True)
+    joined_at = models.DateTimeField(auto_now_add=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "shared_goal_memberships"
+        constraints = [models.UniqueConstraint(fields=["shared_goal", "tenant"], name="uq_mission_member")]
+        indexes = [models.Index(fields=["tenant", "left_at"])]
+
+    def __str__(self) -> str:
+        return f"mission_member:{self.shared_goal_id}:{self.tenant_id}"
+
+
+class SharedGoalUpdate(models.Model):
+    """Append-only activity log — THE single stream that feeds the status
+    projection, the digest, AND the envelope (design §2.9). Crew progress reads
+    from control-plane data only, never a cross-tenant Task scan in a request."""
+
+    class Kind(models.TextChoices):
+        JOINED = "joined", "Joined"
+        TASK_ADDED = "task_added", "Task added"
+        TASK_COMPLETED = "task_completed", "Task completed"
+        MILESTONE = "milestone", "Milestone"
+        NOTE = "note", "Note"
+        PROGRESS = "progress", "Progress"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    shared_goal = models.ForeignKey(SharedGoal, on_delete=models.CASCADE, related_name="updates")
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="+")
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="+")
+    kind = models.CharField(max_length=16, choices=Kind.choices)
+    text = models.TextField(blank=True)
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        db_table = "shared_goal_updates"
+
+    def __str__(self) -> str:
+        return f"mission_update:{self.shared_goal_id}:{self.kind}"
+
+
+class PendingGoalAction(models.Model):
+    """Agent proposes a Mission task for ITS OWN human (design §2.10). Human-gated
+    — approve mints the member's own local ``journal.Task``. The agent NEVER
+    writes another human's task."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="pending_goal_actions")
+    shared_goal = models.ForeignKey(SharedGoal, on_delete=models.CASCADE)
+    kind = models.CharField(max_length=16, default="add_task")  # add_task | complete_task | note
+    suggested = models.JSONField(default=dict)  # {title, description, due_date}
+    status = models.CharField(max_length=10, default="pending")  # pending | approved | rejected | expired
+    task = models.ForeignKey("journal.Task", on_delete=models.SET_NULL, null=True, blank=True)  # minted on approve
+    telegram_message_id = models.BigIntegerField(null=True, blank=True)
+    line_message_token = models.CharField(max_length=120, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "pending_goal_actions"
+        indexes = [models.Index(fields=["tenant", "status"])]
+
+    def __str__(self) -> str:
+        return f"pending_goal_action:{self.id} ({self.status})"

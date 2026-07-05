@@ -10,9 +10,11 @@ import {
   ChatThread,
   CronJob,
   Integration,
+  MissionSummary,
   Neighbor,
   NeighborhoodData,
   NeighborProfile,
+  PendingGoalAction,
   PendingRemindersResponse,
   PendingWave,
   PersonalAccessToken,
@@ -187,6 +189,17 @@ import {
   sendThreadMessage,
   markThreadRead,
   patchThreadMembership,
+  fetchMissions,
+  createMission,
+  fetchMissionDetail,
+  patchMission,
+  joinMission,
+  leaveMission,
+  addMissionUpdate,
+  addMissionTask,
+  fetchGoalActions,
+  approveGoalAction,
+  rejectGoalAction,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -2321,6 +2334,185 @@ export function usePatchMembershipMutation(threadId: string) {
       patchThreadMembership(threadId, data),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["friend-threads"] });
+    },
+  });
+}
+
+// ── Missions (PR6) ────────────────────────────────────────────────────────
+// Shared goals between accepted neighbors. Gated the same as the rest of
+// Neighborhood. Deliberately NOT added to query-persist.ts's allowlist — the
+// crew projection should always reflect the live control-plane stream, never
+// a stale replay from localStorage (same reasoning as Absorbed/Wormholes).
+
+export function useMissionsQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["missions"],
+    queryFn: fetchMissions,
+    staleTime: 30_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+export function useMissionDetailQuery(id: string | null) {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["mission", id],
+    queryFn: () => fetchMissionDetail(id as string),
+    staleTime: 15_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled && !!id,
+  });
+}
+
+export function useGoalActionsQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["goal-actions"],
+    queryFn: fetchGoalActions,
+    staleTime: 30_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+export function useCreateMissionMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof createMission>[0]) => createMission(data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["missions"] });
+    },
+  });
+}
+
+export function useJoinMissionMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, commitment }: { id: string; commitment?: string }) => joinMission(id, commitment),
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({ queryKey: ["missions"] });
+      void qc.invalidateQueries({ queryKey: ["mission", variables.id] });
+    },
+  });
+}
+
+// Optimistically drops the mission from the list (mirrors useUnfriendMutation)
+// — leaving is immediate and the summary endpoint only ever returns active
+// memberships, so the row would disappear on the next fetch regardless.
+export function useLeaveMissionMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => leaveMission(id),
+    onMutate: async (id: string) => {
+      await qc.cancelQueries({ queryKey: ["missions"] });
+      const previous = qc.getQueryData<MissionSummary[]>(["missions"]);
+      qc.setQueryData<MissionSummary[]>(["missions"], (old) =>
+        old ? old.filter((m) => m.mission_id !== id) : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["missions"], context.previous);
+      }
+    },
+    onSettled: (_data, _err, id) => {
+      void qc.invalidateQueries({ queryKey: ["missions"] });
+      void qc.invalidateQueries({ queryKey: ["mission", id] });
+    },
+  });
+}
+
+export function useAddMissionUpdateMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: { kind: "note" | "progress" | "milestone"; text: string };
+    }) => addMissionUpdate(id, data),
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({ queryKey: ["mission", variables.id] });
+    },
+  });
+}
+
+export function useAddMissionTaskMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: { title: string; description?: string; due_date?: string };
+    }) => addMissionTask(id, data),
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({ queryKey: ["mission", variables.id] });
+    },
+  });
+}
+
+export function usePatchMissionMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, data }: { id: string; data: Parameters<typeof patchMission>[1] }) =>
+      patchMission(id, data),
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({ queryKey: ["missions"] });
+      void qc.invalidateQueries({ queryKey: ["mission", variables.id] });
+    },
+  });
+}
+
+// ── Mission task proposals (PR6 / design §2.10) ────────────────────────────
+// Agent-proposed next steps on a shared mission. Approve/reject drop the row
+// from the inbox immediately — same optimistic-remove convention as
+// usePurgeAbsorbedMutation above.
+
+export function useApproveGoalActionMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => approveGoalAction(id),
+    onMutate: async (id: string) => {
+      await qc.cancelQueries({ queryKey: ["goal-actions"] });
+      const previous = qc.getQueryData<PendingGoalAction[]>(["goal-actions"]);
+      qc.setQueryData<PendingGoalAction[]>(["goal-actions"], (old) =>
+        old ? old.filter((a) => a.id !== id) : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["goal-actions"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["goal-actions"] });
+    },
+  });
+}
+
+export function useRejectGoalActionMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => rejectGoalAction(id),
+    onMutate: async (id: string) => {
+      await qc.cancelQueries({ queryKey: ["goal-actions"] });
+      const previous = qc.getQueryData<PendingGoalAction[]>(["goal-actions"]);
+      qc.setQueryData<PendingGoalAction[]>(["goal-actions"], (old) =>
+        old ? old.filter((a) => a.id !== id) : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["goal-actions"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["goal-actions"] });
     },
   });
 }

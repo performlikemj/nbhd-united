@@ -7,9 +7,18 @@ from .views import (
     AbsorbedPurgeView,
     AdoptShareView,
     FriendGalaxyView,
+    GoalActionApproveView,
+    GoalActionRejectView,
+    GoalActionsView,
     InviteClaimView,
     InviteCreateView,
     InviteDetailView,
+    MissionDetailView,
+    MissionJoinView,
+    MissionLeaveView,
+    MissionsView,
+    MissionTasksView,
+    MissionUpdatesView,
     NeighborhoodView,
     PendingSharesView,
     ProfileView,
@@ -58,6 +67,22 @@ urlpatterns = [
     path("threads/<uuid:thread_id>/messages/", ThreadMessagesView.as_view(), name="friends-thread-messages"),
     path("threads/<uuid:thread_id>/read/", ThreadReadView.as_view(), name="friends-thread-read"),
     path("threads/<uuid:thread_id>/membership/", ThreadMembershipView.as_view(), name="friends-thread-membership"),
+    # Missions (shared goals + crew projection)
+    path("missions/", MissionsView.as_view(), name="friends-missions"),
+    path("missions/<uuid:mission_id>/", MissionDetailView.as_view(), name="friends-mission-detail"),
+    path("missions/<uuid:mission_id>/join/", MissionJoinView.as_view(), name="friends-mission-join"),
+    path("missions/<uuid:mission_id>/leave/", MissionLeaveView.as_view(), name="friends-mission-leave"),
+    path("missions/<uuid:mission_id>/updates/", MissionUpdatesView.as_view(), name="friends-mission-updates"),
+    path("missions/<uuid:mission_id>/tasks/", MissionTasksView.as_view(), name="friends-mission-tasks"),
+    path("mission-actions/", GoalActionsView.as_view(), name="friends-mission-actions"),
+    path(
+        "mission-actions/<uuid:action_id>/approve/",
+        GoalActionApproveView.as_view(),
+        name="friends-mission-action-approve",
+    ),
+    path(
+        "mission-actions/<uuid:action_id>/reject/", GoalActionRejectView.as_view(), name="friends-mission-action-reject"
+    ),
     # Wormholes / warp (read-only). The <friendship_id>/galaxy/ and /visited/
     # routes sit ABOVE the bare <friendship_id>/ unfriend catch-all so they win.
     path("wormholes/", WormholesView.as_view(), name="friends-wormholes"),
