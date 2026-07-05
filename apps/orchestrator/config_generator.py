@@ -1958,6 +1958,20 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
+    # Neighborhood (Friends) plugin — propose-share + neighborhood-context tools,
+    # gated on friends_enabled. All tools are pull-or-propose; there is
+    # deliberately no direct-post tool (the human approves every share). Mission
+    # tools land in PR6.
+    if getattr(tenant, "friends_enabled", False):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_FRIENDS_PLUGIN_ID", "nbhd-friends-tools") or "").strip(),
+                str(
+                    getattr(settings, "OPENCLAW_FRIENDS_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-friends-tools") or ""
+                ).strip(),
+            )
+        )
+
     # Insights plugin — trajectory tools (history/drill/compare) over pillar
     # snapshots. Phase 1 only emits Gravity snapshots, so we gate on
     # finance_active (which folds in the GRAVITY_ENABLED platform pause).

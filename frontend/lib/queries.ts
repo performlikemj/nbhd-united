@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { isLoggedIn } from "@/lib/auth";
 import {
+  AbsorbedItem,
   AuthUser,
   CronJob,
   Integration,
@@ -176,6 +177,8 @@ import {
   rejectShare,
   revokeShare,
   fetchWormholes,
+  fetchAbsorbed,
+  purgeAbsorbed,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -2159,6 +2162,45 @@ export function useRevokeShareMutation() {
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["pending-shares"] });
       void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
+  });
+}
+
+// ── Absorbed items (PR4) ────────────────────────────────────────────────────
+// What a neighbor's shared spark the assistant has pulled into its own
+// context — transparency + a manual purge. Gated the same as the rest of
+// Neighborhood. Deliberately NOT in query-persist.ts's allowlist: this list
+// should always reflect the assistant's live state, never a stale cache.
+
+export function useAbsorbedQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["absorbed"],
+    queryFn: fetchAbsorbed,
+    staleTime: 30_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+export function usePurgeAbsorbedMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => purgeAbsorbed(id),
+    onMutate: async (id: string) => {
+      await qc.cancelQueries({ queryKey: ["absorbed"] });
+      const previous = qc.getQueryData<AbsorbedItem[]>(["absorbed"]);
+      qc.setQueryData<AbsorbedItem[]>(["absorbed"], (old) =>
+        old ? old.filter((item) => item.id !== id) : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _id, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["absorbed"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["absorbed"] });
     },
   });
 }

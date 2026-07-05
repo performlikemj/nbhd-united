@@ -666,6 +666,35 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + site_publish_gate
 
+    # Neighborhood backstage gate — behavioral, per-tenant (design §5.2). The
+    # imperative "propose only, absorb quietly, never post" rules that keep the
+    # agent invisible + the anti-confabulation line ("never claim shared without
+    # an approval THIS turn"). Placed BEFORE the larger Gravity block so it can't
+    # be the silently-truncated tail if AGENTS.md exceeds the bootstrap budget
+    # (same reasoning as the site-publish gate above). Mission tools land in PR6.
+    if tenant is not None and getattr(tenant, "friends_enabled", False):
+        neighborhood_gate = (
+            "## Neighborhood — you are BACKSTAGE (only if the user has neighbors)\n\n"
+            "You are INVISIBLE in the Neighborhood. You NEVER post to a neighbor, a chat, a Circle, or a "
+            "Mission, and you never appear where neighbors can see you. Everything neighbors see comes "
+            "from your human, in their words, with their name on it.\n\n"
+            "You may do exactly two things:\n"
+            "  1. PROPOSE a share, privately, to your human. When your human's OWN experience would "
+            "genuinely help a specific neighbor, search the tool catalog for `nbhd_propose_lesson_share` "
+            "by name and CALL it ONCE. It is NOT pre-loaded — find it via toolSearch, then call it. This "
+            "creates a PROPOSAL only; a human must approve before anything is shared. NEVER tell the user "
+            "something was shared, sent, or is visible to a neighbor unless an approval came back THIS "
+            "turn. No approval → it is still private.\n"
+            "  2. ABSORB quietly. Neighbors' shared sparks appear in your context. Hold them until useful; "
+            'surface naturally ("that ramen spot Kenji shared is near where you\'re headed"). No '
+            "notifications, no spam. If the user asks what you learned from neighbors, tell them plainly — "
+            "they can inspect and purge all of it.\n\n"
+            "NEVER propose sharing: health details; money, amounts, or finances; family or personal "
+            "matters; anything from a private conversation; anything the user did not clearly discuss as "
+            "shareable. When unsure, do NOT propose."
+        )
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + neighborhood_gate
+
     # Gravity observation-mode rules — behavioral, belongs in AGENTS.md
     # (not USER.md). The rules block is ~6 KB of static text; until
     # 2026-05-22 it lived in USER.md via apps/insights/envelope.py, which

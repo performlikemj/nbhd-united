@@ -312,3 +312,45 @@ class WormholeVisit(models.Model):
 
     def __str__(self) -> str:
         return f"wormhole_visit:{self.viewer_tenant_id}:{self.friendship_id}"
+
+
+class AbsorbedItem(models.Model):
+    """Transparency + purge ledger (design §2.8). STRICTLY a pointer ledger —
+    there is deliberately NO ``summary``/knowledge field. The knowledge lives
+    only in the source rows (``SharedLesson`` / ``FriendMessage``); the agent's
+    awareness is re-derived from the live accessor-filtered rows each envelope
+    render. ``label`` is a display-only denormalized title, not the knowledge.
+
+    Purging sets ``purged_at`` (a tombstone) → the envelope render excludes it
+    and the agent stops surfacing it. Because the knowledge itself lives only in
+    the source rows, purge + source-revocation together give complete, honest
+    control.
+    """
+
+    class SourceKind(models.TextChoices):
+        SHARED_LESSON = "shared_lesson", "Shared spark"
+        FRIEND_MESSAGE = "friend_message", "Chat"  # PR5
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="absorbed_items")  # the absorbER
+    source_kind = models.CharField(max_length=16, choices=SourceKind.choices)
+    source_id = models.UUIDField()  # SharedLesson.id or FriendMessage.public_id — the REAL row
+    from_tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="+")
+    label = models.CharField(max_length=200, blank=True)  # display-only denormalized title (NOT the knowledge)
+    absorbed_at = models.DateTimeField(auto_now_add=True)
+    purged_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "friend_absorbed_items"
+        constraints = [
+            # Idempotent absorb: one ledger row per (absorber, source) — the
+            # since-cursor + this constraint make re-absorb a no-op.
+            models.UniqueConstraint(fields=["tenant", "source_kind", "source_id"], name="uq_absorbed_item"),
+        ]
+        indexes = [
+            models.Index(fields=["tenant", "purged_at"]),
+            models.Index(fields=["tenant", "from_tenant"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"absorbed:{self.tenant_id}:{self.source_kind}:{self.source_id}"

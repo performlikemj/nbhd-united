@@ -11,6 +11,7 @@ import { emitToast } from "@/components/toast";
 import { fetchSharePreview } from "@/lib/api";
 import { getErrorMessage } from "@/lib/errors";
 import {
+  useAbsorbedQuery,
   useAcceptWaveMutation,
   useApprovedLessonsQuery,
   useApproveShareMutation,
@@ -19,6 +20,7 @@ import {
   useNeighborhoodQuery,
   useNeighborProfileQuery,
   usePendingSharesQuery,
+  usePurgeAbsorbedMutation,
   useRejectShareMutation,
   useSendWaveMutation,
   useShareLessonMutation,
@@ -216,6 +218,7 @@ export default function FriendsPage() {
             <ShareLessonCard />
             <WaveForm />
             <ProfileEditor />
+            <AbsorbedCard />
           </>
         )}
       </div>
@@ -559,6 +562,64 @@ function ProfileEditor() {
             {mutation.isPending ? "Saving…" : "Save"}
           </button>
         </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+// Transparency surface (PR4): sparks a neighbor shared that the assistant has
+// pulled into its own context via agent tooling. Hidden entirely when there's
+// nothing to show — an empty "nothing absorbed" card would just be noise on
+// a page that's already mostly empty for most tenants.
+function AbsorbedCard() {
+  const { data: items = [], isLoading } = useAbsorbedQuery();
+  const purgeMutation = usePurgeAbsorbedMutation();
+
+  if (isLoading) {
+    return <SectionCardSkeleton lines={2} />;
+  }
+
+  if (items.length === 0) {
+    return null;
+  }
+
+  const handlePurge = (id: string) => {
+    purgeMutation.mutate(id, {
+      onSuccess: () => emitToast("Purged — your assistant will stop using it.", "success"),
+    });
+  };
+
+  return (
+    <SectionCard
+      title="What your assistant absorbed"
+      subtitle="Sparks your neighbors shared that your assistant is holding. Purge anything you don't want it to use."
+      delay={280}
+    >
+      <div className="space-y-2">
+        {items.map((item) => {
+          const purging = purgeMutation.isPending && purgeMutation.variables === item.id;
+          return (
+            <div
+              key={item.id}
+              className="flex items-start gap-3 rounded-xl border border-border bg-surface/60 p-3"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="line-clamp-2 text-sm text-ink">{item.label || "a shared spark"}</p>
+                {item.from_handle && (
+                  <p className="mt-1 truncate text-xs text-ink-faint">from @{item.from_handle}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => handlePurge(item.id)}
+                disabled={purging}
+                className="min-h-[44px] shrink-0 rounded-full border border-rose-border bg-rose-bg/40 px-4 text-xs font-semibold text-rose-text transition hover:bg-rose-bg disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {purging ? "Purging…" : "Purge"}
+              </button>
+            </div>
+          );
+        })}
       </div>
     </SectionCard>
   );

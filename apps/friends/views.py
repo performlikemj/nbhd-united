@@ -248,3 +248,24 @@ class AdoptShareView(FriendsView):
         tenant = self.get_tenant(request)
         payload, code = services.adopt_spark(tenant, request.user, shared_lesson_id)
         return Response(payload, status=code)
+
+
+# ── Transparency ledger ("what my assistant absorbed") ───────────────────────
+
+
+class AbsorbedListView(FriendsView):
+    """GET /api/v1/friends/absorbed/ — the transparency ledger (un-purged)."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        return Response(services.list_absorbed(tenant))
+
+
+class AbsorbedPurgeView(FriendsView):
+    """POST /api/v1/friends/absorbed/<id>/purge/ — tombstone one item; the
+    envelope + agent context exclude it hereafter."""
+
+    def post(self, request, absorbed_item_id):
+        tenant = self.get_tenant(request)
+        item = services.purge_absorbed(tenant, absorbed_item_id)
+        return Response({"id": str(item.id), "purged": True})

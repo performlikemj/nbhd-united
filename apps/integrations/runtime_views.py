@@ -3969,3 +3969,102 @@ class RuntimeCronValidateOutboundView(APIView):
             content=content,
         )
         return Response(result, status=status.HTTP_200_OK)
+
+
+# ── Neighborhood (Friends) agent-facing runtime endpoints (design §3.5) ───────
+#
+# No runtime endpoint accepts a foreign tenant_id: the agent calls only
+# runtime/<its own tid>/…; any cross-tenant reference is validated against an
+# accepted Friendship for THAT tenant, and only frozen scrubbed rows are
+# returned. The chokepoint test scans this module, so cross-tenant reads route
+# through apps/friends/access.py (Friendship/NeighborProfile edge checks and the
+# Lesson load below are per-tenant, not the confined cross-tenant managers).
+
+
+class RuntimeProposeShareView(APIView):
+    """POST runtime/<tid>/lessons/<lesson_id>/propose-share/
+
+    The agent proposes sharing an EXISTING star to a neighbor. Body:
+    ``{target_friendship_id | target_handle, source_context?}``. Creates a
+    ``PendingShare(proposed_by="agent")`` (+ ensures the SharedLesson + enqueues
+    the fail-closed scrub so the preview is ready) — and NEVER a grant. A human
+    approve is the only path that publishes.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id, lesson_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
+
+        from apps.friends import services as friends_services
+        from apps.lessons.models import Lesson
+
+        lesson = Lesson.objects.filter(id=lesson_id, tenant=tenant).first()
+        if lesson is None:
+            return Response({"error": "lesson_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        data = request.data if isinstance(request.data, dict) else {}
+        friendship = friends_services.resolve_accepted_friendship(
+            tenant, friendship_id=data.get("target_friendship_id"), handle=data.get("target_handle")
+        )
+        if friendship is None:
+            return Response(
+                {"error": "not_neighbors", "detail": "No accepted friendship for the given target."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            pending, created = friends_services.propose_share(
+                tenant, lesson, friendship, data.get("source_context") or data.get("why") or ""
+            )
+        except DRFPermissionDenied as exc:
+            # Mechanical share-never list (gravity/core lessons stay private).
+            return Response({"error": "pillar_blocked", "detail": str(exc)}, status=status.HTTP_403_FORBIDDEN)
+
+        return Response(
+            {
+                "pending_share_id": str(pending.id),
+                "status": pending.status,
+                "created": created,
+                "note": "proposal only — a human must approve before anything is shared",
+            },
+            status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
+        )
+
+
+class RuntimeNeighborhoodContextView(APIView):
+    """GET runtime/<tid>/neighborhood/context/?since=<iso>
+
+    The absorb READ side: accessor-approved scrubbed sparks shared TO the tenant
+    (one-liners + owner handle + shared_lesson_id), each logged to AbsorbedItem
+    on first sight. The response ``cursor`` is the caller's next ``since`` — the
+    idempotent ledger + this cursor make a repeat call a no-op, so no separate
+    ``absorb-ack`` endpoint is needed (fewer endpoints > symmetric API).
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        from django.utils.dateparse import parse_datetime
+
+        from apps.friends import services as friends_services
+
+        raw_since = request.query_params.get("since")
+        since = parse_datetime(raw_since) if raw_since else None
+        return Response(friends_services.neighborhood_context(tenant, since=since))

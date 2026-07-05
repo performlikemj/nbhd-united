@@ -3,6 +3,8 @@
 from django.urls import path
 
 from .views import (
+    AbsorbedListView,
+    AbsorbedPurgeView,
     AdoptShareView,
     FriendGalaxyView,
     InviteClaimView,
@@ -45,6 +47,8 @@ urlpatterns = [
     path("shares/<uuid:pending_share_id>/approve/", ShareApproveView.as_view(), name="friends-share-approve"),
     path("shares/<uuid:pending_share_id>/reject/", ShareRejectView.as_view(), name="friends-share-reject"),
     path("shares/<uuid:shared_lesson_id>/adopt/", AdoptShareView.as_view(), name="friends-share-adopt"),
+    path("absorbed/", AbsorbedListView.as_view(), name="friends-absorbed"),
+    path("absorbed/<uuid:absorbed_item_id>/purge/", AbsorbedPurgeView.as_view(), name="friends-absorbed-purge"),
     # Wormholes / warp (read-only). The <friendship_id>/galaxy/ and /visited/
     # routes sit ABOVE the bare <friendship_id>/ unfriend catch-all so they win.
     path("wormholes/", WormholesView.as_view(), name="friends-wormholes"),

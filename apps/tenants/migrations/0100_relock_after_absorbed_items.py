@@ -1,0 +1,53 @@
+"""Re-run the public-schema RLS lockdown after adding the AbsorbedItem table.
+
+PR4 of the Neighborhood layer adds one public table (``friend_absorbed_items``
+via ``friends.0004``). Per the recurring topo-shift hazard (``0083``/``0097``/
+``0098``/``0099``), a new migration can push a prior relock earlier in the sort,
+leaving newer tables without RLS — and ``apps.tenants.test_public_schema_lockdown
+.test_rls_enabled_on_owned_public_tables`` fails the build when an owned public
+table has ``rowsecurity = false``.
+
+Depends on ``friends.0004`` (creates the table) and the latest ``tenants``
+migration so it runs last, re-locking the new table AND anything else that
+escaped a previous relock. SQL is idempotent and adds NO policy
+(``test_no_policies_on_public_schema`` forbids policies on ``public.*``; Django
+is BYPASSRLS, so the relock protects the anon Supabase Data API — cross-tenant
+isolation is the accessor's job in apps/friends/access.py).
+"""
+
+from django.db import migrations
+
+RELOCK_SQL = r"""
+DO $$
+DECLARE
+  r RECORD;
+BEGIN
+  FOR r IN
+    SELECT schemaname, tablename
+    FROM pg_tables
+    WHERE schemaname = 'public'
+      AND tableowner = current_user
+      AND rowsecurity = false
+  LOOP
+    EXECUTE format('ALTER TABLE %I.%I ENABLE ROW LEVEL SECURITY',
+                   r.schemaname, r.tablename);
+  END LOOP;
+END
+$$;
+"""
+
+REVERSE_SQL = (
+    "-- Reversing this migration would leave friend_absorbed_items without RLS, "
+    "re-exposing it via PostgREST/anon. Do not auto-reverse."
+)
+
+
+class Migration(migrations.Migration):
+    dependencies = [
+        ("tenants", "0099_relock_after_wormhole_visits"),
+        ("friends", "0004_absorbeditem"),
+    ]
+
+    operations = [
+        migrations.RunSQL(RELOCK_SQL, REVERSE_SQL),
+    ]

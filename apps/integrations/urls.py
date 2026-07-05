@@ -39,7 +39,9 @@ from .runtime_views import (
     RuntimeLessonPendingView,
     RuntimeLessonSearchView,
     RuntimeMemorySyncView,
+    RuntimeNeighborhoodContextView,
     RuntimeProfileUpdateView,
+    RuntimeProposeShareView,
     RuntimeReconcileScanView,
     RuntimeSessionMarkProcessedView,
     RuntimeSessionsPendingView,
@@ -195,6 +197,17 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/lessons/pending/",
         RuntimeLessonPendingView.as_view(),
         name="runtime-lessons-pending",
+    ),
+    # Neighborhood (Friends) agent-facing endpoints — propose + backstage absorb
+    path(
+        "runtime/<uuid:tenant_id>/lessons/<int:lesson_id>/propose-share/",
+        RuntimeProposeShareView.as_view(),
+        name="runtime-propose-share",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/neighborhood/context/",
+        RuntimeNeighborhoodContextView.as_view(),
+        name="runtime-neighborhood-context",
     ),
     # Constellation enriched notes — galaxy notes, star reflections, tutoring signals
     path(

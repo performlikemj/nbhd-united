@@ -18,6 +18,7 @@ import secrets
 from collections import Counter
 from datetime import timedelta
 
+from django.core.exceptions import PermissionDenied as DjangoPermissionDenied
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, transaction
 from django.db.models import F, Q
@@ -27,7 +28,15 @@ from rest_framework.exceptions import NotFound, PermissionDenied, ValidationErro
 from apps.tenants.models import Tenant
 
 from . import access
-from .models import FriendInvite, Friendship, NeighborProfile, PendingShare, SharedLesson, compute_pair_key
+from .models import (
+    AbsorbedItem,
+    FriendInvite,
+    Friendship,
+    NeighborProfile,
+    PendingShare,
+    SharedLesson,
+    compute_pair_key,
+)
 from .scrub import _content_hash
 
 # Handles people can never claim (impersonation / support-desk confusion).
@@ -697,3 +706,178 @@ def refresh_shared_positions(tenant_id) -> dict:
         return {"updated": 0, "reason": "no such tenant"}
     updated = access.refresh_shared_positions_for_owner(tenant)
     return {"updated": updated}
+
+
+# ── PR4: agent propose + backstage absorb + transparency ledger ──────────────
+
+
+def propose_share(tenant, lesson, friendship, source_context: str = "") -> tuple[PendingShare, bool]:
+    """Agent proposes sharing an EXISTING lesson to a neighbor → a
+    ``PendingShare(proposed_by="agent")`` + ensured SharedLesson + enqueued scrub
+    (so the preview is ready when the human looks). NEVER creates a grant — a
+    human approve is the only path (§5.4). Idempotent per (lesson, friendship):
+    an existing pending proposal is returned, no dupe. Returns (pending, created).
+    """
+    if lesson.tenant_id != tenant.id:
+        raise NotFound("No such lesson.")
+    assert_shareable_pillar(lesson)  # mechanical gravity/core block → 403
+
+    existing = PendingShare.objects.filter(
+        tenant=tenant,
+        source_lesson=lesson,
+        target_friendship=friendship,
+        status=PendingShare.Status.PENDING,
+    ).first()
+    if existing is not None:
+        return existing, False
+
+    shared_lesson = access.ensure_shared_lesson(lesson, tenant)
+    current_hash = _content_hash(lesson.text or "", lesson.context or "")
+    if shared_lesson.scrub_status != SharedLesson.ScrubStatus.READY or shared_lesson.content_hash != current_hash:
+        access.mark_scrub_pending(shared_lesson)
+        _enqueue_scrub(shared_lesson)
+
+    pending = PendingShare.objects.create(
+        tenant=tenant,
+        source_lesson=lesson,
+        proposed_by="agent",
+        source_context=(source_context or "")[:2000],
+        target_friendship=friendship,
+        status=PendingShare.Status.PENDING,
+        expires_at=timezone.now() + timedelta(days=7),
+    )
+    return pending, True
+
+
+def resolve_accepted_friendship(tenant, friendship_id=None, handle=None) -> Friendship | None:
+    """Resolve an ACCEPTED friendship the tenant is a party to, by opaque
+    friendship_id (party-checked via the accessor) OR by neighbor @handle.
+    Returns None when nothing accepted resolves (never leaks)."""
+    if friendship_id:
+        try:
+            return access.assert_neighbors(tenant, friendship_id)
+        except (PermissionDenied, DjangoPermissionDenied, NotFound):
+            return None
+    if handle:
+        profile = NeighborProfile.objects.filter(handle=str(handle).strip().lower()).first()
+        if profile is None:
+            return None
+        return Friendship.objects.filter(
+            pair_key=compute_pair_key(tenant.id, profile.tenant_id),
+            status=Friendship.Status.ACCEPTED,
+        ).first()
+    return None
+
+
+def _spark_title(text: str) -> str:
+    line = (text or "").strip().splitlines()[0] if (text or "").strip() else ""
+    return line[:140]
+
+
+def neighborhood_context(tenant, since=None) -> dict:
+    """The absorb READ side (design §5.4): accessor-approved scrubbed sparks
+    shared TO ``tenant``. Each newly-seen spark is logged to ``AbsorbedItem``
+    (idempotent via the unique constraint), and items the human has PURGED are
+    excluded. Returns ONLY frozen redacted text — never raw Lesson content.
+    """
+    grants = access.inbound_shared_grants(tenant, since=since)
+    purged_ids = set(
+        AbsorbedItem.objects.filter(
+            tenant=tenant,
+            source_kind=AbsorbedItem.SourceKind.SHARED_LESSON,
+            purged_at__isnull=False,
+        ).values_list("source_id", flat=True)
+    )
+
+    sparks: list[dict] = []
+    latest = since
+    for grant in grants:
+        shared_lesson = grant.shared_lesson
+        if shared_lesson.id in purged_ids:
+            continue  # the human purged this — respect it, don't re-surface
+        title = _spark_title(shared_lesson.redacted_text)
+        _log_absorbed(
+            tenant,
+            AbsorbedItem.SourceKind.SHARED_LESSON,
+            shared_lesson.id,
+            shared_lesson.owner_tenant_id,
+            title,
+        )
+        sparks.append(
+            {
+                "shared_lesson_id": str(shared_lesson.id),
+                "from_handle": _handle_for(shared_lesson.owner_tenant_id),
+                "title": title,
+                "text": shared_lesson.redacted_text,
+            }
+        )
+        if latest is None or grant.created_at > latest:
+            latest = grant.created_at
+
+    return {
+        "neighbors": _accepted_neighbor_handles(tenant),
+        "sparks": sparks,
+        "cursor": latest.isoformat() if latest else None,
+    }
+
+
+def _log_absorbed(tenant, source_kind, source_id, from_tenant_id, label) -> None:
+    """Idempotent ledger insert — a repeated absorb of the same source is a
+    no-op (unique (tenant, source_kind, source_id))."""
+    try:
+        with transaction.atomic():
+            AbsorbedItem.objects.create(
+                tenant=tenant,
+                source_kind=source_kind,
+                source_id=source_id,
+                from_tenant_id=from_tenant_id,
+                label=(label or "")[:200],
+            )
+    except IntegrityError:
+        pass  # already absorbed
+
+
+def list_absorbed(tenant) -> list[dict]:
+    """The transparency ledger — what the assistant absorbed (un-purged)."""
+    items = (
+        AbsorbedItem.objects.filter(tenant=tenant, purged_at__isnull=True)
+        .select_related("from_tenant")
+        .order_by("-absorbed_at")
+    )
+    return [
+        {
+            "id": str(item.id),
+            "source_kind": item.source_kind,
+            "source_id": str(item.source_id),
+            "from_handle": _handle_for(item.from_tenant_id),
+            "label": item.label,
+            "absorbed_at": item.absorbed_at,
+        }
+        for item in items
+    ]
+
+
+def purge_absorbed(tenant, absorbed_item_id) -> AbsorbedItem:
+    """Tombstone one absorbed item — the envelope + context exclude it hereafter."""
+    try:
+        item = AbsorbedItem.objects.get(id=absorbed_item_id, tenant=tenant)
+    except (AbsorbedItem.DoesNotExist, ValueError, DjangoValidationError) as exc:
+        raise NotFound("No such absorbed item.") from exc
+    if item.purged_at is None:
+        item.purged_at = timezone.now()
+        item.save(update_fields=["purged_at"])
+    return item
+
+
+def _handle_for(tenant_id) -> str | None:
+    profile = NeighborProfile.objects.filter(tenant_id=tenant_id).only("handle").first()
+    return profile.handle if profile else None
+
+
+def _accepted_neighbor_handles(tenant) -> list[str]:
+    edges = Friendship.objects.filter(
+        Q(requester=tenant) | Q(addressee=tenant), status=Friendship.Status.ACCEPTED
+    ).values_list("requester_id", "addressee_id")
+    other_ids = [(r if a == tenant.id else a) for (r, a) in edges]
+    handles = NeighborProfile.objects.filter(tenant_id__in=other_ids).values_list("handle", flat=True)
+    return sorted(h for h in handles if h)

@@ -1,0 +1,194 @@
+import { wrapTool } from "../../tool-logger.js";
+const wrap = (def) => wrapTool(def, { plugin: "nbhd-friends-tools" });
+
+/**
+ * NBHD Friends (Neighborhood) Tools Plugin
+ *
+ * Backstage-only. The agent can do exactly two things (design §5.3):
+ *  - nbhd_propose_lesson_share: PROPOSE sharing an EXISTING star to a neighbor.
+ *    Creates a proposal for the OWN human to approve — never publishes, never a
+ *    grant. There is deliberately NO direct-post/publish tool.
+ *  - nbhd_neighborhood_context: read the scrubbed sparks neighbors shared TO the
+ *    tenant (the backstage absorb pull; also surfaced via the USER.md envelope).
+ *
+ * Mission tools land in PR6.
+ */
+
+const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
+
+function asObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function asTrimmedString(value) {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function parseInteger(value, { defaultValue, min, max }) {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  const parsed = Number.parseInt(String(value), 10);
+  if (Number.isNaN(parsed)) return defaultValue;
+  return Math.max(min, Math.min(max, parsed));
+}
+
+function getRuntimeConfig(api) {
+  const pluginConfig = asObject(api.pluginConfig);
+  const apiBaseUrl = asTrimmedString(
+    pluginConfig.apiBaseUrl || process.env.NBHD_API_BASE_URL,
+  ).replace(/\/+$/, "");
+  const tenantId = asTrimmedString(process.env.NBHD_TENANT_ID);
+  const internalKey = asTrimmedString(process.env.NBHD_INTERNAL_API_KEY);
+  const requestTimeoutMs = parseInteger(pluginConfig.requestTimeoutMs, {
+    defaultValue: DEFAULT_REQUEST_TIMEOUT_MS,
+    min: 1000,
+    max: 60000,
+  });
+
+  if (!apiBaseUrl) throw new Error("NBHD_API_BASE_URL is required");
+  if (!tenantId) throw new Error("NBHD_TENANT_ID is required");
+  if (!internalKey) throw new Error("NBHD_INTERNAL_API_KEY is required");
+
+  return { apiBaseUrl, tenantId, internalKey, requestTimeoutMs };
+}
+
+function buildUrl(baseUrl, path, query) {
+  const url = new URL(`${baseUrl}${path}`);
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value === undefined || value === null || value === "") continue;
+    url.searchParams.set(key, String(value));
+  }
+  return url;
+}
+
+function renderPayload(payload) {
+  return {
+    content: [{ type: "text", text: JSON.stringify(payload, null, 2) }],
+    details: { json: payload },
+  };
+}
+
+async function callRuntime(api, { path, method = "GET", query, body }) {
+  const runtime = getRuntimeConfig(api);
+  const url = buildUrl(runtime.apiBaseUrl, path, query);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), runtime.requestTimeoutMs);
+
+  try {
+    const headers = {
+      "X-NBHD-Internal-Key": runtime.internalKey,
+      "X-NBHD-Tenant-Id": runtime.tenantId,
+    };
+    let requestBody;
+    if (method !== "GET" && body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      requestBody = JSON.stringify(body);
+    }
+
+    const response = await fetch(url, { method, headers, body: requestBody, signal: controller.signal });
+    const raw = await response.text();
+    let payload = {};
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = { raw };
+      }
+    }
+    if (!response.ok) {
+      const normalized = asObject(payload);
+      const code = asTrimmedString(normalized.error) || "runtime_request_failed";
+      const detail = asTrimmedString(normalized.detail);
+      throw new Error(`NBHD runtime error ${response.status}: ${code}${detail ? ` (${detail})` : ""}`);
+    }
+    return asObject(payload);
+  } catch (error) {
+    if (error && error.name === "AbortError") {
+      throw new Error(`NBHD runtime request timed out after ${runtime.requestTimeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function tenantPath(api, suffix) {
+  const runtime = getRuntimeConfig(api);
+  return `/api/v1/integrations/runtime/${encodeURIComponent(runtime.tenantId)}${suffix}`;
+}
+
+// A friendship id is an opaque UUID; anything else is treated as an @handle.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export default function register(api) {
+  // ── Propose a share (proposal only — a human must approve) ───────────────
+  api.registerTool(wrap({
+      name: "nbhd_propose_lesson_share",
+      description:
+        "PROPOSE sharing one of the user's EXISTING lessons/stars with a specific neighbor. This creates a PROPOSAL only — it is NOT shared until the user approves the scrubbed preview. NEVER tell the user something was shared unless an approval came back this turn. Do NOT propose health, money/finances, family/personal, or private-conversation content.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          lesson_id: {
+            type: "integer",
+            description: "The id of the user's existing lesson/star to propose sharing.",
+          },
+          why: {
+            type: "string",
+            description: "A short private note to yourself on why this would help — never shown to the neighbor.",
+          },
+          target: {
+            type: "string",
+            description: "The neighbor to propose sharing with: their @handle (e.g. 'kenji') or a friendship id.",
+          },
+        },
+        required: ["lesson_id", "target"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const target = asTrimmedString(input.target).replace(/^@/, "");
+        const body = { source_context: asTrimmedString(input.why) };
+        if (UUID_RE.test(target)) {
+          body.target_friendship_id = target;
+        } else {
+          body.target_handle = target;
+        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/lessons/${encodeURIComponent(String(input.lesson_id))}/propose-share/`),
+          method: "POST",
+          body,
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
+  // ── Neighborhood context (backstage absorb read) ─────────────────────────
+  api.registerTool(wrap({
+      name: "nbhd_neighborhood_context",
+      description:
+        "Read the scrubbed 'sparks' (lessons) your neighbors have shared with the user, plus the user's accepted neighbor handles. This is backstage context: hold it until useful and surface it naturally in conversation. You never post to a neighbor. Optionally pass the `since` cursor returned by a previous call to get only what's new.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          since: {
+            type: "string",
+            description: "Optional ISO-8601 cursor from a previous response's `cursor` field; returns only newer sparks.",
+          },
+        },
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/neighborhood/context/"),
+          method: "GET",
+          query: { since: asTrimmedString(input.since) },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+}
