@@ -1835,3 +1835,33 @@ export function revokeShare(lessonId: number, grantId: string): Promise<{ revoke
     method: "DELETE",
   });
 }
+
+// ── Wormholes & warp (PR3) ────────────────────────────────────────────────────
+// Every call is addressed by friendship_id or shared_lesson_id — never a raw
+// tenant id. The friend galaxy fetch is IMPERATIVE (called at warp time by the
+// Phaser scene) and deliberately NOT a persisted react-query — a stale neighbor
+// galaxy must never replay from localStorage.
+
+/** GET /api/v1/friends/wormholes/ — warp targets for the home galaxy's rim. */
+export function fetchWormholes(): Promise<import("@/lib/types").Wormhole[]> {
+  return apiFetch<import("@/lib/types").Wormhole[]>("/api/v1/friends/wormholes/");
+}
+
+/** GET /api/v1/friends/<id>/galaxy/ — a neighbor's shared constellation (read-only). */
+export function fetchFriendGalaxy(friendshipId: string): Promise<import("@/lib/types").FriendGalaxyData> {
+  return apiFetch<import("@/lib/types").FriendGalaxyData>(`/api/v1/friends/${friendshipId}/galaxy/`);
+}
+
+/** POST /api/v1/friends/<id>/visited/ — advance the "new since last visit" watermark. */
+export function markWormholeVisited(friendshipId: string): Promise<{ friendship_id: string; last_visited_at: string }> {
+  return apiFetch<{ friendship_id: string; last_visited_at: string }>(`/api/v1/friends/${friendshipId}/visited/`, {
+    method: "POST",
+  });
+}
+
+/** POST /api/v1/friends/shares/<id>/adopt/ — bring a neighbor's spark home (pending). */
+export function adoptSpark(sharedLessonId: string): Promise<import("@/lib/types").AdoptResult> {
+  return apiFetch<import("@/lib/types").AdoptResult>(`/api/v1/friends/shares/${sharedLessonId}/adopt/`, {
+    method: "POST",
+  });
+}

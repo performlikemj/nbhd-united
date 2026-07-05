@@ -3,6 +3,8 @@
 from django.urls import path
 
 from .views import (
+    AdoptShareView,
+    FriendGalaxyView,
     InviteClaimView,
     InviteCreateView,
     InviteDetailView,
@@ -15,6 +17,8 @@ from .views import (
     UnfriendView,
     WaveCreateView,
     WaveRespondView,
+    WormholesView,
+    WormholeVisitedView,
 )
 
 urlpatterns = [
@@ -40,6 +44,12 @@ urlpatterns = [
     path("shares/pending/", PendingSharesView.as_view(), name="friends-shares-pending"),
     path("shares/<uuid:pending_share_id>/approve/", ShareApproveView.as_view(), name="friends-share-approve"),
     path("shares/<uuid:pending_share_id>/reject/", ShareRejectView.as_view(), name="friends-share-reject"),
+    path("shares/<uuid:shared_lesson_id>/adopt/", AdoptShareView.as_view(), name="friends-share-adopt"),
+    # Wormholes / warp (read-only). The <friendship_id>/galaxy/ and /visited/
+    # routes sit ABOVE the bare <friendship_id>/ unfriend catch-all so they win.
+    path("wormholes/", WormholesView.as_view(), name="friends-wormholes"),
+    path("<uuid:friendship_id>/galaxy/", FriendGalaxyView.as_view(), name="friends-galaxy"),
+    path("<uuid:friendship_id>/visited/", WormholeVisitedView.as_view(), name="friends-wormhole-visited"),
     path("invites/", InviteCreateView.as_view(), name="friends-invite-create"),
     path("invites/<str:token>/claim/", InviteClaimView.as_view(), name="friends-invite-claim"),
     path("invites/<str:token>/", InviteDetailView.as_view(), name="friends-invite-detail"),

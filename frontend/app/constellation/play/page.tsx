@@ -6,7 +6,7 @@ import { Component, type ReactNode, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import { isPlayEnabled } from "@/lib/constellation-game/flag";
-import { useGalaxyQuery } from "@/lib/queries";
+import { useGalaxyQuery, useTenantQuery, useWormholesQuery } from "@/lib/queries";
 
 // Phaser is ~1MB — lazy-load the whole game so it never touches the main bundle.
 // If the chunk stalls or 404s (common after a deploy when a tab is holding stale
@@ -279,6 +279,9 @@ function ErrorBanner({ msg }: { msg: string }) {
 export default function ConstellationPlayPage() {
   const router = useRouter();
   const [allowed, setAllowed] = useState<boolean | null>(null);
+  // The ?friend=<friendship_id> deep-link (read client-side to avoid the
+  // useSearchParams Suspense requirement under static export).
+  const [initialWarp, setInitialWarp] = useState<string | null>(null);
   const bootError = useCapturedError();
 
   useEffect(() => {
@@ -287,10 +290,25 @@ export default function ConstellationPlayPage() {
     const ok = isPlayEnabled();
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setAllowed(ok);
-    if (!ok) router.replace("/constellation");
+    if (!ok) {
+      router.replace("/constellation");
+      return;
+    }
+    try {
+      const fid = new URLSearchParams(window.location.search).get("friend");
+      if (fid) setInitialWarp(fid);
+    } catch {
+      /* no query string — fine */
+    }
   }, [router]);
 
   const { data, isLoading, isFetching, error, refetch } = useGalaxyQuery();
+  // Wormholes gate on BOTH the play flag and friends_enabled. The hook is
+  // internally gated on friends_enabled, so this is empty for everyone else and
+  // the game is byte-identical to the pre-Neighborhood experience.
+  const { data: tenant } = useTenantQuery();
+  const { data: wormholes } = useWormholesQuery();
+  const friendsEnabled = !!tenant?.friends_enabled;
 
   // gating: render nothing while deciding / redirecting out
   if (allowed === null || !allowed) return null;
@@ -325,7 +343,11 @@ export default function ConstellationPlayPage() {
     content = (
       <GameBoundary>
         <ExitLink />
-        <ConstellationGame galaxy={data} />
+        <ConstellationGame
+          galaxy={data}
+          wormholes={friendsEnabled ? wormholes : undefined}
+          initialWarp={friendsEnabled ? initialWarp : null}
+        />
         <WarpIn />
       </GameBoundary>
     );

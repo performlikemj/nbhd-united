@@ -7,6 +7,7 @@ cluster labels with TF-IDF-weighted tags.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import Counter
@@ -16,6 +17,8 @@ from django.db import transaction
 from apps.tenants.models import Tenant
 
 from .models import Lesson
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CLUSTER_MIN_LESSONS = 5
 # Average-linkage threshold: the mean pairwise similarity between two
@@ -549,12 +552,33 @@ def compute_positions(tenant: Tenant) -> int:
     return n
 
 
+def _enqueue_shared_position_refresh(tenant: Tenant) -> None:
+    """Neighborhood PR3 debounce seam: after a recluster moves this tenant's
+    star coords, enqueue a coords-only copy-forward onto any sparks they've
+    shared to neighbors (``apps.friends.tasks.refresh_shared_positions_task``).
+
+    Lazy + defensive + gated on ``friends_enabled`` — the 99% of tenants without
+    the Neighborhood pay nothing, and a friends-side failure must never break the
+    core constellation refresh. QStash makes it a debounced async fire (it runs
+    inline only in dev/tests where QStash is unconfigured).
+    """
+    if not getattr(tenant, "friends_enabled", False):
+        return
+    try:
+        from apps.cron.publish import publish_task
+
+        publish_task("refresh_shared_positions", str(tenant.id))
+    except Exception:
+        logger.exception("shared-position refresh enqueue failed for tenant %s", tenant.id)
+
+
 def refresh_constellation(tenant: Tenant) -> dict[str, object]:
     """Run clustering + labeling + position computation for a tenant."""
 
     clustering_result = cluster_lessons(tenant)
     label_count = generate_cluster_labels(tenant)
     positions_count = compute_positions(tenant)
+    _enqueue_shared_position_refresh(tenant)
     return {
         **clustering_result,
         "clusters_labeled": label_count,

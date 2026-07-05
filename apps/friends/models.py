@@ -285,3 +285,30 @@ class PendingShare(models.Model):
 
     def __str__(self) -> str:
         return f"pending_share:{self.id} ({self.status})"
+
+
+class WormholeVisit(models.Model):
+    """The "new since last visit" watermark for a viewer's wormhole (design §2.12).
+
+    A wormhole is a DERIVED query (one gate per accepted neighbor with ≥1
+    active+ready grant to the viewer), never a materialized render table. The
+    only persisted piece is this tiny per-(viewer, friendship) watermark, so we
+    can show "N new since last visit": ``new`` = count of active+ready grants to
+    the viewer for that friendship whose ``created_at > last_visited_at``.
+    Gate PLACEMENT is deterministic client-side from a stable hash of
+    ``friendship_id`` — never stored here.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    viewer_tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="wormhole_visits")
+    friendship = models.ForeignKey(Friendship, on_delete=models.CASCADE, related_name="+")
+    last_visited_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "friend_wormhole_visits"
+        constraints = [
+            models.UniqueConstraint(fields=["viewer_tenant", "friendship"], name="uq_wormhole_visit"),
+        ]
+
+    def __str__(self) -> str:
+        return f"wormhole_visit:{self.viewer_tenant_id}:{self.friendship_id}"

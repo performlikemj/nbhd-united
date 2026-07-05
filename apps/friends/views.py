@@ -206,3 +206,45 @@ class ShareRejectView(FriendsView):
         tenant = self.get_tenant(request)
         pending = services.reject_share(tenant, pending_share_id)
         return Response({"pending_share_id": str(pending.id), "status": pending.status})
+
+
+# ── Wormholes & warp (read-only) + the souvenir ──────────────────────────────
+
+
+class WormholesView(FriendsView):
+    """GET /api/v1/friends/wormholes/ — warp targets: one per accepted neighbor
+    with ≥1 active+ready spark shared to me (friendship_id, identity, spark
+    count, new-since-last-visit). Placement is deterministic client-side."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        return Response(services.list_wormholes(tenant))
+
+
+class FriendGalaxyView(FriendsView):
+    """GET /api/v1/friends/<friendship_id>/galaxy/ — the neighbor's SHARED
+    constellation as GalaxyData, built from frozen SharedLesson snapshots via the
+    audited accessor. Read-only; ids namespaced; non-neighbor → 403."""
+
+    def get(self, request, friendship_id):
+        tenant = self.get_tenant(request)
+        return Response(services.friend_galaxy(tenant, friendship_id))
+
+
+class WormholeVisitedView(FriendsView):
+    """POST /api/v1/friends/<friendship_id>/visited/ — advance the viewer's
+    WormholeVisit watermark (kills the "new since last visit" glow)."""
+
+    def post(self, request, friendship_id):
+        tenant = self.get_tenant(request)
+        return Response(services.mark_wormhole_visited(tenant, friendship_id))
+
+
+class AdoptShareView(FriendsView):
+    """POST /api/v1/friends/shares/<shared_lesson_id>/adopt/ — the souvenir:
+    bring a neighbor's spark home as a PENDING lesson in MY tenant. Idempotent."""
+
+    def post(self, request, shared_lesson_id):
+        tenant = self.get_tenant(request)
+        payload, code = services.adopt_spark(tenant, request.user, shared_lesson_id)
+        return Response(payload, status=code)

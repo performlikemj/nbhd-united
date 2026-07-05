@@ -25,11 +25,12 @@ a party (IDOR defeated by construction, design §4.5).
 from __future__ import annotations
 
 from django.core.exceptions import PermissionDenied, ValidationError
+from django.db.models import Q
 from django.utils import timezone
 
 from apps.tenants.models import Tenant
 
-from .models import Friendship, LessonShareGrant, SharedLesson, compute_pair_key
+from .models import Friendship, LessonShareGrant, NeighborProfile, SharedLesson, WormholeVisit, compute_pair_key
 
 
 def _tenant_id(value):
@@ -237,3 +238,157 @@ def revoke_grant(grant: LessonShareGrant) -> None:
 def delete_shared_lesson_if_orphaned(shared_lesson) -> None:
     if not LessonShareGrant.objects.filter(shared_lesson=shared_lesson, status=LessonShareGrant.Status.ACTIVE).exists():
         SharedLesson.objects.filter(id=shared_lesson.id).delete()
+
+
+# ── Wormholes & warp (PR3) ────────────────────────────────────────────────────
+#
+# A wormhole is a DERIVED query — one gate per accepted neighbor with ≥1 active +
+# ready grant TO the viewer — never a materialized table. The grant/SharedLesson
+# reads all live here (chokepoint); the tiny WormholeVisit watermark is per-viewer
+# own data, so it's read here only to compute "new since last visit".
+
+
+def other_party_id(edge: Friendship, viewer_tenant) -> str:
+    """The tenant id of the OTHER party on an edge, from the viewer's side."""
+    viewer_id = _tenant_id(viewer_tenant)
+    return edge.addressee_id if edge.requester_id == viewer_id else edge.requester_id
+
+
+def wormhole_targets(viewer_tenant) -> list[dict]:
+    """One entry per accepted neighbor with ≥1 active+ready grant TO the viewer.
+
+    Returns ``[{friendship, owner_id, spark_count, new_since_last_visit}]``.
+    ``spark_count`` counts the OTHER party's shares visible to the viewer (a
+    grant on the accepted edge whose snapshot is owned by the neighbor and
+    ``scrub_status='ready'``) — never the viewer's own shares to that neighbor.
+    ``new_since_last_visit`` counts those grants created after the viewer's
+    ``WormholeVisit`` watermark (all grants when there's no watermark yet).
+    Neighbors with zero ready grants are omitted (no gate).
+    """
+    viewer_id = _tenant_id(viewer_tenant)
+    edges = Friendship.objects.filter(
+        Q(requester_id=viewer_id) | Q(addressee_id=viewer_id),
+        status=Friendship.Status.ACCEPTED,
+    )
+    watermarks = {v.friendship_id: v.last_visited_at for v in WormholeVisit.objects.filter(viewer_tenant_id=viewer_id)}
+    out: list[dict] = []
+    for edge in edges:
+        owner_id = other_party_id(edge, viewer_id)
+        grants = LessonShareGrant.objects.filter(
+            friendship=edge,
+            status=LessonShareGrant.Status.ACTIVE,
+            shared_lesson__owner_tenant_id=owner_id,
+            shared_lesson__scrub_status=SharedLesson.ScrubStatus.READY,
+        )
+        spark_count = grants.count()
+        if spark_count == 0:
+            continue
+        last = watermarks.get(edge.id)
+        new_since = grants.filter(created_at__gt=last).count() if last else spark_count
+        out.append(
+            {
+                "friendship": edge,
+                "owner_id": owner_id,
+                "spark_count": spark_count,
+                "new_since_last_visit": new_since,
+            }
+        )
+    return out
+
+
+def upsert_wormhole_visit(viewer_tenant, friendship) -> WormholeVisit:
+    """Advance the viewer's watermark for a friendship to now (idempotent upsert
+    on the ``(viewer_tenant, friendship)`` unique constraint)."""
+    visit, _created = WormholeVisit.objects.update_or_create(
+        viewer_tenant_id=_tenant_id(viewer_tenant),
+        friendship=friendship,
+        defaults={"last_visited_at": timezone.now()},
+    )
+    return visit
+
+
+def refresh_shared_positions_for_owner(owner_tenant) -> int:
+    """Copy-forward each ready SharedLesson's SOURCE lesson coords onto the frozen
+    snapshot — COORDS ONLY, no new PII crosses (design §8 geometry freshness).
+
+    Reads the owner's own lesson coords via the ``source_lesson`` FK (never
+    ``Lesson.objects`` — the chokepoint forbids the raw corpus under
+    apps/friends). Writes only ``position_x`` / ``position_y`` back onto the
+    snapshot; ``redacted_text`` / tags / ``star_stage`` stay frozen at their
+    scrubbed values. Returns the number of snapshots whose coords moved.
+    """
+    owner_id = _tenant_id(owner_tenant)
+    snaps = SharedLesson.objects.filter(
+        owner_tenant_id=owner_id, scrub_status=SharedLesson.ScrubStatus.READY
+    ).select_related("source_lesson")
+    updates = []
+    for snap in snaps:
+        src = snap.source_lesson
+        if src is None:
+            continue
+        if snap.position_x != src.position_x or snap.position_y != src.position_y:
+            snap.position_x = src.position_x
+            snap.position_y = src.position_y
+            updates.append(snap)
+    if updates:
+        SharedLesson.objects.bulk_update(updates, ["position_x", "position_y"])
+    return len(updates)
+
+
+def _owner_handle(owner_id) -> str | None:
+    profile = NeighborProfile.objects.filter(tenant_id=owner_id).only("handle").first()
+    return profile.handle if profile else None
+
+
+def adopt_shared_lesson(viewer_tenant, viewer_user, shared_lesson_id):
+    """SOUVENIR — "bring a spark home" (design §8). Create a PENDING ``Lesson`` in
+    the VIEWER'S OWN tenant from a neighbor's frozen, scrubbed snapshot.
+
+    ⚠️ This is the ONE legitimate ``Lesson`` WRITE in any friends path, and it
+    writes ONLY the viewer's own tenant — NEVER the owner's. It goes through the
+    viewer's reverse relation ``viewer_tenant.lessons`` (tenant-scoped by
+    construction) and NOT ``Lesson.objects``, so the chokepoint's "no raw Lesson
+    corpus under apps/friends" rule stays intact and meaningful: that rule guards
+    cross-tenant READS of raw names; this is a scoped WRITE of already-neutralized
+    text into the reader's own galaxy, entering their normal pending-approve gate.
+
+    Idempotent per ``(viewer, shared_lesson)`` via a ``source_ref`` lookup — a
+    repeated adopt returns the existing lesson, never a duplicate.
+
+    Returns ``(lesson, created)``. Raises:
+      * ``ValueError('own_snapshot')`` if the viewer IS the snapshot's owner (→ 400).
+      * ``PermissionDenied`` if the viewer has no active+ready grant (→ 403).
+    """
+    snapshot = get_shared_lesson(shared_lesson_id)
+    if snapshot is None:
+        raise PermissionDenied("No such shared spark")
+    owner_id = snapshot.owner_tenant_id
+    viewer_id = _tenant_id(viewer_tenant)
+    if owner_id == viewer_id:
+        raise ValueError("own_snapshot")
+    # Accessor gate: the viewer must actually be able to SEE this snapshot — an
+    # active grant on the accepted edge + a ready scrub. shared_star_qs is the
+    # single audited visibility check; a non-neighbor / revoked / failed snapshot
+    # yields an empty queryset and this denies.
+    if not shared_star_qs(viewer_tenant, owner_id).filter(id=snapshot.id).exists():
+        raise PermissionDenied("This spark isn't shared with you")
+
+    source_ref = f"shared_lesson:{snapshot.id}"
+    existing = viewer_tenant.lessons.filter(source_ref=source_ref).order_by("created_at").first()
+    if existing is not None:
+        return existing, False
+
+    handle = _owner_handle(owner_id)
+    attribution = (
+        f"Brought home from your Neighborhood — via @{handle}" if handle else "Brought home from your Neighborhood"
+    )
+    lesson = viewer_tenant.lessons.create(
+        text=snapshot.redacted_text or "",
+        context=attribution,
+        tags=list(snapshot.tags or []),
+        source_type="shared",
+        source_ref=source_ref,
+        status="pending",
+        star_stage="proto",
+    )
+    return lesson, True

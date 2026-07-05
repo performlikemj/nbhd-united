@@ -7,15 +7,19 @@
 import Phaser from "phaser";
 
 import {
+  adoptSpark,
   type CopilotPoint,
   createStarNote,
+  fetchFriendGalaxy,
   fetchStarNotes,
+  markWormholeVisited,
   reflectGalaxy,
   type StarNote,
   tutorEnd,
   tutorMessage,
   tutorStart,
 } from "@/lib/api";
+import type { FriendGalaxyData, FriendStar, Wormhole } from "@/lib/types";
 
 import {
   buildTaunt,
@@ -226,6 +230,120 @@ interface Encounter {
   armed: boolean;
 }
 
+// ── Wormholes & warp (PR3) ────────────────────────────────────────────────────
+
+// A wormhole gate in the HOME galaxy: one per accepted neighbor with shared
+// sparks, placed at a deterministic rim position from a stable hash of
+// friendship_id (never re-run layout). Built like an encounter — armed after
+// the ship leaves the gate radius, fires on re-approach — but instead of a duel
+// it warps to a second, co-resident scene.
+interface WormholeGate {
+  data: Wormhole;
+  x: number;
+  y: number;
+  r: number;
+  color: number;
+  ring: Phaser.GameObjects.Image;
+  halo: Phaser.GameObjects.Image;
+  label: Phaser.GameObjects.Text;
+  newGlow: Phaser.GameObjects.Image | null; // the "new since last visit" bloom (nulled once cleared)
+  armed: boolean;
+  cooldownUntil: number;
+}
+
+const GATE = { r: 74, trigger: 150 };
+
+/** A stable 32-bit hash of a string (FNV-1a) — deterministic across sessions, so
+ *  a neighbor's gate always lands in the same place on the rim. */
+function hashString(s: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** Deterministic rim placement for a gate: an angle from the friendship_id hash,
+ *  on a "social ring" around the galaxy centre, clamped inside the world bounds
+ *  so it's always reachable and camera-bounded. */
+function gateRimPosition(friendshipId: string, world: { w: number; h: number }): { x: number; y: number } {
+  const angle = (hashString(friendshipId) / 0xffffffff) * Math.PI * 2;
+  const radius = Math.min(world.w, world.h) * 0.4;
+  const margin = 160;
+  const x = Phaser.Math.Clamp(world.w / 2 + Math.cos(angle) * radius, margin, world.w - margin);
+  const y = Phaser.Math.Clamp(world.h / 2 + Math.sin(angle) * radius, margin, world.h - margin);
+  return { x, y };
+}
+
+/** The neighbor's avatar_hue (0-359) as a saturated accent colour — tints their
+ *  gate in the home galaxy AND washes their galaxy when you warp in. */
+function hueColor(hue: number): number {
+  const h = ((hue % 360) + 360) % 360;
+  return Phaser.Display.Color.HSVToRGB(h / 360, 0.62, 1).color;
+}
+
+/** Build the shared galaxy textures (glow / puff / core / ring / ship / nega) on
+ *  a scene's TextureManager. Extracted so the resident galaxy scene AND the
+ *  co-resident friend-galaxy scene draw from the same primitives. Idempotent per
+ *  game (textures are keyed globally), so the second scene reuses the first's. */
+function makeGalaxyTextures(scene: Phaser.Scene) {
+  if (scene.textures.exists("glow")) return;
+  const gg = scene.make.graphics({ x: 0, y: 0 }, false);
+  for (let i = 26; i > 0; i--) {
+    gg.fillStyle(0xffffff, 0.035);
+    gg.fillCircle(64, 64, i * 2.4);
+  }
+  gg.generateTexture("glow", 128, 128);
+  gg.destroy();
+
+  // Very soft, wide-falloff blob for nebula wisps — softer than "glow" so many
+  // overlapping copies read as an organic cloud rather than stacked discs.
+  const pf = scene.make.graphics({ x: 0, y: 0 }, false);
+  for (let i = 40; i > 0; i--) {
+    pf.fillStyle(0xffffff, 0.018);
+    pf.fillCircle(80, 80, i * 2);
+  }
+  pf.generateTexture("puff", 160, 160);
+  pf.destroy();
+
+  const cg = scene.make.graphics({ x: 0, y: 0 }, false);
+  cg.fillStyle(0xffffff, 1);
+  cg.fillCircle(8, 8, 8);
+  cg.generateTexture("core", 16, 16);
+  cg.destroy();
+
+  // A clean stroked circle for ripples (touchdown / course pings) — graphics
+  // strokes can't tween, an image of one can.
+  const rg = scene.make.graphics({ x: 0, y: 0 }, false);
+  rg.lineStyle(4, 0xffffff, 1);
+  rg.strokeCircle(40, 40, 36);
+  rg.generateTexture("ring", 80, 80);
+  rg.destroy();
+
+  const sg = scene.make.graphics({ x: 0, y: 0 }, false);
+  sg.fillStyle(0xa5b4ff, 1);
+  sg.fillTriangle(30, 12, 4, 3, 4, 21);
+  sg.fillStyle(0x7c6bf0, 1);
+  sg.fillTriangle(30, 12, 6, 7, 6, 17);
+  sg.lineStyle(1, 0xffffff, 0.55);
+  sg.strokeTriangle(30, 12, 4, 3, 4, 21);
+  sg.generateTexture("ship", 34, 24);
+  sg.destroy();
+
+  const ng = scene.make.graphics({ x: 0, y: 0 }, false);
+  ng.fillStyle(0x1c0a15, 1);
+  ng.fillTriangle(30, 12, 4, 1, 4, 23);
+  ng.fillStyle(0x33121f, 1);
+  ng.fillTriangle(28, 12, 8, 6, 8, 18);
+  ng.lineStyle(2, SHADOW, 0.95);
+  ng.strokeTriangle(30, 12, 4, 1, 4, 23);
+  ng.fillStyle(0xff2d55, 1);
+  ng.fillCircle(11, 12, 2.2);
+  ng.generateTexture("nega", 34, 24);
+  ng.destroy();
+}
+
 export class GalaxyScene extends Phaser.Scene {
   private galaxy: GalaxyData;
   private overlayRoot: HTMLElement;
@@ -312,10 +430,18 @@ export class GalaxyScene extends Phaser.Scene {
   private meteorTimer?: Phaser.Time.TimerEvent;
   private rmQuery: MediaQueryList | null = null; // cached prefers-reduced-motion (read per frame)
 
-  constructor(galaxy: GalaxyData, overlayRoot: HTMLElement) {
+  // ── Wormholes & warp (PR3) ──
+  private wormholes: Wormhole[] = []; // warp targets (empty unless friends_enabled)
+  private initialWarp: string | null = null; // ?friend=<id> deep-link → warp straight in after load
+  private gates: WormholeGate[] = [];
+  private warping = false; // one warp at a time (guards double-trigger + mid-fetch re-entry)
+
+  constructor(galaxy: GalaxyData, overlayRoot: HTMLElement, opts?: { wormholes?: Wormhole[]; initialWarp?: string | null }) {
     super("galaxy");
     this.galaxy = galaxy;
     this.overlayRoot = overlayRoot;
+    this.wormholes = opts?.wormholes ?? [];
+    this.initialWarp = opts?.initialWarp ?? null;
   }
 
   private q<T extends HTMLElement = HTMLElement>(sel: string): T | null {
@@ -372,11 +498,41 @@ export class GalaxyScene extends Phaser.Scene {
     this.buildTouch();
     this.buildEncounters(pos);
 
+    // ── Wormholes & warp: the SECOND, co-resident scene (design §8) ──
+    // Register FriendGalaxyScene alongside this one so a warp is a scene.switch
+    // (home slept, state preserved), NEVER a React prop swap (which tears down
+    // and recreates the whole ~1MB Phaser game and loses home camera/ship state).
+    if (!this.scene.get("friend-galaxy")) {
+      this.scene.add("friend-galaxy", new FriendGalaxyScene(this.overlayRoot), false);
+    }
+    // Returning home wakes this scene (it was slept, not destroyed) — re-follow
+    // the ship + reset the warp guard so the next gate can fire.
+    this.events.on(Phaser.Scenes.Events.WAKE, this.onHomeWake, this);
+    this.buildWormholeGates();
+    // Deep-link (?friend=<id>): warp straight in once the galaxy is built.
+    if (this.initialWarp) {
+      const fid = this.initialWarp;
+      this.initialWarp = null;
+      this.time.delayedCall(600, () => {
+        if (!this.destroyed) void this.warpTo(fid, this.wormholes.find((w) => w.friendship_id === fid)?.avatar_hue ?? 210);
+      });
+    }
+
     // Lifecycle cleanup: Phaser doesn't auto-kill our repeating waypoint tween or
     // the DOM toast timer on teardown — clear both so nothing fires/loops on a
     // destroyed scene after the React host unmounts the game.
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.teardownCopilot, this);
     this.events.once(Phaser.Scenes.Events.DESTROY, this.teardownCopilot, this);
+  }
+
+  private onHomeWake() {
+    // Resume the home galaxy after a return-from-friend: unfreeze flight, re-follow
+    // the ship (the warp left the camera stop-followed and zoomed at the gate), and
+    // re-arm the warp guard so the next gate can fire.
+    this.warping = false;
+    this.paused = false;
+    this.docking = false;
+    this.restoreCamera();
   }
 
   private teardownCopilot() {
@@ -401,59 +557,7 @@ export class GalaxyScene extends Phaser.Scene {
   }
 
   private makeTextures() {
-    const gg = this.make.graphics({ x: 0, y: 0 }, false);
-    for (let i = 26; i > 0; i--) {
-      gg.fillStyle(0xffffff, 0.035);
-      gg.fillCircle(64, 64, i * 2.4);
-    }
-    gg.generateTexture("glow", 128, 128);
-    gg.destroy();
-
-    // Very soft, wide-falloff blob for nebula wisps — softer than "glow" so many
-    // overlapping copies read as an organic cloud rather than stacked discs.
-    const pf = this.make.graphics({ x: 0, y: 0 }, false);
-    for (let i = 40; i > 0; i--) {
-      pf.fillStyle(0xffffff, 0.018);
-      pf.fillCircle(80, 80, i * 2);
-    }
-    pf.generateTexture("puff", 160, 160);
-    pf.destroy();
-
-    const cg = this.make.graphics({ x: 0, y: 0 }, false);
-    cg.fillStyle(0xffffff, 1);
-    cg.fillCircle(8, 8, 8);
-    cg.generateTexture("core", 16, 16);
-    cg.destroy();
-
-    // A clean stroked circle for ripples (touchdown / course pings) — graphics
-    // strokes can't tween, an image of one can.
-    const rg = this.make.graphics({ x: 0, y: 0 }, false);
-    rg.lineStyle(4, 0xffffff, 1);
-    rg.strokeCircle(40, 40, 36);
-    rg.generateTexture("ring", 80, 80);
-    rg.destroy();
-
-    const sg = this.make.graphics({ x: 0, y: 0 }, false);
-    sg.fillStyle(0xa5b4ff, 1);
-    sg.fillTriangle(30, 12, 4, 3, 4, 21);
-    sg.fillStyle(0x7c6bf0, 1);
-    sg.fillTriangle(30, 12, 6, 7, 6, 17);
-    sg.lineStyle(1, 0xffffff, 0.55);
-    sg.strokeTriangle(30, 12, 4, 3, 4, 21);
-    sg.generateTexture("ship", 34, 24);
-    sg.destroy();
-
-    const ng = this.make.graphics({ x: 0, y: 0 }, false);
-    ng.fillStyle(0x1c0a15, 1);
-    ng.fillTriangle(30, 12, 4, 1, 4, 23);
-    ng.fillStyle(0x33121f, 1);
-    ng.fillTriangle(28, 12, 8, 6, 8, 18);
-    ng.lineStyle(2, SHADOW, 0.95);
-    ng.strokeTriangle(30, 12, 4, 1, 4, 23);
-    ng.fillStyle(0xff2d55, 1);
-    ng.fillCircle(11, 12, 2.2);
-    ng.generateTexture("nega", 34, 24);
-    ng.destroy();
+    makeGalaxyTextures(this);
   }
 
   private buildStarfield() {
@@ -2055,6 +2159,176 @@ export class GalaxyScene extends Phaser.Scene {
     this.cameras.main.startFollow(this.ship, true, 0.08, 0.08);
   }
 
+  // ── Wormholes & warp ──
+  // One shimmering gate per accepted neighbor with shared sparks, placed at a
+  // deterministic rim position (stable hash of friendship_id — never re-run
+  // layout). Styled in the neighbor's hue, with a name-tag and a "new since last
+  // visit" glow + soft chime on first appearance (chime respects reduced-motion
+  // and browser autoplay rules — it degrades silently).
+  private buildWormholeGates() {
+    for (const wormhole of this.wormholes) {
+      const { x, y } = gateRimPosition(wormhole.friendship_id, this.world);
+      const color = hueColor(wormhole.avatar_hue);
+      const halo = this.add
+        .image(x, y, "glow")
+        .setTint(color)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setScale(1.5)
+        .setAlpha(0.42)
+        .setDepth(3);
+      const ring = this.add
+        .image(x, y, "ring")
+        .setTint(color)
+        .setBlendMode(Phaser.BlendModes.ADD)
+        .setScale((GATE.r + 8) / 36)
+        .setAlpha(0.9)
+        .setDepth(4);
+      const label = this.add
+        .text(x, y + GATE.r + 16, `★ ${wormhole.display_name} — ${wormhole.spark_count} spark${wormhole.spark_count === 1 ? "" : "s"}`, {
+          fontSize: "13px",
+          color: "#dbe7ff",
+          fontStyle: "bold",
+          align: "center",
+          backgroundColor: "rgba(11,15,19,0.72)",
+          padding: { x: 7, y: 4 },
+        })
+        .setOrigin(0.5, 0)
+        .setDepth(7);
+      // The gate breathes so it reads as a portal, not a static disc.
+      if (!this.reducedMotion()) {
+        this.tweens.add({ targets: halo, scale: 1.85, alpha: 0.6, duration: 1600, yoyo: true, repeat: -1, ease: "Sine.inOut" });
+        this.tweens.add({ targets: ring, angle: 360, duration: 14000, repeat: -1 });
+      }
+      let newGlow: Phaser.GameObjects.Image | null = null;
+      if (wormhole.new_since_last_visit > 0) {
+        newGlow = this.add
+          .image(x, y, "glow")
+          .setTint(0xffffff)
+          .setBlendMode(Phaser.BlendModes.ADD)
+          .setScale(2.1)
+          .setAlpha(0)
+          .setDepth(3);
+        if (!this.reducedMotion()) {
+          this.tweens.add({ targets: newGlow, alpha: 0.4, scale: 2.5, duration: 900, yoyo: true, repeat: -1, ease: "Sine.inOut" });
+        } else {
+          newGlow.setAlpha(0.3);
+        }
+      }
+      this.gates.push({ data: wormhole, x, y, r: GATE.r, color, ring, halo, label, newGlow, armed: false, cooldownUntil: 0 });
+    }
+    // Soft chime the first time any "new" gate appears (once per build). Guarded:
+    // no Audio without a user gesture (autoplay policy) and none under reduced
+    // motion — both degrade to silence, never an error.
+    if (this.gates.some((g) => g.newGlow) && !this.reducedMotion()) {
+      this.playGateChime();
+    }
+  }
+
+  private playGateChime() {
+    try {
+      const AudioCtx = (window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext);
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      if (ctx.state === "suspended") { void ctx.close(); return; } // no gesture yet → stay silent
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(660, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(990, ctx.currentTime + 0.18);
+      gain.gain.setValueAtTime(0.0001, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.06, ctx.currentTime + 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.52);
+      osc.onended = () => void ctx.close();
+    } catch {
+      // Audio unavailable — the visual glow already carries the "new" signal.
+    }
+  }
+
+  // Proximity arm/trigger, built exactly like the encounter loop: a gate arms
+  // only once the ship has left its trigger radius (so warping back home never
+  // re-fires instantly), then warps on re-approach.
+  private updateWormholeGates(time: number) {
+    if (this.warping || !this.gates.length) return;
+    const ship = this.ship;
+    for (const gate of this.gates) {
+      if (time <= gate.cooldownUntil) continue;
+      const d = Phaser.Math.Distance.Between(ship.x, ship.y, gate.x, gate.y);
+      if (!gate.armed) {
+        if (d > GATE.trigger * 1.4) gate.armed = true;
+        continue;
+      }
+      if (d < GATE.trigger) {
+        // Disarm before warping: on return-home the ship is dropped right back on
+        // this gate (home state is preserved), so it must leave the radius and
+        // re-approach before it can fire again — no instant re-warp loop.
+        gate.armed = false;
+        void this.warpTo(gate.data.friendship_id, gate.data.avatar_hue, gate);
+        return;
+      }
+    }
+  }
+
+  // The warp: fetch the friend galaxy FIRST (no mid-warp loading stall), then run
+  // the startEncounter-style camera choreography (stopFollow → pan → tweenZoom) +
+  // the WarpIn accent bloom, then scene.switch to the co-resident FriendGalaxyScene.
+  private async warpTo(friendshipId: string, hue: number, gate?: WormholeGate) {
+    if (this.warping) return;
+    this.warping = true;
+    let galaxyData: FriendGalaxyData;
+    try {
+      galaxyData = await fetchFriendGalaxy(friendshipId);
+    } catch {
+      this.warping = false;
+      if (gate) gate.cooldownUntil = this.time.now + 4000;
+      this.showToast("That wormhole flickered out — couldn't reach your neighbor's galaxy. Try again in a moment.");
+      return;
+    }
+    if (this.destroyed) return;
+    // Watermark: mark the gate visited (advances "new since last visit") + kill
+    // its glow locally. Fire-and-forget — the visit POST is not on the hot path.
+    void markWormholeVisited(friendshipId).catch(() => {});
+    if (gate?.newGlow) { gate.newGlow.destroy(); gate.newGlow = null; }
+
+    // Freeze flight + choreograph the jump, mirroring startEncounter.
+    this.paused = true;
+    this.ship.body.setVelocity(0, 0);
+    this.ship.body.setAcceleration(0, 0);
+    this.autopilot = null;
+    this.clearWaypoint();
+    const targetX = gate ? gate.x : this.ship.x;
+    const targetY = gate ? gate.y : this.ship.y;
+    this.ship.rotation = Phaser.Math.Angle.Between(this.ship.x, this.ship.y, targetX, targetY);
+    const cam = this.cameras.main;
+    cam.stopFollow();
+    this.encPrevZoom = cam.zoom;
+    if (this.reducedMotion()) {
+      this.switchToFriend(friendshipId, hue, galaxyData);
+      return;
+    }
+    cam.pan(targetX, targetY, 620, "Sine.easeInOut");
+    this.tweenZoom(2.4, 620);
+    // The WarpIn bloom (matches play/page.tsx:96 accent glow) as a jump-to-
+    // lightspeed flash, then switch scenes at its peak.
+    const flash = this.q("#cg-warp-flash");
+    if (flash) flash.classList.add("show");
+    this.time.delayedCall(560, () => {
+      if (this.destroyed) return;
+      this.switchToFriend(friendshipId, hue, galaxyData);
+      this.time.delayedCall(200, () => { if (flash) flash.classList.remove("show"); });
+    });
+  }
+
+  private switchToFriend(friendshipId: string, hue: number, galaxyData: FriendGalaxyData) {
+    // switch() sleeps THIS scene (state preserved) and starts friend-galaxy fresh
+    // (it was stopped on the last return, so init/create run with the new data —
+    // never a stale wake). paused stays true so the slept home scene resumes clean
+    // on wake via onHomeWake → restoreCamera.
+    this.scene.switch("friend-galaxy", { friendshipId, hue, galaxyData });
+  }
+
   // Fixed bottom-right minimap: the whole world outline + cluster-coloured star
   // dots, with a live marker for the ship and a box for the current view, so you
   // can see how big the map is and never lose yourself. Sized off the viewport's
@@ -2201,6 +2475,10 @@ export class GalaxyScene extends Phaser.Scene {
       }
     }
 
+    // Wormhole gates arm/trigger the same way, beside the encounter loop.
+    this.updateWormholeGates(time);
+    if (this.warping) return;
+
     let thrusting = false;
     const left = this.cursors.left.isDown || this.keys.A.isDown;
     const right = this.cursors.right.isDown || this.keys.D.isDown;
@@ -2299,13 +2577,475 @@ export class GalaxyScene extends Phaser.Scene {
   }
 }
 
-export function mountGalaxyGame(canvasParent: HTMLElement, overlayRoot: HTMLElement, galaxy: GalaxyData): Phaser.Game {
+// ── FriendGalaxyScene: a second, co-resident, READ-ONLY scene (design §8) ──────
+//
+// Warping in is a scene.switch, never a prop swap. This scene is a stripped
+// explorer: fly + land on a spark → a read-only sheet (title/text/tags + "Bring
+// it home"). NO encounters (the nega-self duel reads YOUR neglect timestamps,
+// which don't exist for a friend), NO tutoring, notes, pin, connect, or reflect
+// writes — a friend visit is "explore their shared sparks," full stop. The only
+// mutation is the souvenir (adopt), which writes the VIEWER's OWN pending stars.
+// The always-visible return beacon warps home (scene.switch back → home wakes
+// with its camera/ship state intact, because it was slept, not destroyed).
+
+interface FriendStarEntry {
+  data: FriendStar;
+  x: number;
+  y: number;
+  r: number;
+  glow: Phaser.GameObjects.Image;
+  core: Phaser.GameObjects.Image;
+  label: Phaser.GameObjects.Text;
+}
+
+class FriendGalaxyScene extends Phaser.Scene {
+  private overlayRoot: HTMLElement;
+  private galaxy: FriendGalaxyData = { stars: [], edges: [], clusters: [] };
+  private friendshipId = "";
+  private hue = 210;
+  private accent = 0x7c6bf0;
+  private world = { w: 3600, h: 2400 };
+  private stars: FriendStarEntry[] = [];
+  private ship!: any;
+  private flame!: Phaser.GameObjects.Particles.ParticleEmitter;
+  private ring!: Phaser.GameObjects.Graphics;
+  private prompt!: Phaser.GameObjects.Text;
+  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
+  private keys!: any;
+  private candidate: FriendStarEntry | null = null;
+  private openStar: FriendStarEntry | null = null;
+  private autopilot: { x: number; y: number; star: FriendStarEntry | null } | null = null;
+  private touch = { active: false, anchorX: 0, anchorY: 0, curX: 0, curY: 0, moved: 0 };
+  private paused = false;
+  private adopting = false;
+  private destroyed = false;
+  private landBtn!: HTMLElement | null;
+  private returnBtn!: HTMLElement | null;
+  private toastEl!: HTMLElement | null;
+  private toastTimer = 0;
+
+  constructor(overlayRoot: HTMLElement) {
+    super("friend-galaxy");
+    this.overlayRoot = overlayRoot;
+  }
+
+  private q<T extends HTMLElement = HTMLElement>(sel: string): T | null {
+    return this.overlayRoot.querySelector<T>(sel);
+  }
+
+  private reducedMotion(): boolean {
+    try {
+      return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    } catch {
+      return false;
+    }
+  }
+
+  // init() runs on every fresh start (we STOP this scene on return, so a re-warp
+  // to a different neighbor always re-inits with new data — never a stale wake).
+  init(data: { friendshipId: string; hue: number; galaxyData: FriendGalaxyData }) {
+    this.friendshipId = data.friendshipId;
+    this.hue = data.hue ?? 210;
+    this.accent = hueColor(this.hue);
+    this.galaxy = data.galaxyData ?? { stars: [], edges: [], clusters: [] };
+    // reset per-visit state (create runs after init on a fresh start)
+    this.stars = [];
+    this.candidate = null;
+    this.openStar = null;
+    this.autopilot = null;
+    this.paused = false;
+    this.adopting = false;
+    this.destroyed = false;
+  }
+
+  create() {
+    makeGalaxyTextures(this);
+    this.overlayRoot.classList.add("cg-in-friend");
+
+    // Layout over the friend payload. layoutStars keys by star id, so feed it a
+    // numeric-indexed shim (FriendStar ids are namespaced strings) and map back.
+    const layoutInput = this.galaxy.stars.map((s, i) => ({
+      id: i,
+      x: s.x,
+      y: s.y,
+      cluster_id: s.cluster_id,
+      cluster_label: s.cluster_label,
+      star_stage: s.star_stage,
+    }));
+    const { pos, world } = layoutStars(layoutInput as unknown as GalaxyStar[]);
+    this.world = world;
+    this.physics.world.setBounds(0, 0, world.w, world.h);
+    this.cameras.main.setBounds(0, 0, world.w, world.h);
+    this.cameras.main.setBackgroundColor("#0b0f13");
+
+    this.buildStarfield();
+    this.buildNeighborhoods(pos);
+    this.buildStars(pos);
+
+    // Spawn at the centroid of the shared stars so you arrive among them.
+    let sx = world.w / 2;
+    let sy = world.h / 2;
+    if (this.stars.length) {
+      sx = this.stars.reduce((a, s) => a + s.x, 0) / this.stars.length;
+      sy = this.stars.reduce((a, s) => a + s.y, 0) / this.stars.length;
+    }
+    this.buildShip(sx, sy);
+
+    this.ring = this.add.graphics().setDepth(6);
+    this.prompt = this.add
+      .text(0, 0, "[E] Land", { fontSize: "13px", color: "#dbe7ff", fontStyle: "bold", backgroundColor: "rgba(11,15,19,0.72)", padding: { x: 7, y: 4 } })
+      .setOrigin(0.5, 1)
+      .setDepth(7)
+      .setVisible(false);
+
+    this.buildInput();
+    this.wireDom();
+
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.teardown, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.teardown, this);
+  }
+
+  private buildStarfield() {
+    const W = this.world.w;
+    const H = this.world.h;
+    const density = Math.min(6, (W * H) / (3600 * 2400));
+    const layers = [
+      { n: Math.round(280 * density), alpha: 0.3, sf: 0.14, r: 0.9 },
+      { n: Math.round(180 * density), alpha: 0.55, sf: 0.4, r: 1.3 },
+    ];
+    for (const L of layers) {
+      const g = this.add.graphics().setScrollFactor(L.sf).setDepth(0);
+      for (let i = 0; i < L.n; i++) {
+        g.fillStyle(0xcfe0ff, L.alpha * (0.4 + Math.random() * 0.6));
+        g.fillCircle(Math.random() * W * 1.4, Math.random() * H * 1.4, L.r * (0.6 + Math.random()));
+      }
+    }
+  }
+
+  // Lean nebula: one soft halo per cluster centroid, washed toward the friend's
+  // hue so the whole galaxy reads as "theirs."
+  private buildNeighborhoods(pos: Record<number, { x: number; y: number }>) {
+    const groups = new Map<number, { x: number; y: number; n: number; label: string }>();
+    this.galaxy.stars.forEach((s, i) => {
+      const cid = s.cluster_id;
+      const p = pos[i];
+      if (cid === null || cid === undefined || !p) return;
+      const g = groups.get(cid) ?? { x: 0, y: 0, n: 0, label: s.cluster_label || "" };
+      g.x += p.x;
+      g.y += p.y;
+      g.n += 1;
+      groups.set(cid, g);
+    });
+    for (const [, g] of groups) {
+      const cx = g.x / g.n;
+      const cy = g.y / g.n;
+      this.add.image(cx, cy, "puff").setTint(this.accent).setBlendMode(Phaser.BlendModes.ADD).setScale(6).setAlpha(0.06).setDepth(1);
+      const hex = "#" + this.accent.toString(16).padStart(6, "0");
+      this.add
+        .text(cx, cy - 190, (g.label || "").toUpperCase(), { fontFamily: "serif", fontStyle: "italic", fontSize: "28px", color: hex })
+        .setOrigin(0.5)
+        .setAlpha(0.18)
+        .setDepth(2);
+    }
+  }
+
+  private buildStars(pos: Record<number, { x: number; y: number }>) {
+    this.galaxy.stars.forEach((data, i) => {
+      const p = pos[i];
+      if (!p) return;
+      const cfg = STAGE[data.star_stage] || STAGE_FALLBACK;
+      // Tint by cluster, but lifted toward the friend's hue so their galaxy reads
+      // in their colour family.
+      const tint = lighten(clusterColor(data.cluster_id), 0.12);
+      const glow = this.add.image(p.x, p.y, "glow").setTint(tint).setBlendMode(Phaser.BlendModes.ADD).setScale((cfg.size * 2.9 * cfg.glow) / 62).setDepth(3);
+      const core = this.add.image(p.x, p.y, "core").setTint(tint).setScale(cfg.size / 8).setDepth(4);
+      const label = this.add
+        .text(p.x, p.y + cfg.size + 12, truncate(data.text, 26), { fontSize: "12px", color: "#cdd9f5", align: "center" })
+        .setOrigin(0.5, 0)
+        .setAlpha(0.55)
+        .setDepth(4);
+      label.setTint(tint);
+      if (!this.reducedMotion()) {
+        this.tweens.add({ targets: core, alpha: 0.6, duration: 1400 + Math.random() * 1600, delay: Math.random() * 1400, yoyo: true, repeat: -1, ease: "Sine.inOut" });
+      }
+      this.stars.push({ data, x: p.x, y: p.y, r: cfg.size, glow, core, label });
+    });
+  }
+
+  private buildShip(x: number, y: number) {
+    this.ship = this.physics.add.image(x, y, "ship").setDepth(8);
+    this.ship.body.setDamping(false);
+    this.ship.body.setDrag(CONFIG.SHIP.drag, CONFIG.SHIP.drag);
+    this.ship.body.setMaxVelocity(CONFIG.SHIP.maxVel);
+    this.ship.body.setAllowGravity(false);
+    this.ship.body.setCollideWorldBounds(true);
+    // Wash the visitor's ship trail in the friend's hue — a subtle "you're a guest here."
+    this.flame = this.add
+      .particles(0, 0, "core", { lifespan: 320, speed: { min: 20, max: 70 }, scale: { start: 0.5, end: 0 }, alpha: { start: 0.85, end: 0 }, tint: this.accent, blendMode: "ADD", emitting: false })
+      .setDepth(7);
+    this.cameras.main.startFollow(this.ship, true, 0.09, 0.09);
+    const vmin = Math.min(this.scale.width, this.scale.height);
+    this.cameras.main.setZoom(Phaser.Math.Clamp(vmin / 1400, 0.8, 1.6));
+  }
+
+  private buildInput() {
+    this.cursors = this.input.keyboard!.createCursorKeys();
+    this.keys = this.input.keyboard!.addKeys("W,A,S,D,E,ESC");
+    this.input.on("pointerdown", (p: Phaser.Input.Pointer) => {
+      if (this.paused) return;
+      this.touch = { active: true, anchorX: p.x, anchorY: p.y, curX: p.x, curY: p.y, moved: 0 };
+    });
+    this.input.on("pointermove", (p: Phaser.Input.Pointer) => {
+      if (!this.touch.active) return;
+      this.touch.curX = p.x;
+      this.touch.curY = p.y;
+      this.touch.moved = Math.max(this.touch.moved, Phaser.Math.Distance.Between(this.touch.anchorX, this.touch.anchorY, p.x, p.y));
+    });
+    this.input.on("pointerup", (p: Phaser.Input.Pointer) => {
+      const wasTap = this.touch.active && this.touch.moved <= 12;
+      this.touch.active = false;
+      if (wasTap && !this.paused) this.handleTap(p);
+    });
+  }
+
+  private wireDom() {
+    // Friend banner + return beacon + land button all live in the shared overlay
+    // (constellation-game.tsx); CSS shows the friend-only chrome while .cg-in-friend.
+    const banner = this.q("#cg-friend-banner");
+    if (banner) {
+      banner.textContent = "Exploring a neighbor's shared galaxy";
+      banner.style.setProperty("--friend-hue", String(this.hue));
+    }
+    this.toastEl = this.q("#cg-copilot-toast");
+    this.returnBtn = this.q("#cg-return-home");
+    if (this.returnBtn) (this.returnBtn as HTMLButtonElement).onclick = () => this.returnHome();
+    this.landBtn = this.q("#cg-friend-land-btn");
+    if (this.landBtn) (this.landBtn as HTMLButtonElement).onclick = () => { if (this.candidate) this.landOn(this.candidate); };
+    // Read-only sheet actions.
+    const close = this.q("#cg-fs-close");
+    if (close) (close as HTMLButtonElement).onclick = () => this.closeSheet();
+    const sheet = this.q("#cg-friend-sheet");
+    // onclick (not addEventListener) — this scene re-creates on every warp, so a
+    // listener would accumulate; onclick just overwrites the prior handler.
+    if (sheet) sheet.onclick = (ev) => { if (ev.target === sheet) this.closeSheet(); };
+    const adopt = this.q("#cg-fs-adopt");
+    if (adopt) (adopt as HTMLButtonElement).onclick = () => void this.adopt();
+  }
+
+  private handleTap(p: Phaser.Input.Pointer) {
+    let near: FriendStarEntry | null = null;
+    let nd = 140;
+    for (const s of this.stars) {
+      const d = Phaser.Math.Distance.Between(p.worldX, p.worldY, s.x, s.y);
+      if (d < nd) { nd = d; near = s; }
+    }
+    if (near) {
+      const ds = Phaser.Math.Distance.Between(this.ship.x, this.ship.y, near.x, near.y);
+      if (ds < CONFIG.DOCK_RADIUS) this.landOn(near);
+      else this.autopilot = { x: near.x, y: near.y, star: near };
+    } else {
+      this.autopilot = { x: p.worldX, y: p.worldY, star: null };
+    }
+  }
+
+  private landOn(entry: FriendStarEntry) {
+    this.openStar = entry;
+    this.paused = true;
+    this.ship.body.setVelocity(0, 0);
+    this.ship.body.setAcceleration(0, 0);
+    this.autopilot = null;
+    this.ring.clear();
+    this.prompt.setVisible(false);
+    if (this.landBtn) this.landBtn.classList.remove("show");
+    if (!this.reducedMotion()) {
+      const tint = clusterColor(entry.data.cluster_id);
+      const rip = this.add.image(entry.x, entry.y, "ring").setTint(tint).setBlendMode(Phaser.BlendModes.ADD).setScale((entry.r + 14) / 36).setAlpha(0.85).setDepth(6);
+      this.tweens.add({ targets: rip, scale: ((entry.r + 14) / 36) * 2.2, alpha: 0, duration: 560, ease: "Sine.Out", onComplete: () => rip.destroy() });
+    }
+    this.openSheet(entry);
+  }
+
+  private openSheet(entry: FriendStarEntry) {
+    const sheet = this.q("#cg-friend-sheet");
+    const cluster = this.q("#cg-fs-cluster");
+    const text = this.q("#cg-fs-text");
+    const tags = this.q("#cg-fs-tags");
+    const adopt = this.q<HTMLButtonElement>("#cg-fs-adopt");
+    if (cluster) cluster.textContent = entry.data.cluster_label || "a shared spark";
+    if (text) text.textContent = entry.data.text;
+    if (tags) {
+      tags.innerHTML = "";
+      for (const t of entry.data.tags || []) {
+        const chip = document.createElement("span");
+        chip.className = "cg-tag";
+        chip.textContent = t;
+        tags.appendChild(chip);
+      }
+    }
+    if (adopt) {
+      adopt.disabled = false;
+      adopt.textContent = "✦ Bring it home";
+    }
+    if (sheet) sheet.classList.add("open");
+  }
+
+  private closeSheet() {
+    const sheet = this.q("#cg-friend-sheet");
+    if (sheet) sheet.classList.remove("open");
+    this.openStar = null;
+    this.paused = false;
+  }
+
+  private async adopt() {
+    const entry = this.openStar;
+    if (!entry || this.adopting) return;
+    this.adopting = true;
+    const adopt = this.q<HTMLButtonElement>("#cg-fs-adopt");
+    if (adopt) { adopt.disabled = true; adopt.textContent = "Bringing it home…"; }
+    try {
+      await adoptSpark(entry.data.shared_lesson_id);
+      this.showToast("Added to your pending stars — approve it in your own galaxy.");
+      this.closeSheet();
+    } catch {
+      if (adopt) { adopt.disabled = false; adopt.textContent = "✦ Bring it home"; }
+      this.showToast("Couldn't bring that home just now — try again.");
+    } finally {
+      this.adopting = false;
+    }
+  }
+
+  private showToast(text: string) {
+    const el = this.toastEl;
+    if (!el || !text) return;
+    el.textContent = text;
+    el.classList.add("show");
+    if (this.toastTimer) window.clearTimeout(this.toastTimer);
+    this.toastTimer = window.setTimeout(() => el.classList.remove("show"), 6000);
+  }
+
+  private returnHome() {
+    // STOP this scene (clears its display so the next warp starts fresh) and WAKE
+    // the slept home scene — home resumes with its camera/ship state intact.
+    this.closeSheet();
+    this.scene.stop();
+    this.scene.wake("galaxy");
+  }
+
+  private teardown() {
+    this.destroyed = true;
+    if (this.toastTimer) { window.clearTimeout(this.toastTimer); this.toastTimer = 0; }
+    this.overlayRoot.classList.remove("cg-in-friend");
+    // Hide the friend chrome so a return never leaves it over the home galaxy.
+    for (const id of ["#cg-friend-sheet"]) {
+      const el = this.q(id);
+      if (el) el.classList.remove("open");
+    }
+    if (this.landBtn) this.landBtn.classList.remove("show");
+  }
+
+  update(_time: number, delta: number) {
+    const dt = delta / 1000;
+    const ship = this.ship;
+    if (this.paused) {
+      this.ring.clear();
+      this.prompt.setVisible(false);
+      if (this.landBtn) this.landBtn.classList.remove("show");
+      return;
+    }
+
+    let thrusting = false;
+    const left = this.cursors.left.isDown || this.keys.A.isDown;
+    const right = this.cursors.right.isDown || this.keys.D.isDown;
+    const keyThrust = this.cursors.up.isDown || this.keys.W.isDown;
+    const braking = this.cursors.down.isDown || this.keys.S.isDown;
+    let mag = 1;
+
+    if (left || right || keyThrust) {
+      this.autopilot = null;
+      if (left) ship.rotation -= CONFIG.SHIP.turn * dt;
+      if (right) ship.rotation += CONFIG.SHIP.turn * dt;
+      thrusting = keyThrust;
+    } else if (this.touch.active && this.touch.moved > 12) {
+      const ang = Phaser.Math.Angle.Between(this.touch.anchorX, this.touch.anchorY, this.touch.curX, this.touch.curY);
+      ship.rotation = Phaser.Math.Angle.RotateTo(ship.rotation, ang, CONFIG.SHIP.turn * dt * 1.6);
+      const throw_ = Phaser.Math.Distance.Between(this.touch.anchorX, this.touch.anchorY, this.touch.curX, this.touch.curY);
+      mag = Phaser.Math.Clamp(throw_ / 56, 0.3, 1);
+      thrusting = true;
+    } else if (this.autopilot) {
+      const t = this.autopilot;
+      const ang = Phaser.Math.Angle.Between(ship.x, ship.y, t.x, t.y);
+      const dist = Phaser.Math.Distance.Between(ship.x, ship.y, t.x, t.y);
+      const arriveR = t.star ? t.star.r + 34 : 44;
+      if (dist <= arriveR) {
+        const arrived = t.star;
+        this.autopilot = null;
+        if (arrived) this.landOn(arrived);
+        else ship.body.setVelocity(0, 0);
+      } else {
+        ship.rotation = Phaser.Math.Angle.RotateTo(ship.rotation, ang, CONFIG.SHIP.turn * dt * 1.4);
+        const aim = Math.abs(Phaser.Math.Angle.Wrap(ang - ship.rotation));
+        const cap = Phaser.Math.Clamp((dist / 260) * CONFIG.SHIP.maxVel, 60, CONFIG.SHIP.maxVel);
+        const speed = ship.body.velocity.length();
+        if (speed > cap) ship.body.velocity.scale(cap / speed);
+        thrusting = aim < 0.7 && speed < cap;
+      }
+    }
+
+    if (braking) {
+      this.autopilot = null;
+      thrusting = false;
+      ship.body.velocity.scale(Math.max(0, 1 - CONFIG.FEEL.brake * dt));
+    }
+
+    if (thrusting) {
+      this.physics.velocityFromRotation(ship.rotation, CONFIG.SHIP.accel * mag, ship.body.acceleration);
+      this.flame.emitParticleAt(ship.x - Math.cos(ship.rotation) * 16, ship.y - Math.sin(ship.rotation) * 16, 2);
+    } else {
+      ship.body.setAcceleration(0, 0);
+    }
+
+    // Nearest dockable star → land ring + prompt.
+    let best: FriendStarEntry | null = null;
+    let bestD = CONFIG.DOCK_RADIUS;
+    for (const s of this.stars) {
+      const d = Phaser.Math.Distance.Between(ship.x, ship.y, s.x, s.y);
+      if (d < bestD) { bestD = d; best = s; }
+    }
+    this.candidate = best;
+    this.ring.clear();
+    if (best) {
+      const wob = this.reducedMotion() ? 0 : Math.sin(_time / 200);
+      this.ring.lineStyle(2, 0xffffff, 0.78 + wob * 0.18);
+      this.ring.strokeCircle(best.x, best.y, best.r + 16 + wob * 2.5);
+      this.prompt.setPosition(best.x, best.y - best.r - 22).setVisible(true);
+      if (this.landBtn) this.landBtn.classList.add("show");
+      if (Phaser.Input.Keyboard.JustDown(this.keys.E)) this.landOn(best);
+    } else {
+      this.prompt.setVisible(false);
+      if (this.landBtn) this.landBtn.classList.remove("show");
+    }
+    if (Phaser.Input.Keyboard.JustDown(this.keys.ESC)) {
+      if (this.openStar) this.closeSheet();
+      else this.returnHome();
+    }
+  }
+}
+
+export function mountGalaxyGame(
+  canvasParent: HTMLElement,
+  overlayRoot: HTMLElement,
+  galaxy: GalaxyData,
+  opts?: { wormholes?: Wormhole[]; initialWarp?: string | null },
+): Phaser.Game {
   return new Phaser.Game({
     type: Phaser.AUTO,
     parent: canvasParent,
     backgroundColor: "#0b0f13",
     scale: { mode: Phaser.Scale.RESIZE, width: "100%", height: "100%" },
     physics: { default: "arcade", arcade: { debug: false } },
-    scene: new GalaxyScene(galaxy, overlayRoot),
+    // Only the resident galaxy scene is registered at boot; it adds the
+    // co-resident friend-galaxy scene in create() (autoStart=false) so warp is a
+    // scene.switch, never a game teardown.
+    scene: new GalaxyScene(galaxy, overlayRoot, opts),
   });
 }
