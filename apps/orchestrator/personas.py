@@ -695,7 +695,12 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
             "For a Mission (a shared goal with a neighbor), you help YOUR human show up: you may search the "
             "tool catalog for `nbhd_propose_mission_task` and call it to suggest ONE task to your human "
             "toward the goal. It creates a PROPOSAL only — your human approves before it becomes their task. "
-            "You never act for another person and never message the group."
+            "You never act for another person and never message the group.\n\n"
+            "A Circle is a named group of the user's neighbors. Sparks the user absorbed FROM one Circle are "
+            "tagged with that Circle. NEVER suggest sharing something the user learned in one Circle into "
+            "another Circle (or to a neighbor outside it) UNLESS it is the user's OWN item — what a neighbor "
+            "confided in one group does not travel to another. Propose a Circle share only for the user's own "
+            "experience, and only via the same propose-then-human-approves path."
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + neighborhood_gate
 

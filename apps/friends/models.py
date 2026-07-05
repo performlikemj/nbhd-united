@@ -129,6 +129,7 @@ class FriendInvite(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     inviter = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="friend_invites")
     token = models.CharField(max_length=64, unique=True)  # secrets.token_urlsafe(32), high-entropy
+    circle = models.ForeignKey("Circle", on_delete=models.CASCADE, null=True, blank=True)  # optional: into a Circle
     prefill_email = models.EmailField(blank=True)
     max_uses = models.PositiveIntegerField(default=1)
     uses = models.PositiveIntegerField(default=0)
@@ -214,6 +215,7 @@ class LessonShareGrant(models.Model):
     friendship = models.ForeignKey(
         Friendship, on_delete=models.CASCADE, null=True, blank=True, related_name="lesson_grants"
     )
+    circle = models.ForeignKey("Circle", on_delete=models.CASCADE, null=True, blank=True, related_name="lesson_grants")
     granted_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="+")
     status = models.CharField(max_length=8, choices=Status.choices, default=Status.ACTIVE)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -222,19 +224,27 @@ class LessonShareGrant(models.Model):
     class Meta:
         db_table = "lesson_share_grants"
         constraints = [
-            # PR7: widen to Q(friendship__isnull=False) ^ Q(circle__isnull=False).
+            # Exactly one audience — a friendship XOR a circle (design §2.5 final form).
             models.CheckConstraint(
-                condition=models.Q(friendship__isnull=False),
+                condition=models.Q(friendship__isnull=False) ^ models.Q(circle__isnull=False),
                 name="grant_exactly_one_audience",
             ),
-            # Partial-unique per audience → one grant per (lesson, friendship).
+            # Partial-unique per audience → one grant per (lesson, friendship) and per (lesson, circle).
             models.UniqueConstraint(
                 fields=["shared_lesson", "friendship"],
                 name="uq_grant_friendship",
                 condition=models.Q(friendship__isnull=False),
             ),
+            models.UniqueConstraint(
+                fields=["shared_lesson", "circle"],
+                name="uq_grant_circle",
+                condition=models.Q(circle__isnull=False),
+            ),
         ]
-        indexes = [models.Index(fields=["friendship", "status"])]
+        indexes = [
+            models.Index(fields=["friendship", "status"]),
+            models.Index(fields=["circle", "status"]),
+        ]
 
     def __str__(self) -> str:
         return f"grant:{self.id} ({self.status})"
@@ -267,6 +277,7 @@ class PendingShare(models.Model):
     preview_text = models.TextField(blank=True)  # convenience mirror of the scrubbed text at approve time
     final_text = models.TextField(blank=True)  # what the human actually approved (post-edit)
     target_friendship = models.ForeignKey(Friendship, on_delete=models.CASCADE, null=True, blank=True)
+    target_circle = models.ForeignKey("Circle", on_delete=models.CASCADE, null=True, blank=True)
 
     status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
     telegram_message_id = models.BigIntegerField(null=True, blank=True)
@@ -336,6 +347,9 @@ class AbsorbedItem(models.Model):
     source_kind = models.CharField(max_length=16, choices=SourceKind.choices)
     source_id = models.UUIDField()  # SharedLesson.id or FriendMessage.public_id — the REAL row
     from_tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="+")
+    circle = models.ForeignKey(
+        "Circle", on_delete=models.SET_NULL, null=True, blank=True
+    )  # circle-scoped purge/leak-tag
     label = models.CharField(max_length=200, blank=True)  # display-only denormalized title (NOT the knowledge)
     absorbed_at = models.DateTimeField(auto_now_add=True)
     purged_at = models.DateTimeField(null=True, blank=True)
@@ -368,6 +382,7 @@ class FriendThread(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     kind = models.CharField(max_length=8, choices=Kind.choices, default=Kind.DIRECT)
     friendship = models.ForeignKey(Friendship, on_delete=models.CASCADE, null=True, blank=True, related_name="thread")
+    circle = models.ForeignKey("Circle", on_delete=models.CASCADE, null=True, blank=True, related_name="threads")
     title = models.CharField(max_length=160, blank=True)
     created_by = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="threads_started")
     created_at = models.DateTimeField(auto_now_add=True)
@@ -462,6 +477,9 @@ class SharedGoal(models.Model):
     description = models.TextField(blank=True)
     pillar = models.CharField(max_length=20, blank=True)
     friendship = models.ForeignKey(Friendship, on_delete=models.SET_NULL, null=True, blank=True)  # 1:1 mission
+    circle = models.ForeignKey(
+        "Circle", on_delete=models.SET_NULL, null=True, blank=True, related_name="missions"
+    )  # circle mission
     created_by = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="missions_created")
     target = models.JSONField(default=dict)  # {metric, unit, cadence:"daily", value:10000}
     target_date = models.DateField(null=True, blank=True)
@@ -555,3 +573,71 @@ class PendingGoalAction(models.Model):
 
     def __str__(self) -> str:
         return f"pending_goal_action:{self.id} ({self.status})"
+
+
+class Circle(models.Model):
+    """A named set of accepted neighbors (the blueprint's Group; design §2.11).
+    Built ON edges — you must be a member's neighbor, or claim an invite, to join.
+    Membership itself is the consent grant inside a Circle."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True)
+    hue = models.PositiveSmallIntegerField(default=210)  # galaxy tint
+    created_by = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="circles_created")
+    invite_code = models.CharField(max_length=64, unique=True)  # link/QR (reuse linking pattern)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "friend_circles"
+
+    def __str__(self) -> str:
+        return f"circle:{self.id} ({self.name})"
+
+
+class CircleMembership(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    circle = models.ForeignKey(Circle, on_delete=models.CASCADE, related_name="memberships")
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="circle_memberships")
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="+")
+    role = models.CharField(max_length=8, default="member")  # member | admin
+    share_preferences = models.JSONField(default=dict)  # categories the agent MAY suggest sharing
+    agent_absorb_enabled = models.BooleanField(default=True)
+    muted = models.BooleanField(default=False)
+    status = models.CharField(max_length=8, default="active")  # active | left | removed
+    joined_at = models.DateTimeField(auto_now_add=True)
+    left_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "friend_circle_memberships"
+        constraints = [models.UniqueConstraint(fields=["circle", "tenant"], name="uq_circle_tenant")]
+        indexes = [models.Index(fields=["tenant", "status"])]
+
+    def __str__(self) -> str:
+        return f"circle_member:{self.circle_id}:{self.tenant_id}"
+
+
+class ContentReport(models.Model):
+    """MVP moderation: report + block + owner-unshare (design §2.10). No global
+    queue at launch scale — shares are scoped + human-approved + identity-scrubbed,
+    so the blast radius is small. A report hides the item for the REPORTER."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    reporter_tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="+")
+    reporter_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="+")
+    target_kind = models.CharField(
+        max_length=16, choices=[("shared_lesson", "Shared spark"), ("friend_message", "Chat")]
+    )
+    shared_lesson = models.ForeignKey(SharedLesson, on_delete=models.CASCADE, null=True, blank=True)
+    friend_message = models.ForeignKey(FriendMessage, on_delete=models.CASCADE, null=True, blank=True)
+    reason = models.CharField(max_length=280)
+    status = models.CharField(max_length=12, default="open")  # open | hidden | dismissed
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "content_reports"
+        indexes = [models.Index(fields=["reporter_tenant", "status"])]
+
+    def __str__(self) -> str:
+        return f"report:{self.id} ({self.target_kind})"

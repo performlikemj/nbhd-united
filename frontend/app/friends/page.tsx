@@ -9,7 +9,7 @@ import { SectionCard } from "@/components/section-card";
 import { Skeleton, SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import { emitToast } from "@/components/toast";
-import { fetchSharePreview } from "@/lib/api";
+import { fetchCircleSharePreview, fetchSharePreview } from "@/lib/api";
 import { getErrorMessage } from "@/lib/errors";
 import {
   useAbsorbedQuery,
@@ -20,10 +20,15 @@ import {
   useApproveGoalActionMutation,
   useApproveShareMutation,
   useBlockWaveMutation,
+  useCircleDetailQuery,
+  useCirclesQuery,
+  useCreateCircleMutation,
   useCreateMissionMutation,
   useDeclineWaveMutation,
   useGoalActionsQuery,
+  useJoinCircleMutation,
   useJoinMissionMutation,
+  useLeaveCircleMutation,
   useLeaveMissionMutation,
   useMarkThreadReadMutation,
   useMissionDetailQuery,
@@ -35,8 +40,10 @@ import {
   usePatchMissionMutation,
   usePendingSharesQuery,
   usePurgeAbsorbedMutation,
+  useRegenerateInviteCodeMutation,
   useRejectGoalActionMutation,
   useRejectShareMutation,
+  useRemoveCircleMemberMutation,
   useSendMessageMutation,
   useSendWaveMutation,
   useShareLessonMutation,
@@ -47,6 +54,7 @@ import {
 } from "@/lib/queries";
 import type {
   ChatThread,
+  CircleMember,
   MissionMember,
   Neighbor,
   NeighborProfile,
@@ -69,8 +77,9 @@ function useDocumentVisible(): boolean {
   return visible;
 }
 
-// The one place a raw dynamic color is allowed — the avatar hue is a
-// user-chosen 0-359 value, not a design-system token.
+// The one place a raw dynamic color is allowed — the avatar/circle hue is a
+// user-chosen 0-359 value, not a design-system token. Reused for circle dots
+// (PR7) too — same formula, one chokepoint.
 function avatarStyle(hue: number): CSSProperties {
   return { backgroundColor: `hsl(${hue} 70% 55%)` };
 }
@@ -90,6 +99,8 @@ export default function FriendsPage() {
   const [openThread, setOpenThread] = useState<ChatThread | null>(null);
   const [creatingMission, setCreatingMission] = useState(false);
   const [openMissionId, setOpenMissionId] = useState<string | null>(null);
+  const [creatingCircle, setCreatingCircle] = useState(false);
+  const [openCircleId, setOpenCircleId] = useState<string | null>(null);
 
   const neighbors = data?.neighbors ?? [];
   const pendingIncoming = data?.pending_incoming ?? [];
@@ -167,7 +178,9 @@ export default function FriendsPage() {
                     >
                       <div className="min-w-0 flex-1">
                         <p className="line-clamp-2 text-sm text-ink">{share.lesson_preview}</p>
-                        <p className="mt-1 truncate text-xs text-ink-faint">To {share.audience}</p>
+                        <p className="mt-1 truncate text-xs text-ink-faint">
+                          To {share.audience ?? "a circle"}
+                        </p>
                       </div>
                       <button
                         type="button"
@@ -324,6 +337,13 @@ export default function FriendsPage() {
               onCreateMission={() => setCreatingMission(true)}
             />
 
+            <CirclesCard
+              delay={(hasApprovals ? 80 : 0) + (hasRequests ? 80 : 0) + 160}
+              onOpenCircle={setOpenCircleId}
+              onCreateCircle={() => setCreatingCircle(true)}
+            />
+            <JoinCircleForm />
+
             <ShareLessonCard />
             <WaveForm />
             <ProfileEditor />
@@ -342,6 +362,19 @@ export default function FriendsPage() {
 
       {openMissionId && (
         <MissionDetailOverlay missionId={openMissionId} onClose={() => setOpenMissionId(null)} />
+      )}
+
+      {creatingCircle && <CreateCircleModal onClose={() => setCreatingCircle(false)} />}
+
+      {openCircleId && (
+        <CircleDetailOverlay
+          circleId={openCircleId}
+          onClose={() => setOpenCircleId(null)}
+          onOpenChat={(thread) => {
+            setOpenCircleId(null);
+            setOpenThread(thread);
+          }}
+        />
       )}
 
       <ConfirmDialog
@@ -724,7 +757,8 @@ function ProfileEditor() {
   );
 }
 
-// 1:1 chat with one neighbor. A bottom-sheet/dialog overlay — same
+// Chat pane shared by 1:1 neighbor threads AND circle threads (PR7) — one
+// implementation, never forked. A bottom-sheet/dialog overlay — same
 // backdrop+sticky-footer language as SharePreviewModal — rather than a
 // bespoke inline panel, so it reads as part of the same design system.
 // Polls messages every ~4s while mounted and the tab is visible; marks the
@@ -733,8 +767,18 @@ function ThreadView({ thread, onClose }: { thread: ChatThread; onClose: () => vo
   const visible = useDocumentVisible();
   const { data: threads = [] } = useThreadsQuery();
   // Prefer the live row from the thread list (accurate muted/unread) once
-  // it's loaded; fall back to the snapshot passed in when opening.
+  // it's loaded; fall back to the snapshot passed in when opening. A circle
+  // thread has no friendship — the backend's generic thread list can't
+  // resolve a "display name" for a group (only 1:1 has an "other party"), so
+  // its row comes back as a placeholder ("Neighbor" / hue 210). Keep using
+  // that row for muted/unread (per-membership fields, correct either way),
+  // but keep the header identity from the CircleDetailOverlay-seeded `thread`
+  // prop, which already carries the circle's real name + hue.
+  const isCircleChat = thread.friendship_id === null;
   const liveThread = threads.find((t) => t.thread_id === thread.thread_id) ?? thread;
+  const headerName = isCircleChat ? thread.display_name : liveThread.display_name;
+  const headerHue = isCircleChat ? thread.avatar_hue : liveThread.avatar_hue;
+  const headerHandle = isCircleChat ? null : liveThread.handle;
 
   const { data, isLoading } = useThreadMessagesQuery(thread.thread_id, { active: visible });
   const sendMutation = useSendMessageMutation(thread.thread_id);
@@ -801,12 +845,12 @@ function ThreadView({ thread, onClose }: { thread: ChatThread; onClose: () => vo
         </div>
 
         <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 sm:px-6">
-          <span className="h-9 w-9 shrink-0 rounded-full" style={avatarStyle(liveThread.avatar_hue)} aria-hidden />
+          <span className="h-9 w-9 shrink-0 rounded-full" style={avatarStyle(headerHue)} aria-hidden />
           <div className="min-w-0 flex-1">
             <h2 id="thread-view-title" className="truncate font-headline text-base font-bold text-ink">
-              {liveThread.display_name}
+              {headerName}
             </h2>
-            {liveThread.handle && <p className="truncate text-xs text-ink-faint">@{liveThread.handle}</p>}
+            {headerHandle && <p className="truncate text-xs text-ink-faint">@{headerHandle}</p>}
           </div>
           <button
             type="button"
@@ -1630,6 +1674,621 @@ function MissionDetailOverlay({ missionId, onClose }: { missionId: string; onClo
   );
 }
 
+// ── Circles (PR7) ────────────────────────────────────────────────────────
+// Small named groups built ON edges (design §2.11) — join via invite code, or
+// being waved in by a member you're already neighbors with. List+create
+// mirrors MissionsCard's shape; the detail overlay mirrors MissionDetailOverlay.
+
+function CirclesCard({
+  delay,
+  onOpenCircle,
+  onCreateCircle,
+}: {
+  delay: number;
+  onOpenCircle: (circleId: string) => void;
+  onCreateCircle: () => void;
+}) {
+  const { data: circles = [], isLoading } = useCirclesQuery();
+
+  if (isLoading) {
+    return <SectionCardSkeleton lines={2} />;
+  }
+
+  return (
+    <SectionCard title="Circles" subtitle="Small named groups of neighbors." delay={delay}>
+      <div className="space-y-3">
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={onCreateCircle}
+            className="min-h-[44px] shrink-0 rounded-full border border-accent/40 bg-accent/10 px-4 text-xs font-semibold text-accent transition hover:bg-accent/20"
+          >
+            New circle
+          </button>
+        </div>
+
+        {circles.length === 0 ? (
+          <p className="rounded-panel border border-dashed border-border bg-surface/40 p-8 text-center text-sm text-ink-muted">
+            No circles yet &mdash; start one, or join with an invite code below.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {circles.map((circle) => (
+              <button
+                key={circle.circle_id}
+                type="button"
+                onClick={() => onOpenCircle(circle.circle_id)}
+                className="flex min-h-[44px] w-full items-center gap-3 rounded-xl border border-border bg-surface/60 p-3 text-left transition hover:bg-surface-hover"
+              >
+                <span className="h-9 w-9 shrink-0 rounded-full" style={avatarStyle(circle.hue)} aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium text-ink">{circle.name}</p>
+                  <p className="truncate text-xs text-ink-faint">
+                    {circle.member_count} {circle.member_count === 1 ? "member" : "members"}
+                    {circle.my_role === "admin" ? " · Admin" : ""}
+                  </p>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
+function JoinCircleForm() {
+  const joinMutation = useJoinCircleMutation();
+  const [code, setCode] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    const trimmed = code.trim();
+    if (!trimmed) return;
+    setError(null);
+    try {
+      await joinMutation.mutateAsync(trimmed);
+      setCode("");
+      emitToast("You're in.", "success");
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  };
+
+  return (
+    <SectionCard
+      title="Join a circle"
+      subtitle="Paste an invite code from a neighbor to join their circle."
+      delay={180}
+    >
+      <form onSubmit={submit} className="space-y-3">
+        <label className="block">
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+            Invite code
+          </span>
+          <input
+            type="text"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="Paste code…"
+            autoCapitalize="none"
+            autoCorrect="off"
+            className="mt-1 w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint transition focus:border-accent/50 min-h-[44px]"
+          />
+        </label>
+
+        {error && (
+          <p role="alert" className="rounded-xl border border-rose-border bg-rose-bg px-3 py-2 text-xs text-rose-text">
+            {error}
+          </p>
+        )}
+
+        <button
+          type="submit"
+          disabled={!code.trim() || joinMutation.isPending}
+          className="glow-purple min-h-[44px] rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {joinMutation.isPending ? "Joining…" : "Join"}
+        </button>
+      </form>
+    </SectionCard>
+  );
+}
+
+// Bottom-sheet/dialog overlay for starting a circle — same backdrop +
+// sticky-footer language as CreateMissionModal/SharePreviewModal.
+function CreateCircleModal({ onClose }: { onClose: () => void }) {
+  const createMutation = useCreateCircleMutation();
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [hue, setHue] = useState(() => Math.floor(Math.random() * 360));
+  const [error, setError] = useState<string | null>(null);
+
+  // Esc-to-close — never trapped, matches ThreadView/SharePreviewModal.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const canSubmit = !!name.trim() && !createMutation.isPending;
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setError(null);
+    try {
+      await createMutation.mutateAsync({
+        name: name.trim(),
+        description: description.trim() || undefined,
+        hue,
+      });
+      emitToast("Circle created.", "success");
+      onClose();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[80] flex items-end justify-center p-0 sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="create-circle-title"
+      onClick={onClose}
+    >
+      <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative flex max-h-[92vh] w-full flex-col overflow-y-auto rounded-t-2xl border border-border bg-card shadow-panel animate-reveal sm:max-h-[85vh] sm:max-w-lg sm:rounded-2xl"
+      >
+        <div className="flex justify-center pt-2.5 pb-1 sm:hidden">
+          <span className="h-1 w-9 rounded-full bg-border" aria-hidden="true" />
+        </div>
+
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close"
+          className="absolute right-3 top-3 z-10 flex min-h-[44px] min-w-[44px] items-center justify-center rounded-full bg-surface/80 text-ink-muted backdrop-blur-md transition hover:bg-surface-hover hover:text-ink sm:right-4 sm:top-4"
+        >
+          <span aria-hidden="true">✕</span>
+        </button>
+
+        <div className="px-6 pb-2 pt-4 sm:p-8 sm:pb-2">
+          <div className="pr-12 sm:pr-14">
+            <h2 id="create-circle-title" className="font-headline text-xl font-bold text-ink sm:text-2xl">
+              Start a circle
+            </h2>
+            <p className="mt-1 text-sm text-ink-muted">
+              A small named group of neighbors you can share and chat with together.
+            </p>
+          </div>
+        </div>
+
+        <form onSubmit={submit} className="flex-1 space-y-4 px-6 pb-6 sm:p-8 sm:pt-4">
+          <div className="flex items-center gap-4">
+            <span
+              className="h-12 w-12 shrink-0 rounded-full border-2 border-border"
+              style={avatarStyle(hue)}
+              aria-hidden
+            />
+            <label className="flex-1 min-w-0">
+              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Hue</span>
+              <input
+                type="range"
+                min={0}
+                max={359}
+                value={hue}
+                onChange={(e) => setHue(Number(e.target.value))}
+                className="mt-2 w-full accent-accent"
+                aria-label="Circle hue"
+              />
+            </label>
+          </div>
+
+          <label className="block">
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Name</span>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="Nishi-ku neighbors"
+              maxLength={120}
+              className="mt-1 w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint transition focus:border-accent/50 min-h-[44px]"
+            />
+          </label>
+
+          <label className="block">
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+              Description (optional)
+            </span>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              rows={3}
+              maxLength={400}
+              placeholder="What brings this circle together…"
+              className="mt-1 w-full resize-none rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none placeholder:text-ink-faint transition focus:border-accent/50"
+            />
+          </label>
+
+          {error && (
+            <p role="alert" className="rounded-xl border border-rose-border bg-rose-bg px-3 py-2 text-xs text-rose-text">
+              {error}
+            </p>
+          )}
+
+          <div className="sticky bottom-0 -mx-6 border-t border-border bg-surface/95 px-6 py-4 backdrop-blur-md sm:-mx-8 sm:px-8">
+            <button
+              type="submit"
+              disabled={!canSubmit}
+              className="glow-purple min-h-[44px] w-full rounded-full bg-accent px-5 py-2.5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
+            >
+              {createMutation.isPending ? "Creating…" : "Create circle"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// One row in a circle's member list — mirrors NeighborRow's avatar/name/handle
+// layout; the Remove action only ever renders for an admin viewer, never on
+// the viewer's own row (enforced by the caller via `canRemove`).
+function CircleMemberRow({
+  member,
+  canRemove,
+  removing,
+  onRemove,
+}: {
+  member: CircleMember;
+  canRemove: boolean;
+  removing: boolean;
+  onRemove: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-border bg-surface/60 p-3">
+      <span className="h-9 w-9 shrink-0 rounded-full" style={avatarStyle(member.avatar_hue)} aria-hidden />
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium text-ink">{member.is_me ? "You" : member.display_name}</p>
+        <p className="truncate text-xs text-ink-faint">
+          {member.handle ? `@${member.handle}` : "no handle set"}
+          {member.role === "admin" ? " · Admin" : ""}
+        </p>
+      </div>
+      {canRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={removing}
+          className="min-h-[44px] shrink-0 rounded-full border border-rose-border bg-rose-bg/40 px-3 text-xs font-semibold text-rose-text transition hover:bg-rose-bg disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {removing ? "Removing…" : "Remove"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Leaving a circle asks what happens to what the assistant already learned
+// there — purge is the DEFAULT (first, primary action); keep is an explicit
+// opt-in. A small nested confirm — rendered as ITS OWN top-level overlay
+// (sibling of CircleDetailOverlay's backdrop, not a DOM descendant of it) so
+// its own backdrop click/Esc only dismiss itself, never the circle detail
+// underneath.
+function LeaveCircleModal({
+  circleName,
+  pending,
+  onConfirm,
+  onCancel,
+}: {
+  circleName: string;
+  pending: boolean;
+  onConfirm: (keep: boolean) => void;
+  onCancel: () => void;
+}) {
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[90] flex items-end justify-center p-0 sm:items-center sm:p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="leave-circle-title"
+      onClick={onCancel}
+    >
+      <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full rounded-t-2xl border border-border bg-card shadow-panel animate-reveal sm:max-w-sm sm:rounded-2xl"
+      >
+        <div className="flex justify-center pt-2.5 pb-1 sm:hidden">
+          <span className="h-1 w-9 rounded-full bg-border" aria-hidden="true" />
+        </div>
+        <div className="p-6">
+          <h3 id="leave-circle-title" className="text-base font-semibold text-ink">
+            Leave {circleName}?
+          </h3>
+          <p className="mt-2 text-sm leading-relaxed text-ink-muted">
+            You&rsquo;ll lose access to this circle&rsquo;s chat and shares. Choose what happens to anything
+            your assistant already learned from it.
+          </p>
+
+          <div className="mt-5 space-y-2">
+            <button
+              type="button"
+              onClick={() => onConfirm(false)}
+              disabled={pending}
+              className="min-h-[44px] w-full rounded-xl border border-rose-border bg-rose-bg/40 px-4 text-sm font-semibold text-rose-text transition hover:bg-rose-bg disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {pending ? "Leaving…" : "Delete what my assistant learned here"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onConfirm(true)}
+              disabled={pending}
+              className="min-h-[44px] w-full rounded-xl border border-border px-4 text-sm text-ink-muted transition hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {pending ? "Leaving…" : "Leave, but keep it"}
+            </button>
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={pending}
+              className="min-h-[44px] w-full rounded-xl px-4 text-sm text-ink-faint transition hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Circle detail — members + (admin-only) invite code/regenerate + a per-member
+// Remove (admin, never on is_me) + the entry point into the SAME Messages pane
+// 1:1 chat uses (keyed by the circle's thread_id — never a second chat
+// implementation) + leave (purge-or-keep). Same bottom-sheet overlay idiom as
+// MissionDetailOverlay/ThreadView.
+function CircleDetailOverlay({
+  circleId,
+  onClose,
+  onOpenChat,
+}: {
+  circleId: string;
+  onClose: () => void;
+  onOpenChat: (thread: ChatThread) => void;
+}) {
+  const { data: circle, isLoading, isError } = useCircleDetailQuery(circleId);
+  const removeMutation = useRemoveCircleMemberMutation();
+  const regenerateMutation = useRegenerateInviteCodeMutation();
+  const leaveMutation = useLeaveCircleMutation();
+
+  const [removingHandle, setRemovingHandle] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [confirmingLeave, setConfirmingLeave] = useState(false);
+
+  // Esc-to-close — never trapped, matches ThreadView/SharePreviewModal. Ceded
+  // to the leave-confirm while it's open (its own Esc handler cancels that
+  // instead — see LeaveCircleModal).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !confirmingLeave) onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose, confirmingLeave]);
+
+  const isAdmin = circle?.my_role === "admin";
+
+  const handleRemove = (handle: string) => {
+    setRemovingHandle(handle);
+    removeMutation.mutate(
+      { id: circleId, handle },
+      {
+        onSuccess: () => emitToast(`Removed @${handle}.`, "success"),
+        onSettled: () => setRemovingHandle(null),
+      },
+    );
+  };
+
+  const copyInviteCode = async () => {
+    if (!circle?.invite_code) return;
+    setCopyError(null);
+    try {
+      await navigator.clipboard.writeText(circle.invite_code);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2500);
+    } catch {
+      setCopyError("Couldn't copy automatically — select the code above and copy it manually.");
+    }
+  };
+
+  const handleOpenChat = () => {
+    if (!circle?.thread_id) return;
+    onOpenChat({
+      thread_id: circle.thread_id,
+      friendship_id: null,
+      display_name: circle.name,
+      handle: null,
+      avatar_hue: circle.hue,
+      unread: 0,
+      last_message: "",
+      last_message_at: null,
+      muted: false,
+      agent_absorb_enabled: false,
+    });
+  };
+
+  const handleLeaveConfirm = (keep: boolean) => {
+    leaveMutation.mutate(
+      { id: circleId, keep },
+      {
+        onSuccess: (result) => {
+          emitToast(
+            result.purged
+              ? "Left the circle — what your assistant learned there was purged."
+              : "Left the circle.",
+            "success",
+          );
+          setConfirmingLeave(false);
+          onClose();
+        },
+        onError: () => setConfirmingLeave(false),
+      },
+    );
+  };
+
+  return (
+    <>
+      <div
+        className="fixed inset-0 z-[80] flex items-end justify-center p-0 sm:items-center sm:p-4"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="circle-detail-title"
+        onClick={onClose}
+      >
+        <div className="absolute inset-0 bg-overlay backdrop-blur-md" aria-hidden="true" />
+        <div
+          onClick={(e) => e.stopPropagation()}
+          className="relative flex max-h-[92vh] w-full flex-col overflow-hidden rounded-t-2xl border border-border bg-card shadow-panel animate-reveal sm:max-h-[85vh] sm:max-w-lg sm:rounded-2xl"
+        >
+          <div className="flex justify-center pt-2.5 pb-1 sm:hidden">
+            <span className="h-1 w-9 rounded-full bg-border" aria-hidden="true" />
+          </div>
+
+          <header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 sm:px-6">
+            {circle && (
+              <span className="h-9 w-9 shrink-0 rounded-full" style={avatarStyle(circle.hue)} aria-hidden />
+            )}
+            <div className="min-w-0 flex-1">
+              <h2 id="circle-detail-title" className="truncate font-headline text-base font-bold text-ink">
+                {circle?.name ?? "Circle"}
+              </h2>
+              {circle && (
+                <p className="truncate text-xs text-ink-faint">
+                  {circle.members.length} {circle.members.length === 1 ? "member" : "members"}
+                  {isAdmin ? " · You're admin" : ""}
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-full text-ink-faint transition hover:bg-surface-hover hover:text-ink"
+            >
+              <span aria-hidden="true">✕</span>
+            </button>
+          </header>
+
+          <div className="flex-1 space-y-5 overflow-y-auto px-4 py-4 sm:px-6">
+            {isLoading && !circle ? (
+              <p className="pt-8 text-center text-sm text-ink-muted">Loading&hellip;</p>
+            ) : isError || !circle ? (
+              <p className="pt-8 text-center text-sm text-ink-muted">
+                This circle isn&rsquo;t available right now.
+              </p>
+            ) : (
+              <>
+                {circle.description && (
+                  <p className="text-sm leading-relaxed text-ink-muted">{circle.description}</p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleOpenChat}
+                  disabled={!circle.thread_id}
+                  className="glow-purple flex min-h-[44px] w-full items-center justify-center rounded-full bg-accent px-5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Open chat
+                </button>
+
+                {isAdmin && (
+                  <div className="rounded-xl border border-border bg-surface/60 p-3">
+                    <p className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+                      Invite code
+                    </p>
+                    <div className="mt-2 flex items-center gap-2">
+                      <code className="min-w-0 flex-1 truncate rounded-lg border border-border bg-surface px-3 py-2 text-xs text-ink">
+                        {circle.invite_code}
+                      </code>
+                      <button
+                        type="button"
+                        onClick={() => void copyInviteCode()}
+                        className="min-h-[44px] shrink-0 rounded-full border border-accent/40 bg-accent/10 px-3 text-xs font-semibold text-accent transition hover:bg-accent/20"
+                      >
+                        {copied ? "Copied" : "Copy"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => regenerateMutation.mutate(circleId)}
+                        disabled={regenerateMutation.isPending}
+                        className="min-h-[44px] shrink-0 rounded-full border border-border px-3 text-xs text-ink-muted transition hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {regenerateMutation.isPending ? "Regenerating…" : "Regenerate"}
+                      </button>
+                    </div>
+                    {copyError && <p className="mt-1.5 text-xs text-rose-text">{copyError}</p>}
+                  </div>
+                )}
+
+                <div>
+                  <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+                    Members
+                  </p>
+                  <div className="space-y-2">
+                    {circle.members.map((member, i) => (
+                      <CircleMemberRow
+                        key={member.handle ?? `member-${i}`}
+                        member={member}
+                        canRemove={isAdmin && !member.is_me && !!member.handle}
+                        removing={!!member.handle && removingHandle === member.handle}
+                        onRemove={() => member.handle && handleRemove(member.handle)}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setConfirmingLeave(true)}
+                  className="min-h-[44px] w-full rounded-xl border border-border px-4 text-sm text-ink-muted transition hover:bg-surface-hover hover:text-ink"
+                >
+                  Leave circle
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {circle && confirmingLeave && (
+        <LeaveCircleModal
+          circleName={circle.name}
+          pending={leaveMutation.isPending}
+          onConfirm={handleLeaveConfirm}
+          onCancel={() => setConfirmingLeave(false)}
+        />
+      )}
+    </>
+  );
+}
+
 // Chosen share affordance: the constellation lesson graph (app/constellation/page.tsx)
 // is a bespoke hardcoded-hex SVG canvas with its own Inspector panel — not the
 // design-token surface the rest of the app uses — so threading a neighbor
@@ -1640,45 +2299,58 @@ function MissionDetailOverlay({ missionId, onClose }: { missionId: string; onClo
 function ShareLessonCard() {
   const { data: lessons = [], isLoading: lessonsLoading } = useApprovedLessonsQuery();
   const { data: neighborhood, isLoading: neighborhoodLoading } = useNeighborhoodQuery();
+  const { data: circles = [], isLoading: circlesLoading } = useCirclesQuery();
   const neighbors = neighborhood?.neighbors ?? [];
   const shareLessonMutation = useShareLessonMutation();
 
   const [lessonId, setLessonId] = useState("");
+  // PR7: audience widened to EITHER a single neighbor OR one of my circles.
+  const [audienceKind, setAudienceKind] = useState<"neighbor" | "circle">("neighbor");
   const [friendshipId, setFriendshipId] = useState("");
+  const [circleId, setCircleId] = useState("");
 
-  const canShare = !!lessonId && !!friendshipId && !shareLessonMutation.isPending;
+  const targetId = audienceKind === "circle" ? circleId : friendshipId;
+  const canShare = !!lessonId && !!targetId && !shareLessonMutation.isPending;
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!lessonId || !friendshipId) return;
+    if (!lessonId || !targetId) return;
     try {
-      await shareLessonMutation.mutateAsync({ lessonId: Number(lessonId), friendshipId });
+      await shareLessonMutation.mutateAsync(
+        audienceKind === "circle"
+          ? { lessonId: Number(lessonId), circleId }
+          : { lessonId: Number(lessonId), friendshipId },
+      );
       emitToast("Shared to your approval queue — review & approve it.", "success");
       setLessonId("");
       setFriendshipId("");
+      setCircleId("");
     } catch {
-      // Pillar-blocked (403) / missing-field (400) failures already surface
-      // via the default global error toast — see useShareLessonMutation.
+      // Pillar-blocked (403) / missing-audience (400) failures already
+      // surface via the default global error toast — see useShareLessonMutation.
     }
   };
 
-  if (lessonsLoading || neighborhoodLoading) {
+  if (lessonsLoading || neighborhoodLoading || circlesLoading) {
     return <SectionCardSkeleton lines={2} />;
   }
+
+  const hasAnyAudience = neighbors.length > 0 || circles.length > 0;
 
   return (
     <SectionCard
       title="Share a lesson"
-      subtitle="Pick something you've learned and send it to a neighbor — they only see it once you approve the preview."
+      subtitle="Pick something you've learned and send it to a neighbor or a circle — they only see it once you approve the preview."
       delay={200}
     >
       {lessons.length === 0 ? (
         <p className="rounded-panel border border-dashed border-border bg-surface/40 p-6 text-center text-sm text-ink-muted">
           No approved lessons yet &mdash; approve one in your Constellation first.
         </p>
-      ) : neighbors.length === 0 ? (
+      ) : !hasAnyAudience ? (
         <p className="rounded-panel border border-dashed border-border bg-surface/40 p-6 text-center text-sm text-ink-muted">
-          Wave to a neighbor first &mdash; you&rsquo;ll be able to share with them once they accept.
+          Wave to a neighbor or start a circle first &mdash; you&rsquo;ll be able to share once you have an
+          audience.
         </p>
       ) : (
         <form onSubmit={submit} className="space-y-3">
@@ -1698,21 +2370,75 @@ function ShareLessonCard() {
             </select>
           </label>
 
-          <label className="block">
-            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Neighbor</span>
-            <select
-              value={friendshipId}
-              onChange={(e) => setFriendshipId(e.target.value)}
-              className="mt-1 min-h-[44px] w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none transition focus:border-accent/50"
-            >
-              <option value="">Choose a neighbor&hellip;</option>
-              {neighbors.map((n) => (
-                <option key={n.friendship_id} value={n.friendship_id}>
-                  {n.display_name} (@{n.handle})
-                </option>
-              ))}
-            </select>
-          </label>
+          <div>
+            <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">
+              Share with
+            </span>
+            <div className="mt-1 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setAudienceKind("neighbor")}
+                aria-pressed={audienceKind === "neighbor"}
+                disabled={neighbors.length === 0}
+                className={clsx(
+                  "min-h-[44px] flex-1 rounded-xl border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
+                  audienceKind === "neighbor"
+                    ? "border-accent/40 bg-accent/10 text-accent"
+                    : "border-border text-ink-muted hover:bg-surface-hover hover:text-ink",
+                )}
+              >
+                A neighbor
+              </button>
+              <button
+                type="button"
+                onClick={() => setAudienceKind("circle")}
+                aria-pressed={audienceKind === "circle"}
+                disabled={circles.length === 0}
+                className={clsx(
+                  "min-h-[44px] flex-1 rounded-xl border px-3 text-xs font-medium transition disabled:cursor-not-allowed disabled:opacity-50",
+                  audienceKind === "circle"
+                    ? "border-accent/40 bg-accent/10 text-accent"
+                    : "border-border text-ink-muted hover:bg-surface-hover hover:text-ink",
+                )}
+              >
+                A circle
+              </button>
+            </div>
+          </div>
+
+          {audienceKind === "circle" ? (
+            <label className="block">
+              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Circle</span>
+              <select
+                value={circleId}
+                onChange={(e) => setCircleId(e.target.value)}
+                className="mt-1 min-h-[44px] w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none transition focus:border-accent/50"
+              >
+                <option value="">Choose a circle&hellip;</option>
+                {circles.map((c) => (
+                  <option key={c.circle_id} value={c.circle_id}>
+                    {c.name} ({c.member_count})
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <label className="block">
+              <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink-faint">Neighbor</span>
+              <select
+                value={friendshipId}
+                onChange={(e) => setFriendshipId(e.target.value)}
+                className="mt-1 min-h-[44px] w-full rounded-xl border border-border bg-surface/60 px-4 py-2.5 text-sm text-ink outline-none transition focus:border-accent/50"
+              >
+                <option value="">Choose a neighbor&hellip;</option>
+                {neighbors.map((n) => (
+                  <option key={n.friendship_id} value={n.friendship_id}>
+                    {n.display_name} (@{n.handle})
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
 
           <button
             type="submit"
@@ -1750,7 +2476,21 @@ function SharePreviewModal({ share, onClose }: { share: PendingShare; onClose: (
 
   const loadPreview = useCallback(async () => {
     try {
-      const result = await fetchSharePreview(share.lesson_id, share.friendship_id);
+      // PR7: the audience can now be a circle instead of a neighbor. The
+      // pending-shares list already carries an optional circle_id for that
+      // case (see PendingShare in lib/types.ts) — this branches on whichever
+      // is present, same "just render the audience string" contract as the
+      // neighbor path.
+      let result;
+      if (share.circle_id) {
+        result = await fetchCircleSharePreview(share.lesson_id, share.circle_id);
+      } else if (share.friendship_id) {
+        result = await fetchSharePreview(share.lesson_id, share.friendship_id);
+      } else {
+        setFailureDetail("This share doesn't have an audience yet.");
+        setPhase("failed");
+        return;
+      }
       if (!mountedRef.current) return;
       if (result.status === 200) {
         setPreview(result.data);
@@ -1767,7 +2507,7 @@ function SharePreviewModal({ share, onClose }: { share: PendingShare; onClose: (
       setFailureDetail(getErrorMessage(err));
       setPhase("failed");
     }
-  }, [share.lesson_id, share.friendship_id]);
+  }, [share.lesson_id, share.friendship_id, share.circle_id]);
 
   useEffect(() => {
     loadPreviewRef.current = () => void loadPreview();

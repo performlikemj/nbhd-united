@@ -1712,6 +1712,17 @@ export function shareLesson(
   });
 }
 
+// PR7: same endpoint, a circle audience instead of a single neighbor.
+export function shareLessonToCircle(
+  lessonId: number,
+  circleId: string,
+): Promise<{ pending_share_id: string; status: string }> {
+  return apiFetch<{ pending_share_id: string; status: string }>(`/api/v1/lessons/${lessonId}/share/`, {
+    method: "POST",
+    body: JSON.stringify({ target_circle_id: circleId }),
+  });
+}
+
 export function fetchPendingShares(): Promise<import("@/lib/types").PendingShare[]> {
   return apiFetch<import("@/lib/types").PendingShare[]>("/api/v1/friends/shares/pending/");
 }
@@ -1773,13 +1784,7 @@ export type SharePreviewResult =
   | { status: 200; data: import("@/lib/types").SharePreview }
   | { status: 202 | 409; detail: string };
 
-// GET /api/v1/friends/shares/preview/ — 200 once the scrub is ready, 202
-// while it's still running (poll again), 409 if the scrub failed outright.
-export async function fetchSharePreview(
-  lessonId: number,
-  friendshipId: string,
-): Promise<SharePreviewResult> {
-  const qs = new URLSearchParams({ lesson_id: String(lessonId), friendship_id: friendshipId });
+async function fetchSharePreviewByQuery(qs: URLSearchParams): Promise<SharePreviewResult> {
   const { status, data } = await apiFetchStatus<
     import("@/lib/types").SharePreview & { detail?: string }
   >(`/api/v1/friends/shares/preview/?${qs.toString()}`);
@@ -1791,6 +1796,20 @@ export async function fetchSharePreview(
   const err = new Error(data?.detail ?? `Request failed: ${status}`);
   (err as Error & { status: number }).status = status;
   throw err;
+}
+
+// GET /api/v1/friends/shares/preview/ — 200 once the scrub is ready, 202
+// while it's still running (poll again), 409 if the scrub failed outright.
+export function fetchSharePreview(lessonId: number, friendshipId: string): Promise<SharePreviewResult> {
+  return fetchSharePreviewByQuery(
+    new URLSearchParams({ lesson_id: String(lessonId), friendship_id: friendshipId }),
+  );
+}
+
+// GET /api/v1/friends/shares/preview/?circle_id= (PR7) — same contract as
+// fetchSharePreview above, widened for a circle audience.
+export function fetchCircleSharePreview(lessonId: number, circleId: string): Promise<SharePreviewResult> {
+  return fetchSharePreviewByQuery(new URLSearchParams({ lesson_id: String(lessonId), circle_id: circleId }));
 }
 
 export interface ApproveShareSuccess {
@@ -2064,6 +2083,87 @@ export function approveGoalAction(
 export function rejectGoalAction(id: string): Promise<{ action_id: string; status: string }> {
   return apiFetch<{ action_id: string; status: string }>(
     `/api/v1/friends/mission-actions/${id}/reject/`,
+    { method: "POST" },
+  );
+}
+
+// ── Circles (PR7) ────────────────────────────────────────────────────────
+// Groups built on edges (design §2.11) — trailing slashes required, same as
+// the rest of apps/friends/urls.py. See apps/friends/circles.py for the
+// service layer these views wrap.
+
+/** GET /api/v1/friends/circles/ — my circles (active memberships only). */
+export function fetchCircles(): Promise<import("@/lib/types").CircleSummary[]> {
+  return apiFetch<import("@/lib/types").CircleSummary[]>("/api/v1/friends/circles/");
+}
+
+/** POST /api/v1/friends/circles/ — start a circle (creator becomes admin). */
+export function createCircle(data: {
+  name: string;
+  description?: string;
+  hue?: number;
+}): Promise<{ circle_id: string }> {
+  return apiFetch<{ circle_id: string }>("/api/v1/friends/circles/", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+/** POST /api/v1/friends/circles/join/ {invite_code} — join via a code shared
+ * by a neighbor already in the circle. */
+export function joinCircle(inviteCode: string): Promise<import("@/lib/types").CircleJoinResult> {
+  return apiFetch<import("@/lib/types").CircleJoinResult>("/api/v1/friends/circles/join/", {
+    method: "POST",
+    body: JSON.stringify({ invite_code: inviteCode }),
+  });
+}
+
+/** GET /api/v1/friends/circles/<id>/ — members + (admin-only) invite code + thread_id. */
+export function fetchCircleDetail(circleId: string): Promise<import("@/lib/types").CircleDetail> {
+  return apiFetch<import("@/lib/types").CircleDetail>(`/api/v1/friends/circles/${circleId}/`);
+}
+
+/** POST /api/v1/friends/circles/<id>/members/ {handle} — wave a neighbor into the circle. */
+export function addCircleMember(
+  circleId: string,
+  handle: string,
+): Promise<{ circle_id: string; added: string }> {
+  return apiFetch<{ circle_id: string; added: string }>(`/api/v1/friends/circles/${circleId}/members/`, {
+    method: "POST",
+    body: JSON.stringify({ handle }),
+  });
+}
+
+/**
+ * POST /api/v1/friends/circles/<id>/leave/ {keep?} — leave the circle.
+ * Omitting `keep` (or passing `keep: false`) purges what the assistant
+ * absorbed from this circle; `keep: true` is the explicit opt-in to retain it.
+ */
+export function leaveCircle(
+  circleId: string,
+  keep?: boolean,
+): Promise<import("@/lib/types").CircleLeaveResult> {
+  return apiFetch<import("@/lib/types").CircleLeaveResult>(`/api/v1/friends/circles/${circleId}/leave/`, {
+    method: "POST",
+    body: JSON.stringify(keep ? { keep: true } : {}),
+  });
+}
+
+/** POST /api/v1/friends/circles/<id>/remove/ {handle} — admin removes a member. */
+export function removeCircleMember(
+  circleId: string,
+  handle: string,
+): Promise<{ circle_id: string; removed: string }> {
+  return apiFetch<{ circle_id: string; removed: string }>(`/api/v1/friends/circles/${circleId}/remove/`, {
+    method: "POST",
+    body: JSON.stringify({ handle }),
+  });
+}
+
+/** POST /api/v1/friends/circles/<id>/invite-code/ — admin regenerates the code. */
+export function regenerateInviteCode(circleId: string): Promise<{ circle_id: string; invite_code: string }> {
+  return apiFetch<{ circle_id: string; invite_code: string }>(
+    `/api/v1/friends/circles/${circleId}/invite-code/`,
     { method: "POST" },
   );
 }

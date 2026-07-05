@@ -438,7 +438,7 @@ def _enqueue_scrub(shared_lesson, pending_share_id=None) -> None:
     publish_task("scrub_shared_lesson", str(shared_lesson.id), **kwargs)
 
 
-def share_lesson(owner_tenant, owner_user, lesson, friendship_id) -> PendingShare:
+def share_lesson(owner_tenant, owner_user, lesson, friendship_id=None, circle_id=None) -> PendingShare:
     """Human-initiated share intent → a ``PendingShare(proposed_by="user")`` +
     an ensured ``SharedLesson`` + an enqueued fail-closed scrub. **No grant is
     created here** — the grant is created only at approve-after-preview (design
@@ -446,7 +446,7 @@ def share_lesson(owner_tenant, owner_user, lesson, friendship_id) -> PendingShar
     if lesson.tenant_id != owner_tenant.id:
         raise NotFound("No such lesson.")
     assert_shareable_pillar(lesson)  # mechanical gravity/core block → 403
-    edge = access.assert_neighbors(owner_tenant, friendship_id)  # party + accepted, else 403
+    edge, circle = _resolve_share_audience(owner_tenant, friendship_id, circle_id)
 
     shared_lesson = access.ensure_shared_lesson(lesson, owner_tenant)
     current_hash = _content_hash(lesson.text or "", lesson.context or "")
@@ -459,15 +459,29 @@ def share_lesson(owner_tenant, owner_user, lesson, friendship_id) -> PendingShar
         source_lesson=lesson,
         proposed_by="user",
         target_friendship=edge,
+        target_circle=circle,
         status=PendingShare.Status.PENDING,
         expires_at=timezone.now() + timedelta(days=7),
     )
 
 
-def preview_share(owner_tenant, lesson_id, friendship_id) -> tuple[dict, int]:
-    """Preview-before-share: the LITERAL ``redacted_text`` the neighbor will see.
+def _resolve_share_audience(tenant, friendship_id, circle_id):
+    """Resolve exactly one share audience: an accepted friendship XOR a circle the
+    tenant is an active member of. Returns ``(edge, circle)`` with one None."""
+    if circle_id:
+        from .circles import _assert_circle_member
+
+        circle, _membership = _assert_circle_member(tenant, circle_id)
+        return None, circle
+    if friendship_id:
+        return access.assert_neighbors(tenant, friendship_id), None
+    raise ValidationError("A friendship_id or circle_id is required.")
+
+
+def preview_share(owner_tenant, lesson_id, friendship_id=None, circle_id=None) -> tuple[dict, int]:
+    """Preview-before-share: the LITERAL ``redacted_text`` the audience will see.
     202 while scrubbing, 409 if the scrub failed (fail-closed), 200 when ready."""
-    edge = access.assert_neighbors(owner_tenant, friendship_id)
+    edge, circle = _resolve_share_audience(owner_tenant, friendship_id, circle_id)
     shared_lesson = access.get_shared_lesson_by_lesson_id(lesson_id, owner_tenant)
     if shared_lesson is None:
         raise NotFound("No share in progress for this lesson.")
@@ -478,20 +492,35 @@ def preview_share(owner_tenant, lesson_id, friendship_id) -> tuple[dict, int]:
     return {
         "redacted_text": shared_lesson.redacted_text,
         "redacted_context": shared_lesson.redacted_context,
-        "audience": _audience_label(owner_tenant, edge),
+        "audience": _circle_audience_label(circle) if circle else _audience_label(owner_tenant, edge),
         "residuals_banner": RESIDUALS_BANNER,
     }, 200
+
+
+def _circle_audience_label(circle) -> str:
+    from .models import CircleMembership
+
+    count = CircleMembership.objects.filter(circle=circle, status="active").count()
+    others = max(0, count - 1)  # exclude the sharer
+    return f"your {others} {circle.name} neighbor{'s' if others != 1 else ''}"
 
 
 def list_pending_shares(tenant) -> list[dict]:
     shares = (
         PendingShare.objects.filter(tenant=tenant, status=PendingShare.Status.PENDING)
-        .select_related("source_lesson", "target_friendship")
+        .select_related("source_lesson", "target_friendship", "target_circle")
         .order_by("-created_at")
     )
     out: list[dict] = []
     for pending in shares:
         edge = pending.target_friendship
+        circle = pending.target_circle
+        if circle is not None:
+            audience = _circle_audience_label(circle)
+        elif edge is not None:
+            audience = _audience_label(tenant, edge)
+        else:
+            audience = None
         out.append(
             {
                 "id": str(pending.id),
@@ -499,7 +528,8 @@ def list_pending_shares(tenant) -> list[dict]:
                 "lesson_preview": (pending.source_lesson.text or "")[:140],
                 "proposed_by": pending.proposed_by,
                 "friendship_id": str(edge.id) if edge else None,
-                "audience": _audience_label(tenant, edge) if edge else None,
+                "circle_id": str(circle.id) if circle else None,
+                "audience": audience,
                 "created_at": pending.created_at,
             }
         )
@@ -515,7 +545,7 @@ def approve_share(tenant, pending_share_id, final_text=None) -> tuple[dict, int]
         return {"pending_share_id": str(pending.id), "status": pending.status}, 200
     if pending.status != PendingShare.Status.PENDING:
         raise ValidationError("This share can no longer be approved.")
-    if pending.target_friendship_id is None:
+    if pending.target_friendship_id is None and pending.target_circle_id is None:
         raise ValidationError("This share has no audience.")
 
     shared_lesson = access.get_shared_lesson_by_lesson_id(pending.source_lesson_id, tenant)
@@ -544,8 +574,13 @@ def approve_share(tenant, pending_share_id, final_text=None) -> tuple[dict, int]
         pending.save(update_fields=["status", "resolved_at"])
         return {"detail": "We couldn't prepare this share safely, so nothing was shared."}, 409
 
-    # READY → freeze + publish (create the grant).
-    grant = access.create_grant(shared_lesson, pending.target_friendship, granted_by=tenant.user)
+    # READY → freeze + publish (create the grant for the friendship XOR circle).
+    grant = access.create_grant(
+        shared_lesson,
+        friendship=pending.target_friendship,
+        circle=pending.target_circle,
+        granted_by=tenant.user,
+    )
     pending.status = PendingShare.Status.EDITED if pending.final_text else PendingShare.Status.APPROVED
     pending.preview_text = shared_lesson.redacted_text
     pending.resolved_at = timezone.now()
@@ -716,21 +751,26 @@ def refresh_shared_positions(tenant_id) -> dict:
 # ── PR4: agent propose + backstage absorb + transparency ledger ──────────────
 
 
-def propose_share(tenant, lesson, friendship, source_context: str = "") -> tuple[PendingShare, bool]:
-    """Agent proposes sharing an EXISTING lesson to a neighbor → a
+def propose_share(
+    tenant, lesson, friendship=None, source_context: str = "", *, circle=None
+) -> tuple[PendingShare, bool]:
+    """Agent proposes sharing an EXISTING lesson to a neighbor OR a circle → a
     ``PendingShare(proposed_by="agent")`` + ensured SharedLesson + enqueued scrub
     (so the preview is ready when the human looks). NEVER creates a grant — a
-    human approve is the only path (§5.4). Idempotent per (lesson, friendship):
-    an existing pending proposal is returned, no dupe. Returns (pending, created).
-    """
+    human approve is the only path (§5.4). Idempotent per (lesson, audience): an
+    existing pending proposal is returned, no dupe. Exactly one of friendship /
+    circle. Returns (pending, created)."""
     if lesson.tenant_id != tenant.id:
         raise NotFound("No such lesson.")
+    if bool(friendship) == bool(circle):
+        raise ValidationError("Exactly one of a neighbor or a circle is required.")
     assert_shareable_pillar(lesson)  # mechanical gravity/core block → 403
 
     existing = PendingShare.objects.filter(
         tenant=tenant,
         source_lesson=lesson,
         target_friendship=friendship,
+        target_circle=circle,
         status=PendingShare.Status.PENDING,
     ).first()
     if existing is not None:
@@ -748,10 +788,26 @@ def propose_share(tenant, lesson, friendship, source_context: str = "") -> tuple
         proposed_by="agent",
         source_context=(source_context or "")[:2000],
         target_friendship=friendship,
+        target_circle=circle,
         status=PendingShare.Status.PENDING,
         expires_at=timezone.now() + timedelta(days=7),
     )
     return pending, True
+
+
+def resolve_member_circle(tenant, circle_id):
+    """Resolve a circle the tenant is an ACTIVE member of, by opaque circle_id.
+    Returns None when nothing resolves (no-reveal), mirroring
+    :func:`resolve_accepted_friendship`."""
+    if not circle_id:
+        return None
+    from .circles import _assert_circle_member
+
+    try:
+        circle, _membership = _assert_circle_member(tenant, circle_id)
+        return circle
+    except (PermissionDenied, DjangoPermissionDenied, NotFound):
+        return None
 
 
 def resolve_accepted_friendship(tenant, friendship_id=None, handle=None) -> Friendship | None:
@@ -807,6 +863,7 @@ def neighborhood_context(tenant, since=None) -> dict:
             shared_lesson.id,
             shared_lesson.owner_tenant_id,
             title,
+            circle_id=grant.circle_id,  # tag circle-sourced sparks (cross-leak guard + scoped purge)
         )
         sparks.append(
             {
@@ -837,19 +894,31 @@ def _absorb_chat(tenant) -> list[dict]:
 
     highlights: list[dict] = []
     for entry in access.absorb_pending_chat(tenant):
-        from_handle = _handle_for(entry["from_id"])
-        label = f"Chat with @{from_handle}" if from_handle else "Chat with a neighbor"
+        circle_id = entry.get("circle_id")
         texts = []
         for message in entry["messages"]:
             texts.append(redact_user_message(message.text, tenant))  # fresh redaction, ephemeral
-            _log_absorbed(tenant, AbsorbedItem.SourceKind.FRIEND_MESSAGE, message.public_id, entry["from_id"], label)
+            # from_tenant = the actual sender (works for 1:1 AND circle group chat);
+            # label is a NEUTRAL pointer + circle tag, never message text.
+            sender_handle = _handle_for(message.sender_tenant_id)
+            label = f"Chat with @{sender_handle}" if sender_handle else "Neighborhood chat"
+            _log_absorbed(
+                tenant,
+                AbsorbedItem.SourceKind.FRIEND_MESSAGE,
+                message.public_id,
+                message.sender_tenant_id,
+                label,
+                circle_id=circle_id,
+            )
+        from_handle = _handle_for(entry["from_id"]) if entry.get("from_id") else None
         highlights.append({"thread_id": entry["thread_id"], "from_handle": from_handle, "messages": texts})
     return highlights
 
 
-def _log_absorbed(tenant, source_kind, source_id, from_tenant_id, label) -> None:
+def _log_absorbed(tenant, source_kind, source_id, from_tenant_id, label, *, circle_id=None) -> None:
     """Idempotent ledger insert — a repeated absorb of the same source is a
-    no-op (unique (tenant, source_kind, source_id))."""
+    no-op (unique (tenant, source_kind, source_id)). ``circle_id`` tags
+    circle-sourced items for scoped purge + the cross-group leakage guard."""
     try:
         with transaction.atomic():
             AbsorbedItem.objects.create(
@@ -857,6 +926,7 @@ def _log_absorbed(tenant, source_kind, source_id, from_tenant_id, label) -> None
                 source_kind=source_kind,
                 source_id=source_id,
                 from_tenant_id=from_tenant_id,
+                circle_id=circle_id,
                 label=(label or "")[:200],
             )
     except IntegrityError:

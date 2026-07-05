@@ -133,13 +133,16 @@ class LessonViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_403_FORBIDDEN,
             )
         friendship_id = request.data.get("friendship_id")
-        if not friendship_id:
-            return Response({"detail": "friendship_id is required."}, status=status.HTTP_400_BAD_REQUEST)
+        circle_id = request.data.get("target_circle_id") or request.data.get("circle_id")
+        if not friendship_id and not circle_id:
+            return Response(
+                {"detail": "friendship_id or target_circle_id is required."}, status=status.HTTP_400_BAD_REQUEST
+            )
 
         from apps.friends import services
 
         lesson = self.get_object()
-        pending = services.share_lesson(tenant, request.user, lesson, friendship_id)
+        pending = services.share_lesson(tenant, request.user, lesson, friendship_id, circle_id)
         return Response(
             {"pending_share_id": str(pending.id), "status": pending.status},
             status=status.HTTP_201_CREATED,

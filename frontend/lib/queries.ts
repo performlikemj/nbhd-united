@@ -8,6 +8,8 @@ import {
   AuthUser,
   ChatPage,
   ChatThread,
+  CircleDetail,
+  CircleSummary,
   CronJob,
   Integration,
   MissionSummary,
@@ -177,6 +179,7 @@ import {
   fetchLessons,
   fetchPendingShares,
   shareLesson,
+  shareLessonToCircle,
   approveShare,
   rejectShare,
   revokeShare,
@@ -200,6 +203,14 @@ import {
   fetchGoalActions,
   approveGoalAction,
   rejectGoalAction,
+  fetchCircles,
+  createCircle,
+  joinCircle,
+  fetchCircleDetail,
+  addCircleMember,
+  leaveCircle,
+  removeCircleMember,
+  regenerateInviteCode,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -2140,12 +2151,22 @@ export function useApprovedLessonsQuery() {
   });
 }
 
+// PR7: the audience is now EITHER a neighbor or a circle — exactly one of
+// friendshipId / circleId is expected per call (the picker below enforces it).
 export function useShareLessonMutation() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ lessonId, friendshipId }: { lessonId: number; friendshipId: string }) =>
-      shareLesson(lessonId, friendshipId),
-    // 403 (pillar-blocked) / 400 (missing friendship) surface via the default
+    mutationFn: ({
+      lessonId,
+      friendshipId,
+      circleId,
+    }: {
+      lessonId: number;
+      friendshipId?: string;
+      circleId?: string;
+    }) =>
+      circleId ? shareLessonToCircle(lessonId, circleId) : shareLesson(lessonId, friendshipId as string),
+    // 403 (pillar-blocked) / 400 (missing audience) surface via the default
     // global error toast (see app/providers.tsx) — no meta.skipErrorToast,
     // unlike the wave form, since this action has no inline error slot.
     onSuccess: () => {
@@ -2513,6 +2534,118 @@ export function useRejectGoalActionMutation() {
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["goal-actions"] });
+    },
+  });
+}
+
+// ── Circles (PR7) ────────────────────────────────────────────────────────
+// Groups built on edges (design §2.11). Gated the same as the rest of
+// Neighborhood. Deliberately NOT added to query-persist.ts's allowlist —
+// membership/invite-code churn should always reflect the live server state,
+// same reasoning as Absorbed/Wormholes/Missions above.
+
+export function useCirclesQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["circles"],
+    queryFn: fetchCircles,
+    staleTime: 30_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+export function useCircleDetailQuery(id: string | null) {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["circle", id],
+    queryFn: () => fetchCircleDetail(id as string),
+    staleTime: 15_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled && !!id,
+  });
+}
+
+export function useCreateCircleMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Parameters<typeof createCircle>[0]) => createCircle(data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["circles"] });
+    },
+  });
+}
+
+// Inline error on the join form (meta.skipErrorToast), same convention as
+// useSendWaveMutation — an invalid/unknown code is an expected input error,
+// not a global-toast-worthy failure.
+export function useJoinCircleMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (inviteCode: string) => joinCircle(inviteCode),
+    meta: { skipErrorToast: true },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["circles"] });
+    },
+  });
+}
+
+export function useAddCircleMemberMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, handle }: { id: string; handle: string }) => addCircleMember(id, handle),
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({ queryKey: ["circle", variables.id] });
+      void qc.invalidateQueries({ queryKey: ["circles"] });
+    },
+  });
+}
+
+// Optimistically drops the circle from the list (mirrors useLeaveMissionMutation)
+// — leaving is immediate and the list endpoint only ever returns active
+// memberships, so the row would disappear on the next fetch regardless.
+export function useLeaveCircleMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, keep }: { id: string; keep?: boolean }) => leaveCircle(id, keep),
+    onMutate: async ({ id }: { id: string; keep?: boolean }) => {
+      await qc.cancelQueries({ queryKey: ["circles"] });
+      const previous = qc.getQueryData<CircleSummary[]>(["circles"]);
+      qc.setQueryData<CircleSummary[]>(["circles"], (old) =>
+        old ? old.filter((c) => c.circle_id !== id) : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["circles"], context.previous);
+      }
+    },
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({ queryKey: ["circles"] });
+      void qc.invalidateQueries({ queryKey: ["circle", variables.id] });
+    },
+  });
+}
+
+export function useRemoveCircleMemberMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, handle }: { id: string; handle: string }) => removeCircleMember(id, handle),
+    onSettled: (_data, _err, variables) => {
+      void qc.invalidateQueries({ queryKey: ["circle", variables.id] });
+      void qc.invalidateQueries({ queryKey: ["circles"] });
+    },
+  });
+}
+
+export function useRegenerateInviteCodeMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => regenerateInviteCode(id),
+    onSuccess: (data) => {
+      qc.setQueryData<CircleDetail>(["circle", data.circle_id], (old) =>
+        old ? { ...old, invite_code: data.invite_code } : old,
+      );
+      void qc.invalidateQueries({ queryKey: ["circles"] });
     },
   });
 }

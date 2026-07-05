@@ -30,6 +30,8 @@ from apps.tenants.models import Tenant
 from . import access
 from .models import (
     AbsorbedItem,
+    Circle,
+    CircleMembership,
     FriendMessage,
     Friendship,
     LessonShareGrant,
@@ -88,13 +90,23 @@ def render_neighborhood(tenant: Tenant) -> str:
                     "tenant_id", "handle"
                 )
             )
+            # Tag circle-sourced sparks with their circle so the agent honors the
+            # no-cross-Circle-leakage rule (design §12 / AGENTS.md gate).
+            circle_ids = [s.circle_id for s in sparks if s.circle_id]
+            circle_name_by_id = (
+                dict(Circle.objects.filter(id__in=circle_ids).values_list("id", "name")) if circle_ids else {}
+            )
             lines.append(
                 "Sparks neighbors shared (hold until useful, then surface naturally; never claim you shared anything):"
             )
             for spark in sparks:
                 who = handle_by_id.get(spark.from_tenant_id)
                 title = (spark.label or "a shared spark").strip()[:100]
-                lines.append(f"- {title}" + (f" — @{who}" if who else ""))
+                circle_name = circle_name_by_id.get(spark.circle_id)
+                suffix = f" — @{who}" if who else ""
+                if circle_name:
+                    suffix += f" (in {circle_name}; keep it in that Circle)"
+                lines.append(f"- {title}{suffix}")
         if chat_counts:
             lines.append("New neighborhood messages (call nbhd_neighborhood_context to read them):")
             for entry in chat_counts:
@@ -163,14 +175,23 @@ def _schedule_recipient_push(tenant_id) -> None:
 
 
 def _refresh_recipient_on_grant(sender, instance, **kwargs) -> None:
-    """Refresh the RECIPIENT's USER.md when a grant is created/revoked — the
-    friendship's other party (the grant owner already sees their own share).
-    Defensive: never raises."""
+    """Refresh the RECIPIENT's USER.md when a grant is created/revoked. For a
+    friendship grant that's the edge's other party; for a Circle grant it's every
+    OTHER active member (the grant owner already sees their own share). Defensive:
+    never raises."""
     try:
+        owner_id = instance.shared_lesson.owner_tenant_id
+        if instance.circle_id is not None:
+            member_ids = CircleMembership.objects.filter(circle_id=instance.circle_id, status="active").values_list(
+                "tenant_id", flat=True
+            )
+            for recipient_id in member_ids:
+                if recipient_id != owner_id:
+                    _schedule_recipient_push(recipient_id)
+            return
         friendship = instance.friendship
         if friendship is None:
-            return  # circle grants (PR7) resolve recipients differently
-        owner_id = instance.shared_lesson.owner_tenant_id
+            return
         recipient_id = friendship.addressee_id if friendship.requester_id == owner_id else friendship.requester_id
         _schedule_recipient_push(recipient_id)
     except Exception:  # noqa: BLE001

@@ -31,6 +31,8 @@ from django.utils import timezone
 from apps.tenants.models import Tenant
 
 from .models import (
+    CircleMembership,
+    ContentReport,
     FriendMessage,
     Friendship,
     FriendThread,
@@ -107,23 +109,54 @@ def shared_star_qs(viewer_tenant, owner_tenant):
     Reads touch ONLY ``SharedLesson`` (ready) — never ``Lesson``,
     ``LessonConnection``, ``StarJournalEntry``, ``Document``, or ``journal``.
 
-    PR2: the friendship-grant path. The circle path lands in PR7.
+    PR7: friendship-grant OR circle-grant (a circle both are ACTIVE members of).
+    Reporter-side hidden items (a ContentReport by the viewer) are excluded.
     """
     viewer_id, owner_id = _tenant_id(viewer_tenant), _tenant_id(owner_tenant)
     if viewer_id == owner_id:
         return SharedLesson.objects.none()
+
+    audience = Q()
     edge = Friendship.objects.filter(
         pair_key=compute_pair_key(viewer_id, owner_id),
         status=Friendship.Status.ACCEPTED,
     ).first()
-    if edge is None:
+    if edge is not None:
+        audience |= Q(grants__friendship=edge, grants__status=LessonShareGrant.Status.ACTIVE)
+    shared_circle_ids = _shared_active_circle_ids(viewer_id, owner_id)
+    if shared_circle_ids:
+        audience |= Q(grants__circle_id__in=shared_circle_ids, grants__status=LessonShareGrant.Status.ACTIVE)
+    if not audience:  # no accepted edge and no shared circle → no visibility
         return SharedLesson.objects.none()
-    return SharedLesson.objects.filter(
-        owner_tenant_id=owner_id,
-        scrub_status=SharedLesson.ScrubStatus.READY,
-        grants__friendship=edge,
-        grants__status=LessonShareGrant.Status.ACTIVE,
-    ).distinct()
+
+    return (
+        SharedLesson.objects.filter(Q(owner_tenant_id=owner_id, scrub_status=SharedLesson.ScrubStatus.READY) & audience)
+        .exclude(id__in=_reported_shared_lesson_ids(viewer_id))
+        .distinct()
+    )
+
+
+def _shared_active_circle_ids(viewer_id, owner_id) -> list:
+    """Circles BOTH tenants are ACTIVE members of (the §2.5 circle visibility rule)."""
+    viewer_circles = set(
+        CircleMembership.objects.filter(tenant_id=viewer_id, status="active").values_list("circle_id", flat=True)
+    )
+    if not viewer_circles:
+        return []
+    return list(
+        CircleMembership.objects.filter(tenant_id=owner_id, status="active", circle_id__in=viewer_circles).values_list(
+            "circle_id", flat=True
+        )
+    )
+
+
+def _reported_shared_lesson_ids(viewer_id) -> list:
+    """SharedLesson ids the viewer has reported (reporter-side hide, design §10)."""
+    return list(
+        ContentReport.objects.filter(
+            reporter_tenant_id=viewer_id, status="hidden", shared_lesson__isnull=False
+        ).values_list("shared_lesson_id", flat=True)
+    )
 
 
 def assert_can_write(viewer_tenant, target_tenant, *, allow_hibernated: bool = True) -> Tenant:
@@ -213,13 +246,17 @@ def save_scrub_failed(shared_lesson, error: str) -> None:
     shared_lesson.save(update_fields=["scrub_status", "scrub_error", "scrubbed_at", "updated_at"])
 
 
-def create_grant(shared_lesson, friendship, granted_by=None) -> LessonShareGrant:
-    """Idempotent ACTIVE grant for (shared_lesson, friendship) — the freeze+publish
-    step. Re-activates a previously-revoked grant rather than duplicating."""
+def create_grant(shared_lesson, friendship=None, circle=None, granted_by=None) -> LessonShareGrant:
+    """Idempotent ACTIVE grant — the freeze+publish step. Exactly one audience:
+    a friendship (1:1) XOR a circle. Re-activates a previously-revoked grant
+    rather than duplicating."""
+    lookup = {"shared_lesson": shared_lesson}
+    if circle is not None:
+        lookup["circle"] = circle
+    else:
+        lookup["friendship"] = friendship
     grant, created = LessonShareGrant.objects.get_or_create(
-        shared_lesson=shared_lesson,
-        friendship=friendship,
-        defaults={"granted_by": granted_by, "status": LessonShareGrant.Status.ACTIVE},
+        **lookup, defaults={"granted_by": granted_by, "status": LessonShareGrant.Status.ACTIVE}
     )
     if not created and grant.status != LessonShareGrant.Status.ACTIVE:
         grant.status = LessonShareGrant.Status.ACTIVE
@@ -227,6 +264,32 @@ def create_grant(shared_lesson, friendship, granted_by=None) -> LessonShareGrant
         grant.granted_by = granted_by
         grant.save(update_fields=["status", "revoked_at", "granted_by"])
     return grant
+
+
+def my_active_circle_ids(tenant) -> list:
+    return list(
+        CircleMembership.objects.filter(tenant_id=_tenant_id(tenant), status="active").values_list(
+            "circle_id", flat=True
+        )
+    )
+
+
+def revoke_owner_circle_grants(owner_tenant, circle) -> None:
+    """On leave/remove: revoke the departing member's OWN grants scoped to this
+    circle (their shared snapshots leave the circle instantly), deleting any
+    snapshot left with no remaining active grants."""
+    owner_id = _tenant_id(owner_tenant)
+    grants = list(
+        LessonShareGrant.objects.filter(
+            circle=circle, status=LessonShareGrant.Status.ACTIVE, shared_lesson__owner_tenant_id=owner_id
+        ).select_related("shared_lesson")
+    )
+    for grant in grants:
+        grant.status = LessonShareGrant.Status.REVOKED
+        grant.revoked_at = timezone.now()
+        grant.save(update_fields=["status", "revoked_at"])
+    for grant in grants:
+        delete_shared_lesson_if_orphaned(grant.shared_lesson)
 
 
 def get_grant(grant_id) -> LessonShareGrant | None:
@@ -423,12 +486,11 @@ def inbound_shared_grants(viewer_tenant, since=None):
     """Active grants of READY sparks shared TO ``viewer_tenant``, newest first.
 
     Visibility = an active ``LessonShareGrant`` on an accepted friendship the
-    viewer is a party to, AND ``scrub_status='ready'``. ``since`` (a datetime)
-    filters to grants created after it (the absorb cursor). Returns an EMPTY
-    queryset when the viewer has no accepted edges — never raises.
+    viewer is a party to, OR on a circle the viewer is an active member of, AND
+    ``scrub_status='ready'``. ``since`` (a datetime) filters to grants created
+    after it (the absorb cursor). Empty when the viewer has no edges/circles —
+    never raises.
     """
-    from django.db.models import Q
-
     viewer_id = _tenant_id(viewer_tenant)
     edge_ids = list(
         Friendship.objects.filter(
@@ -436,13 +498,22 @@ def inbound_shared_grants(viewer_tenant, since=None):
             status=Friendship.Status.ACCEPTED,
         ).values_list("id", flat=True)
     )
-    if not edge_ids:
+    circle_ids = my_active_circle_ids(viewer_id)
+    audience = Q()
+    if edge_ids:
+        audience |= Q(friendship_id__in=edge_ids)
+    if circle_ids:
+        audience |= Q(circle_id__in=circle_ids)
+    if not audience:
         return LessonShareGrant.objects.none()
-    qs = LessonShareGrant.objects.filter(
-        status=LessonShareGrant.Status.ACTIVE,
-        friendship_id__in=edge_ids,
-        shared_lesson__scrub_status=SharedLesson.ScrubStatus.READY,
-    ).select_related("shared_lesson", "shared_lesson__owner_tenant")
+    qs = (
+        LessonShareGrant.objects.filter(
+            status=LessonShareGrant.Status.ACTIVE,
+            shared_lesson__scrub_status=SharedLesson.ScrubStatus.READY,
+        )
+        .filter(audience)
+        .select_related("shared_lesson", "shared_lesson__owner_tenant", "circle")
+    )
     if since is not None:
         qs = qs.filter(created_at__gt=since)
     return qs.order_by("-created_at")
@@ -471,14 +542,24 @@ def assert_participant(viewer_tenant, thread_id) -> FriendThread:
     return thread
 
 
-def thread_messages_page(thread, after_seq: int, limit: int) -> list[FriendMessage]:
+def thread_messages_page(thread, after_seq: int, limit: int, viewer_tenant_id=None) -> list[FriendMessage]:
     """Ascending page of live messages with ``seq > after_seq`` (the caller has
-    already run :func:`assert_participant`)."""
-    return list(
-        FriendMessage.objects.filter(thread=thread, deleted_at__isnull=True, seq__gt=after_seq)
-        .select_related("sender_tenant")
-        .order_by("seq")[:limit]
-    )
+    already run :func:`assert_participant`). Messages the viewer has reported are
+    hidden (reporter-side moderation)."""
+    qs = FriendMessage.objects.filter(thread=thread, deleted_at__isnull=True, seq__gt=after_seq)
+    if viewer_tenant_id is not None:
+        hidden = ContentReport.objects.filter(
+            reporter_tenant_id=viewer_tenant_id, status="hidden", friend_message__isnull=False
+        ).values_list("friend_message_id", flat=True)
+        qs = qs.exclude(seq__in=hidden)
+    return list(qs.select_related("sender_tenant").order_by("seq")[:limit])
+
+
+def get_friend_message_by_public_id(public_id) -> FriendMessage | None:
+    try:
+        return FriendMessage.objects.get(public_id=public_id)
+    except (FriendMessage.DoesNotExist, ValueError, ValidationError):
+        return None
 
 
 def create_friend_message(thread, sender_tenant, sender_user, client_msg_id, text) -> tuple[FriendMessage, bool]:
@@ -572,7 +653,8 @@ def absorb_pending_chat(viewer_tenant) -> list[dict]:
         result.append(
             {
                 "thread_id": str(membership.thread_id),
-                "from_id": _thread_other_party_id(membership.thread, viewer_id),
+                "from_id": _thread_other_party_id(membership.thread, viewer_id),  # None for circle threads
+                "circle_id": membership.thread.circle_id,  # tag circle-sourced items for scoped purge
                 "messages": messages,
             }
         )

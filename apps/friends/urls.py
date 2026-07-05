@@ -6,6 +6,13 @@ from .views import (
     AbsorbedListView,
     AbsorbedPurgeView,
     AdoptShareView,
+    CircleDetailView,
+    CircleInviteCodeView,
+    CircleJoinView,
+    CircleLeaveView,
+    CircleMembersView,
+    CircleRemoveView,
+    CirclesView,
     FriendGalaxyView,
     GoalActionApproveView,
     GoalActionRejectView,
@@ -22,6 +29,7 @@ from .views import (
     NeighborhoodView,
     PendingSharesView,
     ProfileView,
+    ReportView,
     ShareApproveView,
     SharePreviewView,
     ShareRejectView,
@@ -83,6 +91,17 @@ urlpatterns = [
     path(
         "mission-actions/<uuid:action_id>/reject/", GoalActionRejectView.as_view(), name="friends-mission-action-reject"
     ),
+    # Circles (groups on edges). `circles/join/` is a literal, so it wins over
+    # the `circles/<uuid:circle_id>/` routes below (join is never a UUID anyway).
+    path("circles/", CirclesView.as_view(), name="friends-circles"),
+    path("circles/join/", CircleJoinView.as_view(), name="friends-circle-join"),
+    path("circles/<uuid:circle_id>/", CircleDetailView.as_view(), name="friends-circle-detail"),
+    path("circles/<uuid:circle_id>/members/", CircleMembersView.as_view(), name="friends-circle-members"),
+    path("circles/<uuid:circle_id>/leave/", CircleLeaveView.as_view(), name="friends-circle-leave"),
+    path("circles/<uuid:circle_id>/remove/", CircleRemoveView.as_view(), name="friends-circle-remove"),
+    path("circles/<uuid:circle_id>/invite-code/", CircleInviteCodeView.as_view(), name="friends-circle-invite-code"),
+    # Moderation (reporter-side hide; design §10)
+    path("report/", ReportView.as_view(), name="friends-report"),
     # Wormholes / warp (read-only). The <friendship_id>/galaxy/ and /visited/
     # routes sit ABOVE the bare <friendship_id>/ unfriend catch-all so they win.
     path("wormholes/", WormholesView.as_view(), name="friends-wormholes"),
