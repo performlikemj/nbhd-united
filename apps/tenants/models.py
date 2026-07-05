@@ -658,6 +658,14 @@ class Tenant(models.Model):
         ),
     )
 
+    # Neighborhood (Friends) module — cross-tenant sharing, wormholes, chat,
+    # Missions. Dark by default; rolled out per-tenant like every other pillar.
+    # Product surface is "Neighborhood"; the flag/app stay ``friends_*``.
+    friends_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable the Neighborhood (Friends) layer — waves, shared sparks, wormholes, chat",
+    )
+
     # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
     # "finance"), values are ISO-8601 timestamps of successful welcome
     # delivery. The welcome prompt instructs the agent to call

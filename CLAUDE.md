@@ -4,7 +4,7 @@ Multi-tenant SaaS platform. Each subscriber gets a private AI assistant (OpenCla
 
 ## Tech Stack
 
-- **Backend**: Django 5.1 + DRF, QStash (scheduling, not Celery), PostgreSQL 16 via Supabase, Python 3.12
+- **Backend**: Django 6.0.6 + DRF, QStash (scheduling, not Celery), PostgreSQL 16 via Supabase, Python 3.12
 - **Frontend**: Next.js 14 (static export to `out/`), TypeScript, Tailwind CSS, TipTap editor
 - **Infrastructure**: Azure Container Apps, Key Vault, Container Registry (`nbhdunited`), Static Web Apps
 - **Billing**: Stripe via dj-stripe
