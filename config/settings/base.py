@@ -272,6 +272,18 @@ NBHD_INTERNAL_API_KEY = env("NBHD_INTERNAL_API_KEY", default="")
 # doesn't race with leftover daemon threads holding DB connections.
 NBHD_DISABLE_BACKGROUND_THREADS = env.bool("NBHD_DISABLE_BACKGROUND_THREADS", default=False)
 
+# Neighborhood DB backstop (PR8). When on, trusted server-side background work
+# that reads the friends cross-tenant tables (scrub / position refresh / envelope
+# render / chat push) marks its connection service-role so the FORCE-RLS policies
+# on shared_lessons / lesson_share_grants / friend_messages don't hide rows from
+# it. Those policies are INERT while the app's Postgres role bypasses RLS
+# (superuser / service_role) — they only begin enforcing if the app connects as a
+# non-BYPASSRLS role (see `manage.py check_friends_rls`). The accessor
+# (apps/friends/access.py) is always the primary boundary; this is defense in
+# depth. Turn off only to skip the extra session-var round-trips once the app
+# role is confirmed to bypass RLS.
+FRIENDS_DB_BACKSTOP = env.bool("FRIENDS_DB_BACKSTOP", default=True)
+
 # LINE Messaging API (shared bot)
 LINE_CHANNEL_ACCESS_TOKEN = env("LINE_CHANNEL_ACCESS_TOKEN", default="")
 LINE_CHANNEL_SECRET = env("LINE_CHANNEL_SECRET", default="")

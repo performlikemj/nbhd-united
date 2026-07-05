@@ -77,7 +77,10 @@ def render_neighborhood(tenant: Tenant) -> str:
                 source_kind=AbsorbedItem.SourceKind.SHARED_LESSON,
             ).order_by("-absorbed_at")[:_MAX_SPARKS]
         )
-        chat_counts = access.chat_absorb_pending_counts(tenant)[:2]
+        # This renders in a background USER.md push thread (no tenant GUC), so
+        # the friend_messages read needs service-role under the FORCE-RLS policy.
+        with access.backstop_service_context():
+            chat_counts = access.chat_absorb_pending_counts(tenant)[:2]
         if not handles and not sparks and not chat_counts:
             return ""
 

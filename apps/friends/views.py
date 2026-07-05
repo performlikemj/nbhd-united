@@ -17,7 +17,7 @@ from rest_framework.views import APIView
 
 from . import circles, services
 from .serializers import InviteCreateSerializer, NeighborProfileSerializer, WaveCreateSerializer
-from .throttling import WaveSendDayThrottle
+from .throttling import AdoptDayThrottle, MessageSendHourThrottle, WaveSendDayThrottle
 
 
 class FriendsView(APIView):
@@ -245,6 +245,8 @@ class AdoptShareView(FriendsView):
     """POST /api/v1/friends/shares/<shared_lesson_id>/adopt/ — the souvenir:
     bring a neighbor's spark home as a PENDING lesson in MY tenant. Idempotent."""
 
+    throttle_classes = [AdoptDayThrottle]
+
     def post(self, request, shared_lesson_id):
         tenant = self.get_tenant(request)
         payload, code = services.adopt_spark(tenant, request.user, shared_lesson_id)
@@ -301,6 +303,13 @@ class ThreadsView(FriendsView):
 class ThreadMessagesView(FriendsView):
     """GET /api/v1/friends/threads/<id>/messages/?since=<cursor>&limit= — keyset feed.
     POST — send (idempotent client_msg_id)."""
+
+    def get_throttles(self):
+        # Throttle SENDS (POST) only — polling the feed (GET) must stay free, or
+        # a lively conversation would rate-limit its own readers.
+        if self.request.method == "POST":
+            return [MessageSendHourThrottle()]
+        return []
 
     def get(self, request, thread_id):
         tenant = self.get_tenant(request)

@@ -25,3 +25,27 @@ class WaveSendDayThrottle(_UserScopedThrottle):
 
     scope = "friend_wave_day"
     rate = "10/day"
+
+
+class ShareSendDayThrottle(_UserScopedThrottle):
+    """Sharing a lesson kicks off a fail-closed DeBERTa scrub (real compute).
+    Generous for a normal day of sharing, but caps a runaway loop / abuse."""
+
+    scope = "friend_share_day"
+    rate = "30/day"
+
+
+class AdoptDayThrottle(_UserScopedThrottle):
+    """Adopting a neighbor's spark ("bring it home") mints a pending lesson.
+    Generous daily budget; the cap only bites automated hammering."""
+
+    scope = "friend_adopt_day"
+    rate = "60/day"
+
+
+class MessageSendHourThrottle(_UserScopedThrottle):
+    """Friend/circle chat send. Hourly (not daily) so a lively conversation is
+    never blocked, while a flood/abuse burst is capped."""
+
+    scope = "friend_message_hour"
+    rate = "60/hour"

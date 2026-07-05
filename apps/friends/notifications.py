@@ -194,14 +194,17 @@ def _deliver_friend_push(message) -> None:
         from . import access
         from .models import FriendThreadMembership
 
-        if not access.claim_message_notified(message):
-            return  # a re-drain lost the claim — already pushed
-        recipients = (
-            FriendThreadMembership.objects.filter(thread_id=message.thread_id, left_at__isnull=True, muted=False)
-            .exclude(tenant_id=message.sender_tenant_id)
-            .select_related("user")
-        )
-        sender = NeighborProfile.objects.filter(tenant_id=message.sender_tenant_id).first()
+        # Runs off the request thread (no tenant GUC); mark service-role so the
+        # FORCE-RLS claim/update on friend_messages isn't hidden by the policy.
+        with access.backstop_service_context():
+            if not access.claim_message_notified(message):
+                return  # a re-drain lost the claim — already pushed
+            recipients = list(
+                FriendThreadMembership.objects.filter(thread_id=message.thread_id, left_at__isnull=True, muted=False)
+                .exclude(tenant_id=message.sender_tenant_id)
+                .select_related("user")
+            )
+            sender = NeighborProfile.objects.filter(tenant_id=message.sender_tenant_id).first()
         name = sender.display_name if sender else "A neighbor"
         for membership in recipients:
             _push_to_user_devices(

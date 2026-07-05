@@ -13,6 +13,18 @@ This test fails the build if either pattern reappears.
 If a future change genuinely needs one of these patterns, add the comment
 `rls-exposure-allowed` on the same migration file and update this test's
 allowlist deliberately.
+
+TWO-REGIME POSTURE (PR8): the default posture is anon-API lockdown — RLS bare
+(enabled, NO policies) on every owned public table, so the Supabase Data API
+(anon/authenticated, which have zero grants anyway) can read nothing, and the
+audited accessor in apps/friends/access.py is the real cross-tenant boundary.
+The ONE exception is the three highest-blast-radius friends tables
+(``shared_lessons``, ``lesson_share_grants``, ``friend_messages``): they carry
+real FORCE-RLS tenant policies (a deliberate DB backstop, added by
+friends.0008 and kept enabled by disable_rls's RLS_KEEP_ENABLED). Those policies
+name ``app_user`` (never ``public``), so they never re-expose the anon API. The
+runtime guard below therefore ALLOWS exactly those named policies on exactly
+those three tables and still forbids everything else.
 """
 
 from __future__ import annotations
@@ -106,6 +118,12 @@ class PublicSchemaLockdownStaticGuard(SimpleTestCase):
 class PublicSchemaLockdownRuntimeGuard(TestCase):
     """Asserts the post-migrate state of the test database."""
 
+    # The friends DB backstop (friends.0008) is the ONE sanctioned exception to
+    # the "no policies on public.*" rule: named, app_user-scoped policies on the
+    # three highest-blast-radius cross-tenant tables. Any policy outside this
+    # allowlist — or any of these policies targeting `public` — still fails.
+    ALLOWED_POLICY_TABLES = frozenset({"shared_lessons", "lesson_share_grants", "friend_messages"})
+
     def test_no_policies_on_public_schema(self):
         with connection.cursor() as cur:
             cur.execute(
@@ -117,13 +135,20 @@ class PublicSchemaLockdownRuntimeGuard(TestCase):
                 """
             )
             rows = cur.fetchall()
+        # Allowed: friends-backstop policies on the three sanctioned tables,
+        # scoped to a named role (roles must not include `public`).
+        offenders = [
+            row for row in rows if not (row[0] in self.ALLOWED_POLICY_TABLES and "public" not in (row[2] or []))
+        ]
         self.assertEqual(
-            rows,
+            offenders,
             [],
-            "Policies exist on public.* after migrations run. Migration 0058 "
-            "drops every existing policy; if you need a real RLS policy add "
-            "it via a new migration with a named role (never `TO public`) "
-            "and update this test. Found: " + repr(rows),
+            "Unexpected policies on public.* after migrations run. Migration 0058 "
+            "drops every existing policy; the only sanctioned policies are the "
+            "friends backstop (friends.0008) on "
+            f"{sorted(self.ALLOWED_POLICY_TABLES)} scoped to a named role. If you "
+            "need another real RLS policy add it via a migration with a named "
+            "role (never `TO public`) and extend this allowlist. Found: " + repr(offenders),
         )
 
     def test_rls_enabled_on_owned_public_tables(self):

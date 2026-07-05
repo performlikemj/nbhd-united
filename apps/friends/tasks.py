@@ -14,9 +14,11 @@ def scrub_shared_lesson_task(shared_lesson_id: str, pending_share_id: str | None
     cold-load must not sit in an HTTP handler). Returns a small status dict that
     carries no lesson content (task return values surface in QStash dashboards).
     """
+    from apps.friends import access
     from apps.friends.scrub import scrub_shared_lesson
 
-    result = scrub_shared_lesson(shared_lesson_id, pending_share_id=pending_share_id)
+    with access.backstop_service_context():  # background read/write of shared_lessons under FORCE-RLS
+        result = scrub_shared_lesson(shared_lesson_id, pending_share_id=pending_share_id)
     logger.info("scrub_shared_lesson_task %s → %s", str(shared_lesson_id)[:8], result.get("reason"))
     return result
 
@@ -26,9 +28,11 @@ def refresh_shared_positions_task(tenant_id: str) -> dict:
     shared snapshots (design §8). Debounced: enqueued after the lessons app
     finishes a constellation recluster. Carries no lesson content in its return.
     """
+    from apps.friends import access
     from apps.friends.services import refresh_shared_positions
 
-    result = refresh_shared_positions(tenant_id)
+    with access.backstop_service_context():  # background read/write of shared_lessons under FORCE-RLS
+        result = refresh_shared_positions(tenant_id)
     logger.info("refresh_shared_positions_task %s → %s", str(tenant_id)[:8], result)
     return result
 
