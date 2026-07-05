@@ -51,11 +51,13 @@ def _content_hash(text: str, context: str) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _assert_ner_available() -> None:
-    """Raise :class:`NerUnavailable` unless the DeBERTa NER pipeline is loaded
-    AND its entity pass runs (verified against a probe). This is the fail-closed
-    gate — it deliberately calls ``get_pii_pipeline`` directly instead of going
-    through the redactor, whose swallow would hide the degradation."""
+def _assert_ner_available():
+    """Return the verified DeBERTa NER pipeline, or raise
+    :class:`NerUnavailable` unless it is loaded AND its entity pass runs
+    (verified against a probe). This is the fail-closed gate — it deliberately
+    calls ``get_pii_pipeline`` directly instead of going through the redactor,
+    whose swallow would hide the degradation. The returned pipe is reused by
+    :func:`_assert_output_clean` so both belts verify the same instance."""
     from apps.pii.config import DEBERTA_LABEL_MAP
     from apps.pii.engine import get_pii_pipeline
 
@@ -74,6 +76,46 @@ def _assert_ner_available() -> None:
         raise NerUnavailable(
             "DeBERTa NER pass did not detect the probe PERSON — refusing to fall back to Presidio-only"
         )
+    return pipe
+
+
+# Labels that must NEVER survive into a published snapshot, enforced by the
+# second belt below. LOCATION is deliberately excluded: the raw pipeline (no
+# redactor score-tier logic) false-fires on number-ish tokens (see the
+# BUILDINGNUMBER history in apps/pii/config.py), and a surviving place name is
+# lower-stakes than a name/contact. PERSON/EMAIL/PHONE at >=0.7 are unambiguous.
+_OUTPUT_FORBIDDEN_LABELS = frozenset({"PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER"})
+_OUTPUT_SCORE_FLOOR = 0.7
+
+
+def _assert_output_clean(pipe, outputs) -> None:
+    """The SECOND belt (design §4.3): ``RedactionSession.redact()`` swallows
+    per-call inference errors and returns near-raw text, so a failure AFTER the
+    probe passed could otherwise publish real names as "scrubbed". The
+    probe-verified NER pass must find no high-confidence identity entity in the
+    text we are about to freeze — a hit means some upstream step silently
+    degraded on THIS text. Fail closed; the owner can edit and retry."""
+    from apps.pii.config import DEBERTA_LABEL_MAP
+
+    for out in outputs:
+        if not out:
+            continue
+        try:
+            detections = pipe(out)
+        except Exception as exc:  # noqa: BLE001 — verification failure is fail-closed
+            raise NerUnavailable(f"output verification inference failed: {exc}") from exc
+        hits = sorted(
+            {
+                DEBERTA_LABEL_MAP.get(d.get("entity_group") or "")
+                for d in (detections or [])
+                if float(d.get("score") or 0.0) >= _OUTPUT_SCORE_FLOOR
+            }
+            & _OUTPUT_FORBIDDEN_LABELS
+        )
+        if hits:
+            raise NerUnavailable(
+                f"scrubbed output still contains identity entities ({', '.join(hits)}) — refusing to publish"
+            )
 
 
 def _redact_identities(owner_tenant, text: str) -> str:
@@ -134,9 +176,9 @@ def scrub_shared_lesson(shared_lesson_id, pending_share_id: str | None = None) -
     if shared_lesson.scrub_status == SharedLesson.ScrubStatus.READY and shared_lesson.content_hash == content_hash:
         return {"ok": True, "reason": "already_ready"}
 
-    # ── FAIL-CLOSED gate ──
+    # ── FAIL-CLOSED gate (belt 1: the pipeline itself works) ──
     try:
-        _assert_ner_available()
+        pipe = _assert_ner_available()
     except Exception as exc:  # noqa: BLE001 — verified-or-fail-closed
         access.save_scrub_failed(shared_lesson, f"NER path unavailable — refusing to share (fail-closed): {exc}")
         logger.warning("share scrub fail-closed for %s: NER unavailable", shared_lesson_id)
@@ -149,6 +191,16 @@ def scrub_shared_lesson(shared_lesson_id, pending_share_id: str | None = None) -
     except Exception as exc:  # noqa: BLE001 — any redaction error is fail-closed
         access.save_scrub_failed(shared_lesson, f"scrub error: {exc}")
         return {"ok": False, "reason": "scrub_error"}
+
+    # ── FAIL-CLOSED gate (belt 2: THIS text actually got cleaned) ──
+    # RedactionSession.redact() swallows per-call inference errors and returns
+    # near-raw text; without this check such a failure would publish real names.
+    try:
+        _assert_output_clean(pipe, [redacted_text, redacted_context, redacted_cluster])
+    except Exception as exc:  # noqa: BLE001 — verification failure is fail-closed
+        access.save_scrub_failed(shared_lesson, f"output verification failed (fail-closed): {exc}")
+        logger.warning("share scrub fail-closed for %s: output not clean", shared_lesson_id)
+        return {"ok": False, "reason": "output_not_clean"}
 
     access.save_scrub_ready(
         shared_lesson,

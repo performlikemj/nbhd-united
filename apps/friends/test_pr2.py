@@ -63,6 +63,7 @@ class ScrubFailClosedTest(TestCase):
     def test_neutralizes_placeholders_no_map(self):
         with (
             mock.patch("apps.friends.scrub._assert_ner_available"),
+            mock.patch("apps.friends.scrub._assert_output_clean"),
             mock.patch(
                 "apps.friends.scrub._redact_identities",
                 side_effect=lambda owner, text: "[PERSON_1] cooks with [PERSON_2] on Sundays." if text else "",
@@ -116,6 +117,48 @@ class ScrubFailClosedTest(TestCase):
         h1 = scrub._content_hash("hello", "world")
         self.assertEqual(h1, scrub._content_hash("hello", "world"))
         self.assertNotEqual(h1, scrub._content_hash("hello", "worlds"))
+
+    def test_fail_closed_when_output_still_has_identities(self):
+        """Belt 2: RedactionSession.redact() swallows per-call inference errors
+        and returns near-raw text. Simulate that swallow (identity redaction is
+        a no-op) with a working pipe that still sees the PERSON in the output —
+        the scrub must fail closed, never publish."""
+
+        def detecting_pipe(text):
+            if "Sarah" in text:
+                return [{"entity_group": "FIRSTNAME", "score": 0.98, "start": 0, "end": 5}]
+            return []
+
+        self.lesson.text = "Sarah taught me to batch-cook on Sundays."
+        self.lesson.save(update_fields=["text"])
+        with (
+            mock.patch("apps.friends.scrub._assert_ner_available", return_value=detecting_pipe),
+            mock.patch("apps.friends.scrub._redact_identities", side_effect=lambda owner, text: text),
+        ):
+            result = scrub.scrub_shared_lesson(str(self.sl.id))
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "output_not_clean")
+        self.sl.refresh_from_db()
+        self.assertEqual(self.sl.scrub_status, "failed")
+        self.assertIn("identity entities", self.sl.scrub_error)
+        self.assertEqual(self.sl.redacted_text, "")  # nothing published
+        self.assertEqual(LessonShareGrant.objects.count(), 0)
+
+    def test_output_check_ignores_low_confidence_and_passes_clean(self):
+        """The output belt uses a 0.7 score floor (raw pipe has no redactor
+        score tiers) and passes clean text through to ready."""
+
+        def low_confidence_pipe(text):
+            return [{"entity_group": "FIRSTNAME", "score": 0.4, "start": 0, "end": 5}] if text else []
+
+        with (
+            mock.patch("apps.friends.scrub._assert_ner_available", return_value=low_confidence_pipe),
+            mock.patch("apps.friends.scrub._redact_identities", side_effect=lambda owner, text: text),
+        ):
+            result = scrub.scrub_shared_lesson(str(self.sl.id))
+        self.assertTrue(result["ok"])
+        self.sl.refresh_from_db()
+        self.assertEqual(self.sl.scrub_status, "ready")
 
 
 # ── Share intent → PendingShare + snapshot (no grant yet) ─────────────────────
