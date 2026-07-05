@@ -4012,18 +4012,25 @@ class RuntimeProposeShareView(APIView):
             return Response({"error": "lesson_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         data = request.data if isinstance(request.data, dict) else {}
-        friendship = friends_services.resolve_accepted_friendship(
-            tenant, friendship_id=data.get("target_friendship_id"), handle=data.get("target_handle")
-        )
-        if friendship is None:
-            return Response(
-                {"error": "not_neighbors", "detail": "No accepted friendship for the given target."},
-                status=status.HTTP_403_FORBIDDEN,
+        circle = friends_services.resolve_member_circle(tenant, data.get("target_circle_id"))
+        friendship = None
+        if circle is None:
+            friendship = friends_services.resolve_accepted_friendship(
+                tenant, friendship_id=data.get("target_friendship_id"), handle=data.get("target_handle")
             )
+            if friendship is None:
+                return Response(
+                    {"error": "not_neighbors", "detail": "No accepted friendship or circle for the given target."},
+                    status=status.HTTP_403_FORBIDDEN,
+                )
 
         try:
             pending, created = friends_services.propose_share(
-                tenant, lesson, friendship, data.get("source_context") or data.get("why") or ""
+                tenant,
+                lesson,
+                friendship,
+                data.get("source_context") or data.get("why") or "",
+                circle=circle,
             )
         except DRFPermissionDenied as exc:
             # Mechanical share-never list (gravity/core lessons stay private).

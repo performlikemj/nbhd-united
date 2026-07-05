@@ -15,7 +15,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import services
+from . import circles, services
 from .serializers import InviteCreateSerializer, NeighborProfileSerializer, WaveCreateSerializer
 from .throttling import WaveSendDayThrottle
 
@@ -175,9 +175,10 @@ class SharePreviewView(FriendsView):
         tenant = self.get_tenant(request)
         lesson_id = request.query_params.get("lesson_id")
         friendship_id = request.query_params.get("friendship_id")
-        if not lesson_id or not friendship_id:
-            raise ValidationError("lesson_id and friendship_id are required.")
-        payload, code = services.preview_share(tenant, lesson_id, friendship_id)
+        circle_id = request.query_params.get("circle_id")
+        if not lesson_id or not (friendship_id or circle_id):
+            raise ValidationError("lesson_id and one of friendship_id / circle_id are required.")
+        payload, code = services.preview_share(tenant, lesson_id, friendship_id, circle_id)
         return Response(payload, status=code)
 
 
@@ -467,3 +468,94 @@ class GoalActionRejectView(FriendsView):
     def post(self, request, action_id):
         tenant = self.get_tenant(request)
         return Response(services.reject_goal_action(tenant, action_id))
+
+
+# ── Circles (groups) + moderation ────────────────────────────────────────────
+
+
+def _is_truthy(value) -> bool:
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+class CirclesView(FriendsView):
+    """GET /api/v1/friends/circles/ — my circles. POST — create one (I'm admin)."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        return Response(circles.list_circles(tenant))
+
+    def post(self, request):
+        tenant = self.get_tenant(request)
+        circle = circles.create_circle(
+            tenant,
+            request.user,
+            name=request.data.get("name", ""),
+            description=request.data.get("description", ""),
+            hue=request.data.get("hue", 210),
+        )
+        return Response({"circle_id": str(circle.id)}, status=status.HTTP_201_CREATED)
+
+
+class CircleJoinView(FriendsView):
+    """POST /api/v1/friends/circles/join/ {invite_code} — join via code (must be a
+    neighbor of the circle creator)."""
+
+    def post(self, request):
+        tenant = self.get_tenant(request)
+        return Response(circles.join_circle(tenant, request.user, request.data.get("invite_code", "")))
+
+
+class CircleDetailView(FriendsView):
+    def get(self, request, circle_id):
+        tenant = self.get_tenant(request)
+        return Response(circles.get_circle_detail(tenant, circle_id))
+
+
+class CircleMembersView(FriendsView):
+    """POST /api/v1/friends/circles/<id>/members/ {handle} — wave a neighbor in."""
+
+    def post(self, request, circle_id):
+        tenant = self.get_tenant(request)
+        return Response(circles.add_circle_member(tenant, request.user, circle_id, request.data.get("handle", "")))
+
+
+class CircleLeaveView(FriendsView):
+    """POST /api/v1/friends/circles/<id>/leave/ {keep?} — leave; purge my
+    circle-absorbed items by default, or keep=true to retain them."""
+
+    def post(self, request, circle_id):
+        tenant = self.get_tenant(request)
+        return Response(circles.leave_circle(tenant, circle_id, purge=not _is_truthy(request.data.get("keep"))))
+
+
+class CircleRemoveView(FriendsView):
+    """POST /api/v1/friends/circles/<id>/remove/ {handle} — admin removes a member."""
+
+    def post(self, request, circle_id):
+        tenant = self.get_tenant(request)
+        return Response(circles.remove_circle_member(tenant, circle_id, request.data.get("handle", "")))
+
+
+class CircleInviteCodeView(FriendsView):
+    """POST /api/v1/friends/circles/<id>/invite-code/ — admin regenerates the code."""
+
+    def post(self, request, circle_id):
+        tenant = self.get_tenant(request)
+        return Response(circles.regenerate_invite_code(tenant, circle_id))
+
+
+class ReportView(FriendsView):
+    """POST /api/v1/friends/report/ {target_kind, target_id, reason} — hide the
+    item for the reporter + record it (design §10)."""
+
+    def post(self, request):
+        tenant = self.get_tenant(request)
+        return Response(
+            circles.report_content(
+                tenant,
+                request.user,
+                target_kind=request.data.get("target_kind", ""),
+                target_id=request.data.get("target_id", ""),
+                reason=request.data.get("reason", ""),
+            )
+        )

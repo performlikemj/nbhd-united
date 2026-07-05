@@ -50,8 +50,8 @@ def build_thread_page(viewer_tenant, thread, *, cursor, limit) -> tuple[list[dic
     advance. The caller must have run :func:`access.assert_participant` first."""
     after = decode_cursor(cursor)
     limit = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
-    messages = access.thread_messages_page(thread, after, limit)
     viewer_id = getattr(viewer_tenant, "id", viewer_tenant)
+    messages = access.thread_messages_page(thread, after, limit, viewer_tenant_id=viewer_id)
     items = [
         {
             "public_id": str(m.public_id),

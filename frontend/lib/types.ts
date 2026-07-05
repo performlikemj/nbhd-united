@@ -1049,14 +1049,19 @@ export interface FriendInvite {
 // ── Neighborhood shares (PR2) ────────────────────────────────────────────────
 // The propose → scrub → preview → approve → publish pipeline. Every share is
 // addressed by friendship_id + lesson id (see the header note above) — never
-// a raw tenant id.
+// a raw tenant id. Since PR7, the audience can ALSO be a circle: friendship_id
+// is null and audience is null for a circle-targeted share (the backend's
+// pending-shares list doesn't yet surface a circle_id — see CircleDetail
+// below; `circle_id` is typed here so the frontend lights up the moment it
+// does, with zero further changes).
 export interface PendingShare {
   id: string;
   lesson_id: number;
   lesson_preview: string;
   proposed_by: string;
-  friendship_id: string;
-  audience: string;
+  friendship_id: string | null;
+  circle_id?: string | null;
+  audience: string | null;
   created_at: string;
 }
 
@@ -1224,4 +1229,54 @@ export interface PendingGoalAction {
     due_date: string | null;
   };
   created_at: string;
+}
+
+// ── Circles (PR7) ────────────────────────────────────────────────────────
+// A named group of accepted neighbors, built ON edges (design §2.11): you
+// join only via invite code or by being waved in by a member you're already
+// neighbors with. See apps/friends/circles.py.
+export type CircleRole = "admin" | "member";
+
+export interface CircleSummary {
+  circle_id: string;
+  name: string;
+  hue: number; // 0-359
+  member_count: number;
+  my_role: CircleRole;
+  // Only populated when my_role === "admin" — null for a plain member.
+  invite_code: string | null;
+}
+
+export interface CircleMember {
+  handle: string | null;
+  display_name: string;
+  avatar_hue: number;
+  role: CircleRole;
+  is_me: boolean;
+}
+
+export interface CircleDetail {
+  circle_id: string;
+  name: string;
+  description: string;
+  hue: number;
+  members: CircleMember[];
+  my_role: CircleRole;
+  // Drives the SAME 1:1 Messages pane, keyed by this id — never a second
+  // chat implementation. Null only if the circle's thread somehow didn't
+  // get created (shouldn't happen via create_circle, but the backend can
+  // still return null — see apps/friends/circles.py get_circle_detail).
+  thread_id: string | null;
+  invite_code: string | null;
+}
+
+export interface CircleJoinResult {
+  circle_id: string;
+  status: string;
+}
+
+export interface CircleLeaveResult {
+  circle_id: string;
+  status: string;
+  purged: boolean;
 }
