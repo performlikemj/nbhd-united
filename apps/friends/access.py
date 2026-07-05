@@ -352,8 +352,12 @@ def adopt_shared_lesson(viewer_tenant, viewer_user, shared_lesson_id):
     cross-tenant READS of raw names; this is a scoped WRITE of already-neutralized
     text into the reader's own galaxy, entering their normal pending-approve gate.
 
-    Idempotent per ``(viewer, shared_lesson)`` via a ``source_ref`` lookup — a
-    repeated adopt returns the existing lesson, never a duplicate.
+    Idempotent per ``(viewer, shared_lesson)`` via a ``source_ref`` lookup over
+    the viewer's LIVE copies (pending/approved) — a repeated adopt returns the
+    existing lesson, never a duplicate. A DISMISSED copy does not block:
+    dismissing a souvenir means "not now", and the spark is still sitting in the
+    friend's galaxy inviting adoption — re-adopt mints a fresh pending lesson
+    (otherwise the "added to your pending stars" toast would lie).
 
     Returns ``(lesson, created)``. Raises:
       * ``ValueError('own_snapshot')`` if the viewer IS the snapshot's owner (→ 400).
@@ -374,7 +378,9 @@ def adopt_shared_lesson(viewer_tenant, viewer_user, shared_lesson_id):
         raise PermissionDenied("This spark isn't shared with you")
 
     source_ref = f"shared_lesson:{snapshot.id}"
-    existing = viewer_tenant.lessons.filter(source_ref=source_ref).order_by("created_at").first()
+    existing = (
+        viewer_tenant.lessons.filter(source_ref=source_ref).exclude(status="dismissed").order_by("created_at").first()
+    )
     if existing is not None:
         return existing, False
 

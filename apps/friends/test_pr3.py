@@ -273,6 +273,27 @@ class AdoptSparkTest(TestCase):
         self.assertFalse(payload2["created"])
         self.assertEqual(Lesson.objects.filter(tenant=self.viewer, source_ref=f"shared_lesson:{self.sl.id}").count(), 1)
 
+    def test_re_adopt_after_dismiss_mints_fresh_pending(self):
+        """Dismissing a souvenir means "not now" — the spark is still in the
+        friend's galaxy inviting adoption, so a later adopt must mint a FRESH
+        pending lesson (a dismissed copy blocking would make the success toast
+        lie). Live copies (pending/approved) still dedup."""
+        payload1, _ = services.adopt_spark(self.viewer, self.viewer.user, self.sl.id)
+        first = Lesson.objects.get(id=payload1["lesson_id"])
+        first.status = "dismissed"
+        first.save(update_fields=["status"])
+
+        payload2, code2 = services.adopt_spark(self.viewer, self.viewer.user, self.sl.id)
+        self.assertEqual(code2, 201)
+        self.assertTrue(payload2["created"])
+        self.assertNotEqual(payload1["lesson_id"], payload2["lesson_id"])
+        fresh = Lesson.objects.get(id=payload2["lesson_id"])
+        self.assertEqual(fresh.status, "pending")
+        # And the fresh live copy now dedups again.
+        payload3, code3 = services.adopt_spark(self.viewer, self.viewer.user, self.sl.id)
+        self.assertEqual(payload3["lesson_id"], payload2["lesson_id"])
+        self.assertEqual(code3, 200)
+
     def test_adopting_own_snapshot_is_400(self):
         # The owner tries to adopt their own snapshot.
         resp = _client(self.owner.user).post(f"/api/v1/friends/shares/{self.sl.id}/adopt/")
