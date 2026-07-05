@@ -20,6 +20,7 @@ import {
   IconGravity,
   IconFuel,
   IconCore,
+  IconNeighborhood,
   IconSettings,
   IconLogOut,
 } from "@/components/icons/constellation";
@@ -49,6 +50,7 @@ function useNavItems(
     gravity_available?: boolean;
     fuel_enabled?: boolean;
     core_enabled?: boolean;
+    friends_enabled?: boolean;
   } | null,
 ): NavItem[] {
   const items: NavItem[] = [
@@ -66,6 +68,9 @@ function useNavItems(
   }
   if (tenant?.core_enabled) {
     items.push({ href: "/core", label: "Core", icon: IconCore });
+  }
+  if (tenant?.friends_enabled) {
+    items.push({ href: "/friends", label: "Neighborhood", icon: IconNeighborhood });
   }
   items.push({ href: "/settings", label: "Settings", icon: IconSettings });
   return items;

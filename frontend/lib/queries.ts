@@ -7,7 +7,11 @@ import {
   AuthUser,
   CronJob,
   Integration,
+  Neighbor,
+  NeighborhoodData,
+  NeighborProfile,
   PendingRemindersResponse,
+  PendingWave,
   PersonalAccessToken,
   ProvisioningStatus,
   RefreshConfigStatus,
@@ -156,6 +160,15 @@ import {
   approveLesson,
   dismissLesson,
   deleteLesson,
+  fetchNeighborhood,
+  sendWave,
+  acceptWave,
+  declineWave,
+  blockWave,
+  unfriend,
+  fetchNeighborProfile,
+  updateNeighborProfile,
+  createFriendInvite,
 } from "@/lib/api";
 
 export function useMeQuery() {
@@ -1856,5 +1869,201 @@ export function useDeleteLessonMutation() {
       void qc.invalidateQueries({ queryKey: ["constellation"] });
       void qc.invalidateQueries({ queryKey: ["pending-lessons"] });
     },
+  });
+}
+
+// ── Neighborhood (Friends) ───────────────────────────────────────────────────
+
+export function useNeighborhoodQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["neighborhood"],
+    queryFn: fetchNeighborhood,
+    staleTime: 30_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+export function useNeighborProfileQuery() {
+  const { data: tenant } = useTenantQuery();
+  return useQuery({
+    queryKey: ["neighbor-profile"],
+    queryFn: fetchNeighborProfile,
+    staleTime: 10 * 60_000,
+    enabled: isLoggedIn() && !!tenant?.friends_enabled,
+  });
+}
+
+// Fold an accepted incoming wave straight into the neighbors list so the row
+// hops sections instantly instead of waiting on the invalidate round-trip.
+function acceptWaveOptimistically(old: NeighborhoodData, friendshipId: string): NeighborhoodData {
+  const wave = old.pending_incoming.find((w) => w.friendship_id === friendshipId);
+  if (!wave) return old;
+  const promoted: Neighbor = {
+    friendship_id: wave.friendship_id,
+    display_name: wave.display_name,
+    handle: wave.handle,
+    avatar_hue: wave.avatar_hue,
+    status: "accepted",
+    since: new Date().toISOString(),
+  };
+  return {
+    ...old,
+    pending_incoming: old.pending_incoming.filter((w) => w.friendship_id !== friendshipId),
+    neighbors: [promoted, ...old.neighbors],
+  };
+}
+
+export function useAcceptWaveMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (friendshipId: string) => acceptWave(friendshipId),
+    onMutate: async (friendshipId: string) => {
+      await qc.cancelQueries({ queryKey: ["neighborhood"] });
+      const previous = qc.getQueryData<NeighborhoodData>(["neighborhood"]);
+      qc.setQueryData<NeighborhoodData>(["neighborhood"], (old) =>
+        old ? acceptWaveOptimistically(old, friendshipId) : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _friendshipId, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["neighborhood"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
+  });
+}
+
+export function useDeclineWaveMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (friendshipId: string) => declineWave(friendshipId),
+    onMutate: async (friendshipId: string) => {
+      await qc.cancelQueries({ queryKey: ["neighborhood"] });
+      const previous = qc.getQueryData<NeighborhoodData>(["neighborhood"]);
+      qc.setQueryData<NeighborhoodData>(["neighborhood"], (old) =>
+        old
+          ? {
+              ...old,
+              pending_incoming: old.pending_incoming.filter(
+                (w: PendingWave) => w.friendship_id !== friendshipId,
+              ),
+            }
+          : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _friendshipId, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["neighborhood"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
+  });
+}
+
+export function useBlockWaveMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (friendshipId: string) => blockWave(friendshipId),
+    onMutate: async (friendshipId: string) => {
+      await qc.cancelQueries({ queryKey: ["neighborhood"] });
+      const previous = qc.getQueryData<NeighborhoodData>(["neighborhood"]);
+      qc.setQueryData<NeighborhoodData>(["neighborhood"], (old) =>
+        old
+          ? {
+              ...old,
+              pending_incoming: old.pending_incoming.filter((w) => w.friendship_id !== friendshipId),
+              pending_outgoing: old.pending_outgoing.filter((w) => w.friendship_id !== friendshipId),
+              neighbors: old.neighbors.filter((n) => n.friendship_id !== friendshipId),
+            }
+          : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _friendshipId, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["neighborhood"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
+  });
+}
+
+export function useUnfriendMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (friendshipId: string) => unfriend(friendshipId),
+    onMutate: async (friendshipId: string) => {
+      await qc.cancelQueries({ queryKey: ["neighborhood"] });
+      const previous = qc.getQueryData<NeighborhoodData>(["neighborhood"]);
+      qc.setQueryData<NeighborhoodData>(["neighborhood"], (old) =>
+        old ? { ...old, neighbors: old.neighbors.filter((n) => n.friendship_id !== friendshipId) } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _friendshipId, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["neighborhood"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
+  });
+}
+
+// No optimistic write here — the resulting friendship_id/status are only
+// known once the server resolves the handle (and a re-wave can resolve
+// straight to "accepted"), so there's no local state to reconcile against.
+// Errors render inline on the form (meta.skipErrorToast), same as profile save.
+export function useSendWaveMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: { handle: string; note?: string }) => sendWave(data),
+    meta: { skipErrorToast: true },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
+  });
+}
+
+export function useUpdateNeighborProfileMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (data: Partial<NeighborProfile>) => updateNeighborProfile(data),
+    meta: { skipErrorToast: true },
+    onMutate: async (newData: Partial<NeighborProfile>) => {
+      await qc.cancelQueries({ queryKey: ["neighbor-profile"] });
+      const previous = qc.getQueryData<NeighborProfile>(["neighbor-profile"]);
+      qc.setQueryData<NeighborProfile>(["neighbor-profile"], (old) =>
+        old ? { ...old, ...newData } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _newData, context) => {
+      if (context?.previous) {
+        qc.setQueryData(["neighbor-profile"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ["neighbor-profile"] });
+      void qc.invalidateQueries({ queryKey: ["neighborhood"] });
+    },
+  });
+}
+
+// Invites aren't a persisted list in PR1 (no query to invalidate) — this just
+// mints a token/url for the caller to display or share.
+export function useCreateInviteMutation() {
+  return useMutation({
+    mutationFn: (data: { max_uses?: number; expires_in_days?: number } = {}) => createFriendInvite(data),
   });
 }

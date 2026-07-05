@@ -753,6 +753,11 @@ class TelegramPoller:
                 self._handle_task_action_callback(update, tenant)
                 return
 
+            # Wave (friend-request) accept/decline callbacks
+            if callback_data.startswith("friend:"):
+                self._handle_friend_callback(update, tenant)
+                return
+
             # Action gate callbacks (approve/deny destructive actions)
             if callback_data.startswith("gate_approve:") or callback_data.startswith("gate_deny:"):
                 self._handle_gate_callback(update, tenant, callback_data, callback_id, chat_id)
@@ -1691,6 +1696,28 @@ class TelegramPoller:
                 self._execute_telegram_response(response_data)
         except Exception:
             logger.exception("Error handling lesson callback")
+            callback_id = update["callback_query"].get("id")
+            if callback_id:
+                lang = getattr(tenant.user, "language", None) or "en"
+                self._answer_callback_query(callback_id, error_msg(lang, "forwarding_error"))
+
+    def _handle_friend_callback(self, update: dict, tenant: Tenant) -> None:
+        """Handle wave accept/decline callbacks via the shared handler.
+
+        ``handle_friend_callback`` returns a JsonResponse describing a Telegram
+        method (editMessageText / answerCallbackQuery); we replay it, same as
+        the lesson-callback path."""
+        from .friends_callbacks import handle_friend_callback
+
+        try:
+            json_response = handle_friend_callback(update, tenant)
+            import json as _json
+
+            response_data = _json.loads(json_response.content)
+            if response_data:
+                self._execute_telegram_response(response_data)
+        except Exception:
+            logger.exception("Error handling friend callback")
             callback_id = update["callback_query"].get("id")
             if callback_id:
                 lang = getattr(tenant.user, "language", None) or "en"

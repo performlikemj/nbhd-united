@@ -174,6 +174,17 @@ export function IconCore({ className = "h-5 w-5" }: { className?: string }) {
   );
 }
 
+export function IconNeighborhood({ className = "h-5 w-5" }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="6" r="1.6" fill="currentColor" />
+      <circle cx="6" cy="16" r="1.6" fill="currentColor" />
+      <circle cx="18" cy="16" r="1.6" fill="currentColor" />
+      <path d="M12 6L6 16M12 6l6 10M6 16h12" />
+    </svg>
+  );
+}
+
 export function IconSettings({ className = "h-5 w-5" }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round">
