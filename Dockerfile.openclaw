@@ -58,6 +58,15 @@ COPY runtime/openclaw/plugins/nbhd-stream-progress /opt/nbhd/plugins/nbhd-stream
 COPY runtime/openclaw/plugins/nbhd-automation-tools /opt/nbhd/plugins/nbhd-automation-tools
 COPY runtime/openclaw/plugins/nbhd-cron-enforcement /opt/nbhd/plugins/nbhd-cron-enforcement
 COPY runtime/openclaw/plugins/nbhd-site-publishing /opt/nbhd/plugins/nbhd-site-publishing
+# nbhd-friends-tools is emitted into plugins.load.paths by config_generator
+# whenever friends_enabled — omitting this COPY made OpenClaw hard-fail boot
+# with "plugin path not found: /opt/nbhd/plugins/nbhd-friends-tools", bricking
+# every friends tenant's gateway (2026-07-05 incident). nbhd-agenda-tools had
+# the same latent omission. Both are Node-built-ins-only (no npm install).
+# The scripts/check_openclaw_plugin_packaging.py CI guard now fails the build
+# if any shippable plugin is missing from this block.
+COPY runtime/openclaw/plugins/nbhd-friends-tools /opt/nbhd/plugins/nbhd-friends-tools
+COPY runtime/openclaw/plugins/nbhd-agenda-tools /opt/nbhd/plugins/nbhd-agenda-tools
 COPY skills/gws-* /opt/nbhd/skills/
 COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
