@@ -141,6 +141,9 @@ class HomeBffTest(TestCase):
         self.assertEqual(share["pending_share_id"], str(self.proposal.id))
         self.assertIn("scrub_status", share)
         self.assertIn("audience_label", share)
+        # PR12: preview-poll ids for the iOS SharePreviewSheet (proposal path).
+        self.assertEqual(share["lesson_id"], str(self.proposal.source_lesson_id))
+        self.assertEqual(share["friendship_id"], str(self.proposal.target_friendship_id))
 
     def test_since_filters_moments(self):
         from urllib.parse import quote
