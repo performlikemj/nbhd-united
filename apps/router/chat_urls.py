@@ -13,6 +13,7 @@ from apps.router.chat_views import (
     ChatReadView,
     ChatThreadListView,
     ChatThreadMessagesView,
+    TranscriptionVocabView,
 )
 
 urlpatterns = [
@@ -20,6 +21,11 @@ urlpatterns = [
     path("read/", ChatReadView.as_view(), name="chat-read"),
     path("context/", ChatContextView.as_view(), name="chat-context"),
     path("turns/", ChatLocalTurnView.as_view(), name="chat-local-turn"),
+    path(
+        "transcription-vocab/",
+        TranscriptionVocabView.as_view(),
+        name="chat-transcription-vocab",
+    ),
     path(
         "messages/<str:client_msg_id>/",
         ChatMessageDetailView.as_view(),

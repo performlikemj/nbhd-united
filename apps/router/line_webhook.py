@@ -102,8 +102,11 @@ def _transcribe_line_audio(message_id: str, tenant: Tenant | None = None) -> str
     When ``tenant`` is provided, a vocabulary hint built from the tenant's own
     known non-PII proper nouns (denylisted brands, workspace names, the user's
     display name) is passed as the Whisper ``prompt`` so distinctive names
-    transcribe consistently instead of being misheard — e.g. "Rakuten" ->
-    "Rocketen", which then poisons the journal and PII map.
+    transcribe consistently instead of being phonetically garbled. This is the
+    class behind the 2026-07 "Rakuten" -> "Rocketen" incident — that clip
+    entered via iOS on-device STT (fixed app-side via ``contextualStrings`` fed
+    from the same vocabulary); this hint hardens the LINE channel against the
+    same failure. See apps/router/transcription.py.
 
     Returns transcribed text, or None on failure.
     """
@@ -969,7 +972,7 @@ class LineWebhookView(View):
             tenant_prefetched = True
             _show_loading(line_user_id)
             # Pass the resolved tenant so Whisper gets the tenant's vocabulary
-            # hint (prevents brand/name mishearings like "Rakuten" -> "Rocketen").
+            # hint (guards against phonetic garbling of known brand/project names).
             transcript = _transcribe_line_audio(message_id, tenant=prefetched_tenant)
             if transcript:
                 logger.info(

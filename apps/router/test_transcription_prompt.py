@@ -1,19 +1,29 @@
-"""Tests for the per-tenant Whisper vocabulary hint.
+"""Tests for the per-tenant speech-to-text vocabulary.
 
-Regression guard for the "Rakuten" -> "Rocketen" voice-transcription garble:
-transcription now passes the tenant's own known non-PII vocabulary as the
-Whisper ``prompt`` so distinctive brand/project names decode consistently. The
-acoustic win itself can't be unit-tested (Whisper is mocked), so these lock in
-that (a) the hint is assembled from the right sources and (b) both voice
-channels actually forward it to the Whisper request.
+Regression guard for the "Rakuten" -> "Rocketen" voice-transcription garble
+class. The incident itself entered via iOS on-device STT (Apple's recognizer;
+no server-side audio path exists for iOS) — the app fixes that channel by
+feeding ``SFSpeechRecognitionRequest.contextualStrings`` from
+``GET /api/v1/chat/transcription-vocab/``. The two server-side Whisper channels
+(Telegram poller, LINE webhook) are hardened against the same class by passing
+the vocabulary as the Whisper ``prompt``.
+
+The acoustic win itself can't be unit-tested (recognizers are mocked/remote),
+so these lock in that (a) the vocabulary is assembled from the right sources
+with budget caps, (b) both Whisper channels actually forward it, and (c) the
+iOS endpoint requires auth and returns the same terms.
 """
 
+import secrets
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
+from rest_framework.test import APIClient
 
-from apps.router.transcription import build_transcription_prompt
+from apps.router.transcription import build_transcription_prompt, collect_transcription_vocab
+
+_VOCAB_URL = "/api/v1/chat/transcription-vocab/"
 
 
 def _tenant(denylist=None, display_name="Michael Jones"):
@@ -23,6 +33,27 @@ def _tenant(denylist=None, display_name="Michael Jones"):
         # lookup and degrades to [] — exercising the no-workspace path.
         user=SimpleNamespace(display_name=display_name),
     )
+
+
+class CollectTranscriptionVocabTests(SimpleTestCase):
+    """The shared term collector both the Whisper prompt and the iOS endpoint use."""
+
+    def test_none_tenant_returns_empty(self):
+        self.assertEqual(collect_transcription_vocab(None), [])
+
+    def test_terms_sourced_from_denylist_and_display_name(self):
+        terms = collect_transcription_vocab(_tenant(denylist={"rakuten": {}}, display_name="Kiho Tanaka"))
+        self.assertIn("Rakuten", terms)  # denylist key, title-cased proper noun
+        self.assertIn("Kiho Tanaka", terms)
+
+    def test_budget_caps_term_count(self):
+        big = {f"brandterm{i:03d}": {} for i in range(500)}
+        terms = collect_transcription_vocab(_tenant(denylist=big))
+        self.assertLessEqual(len(terms), 48)
+
+    def test_never_raises_on_malformed_tenant(self):
+        # Denylist not a dict, no user attr — must degrade to [], never raise.
+        self.assertEqual(collect_transcription_vocab(SimpleNamespace(pii_denylist=["oops"])), [])
 
 
 class BuildTranscriptionPromptTests(SimpleTestCase):
@@ -61,6 +92,69 @@ class BuildTranscriptionPromptTests(SimpleTestCase):
     def test_never_raises_on_malformed_tenant(self):
         # Denylist not a dict, no user attr — must degrade to None, never raise.
         self.assertIsNone(build_transcription_prompt(SimpleNamespace(pii_denylist=["oops"])))
+
+
+class TranscriptionVocabEndpointTests(TestCase):
+    """``GET /api/v1/chat/transcription-vocab/`` — the iOS consumer surface.
+
+    Same JWT-authed surface as the other ``/api/v1/chat/`` endpoints; the app
+    feeds the returned terms into ``SFSpeechRecognitionRequest.contextualStrings``.
+    """
+
+    def setUp(self):
+        from apps.tenants.models import Tenant, User
+
+        self.user = User.objects.create_user(
+            username=f"vocab_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+        )
+        self.tenant = Tenant.objects.create(
+            user=self.user,
+            status=Tenant.Status.ACTIVE,
+            container_fqdn="oc-vocab.example.com",
+            pii_denylist={"rakuten": {"reason": "manual"}, "sautai": {"reason": "arbiter"}},
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_requires_auth(self):
+        resp = APIClient().get(_VOCAB_URL)
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_returns_terms_shape(self):
+        resp = self.client.get(_VOCAB_URL)
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(set(body.keys()), {"terms"})
+        self.assertIsInstance(body["terms"], list)
+        self.assertIn("Rakuten", body["terms"])
+        self.assertIn("Sautai", body["terms"])
+
+    def test_includes_workspace_names(self):
+        from apps.journal.models import Workspace
+
+        Workspace.objects.create(tenant=self.tenant, name="Moonshot", slug="moonshot")
+        terms = self.client.get(_VOCAB_URL).json()["terms"]
+        self.assertIn("Moonshot", terms)
+
+    def test_budget_capped(self):
+        self.tenant.pii_denylist = {f"brandterm{i:03d}": {} for i in range(500)}
+        self.tenant.save(update_fields=["pii_denylist"])
+        terms = self.client.get(_VOCAB_URL).json()["terms"]
+        self.assertLessEqual(len(terms), 48)
+
+    def test_user_without_tenant_gets_404(self):
+        from apps.tenants.models import User
+
+        lone = User.objects.create_user(
+            username=f"lone_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+        )
+        client = APIClient()
+        client.force_authenticate(user=lone)
+        resp = client.get(_VOCAB_URL)
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json(), {"error": "no_tenant"})
 
 
 class TelegramVoicePromptTests(SimpleTestCase):

@@ -729,6 +729,34 @@ class ChatReadView(APIView):
         return _no_store(Response({"unread": 0}, status=status.HTTP_200_OK))
 
 
+class TranscriptionVocabView(APIView):
+    """GET: the tenant's speech-to-text vocabulary for on-device recognition.
+
+    iOS transcribes voice input ON DEVICE (Apple's speech recognizer) and POSTs
+    text — the July 2026 "Rakuten"→"Rocketen" garble entered through that path,
+    so the server never sees the audio and the server-side Whisper prompt hint
+    cannot help this channel. The app fetches these terms and feeds them into
+    ``SFSpeechRecognitionRequest.contextualStrings`` so known brands / projects /
+    names decode with consistent spelling.
+
+    Terms come from ``collect_transcription_vocab`` — pii_denylist keys,
+    workspace names, the user's display name; never ``pii_entity_map`` contacts
+    — with the same budget caps as the server-side Whisper hint, so every
+    channel biases toward the identical vocabulary. Same JWT-authed consumer
+    surface as ``ChatMessageView``. Returns ``{"terms": [...]}``.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.router.transcription import collect_transcription_vocab
+
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        return _no_store(Response({"terms": collect_transcription_vocab(tenant)}))
+
+
 _MAX_PARTIAL_TEXT_CHARS = 32000
 
 
