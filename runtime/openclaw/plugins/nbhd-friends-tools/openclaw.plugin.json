@@ -23,6 +23,10 @@
         "minimum": 1000,
         "maximum": 60000,
         "description": "HTTP timeout for NBHD runtime endpoint requests."
+      },
+      "proposeEnabled": {
+        "type": "boolean",
+        "description": "Register the two PROPOSE tools (nbhd_propose_lesson_share, nbhd_propose_mission_task). The runtime endpoints 403 independently; this is the don't-even-offer-it layer."
       }
     }
   }
