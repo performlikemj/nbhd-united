@@ -665,6 +665,15 @@ class Tenant(models.Model):
         default=False,
         help_text="Enable the Neighborhood (Friends) layer — waves, shared sparks, wormholes, chat",
     )
+    friends_agent_propose_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Let the assistant PROPOSE shares/mission-tasks (human still approves every one). "
+            "Off + friends_enabled = an absorb-only agent: it reads neighbors' sparks but never "
+            "proposes. Gates the propose plugin tools, the AGENTS.md propose rules, and the "
+            "runtime propose endpoints."
+        ),
+    )
 
     # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
     # "finance"), values are ISO-8601 timestamps of successful welcome

@@ -6,6 +6,7 @@ from django.contrib.postgres.fields import ArrayField
 from django.db import models
 from pgvector.django import VectorField
 
+from apps.insights.pillars import Pillar
 from apps.tenants.models import Tenant
 
 
@@ -44,6 +45,14 @@ class Lesson(models.Model):
         blank=True,
         help_text="Reference to source (daily note date, URL, etc.)",
     )
+
+    # ── Pillar ───────────────────────────────────────────────
+    # First-class provenance for the friends share-block (finance/mindfulness
+    # lessons stay private). Mirrors journal.Goal.pillar. Blank = "derive from
+    # tags at read time"; ``save()`` auto-fills it from tags when a creation path
+    # leaves it blank, and the share-block still re-checks the tag heuristic so
+    # it is never weaker than the pre-field behavior.
+    pillar = models.CharField(max_length=32, choices=Pillar.choices, blank=True, default="")
 
     # ── Approval flow ────────────────────────────────────────
     status = models.CharField(
@@ -97,6 +106,17 @@ class Lesson(models.Model):
             models.Index(fields=["tenant", "cluster_id"]),
             models.Index(fields=["tenant", "star_stage"]),
         ]
+
+    def save(self, *args, **kwargs):
+        # Auto-derive the pillar from tags when a creation/edit path leaves it
+        # blank — so every lesson-creation path (console, runtime, extraction,
+        # reseed, adopt) gets a pillar "where derivable" without each one having
+        # to set it. Only fills a blank field; an explicit pillar is respected.
+        if not self.pillar and self.tags:
+            from apps.lessons.pillars import infer_pillar_from_tags
+
+            self.pillar = infer_pillar_from_tags(self.tags)
+        super().save(*args, **kwargs)
 
     def __str__(self) -> str:
         return f"{self.tenant_id}:{self.id}"

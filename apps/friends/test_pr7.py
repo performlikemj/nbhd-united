@@ -261,11 +261,13 @@ class CircleChatTest(TestCase):
 
 class AgentsMdLeakGuardTest(TestCase):
     def test_cross_circle_leak_line_present_when_enabled(self):
+        # The cross-Circle leak guard is present regardless of the propose flag
+        # (PR9 split): assert on the always-rendered core wording.
         tenant = _tenant("md_on", friends_enabled=True)
         files = personas.render_workspace_files("neighbor", tenant=tenant)
         agents_md = files["NBHD_AGENTS_MD"]
-        self.assertIn("one Circle into another", agents_md)
-        self.assertIn("user's OWN item", agents_md)
+        self.assertIn("as if it belongs to another Circle", agents_md)
+        self.assertIn("does not travel to another", agents_md)
 
     def test_gate_absent_when_disabled(self):
         tenant = _tenant("md_off", friends_enabled=False)

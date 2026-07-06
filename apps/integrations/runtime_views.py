@@ -4001,6 +4001,11 @@ class RuntimeProposeShareView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        if not getattr(tenant, "friends_agent_propose_enabled", False):
+            return Response(
+                {"error": "propose_disabled", "detail": "Agent proposing is off for this account (absorb-only)."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         from rest_framework.exceptions import PermissionDenied as DRFPermissionDenied
 
@@ -4114,6 +4119,11 @@ class RuntimeProposeMissionTaskView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        if not getattr(tenant, "friends_agent_propose_enabled", False):
+            return Response(
+                {"error": "propose_disabled", "detail": "Agent proposing is off for this account (absorb-only)."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         from django.utils.dateparse import parse_date
 
