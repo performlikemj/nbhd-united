@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(stripe prices create:*)",
-      "Bash(stripe listen:*)"
-    ]
-  }
-}

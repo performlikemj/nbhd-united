@@ -1,125 +1,62 @@
 # NBHD United
 
-Multi-tenant SaaS platform. Each subscriber gets a private AI assistant (OpenClaw) via Telegram or LINE, running in its own Azure Container App. This repo is the control plane (Django) + subscriber console (Next.js frontend).
+Multi-tenant SaaS platform. Each subscriber gets a private AI assistant (OpenClaw) reached through the iOS app, Telegram, or LINE, running in its own Azure Container App. This repo is the control plane (Django) + subscriber console (Next.js frontend).
 
-## Tech Stack
+## How to use this file
 
-- **Backend**: Django 6.0.6 + DRF, QStash (scheduling, not Celery), PostgreSQL 16 via Supabase, Python 3.12
-- **Frontend**: Next.js 14 (static export to `out/`), TypeScript, Tailwind CSS, TipTap editor
-- **Infrastructure**: Azure Container Apps, Key Vault, Container Registry (`nbhdunited`), Static Web Apps
-- **Billing**: Stripe via dj-stripe
-- **Messaging**: Telegram Bot API (`python-telegram-bot`), LINE Messaging API
-- **AI Runtime**: OpenClaw (separate image, `Dockerfile.openclaw`), LiteLLM for model routing
+This file is a router, not the manual. Deep context lives in `docs/agents/` — each doc encodes hard-won production lessons, and skipping them repeats old incidents. **Read the matching doc BEFORE starting work in its area:**
 
-## Architecture
+| When you are... | Read first |
+|---|---|
+| Touching tenants, containers, provisioning, messaging flow, OpenClaw config | `docs/agents/architecture.md` |
+| Changing message routing, file-share writes, crons, revisions, timezones, transactions | `docs/agents/invariants.md` — permanent rules; each one broke production once |
+| Debugging production, reading logs, "assistant silent", timeouts, wake/hibernation | `docs/agents/debugging.md` |
+| Committing, pushing, merging PRs, deploying, writing migrations | `docs/agents/workflow.md` |
+| Writing Django/backend code | `docs/agents/backend.md` |
+| Writing frontend code or anything visual | `docs/agents/frontend.md` + `DESIGN.md` |
+
+Skills available as slash commands on this machine: `/deploy` (commit→push→verify), `/production-logs`, `/rotate-keys` (secrets never appear in output), `/yardtalk-push`.
+
+## Tech stack
+
+- **Backend**: Django 6 + DRF, Python 3.12 (local venv 3.11 — pins can lag CI), QStash for ALL scheduling (never Celery), PostgreSQL 16 via Supabase us-west-1
+- **Frontend**: Next.js 14 static export (`out/`, no SSR), TypeScript, Tailwind, TipTap editor
+- **Infra**: Azure Container Apps (`rg-nbhd-prod`), Key Vault `kv-nbhd-prod`, ACR `nbhdunited.azurecr.io`, Static Web Apps
+- **Billing**: Stripe via dj-stripe · **Messaging**: Telegram Bot API, LINE Messaging API
+- **AI runtime**: OpenClaw (separate image, `Dockerfile.openclaw`), LiteLLM/OpenRouter for models
 
 ```
-Django control plane (nbhd-django-westus2)
-  ├── Subscriber console API (DRF)
-  ├── Telegram webhook router → oc-* containers
-  ├── Billing (Stripe webhooks → provisioning)
-  └── Cron (QStash → bump configs, usage reports)
-
-Per-tenant containers (oc-<tenant_prefix>)
-  ├── OpenClaw AI assistant runtime
-  ├── Azure File Share mount (ws-<tenant_prefix>)
-  └── Managed Identity (mi-nbhd-<tenant_prefix>)
-
-Frontend (nbhd-united-frontend, Azure Static Web App)
-  └── Next.js static export → subscriber dashboard
+Django control plane (nbhd-django-westus2)     Per-tenant: oc-<prefix> container
+  ├── Console API (DRF)                          ├── OpenClaw runtime
+  ├── Channel routers → oc-* containers          ├── File share ws-<prefix>
+  ├── Stripe webhooks → provisioning             └── Identity mi-nbhd-<prefix>
+  └── QStash crons                             Frontend: Azure Static Web App
 ```
 
-## Azure Naming Conventions
+Django apps: `actions agents automations billing byo_models common core cron dashboard finance friends fuel insights integrations journal lessons orchestrator pii platform_logs router telegram_bot tenants`.
 
-| Resource | Prefix | Example |
-|---|---|---|
-| Container App | `oc-` | `oc-148ccf1c-ef13-47f8-a` |
-| Managed Identity | `mi-nbhd-` | `mi-nbhd-148ccf1c-ef13-47f8-a` |
-| File Share | `ws-` | `ws-148ccf1c-ef13-47f8-a` |
-
-Resource group: `rg-nbhd-prod`. Registry: `nbhdunited.azurecr.io`.
-Full docs: `docs/infrastructure/azure-resource-naming.md`
-
-## Django Apps
-
-`actions`, `agents`, `automations`, `billing`, `cron`, `dashboard`, `integrations`, `journal`, `lessons`, `orchestrator`, `platform_logs`, `router`, `telegram_bot`, `tenants`
-
-## Key Commands
+## Key commands
 
 ```bash
-make run              # Django dev server (0.0.0.0:8000)
-make test             # python manage.py test apps/
-make lint             # ruff check .
-make migrate          # python manage.py migrate
-make tenants          # python manage.py list_tenants
-make health           # python manage.py check_health
-make provision TENANT_ID=<uuid>
-make deprovision TENANT_ID=<uuid>
-cd frontend && npm run build   # Static export to out/
-cd frontend && npm run dev     # Next.js dev server
+make run / make test / make lint / make migrate       # dev server · full tests · ruff check · migrate
+make tenants / make health                            # list tenants · health check
+make provision TENANT_ID=<uuid>                       # (and deprovision)
+cd frontend && npm run dev / npm run build            # dev server · static export
+python manage.py test apps.<app>.<module> --noinput   # targeted tests while iterating
 ```
 
-## CI/CD Pipeline
+## Iron rules (always active — rationale in docs/agents/)
 
-Push to `main` triggers `.github/workflows/ci-cd.yml`:
-1. Frontend lint + build
-2. Backend Django checks + tests (pgvector/pg16)
-3. OpenClaw config doctor smoke test
-4. Build + push Django image → `nbhdunited.azurecr.io/django:<sha>`
-5. Build + push OpenClaw image → `nbhdunited.azurecr.io/nbhd-openclaw:<sha>`
-6. Deploy Django to Container Apps (single-revision mode)
-7. Health check → bump pending configs → register QStash crons
-8. Deploy frontend to Azure Static Web App
+- `main` is protected: PR branches only (`feat/` `fix/` `refactor/` `docs/`). Stage specific files (`git add -A`/`.` is hook-blocked). No `--no-verify`. No force-push.
+- Cross-branch work → `git worktree add .claude/worktrees/<name>`, never checkout-switch a dirty tree.
+- Before pushing backend code: `.venv/bin/ruff format <files>` and `manage.py makemigrations --check --dry-run` — CI gates that `make lint` does NOT cover.
+- Merging: `gh pr view <n> --json baseRefName` must be `main`; afterwards verify main actually advanced. `gh pr merge --auto` merges instantly (no required checks) — watch CI yourself if green-before-merge matters.
+- QStash, not Celery. Never SQLite on the per-tenant file share. Every inbound handler calls `claim_inbound_event` first. Message-routing changes cover ALL channel paths (Telegram poller + webhook + LINE).
+- Test in production (no staging): after every deploy, verify the user-facing symptom via logs/probes — never conclude success from an exit code or a MERGED badge.
+- Never print secrets or dump env vars into output. Never delete Azure resources without explicit confirmation.
+- Env var names in `config/settings/production.py` must match the Azure Container App env vars (a hook reminds you on edit).
 
-## Commit Convention
+## Commit convention
 
-Use prefixes: `feat:`, `fix:`, `merge:`, `refactor:`, `docs:`, `fix(scope):`
-Keep messages concise, focused on the "why". Examples:
-- `feat: tier-based GWS access + gate tool plugin + Celery expiry`
-- `fix: billing plan selector overflow on mobile — use stacked cards`
-- `merge: action-gating + envelope timezone fix`
-- `fix(tests): update suspended-tenant test assertions`
-
-## Development Workflow
-
-- Plan first for complex features — create `CONTINUITY_<feature-name>.md`
-- Implement phase by phase, test between phases
-- Test in production (no staging environment)
-- After deploy: always verify via `az containerapp logs show`
-- For multi-tenant changes: bump configs, verify at least one tenant picks up
-
-## Frontend Conventions
-
-@DESIGN.md
-
-- Tokens, typography, components, do's/don'ts: follow `DESIGN.md` (imported above). It supersedes `frontend/BRAND_GUIDE.md`, which is pre-Constellation and out of date.
-- Source of truth for tokens is `frontend/app/globals.css`; Tailwind mappings in `frontend/tailwind.config.ts`. Keep `DESIGN.md` aligned when these change.
-- Mobile-first responsive design
-- WCAG 2.1 AA accessibility (4.5:1 contrast, 44×44px touch targets)
-- Respect `prefers-reduced-motion`
-- Use CSS variables / Tailwind tokens, never hardcoded hex
-
-## Gotchas
-
-- **Key Vault identity prefix**: Use `mi-nbhd-` identity name for `identityref:`, NOT `oc-` container name
-- **Telegram single-revision**: Required to prevent 409 conflicts from multiple pollers
-- **IPv6 unreliable**: OpenClaw uses `--dns-result-order=ipv4first`
-- **Cold starts mask errors**: Always check logs after timeout errors — the real error may be hidden
-- **Frontend is static export**: No SSR. `npm run build` creates `out/` directory
-- **QStash, not Celery**: Do NOT add `django_celery_beat` — project uses QStash for all scheduling
-- **No SQLite on the per-tenant Azure File Share**: SMB lock/fsync semantics don't preserve SQLite's durability assumptions end-to-end — a container kill mid-write can leave a 0-byte file. OpenClaw's built-in `memory_search` indexed onto the share via `memory/main.sqlite` and corrupted fleet-wide; we disabled it and route search through Postgres (`nbhd_journal_search`). If any future OpenClaw feature wants to store SQLite on the share, route it through Postgres instead, or store the SQLite in container-local ephemeral storage and rebuild on cold start.
-
-## Git Workflow
-
-- **`main` is protected** — all changes go through PR branches. Direct push to main is rejected.
-- Create a feature branch (`feat/`, `fix/`, `refactor/`), push it, then `gh pr create`.
-- CI must pass before merge. Merge via `gh pr merge <number> --merge --delete-branch`.
-
-## Don'ts
-
-- Do NOT push directly to main — branch protection requires a PR
-- Do NOT use `git add -A` or `git add .` — stage specific files to avoid committing `.env`
-- Do NOT skip pre-commit hooks (`--no-verify`) unless the block is a false positive in scanner code
-- Do NOT force push to main
-- Do NOT delete Azure resources without explicit confirmation
-- Do NOT modify env var names in `config/settings/production.py` without updating Azure Container App env vars
+Prefixes: `feat:` `fix:` `fix(scope):` `refactor:` `docs:` `merge:` — concise, focused on the why.
+Plan complex features in `CONTINUITY_<feature>.md` first; implement phase by phase; verify between phases.
