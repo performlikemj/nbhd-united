@@ -111,6 +111,60 @@ for (const line of operationalCases) {
   });
 }
 
+// Gateway-fatal config diagnostics MUST survive redaction — they were being
+// dropped as non-operational during the 2026-07-05 incident, blinding
+// diagnosis while a schema-invalid openclaw.json kept the gateway down.
+const gatewayFatalCases = [
+  // The ACTUAL 2026-07-05 error (was being truncated into a misleading
+  // `agents.defaults: Invalid input`).
+  "plugins.load.paths: plugin: plugin path not found: /opt/nbhd/plugins/nbhd-friends-tools",
+  "plugin path not found: /opt/nbhd/plugins/nbhd-friends-tools",
+  "agents.defaults: Invalid input",
+  "agents.defaults.model.primary: Required",
+  "plugins.entries: Unrecognized key(s) in object: 'foo'",
+  "Gateway failed to start: Invalid config at /home/node/.openclaw/openclaw.json",
+  "Invalid config at /home/node/.openclaw/openclaw.json",
+  "Error: Gateway config validation failed",
+];
+
+for (const line of gatewayFatalCases) {
+  test(`gateway-fatal config error survives redaction: ${JSON.stringify(line.slice(0, 60))}`, () => {
+    assert.equal(redactor.looksGatewayFatal(line), true);
+    // Every gatewayFatalCases line is secret-free, so the maskBareSecrets
+    // passthrough must leave it byte-identical.
+    assert.equal(redactor.redactLine(line), line);
+  });
+}
+
+// A gateway-fatal line that echoes resolved config values must still pass
+// through (it's the only diagnostic), but any embedded secret is masked
+// before it reaches Log Analytics.
+test("gateway-fatal passthrough masks an embedded provider key", () => {
+  const line =
+    'Invalid config: {"gateway":{"auth":{"token":"sk-or-v1-abcdef1234567890"}}}';
+  const out = redactor.redactLine(line);
+  // Line survives (not dropped as non-operational) and keeps its context.
+  assert.doesNotMatch(out, /non-operational line dropped/);
+  assert.match(out, /^Invalid config:/);
+  // The raw token is gone.
+  assert.doesNotMatch(out, /sk-or-v1-abcdef1234567890/);
+});
+
+test("gateway-fatal passthrough masks a bearer credential", () => {
+  const line =
+    "Gateway failed to start: upstream rejected Bearer abcdefgh12345678 handshake";
+  const out = redactor.redactLine(line);
+  assert.doesNotMatch(out, /non-operational line dropped/);
+  // Scheme word kept, credential masked.
+  assert.match(out, /Bearer /);
+  assert.doesNotMatch(out, /abcdefgh12345678/);
+});
+
+test("gateway-fatal passthrough leaves a secret-free Zod verdict unchanged", () => {
+  const line = "agents.defaults.model.primary: Required";
+  assert.equal(redactor.redactLine(line), line);
+});
+
 const proseLeakCases = [
   "Got it — I'll remind you in 10 minutes via LINE.",
   "**Hip Abductor**",
