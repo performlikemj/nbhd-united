@@ -88,8 +88,9 @@ from apps.orchestrator.config_validator import validate_openclaw_config
 tenant = create_tenant(display_name='OpenClaw Doctor Smoke', telegram_chat_id=999001)
 config = generate_openclaw_config(tenant)
 
-# Run Python validator — catches semantic issues (plugin wiring, gateway security, etc.)
-issues = validate_openclaw_config(config)
+# Run Python validator (strict) — semantic issues + strict agents.defaults shape
+# (unknown keys / null / malformed model — the config/binary schema-skew class).
+issues = validate_openclaw_config(config, strict=True)
 errors = [i for i in issues if i.severity == 'error']
 if errors:
     print(f'FAIL: config has {len(errors)} validation error(s):')

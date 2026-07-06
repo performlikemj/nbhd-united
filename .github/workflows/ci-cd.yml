@@ -229,6 +229,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: OpenClaw plugin packaging guard
+        # Static, no-DB: every plugin the config generator can put in
+        # plugins.load.paths must be COPY'd into Dockerfile.openclaw. Catches
+        # the 2026-07-05 boot-crash class ("plugin path not found") at PR time —
+        # e.g. nbhd-friends-tools emitted on friends_enabled but never packaged.
+        run: |
+          python scripts/check_openclaw_plugin_packaging.py
+
       - name: Run OpenClaw doctor smoke
         env:
           DJANGO_SETTINGS_MODULE: config.settings.development
@@ -240,6 +248,42 @@ jobs:
           NBHD_INTERNAL_API_KEY: "smoke-test-internal-key"
         run: |
           ./scripts/openclaw_config_doctor_smoke.sh
+
+      - name: Generate maximal-flags OpenClaw config (friends + all experimental)
+        # Widest config surface: friends plugin path + every version-gated
+        # agents.defaults branch. Strict-validate the Django-owned blocks now,
+        # then hand the file to the freshly BUILT image in deploy-backend so
+        # `openclaw doctor` checks it against the real /opt/nbhd/plugins/ tree.
+        env:
+          DJANGO_SETTINGS_MODULE: config.settings.development
+          SECRET_KEY: test-secret-key-not-for-production
+          DEBUG: "True"
+          DATABASE_URL: postgres://smoke_user:smoke_password@localhost:5432/smoke_db
+          ALLOWED_HOSTS: "*"
+          MOONSHOT_API_KEY: "sk-smoke-test-dummy"
+          NBHD_INTERNAL_API_KEY: "smoke-test-internal-key"
+        run: |
+          python manage.py migrate --noinput
+          python manage.py generate_smoke_config --maximal --output openclaw-maximal.json
+          python - <<'PY'
+          import json, sys
+          from apps.orchestrator.config_validator import validate_openclaw_config
+          config = json.load(open("openclaw-maximal.json"))
+          errors = [i for i in validate_openclaw_config(config, strict=True) if i.severity == "error"]
+          if errors:
+              print("maximal-flags config FAILED strict validation:")
+              for e in errors:
+                  print(f"  {e.path}: {e.message}")
+              sys.exit(1)
+          print("maximal-flags config passed strict validation")
+          PY
+
+      - name: Upload maximal-flags config for the built-image boot smoke
+        uses: actions/upload-artifact@v4
+        with:
+          name: openclaw-maximal-config
+          path: openclaw-maximal.json
+          retention-days: 1
 
       - name: Run redact-stdout.js sidecar tests
         # NBHD_REDACT_STDOUT_DISABLE_AUTOINSTALL=1 prevents the sidecar
@@ -371,6 +415,33 @@ jobs:
             -t ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${OC_TAG} \
             .
           docker push ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${OC_TAG}
+
+      - name: Download maximal-flags config for boot smoke
+        uses: actions/download-artifact@v4
+        with:
+          name: openclaw-maximal-config
+
+      - name: OpenClaw image boot smoke (maximal-flags config)
+        # The general net for the whole config/plugin class: validate the
+        # maximal-flags config (friends_enabled=true + every experimental gate)
+        # against the FRESHLY BUILT image's own binary and real /opt/nbhd/plugins/
+        # tree. A plugin the config references but the image lacks surfaces here
+        # as "plugin path not found" (the 2026-07-05 boot crash); a schema-invalid
+        # agents.defaults surfaces as "Invalid config". Either fails the deploy
+        # BEFORE any tenant is rolled onto the image.
+        run: |
+          OC_IMAGE=${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${{ env.OC_IMAGE_TAG }}
+          docker run --rm \
+            -v "$PWD/openclaw-maximal.json:/home/node/.openclaw/openclaw.json:ro" \
+            -e OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json \
+            -e OPENCLAW_STATE_DIR=/tmp/oc-smoke-state \
+            --entrypoint openclaw \
+            "$OC_IMAGE" doctor --non-interactive 2>&1 | tee /tmp/oc-boot-smoke.log
+          if grep -qiE "Invalid config|plugin path not found" /tmp/oc-boot-smoke.log; then
+            echo "::error::OpenClaw image boot smoke FAILED — the built image cannot validate a maximal-flags (friends_enabled) config. See the log above (plugin path not found / Invalid config)." >&2
+            exit 1
+          fi
+          echo "OpenClaw image boot smoke passed — maximal-flags config validates against the built image."
 
       - name: Deploy Django to Container Apps
         run: |
