@@ -97,7 +97,9 @@ class ExtractVoiceMessageTest(TestCase):
         }
         result = self.poller._extract_message_text(update)
         self.assertEqual(result, '🎤 Voice message: "Check the filters"')
-        mock_transcribe.assert_called_once_with("abc123")
+        # Tenant is threaded through so voice transcription can hint Whisper;
+        # the default caller here has no tenant, so it forwards None.
+        mock_transcribe.assert_called_once_with("abc123", tenant=None)
 
     @patch.object(TelegramPoller, "_transcribe_voice", return_value=None)
     def test_voice_transcription_fails(self, mock_transcribe):
