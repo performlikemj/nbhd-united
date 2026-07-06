@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -591,6 +592,24 @@ class PluginRuntimeDepsMountTest(SimpleTestCase):
         self.assertIn("index-cache", mount_names)
 
 
+# A schema-valid config for the upload-mechanics tests below. These test the
+# byte-write path, not config validity, but upload_config_to_file_share now runs
+# the write-time validation gate, so a stub config would (correctly) be refused.
+_VALID_UPLOAD_CONFIG_JSON = json.dumps(
+    {
+        "gateway": {
+            "mode": "local",
+            "bind": "loopback",
+            "auth": {"mode": "token", "token": "${NBHD_INTERNAL_API_KEY}"},
+        },
+        "channels": {"telegram": {"enabled": True}},
+        "tools": {"deny": ["gateway"], "elevated": {"enabled": False}},
+        "cron": {"enabled": True},
+        "agents": {"defaults": {"model": {"primary": "deepseek/deepseek-v4", "fallbacks": []}}},
+    }
+)
+
+
 @override_settings(
     AZURE_RESOURCE_GROUP="rg-nbhd-prod",
     AZURE_STORAGE_ACCOUNT_NAME="stnbhdprod",
@@ -621,7 +640,7 @@ class UploadConfigToFileShareTest(SimpleTestCase):
 
         upload_config_to_file_share(
             "148ccf1c-ef13-47f8-ada1-a98fa90e14a0",
-            '{"agents": {"defaults": {}}}',
+            _VALID_UPLOAD_CONFIG_JSON,
         )
 
         # ShareFileClient is instantiated exactly once — against the final
@@ -646,7 +665,7 @@ class UploadConfigToFileShareTest(SimpleTestCase):
     @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
     def test_mock_mode_is_no_op(self, _mock_is_mock):
         # Must not raise; must not hit Azure.
-        upload_config_to_file_share("any-tenant", '{"agents": {}}')
+        upload_config_to_file_share("any-tenant", _VALID_UPLOAD_CONFIG_JSON)
 
 
 @override_settings(AZURE_RESOURCE_GROUP="rg-nbhd-prod")

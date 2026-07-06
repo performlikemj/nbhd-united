@@ -519,8 +519,59 @@ def upload_config_to_file_share(tenant_id: str, config_json: str) -> None:
     exception, which ``apply_single_tenant_config_task`` catches and
     *does not* advance ``config_version`` — so partial-write semantics
     are preserved end-to-end without the rename dance.
+
+    Write-time validation gate (2026-07-05): every config-to-share write —
+    provision, ``update_tenant_config``, the hibernation defer path, and the
+    fleet-bump restore — funnels through here, so this is the one place to
+    guarantee a schema-invalid ``openclaw.json`` can never overwrite a tenant's
+    last-good file and brick its gateway on the next boot. On failure we log
+    loudly and raise WITHOUT writing, so the existing (good) file on the share
+    is preserved.
     """
+    _assert_openclaw_config_safe_to_write(tenant_id, config_json)
     _put_share_file(tenant_id, "openclaw.json", text=config_json, ensure_dirs=False)
+
+
+def _assert_openclaw_config_safe_to_write(tenant_id: str, config_json: str) -> None:
+    """Refuse to write an unparseable or schema-invalid ``openclaw.json``.
+
+    The faucet fix for the config-write-validation incident: a config whose
+    ``agents.defaults`` block fails OpenClaw's schema (``Invalid input``) makes
+    the gateway refuse to start, taking the tenant down until a human notices.
+    Validate the Django-owned blocks before the write; on any error keep the
+    last-good file on the share and raise so no caller silently advances
+    ``config_version``.
+    """
+    import json
+
+    from apps.orchestrator.config_validator import (
+        InvalidTenantConfigError,
+        assert_config_writable,
+    )
+
+    tid = str(tenant_id)[:8]
+    try:
+        config = json.loads(config_json)
+    except (ValueError, TypeError) as exc:
+        logger.error(
+            "REFUSING openclaw.json write for tenant %s — content is not valid JSON (%s). "
+            "Keeping the last-good config on the share.",
+            tid,
+            exc,
+        )
+        raise InvalidTenantConfigError(f"openclaw.json is not valid JSON: {exc}") from exc
+
+    try:
+        assert_config_writable(config)
+    except InvalidTenantConfigError as exc:
+        logger.error(
+            "REFUSING schema-invalid openclaw.json write for tenant %s — %s. "
+            "Keeping the last-good config on the share so the gateway stays bootable "
+            "(config-write-validation gate, 2026-07-05).",
+            tid,
+            exc,
+        )
+        raise
 
 
 def upload_workspace_file(
