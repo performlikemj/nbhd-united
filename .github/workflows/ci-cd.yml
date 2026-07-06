@@ -431,10 +431,15 @@ jobs:
         # BEFORE any tenant is rolled onto the image.
         run: |
           OC_IMAGE=${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${{ env.OC_IMAGE_TAG }}
+          # Parity with the doctor-smoke env: the maximal config embeds
+          # "${NBHD_INTERNAL_API_KEY}" in gateway.auth.token, so an unresolved
+          # placeholder would false-fail doctor on an otherwise-valid config.
           docker run --rm \
             -v "$PWD/openclaw-maximal.json:/home/node/.openclaw/openclaw.json:ro" \
             -e OPENCLAW_CONFIG_PATH=/home/node/.openclaw/openclaw.json \
             -e OPENCLAW_STATE_DIR=/tmp/oc-smoke-state \
+            -e NBHD_INTERNAL_API_KEY=smoke-test-internal-key \
+            -e MOONSHOT_API_KEY=sk-smoke-test-dummy \
             --entrypoint openclaw \
             "$OC_IMAGE" doctor --non-interactive 2>&1 | tee /tmp/oc-boot-smoke.log
           if grep -qiE "Invalid config|plugin path not found" /tmp/oc-boot-smoke.log; then
