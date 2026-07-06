@@ -310,6 +310,7 @@ jobs:
           node --test runtime/openclaw/tool-logger.test.js
           node --test runtime/openclaw/plugins/nbhd-journal-tools/schema.test.mjs
           node --test runtime/openclaw/plugins/nbhd-usage-reporter/register.test.mjs
+          node --test runtime/openclaw/plugins/nbhd-friends-tools/index.test.mjs
 
       - name: Audit OpenClaw chmod call-site inventory
         # Diffs the chmod-family callee shapes in the pinned OpenClaw npm

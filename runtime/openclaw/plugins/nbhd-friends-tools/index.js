@@ -120,8 +120,21 @@ function tenantPath(api, suffix) {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export default function register(api) {
+  // The config generator emits `proposeEnabled` (an explicit boolean) for EVERY
+  // friends-enabled tenant. The manifest configSchema MUST declare it or the
+  // OpenClaw binary hard-rejects the whole plugin config at boot
+  // (additionalProperties:false → "must not have additional properties") — that
+  // is exactly the 2026-07-06 image-boot-smoke failure this file fixes. We read
+  // it here and register the two PROPOSE tools ONLY when it is strictly true.
+  // Fail-closed: absent/undefined/any non-true value → propose tools NOT
+  // registered, matching the 403-backed design (the runtime endpoints deny
+  // independently; this is the don't-even-offer-it layer).
+  const cfg = (api.pluginConfig && typeof api.pluginConfig === "object") ? api.pluginConfig : {};
+  const proposeEnabled = cfg.proposeEnabled === true;
+
   // ── Propose a share (proposal only — a human must approve) ───────────────
-  api.registerTool(wrap({
+  if (proposeEnabled) {
+    api.registerTool(wrap({
       name: "nbhd_propose_lesson_share",
       description:
         "PROPOSE sharing one of the user's EXISTING lessons/stars with a specific neighbor. This creates a PROPOSAL only — it is NOT shared until the user approves the scrubbed preview. NEVER tell the user something was shared unless an approval came back this turn. Do NOT propose health, money/finances, family/personal, or private-conversation content.",
@@ -163,6 +176,7 @@ export default function register(api) {
     }),
     { optional: true },
   );
+  }
 
   // ── Neighborhood context (backstage absorb read) ─────────────────────────
   api.registerTool(wrap({
@@ -207,7 +221,8 @@ export default function register(api) {
   );
 
   // ── Propose a Mission task (proposal only — the human approves) ───────────
-  api.registerTool(wrap({
+  if (proposeEnabled) {
+    api.registerTool(wrap({
       name: "nbhd_propose_mission_task",
       description:
         "PROPOSE ONE task for the USER toward a Mission they're part of. This creates a PROPOSAL only — it becomes the user's task only after they approve. You propose tasks for YOUR OWN human only, never for another member.",
@@ -238,4 +253,5 @@ export default function register(api) {
     }),
     { optional: true },
   );
+  }
 }
