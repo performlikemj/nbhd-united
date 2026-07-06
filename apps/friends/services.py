@@ -503,9 +503,18 @@ def _wave_public(edge, other_profile, *, incoming: bool) -> dict:
         "friendship_id": str(edge.id),
         "direction": "in" if incoming else "out",
         "note": edge.invite_note or "",
-        "created_at": edge.created_at.isoformat(),
+        "created_at": _iso_z(edge.created_at),
         **_profile_public(other_profile),
     }
+
+
+def _iso_z(dt) -> str | None:
+    """UTC ISO-8601 with a Z suffix. The home cursor round-trips as a query
+    param; a '+00:00' offset would need URL-encoding (a raw '+' decodes to a
+    space) — Z has no footgun. parse_datetime accepts both forms."""
+    if dt is None:
+        return None
+    return dt.isoformat().replace("+00:00", "Z")
 
 
 def neighborhood_home(tenant, since=None) -> dict:
@@ -554,7 +563,7 @@ def neighborhood_home(tenant, since=None) -> dict:
             pending_out.append(_wave_public(edge, profiles.get(edge.addressee_id), incoming=False))
 
     moments = _decision_moments(tenant, pending, profiles, since=since)
-    cursor = moments[0]["created_at"] if moments else (since.isoformat() if since else None)
+    cursor = moments[0]["created_at"] if moments else _iso_z(since)
 
     return {
         "profile": {
@@ -588,7 +597,7 @@ def _decision_moments(tenant, pending, profiles, *, since=None) -> list[dict]:
             {
                 "id": f"wave:{edge.id}",
                 "kind": "wave",
-                "created_at": edge.created_at.isoformat(),
+                "created_at": _iso_z(edge.created_at),
                 "_sort": edge.created_at,
                 "friendship_id": str(edge.id),
                 "note": edge.invite_note or "",
@@ -607,7 +616,7 @@ def _decision_moments(tenant, pending, profiles, *, since=None) -> list[dict]:
             {
                 "id": f"share:{share.id}",
                 "kind": "share_proposal",
-                "created_at": share.created_at.isoformat(),
+                "created_at": _iso_z(share.created_at),
                 "_sort": share.created_at,
                 "pending_share_id": str(share.id),
                 "preview_text": (snapshot.redacted_text if snapshot else "") or "",
@@ -1125,7 +1134,7 @@ def neighborhood_context(tenant, since=None) -> dict:
         "neighbors": _accepted_neighbor_handles(tenant),
         "sparks": sparks,
         "chat": _absorb_chat(tenant),
-        "cursor": latest.isoformat() if latest else None,
+        "cursor": _iso_z(latest),
     }
 
 
