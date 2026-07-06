@@ -128,6 +128,26 @@ def assert_neighbors(viewer_tenant, friendship_id) -> Friendship:
     return edge
 
 
+def blocked_counterpart_ids(viewer_tenant) -> set:
+    """Tenant ids the viewer has a ``blocked`` edge with, EITHER direction (they
+    blocked the viewer, or the viewer blocked them). Inside a shared Circle these
+    counterparts are quietly hidden both ways (PR10) — no ejection, no reveal.
+    Empty set when there are no blocks."""
+    vid = _tenant_id(viewer_tenant)
+    out: set = set()
+    for requester_id, addressee_id in Friendship.objects.filter(
+        Q(requester_id=vid) | Q(addressee_id=vid), status=Friendship.Status.BLOCKED
+    ).values_list("requester_id", "addressee_id"):
+        out.add(addressee_id if requester_id == vid else requester_id)
+    return out
+
+
+def _is_blocked_pair(a_id, b_id) -> bool:
+    """True iff a ``blocked`` edge exists between the two tenants (either who)."""
+    edge = Friendship.objects.filter(pair_key=compute_pair_key(a_id, b_id)).first()
+    return edge is not None and edge.status == Friendship.Status.BLOCKED
+
+
 def shared_star_qs(viewer_tenant, owner_tenant):
     """``SharedLesson`` rows of ``owner_tenant`` visible to ``viewer_tenant``.
 
@@ -147,6 +167,10 @@ def shared_star_qs(viewer_tenant, owner_tenant):
     """
     viewer_id, owner_id = _tenant_id(viewer_tenant), _tenant_id(owner_tenant)
     if viewer_id == owner_id:
+        return SharedLesson.objects.none()
+    # PR10: a blocked pair sees nothing of each other's, even via a shared Circle
+    # (the friendship arm already requires ACCEPTED; this closes the circle arm).
+    if _is_blocked_pair(viewer_id, owner_id):
         return SharedLesson.objects.none()
 
     audience = Q()
@@ -547,6 +571,9 @@ def inbound_shared_grants(viewer_tenant, since=None):
         .filter(audience)
         .select_related("shared_lesson", "shared_lesson__owner_tenant", "circle")
     )
+    blocked = blocked_counterpart_ids(viewer_id)  # PR10: don't absorb a blocked counterpart's sparks
+    if blocked:
+        qs = qs.exclude(shared_lesson__owner_tenant_id__in=blocked)
     if since is not None:
         qs = qs.filter(created_at__gt=since)
     return qs.order_by("-created_at")
@@ -585,6 +612,11 @@ def thread_messages_page(thread, after_seq: int, limit: int, viewer_tenant_id=No
             reporter_tenant_id=viewer_tenant_id, status="hidden", friend_message__isnull=False
         ).values_list("friend_message_id", flat=True)
         qs = qs.exclude(seq__in=hidden)
+        # PR10: quietly hide a blocked counterpart's messages (history included,
+        # both directions). The composer stays open — others still see you.
+        blocked = blocked_counterpart_ids(viewer_tenant_id)
+        if blocked:
+            qs = qs.exclude(sender_tenant_id__in=blocked)
     return list(qs.select_related("sender_tenant").order_by("seq")[:limit])
 
 
@@ -638,6 +670,7 @@ def chat_absorb_pending_counts(viewer_tenant) -> list[dict]:
     absorb-enabled threads with un-absorbed messages from the OTHER party. Feeds
     the envelope POINTER (never message text; USER.md is on the share)."""
     viewer_id = _tenant_id(viewer_tenant)
+    blocked = blocked_counterpart_ids(viewer_id) | {viewer_id}  # PR10: skip blocked counterparts + self
     out: list[dict] = []
     memberships = FriendThreadMembership.objects.filter(
         tenant_id=viewer_id, left_at__isnull=True, agent_absorb_enabled=True
@@ -647,7 +680,7 @@ def chat_absorb_pending_counts(viewer_tenant) -> list[dict]:
             FriendMessage.objects.filter(
                 thread=membership.thread, deleted_at__isnull=True, seq__gt=membership.last_absorbed_seq
             )
-            .exclude(sender_tenant_id=viewer_id)
+            .exclude(sender_tenant_id__in=blocked)
             .count()
         )
         if count:
@@ -667,6 +700,7 @@ def absorb_pending_chat(viewer_tenant) -> list[dict]:
     and return raw messages for the caller to redact-fresh + log. FriendMessage
     access is confined here."""
     viewer_id = _tenant_id(viewer_tenant)
+    blocked = blocked_counterpart_ids(viewer_id) | {viewer_id}  # PR10: never absorb a blocked counterpart
     result: list[dict] = []
     memberships = FriendThreadMembership.objects.filter(
         tenant_id=viewer_id, left_at__isnull=True, agent_absorb_enabled=True
@@ -676,7 +710,7 @@ def absorb_pending_chat(viewer_tenant) -> list[dict]:
             FriendMessage.objects.filter(
                 thread=membership.thread, deleted_at__isnull=True, seq__gt=membership.last_absorbed_seq
             )
-            .exclude(sender_tenant_id=viewer_id)
+            .exclude(sender_tenant_id__in=blocked)
             .select_related("sender_tenant")
             .order_by("seq")[:20]
         )

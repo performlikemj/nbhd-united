@@ -76,6 +76,17 @@ class UnfriendView(FriendsView):
         return Response({"friendship_id": str(edge.id), "status": edge.status})
 
 
+class UnblockView(FriendsView):
+    """POST /api/v1/friends/<friendship_id>/unblock/ — the blocker lifts a block.
+    Flips the edge to ``revoked`` (re-wave to resume); only the blocker can, and
+    a non-blocker / non-party gets 404 (the block was never disclosed to them)."""
+
+    def post(self, request, friendship_id):
+        tenant = self.get_tenant(request)
+        edge = services.unblock(tenant, friendship_id)
+        return Response({"friendship_id": str(edge.id), "status": edge.status})
+
+
 class ProfileView(FriendsView):
     """GET / PATCH /api/v1/friends/profile/ — the caller's own @handle/bio/hue.
     GET auto-creates a profile with a derived unique handle on first access."""
