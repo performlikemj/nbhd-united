@@ -279,7 +279,6 @@ numpy==2.4.6
     #   blis
     #   contourpy
     #   matplotlib
-    #   pgvector
     #   presidio-analyzer
     #   spacy
     #   thinc
@@ -343,7 +342,7 @@ packaging==26.0
     #   transformers
     #   weasel
     #   wheel
-pgvector==0.4.2
+pgvector==0.5.0
     # via -r requirements.in
 phonenumbers==9.0.33
     # via presidio-analyzer
