@@ -449,13 +449,195 @@ def claim_invite(tenant, user, token: str) -> Friendship:
     return edge
 
 
+# ── Consent + blocked list + home BFF (iOS enablers, PR11) ───────────────────
+
+# Bump to force everyone to re-accept (App Review EULA acknowledgment). iOS shows
+# the consent gate whenever a profile's accepted version != this.
+FRIENDS_TERMS_VERSION = "2026-07-06"
+
+
+def record_consent(tenant, user, terms_version: str = "") -> dict:
+    """Record the tenant's Neighborhood EULA acknowledgment on their profile
+    (server-side so it survives reinstall). Idempotent — re-accepting just
+    refreshes the timestamp/version."""
+    profile = ensure_neighbor_profile(tenant, user)
+    version = (terms_version or FRIENDS_TERMS_VERSION).strip()[:20]
+    profile.accepted_terms_at = timezone.now()
+    profile.accepted_terms_version = version
+    profile.save(update_fields=["accepted_terms_at", "accepted_terms_version"])
+    return {
+        "accepted_terms_at": profile.accepted_terms_at.isoformat(),
+        "accepted_terms_version": version,
+        "current_terms_version": FRIENDS_TERMS_VERSION,
+    }
+
+
+def _profile_public(profile) -> dict:
+    return {
+        "handle": profile.handle if profile else None,
+        "display_name": profile.display_name if profile else "Neighbor",
+        "avatar_hue": profile.avatar_hue if profile else 210,
+    }
+
+
+def blocked_list(tenant) -> list[dict]:
+    """Neighbors THIS tenant has blocked (``blocked_by == tenant``) — the iOS
+    Settings Blocked-list. Only the blocker sees their own blocks."""
+    edges = list(Friendship.objects.filter(blocked_by=tenant, status=Friendship.Status.BLOCKED))
+    other_ids = {(e.addressee_id if e.requester_id == tenant.id else e.requester_id): e for e in edges}
+    profiles = {p.tenant_id: p for p in NeighborProfile.objects.filter(tenant_id__in=other_ids.keys())}
+    out = []
+    for other_id, edge in other_ids.items():
+        out.append(
+            {
+                "friendship_id": str(edge.id),
+                **_profile_public(profiles.get(other_id)),
+                "blocked_at": edge.responded_at.isoformat() if edge.responded_at else None,
+            }
+        )
+    return out
+
+
+def _wave_public(edge, other_profile, *, incoming: bool) -> dict:
+    return {
+        "friendship_id": str(edge.id),
+        "direction": "in" if incoming else "out",
+        "note": edge.invite_note or "",
+        "created_at": edge.created_at.isoformat(),
+        **_profile_public(other_profile),
+    }
+
+
+def neighborhood_home(tenant, since=None) -> dict:
+    """Aggregated Neighborhood home + decision-moments BFF (design ask #2) — one
+    call for the iOS home + moments dock. Bounded queries (no per-neighbor N+1):
+    neighbor profiles, spark counts, and 1:1 thread state each load in bulk.
+    All cross-tenant reads route through :mod:`apps.friends.access`."""
+    me = ensure_neighbor_profile(tenant, tenant.user)
+
+    edges = list(
+        Friendship.objects.filter(Q(requester=tenant) | Q(addressee=tenant), status=Friendship.Status.ACCEPTED)
+    )
+    counterpart_ids = [(e.addressee_id if e.requester_id == tenant.id else e.requester_id) for e in edges]
+    spark_counts = access.spark_counts_by_owner(tenant)
+    thread_state = access.direct_thread_state(tenant)
+
+    pending = list(
+        Friendship.objects.filter(Q(requester=tenant) | Q(addressee=tenant), status=Friendship.Status.PENDING)
+    )
+    pending_other_ids = [(e.requester_id if e.addressee_id == tenant.id else e.addressee_id) for e in pending]
+
+    profiles = {
+        p.tenant_id: p
+        for p in NeighborProfile.objects.filter(tenant_id__in=set(counterpart_ids) | set(pending_other_ids))
+    }
+
+    neighbors = []
+    for edge in edges:
+        cid = edge.addressee_id if edge.requester_id == tenant.id else edge.requester_id
+        state = thread_state.get(cid, {})
+        neighbors.append(
+            {
+                "friendship_id": str(edge.id),
+                **_profile_public(profiles.get(cid)),
+                "spark_count": spark_counts.get(cid, 0),
+                "has_unread_thread": state.get("has_unread", False),
+                "thread_id": state.get("thread_id"),
+            }
+        )
+
+    pending_in, pending_out = [], []
+    for edge in pending:
+        if edge.addressee_id == tenant.id:
+            pending_in.append(_wave_public(edge, profiles.get(edge.requester_id), incoming=True))
+        else:
+            pending_out.append(_wave_public(edge, profiles.get(edge.addressee_id), incoming=False))
+
+    moments = _decision_moments(tenant, pending, profiles, since=since)
+    cursor = moments[0]["created_at"] if moments else (since.isoformat() if since else None)
+
+    return {
+        "profile": {
+            "handle": me.handle,
+            "display_name": me.display_name,
+            "bio": me.bio,
+            "avatar_hue": me.avatar_hue,
+            "accepted_terms_at": me.accepted_terms_at.isoformat() if me.accepted_terms_at else None,
+            "accepted_terms_version": me.accepted_terms_version,
+            "needs_consent": me.accepted_terms_version != FRIENDS_TERMS_VERSION,
+        },
+        "neighbors": neighbors,
+        "pending_in": pending_in,
+        "pending_out": pending_out,
+        "moments": moments,
+        "cursor": cursor,
+    }
+
+
+def _decision_moments(tenant, pending, profiles, *, since=None) -> list[dict]:
+    """Decision-moments only: incoming waves to answer + agent share-proposals to
+    approve. Sorted newest-first; ``since`` (a datetime) keeps only newer ones."""
+    moments: list[dict] = []
+    for edge in pending:
+        if edge.addressee_id != tenant.id:
+            continue  # only incoming waves are a decision for me
+        if since is not None and edge.created_at <= since:
+            continue
+        prof = profiles.get(edge.requester_id)
+        moments.append(
+            {
+                "id": f"wave:{edge.id}",
+                "kind": "wave",
+                "created_at": edge.created_at.isoformat(),
+                "_sort": edge.created_at,
+                "friendship_id": str(edge.id),
+                "note": edge.invite_note or "",
+                **_profile_public(prof),
+            }
+        )
+
+    proposals = PendingShare.objects.filter(
+        tenant=tenant, proposed_by="agent", status=PendingShare.Status.PENDING
+    ).select_related("source_lesson", "target_friendship", "target_circle")
+    for share in proposals:
+        if since is not None and share.created_at <= since:
+            continue
+        snapshot = access.get_shared_lesson_by_lesson_id(share.source_lesson_id, tenant)
+        moments.append(
+            {
+                "id": f"share:{share.id}",
+                "kind": "share_proposal",
+                "created_at": share.created_at.isoformat(),
+                "_sort": share.created_at,
+                "pending_share_id": str(share.id),
+                "preview_text": (snapshot.redacted_text if snapshot else "") or "",
+                "scrub_status": snapshot.scrub_status if snapshot else "pending",
+                "audience_label": _share_audience_label(tenant, share),
+            }
+        )
+
+    moments.sort(key=lambda m: m["_sort"], reverse=True)
+    for m in moments:
+        m.pop("_sort", None)
+    return moments
+
+
+def _share_audience_label(tenant, share) -> str:
+    if share.target_circle_id is not None:
+        return _circle_audience_label(share.target_circle)
+    if share.target_friendship_id is not None:
+        return _audience_label(tenant, share.target_friendship)
+    return "a neighbor"
+
+
 # ── Notifications (thin wrapper; defensive, never raises into a request) ──────
 
 
 def _notify_wave_received(friendship: Friendship) -> None:
-    from .notifications import notify_wave_received
+    from .notifications import notify_wave_app, notify_wave_received
 
-    notify_wave_received(friendship)
+    notify_wave_received(friendship)  # Telegram/LINE inline accept/decline (existing)
+    notify_wave_app(friendship)  # typed APNs wake for the iOS moments dock (best-effort)
 
 
 # ── Share pipeline (propose → scrub → preview → approve → freeze → publish) ───
@@ -852,6 +1034,9 @@ def propose_share(
         status=PendingShare.Status.PENDING,
         expires_at=timezone.now() + timedelta(days=7),
     )
+    from .notifications import notify_share_proposal
+
+    notify_share_proposal(pending)  # typed APNs wake so the human sees the approval moment
     return pending, True
 
 

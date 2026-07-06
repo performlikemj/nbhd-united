@@ -216,6 +216,8 @@ def _deliver_friend_push(message) -> None:
                 thread_id=str(message.thread_id),
                 collapse_id=f"friend-{message.thread_id}",
                 content_available=True,
+                # Typed routing (design §6.2): iOS routes by `type` + the id.
+                extra={"type": "friend_message", "thread_id": str(message.thread_id)},
             )
     except Exception:
         logger.exception("friend push failed for message %s", getattr(message, "seq", "?"))
@@ -235,3 +237,61 @@ def notify_friend_message(message) -> None:
         transaction.on_commit(_run)
     else:
         transaction.on_commit(lambda: threading.Thread(target=_run, daemon=True).start())
+
+
+# ---------------------------------------------------------------------------
+# Typed APNs wakes for wave-received + share-proposal-ready (iOS moments dock).
+# The home BFF poll is truth; these are silent, typed nudges so the dock
+# refreshes and routes. content_available only (no alert) — a wave already
+# alerts on Telegram/LINE, and a share-proposal is a quiet backstage suggestion.
+# ---------------------------------------------------------------------------
+
+
+def _push_app_typed(user, *, ptype: str, extra_ids: dict, body: str = "", collapse_id: str | None = None) -> None:
+    """Best-effort typed APNs wake to a user's registered devices. No-op when APNs
+    is unconfigured or the user has no devices. Never raises."""
+    try:
+        from apps.common.apns import apns_configured
+
+        if not apns_configured():
+            return
+        from apps.router.push_views import _push_to_user_devices
+
+        _push_to_user_devices(
+            user,
+            body=body,
+            thread_id=None,
+            collapse_id=collapse_id,
+            content_available=True,
+            extra={"type": ptype, **extra_ids},
+        )
+    except Exception:
+        logger.exception("typed friends push (%s) failed", ptype)
+
+
+def notify_wave_app(friendship: Friendship) -> None:
+    """Silent typed wake to the addressee's app devices for a pending wave, so the
+    iOS moments dock surfaces the wave-to-answer. Additive to the Telegram/LINE
+    alert in :func:`notify_wave_received`."""
+    if friendship.status != Friendship.Status.PENDING:
+        return
+    _push_app_typed(
+        friendship.addressee.user,
+        ptype="wave",
+        extra_ids={"friendship_id": str(friendship.id)},
+        collapse_id=f"wave-{friendship.id}",
+    )
+
+
+def notify_share_proposal(pending_share) -> None:
+    """Silent typed wake to the human when their assistant proposes a share, so
+    the moments dock surfaces the approval decision (backstage → decision-moment).
+    Only for agent-proposed, pending shares."""
+    if getattr(pending_share, "proposed_by", "") != "agent":
+        return
+    _push_app_typed(
+        pending_share.tenant.user,
+        ptype="share_approval",
+        extra_ids={"pending_share_id": str(pending_share.id)},
+        collapse_id=f"share-{pending_share.id}",
+    )

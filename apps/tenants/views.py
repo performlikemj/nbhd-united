@@ -95,7 +95,23 @@ class OnboardTenantView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        # Neighborhood invite auto-accept (the PR1.5 seam): if the signup carried
+        # an invite token, resolve the edge now. Best-effort — an invalid/expired
+        # token must NEVER block a signup, so failures are swallowed.
+        invite_token = (serializer.validated_data.get("invite_token") or "").strip()
+        if invite_token:
+            self._claim_invite_quietly(tenant, user, invite_token)
+
         return Response(TenantSerializer(tenant).data, status=status.HTTP_201_CREATED)
+
+    @staticmethod
+    def _claim_invite_quietly(tenant, user, token: str) -> None:
+        try:
+            from apps.friends.services import claim_invite
+
+            claim_invite(tenant, user, token)
+        except Exception:  # noqa: BLE001 — a bad invite never blocks signup
+            logger.info("signup invite claim skipped for tenant %s (invalid/expired token)", str(tenant.id)[:8])
 
 
 class ProvisioningStatusView(APIView):

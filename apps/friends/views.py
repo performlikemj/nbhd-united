@@ -190,7 +190,12 @@ class SharePreviewView(FriendsView):
         if not lesson_id or not (friendship_id or circle_id):
             raise ValidationError("lesson_id and one of friendship_id / circle_id are required.")
         payload, code = services.preview_share(tenant, lesson_id, friendship_id, circle_id)
-        return Response(payload, status=code)
+        response = Response(payload, status=code)
+        if code == status.HTTP_202_ACCEPTED:
+            # The scrub is async; tell the SharePreviewSheet when to re-poll
+            # (design ask #4 — the "getting ready safely" trust beat).
+            response["Retry-After"] = "2"
+        return response
 
 
 class PendingSharesView(FriendsView):
@@ -565,8 +570,9 @@ class CircleInviteCodeView(FriendsView):
 
 
 class ReportView(FriendsView):
-    """POST /api/v1/friends/report/ {target_kind, target_id, reason} — hide the
-    item for the reporter + record it (design §10)."""
+    """POST /api/v1/friends/report/ {target_kind, target_id?, reason, detail?} —
+    hide the reported item for the reporter (shared_lesson / friend_message), OR
+    record a ``general`` support concern (no content id; App Review #3)."""
 
     def post(self, request):
         tenant = self.get_tenant(request)
@@ -577,5 +583,37 @@ class ReportView(FriendsView):
                 target_kind=request.data.get("target_kind", ""),
                 target_id=request.data.get("target_id", ""),
                 reason=request.data.get("reason", ""),
+                detail=request.data.get("detail", ""),
             )
         )
+
+
+class ConsentView(FriendsView):
+    """POST /api/v1/friends/consent/ {terms_version?} — record the Neighborhood
+    EULA acknowledgment on the caller's profile (App Review 1.2 #4). Idempotent."""
+
+    def post(self, request):
+        tenant = self.get_tenant(request)
+        return Response(services.record_consent(tenant, request.user, request.data.get("terms_version", "")))
+
+
+class BlockedListView(FriendsView):
+    """GET /api/v1/friends/blocked/ — neighbors the caller has blocked, for the
+    iOS Settings Blocked-list (unblock is POST <friendship_id>/unblock/)."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        return Response(services.blocked_list(tenant))
+
+
+class NeighborhoodHomeView(FriendsView):
+    """GET /api/v1/friends/home/?since=<iso> — the aggregated home + decision-
+    moments BFF (one call for the iOS home + moments dock; design ask #2)."""
+
+    def get(self, request):
+        from django.utils.dateparse import parse_datetime
+
+        tenant = self.get_tenant(request)
+        raw_since = request.query_params.get("since")
+        since = parse_datetime(raw_since) if raw_since else None
+        return Response(services.neighborhood_home(tenant, since=since))

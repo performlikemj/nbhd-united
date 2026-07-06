@@ -6,6 +6,7 @@ from .views import (
     AbsorbedListView,
     AbsorbedPurgeView,
     AdoptShareView,
+    BlockedListView,
     CircleDetailView,
     CircleInviteCodeView,
     CircleJoinView,
@@ -13,6 +14,7 @@ from .views import (
     CircleMembersView,
     CircleRemoveView,
     CirclesView,
+    ConsentView,
     FriendGalaxyView,
     GoalActionApproveView,
     GoalActionRejectView,
@@ -26,6 +28,7 @@ from .views import (
     MissionsView,
     MissionTasksView,
     MissionUpdatesView,
+    NeighborhoodHomeView,
     NeighborhoodView,
     PendingSharesView,
     ProfileView,
@@ -47,6 +50,9 @@ from .views import (
 
 urlpatterns = [
     path("", NeighborhoodView.as_view(), name="friends-neighborhood"),
+    path("home/", NeighborhoodHomeView.as_view(), name="friends-home"),
+    path("blocked/", BlockedListView.as_view(), name="friends-blocked"),
+    path("consent/", ConsentView.as_view(), name="friends-consent"),
     path("profile/", ProfileView.as_view(), name="friends-profile"),
     path("waves/", WaveCreateView.as_view(), name="friends-wave-create"),
     path(

@@ -420,7 +420,7 @@ export function bulkAddPIIDenylistEntries(names: string[]): Promise<PIIDenylistB
   });
 }
 
-export function onboardTenant(data: { display_name?: string; language?: string; agent_persona?: string }): Promise<Tenant> {
+export function onboardTenant(data: { display_name?: string; language?: string; agent_persona?: string; invite_token?: string }): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/onboard/", {
     method: "POST",
     body: JSON.stringify(data),
