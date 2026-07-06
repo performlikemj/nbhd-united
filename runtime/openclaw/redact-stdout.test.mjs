@@ -111,6 +111,29 @@ for (const line of operationalCases) {
   });
 }
 
+// Gateway-fatal config diagnostics MUST survive redaction — they were being
+// dropped as non-operational during the 2026-07-05 incident, blinding
+// diagnosis while a schema-invalid openclaw.json kept the gateway down.
+const gatewayFatalCases = [
+  // The ACTUAL 2026-07-05 error (was being truncated into a misleading
+  // `agents.defaults: Invalid input`).
+  "plugins.load.paths: plugin: plugin path not found: /opt/nbhd/plugins/nbhd-friends-tools",
+  "plugin path not found: /opt/nbhd/plugins/nbhd-friends-tools",
+  "agents.defaults: Invalid input",
+  "agents.defaults.model.primary: Required",
+  "plugins.entries: Unrecognized key(s) in object: 'foo'",
+  "Gateway failed to start: Invalid config at /home/node/.openclaw/openclaw.json",
+  "Invalid config at /home/node/.openclaw/openclaw.json",
+  "Error: Gateway config validation failed",
+];
+
+for (const line of gatewayFatalCases) {
+  test(`gateway-fatal config error survives redaction: ${JSON.stringify(line.slice(0, 60))}`, () => {
+    assert.equal(redactor.looksOperational(line), true);
+    assert.equal(redactor.redactLine(line), line);
+  });
+}
+
 const proseLeakCases = [
   "Got it — I'll remind you in 10 minutes via LINE.",
   "**Hip Abductor**",

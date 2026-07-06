@@ -160,8 +160,43 @@ const OPERATIONAL_LINE_PATTERNS = [
   /^npm (?:warn|notice|info|error)\b/,
 ];
 
+// Gateway-fatal config diagnostics. These lines are the ONLY signal an
+// operator gets when a tenant's `openclaw.json` is schema-invalid and the
+// gateway refuses to start (the 2026-07-05 incident: every user message and
+// in-container cron died with `ECONNREFUSED 127.0.0.1:18789` while Azure
+// health looked fine). Their shapes slip the operational classifier above —
+// `agents.defaults: Invalid input` carries a dotted path the subsystem regex
+// rejects, and `Gateway failed to start: ...` has more words before the colon
+// than the banner regex allows — so they were being dropped as
+// `[nbhd:redact] non-operational line dropped`, blinding diagnosis for hours.
+// Whitelist them explicitly. They are schema paths + generic Zod verdicts, not
+// tenant content; strategy-A field masking still runs first (see redactLine),
+// so any embedded `"message":"…"` value stays masked.
+const GATEWAY_FATAL_CONFIG_PATTERNS = [
+  // Boot-time gateway startup failures.
+  /Gateway failed to start/i,
+  /Invalid config(?:uration)?\b/i,
+  /Gateway config (?:invalid|validation failed)/i,
+  // Missing-plugin boot crash — the ACTUAL 2026-07-05 error
+  // (`plugins.load.paths: plugin: plugin path not found:
+  // /opt/nbhd/plugins/nbhd-friends-tools`). Truncating this into a misleading
+  // `agents.defaults: Invalid input` cost two wrong root-cause theories, so it
+  // must pass through verbatim.
+  /plugin path not found/i,
+  /^plugins\.load\.paths\b/,
+  // Reference to the config file path in an error line.
+  /\/home\/node\/\.openclaw\/openclaw\.json/,
+  // Zod-style config validation verdict at a (possibly dotted/indexed) path,
+  // e.g. `agents.defaults: Invalid input`, `agents.defaults.model.primary:
+  // Required`, `plugins.entries: Unrecognized key(s)`.
+  /^[A-Za-z_][\w.[\]]*:\s(?:Invalid input|Invalid|Expected|Required|Unrecognized)\b/,
+];
+
 function looksOperational(line) {
   for (const re of OPERATIONAL_LINE_PATTERNS) {
+    if (re.test(line)) return true;
+  }
+  for (const re of GATEWAY_FATAL_CONFIG_PATTERNS) {
     if (re.test(line)) return true;
   }
   return false;
@@ -264,4 +299,5 @@ module.exports = {
   maskToken,
   wrapStream,
   OPERATIONAL_LINE_PATTERNS,
+  GATEWAY_FATAL_CONFIG_PATTERNS,
 };
