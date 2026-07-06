@@ -619,6 +619,10 @@ def _decision_moments(tenant, pending, profiles, *, since=None) -> list[dict]:
                 "created_at": _iso_z(share.created_at),
                 "_sort": share.created_at,
                 "pending_share_id": str(share.id),
+                # lesson_id + friendship_id let a client live-poll the preview
+                # endpoint for a proposal that's still scrubbing (iOS N3 seam).
+                "lesson_id": str(share.source_lesson_id),
+                "friendship_id": str(share.target_friendship_id) if share.target_friendship_id else None,
                 "preview_text": (snapshot.redacted_text if snapshot else "") or "",
                 "scrub_status": snapshot.scrub_status if snapshot else "pending",
                 "audience_label": _share_audience_label(tenant, share),
