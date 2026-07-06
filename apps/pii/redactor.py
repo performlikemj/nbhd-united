@@ -911,6 +911,31 @@ def _redact_user_message(
                 # minted this entity — reuse its placeholder.
                 placeholder = locked_inverted_ci[ci_key][1]
                 replacements.append((start, end, placeholder))
+                # Telemetry — a span NER freshly DETECTED reached the mint path
+                # (Step 1's regex and the function-start known-entity check both
+                # missed it) and collapsed onto an EXISTING placeholder instead
+                # of minting. This is the silent, permanent same-name fusion we
+                # want measurable: two different people who share a name land on
+                # one placeholder here and can never be separated again. Same
+                # PCI/PII discipline as pii_mint below — NEVER log the raw span
+                # (these logs ship to Azure Log Analytics in cleartext); tenant
+                # id, type, placeholder, score and a coarse span length only.
+                # ``source`` is the one split we can tell apart cheaply:
+                # ``same_message`` — minted earlier in THIS call (same new name
+                # twice in one message; benign), vs ``concurrent`` — from the
+                # row-locked DB snapshot (another redaction minted it during our
+                # read→lock window, or our in-memory map was stale). A name that
+                # genuinely pre-existed in the map is caught by the earlier
+                # known-entity check and never reaches this branch.
+                logger.info(
+                    "pii_reuse tenant=%s type=%s placeholder=%s score=%.3f span_len=%d source=%s",
+                    getattr(tenant, "id", "?"),
+                    etype,
+                    placeholder,
+                    score,
+                    len(original),
+                    "same_message" if placeholder in new_map_entries else "concurrent",
+                )
                 continue
 
             count = locked_counters.get(etype, 0) + 1
