@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import clsx from "clsx";
 
@@ -52,6 +52,35 @@ export function CurrentStatusCard() {
   // status refetch once the server confirms.
   const [completingIds, setCompletingIds] = useState<Set<string>>(() => new Set());
   const [erroredIds, setErroredIds] = useState<Set<string>>(() => new Set());
+  // Ids whose complete POST is still running (added before `mutate`, cleared in
+  // that call's `onSettled`). Needed because the checked/disabled render is keyed
+  // purely on `completingIds` membership: a task the assistant REOPENS server-side
+  // (multi-channel lifecycle) reappears in `open_tasks` on the next status
+  // refetch, so an id that only ever grew would render that row permanently
+  // checked + disabled with no recovery short of a reload.
+  const inFlightIdsRef = useRef<Set<string>>(new Set());
+
+  // On FRESH server data, prune every *settled* id from `completingIds` so each
+  // row re-derives from server truth: if it's still in `open_tasks` it renders
+  // interactive/unchecked again (the reopened-task fix); if it's gone it was just
+  // garbage. In-flight ids are excluded so a focus-triggered background refetch
+  // landing mid-mutation can't flicker a just-checked row back to unchecked — the
+  // intended "keep checked until the refetch drops the row" UX still holds because
+  // that completion refetch no longer contains the task.
+  useEffect(() => {
+    if (!data) return;
+    const inFlight = inFlightIdsRef.current;
+    setCompletingIds((prev) => {
+      if (prev.size === 0) return prev;
+      let next: Set<string> | null = null;
+      for (const id of prev) {
+        if (inFlight.has(id)) continue; // POST still running — keep the checked look
+        if (!next) next = new Set(prev);
+        next.delete(id);
+      }
+      return next ?? prev;
+    });
+  }, [data]);
 
   if (isLoading || !data) return null;
 
@@ -67,6 +96,7 @@ export function CurrentStatusCard() {
       return next;
     });
     setCompletingIds((prev) => new Set(prev).add(id));
+    inFlightIdsRef.current.add(id); // protect this row from the fresh-data prune
     completeTaskMutation.mutate(id, {
       onError: () => {
         // Roll the optimistic checked state back and surface a retry at the row.
@@ -78,6 +108,9 @@ export function CurrentStatusCard() {
         setErroredIds((prev) => new Set(prev).add(id));
       },
       // onSuccess: keep the checked look — the fresh status refetch drops the row.
+      onSettled: () => {
+        inFlightIdsRef.current.delete(id); // POST resolved — id is now prunable
+      },
     });
   };
 
