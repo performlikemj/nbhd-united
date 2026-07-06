@@ -96,8 +96,14 @@ def _show_loading(line_user_id: str) -> None:
         pass  # non-critical — don't log noise
 
 
-def _transcribe_line_audio(message_id: str) -> str | None:
+def _transcribe_line_audio(message_id: str, tenant: Tenant | None = None) -> str | None:
     """Download audio from LINE Content API and transcribe via OpenAI Whisper.
+
+    When ``tenant`` is provided, a vocabulary hint built from the tenant's own
+    known non-PII proper nouns (denylisted brands, workspace names, the user's
+    display name) is passed as the Whisper ``prompt`` so distinctive names
+    transcribe consistently instead of being misheard — e.g. "Rakuten" ->
+    "Rocketen", which then poisons the journal and PII map.
 
     Returns transcribed text, or None on failure.
     """
@@ -142,12 +148,21 @@ def _transcribe_line_audio(message_id: str) -> str | None:
         else:
             ext = "m4a"  # LINE default for voice messages
 
-        # 2. Transcribe via OpenAI Whisper API
+        # 2. Transcribe via OpenAI Whisper API. Bias decoding toward the
+        # tenant's own known non-PII vocabulary so brand/project names are
+        # spelled consistently instead of re-guessed per clip. See
+        # apps/router/transcription.py for the PII boundary on the hint.
+        from apps.router.transcription import build_transcription_prompt
+
+        data = {"model": "whisper-1"}
+        prompt = build_transcription_prompt(tenant)
+        if prompt:
+            data["prompt"] = prompt
         whisper_resp = httpx.post(
             WHISPER_API_URL,
             headers={"Authorization": f"Bearer {openai_key}"},
             files={"file": (f"voice.{ext}", audio_data, f"audio/{ext}")},
-            data={"model": "whisper-1"},
+            data=data,
             timeout=30,
         )
         if not whisper_resp.is_success:
@@ -953,7 +968,9 @@ class LineWebhookView(View):
             prefetched_tenant = _audio_tenant
             tenant_prefetched = True
             _show_loading(line_user_id)
-            transcript = _transcribe_line_audio(message_id)
+            # Pass the resolved tenant so Whisper gets the tenant's vocabulary
+            # hint (prevents brand/name mishearings like "Rakuten" -> "Rocketen").
+            transcript = _transcribe_line_audio(message_id, tenant=prefetched_tenant)
             if transcript:
                 logger.info(
                     "LINE audio transcribed: %d chars from message_id=%s",

@@ -449,8 +449,14 @@ class TelegramPoller:
         except Exception:
             pass  # Non-critical, don't log
 
-    def _transcribe_voice(self, file_id: str) -> str | None:
+    def _transcribe_voice(self, file_id: str, tenant: Tenant | None = None) -> str | None:
         """Download a Telegram voice file and transcribe via OpenAI Whisper.
+
+        When ``tenant`` is provided, a vocabulary hint built from the tenant's
+        own known non-PII proper nouns (denylisted brands, workspace names, the
+        user's display name) is passed as the Whisper ``prompt`` so distinctive
+        names transcribe consistently instead of being misheard — e.g.
+        "Rakuten" -> "Rocketen", which then poisons the journal and PII map.
 
         Returns transcribed text, or None on failure.
         """
@@ -487,12 +493,21 @@ class TelegramPoller:
             # Determine extension from file_path
             ext = file_path.rsplit(".", 1)[-1] if "." in file_path else "ogg"
 
-            # 3. Transcribe via OpenAI Whisper API
+            # 3. Transcribe via OpenAI Whisper API. Bias decoding toward the
+            # tenant's own known non-PII vocabulary so brand/project names are
+            # spelled consistently instead of re-guessed per clip. See
+            # apps/router/transcription.py for the PII boundary on the hint.
+            from apps.router.transcription import build_transcription_prompt
+
+            data = {"model": "whisper-1"}
+            prompt = build_transcription_prompt(tenant)
+            if prompt:
+                data["prompt"] = prompt
             whisper_resp = self._http.post(
                 "https://api.openai.com/v1/audio/transcriptions",
                 headers={"Authorization": f"Bearer {openai_key}"},
                 files={"file": (f"voice.{ext}", audio_data, f"audio/{ext}")},
-                data={"model": "whisper-1"},
+                data=data,
                 timeout=30,
             )
             if not whisper_resp.is_success:
@@ -915,8 +930,9 @@ class TelegramPoller:
         if msg_obj.get("voice") or msg_obj.get("audio"):
             self._send_typing(chat_id)
 
-        # Extract message text
-        message_text = self._extract_message_text(update)
+        # Extract message text (pass tenant so voice transcription can hint
+        # Whisper with the tenant's own vocabulary)
+        message_text = self._extract_message_text(update, tenant)
         if not message_text:
             return
 
@@ -1115,8 +1131,13 @@ class TelegramPoller:
 
         return f'[Replying to: "{reply_text}"]\n\n'
 
-    def _extract_message_text(self, update: dict) -> str | None:
-        """Extract user message text from a Telegram update."""
+    def _extract_message_text(self, update: dict, tenant: Tenant | None = None) -> str | None:
+        """Extract user message text from a Telegram update.
+
+        ``tenant`` (when known) is forwarded to voice transcription so Whisper
+        gets a per-tenant vocabulary hint; it is optional so callers/tests that
+        only need text extraction keep working unchanged.
+        """
         message = update.get("message") or update.get("edited_message")
         if not message:
             return None
@@ -1147,7 +1168,7 @@ class TelegramPoller:
         if voice:
             file_id = voice.get("file_id")
             if file_id:
-                transcript = self._transcribe_voice(file_id)
+                transcript = self._transcribe_voice(file_id, tenant=tenant)
                 if transcript:
                     return f'{reply_prefix}🎤 Voice message: "{transcript}"'
             return f"{reply_prefix}[Voice message — couldn't transcribe, please try sending as text]"
