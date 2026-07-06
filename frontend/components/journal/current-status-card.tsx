@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+
 import clsx from "clsx";
 
 import { useCompleteTaskMutation, useJournalStatusQuery } from "@/lib/queries";
@@ -43,10 +45,41 @@ function statusPillClass(ob: JournalObligation): string {
 export function CurrentStatusCard() {
   const { data, isLoading } = useJournalStatusQuery();
   const completeTaskMutation = useCompleteTaskMutation();
+  // Local optimistic state for the task-complete control. `completingIds` drives
+  // the instant checked + strikethrough affordance and doubles as the in-flight
+  // guard (a second tap on the same row is ignored); `erroredIds` surfaces a
+  // retry at the row if the POST fails. The row is removed by the mutation's
+  // status refetch once the server confirms.
+  const [completingIds, setCompletingIds] = useState<Set<string>>(() => new Set());
+  const [erroredIds, setErroredIds] = useState<Set<string>>(() => new Set());
+
   if (isLoading || !data) return null;
 
   const { obligations, open_tasks: openTasks, active_goals: activeGoals } = data;
   if (!obligations.length && !openTasks.length && !activeGoals.length) return null;
+
+  const handleComplete = (id: string) => {
+    if (completingIds.has(id)) return; // in-flight — ignore repeat taps
+    setErroredIds((prev) => {
+      if (!prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+    setCompletingIds((prev) => new Set(prev).add(id));
+    completeTaskMutation.mutate(id, {
+      onError: () => {
+        // Roll the optimistic checked state back and surface a retry at the row.
+        setCompletingIds((prev) => {
+          const next = new Set(prev);
+          next.delete(id);
+          return next;
+        });
+        setErroredIds((prev) => new Set(prev).add(id));
+      },
+      // onSuccess: keep the checked look — the fresh status refetch drops the row.
+    });
+  };
 
   return (
     <div className="mx-4 mt-4 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-4 lg:mx-6 lg:mt-6 lg:p-5">
@@ -77,20 +110,65 @@ export function CurrentStatusCard() {
       {openTasks.length > 0 && (
         <div className="mb-2">
           <div className="mb-1 text-[11px] uppercase tracking-[0.12em] text-ink-faint/50">Open tasks</div>
-          <ul className="space-y-1 text-sm text-ink-muted">
-            {openTasks.map((t) => (
-              <li key={t.id} className="flex items-center gap-2">
-                <button
-                  type="button"
-                  aria-label={`Mark "${t.title}" done`}
-                  disabled={completeTaskMutation.isPending}
-                  onClick={() => completeTaskMutation.mutate(t.id)}
-                  className="grid h-4 w-4 shrink-0 place-items-center rounded border border-white/20 transition hover:border-signal-text/70 disabled:opacity-40"
-                />
-                <span className="min-w-0 flex-1 truncate">{t.title}</span>
-                {t.due_date && <span className="shrink-0 text-xs text-ink-faint">{shortDate(t.due_date)}</span>}
-              </li>
-            ))}
+          <ul className="text-sm text-ink-muted">
+            {openTasks.map((t) => {
+              const completing = completingIds.has(t.id);
+              const errored = erroredIds.has(t.id);
+              return (
+                <li key={t.id} className="flex items-center gap-1">
+                  {/* 44×44 hit area (WCAG 2.1 AA / DESIGN.md) around an 18px box. */}
+                  <button
+                    type="button"
+                    aria-label={completing ? `Completing "${t.title}"` : `Mark "${t.title}" done`}
+                    aria-pressed={completing}
+                    disabled={completing}
+                    onClick={() => handleComplete(t.id)}
+                    className="group flex h-11 w-11 shrink-0 items-center justify-center rounded-lg transition-colors hover:bg-white/[0.04] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-default motion-safe:active:scale-95"
+                  >
+                    <span
+                      className={clsx(
+                        "grid h-[18px] w-[18px] place-items-center rounded-[6px] border transition-all duration-200",
+                        completing
+                          ? "border-signal-text bg-signal-text text-bg"
+                          : "border-white/25 group-hover:border-signal-text/70",
+                      )}
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={3}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                        className={clsx("h-3 w-3 transition-opacity duration-200", completing ? "opacity-100" : "opacity-0")}
+                      >
+                        <path d="M5 13l4 4L19 7" />
+                      </svg>
+                    </span>
+                  </button>
+                  <span
+                    className={clsx(
+                      "min-w-0 flex-1 truncate transition-all duration-200",
+                      completing && "text-ink-faint line-through motion-safe:opacity-60",
+                    )}
+                  >
+                    {t.title}
+                  </span>
+                  {errored ? (
+                    <button
+                      type="button"
+                      onClick={() => handleComplete(t.id)}
+                      className="shrink-0 rounded-md px-2 py-1 text-xs font-medium text-rose-text transition-colors hover:bg-rose-bg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                    >
+                      Couldn&apos;t save — retry
+                    </button>
+                  ) : (
+                    t.due_date && <span className="shrink-0 text-xs text-ink-faint">{shortDate(t.due_date)}</span>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}

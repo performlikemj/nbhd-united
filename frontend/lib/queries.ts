@@ -305,7 +305,13 @@ export function useCompleteTaskMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (taskId: string) => completeTask(taskId),
-    onSuccess: () => {
+    // Instant feedback (checked + strikethrough) is driven by local state in
+    // CurrentStatusCard so the row can animate out; here we only reconcile
+    // against the server. `onSettled` (not `onSuccess`) so a failed attempt
+    // also re-syncs — the refetch now bypasses the HTTP cache (fetchJournalStatus
+    // uses `no-store`), so the completed task drops immediately instead of
+    // reappearing from the stale `max-age=10` browser cache.
+    onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["journal-status"] });
     },
   });
@@ -315,7 +321,7 @@ export function useReopenTaskMutation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (taskId: string) => reopenTask(taskId),
-    onSuccess: () => {
+    onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["journal-status"] });
     },
   });
