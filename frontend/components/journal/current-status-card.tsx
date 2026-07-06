@@ -80,6 +80,23 @@ export function CurrentStatusCard() {
       }
       return next ?? prev;
     });
+    // Prune `erroredIds` against the same server truth: drop the retry affordance
+    // for any errored id the server no longer lists as open (completed elsewhere
+    // or removed), so a later reopen of that id can't resurface a stale
+    // "couldn't save" row. Ids still open keep their retry; an id whose retry POST
+    // is in flight is left untouched.
+    setErroredIds((prev) => {
+      if (prev.size === 0) return prev;
+      const openIds = new Set(data.open_tasks.map((t) => t.id));
+      let next: Set<string> | null = null;
+      for (const id of prev) {
+        if (inFlight.has(id)) continue; // retry POST still running — leave as-is
+        if (openIds.has(id)) continue; // still an open task — keep the retry
+        if (!next) next = new Set(prev);
+        next.delete(id);
+      }
+      return next ?? prev;
+    });
   }, [data]);
 
   if (isLoading || !data) return null;
