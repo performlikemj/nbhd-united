@@ -29,6 +29,16 @@ from .models import (
 )
 
 MAX_CIRCLES_PER_TENANT = 8
+MAX_CIRCLE_MEMBERS = 50
+
+
+def _assert_circle_has_room(circle, tenant) -> None:
+    """Block a NEW active member once the circle is full. An existing active
+    member (idempotent re-join / re-add) is never blocked."""
+    if CircleMembership.objects.filter(circle=circle, tenant=tenant, status="active").exists():
+        return
+    if CircleMembership.objects.filter(circle=circle, status="active").count() >= MAX_CIRCLE_MEMBERS:
+        raise ValidationError(f"This circle is full — it already has the maximum of {MAX_CIRCLE_MEMBERS} members.")
 
 
 def _clamp_hue(hue) -> int:
@@ -164,6 +174,7 @@ def join_circle(tenant, user, invite_code) -> dict:
     # creator (the inviter) — you can't reach into a circle of strangers.
     if not access.are_neighbors(tenant, circle.created_by_id):
         raise PermissionDenied("You can only join a circle through a neighbor you're connected with.")
+    _assert_circle_has_room(circle, tenant)
     _add_active_member(circle, tenant, user, role="member")
     return {"circle_id": str(circle.id), "status": "active"}
 
@@ -181,6 +192,7 @@ def add_circle_member(tenant, user, circle_id, handle) -> dict:
         raise NotFound("No neighbor with that handle.")
     if not access.are_neighbors(tenant, profile.tenant_id):
         raise PermissionDenied("You can only add a neighbor you're connected with.")
+    _assert_circle_has_room(circle, profile.tenant)
     _add_active_member(circle, profile.tenant, profile.tenant.user, role="member")
     return {"circle_id": str(circle.id), "added": profile.handle}
 

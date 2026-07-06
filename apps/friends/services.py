@@ -25,6 +25,7 @@ from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
+from apps.lessons.pillars import infer_pillar_from_tags
 from apps.tenants.models import Tenant
 
 from . import access
@@ -53,6 +54,23 @@ _HANDLE_STRIP_RE = re.compile(r"[^a-z0-9_]")
 MAX_INVITE_USES = 50
 MAX_INVITE_DAYS = 90
 DEFAULT_INVITE_DAYS = 14
+
+# A neighborhood is people you actually know — a Dunbar-ish ceiling keeps it that
+# way (and caps the fan-out of any one account). Checked when an action would
+# GROW the actor's accepted-edge count (wave send / invite claim).
+MAX_NEIGHBORS = 150
+_AT_MAX_NEIGHBORS_MSG = (
+    "You've reached the maximum of 150 neighbors. Your Neighborhood is meant to be people you "
+    "actually know — remove a neighbor to make room for a new one."
+)
+
+
+def accepted_neighbor_count(tenant) -> int:
+    """How many ACCEPTED edges the tenant is a party to."""
+    tid = getattr(tenant, "id", tenant)
+    return Friendship.objects.filter(
+        Q(requester_id=tid) | Q(addressee_id=tid), status=Friendship.Status.ACCEPTED
+    ).count()
 
 
 # ── Profiles ────────────────────────────────────────────────────────────────
@@ -203,6 +221,13 @@ def send_wave(from_tenant, from_user, handle: str, note: str = "") -> tuple[Frie
     ensure_neighbor_profile(from_tenant, from_user)  # so the addressee can see who waved
     pair = compute_pair_key(from_tenant.id, target.id)
     existing = Friendship.objects.filter(pair_key=pair).first()
+
+    # Neighbor cap — enforced only when this wave would GROW the sender's network
+    # (a fresh wave, a re-wave after decline, or waving back to accept). An
+    # already-accepted edge is idempotent and never blocked.
+    if existing is None or existing.status != Friendship.Status.ACCEPTED:
+        if accepted_neighbor_count(from_tenant) >= MAX_NEIGHBORS:
+            raise ValidationError(_AT_MAX_NEIGHBORS_MSG)
 
     if existing is not None:
         if existing.status == Friendship.Status.BLOCKED:
@@ -362,6 +387,13 @@ def claim_invite(tenant, user, token: str) -> Friendship:
     ensure_neighbor_profile(tenant, user)
     ensure_neighbor_profile(inviter, inviter.user)
     pair = compute_pair_key(inviter.id, tenant.id)
+    # Neighbor cap for the claimer — skipped when the edge is already accepted
+    # (idempotent re-claim doesn't grow their network).
+    _existing = Friendship.objects.filter(pair_key=pair).first()
+    if (_existing is None or _existing.status != Friendship.Status.ACCEPTED) and (
+        accepted_neighbor_count(tenant) >= MAX_NEIGHBORS
+    ):
+        raise ValidationError(_AT_MAX_NEIGHBORS_MSG)
     with transaction.atomic():
         edge = Friendship.objects.select_for_update().filter(pair_key=pair).first()
         if edge is None:
@@ -402,28 +434,24 @@ RESIDUALS_BANNER = "We hide names — but not amounts, dates, or company names."
 # these pillars refuse to share by default; MJ can opt a pillar in later.
 SHARE_BLOCKED_PILLARS = frozenset({"gravity", "core"})
 
-# NOTE: ``lessons.Lesson`` has no ``pillar`` column, so pillar is inferred from
-# tags/an explicit attr as a conservative, over-blocking heuristic. A first-
-# class provenance signal (a pillar field, or finance/core lesson origin) should
-# replace this — flagged for the reviewer. Over-blocking is the safe direction.
-_GRAVITY_MARKERS = frozenset({"gravity", "finance", "money", "debt", "budget", "savings", "loan", "salary", "invoice"})
-_CORE_MARKERS = frozenset({"core", "mindfulness", "meditation", "mental-health", "mental health", "therapy"})
-
 
 def lesson_pillar(lesson) -> str:
-    explicit = getattr(lesson, "pillar", None)
+    """The lesson's pillar: the first-class ``pillar`` field when set (PR9), else
+    the shared tag heuristic (gravity/core/lessons)."""
+    explicit = (getattr(lesson, "pillar", "") or "").strip().lower()
     if explicit:
-        return str(explicit).lower()
-    tags = {str(t).strip().lower() for t in (getattr(lesson, "tags", None) or [])}
-    if tags & _GRAVITY_MARKERS:
-        return "gravity"
-    if tags & _CORE_MARKERS:
-        return "core"
-    return "lessons"
+        return explicit
+    return infer_pillar_from_tags(getattr(lesson, "tags", None))
 
 
 def assert_shareable_pillar(lesson) -> None:
-    if lesson_pillar(lesson) in SHARE_BLOCKED_PILLARS:
+    """Mechanical share-never block. Blocks if EITHER the first-class ``pillar``
+    field is share-blocked OR the tag heuristic is — belt and suspenders, so a
+    lesson whose field predates a later finance/mindfulness tag still can't slip
+    through. Never weaker than the pre-field behavior."""
+    field = (getattr(lesson, "pillar", "") or "").strip().lower()
+    heuristic = infer_pillar_from_tags(getattr(lesson, "tags", None))
+    if field in SHARE_BLOCKED_PILLARS or heuristic in SHARE_BLOCKED_PILLARS:
         raise PermissionDenied(
             "Finance and mindfulness lessons stay private by default — they can't be shared to your Neighborhood."
         )

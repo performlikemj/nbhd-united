@@ -2189,6 +2189,18 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
             plugin_config["entries"][sitepub_id]["config"] = {k: _sc[k] for k in _sc_keys if _sc.get(k)}
 
+        # Neighborhood plugin — gate the PROPOSE tools (nbhd_propose_lesson_share
+        # + nbhd_propose_mission_task) on friends_agent_propose_enabled. The
+        # context/absorb tools stay available on friends_enabled alone; the
+        # plugin reads proposeEnabled to decide whether to register the two
+        # propose tools. (The runtime endpoints 403 independently, so this is the
+        # "don't even offer it" layer, not the only gate.)
+        friends_id = str(getattr(settings, "OPENCLAW_FRIENDS_PLUGIN_ID", "nbhd-friends-tools") or "").strip()
+        if friends_id and friends_id in plugin_config["entries"]:
+            plugin_config["entries"][friends_id]["config"] = {
+                "proposeEnabled": bool(getattr(tenant, "friends_agent_propose_enabled", False)),
+            }
+
         paths = [ppath for _, ppath in _active_plugins if ppath]
         if paths:
             plugin_config["load"] = {"paths": paths}

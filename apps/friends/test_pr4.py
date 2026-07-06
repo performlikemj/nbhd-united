@@ -25,10 +25,14 @@ from .models import AbsorbedItem, Friendship, LessonShareGrant, NeighborProfile,
 _RUNTIME = "/api/v1/integrations/runtime"
 
 
-def _tenant(username, *, friends_enabled=True, finance_enabled=False):
+def _tenant(username, *, friends_enabled=True, finance_enabled=False, propose_enabled=True):
     user = User.objects.create_user(username=username, password="pass", display_name=username.title())
     return Tenant.objects.create(
-        user=user, status="active", friends_enabled=friends_enabled, finance_enabled=finance_enabled
+        user=user,
+        status="active",
+        friends_enabled=friends_enabled,
+        finance_enabled=finance_enabled,
+        friends_agent_propose_enabled=propose_enabled,
     )
 
 
