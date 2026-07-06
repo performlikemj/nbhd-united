@@ -50,6 +50,10 @@ class NeighborProfile(models.Model):
     display_name = models.CharField(max_length=80)  # defaults from User.display_name; overridable
     bio = models.CharField(max_length=280, blank=True)
     avatar_hue = models.IntegerField(default=210)  # 0-359; seeds friend-galaxy tint + wormhole-gate color
+    # Auditable EULA acknowledgment (App Review 1.2 #4). A local-only flag is
+    # fragile across reinstall, so consent lives server-side on the profile.
+    accepted_terms_at = models.DateTimeField(null=True, blank=True)
+    accepted_terms_version = models.CharField(max_length=20, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -626,7 +630,12 @@ class ContentReport(models.Model):
     reporter_tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="+")
     reporter_user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name="+")
     target_kind = models.CharField(
-        max_length=16, choices=[("shared_lesson", "Shared spark"), ("friend_message", "Chat")]
+        max_length=16,
+        choices=[
+            ("shared_lesson", "Shared spark"),
+            ("friend_message", "Chat"),
+            ("general", "General / support"),  # Settings → Support "Report a concern" (no content id)
+        ],
     )
     shared_lesson = models.ForeignKey(SharedLesson, on_delete=models.CASCADE, null=True, blank=True)
     friend_message = models.ForeignKey(FriendMessage, on_delete=models.CASCADE, null=True, blank=True)

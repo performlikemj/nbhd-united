@@ -70,6 +70,7 @@ class TenantSerializer(serializers.ModelSerializer):
     gravity_available = serializers.SerializerMethodField()
     effective_model = serializers.SerializerMethodField()
     free_model_offer = serializers.SerializerMethodField()
+    friends_agent_propose_enabled = serializers.SerializerMethodField()
 
     class Meta:
         model = Tenant
@@ -112,9 +113,16 @@ class TenantSerializer(serializers.ModelSerializer):
             "fuel_enabled",
             "core_enabled",
             "friends_enabled",
+            "friends_agent_propose_enabled",
             "byo_models_enabled",
         )
         read_only_fields = fields
+
+    def get_friends_agent_propose_enabled(self, obj):
+        """Whether the assistant may PROPOSE shares/mission-tasks (PR9). Read via
+        getattr so this serializer is correct whether or not the PR9 model field
+        has landed yet (default False = absorb-only)."""
+        return bool(getattr(obj, "friends_agent_propose_enabled", False))
 
     def get_gravity_available(self, obj):
         """Platform-level availability of the Gravity (finance) module. When
@@ -176,6 +184,9 @@ class TenantRegistrationSerializer(serializers.Serializer):
     language = serializers.CharField(max_length=10, required=False, default="en")
     timezone = serializers.CharField(max_length=63, required=False, default="UTC")
     agent_persona = serializers.CharField(max_length=30, required=False, default="neighbor")
+    # Optional Neighborhood invite token (from a /friends/invite/<token> landing).
+    # Claimed after provisioning; a bad/expired token never blocks the signup.
+    invite_token = serializers.CharField(max_length=64, required=False, allow_blank=True, default="")
 
     def validate_timezone(self, value):
         return _validate_timezone(value)

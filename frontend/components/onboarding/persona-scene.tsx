@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { useOnboardMutation, useMeQuery, usePersonasQuery } from "@/lib/queries";
 import type { PersonaOption } from "@/lib/api";
+import { readAndClearInviteToken } from "@/lib/invite-token";
 
 const autoOnboardAttempted = new Set<string>();
 
@@ -19,8 +20,16 @@ export function PersonaScene() {
     if (!userId || isPending || isSuccess) return;
     if (autoOnboardAttempted.has(userId)) return;
     autoOnboardAttempted.add(userId);
+    // Neighborhood invite handoff: a token stashed by /signup?invite=<token>
+    // rides along here so the backend can claim it once the tenant is
+    // provisioned. Read-once — a missing/bad token is a silent no-op.
+    const inviteToken = readAndClearInviteToken();
     try {
-      await onboardTenant({ display_name: me.display_name, agent_persona: selected });
+      await onboardTenant({
+        display_name: me.display_name,
+        agent_persona: selected,
+        ...(inviteToken ? { invite_token: inviteToken } : {}),
+      });
     } catch {
       autoOnboardAttempted.delete(userId);
     }

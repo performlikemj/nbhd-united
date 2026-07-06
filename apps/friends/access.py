@@ -31,7 +31,7 @@ import contextlib
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import connection
-from django.db.models import Q
+from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 
 from apps.tenants.models import Tenant
@@ -214,6 +214,62 @@ def _reported_shared_lesson_ids(viewer_id) -> list:
             reporter_tenant_id=viewer_id, status="hidden", shared_lesson__isnull=False
         ).values_list("shared_lesson_id", flat=True)
     )
+
+
+def spark_counts_by_owner(viewer_tenant) -> dict:
+    """``{owner_tenant_id: n}`` — how many READY snapshots each of the viewer's
+    neighbors has shared visible to them (friendship OR shared-circle grant), in
+    ONE grouped query (no per-neighbor N+1 for the home BFF). A badge count; it
+    doesn't subtract the viewer's own reports (negligible for a badge)."""
+    viewer_id = _tenant_id(viewer_tenant)
+    edge_ids = list(
+        Friendship.objects.filter(
+            Q(requester_id=viewer_id) | Q(addressee_id=viewer_id), status=Friendship.Status.ACCEPTED
+        ).values_list("id", flat=True)
+    )
+    circle_ids = my_active_circle_ids(viewer_id)
+    audience = Q()
+    if edge_ids:
+        audience |= Q(grants__friendship_id__in=edge_ids)
+    if circle_ids:
+        audience |= Q(grants__circle_id__in=circle_ids)
+    if not audience:
+        return {}
+    rows = (
+        SharedLesson.objects.filter(
+            Q(scrub_status=SharedLesson.ScrubStatus.READY, grants__status=LessonShareGrant.Status.ACTIVE) & audience
+        )
+        .values("owner_tenant_id")
+        .annotate(n=Count("id", distinct=True))
+    )
+    return {row["owner_tenant_id"]: row["n"] for row in rows}
+
+
+def direct_thread_state(viewer_tenant) -> dict:
+    """``{other_party_tenant_id: {"thread_id": str, "has_unread": bool}}`` for the
+    viewer's 1:1 threads. One query — unread is an ``Exists`` subquery (a message
+    newer than the viewer's read cursor, not sent by the viewer)."""
+    viewer_id = _tenant_id(viewer_tenant)
+    unread_subq = (
+        FriendMessage.objects.filter(
+            thread=OuterRef("thread"), deleted_at__isnull=True, seq__gt=OuterRef("last_read_seq")
+        )
+        .exclude(sender_tenant_id=viewer_id)
+        .values("pk")
+    )
+    memberships = (
+        FriendThreadMembership.objects.filter(
+            tenant_id=viewer_id, left_at__isnull=True, thread__kind=FriendThread.Kind.DIRECT
+        )
+        .select_related("thread", "thread__friendship")
+        .annotate(has_unread=Exists(unread_subq))
+    )
+    out: dict = {}
+    for membership in memberships:
+        other = _thread_other_party_id(membership.thread, viewer_id)
+        if other is not None:
+            out[other] = {"thread_id": str(membership.thread_id), "has_unread": bool(membership.has_unread)}
+    return out
 
 
 def assert_can_write(viewer_tenant, target_tenant, *, allow_hibernated: bool = True) -> Tenant:

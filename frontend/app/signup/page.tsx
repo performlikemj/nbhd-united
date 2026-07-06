@@ -1,17 +1,28 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 
 import { fetchMe, signup } from "@/lib/api";
 import { setTokens } from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
+import { stashInviteToken } from "@/lib/invite-token";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 import { PasswordStrengthMeter } from "@/components/onboarding/password-strength-meter";
 
-export default function SignupPage() {
+function SignupPageInner() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Neighborhood invite handoff: stash `?invite=<token>` now — tenant
+  // provisioning (and the invite claim) happens later, in PersonaScene
+  // during /onboarding, by which point the query param is gone.
+  useEffect(() => {
+    const invite = searchParams.get("invite");
+    if (invite) stashInviteToken(invite);
+  }, [searchParams]);
+
   const [displayName, setDisplayName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -174,5 +185,13 @@ export default function SignupPage() {
         </p>
       </div>
     </OnboardingShell>
+  );
+}
+
+export default function SignupPage() {
+  return (
+    <Suspense fallback={null}>
+      <SignupPageInner />
+    </Suspense>
   );
 }

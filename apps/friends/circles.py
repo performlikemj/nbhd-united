@@ -244,27 +244,34 @@ def regenerate_invite_code(tenant, circle_id) -> dict:
     return {"circle_id": str(circle.id), "invite_code": circle.invite_code}
 
 
-def report_content(tenant, user, *, target_kind, target_id, reason) -> dict:
-    """Reporter-side moderation: hide the item for the reporter + record a report
-    (design §10 — small blast radius, no global queue at launch scale)."""
-    if target_kind not in ("shared_lesson", "friend_message"):
-        raise ValidationError("target_kind must be shared_lesson or friend_message.")
+def report_content(tenant, user, *, target_kind, target_id="", reason="", detail="") -> dict:
+    """Reporter-side moderation + support intake. A content report (shared_lesson
+    / friend_message) hides the item for the reporter and records it (design §10).
+    A ``general`` report has no content id — it's the Settings → Support "Report a
+    concern" destination (App Review #3); nothing is hidden, it lands as an open
+    support row."""
+    if target_kind not in ("shared_lesson", "friend_message", "general"):
+        raise ValidationError("target_kind must be shared_lesson, friend_message, or general.")
+    is_content = target_kind in ("shared_lesson", "friend_message")
+    text = (reason or "").strip()
+    if detail:
+        text = (text + " — " + str(detail).strip()).strip(" —")
     report = ContentReport(
         reporter_tenant=tenant,
         reporter_user=user,
         target_kind=target_kind,
-        reason=(reason or "").strip()[:280],
-        status="hidden",
+        reason=text[:280],
+        status="hidden" if is_content else "open",
     )
     if target_kind == "shared_lesson":
         shared_lesson = access.get_shared_lesson(target_id)
         if shared_lesson is None:
             raise NotFound("No such spark.")
         report.shared_lesson = shared_lesson
-    else:
+    elif target_kind == "friend_message":
         message = access.get_friend_message_by_public_id(target_id)
         if message is None:
             raise NotFound("No such message.")
         report.friend_message = message
     report.save()
-    return {"report_id": str(report.id), "hidden": True}
+    return {"report_id": str(report.id), "hidden": is_content}
