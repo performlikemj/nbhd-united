@@ -277,9 +277,41 @@ def respond_to_wave(tenant, friendship_id, action: str) -> Friendship:
         edge.blocked_by = tenant
         edge.responded_at = now
         edge.save(update_fields=["status", "blocked_by", "responded_at"])
+        _purge_absorbed_between(tenant.id, _edge_other_party_id(edge, tenant.id))  # PR10: block = purge now
         return edge
 
     raise ValidationError("Unknown action.")
+
+
+def _edge_other_party_id(edge, tenant_id):
+    return edge.addressee_id if edge.requester_id == tenant_id else edge.requester_id
+
+
+def _purge_absorbed_between(a_id, b_id) -> None:
+    """Block is the strongest signal: tombstone what each side's agent absorbed
+    FROM the other (both directions), so a blocked counterpart's circle-sourced
+    sparks/chat stop surfacing immediately — defensive, alongside the read-time
+    filter in access.py."""
+    AbsorbedItem.objects.filter(
+        Q(tenant_id=a_id, from_tenant_id=b_id) | Q(tenant_id=b_id, from_tenant_id=a_id),
+        purged_at__isnull=True,
+    ).update(purged_at=timezone.now())
+
+
+def unblock(tenant, friendship_id) -> Friendship:
+    """Lift a block. ONLY the blocker (``blocked_by``) may unblock; a non-party or
+    the blocked side gets 404 (no-reveal — the block was never disclosed to them).
+    Flips to ``revoked`` (NOT accepted): the relationship must be re-waved to
+    resume, so unblocking never silently restores a connection. Idempotent."""
+    edge = _load_edge_for_party(tenant, friendship_id)
+    if edge.status != Friendship.Status.BLOCKED or edge.blocked_by_id != tenant.id:
+        # Not a block this tenant owns — don't confirm one exists.
+        raise NotFound("No such block.")
+    edge.status = Friendship.Status.REVOKED
+    edge.blocked_by = None
+    edge.revoked_at = timezone.now()
+    edge.save(update_fields=["status", "blocked_by", "revoked_at"])
+    return edge
 
 
 def unfriend(tenant, friendship_id) -> Friendship:

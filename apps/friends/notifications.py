@@ -199,9 +199,12 @@ def _deliver_friend_push(message) -> None:
         with access.backstop_service_context():
             if not access.claim_message_notified(message):
                 return  # a re-drain lost the claim — already pushed
+            # PR10: a blocked counterpart of the sender gets no push (quiet, both
+            # ways — they also don't see the message in-feed).
+            skip_ids = access.blocked_counterpart_ids(message.sender_tenant_id) | {message.sender_tenant_id}
             recipients = list(
                 FriendThreadMembership.objects.filter(thread_id=message.thread_id, left_at__isnull=True, muted=False)
-                .exclude(tenant_id=message.sender_tenant_id)
+                .exclude(tenant_id__in=skip_ids)
                 .select_related("user")
             )
             sender = NeighborProfile.objects.filter(tenant_id=message.sender_tenant_id).first()
