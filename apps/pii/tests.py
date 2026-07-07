@@ -1393,3 +1393,113 @@ class DenylistDegenerateCommandTest(TestCase):
         self.assertEqual(len(self.tenant.pii_entity_map), 6)
         self.assertEqual(get_name(self.tenant.pii_entity_map["[PERSON_5]"]), "Sautai")
         self.assertEqual(get_name(self.tenant.pii_entity_map["[PERSON_7]"]), "Li")
+
+
+class PiiReuseTelemetryTest(TestCase):
+    """Reuse of an EXISTING placeholder for a newly DETECTED span (the row-locked
+    mint-path branch) must emit a PII-safe ``pii_reuse`` line so same-name fusion
+    — two different people collapsing onto one placeholder, silently and
+    permanently — becomes measurable. A fresh mint must NOT emit it, and the line
+    must never carry the raw detected span (these logs ship to Log Analytics in
+    cleartext). ``_detect_pii`` is mocked, so no ONNX model is needed; the tests
+    drive the mint/reuse branch directly. The routine Step-1 regex rewrites of
+    already-known names are deliberately NOT instrumented (they fire on every
+    message and would flood), so they are not exercised here.
+    """
+
+    LOGGER = "apps.pii.redactor"
+    NAME = "Marcus Delgado"  # clean two-word PERSON; survives _filter_results
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Test User", telegram_chat_id=920100)
+        self.tenant.pii_entity_map = {}
+
+    def _person_spans(self, text):
+        # PERSON spans at the real offsets of every NAME occurrence, so the
+        # mocked _detect_pii lines up with the (unchanged) post-Step-1 text.
+        from apps.pii.redactor import DetectedEntity
+
+        spans = []
+        idx = text.find(self.NAME)
+        while idx != -1:
+            spans.append(DetectedEntity("PERSON", idx, idx + len(self.NAME), 0.95))
+            idx = text.find(self.NAME, idx + 1)
+        return spans
+
+    def test_same_message_duplicate_logs_pii_reuse(self):
+        # Same brand-new name twice in one message: the first occurrence mints,
+        # the second reuses the just-minted placeholder within the SAME call.
+        from apps.pii.redactor import redact_user_message
+
+        text = f"Tell {self.NAME} and {self.NAME} about it"
+        spans = self._person_spans(text)
+        self.assertEqual(len(spans), 2)
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=spans),
+            self.assertLogs(self.LOGGER, level="INFO") as cm,
+        ):
+            result = redact_user_message(text, self.tenant)
+
+        # Both occurrences collapse onto the single minted placeholder.
+        self.assertEqual(result.count("[PERSON_1]"), 2)
+        self.assertNotIn("[PERSON_2]", result)
+
+        reuse = [ln for ln in cm.output if "pii_reuse" in ln]
+        mint = [ln for ln in cm.output if "pii_mint" in ln]
+        self.assertEqual(len(mint), 1, cm.output)
+        self.assertEqual(len(reuse), 1, cm.output)
+        self.assertIn("type=PERSON", reuse[0])
+        self.assertIn("placeholder=[PERSON_1]", reuse[0])
+        self.assertIn("source=same_message", reuse[0])
+        # The raw detected span must never appear in ANY log line.
+        for ln in cm.output:
+            self.assertNotIn(self.NAME, ln)
+
+    def test_reuse_from_persisted_map_logs_source_concurrent(self):
+        # Placeholder already in the DB row but NOT in this tenant object's
+        # in-memory map (a stale snapshot / concurrent-mint race): Step 1 and the
+        # function-start known check both miss it, so the freshly detected span
+        # reaches the mint path and reuses the row-locked placeholder.
+        from apps.pii.redactor import redact_user_message
+
+        Tenant = type(self.tenant)
+        Tenant.objects.filter(pk=self.tenant.pk).update(pii_entity_map={"[PERSON_1]": self.NAME})
+        self.tenant.pii_entity_map = {}  # in-memory view is intentionally stale
+
+        text = f"Ping {self.NAME} tonight"
+        spans = self._person_spans(text)
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=spans),
+            self.assertLogs(self.LOGGER, level="INFO") as cm,
+        ):
+            result = redact_user_message(text, self.tenant)
+
+        self.assertIn("[PERSON_1]", result)
+        self.assertNotIn(self.NAME, result)
+
+        reuse = [ln for ln in cm.output if "pii_reuse" in ln]
+        mint = [ln for ln in cm.output if "pii_mint" in ln]
+        self.assertEqual(len(reuse), 1, cm.output)
+        self.assertEqual(len(mint), 0, cm.output)  # nothing new was minted
+        self.assertIn("source=concurrent", reuse[0])
+        self.assertIn("placeholder=[PERSON_1]", reuse[0])
+        for ln in cm.output:
+            self.assertNotIn(self.NAME, ln)
+
+    def test_fresh_mint_does_not_log_pii_reuse(self):
+        # A single brand-new name mints and must NOT emit pii_reuse.
+        from apps.pii.redactor import redact_user_message
+
+        text = f"Ping {self.NAME} tonight"
+        spans = self._person_spans(text)
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=spans),
+            self.assertLogs(self.LOGGER, level="INFO") as cm,
+        ):
+            redact_user_message(text, self.tenant)
+
+        self.assertEqual([ln for ln in cm.output if "pii_reuse" in ln], [], cm.output)
+        self.assertEqual(len([ln for ln in cm.output if "pii_mint" in ln]), 1, cm.output)
