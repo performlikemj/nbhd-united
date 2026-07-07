@@ -47,6 +47,7 @@ from .models import (
     NeighborProfile,
     SharedGoal,
     SharedLesson,
+    SkyMembership,
     WormholeVisit,
     compute_pair_key,
 )
@@ -843,3 +844,103 @@ def update_mission(mission, *, expected_version, editor_owner, fields):
 
 def set_mission_status(mission, status, **extra):
     SharedGoal.objects.filter(id=mission.id).update(status=status, **extra)
+
+
+# ── "My sky" — the chosen inner circle (Bounded Neighborhood; BN-PR1) ─────────
+#
+# SkyMembership is a PRIVATE, ONE-WAY, per-(viewer, friendship) curation — the
+# polar opposite of a Circle (no consent, no visibility to the other party, no
+# group chat). It mirrors WormholeVisit: per-viewer OWN data, lifecycle tied to
+# the edge. All reads/writes are self-scoped and confined to THIS module (the AST
+# chokepoint guards SkyMembership.objects here), so "whom you keep close" can
+# never leak to the person you chose — no moment, no push, no counter they can
+# see. Hard-capped at MAX_SKY, enforced server-side at the add action.
+
+MAX_SKY = 12  # hard inner-circle cap (Bounded Neighborhood brief §4.4, accepted 2026-07-07)
+
+
+def sky_count(viewer_tenant) -> int:
+    """How many neighbors the viewer keeps in their sky (drives the hard cap)."""
+    return SkyMembership.objects.filter(viewer_tenant_id=_tenant_id(viewer_tenant)).count()
+
+
+def sky_friendship_ids(viewer_tenant) -> set:
+    """The set of friendship ids in the viewer's sky — ONE query, for the additive
+    ``in_my_sky`` flag on the home BFF + wormhole payloads. Self-scoped: a viewer
+    only ever sees their own picks."""
+    return set(
+        SkyMembership.objects.filter(viewer_tenant_id=_tenant_id(viewer_tenant)).values_list("friendship_id", flat=True)
+    )
+
+
+def add_to_sky(viewer_tenant, friendship) -> tuple[bool, bool]:
+    """Add an accepted-neighbor edge to the viewer's PRIVATE sky. Returns
+    ``(created, full)``:
+
+      * ``(True, False)``  — newly added.
+      * ``(False, False)`` — already in the sky (idempotent no-op).
+      * ``(False, True)``  — rejected: the sky is at the hard ``MAX_SKY`` cap and
+        this would be a genuinely NEW add. Nothing is created; the caller renders
+        the forced-removal swap. (An already-in-sky edge is never cap-blocked.)
+
+    The caller has already party-checked the accepted edge via
+    :func:`assert_neighbors`. One-way + invisible: no signal of any kind reaches
+    the other party.
+    """
+    from django.db import IntegrityError, transaction
+
+    viewer_id = _tenant_id(viewer_tenant)
+    if SkyMembership.objects.filter(viewer_tenant_id=viewer_id, friendship=friendship).exists():
+        return False, False  # idempotent — already chosen
+    # Hard cap — mirrors the circle-member cap (circles.py), but only a genuinely
+    # new add at capacity is blocked. A tiny TOCTOU on concurrent adds of
+    # *different* edges is benign (a private list momentarily at 13, never a
+    # security boundary); the forced-removal UX is the real cap mechanism.
+    if SkyMembership.objects.filter(viewer_tenant_id=viewer_id).count() >= MAX_SKY:
+        return False, True
+    try:
+        with transaction.atomic():
+            SkyMembership.objects.create(viewer_tenant_id=viewer_id, friendship=friendship)
+    except IntegrityError:
+        return False, False  # concurrent same-edge add won the unique race — idempotent
+    return True, False
+
+
+def remove_from_sky(viewer_tenant, friendship) -> bool:
+    """Remove an edge from the viewer's sky. Idempotent — returns True iff a row
+    was deleted. Self-scoped by ``viewer_tenant`` so it can only ever delete the
+    caller's OWN pick (never another viewer's). It is NOT an unfriend: the edge
+    and everything shared over it are untouched — only the flight gate goes away.
+    Works regardless of edge status (so a stale pick can always be tidied).
+    ``friendship`` may be a ``Friendship`` instance or a raw friendship id."""
+    deleted, _ = SkyMembership.objects.filter(
+        viewer_tenant_id=_tenant_id(viewer_tenant), friendship_id=getattr(friendship, "id", friendship)
+    ).delete()
+    return deleted > 0
+
+
+def sky_roster(viewer_tenant) -> list[dict]:
+    """The viewer's full sky roster (≤ ``MAX_SKY``), newest-added first, INCLUDING
+    the quiet in-sky-no-spark slots the spark-gated wormhole payload omits.
+    Returns ``[{friendship_id, owner_id, added_at}]``; identity/spark hydration is
+    the caller's job (like ``wormhole_targets`` → ``list_wormholes``). Skips any
+    row whose edge is no longer an accepted edge the viewer is a party to (a
+    revoked/blocked edge can outlive its sky row until the human tidies it,
+    exactly as a ``WormholeVisit`` watermark does)."""
+    viewer_id = _tenant_id(viewer_tenant)
+    rows = SkyMembership.objects.filter(viewer_tenant_id=viewer_id).select_related("friendship").order_by("-added_at")
+    out: list[dict] = []
+    for row in rows:
+        edge = row.friendship
+        if edge.status != Friendship.Status.ACCEPTED:
+            continue
+        if viewer_id not in (edge.requester_id, edge.addressee_id):
+            continue
+        out.append(
+            {
+                "friendship_id": str(edge.id),
+                "owner_id": other_party_id(edge, viewer_id),
+                "added_at": row.added_at,
+            }
+        )
+    return out

@@ -36,6 +36,8 @@ from .views import (
     ShareApproveView,
     SharePreviewView,
     ShareRejectView,
+    SkyRosterView,
+    SkyView,
     ThreadMembershipView,
     ThreadMessagesView,
     ThreadReadView,
@@ -109,11 +111,14 @@ urlpatterns = [
     path("circles/<uuid:circle_id>/invite-code/", CircleInviteCodeView.as_view(), name="friends-circle-invite-code"),
     # Moderation (reporter-side hide; design §10)
     path("report/", ReportView.as_view(), name="friends-report"),
-    # Wormholes / warp (read-only). The <friendship_id>/galaxy/ and /visited/
-    # routes sit ABOVE the bare <friendship_id>/ unfriend catch-all so they win.
+    # Wormholes / warp (read-only) + "my sky" curation. The <friendship_id>/galaxy/,
+    # /visited/, /sky/ routes sit ABOVE the bare <friendship_id>/ unfriend catch-all
+    # so they win; `sky/` (the roster GET) is a literal (not a UUID), also above it.
     path("wormholes/", WormholesView.as_view(), name="friends-wormholes"),
+    path("sky/", SkyRosterView.as_view(), name="friends-sky"),
     path("<uuid:friendship_id>/galaxy/", FriendGalaxyView.as_view(), name="friends-galaxy"),
     path("<uuid:friendship_id>/visited/", WormholeVisitedView.as_view(), name="friends-wormhole-visited"),
+    path("<uuid:friendship_id>/sky/", SkyView.as_view(), name="friends-sky-edge"),
     path("<uuid:friendship_id>/unblock/", UnblockView.as_view(), name="friends-unblock"),
     path("invites/", InviteCreateView.as_view(), name="friends-invite-create"),
     path("invites/<str:token>/claim/", InviteClaimView.as_view(), name="friends-invite-claim"),
