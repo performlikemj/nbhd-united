@@ -700,6 +700,18 @@ class Tenant(models.Model):
         help_text="Identity rollback + growth snapshots for SOUL.md/IDENTITY.md (see backfill_identity_growth).",
     )
 
+    # Constellation cluster-name cache for the async LLM naming pass
+    # (apps.lessons.cluster_naming). Keyed on a hash of a cluster's SORTED
+    # member lesson ids — cluster_id numbers are reassigned every recluster, so
+    # they can't be the key. A cache hit reuses the stored name with no LLM
+    # call; entries whose member-hash no longer exists are pruned each run.
+    # Shape: {"<sha1-of-sorted-ids>": "Weight Tracking"}.
+    cluster_label_cache = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Cached LLM cluster names keyed by hash of sorted member lesson ids.",
+    )
+
     # BYO subscription mode — Phase 1 gates Anthropic Claude Pro/Max CLI
     # behind this flag. After fleet rollout (PR #434, 2026-05-02) the default
     # is True; existing rows are flipped via migration 0051. Newly provisioned

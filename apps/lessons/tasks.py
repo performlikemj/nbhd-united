@@ -32,6 +32,21 @@ def dedup_lessons_task() -> dict:
     return {"ok": True, "output_bytes": len(output), "output_lines": output.count("\n")}
 
 
+def name_clusters_task(tenant_id: str) -> dict:
+    """Async LLM naming pass for a tenant's constellations (cached + capped).
+
+    Enqueued (async) by ``refresh_constellation`` after clustering + the
+    deterministic label pass. Best-effort: any failure leaves the deterministic
+    labels in place. Returns counts only — no lesson content in the QStash
+    dashboard.
+    """
+    from apps.lessons.cluster_naming import name_clusters_for_tenant
+
+    result = name_clusters_for_tenant(tenant_id)
+    logger.info("name_clusters_task %s → %s", str(tenant_id)[:8], result)
+    return result
+
+
 def reseed_lessons_task() -> dict:
     """Fan out reseed to each active tenant via QStash."""
     from apps.tenants.models import Tenant
