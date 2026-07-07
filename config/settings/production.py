@@ -119,9 +119,13 @@ DEFAULT_FROM_EMAIL = env(
 # Do NOT set CORS_ALLOW_ALL_ORIGINS here (that is dev-only).
 
 # Logging — stdout/stderr goes to Container Apps Log Analytics.
-# The `redact_byo_paste_body` filter is a defensive backstop to keep
-# BYO subscription tokens out of access logs (primary defense lives in
-# the BYO views — they never log request bodies).
+# Two redaction filters run on the single console handler as defensive
+# backstops for credentials that would otherwise stream to the log sink:
+#   - redact_byo_paste_body: keeps BYO subscription tokens out of access
+#     logs (primary defense lives in the BYO views — they never log bodies).
+#   - redact_telegram_token: scrubs the shared Telegram bot token, which
+#     httpx logs on every Bot API call because Telegram puts the token in
+#     the URL path (e.g. .../bot<id>:<secret>/getUpdates).
 LOGGING = {
     "version": 1,
     "disable_existing_loggers": False,
@@ -135,12 +139,15 @@ LOGGING = {
         "redact_byo_paste_body": {
             "()": "apps.byo_models.logging_filters.RedactBYOPasteBody",
         },
+        "redact_telegram_token": {
+            "()": "apps.router.logging_filters.RedactTelegramToken",
+        },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "verbose",
-            "filters": ["redact_byo_paste_body"],
+            "filters": ["redact_byo_paste_body", "redact_telegram_token"],
         },
     },
     "root": {
