@@ -455,8 +455,12 @@ class TelegramPoller:
         When ``tenant`` is provided, a vocabulary hint built from the tenant's
         own known non-PII proper nouns (denylisted brands, workspace names, the
         user's display name) is passed as the Whisper ``prompt`` so distinctive
-        names transcribe consistently instead of being misheard — e.g.
-        "Rakuten" -> "Rocketen", which then poisons the journal and PII map.
+        names transcribe consistently instead of being phonetically garbled.
+        This is the class behind the 2026-07 "Rakuten" -> "Rocketen" incident —
+        that clip entered via iOS on-device STT (fixed app-side via
+        ``contextualStrings`` fed from the same vocabulary); this hint hardens
+        the Telegram channel against the same failure. See
+        apps/router/transcription.py.
 
         Returns transcribed text, or None on failure.
         """

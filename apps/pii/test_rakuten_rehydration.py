@@ -1,12 +1,14 @@
 """Regression locks for the "Rakuten" -> "Rocketen" incident.
 
-Forensics established the garble was created by *speech-to-text* (Whisper
-misheard the brand) and stored verbatim; the PII layer only mirrored the
-misheard surface form into ``Tenant.pii_entity_map`` as ``[PERSON_526]`` and
-replays it faithfully. Because redaction/rehydration match on the EXACT
-canonical key (``casefold().strip()``), a correctly-spelled "Rakuten" can never
-collide onto the "rocketen" placeholder — so the map is not a corruption source
-and the fix is data repair, not redactor code.
+Forensics established the garble was created by *speech-to-text* — Apple's
+on-device recognizer in the iOS app misheard the brand (iOS voice never touches
+server-side Whisper; the chat ingress accepts text only) — and stored verbatim;
+the PII layer only mirrored the misheard surface form into
+``Tenant.pii_entity_map`` as ``[PERSON_526]`` and replays it faithfully.
+Because redaction/rehydration match on the EXACT canonical key
+(``casefold().strip()``), a correctly-spelled "Rakuten" can never collide onto
+the "rocketen" placeholder — so the map is not a corruption source and the fix
+is data repair, not redactor code.
 
 These tests pin that behaviour so a future "fuzzy match" refactor (the tempting
 but wrong hypothesis) can't silently reintroduce cross-contamination, and so the

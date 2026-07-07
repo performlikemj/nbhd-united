@@ -1,25 +1,33 @@
-"""Vocabulary hinting for server-side voice transcription.
+"""Per-tenant vocabulary for speech-to-text, across all voice channels.
 
-OpenAI Whisper transcribes a short clip with no knowledge of the speaker's
+Speech recognizers transcribe a short clip with no knowledge of the speaker's
 world, so distinctive proper nouns — brands, project names, people — come back
-*phonetically approximated*. A Japanese brand like "Rakuten" (楽天) is decoded
-as "Rocketen". That misheard token is then written verbatim into the tenant's
-journal, and because the PII layer mirrors journal text to the file share
-(``apps/orchestrator/memory_sync.py``) the NER model mislabels it as a PERSON
-and freezes it into ``Tenant.pii_entity_map`` — from where the daily-summary
-carry-forward reproduces it in every later message about the user's goals.
+*phonetically approximated*. That is how the July 2026 incident happened: MJ's
+voice note about a **Rakuten** (楽天) meeting came back as "Rocketen", was
+written verbatim into his journal, carried forward by the daily summary, and
+frozen into ``Tenant.pii_entity_map`` when memory_sync's redaction pass ran NER
+over the note (an unknown proper noun mislabels as PERSON; COMPANY_NAME is
+deliberately not detected).
 
-Whisper accepts an optional ``prompt`` that biases decoding toward the
-vocabulary it contains (it is decoder context, not an instruction).
-``build_transcription_prompt`` assembles that hint from the tenant's OWN
-already-known, non-PII vocabulary so a name the user has used before is spelled
-consistently instead of re-guessed on every clip.
+Channel attribution matters here: the incident clip arrived via the **iOS app**,
+whose voice input is transcribed ON DEVICE by Apple's speech recognizer — the
+text reaches Django already garbled (``apps/router/chat_views.py`` chat ingress
+accepts text only; there is no server-side audio path for iOS). The fix for that
+channel is the iOS app feeding this same vocabulary into
+``SFSpeechRecognitionRequest.contextualStrings`` — it fetches the terms from
+``GET /api/v1/chat/transcription-vocab/`` (``TranscriptionVocabView``), which is
+why the term collection lives in a shared helper here. The two SERVER-side
+transcription sites — the Telegram poller and the LINE webhook, both OpenAI
+``whisper-1`` — previously sent no vocabulary at all; they now pass
+``build_transcription_prompt`` as the Whisper ``prompt`` (decoder bias, not an
+instruction), hardening them against the same garble class.
 
 PII boundary
 ------------
-The audio already goes to OpenAI, so this adds no new *audio* egress. For the
-text hint we deliberately draw ONLY from sources the user or the PII arbiter
-have already declared non-identifying:
+For Whisper the audio already goes to OpenAI, so the hint adds no new *audio*
+egress; for iOS the terms stay on the user's own device. Either way we
+deliberately draw ONLY from sources the user or the PII arbiter have already
+declared non-identifying:
 
 * ``pii_denylist`` keys — brands / projects / jargon explicitly marked
   "not PII for me" (this is exactly where "rakuten" lands once denylisted, so
@@ -28,7 +36,7 @@ have already declared non-identifying:
 * the user's own display name.
 
 Contact names living in ``pii_entity_map`` are intentionally excluded: those
-are third-party PERSON entities the module works to keep out of provider
+are third-party PERSON entities the PII module works to keep out of provider
 prompts, and the transcription win does not justify widening their egress.
 """
 
@@ -42,25 +50,42 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Whisper caps the prompt at ~224 tokens; stay well under with coarse budgets.
+# Whisper caps the prompt at ~224 tokens; iOS contextualStrings likewise wants
+# a short list. Stay well under both with coarse budgets.
 _MAX_TERMS = 48
 _MAX_PROMPT_CHARS = 600
+
+
+def collect_transcription_vocab(tenant: Tenant | None) -> list[str]:
+    """Ordered, de-duplicated transcription vocabulary for a tenant.
+
+    The single source of truth for *which terms* bias speech-to-text, shared by
+    the server-side Whisper prompt (Telegram/LINE) and the iOS vocabulary
+    endpoint (``GET /api/v1/chat/transcription-vocab/`` →
+    ``SFSpeechRecognitionRequest.contextualStrings``).
+
+    Order: denylisted brands / jargon, then workspace names, then the user's
+    own name — capped by term count and total length to respect the consumers'
+    budgets. Never raises: any lookup failure degrades to ``[]`` so
+    transcription proceeds exactly as it does without a hint.
+    """
+    if tenant is None:
+        return []
+    try:
+        return _collect_vocabulary(tenant)
+    except Exception:
+        logger.debug("collect_transcription_vocab: vocabulary lookup failed", exc_info=True)
+        return []
 
 
 def build_transcription_prompt(tenant: Tenant | None) -> str | None:
     """Return a Whisper ``prompt`` biasing decoding toward the tenant's known
     non-PII proper nouns, or ``None`` when there is no useful vocabulary.
 
-    Never raises: any lookup failure degrades to ``None`` so transcription
-    proceeds exactly as it does today.
+    Used by the two server-side Whisper call sites (Telegram poller, LINE
+    webhook). Never raises — see ``collect_transcription_vocab``.
     """
-    if tenant is None:
-        return None
-    try:
-        terms = _collect_vocabulary(tenant)
-    except Exception:
-        logger.debug("build_transcription_prompt: vocabulary lookup failed", exc_info=True)
-        return None
+    terms = collect_transcription_vocab(tenant)
     if not terms:
         return None
     # A short natural-language frame reads better to Whisper than a bare list
@@ -69,12 +94,7 @@ def build_transcription_prompt(tenant: Tenant | None) -> str | None:
 
 
 def _collect_vocabulary(tenant: Tenant) -> list[str]:
-    """Ordered, de-duplicated vocabulary terms, highest-signal first.
-
-    Order: denylisted brands / jargon, then workspace names, then the user's
-    own name — capped by term count and total length to respect Whisper's
-    prompt budget.
-    """
+    """Assemble the raw term list (see ``collect_transcription_vocab``)."""
     seen: set[str] = set()
     terms: list[str] = []
 
@@ -92,8 +112,8 @@ def _collect_vocabulary(tenant: Tenant) -> list[str]:
         terms.append(term)
 
     # 1. Denylist keys: the user/arbiter-vetted "not PII" vocabulary. Keys are
-    #    canonical (casefolded); title-case bare single tokens so Whisper is
-    #    biased toward the natural proper-noun spelling ("rakuten" -> "Rakuten").
+    #    canonical (casefolded); title-case bare single tokens so the recognizer
+    #    is biased toward the natural proper-noun spelling ("rakuten" -> "Rakuten").
     denylist = getattr(tenant, "pii_denylist", None) or {}
     if isinstance(denylist, dict):
         for key in denylist:
@@ -107,7 +127,7 @@ def _collect_vocabulary(tenant: Tenant) -> list[str]:
     user = getattr(tenant, "user", None)
     _add(getattr(user, "display_name", "") if user is not None else "")
 
-    # Enforce the prompt budget.
+    # Enforce the budget.
     out: list[str] = []
     total = 0
     for term in terms:
