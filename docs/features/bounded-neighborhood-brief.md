@@ -230,20 +230,24 @@ today's scale but is the directory's backing data. Add a **ranked, paginated** d
 - The existing `GET /api/v1/friends/` and `/home/` keep working unchanged (additive `in_my_sky` /
   `pinned` fields on their neighbor rows; older clients ignore them).
 
-### 4.3 Server-side "warpable" — the sky-filtered gate list
+### 4.3 Server-side "warpable" — put `in_my_sky` where each client already reads
 
-The flight should not have to decide membership. Mark it server-side so the client just renders what
-it's handed:
+The flight should not have to *compute* membership — it should read one boolean. **Where that boolean
+lands differs by client, and this is the load-bearing accuracy point:**
 
-- Extend `list_wormholes` (`apps/friends/services.py:888`) / `wormhole_targets`
-  (`apps/friends/access.py:444`) to include **`in_my_sky: bool`** on each target, and accept a filter:
-  `GET /api/v1/friends/wormholes/?warpable=sky` returns **only** in-sky + ready-spark gates (the flight
-  set); no filter returns all spark-sharing neighbors (today's behavior — the directory's warp set).
-- Optionally a dedicated `GET /api/v1/friends/sky/` returning the sky roster (including quiet
-  in-sky-no-spark slots) for the directory's "your sky" section.
+- **iOS builds its flight gates entirely client-side from `GET /api/v1/friends/home/`** (`neighborhood_home`,
+  `apps/friends/services.py:520`) — there is **no iOS wormholes endpoint**; the flight filters the home
+  payload's `neighbors` array by `sparkCount > 0` and caps it (§5.2). So the single additive field
+  **`in_my_sky: bool` on each `neighbors` row of `neighborhood_home` is what makes the iOS swap work.**
+- **Web** uses `list_wormholes` / `wormhole_targets` (`services.py:888` / `access.py:444`) — add
+  `in_my_sky` there too, plus an optional `GET /api/v1/friends/wormholes/?warpable=sky` filter returning
+  only in-sky + ready-spark gates.
+- **Optional** `GET /api/v1/friends/sky/` returning the full sky roster **including quiet
+  in-sky-no-spark slots** (which the spark-gated payloads above omit) for the directory's "Your sky"
+  section.
 
-This makes the iOS/web flight swap (§5.2) a **filter, not a computation** — the client renders the
-`warpable=sky` list verbatim.
+Net: add `in_my_sky` to the `neighbors` rows of `neighborhood_home` (iOS, primary) and to
+`wormhole_targets` (web). The flight swap (§5.2) becomes a **filter, not a computation.**
 
 ### 4.4 Ceiling enforcement points
 
@@ -286,36 +290,88 @@ behind the same dark flags.
 
 ### 5.1 "Add to my sky" action (profile + directory)
 
-- **NeighborProfileSheet:** add an **"Add to my sky" / "In your sky ✓"** toggle beside the existing
-  spark-gated warp affordance (`sparkCount > 0`). Full → present the "make room" swap sheet. Copy is
-  celestial and warm; the act feels deliberate.
-- **Directory rows:** a quiet inline star/pin affordance to add-to-sky without opening the sheet.
-- Calls `POST/DELETE /api/v1/friends/<friendship_id>/sky/`; optimistic with rollback on the 409-full.
+- **NeighborProfileSheet** (`NBHD/Neighborhood/NeighborProfileSheet.swift`) today gates its warp row on
+  `env != nil && neighbor.sparkCount > 0` (line 35 — `warpRow` presents `WarpEntry`, the web-galaxy
+  destination view) and carries message/share rows plus an overflow (unfriend/block/report). It has
+  **no curation action today** — so an **"Add to my sky" / "In your sky ✓"** toggle is a genuinely new
+  affordance here, placed beside the warp row. Full sky → present the "make room" swap sheet.
+- **Directory rows:** a quiet inline star affordance to add-to-sky without opening the sheet.
+- Both call `POST/DELETE /api/v1/friends/<friendship_id>/sky/` (the `Neighbor.id` **is** the
+  `friendship_id`) via the generic `RemoteAPIClient` on `NeighborhoodViewModel` — no new client class,
+  just two path calls. Optimistic, with rollback on the 409-full.
 
-### 5.2 The flight-gate swap — ONE function
+### 5.2 The flight-gate swap — ONE function (exact swap point)
 
-<!-- IOS_SWAP_POINT: exact file/function slotted from the flight-wormholes exploration below -->
-On `feat/flight-wormholes`, the neighbors rendered as wormhole gates in the flight are chosen by a
-**single pure function** — currently a **top-K = 6 by recency** placeholder, deliberately isolated as
-*the* swap point. The entire iOS behavior change is to swap that function's body:
+The swap point already exists, named and commented, on branch `feat/flight-wormholes`:
+**`FlightWormholeSelection.gates(from:maxGates:)` in
+`NBHD/Constellation/Spike/FlightWormhole.swift`.** Its own doc-comment reads: *"Isolated behind ONE
+swappable function per MJ's bounded-neighborhood direction (2026-07-07): the gates are a small CHOSEN
+inner circle, not the whole spark-gated directory… This rule is a PLACEHOLDER (recency-ish) the design
+brief will replace; keep it a single function."* **This brief is that replacement.**
 
-- **From:** "take all warp targets, sort by recency, keep the first 6."
-- **To:** "keep the targets where `inMySky == true`" — or, if the backend ships `warpable=sky`
-  (§4.3), the function collapses to "render exactly what the sky endpoint returned." Either way it is a
-  **one-function diff**; no change to gate rendering, warp choreography, return-home, or the second
-  scene.
+Current placeholder body (`static let maxGates = 6`):
 
-Because the placeholder already isolates selection behind one pure function, this swap is the whole
-point of the branch's design — the flight goes from "a recency-picked handful" to "your chosen sky"
-with no structural change.
+```swift
+// Placeholder: unread-thread neighbors first, then the backend's (recency-ish) order, capped at 6.
+static func gates(from warpable: [Neighbor], maxGates: Int = maxGates) -> [Neighbor] {
+    let ordered = warpable.enumerated().sorted { a, b in
+        if a.element.hasUnreadThread != b.element.hasUnreadThread { return a.element.hasUnreadThread }
+        return a.offset < b.offset            // stable → preserves incoming (recency) order
+    }.map(\.element)
+    return Array(ordered.prefix(max(0, maxGates)))
+}
+```
+
+The swap — the **entire** iOS flight behavior change:
+
+```swift
+// Bounded Neighborhood: the flight renders your CHOSEN sky, not a recency-picked handful.
+static func gates(from warpable: [Neighbor]) -> [Neighbor] {
+    warpable.filter { $0.inMySky }            // `warpable` is ALREADY spark-gated upstream
+}
+```
+
+Two facts make this clean:
+
+- **The input `warpable` is already the spark-gated set** — it comes from the shared
+  `NeighborhoodViewModel` filtered on `sparkCount > 0` (per `FlightWormhole.swift`'s own comment). So
+  filtering it to `inMySky` yields exactly `in_my_sky AND sparkCount > 0` for free — the spark-gate is
+  preserved automatically, not re-implemented.
+- **`inMySky` is one new `Bool` on the `Neighbor` model**, populated from the backend's additive
+  `in_my_sky` field (§4.3). Nothing downstream changes: `WormholeTarget` (`id`/`name`/`hue`), gate
+  placement (`FlightWormholeMath.positions`), proximity, the directional HUD, warp choreography, and
+  return-home are all untouched. The `maxGates` cap can be dropped (the ≤12 sky is its own bound) or
+  kept as a defensive ceiling.
+
+This is a **one-function diff** — the whole point of how the branch was structured. The single call
+site is `ConstellationFlightSpikeView.loadWormholes(env:)` (same file's view), which already does
+`vm.neighbors.filter { $0.sparkCount > 0 }` then `FlightWormholeSelection.gates(from:)` before building
+`WormholeTarget`s — so it needs no change. The one companion edit is the regression net:
+`NBHDTests/FlightWormholeTests.swift` currently asserts `maxGates == 6` and the cap/order behavior; that
+suite gets rewritten to assert "renders exactly the in-sky neighbors."
+
+> **Branch note:** `feat/flight-wormholes` is **local-only (not pushed to origin)** as of 2026-07-07;
+> the swap-point commit (`ea9cdd0`, *"Gates are the CHOSEN inner circle: top-K (=6) behind a single
+> swappable FlightWormholeSelection.gates()"*) landed the same day this brief was written. The brief and
+> the code were authored to meet in the middle — the code left the seam, this brief fills it.
 
 ### 5.3 Directory UX
 
-- A **scrollable list**: search field, "Your sky" section at top (the ≤12, including quiet no-spark
-  slots), then **Recents**, then **Pinned**, then the full alphabetical roster.
-- Each row: avatar hue dot, name/@handle, a **warp** affordance iff `spark_count > 0`, an **add-to-sky**
-  affordance (or ✓ if in sky), unread-thread dot.
-- Backed by `GET /api/v1/friends/directory/` (§4.2), keyset-paginated, poll-free (it's not a live feed).
+The directory **extends `NeighborhoodHome`** (`NBHD/Neighborhood/NeighborhoodHome.swift`), which today is
+a static `LazyVGrid` of `NeighborCell` with **no search, pin, or recency** — but the iOS design directive
+deliberately left it `Section`-based so a "Your sky" section slots in **additively, not a rewrite**
+(`NEIGHBORHOOD_DESIGN.md`). Target shape:
+
+- A **scrollable, sectioned list**: search field, a **"Your sky"** section at top (the ≤12, including
+  quiet no-spark slots), then **Recents**, then **Pinned**, then the full alphabetical roster.
+- Each row: avatar hue dot, name/@handle, a **warp** affordance iff `sparkCount > 0`, an **add-to-sky**
+  toggle (or ✓ if in sky), unread-thread dot.
+- Backed by `GET /api/v1/friends/directory/` (§4.2), keyset-paginated, poll-free (not a live feed).
+- **Already exists to reuse:** the front-door `ConstellationView.gameEntryBar` "Warp to a neighbor"
+  button already offers **unbounded** warp to any spark-sharing neighbor (`neighbors.filter { sparkCount
+  > 0 }`) — that is the directory's "warp to anyone who's shared" path today, distinct from the
+  sky-only flight. The existing `momentsStrip` ("Waiting on you") is the decision-moments surface that
+  §6 BN-PR4 extends with exchange moments.
 
 ### 5.4 Empty & ceiling states
 
@@ -399,7 +455,10 @@ shows no gates) — degraded, not broken.
    groups (chat + circle-scoped sharing); My-sky is a private personal curation for the flight. Adding a
    Circle does **not** populate your sky, and vice-versa. Optional nicety: a Circle's members may appear
    as *suggested* sky candidates (per Q4), never auto-added. Keeping them independent avoids leaking the
-   private sky into a shared group's semantics.
+   private sky into a shared group's semantics. (Note: `Circle`/`CircleMembership` shipped in the backend
+   at PR7, but Circles are **not built in iOS yet** — documented Phase 2+, `NeighborhoodHome` left
+   extensible for a future Circles section — so this interaction is a backend + future-iOS concern, not
+   a live collision.)
 
 6. **Launch sequencing vs App Store 1.0.4.** *Recommend **ship after 1.0.4**, as an increment on the
    1.0.5 Neighborhood release train.* 1.0.4 is represented to Apple as "1:1 private, no social/UGC," and
@@ -438,9 +497,17 @@ Nothing in this brief contradicts a shipped semantic; these are the seams and fr
   FORCE-RLS bind, any new table genuinely needs its relock migration (and a GUC-scoped policy for the
   FORCE set) — this is no longer a theoretical "someday" like it was pre-PR8. Treated as a hard
   requirement in §4.5 / BN-PR1 / BN-PR6.
+- **The iOS flight is a presentation-layer concern over `/api/v1/friends/home/`.** There is no iOS
+  wormholes endpoint — the flight derives its gates client-side from the home BFF's `neighbors` array.
+  So the sky must be expressed as an additive field on **that** payload (§4.3), not only on the web-only
+  `/wormholes/` endpoint. Missing this is the one way to build the backend and have the iOS flight still
+  show the old placeholder.
 - **Web flight renders all wormholes today** (`galaxy-scene.ts` `buildWormholeGates` over the full
   `fetchWormholes()` list — no top-K). The sky filter should reach web too (BN-PR5), but web is lower
   priority and currently correct-but-unbounded; at small scale it's fine until parity lands.
+- **The swap-point branch is local-only.** `feat/flight-wormholes` (with `FlightWormhole.swift`) is not
+  pushed to origin as of 2026-07-07; the brief references a local branch. Whoever implements BN-PR2 needs
+  that branch (or its eventual push/merge) in hand — the seam it left is the whole plan.
 
 ---
 
