@@ -272,7 +272,17 @@ export function fetchHorizons(): Promise<import("@/lib/types").HorizonsData> {
 // Journal current-status projection — live state derived from typed models
 // + the finance ledger (never a stale baked copy). See status_projection.py.
 export function fetchJournalStatus(): Promise<import("@/lib/types").JournalStatus> {
-  return apiFetch<import("@/lib/types").JournalStatus>("/api/v1/journal/status/");
+  // Bypass the browser HTTP cache. The API applies a default
+  // `Cache-Control: private, max-age=10, stale-while-revalidate=60`
+  // (config/cache_middleware.py) to GET reads. For this mutation-sensitive
+  // status list that meant a task just completed via POST .../complete/
+  // reappeared for up to 10s, because React Query's post-mutation refetch
+  // was served the stale cached body instead of hitting the server. React
+  // Query's own `staleTime` (60s) is the real request dedup here, so
+  // `no-store` only forces freshness on the refetches that actually fire.
+  return apiFetch<import("@/lib/types").JournalStatus>("/api/v1/journal/status/", {
+    cache: "no-store",
+  });
 }
 
 // Typed-task writes — update the row, not synthesized markdown (which GET
