@@ -22,10 +22,20 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CLUSTER_MIN_LESSONS = 5
 # Average-linkage threshold: the mean pairwise similarity between two
-# clusters must exceed this value for them to merge.  Raised to 0.84
-# to prevent cross-domain lessons (e.g. DevOps + personal habits) from
-# being pulled into the same cluster via a semantically bridging lesson.
-CLUSTER_SIMILARITY_THRESHOLD = 0.84
+# clusters must exceed this value for them to merge.
+#
+# Calibrated for OpenAI text-embedding-3-small (1536-dim), the model that
+# actually generates lesson embeddings.  Measured on live prod data, the
+# real inter-lesson cosine similarity between distinct lessons tops out
+# around 0.76 and averages ~0.52 (nearest-neighbour ~0.52; global max 0.762
+# on a 111-lesson tenant).  A prior value of 0.84 was mathematically
+# unreachable against those embeddings, so the agglomerative loop merged
+# nothing and every lesson became a singleton (cluster_id = NULL) fleet-wide.
+# That 0.84 only "passed" in tests because the synthetic fixtures packed
+# vectors into a low-dim region where cosine easily exceeds 0.84 — a
+# threshold-vs-embedding-model mismatch CI never caught.  0.62 sits above
+# the noise floor but comfortably below the real similarity ceiling.
+CLUSTER_SIMILARITY_THRESHOLD = 0.62
 
 # Maximum lessons per cluster.  Prevents mega-clusters that absorb
 # loosely related topics.  When a merge would exceed this, skip it.
@@ -33,8 +43,11 @@ MAX_CLUSTER_SIZE = 8
 
 # Minimum pairwise similarity for a lesson to stay in a cluster during
 # the post-clustering coherence check.  Lessons below this threshold
-# against the cluster median are ejected as noise.
-COHERENCE_MIN_SIMILARITY = 0.72
+# against the cluster median are ejected as noise.  Kept below the merge
+# threshold (0.62) so the coherence pass trims genuine outliers without
+# dissolving clusters that legitimately formed at real-embedding
+# similarities (~0.52 average, ~0.76 max).
+COHERENCE_MIN_SIMILARITY = 0.50
 
 # Tags describing personal behavioral patterns rather than subject domains.
 # These receive 1× weight in label scoring; domain-specific tags receive
