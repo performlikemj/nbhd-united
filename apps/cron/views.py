@@ -120,6 +120,9 @@ TASK_MAP = {
     "dispatch_line_quota_handler": "apps.router.tasks.dispatch_line_quota_handler_task",
     # Lesson constellation maintenance
     "dedup_lessons": "apps.lessons.tasks.dedup_lessons_task",
+    # Async LLM cluster-naming pass (enqueued by refresh_constellation after the
+    # deterministic label pass; cached + capped, deterministic labels on failure)
+    "name_clusters": "apps.lessons.tasks.name_clusters_task",
     "reseed_lessons": "apps.lessons.tasks.reseed_lessons_task",
     "reseed_lessons_single_tenant": "apps.lessons.tasks.reseed_lessons_single_tenant_task",
     # Neighborhood: fail-closed share scrub (async, never inline in a request)

@@ -12,6 +12,7 @@ import math
 import re
 from collections import Counter
 
+from django.conf import settings
 from django.db import transaction
 
 from apps.tenants.models import Tenant
@@ -24,30 +25,41 @@ DEFAULT_CLUSTER_MIN_LESSONS = 5
 # Average-linkage threshold: the mean pairwise similarity between two
 # clusters must exceed this value for them to merge.
 #
-# Calibrated for OpenAI text-embedding-3-small (1536-dim), the model that
-# actually generates lesson embeddings.  Measured on live prod data, the
-# real inter-lesson cosine similarity between distinct lessons tops out
-# around 0.76 and averages ~0.52 (nearest-neighbour ~0.52; global max 0.762
-# on a 111-lesson tenant).  A prior value of 0.84 was mathematically
-# unreachable against those embeddings, so the agglomerative loop merged
-# nothing and every lesson became a singleton (cluster_id = NULL) fleet-wide.
-# That 0.84 only "passed" in tests because the synthetic fixtures packed
-# vectors into a low-dim region where cosine easily exceeds 0.84 — a
-# threshold-vs-embedding-model mismatch CI never caught.  0.62 sits above
-# the noise floor but comfortably below the real similarity ceiling.
-CLUSTER_SIMILARITY_THRESHOLD = 0.62
+# Calibrated 2026-07-07 by sweeping the REAL prod pgvector similarity
+# matrices of two tenants (an 111-lesson tenant and an 11-lesson tenant)
+# — reproducing the live _agglomerative_cluster/_eject_outliers output
+# exactly, then human-judging cluster coherence at each setting.  On
+# OpenAI text-embedding-3-small (1536-dim, the model that generates lesson
+# embeddings) inter-lesson cosine tops out ~0.76 and averages ~0.52; the
+# average nearest-neighbour similarity is ~0.516.  At 0.62 only outright
+# near-duplicates merged: the 111-lesson tenant produced 7 pairs at 12.6%
+# coverage, no real same-theme groups.  At 0.50 the same-theme groups
+# finally merge — ~20 human-judged-coherent clusters at 51% coverage on
+# the 111-lesson tenant and 73% on the 11-lesson tenant, with no
+# cross-domain mush.  0.50 sits deliberately just above the ~0.516 mean
+# nearest-neighbour, so the coherence eject pass below AND the regression
+# tests in test_clustering.py (floor pin at 0.40, mid-scale merge at 0.55)
+# are the guardrails against drifting into the noise floor.  A prior value
+# of 0.84 was mathematically unreachable against these embeddings and
+# clustered nothing fleet-wide; it only "passed" in tests because synthetic
+# fixtures packed vectors into a low-dim region where cosine trivially
+# exceeds 0.84.
+CLUSTER_SIMILARITY_THRESHOLD = 0.50
 
 # Maximum lessons per cluster.  Prevents mega-clusters that absorb
 # loosely related topics.  When a merge would exceed this, skip it.
-MAX_CLUSTER_SIZE = 8
+# Raised 8→12 alongside the 0.50 recalibration: at 0.50 genuine same-theme
+# groups are larger than the near-duplicate pairs 0.62 produced, and 12 was
+# the size at which the swept clusters stayed coherent without chaining.
+MAX_CLUSTER_SIZE = 12
 
 # Minimum pairwise similarity for a lesson to stay in a cluster during
-# the post-clustering coherence check.  Lessons below this threshold
-# against the cluster median are ejected as noise.  Kept below the merge
-# threshold (0.62) so the coherence pass trims genuine outliers without
-# dissolving clusters that legitimately formed at real-embedding
-# similarities (~0.52 average, ~0.76 max).
-COHERENCE_MIN_SIMILARITY = 0.50
+# the post-clustering coherence check.  Lessons whose median similarity to
+# cluster-mates falls below this are ejected as noise.  Held at
+# threshold − 0.10 (0.40) so the coherence pass trims genuine outliers that
+# slipped in through average-linkage averaging without dissolving clusters
+# that legitimately formed at real-embedding similarities (~0.52 average).
+COHERENCE_MIN_SIMILARITY = 0.40
 
 # Tags describing personal behavioral patterns rather than subject domains.
 # These receive 1× weight in label scoring; domain-specific tags receive
@@ -72,83 +84,431 @@ _BEHAVIORAL_TAGS = frozenset(
     }
 )
 
+# Common English function/filler words that must never become a cluster
+# name.  A cluster's raw lesson text is full of these; a 65-word list (the
+# prior size) leaked function words like "across", "daily", "in-person" and
+# "replies" into labels, reading as word salad.  This ~280-word list covers
+# articles, pronouns, prepositions, conjunctions, auxiliary/modal verbs,
+# common adverbs, time/quantity fillers, and the specific leak words seen in
+# the bad-label screenshot.  Applied only to TEXT tokens (tagless clusters);
+# curated tags are trusted and scored on their own.
 _TEXT_STOPWORDS = frozenset(
     {
+        # articles / determiners / quantifiers
         "the",
-        "and",
-        "but",
-        "for",
-        "not",
-        "you",
-        "that",
+        "a",
+        "an",
         "this",
-        "with",
-        "have",
-        "from",
-        "they",
-        "will",
-        "your",
-        "been",
-        "when",
-        "there",
-        "their",
-        "what",
-        "which",
-        "were",
-        "make",
-        "like",
-        "just",
-        "more",
-        "also",
-        "into",
-        "than",
-        "then",
+        "that",
+        "these",
+        "those",
         "some",
-        "would",
-        "about",
-        "always",
-        "never",
-        "should",
-        "could",
-        "keep",
-        "good",
-        "best",
-        "use",
-        "using",
-        "used",
-        "can",
-        "may",
-        "might",
-        "over",
+        "any",
+        "all",
+        "both",
         "each",
         "every",
-        "first",
+        "either",
+        "neither",
+        "another",
+        "other",
+        "such",
+        "no",
+        "none",
+        "many",
+        "much",
+        "most",
+        "more",
+        "less",
+        "few",
+        "several",
+        "enough",
+        "own",
+        "same",
+        "whole",
+        "half",
+        "lot",
+        "lots",
+        "bit",
+        "kind",
+        "sort",
+        "type",
+        "part",
+        "piece",
+        "couple",
+        "plenty",
+        # pronouns
+        "i",
+        "me",
+        "my",
+        "mine",
+        "myself",
+        "we",
+        "us",
+        "our",
+        "ours",
+        "ourselves",
+        "you",
+        "your",
+        "yours",
+        "yourself",
+        "yourselves",
+        "he",
+        "him",
+        "his",
+        "himself",
+        "she",
+        "her",
+        "hers",
+        "herself",
+        "it",
+        "its",
+        "itself",
+        "they",
+        "them",
+        "their",
+        "theirs",
+        "themselves",
+        "who",
+        "whom",
+        "whose",
+        "which",
+        "what",
+        "whatever",
+        "whoever",
+        "someone",
+        "somebody",
+        "something",
+        "anyone",
+        "anybody",
+        "anything",
+        "everyone",
+        "everybody",
+        "everything",
+        "nobody",
+        "nothing",
+        "one",
+        "ones",
+        # prepositions / particles
+        "of",
+        "in",
+        "on",
+        "at",
+        "by",
+        "for",
+        "with",
+        "about",
+        "against",
+        "between",
+        "into",
+        "through",
+        "during",
         "before",
         "after",
+        "above",
+        "below",
+        "to",
+        "from",
+        "up",
+        "down",
+        "out",
+        "off",
+        "over",
+        "under",
+        "again",
+        "further",
+        "onto",
+        "upon",
+        "within",
+        "without",
+        "toward",
+        "towards",
+        "across",
+        "along",
+        "around",
+        "behind",
+        "beside",
+        "beyond",
+        "near",
+        "past",
+        "per",
+        "via",
+        "amid",
+        "among",
+        "unto",
+        "throughout",
+        # conjunctions
+        "and",
+        "but",
+        "or",
+        "nor",
+        "so",
+        "yet",
+        "because",
+        "as",
+        "until",
         "while",
+        "although",
+        "though",
+        "whereas",
         "since",
-        "both",
-        "through",
-        "very",
+        "unless",
+        "whether",
+        "if",
+        "then",
+        "than",
+        "else",
+        "hence",
+        "thus",
+        "therefore",
+        "however",
+        "moreover",
+        "meanwhile",
+        "besides",
+        "otherwise",
+        # auxiliary / modal / common verbs
+        "be",
+        "am",
+        "is",
+        "are",
+        "was",
+        "were",
+        "been",
+        "being",
+        "have",
+        "has",
+        "had",
+        "having",
+        "do",
+        "does",
+        "did",
+        "doing",
+        "done",
+        "will",
+        "would",
+        "shall",
+        "should",
+        "can",
+        "could",
+        "may",
+        "might",
+        "must",
+        "ought",
+        "get",
+        "gets",
+        "got",
+        "getting",
+        "make",
+        "makes",
+        "made",
+        "making",
+        "go",
+        "goes",
+        "going",
+        "went",
+        "come",
+        "comes",
+        "came",
+        "coming",
+        "keep",
+        "keeps",
+        "kept",
+        "let",
+        "lets",
+        "put",
+        "take",
+        "takes",
+        "took",
+        "use",
+        "uses",
+        "used",
+        "using",
+        "want",
+        "wants",
+        "need",
+        "needs",
+        "try",
+        "tried",
+        "trying",
+        "seem",
+        "seems",
+        "feel",
+        "feels",
+        "felt",
+        "say",
+        "says",
+        "said",
+        "tell",
+        "told",
+        "give",
+        "gave",
+        "given",
+        "reply",
+        "replies",
+        "replied",
+        "replying",
+        # adverbs / intensifiers / fillers
+        "not",
         "only",
+        "just",
+        "also",
+        "too",
+        "very",
+        "really",
+        "quite",
+        "rather",
+        "almost",
+        "always",
+        "never",
         "often",
-        "most",
+        "sometimes",
+        "usually",
+        "already",
+        "still",
+        "even",
+        "ever",
+        "once",
+        "twice",
+        "back",
+        "here",
+        "there",
         "where",
+        "when",
         "how",
         "why",
+        "now",
+        "soon",
+        "later",
+        "early",
+        "late",
+        "well",
+        "far",
+        "away",
+        "maybe",
+        "perhaps",
+        "actually",
+        "basically",
+        "literally",
+        "simply",
+        "merely",
+        "mostly",
+        "generally",
+        "especially",
+        "particularly",
+        "instead",
+        "anyway",
+        "somehow",
+        "somewhat",
+        "overall",
+        # time / quantity fillers (the leak words from the bad-label screenshot)
+        "day",
+        "days",
+        "daily",
+        "today",
+        "tomorrow",
+        "yesterday",
+        "week",
+        "weekly",
+        "weeks",
+        "month",
+        "monthly",
+        "year",
+        "yearly",
+        "time",
+        "times",
+        "morning",
+        "evening",
+        "night",
+        "afternoon",
+        "hour",
+        "hours",
+        "minute",
+        "minutes",
+        "in-person",
+        "late-night",
+        "everyday",
+        "weekday",
+        "weekend",
+        # generic evaluatives
+        "good",
+        "bad",
+        "best",
+        "better",
+        "worse",
+        "worst",
+        "great",
+        "nice",
+        "okay",
+        "fine",
+        "sure",
+        "new",
+        "old",
+        "big",
+        "small",
+        "long",
+        "short",
+        "high",
+        "low",
+        "next",
+        "last",
+        "first",
+        "second",
+        "third",
+        "little",
+        "able",
+        "thing",
+        "things",
+        "stuff",
+        "way",
+        "ways",
     }
 )
 
 _DOMAIN_WEIGHT_MULTIPLIER = 2.0  # multiplier for non-behavioral (domain) tags
-_TEXT_TOKEN_WEIGHT = 0.4  # text tokens count as this fraction of a tag
-_AMBIGUITY_MARGIN = 0.15  # swap in domain term if within 15% of behavioral top
 
 
-def _extract_text_tokens(text: str, max_chars: int = 200) -> list[str]:
-    """Extract meaningful word tokens from a text snippet for label scoring."""
+def _extract_text_tokens(text: str, max_chars: int = 240) -> list[str]:
+    """Ordered, stopword-filtered word tokens from a text snippet.
+
+    Order is preserved (with repeats) so adjacent-token bigrams can be built
+    from the result — a good bigram ("weight tracking") reads far better as a
+    label than the top-3 unigram salad the old labeler produced.
+    """
     snippet = text[:max_chars].lower()
     tokens = re.findall(r"[a-z][a-z0-9_-]{2,}", snippet)
     return [t for t in tokens if t not in _TEXT_STOPWORDS]
+
+
+def _bigrams(tokens: list[str]) -> list[str]:
+    """Adjacent-token bigrams from an ordered token list ("a b c" → "a b", "b c")."""
+    return [f"{tokens[i]} {tokens[i + 1]}" for i in range(len(tokens) - 1)]
+
+
+def _titlecase_label(term: str) -> str:
+    """Render a term/bigram as a display name: Title Case, no record separators.
+
+    Never emits '·' — the iOS HUD renders labels as "Inside · <label>", so a
+    '·' inside the label would read as a double separator.
+    """
+    cleaned = term.replace("·", " ").strip()
+    return " ".join(part.title() for part in cleaned.split())
+
+
+def _format_cluster_label(terms: list[str], *, max_len: int = 40) -> str:
+    """Join up to two ranked terms as a Title-Case name ("Fitness & Health").
+
+    Drops to a single term if two would exceed ``max_len``; hard-truncates a
+    lone over-long term so the DB's 40-char expectation always holds.
+    """
+    names = [_titlecase_label(t) for t in terms[:2] if t.strip()]
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    if len(names) == 2:
+        joined = f"{names[0]} & {names[1]}"
+        if len(joined) <= max_len:
+            return joined
+    return names[0][:max_len]
 
 
 def _cosine_similarity_matrix(embeddings):
@@ -345,14 +705,103 @@ def cluster_lessons(tenant: Tenant) -> dict[str, int]:
     }
 
 
-def generate_cluster_labels(tenant: Tenant) -> int:
-    """Generate cluster labels using TF-IDF on tags and text snippets.
+def _cluster_candidate_terms(
+    cluster_lessons: list[Lesson],
+    total_docs: int,
+    global_tag_df: Counter,
+) -> tuple[list[str], bool]:
+    """Rank candidate label terms for one cluster (the hardened deterministic floor).
 
-    Tags frequent within a cluster but rare globally receive higher scores.
-    Domain-specific tags are weighted 2× over behavioral/generic tags
-    (habits, mindset, …) so subject-domain vocabulary wins over generic
-    self-improvement labels.  Text tokens from lesson snippets supplement
-    the tag signal when tags are sparse or overly generic.
+    Returns ``(terms, used_tags)`` — an ordered list of the best candidate
+    strings (tags, or text bigrams/unigrams) and whether they came from
+    curated tags (``True``) or raw lesson text (``False``). Rules:
+
+    * **Tags-first.** If ANY lesson in the cluster carries a tag, candidates
+      are drawn from tags only; raw text is used solely for tagless clusters.
+      Curated tags read far cleaner than text tokens.
+    * **Majority support.** A candidate must appear in ``ceil(size/2)`` of the
+      cluster's lessons — this kills one-off proper-noun leaks (a single
+      lesson's ``angellist``/``wellfound``). If nothing clears majority the
+      highest-support candidates are kept so the cluster still gets a name.
+    * **Text prefers bigrams.** Adjacent-token bigrams ("cold outreach") are
+      scored before unigrams; unigrams are used only when no bigram clears
+      majority, so labels stop reading as unigram salad.
+    * **Tags rank by (support, TF-IDF·domain-weight).** Shared, domain-specific
+      vocabulary wins over a globally-rare one-off — the failure mode where IDF
+      dominates in tiny clusters and hands the label to junk.
+    """
+    size = len(cluster_lessons)
+    majority = math.ceil(size / 2)
+    has_tags = any(lesson.tags for lesson in cluster_lessons)
+
+    if has_tags:
+        tag_df: Counter = Counter()
+        for lesson in cluster_lessons:
+            tag_df.update(set(lesson.tags))
+
+        def _tag_score(tag: str, df: int) -> float:
+            tf = df / size
+            idf = math.log((total_docs + 1) / (global_tag_df.get(tag, 0) + 1))
+            weight = 1.0 if tag.lower() in _BEHAVIORAL_TAGS else _DOMAIN_WEIGHT_MULTIPLIER
+            return tf * idf * weight
+
+        scored = [(tag, df, _tag_score(tag, df)) for tag, df in tag_df.items()]
+        supported = [row for row in scored if row[1] >= majority] or scored
+        # Support first (shared vocabulary), then domain-weighted TF-IDF.
+        supported.sort(key=lambda row: (row[1], row[2]), reverse=True)
+        return [row[0] for row in supported], True
+
+    # Tagless cluster: build from text, preferring bigrams over unigrams.
+    unigram_df: Counter = Counter()
+    bigram_df: Counter = Counter()
+    for lesson in cluster_lessons:
+        tokens = _extract_text_tokens(lesson.text or "")
+        unigram_df.update(set(tokens))
+        bigram_df.update(set(_bigrams(tokens)))
+
+    bigrams_supported = [(b, df) for b, df in bigram_df.items() if df >= majority]
+    if bigrams_supported:
+        bigrams_supported.sort(key=lambda t: t[1], reverse=True)
+        return [b for b, _ in bigrams_supported], False
+
+    unigrams_supported = [(u, df) for u, df in unigram_df.items() if df >= majority]
+    pool = unigrams_supported or list(unigram_df.items())
+    if not pool:
+        return [], False
+    pool.sort(key=lambda t: t[1], reverse=True)
+    return [u for u, _ in pool], False
+
+
+def deterministic_cluster_label(
+    cluster_lessons: list[Lesson],
+    total_docs: int,
+    global_tag_df: Counter,
+) -> str:
+    """The always-on, network-free display name for one cluster.
+
+    This is the label floor: synchronous, deterministic, and good enough to
+    ship on its own. The async LLM naming pass (``cluster_naming.py``) is an
+    upgrade layered on top — it must never block or replace this floor when it
+    fails. Reused by the offline label-sanity script and the LLM evidence
+    builder so all three see the same candidate ranking.
+    """
+    terms, _used_tags = _cluster_candidate_terms(cluster_lessons, total_docs, global_tag_df)
+    label = _format_cluster_label(terms)
+    if label:
+        return label
+    raw_text = " ".join((lesson.text or "") for lesson in cluster_lessons)[:500].strip()
+    return (raw_text[:40] or "Lesson cluster")[:40]
+
+
+def generate_cluster_labels(tenant: Tenant) -> int:
+    """Assign each cluster its hardened deterministic label (tags-first, network-free).
+
+    Curated tags drive the label when present; tagless clusters fall back to
+    text bigrams, then unigrams. Majority support kills one-off proper-noun
+    leaks and a ~280-word stopword list keeps function/filler words out. The
+    result is Title-Case, at most two terms joined with " & ", capped at 40
+    chars. An optional async LLM pass may later overwrite these with warmer
+    names (see ``cluster_naming.py``); this remains the floor that always runs.
     """
     all_lessons = list(Lesson.objects.filter(tenant=tenant, status="approved"))
     total_docs = len(all_lessons) or 1
@@ -384,61 +833,7 @@ def generate_cluster_labels(tenant: Tenant) -> int:
         if not cluster_lessons:
             continue
 
-        cluster_size = len(cluster_lessons)
-        text_parts: list[str] = []
-        cluster_tag_tf: Counter = Counter()
-
-        for lesson in cluster_lessons:
-            cluster_tag_tf.update(set(lesson.tags))
-            text_parts.append(lesson.text or "")
-
-        scores: dict[str, float] = {}
-
-        # Tag TF-IDF with domain weighting.
-        for tag, count in cluster_tag_tf.items():
-            tf = count / cluster_size
-            idf = math.log((total_docs + 1) / (global_tag_df.get(tag, 0) + 1))
-            weight = 1.0 if tag.lower() in _BEHAVIORAL_TAGS else _DOMAIN_WEIGHT_MULTIPLIER
-            scores[tag] = tf * idf * weight
-
-        # Text token supplement — adds domain keywords from lesson text as
-        # lower-weight candidates when not already represented by a tag.
-        text_token_tf: Counter = Counter()
-        for lesson in cluster_lessons:
-            text_token_tf.update(set(_extract_text_tokens(lesson.text or "")))
-
-        for token, count in text_token_tf.items():
-            if token in scores:
-                continue  # already covered by a tag
-            tf = count / cluster_size
-            idf = math.log((total_docs + 1) / (global_tag_df.get(token, 0) + 1))
-            weight = 1.0 if token.lower() in _BEHAVIORAL_TAGS else _DOMAIN_WEIGHT_MULTIPLIER
-            scores[token] = tf * idf * weight * _TEXT_TOKEN_WEIGHT
-
-        if not scores:
-            raw_text = " ".join(text_parts)[:500].strip()
-            label = (raw_text[:40] or "Lesson cluster")[:40]
-            Lesson.objects.filter(
-                tenant=tenant,
-                status="approved",
-                cluster_id=cluster_id,
-            ).update(cluster_label=label)
-            labeled += 1
-            continue
-
-        sorted_terms = sorted(scores, key=lambda t: scores[t], reverse=True)
-
-        # Ambiguity fallback: if the top term is behavioral and a domain term
-        # scores within _AMBIGUITY_MARGIN of it, prefer the domain term.
-        top_term = sorted_terms[0]
-        if top_term.lower() in _BEHAVIORAL_TAGS:
-            domain_terms = [t for t in sorted_terms if t.lower() not in _BEHAVIORAL_TAGS]
-            if domain_terms:
-                best_domain = domain_terms[0]
-                if scores[top_term] <= scores[best_domain] * (1 + _AMBIGUITY_MARGIN):
-                    sorted_terms = [best_domain] + [t for t in sorted_terms if t != best_domain]
-
-        label = " ".join(sorted_terms[:3]).strip()
+        label = deterministic_cluster_label(cluster_lessons, total_docs, global_tag_df)
 
         Lesson.objects.filter(
             tenant=tenant,
@@ -585,6 +980,33 @@ def _enqueue_shared_position_refresh(tenant: Tenant) -> None:
         logger.exception("shared-position refresh enqueue failed for tenant %s", tenant.id)
 
 
+def _enqueue_cluster_naming(tenant: Tenant) -> None:
+    """Enqueue the async LLM cluster-naming pass after a recluster.
+
+    The deterministic labels are already written by ``generate_cluster_labels``,
+    so this is a pure upgrade: a warm LLM name replaces the TF-IDF label when the
+    evidence supports it (``apps.lessons.cluster_naming``).
+
+    ASYNC-ONLY — unlike ``_enqueue_shared_position_refresh`` (a pure-DB
+    copy-forward that is safe to run inline in the publish_task dev/test
+    fallback), naming makes a network + cost LLM call, so we deliberately do NOT
+    run it inline: an unconfigured QStash (dev/CI/tests) means SKIP, not a
+    synchronous LLM call inside ``refresh_constellation``. Prod (QStash set)
+    fires it async on a worker. Gated on the kill-switch and fully defensive —
+    a naming-side failure must never break the core constellation refresh.
+    """
+    if not getattr(settings, "QSTASH_TOKEN", ""):
+        return
+    if not getattr(settings, "CLUSTER_LABEL_LLM_ENABLED", True):
+        return
+    try:
+        from apps.cron.publish import publish_task
+
+        publish_task("name_clusters", str(tenant.id))
+    except Exception:
+        logger.exception("cluster-naming enqueue failed for tenant %s", tenant.id)
+
+
 def refresh_constellation(tenant: Tenant) -> dict[str, object]:
     """Run clustering + labeling + position computation for a tenant."""
 
@@ -592,6 +1014,7 @@ def refresh_constellation(tenant: Tenant) -> dict[str, object]:
     label_count = generate_cluster_labels(tenant)
     positions_count = compute_positions(tenant)
     _enqueue_shared_position_refresh(tenant)
+    _enqueue_cluster_naming(tenant)
     return {
         **clustering_result,
         "clusters_labeled": label_count,

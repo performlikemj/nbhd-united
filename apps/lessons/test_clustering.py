@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import numpy as np
 from django.test import TestCase
 
@@ -34,6 +36,33 @@ class LessonClusteringServiceTests(TestCase):
         base = np.zeros(1536)
         base[base_start : base_start + 200] = 1.0
         return (base + rng.normal(0, noise, 1536)).tolist()
+
+    @staticmethod
+    def _three_vectors_with_cosine(cosine: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Three unit vectors (padded to 1536) with EXACT pairwise cosine == ``cosine``.
+
+        Same exact-cosine construction as ``test_cluster_lessons_real_distribution``
+        and ``..._prevents_chaining``: pack the whole signal into the first three
+        dims so the pairwise dot products are analytically pinned, independent of
+        embedding dimensionality. Used to pin merge behaviour at specific real-scale
+        similarities without relying on how numpy noise happens to land.
+        """
+        s = math.sqrt(1.0 - cosine**2)
+        y = (cosine - cosine**2) / s
+        z = math.sqrt(max(0.0, 1.0 - cosine**2 - y**2))
+
+        v1 = np.zeros(1536)
+        v1[0] = 1.0
+
+        v2 = np.zeros(1536)
+        v2[0] = cosine
+        v2[1] = s
+
+        v3 = np.zeros(1536)
+        v3[0] = cosine
+        v3[1] = y
+        v3[2] = z
+        return v1, v2, v3
 
     def test_cluster_lessons_groups_similar_embeddings(self):
         """Lessons with similar embeddings should cluster together."""
@@ -225,6 +254,92 @@ class LessonClusteringServiceTests(TestCase):
         self.assertNotIn(None, cluster_ids)
         self.assertEqual(len(cluster_ids), 1)
 
+    def test_cluster_lessons_floor_pin_noise_does_not_merge(self):
+        """Noise-floor similarities (~0.40) must NOT merge at the 0.50 threshold.
+
+        The average nearest-neighbour cosine on real prod embeddings is ~0.516,
+        so 0.50 sits deliberately just above it.  This pins the floor: three
+        lessons whose pairwise cosine is exactly 0.40 (the "unrelated but not
+        orthogonal" band) must stay singletons.  If someone lowers
+        CLUSTER_SIMILARITY_THRESHOLD into the noise floor (<= 0.40), this test
+        fails — the guardrail against over-merging everything into mush.
+        """
+        v1, v2, v3 = self._three_vectors_with_cosine(0.40)
+        rng = np.random.default_rng(11)
+        noise = 0.001
+
+        near_floor = [
+            self._create_approved_lesson(
+                text=f"Loosely related lesson {i}",
+                tags=[f"floor{i}"],
+                embedding=(vec + rng.normal(0, noise, 1536)).tolist(),
+            )
+            for i, vec in enumerate((v1, v2, v3))
+        ]
+        # Two orthogonal singletons so total >= DEFAULT_CLUSTER_MIN_LESSONS.
+        v4 = np.zeros(1536)
+        v4[10] = 1.0
+        v5 = np.zeros(1536)
+        v5[20] = 1.0
+        self._create_approved_lesson(
+            text="Orthogonal one", tags=["o1"], embedding=(v4 + rng.normal(0, noise, 1536)).tolist()
+        )
+        self._create_approved_lesson(
+            text="Orthogonal two", tags=["o2"], embedding=(v5 + rng.normal(0, noise, 1536)).tolist()
+        )
+
+        result = cluster_lessons(self.tenant)
+
+        # At 0.40 pairwise similarity, nothing crosses the 0.50 merge threshold.
+        self.assertEqual(result["clusters"], 0)
+        self.assertEqual(result["clustered"], 0)
+        for lesson in near_floor:
+            lesson.refresh_from_db()
+            self.assertIsNone(lesson.cluster_id)
+
+    def test_cluster_lessons_mid_scale_related_merges(self):
+        """Related-but-not-duplicate similarities (~0.55) MUST merge at 0.50.
+
+        This is the actual regression this recalibration fixes.  On real prod
+        data the "same theme, not near-duplicate" pairs sit around 0.55 — above
+        the noise floor but below the 0.62 that PR #1054 used, which is why 0.62
+        left only near-duplicate pairs (12.6% coverage) and no genuine
+        constellations.  At 0.50 these three must land in one cluster.
+        """
+        v1, v2, v3 = self._three_vectors_with_cosine(0.55)
+        rng = np.random.default_rng(13)
+        noise = 0.001
+
+        related = [
+            self._create_approved_lesson(
+                text=f"Same-theme lesson {i}",
+                tags=["theme"],
+                embedding=(vec + rng.normal(0, noise, 1536)).tolist(),
+            )
+            for i, vec in enumerate((v1, v2, v3))
+        ]
+        # Two orthogonal singletons so total >= DEFAULT_CLUSTER_MIN_LESSONS.
+        v4 = np.zeros(1536)
+        v4[10] = 1.0
+        v5 = np.zeros(1536)
+        v5[20] = 1.0
+        self._create_approved_lesson(
+            text="Orthogonal one", tags=["o1"], embedding=(v4 + rng.normal(0, noise, 1536)).tolist()
+        )
+        self._create_approved_lesson(
+            text="Orthogonal two", tags=["o2"], embedding=(v5 + rng.normal(0, noise, 1536)).tolist()
+        )
+
+        result = cluster_lessons(self.tenant)
+
+        self.assertGreaterEqual(result["clusters"], 1)
+        self.assertGreaterEqual(result["clustered"], 3)
+        for lesson in related:
+            lesson.refresh_from_db()
+        cluster_ids = {lesson.cluster_id for lesson in related}
+        self.assertNotIn(None, cluster_ids)
+        self.assertEqual(len(cluster_ids), 1)
+
     def test_generate_cluster_labels_uses_distinctive_tags(self):
         self._create_approved_lesson(
             text="I learned to optimize queries",
@@ -265,11 +380,18 @@ class LessonClusteringServiceTests(TestCase):
 
         for label in labels.values():
             self.assertTrue(label)
-            self.assertLessEqual(len(label.split()), 3)
+            # Hardened labeler: Title Case, at most two terms joined with " & ",
+            # capped at 40 chars.
+            self.assertLessEqual(len(label), 40)
+            self.assertLessEqual(len(label.split(" & ")), 2)
+            self.assertEqual(label, label[0].upper() + label[1:])
 
         cluster_one_label = labels[1]
-        self.assertIn("database", cluster_one_label)
-        self.assertIn("performance", cluster_one_label)
+        # Both lessons share "database" and "performance" (support = 2); the
+        # one-off "postgres"/"index" tags lose on support. Title-cased.
+        self.assertIn("Database", cluster_one_label)
+        self.assertIn("Performance", cluster_one_label)
+        self.assertIn(" & ", cluster_one_label)
 
     def test_cluster_lessons_skips_when_too_few_lessons(self):
         lesson_1 = self._create_approved_lesson(text="Tiny sample one", tags=["focus"])
