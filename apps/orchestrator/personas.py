@@ -438,7 +438,7 @@ def render_agents_md(persona_key: str) -> str:
         f"## What I Can Do\n"
         f"\n"
         f"- **Answer questions** — General knowledge, research, explanations\n"
-        f"- **Web search** — Find current information online\n"
+        f"- **Web search** — Find current information online (find `web_search` via tool search first — it is not pre-loaded)\n"
         f"- **Help with writing** — Emails, messages, documents\n"
         f"- **Planning** — Help organize tasks and ideas\n"
         f"\n"
