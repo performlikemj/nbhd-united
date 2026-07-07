@@ -530,6 +530,9 @@ def neighborhood_home(tenant, since=None) -> dict:
     counterpart_ids = [(e.addressee_id if e.requester_id == tenant.id else e.requester_id) for e in edges]
     spark_counts = access.spark_counts_by_owner(tenant)
     thread_state = access.direct_thread_state(tenant)
+    sky_ids = access.sky_friendship_ids(
+        tenant
+    )  # additive in_my_sky flag (Bounded Neighborhood; THE iOS flight contract)
 
     pending = list(
         Friendship.objects.filter(Q(requester=tenant) | Q(addressee=tenant), status=Friendship.Status.PENDING)
@@ -550,6 +553,7 @@ def neighborhood_home(tenant, since=None) -> dict:
                 "friendship_id": str(edge.id),
                 **_profile_public(profiles.get(cid)),
                 "spark_count": spark_counts.get(cid, 0),
+                "in_my_sky": edge.id in sky_ids,
                 "has_unread_thread": state.get("has_unread", False),
                 "thread_id": state.get("thread_id"),
             }
@@ -885,18 +889,28 @@ def _audience_label(viewer_tenant, edge) -> str:
 # ── Wormholes & warp (PR3) ────────────────────────────────────────────────────
 
 
-def list_wormholes(viewer_tenant) -> list[dict]:
+def list_wormholes(viewer_tenant, warpable=None) -> list[dict]:
     """Warp targets for the home galaxy: one gate per accepted neighbor with ≥1
     active+ready spark shared to the viewer. Addressed only by ``friendship_id``
     — never a neighbor's tenant_id. Gate placement is deterministic client-side
     from a stable hash of ``friendship_id``; the payload carries the neighbor's
-    identity, spark count, and the "new since last visit" glow count.
+    identity, spark count, the "new since last visit" glow count, and the additive
+    ``in_my_sky`` flag (Bounded Neighborhood — web parity for the sky flight).
+
+    ``warpable="sky"`` narrows the list to the CHOSEN inner circle —
+    ``in_my_sky AND spark_count > 0`` — i.e. exactly the gates the iOS flight
+    renders. Because ``wormhole_targets`` is already spark-gated, the sky filter is
+    a pure additional narrowing (it can only ever hide gates, never widen).
     """
     targets = access.wormhole_targets(viewer_tenant)
+    sky_ids = access.sky_friendship_ids(viewer_tenant)
     owner_ids = [t["owner_id"] for t in targets]
     profiles = {p.tenant_id: p for p in NeighborProfile.objects.filter(tenant_id__in=owner_ids)}
     out: list[dict] = []
     for target in targets:
+        in_my_sky = target["friendship"].id in sky_ids
+        if warpable == "sky" and not in_my_sky:
+            continue
         profile = profiles.get(target["owner_id"])
         out.append(
             {
@@ -906,6 +920,7 @@ def list_wormholes(viewer_tenant) -> list[dict]:
                 "avatar_hue": profile.avatar_hue if profile else 210,
                 "spark_count": target["spark_count"],
                 "new_since_last_visit": target["new_since_last_visit"],
+                "in_my_sky": in_my_sky,
             }
         )
     out.sort(key=lambda w: (w["display_name"] or "").lower())
@@ -975,6 +990,92 @@ def mark_wormhole_visited(viewer_tenant, friendship_id) -> dict:
     edge = access.assert_neighbors(viewer_tenant, friendship_id)
     visit = access.upsert_wormhole_visit(viewer_tenant, edge)
     return {"friendship_id": str(edge.id), "last_visited_at": visit.last_visited_at}
+
+
+# ── "My sky" — the chosen inner circle (Bounded Neighborhood; BN-PR1) ─────────
+#
+# A private, one-way, invisible curation. The other party is NEVER told — no
+# moment, no push, no counter they can see. All SkyMembership access is confined
+# to apps/friends/access.py (chokepoint); these service functions only orchestrate
+# the party check, the hard-12 cap response, and the roster hydration.
+
+
+def _sky_roster_payload(tenant) -> list[dict]:
+    """Hydrate the viewer's sky roster (≤ ``access.MAX_SKY``) with identities +
+    spark counts, INCLUDING the quiet in-sky-no-spark slots the wormhole payload
+    omits. This is the ONLY place the sky is read back, and only ever for its own
+    owner — a neighbor can never see they were chosen."""
+    roster = access.sky_roster(tenant)
+    owner_ids = [row["owner_id"] for row in roster]
+    profiles = {p.tenant_id: p for p in NeighborProfile.objects.filter(tenant_id__in=owner_ids)}
+    spark_counts = access.spark_counts_by_owner(tenant)
+    out: list[dict] = []
+    for row in roster:
+        oid = row["owner_id"]
+        profile = profiles.get(oid)
+        spark_count = spark_counts.get(oid, 0)
+        out.append(
+            {
+                "friendship_id": row["friendship_id"],
+                **_profile_public(profile),
+                "spark_count": spark_count,
+                "in_my_sky": True,
+                "quiet_slot": spark_count == 0,  # chosen, but nothing to warp to yet
+                "added_at": _iso_z(row["added_at"]),
+            }
+        )
+    return out
+
+
+def list_sky(tenant) -> dict:
+    """The viewer's OWN sky roster — visible ONLY to them (design brief §4.3).
+    ``{sky: [...], count, cap}``; the roster includes quiet no-spark slots so the
+    directory can render "chosen, waiting to share" alongside the live gates."""
+    roster = _sky_roster_payload(tenant)
+    return {"sky": roster, "count": len(roster), "cap": access.MAX_SKY}
+
+
+def add_neighbor_to_sky(tenant, friendship_id) -> tuple[dict, int]:
+    """Add an accepted neighbor to the caller's PRIVATE sky. Party + accepted are
+    checked via the accessor (a stranger's ``friendship_id`` → 403, IDOR dead by
+    construction). Idempotent, and hard-capped at ``access.MAX_SKY``:
+
+      * 201 — newly added.
+      * 200 — already in the sky (no-op).
+      * 409 ``{"error": "sky_full", "cap": MAX_SKY, "sky": [...]}`` — at capacity;
+        the payload carries the current members so the client renders the
+        forced-removal swap ("who makes room?"). Nothing was added.
+
+    One-way + invisible: no signal of any kind reaches the other party.
+    """
+    edge = access.assert_neighbors(tenant, friendship_id)  # party + accepted, else PermissionDenied (403)
+    created, full = access.add_to_sky(tenant, edge)
+    if full:
+        return {
+            "error": "sky_full",
+            "cap": access.MAX_SKY,
+            "detail": f"Your sky holds {access.MAX_SKY}. Remove someone to make room.",
+            "sky": _sky_roster_payload(tenant),
+        }, 409
+    return (
+        {"friendship_id": str(edge.id), "in_my_sky": True, "sky_count": access.sky_count(tenant), "created": created},
+        201 if created else 200,
+    )
+
+
+def remove_neighbor_from_sky(tenant, friendship_id) -> dict:
+    """Remove a neighbor from the caller's sky. Idempotent (200 whether or not a
+    row existed). NOT an unfriend — the edge and everything shared over it are
+    untouched; only the flight gate goes away. Self-scoped, so it can only ever
+    remove the caller's own pick (a foreign/stale ``friendship_id`` removes
+    nothing, no-reveal). The other party is never told."""
+    removed = access.remove_from_sky(tenant, friendship_id)
+    return {
+        "friendship_id": str(friendship_id),
+        "in_my_sky": False,
+        "removed": removed,
+        "sky_count": access.sky_count(tenant),
+    }
 
 
 def adopt_spark(viewer_tenant, viewer_user, shared_lesson_id) -> tuple[dict, int]:

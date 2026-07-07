@@ -329,6 +329,40 @@ class WormholeVisit(models.Model):
         return f"wormhole_visit:{self.viewer_tenant_id}:{self.friendship_id}"
 
 
+class SkyMembership(models.Model):
+    """ "My sky" — one row per ``(viewer, friendship)``: "I chose this neighbor
+    for my inner circle" (the Bounded Neighborhood brief, decisions 2026-07-07).
+
+    A PRIVATE, ONE-WAY, INVISIBLE curation — the polar opposite of a ``Circle``.
+    It mirrors :class:`WormholeVisit` exactly: per-``(viewer, friendship)`` own
+    data, lifecycle tied to the edge via ``Friendship`` CASCADE (an unfriend or
+    block cleans up the sky row for free). Nothing here signals to the other
+    party — no moment, no push, no counter they can ever see; whom you keep close
+    is yours alone. It is NOT an unfriend lever either: removing a neighbor from
+    your sky only takes their gate out of *your* flight.
+
+    Read AND written ONLY self-scoped, through :mod:`apps.friends.access` (the AST
+    chokepoint ``test_access_chokepoint`` guards ``SkyMembership.objects`` to that
+    module, like the cross-tenant content models). Hard-capped at
+    ``access.MAX_SKY`` (12), enforced server-side at the add action.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    viewer_tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="sky_memberships")
+    friendship = models.ForeignKey(Friendship, on_delete=models.CASCADE, related_name="+")
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "friend_sky_memberships"
+        constraints = [
+            models.UniqueConstraint(fields=["viewer_tenant", "friendship"], name="uq_sky_membership"),
+        ]
+        indexes = [models.Index(fields=["viewer_tenant"])]
+
+    def __str__(self) -> str:
+        return f"sky:{self.viewer_tenant_id}:{self.friendship_id}"
+
+
 class AbsorbedItem(models.Model):
     """Transparency + purge ledger (design §2.8). STRICTLY a pointer ledger —
     there is deliberately NO ``summary``/knowledge field. The knowledge lives

@@ -12,7 +12,9 @@ Two rules, enforced by walking each module's AST (robust — not a brittle
 string grep):
 
 1. ``SharedLesson`` / ``FriendMessage`` / ``SharedGoal`` / ``LessonShareGrant``
-   ``.objects`` may be touched ONLY in ``apps/friends/access.py``.
+   ``.objects`` may be touched ONLY in ``apps/friends/access.py`` — and so may the
+   private per-viewer ``SkyMembership`` ("My sky" curation), so "whom you keep
+   close" stays self-scoped (Bounded Neighborhood; brief §4.5).
 2. ``Lesson.objects`` may NOT be touched anywhere under ``apps/friends/`` —
    not even in ``access.py`` — because friend paths read the frozen
    ``SharedLesson`` snapshot, never the raw ``Lesson`` corpus.
@@ -42,6 +44,16 @@ from django.test import SimpleTestCase
 
 # Cross-tenant, frozen-content models. Manager access allowed ONLY in access.py.
 CROSS_TENANT_MODELS = frozenset({"SharedLesson", "FriendMessage", "SharedGoal", "LessonShareGrant"})
+
+# Private, one-way per-viewer curation (Bounded Neighborhood; brief §4.5). Not
+# cross-tenant *content*, but "whom you keep close" is a private preference that
+# must stay self-scoped — so its manager is likewise confined to access.py. Kept
+# separate from CROSS_TENANT_MODELS (which the runtime-view broker test also uses;
+# sky is not a runtime-view concern) and unioned into the friends-module check.
+PRIVATE_CURATION_MODELS = frozenset({"SkyMembership"})
+
+# Every model whose ``.objects`` may appear ONLY in apps/friends/access.py.
+ACCESS_ONLY_MODELS = CROSS_TENANT_MODELS | PRIVATE_CURATION_MODELS
 
 # The raw lesson corpus — forbidden anywhere under apps/friends/ (incl. access.py).
 RAW_LESSON_MODEL = "Lesson"
@@ -104,16 +116,17 @@ class AccessChokepointTest(SimpleTestCase):
         for path, rel in _friends_modules():
             if path == ACCESS_MODULE:
                 continue
-            for name in sorted(_manager_accesses(path.read_text()) & CROSS_TENANT_MODELS):
+            for name in sorted(_manager_accesses(path.read_text()) & ACCESS_ONLY_MODELS):
                 offenders.append((str(rel), f"{name}.objects"))
         self.assertEqual(
             offenders,
             [],
-            "Cross-tenant model manager(s) used outside apps/friends/access.py. "
+            "Access-confined model manager(s) used outside apps/friends/access.py. "
             "Every cross-tenant read MUST route through apps/friends/access.py "
-            "(are_neighbors / assert_neighbors / shared_star_qs / "
-            "assert_can_write) — Django is BYPASSRLS, so this filter is the only "
-            f"thing standing between tenants. Offenders: {offenders}",
+            "(are_neighbors / assert_neighbors / shared_star_qs / assert_can_write) "
+            "— Django is BYPASSRLS, so this filter is the only thing standing "
+            "between tenants — and the private per-viewer SkyMembership (My-sky) is "
+            f"confined there too so a private choice stays self-scoped. Offenders: {offenders}",
         )
 
     def test_raw_lesson_never_touched_under_friends(self):

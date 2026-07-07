@@ -229,13 +229,43 @@ class ShareRejectView(FriendsView):
 
 
 class WormholesView(FriendsView):
-    """GET /api/v1/friends/wormholes/ — warp targets: one per accepted neighbor
-    with ≥1 active+ready spark shared to me (friendship_id, identity, spark
-    count, new-since-last-visit). Placement is deterministic client-side."""
+    """GET /api/v1/friends/wormholes/[?warpable=sky] — warp targets: one per
+    accepted neighbor with ≥1 active+ready spark shared to me (friendship_id,
+    identity, spark count, new-since-last-visit, ``in_my_sky``). Placement is
+    deterministic client-side. ``?warpable=sky`` returns only the CHOSEN inner
+    circle (``in_my_sky AND spark_count > 0``) — the web parity for the sky flight."""
 
     def get(self, request):
         tenant = self.get_tenant(request)
-        return Response(services.list_wormholes(tenant))
+        return Response(services.list_wormholes(tenant, warpable=request.query_params.get("warpable")))
+
+
+class SkyView(FriendsView):
+    """POST / DELETE /api/v1/friends/<friendship_id>/sky/ — add / remove a neighbor
+    from MY private inner circle ("my sky"). One-way + invisible: the other party
+    is never told. POST is hard-capped at 12 — a 13th returns
+    ``409 {"error":"sky_full","cap":12,"sky":[...]}`` carrying the current members
+    so the client renders the forced-removal swap. DELETE is a frictionless,
+    idempotent un-choose (never an unfriend — the edge is untouched)."""
+
+    def post(self, request, friendship_id):
+        tenant = self.get_tenant(request)
+        payload, code = services.add_neighbor_to_sky(tenant, friendship_id)
+        return Response(payload, status=code)
+
+    def delete(self, request, friendship_id):
+        tenant = self.get_tenant(request)
+        return Response(services.remove_neighbor_from_sky(tenant, friendship_id))
+
+
+class SkyRosterView(FriendsView):
+    """GET /api/v1/friends/sky/ — MY sky roster (≤12, including quiet no-spark
+    slots). Visible ONLY to me: the sky is a private curation, never shown to
+    anyone it contains."""
+
+    def get(self, request):
+        tenant = self.get_tenant(request)
+        return Response(services.list_sky(tenant))
 
 
 class FriendGalaxyView(FriendsView):
