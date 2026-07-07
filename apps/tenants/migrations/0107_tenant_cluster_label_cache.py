@@ -4,15 +4,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('tenants', '0106_relock_after_sky'),
+        ("tenants", "0106_relock_after_sky"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='tenant',
-            name='cluster_label_cache',
-            field=models.JSONField(blank=True, default=dict, help_text='Cached LLM cluster names keyed by hash of sorted member lesson ids.'),
+            model_name="tenant",
+            name="cluster_label_cache",
+            field=models.JSONField(
+                blank=True,
+                default=dict,
+                help_text="Cached LLM cluster names keyed by hash of sorted member lesson ids.",
+            ),
         ),
     ]
