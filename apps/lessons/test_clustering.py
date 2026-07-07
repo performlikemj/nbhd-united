@@ -151,6 +151,80 @@ class LessonClusteringServiceTests(TestCase):
         self.assertEqual(l_c1.cluster_id, l_c2.cluster_id)
         self.assertNotEqual(l_a1.cluster_id, l_c1.cluster_id)
 
+    def test_cluster_lessons_real_distribution_similarity(self):
+        """Real-embedding-scale similarities must still form a cluster.
+
+        Guards against threshold-vs-embedding-model drift.  The other tests
+        pack vectors into a low-dim region so pairwise cosine trivially
+        exceeds 0.84 — that is NOT how OpenAI text-embedding-3-small behaves.
+        On live prod data, inter-lesson cosine similarity tops out ~0.76 and
+        averages ~0.52, so a merge threshold above that ceiling (the old 0.84)
+        silently clustered nothing fleet-wide while CI stayed green.
+
+        This fixture builds three unit vectors with EXACT pairwise cosine
+        ~0.72 (padded to 1536 like test_cluster_lessons_prevents_chaining),
+        plus two orthogonal singletons.  At 0.84 nothing merges (clustered=0,
+        clusters=0); at 0.62 the three similar lessons must merge into one
+        multi-lesson cluster.  If someone raises the threshold back above the
+        real similarity ceiling, this test fails.
+        """
+        # Three unit vectors with mutual cosine similarity == 0.72.
+        # Constructed so v_i · v_j = 0.72 for every pair (see derivation:
+        # shared first coordinate 0.72, orthogonal complements sized to
+        # keep each vector unit-norm).
+        v1 = np.zeros(1536)
+        v1[0] = 1.0
+
+        v2 = np.zeros(1536)
+        v2[0] = 0.72
+        v2[1] = 0.69397  # sqrt(1 - 0.72**2)
+
+        v3 = np.zeros(1536)
+        v3[0] = 0.72
+        v3[1] = 0.29050  # (0.72 - 0.72**2) / 0.69397
+        v3[2] = 0.63025  # sqrt(1 - 0.72**2 - 0.29050**2)
+
+        # Two orthogonal directions that must remain singletons (noise).
+        v4 = np.zeros(1536)
+        v4[10] = 1.0
+        v5 = np.zeros(1536)
+        v5[20] = 1.0
+
+        rng = np.random.default_rng(7)
+        noise = 0.001
+
+        similar = [
+            self._create_approved_lesson(
+                text=f"Similar lesson {i}",
+                tags=["cohort"],
+                embedding=(vec + rng.normal(0, noise, 1536)).tolist(),
+            )
+            for i, vec in enumerate((v1, v2, v3))
+        ]
+        self._create_approved_lesson(
+            text="Unrelated one",
+            tags=["solo1"],
+            embedding=(v4 + rng.normal(0, noise, 1536)).tolist(),
+        )
+        self._create_approved_lesson(
+            text="Unrelated two",
+            tags=["solo2"],
+            embedding=(v5 + rng.normal(0, noise, 1536)).tolist(),
+        )
+
+        result = cluster_lessons(self.tenant)
+
+        # At real-distribution similarity (~0.72) the three similar lessons
+        # must merge — this is exactly what the old 0.84 threshold broke.
+        self.assertGreaterEqual(result["clusters"], 1)
+        self.assertGreaterEqual(result["clustered"], 2)
+
+        for lesson in similar:
+            lesson.refresh_from_db()
+        cluster_ids = {lesson.cluster_id for lesson in similar}
+        self.assertNotIn(None, cluster_ids)
+        self.assertEqual(len(cluster_ids), 1)
+
     def test_generate_cluster_labels_uses_distinctive_tags(self):
         self._create_approved_lesson(
             text="I learned to optimize queries",
