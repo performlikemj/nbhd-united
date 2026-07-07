@@ -350,10 +350,12 @@ site is `ConstellationFlightSpikeView.loadWormholes(env:)` (same file's view), w
 `NBHDTests/FlightWormholeTests.swift` currently asserts `maxGates == 6` and the cap/order behavior; that
 suite gets rewritten to assert "renders exactly the in-sky neighbors."
 
-> **Branch note:** `feat/flight-wormholes` is **local-only (not pushed to origin)** as of 2026-07-07;
-> the swap-point commit (`ea9cdd0`, *"Gates are the CHOSEN inner circle: top-K (=6) behind a single
-> swappable FlightWormholeSelection.gates()"*) landed the same day this brief was written. The brief and
-> the code were authored to meet in the middle — the code left the seam, this brief fills it.
+> **Branch note (updated 2026-07-07):** `feat/flight-wormholes` has **merged to nbhd-ios `main`
+> (@ `670bf31`)** — landed as **nbhd-ios#36** with ranking refinement **#37**; it is **no longer
+> local-only**. The swap-point commit (`ea9cdd0`, *"Gates are the CHOSEN inner circle: top-K (=6) behind
+> a single swappable FlightWormholeSelection.gates()"*) landed the same day this brief was written, and
+> **`FlightWormholeSelection.gates()` is now live on `main` as the swap point**. The brief and the code
+> were authored to meet in the middle — the code left the seam, this brief fills it.
 
 ### 5.3 Directory UX
 
@@ -505,9 +507,11 @@ Nothing in this brief contradicts a shipped semantic; these are the seams and fr
 - **Web flight renders all wormholes today** (`galaxy-scene.ts` `buildWormholeGates` over the full
   `fetchWormholes()` list — no top-K). The sky filter should reach web too (BN-PR5), but web is lower
   priority and currently correct-but-unbounded; at small scale it's fine until parity lands.
-- **The swap-point branch is local-only.** `feat/flight-wormholes` (with `FlightWormhole.swift`) is not
-  pushed to origin as of 2026-07-07; the brief references a local branch. Whoever implements BN-PR2 needs
-  that branch (or its eventual push/merge) in hand — the seam it left is the whole plan.
+- **The swap-point branch has merged (updated 2026-07-07).** `feat/flight-wormholes` (with
+  `FlightWormhole.swift`) merged to nbhd-ios `main` (@ `670bf31`) as **nbhd-ios#36** (+ ranking
+  refinement **#37**) — no longer local-only. `FlightWormholeSelection.gates()` is live on `main` as the
+  swap point, so whoever implements BN-PR2 has the seam in hand on the default branch — the seam it left
+  is the whole plan.
 
 ---
 
@@ -515,3 +519,41 @@ Nothing in this brief contradicts a shipped semantic; these are the seams and fr
 established Neighborhood design doc (`docs/features/friends-neighborhood-design.md`) remains the
 implementation source of truth; this brief is the increment that gives the Neighborhood its bounded
 shape.*
+
+---
+
+## Decisions — accepted 2026-07-07
+
+MJ (owner) reviewed §7 and **accepted all six recommended defaults verbatim.** This section makes the
+brief the source of truth; the "draft" framing above is historical. No option was altered — each
+decision is the brief's own recommendation, now binding.
+
+1. **Inner-circle cap → 12, HARD.** (§7 Q1, §2.1, §4.4) The inner circle is a hard cap of 12. Adding a
+   13th triggers **forced removal** — the "your sky is full — make room?" swap flow — never a soft
+   overflow. The friction is the feature; a soft inner circle would become a junk drawer and gates would
+   stop meaning anything.
+2. **The 150 ceiling → keep firm-on-growth, reframed as philosophy.** (§7 Q2, §2.2, §8) The shipped
+   `MAX_NEIGHBORS = 150` behavior stays exactly — a real stop on the *next* add, never a retroactive
+   purge — with only the copy dressed as philosophy ("the ceiling on genuine relationship"). Not made
+   truly-soft/unlimited.
+3. **Inner-circle placement → one-way private curation.** (§7 Q3, §2.1) You may add any accepted neighbor
+   to your sky regardless of whether they've sparked you; the sky is **private, one-way, and invisible**
+   to the other person — no reciprocity, no "who added me," no signal of any kind to them. The spark-gate
+   still governs whether a *gate renders* (in-sky + no spark = a quiet slot, not a dead gate).
+4. **Suggestion signals → passive, dismissable hints only.** (§7 Q4, §2.1) Directory-only, dismissable
+   suggestions sourced from inbound-spark recency + recent 1:1 chat + a shared active Mission; capped to
+   ~2–3; **never a push, never auto-add, never "someone added you."** Backend computes evidence, the
+   human decides. (Not built in BN-PR1 — foundation only.)
+5. **Circles ↔ My-sky → independent.** (§7 Q5, §8) Circles (mutual, visible, shared groups) and My-sky
+   (private personal curation for the flight) do not populate each other. A Circle's members may at most
+   appear as *suggested* sky candidates (per decision 4), never auto-added.
+6. **Launch sequencing → ship on the post-1.0.4 Neighborhood train; built now, dark-gated.** (§7 Q6)
+   The Bounded Neighborhood rides the 1.0.5 Neighborhood release train as a purely additive increment
+   (no new UGC surface — sky is private curation, not content), built now and kept dark behind
+   `friends_enabled` regardless.
+
+**Implementation note (2026-07-07):** BN-PR1 (backend foundation — `SkyMembership`, hard-12 cap,
+`POST/DELETE /friends/<friendship_id>/sky/`, `in_my_sky` on the home BFF + wormhole payloads, relock
+migration, accessor chokepoint + tests) is being implemented against these accepted decisions. The iOS
+swap point they depend on (§5.2) is live: `FlightWormholeSelection.gates()` merged to nbhd-ios `main`
+(@ `670bf31`, nbhd-ios#36 + #37).
