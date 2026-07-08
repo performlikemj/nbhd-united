@@ -49,6 +49,7 @@ class CronPattern(models.TextChoices):
     QUOTE_USER_INTENT = "quote_user_intent", "Quote user intent"
     DOMAIN_SUMMARY = "domain_summary", "Domain summary"
     DAILY_BRIEFING = "daily_briefing", "Daily briefing (system)"
+    WORKOUT_CONGRATS = "workout_congrats", "Workout congrats (system)"
 
 
 class CronCreationPath(models.TextChoices):

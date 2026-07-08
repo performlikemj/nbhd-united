@@ -279,3 +279,90 @@ class DailyBriefingTests(SimpleTestCase):
             payload,
         )
         self.assertFalse(ok2)
+
+
+_AT_SCHEDULE = {"kind": "at", "at": "2099-01-01T00:00:00+00:00"}
+
+
+class WorkoutCongratsTests(SimpleTestCase):
+    def setUp(self):
+        self.handler = get_handler("workout_congrats")
+
+    def test_payload_validates_minimum(self):
+        payload = self.handler.validate_payload({"activity": "Push Day"})
+        self.assertEqual(payload.activity, "Push Day")
+        self.assertIsNone(payload.duration_minutes)
+        self.assertIsNone(payload.rpe)
+
+    def test_payload_rejects_empty_activity(self):
+        with self.assertRaises(Exception):
+            self.handler.validate_payload({"activity": ""})
+
+    def test_payload_rejects_extra_fields(self):
+        # Free-text notes must never leak into the payload (cron prompts bypass
+        # inbound PII redaction) — extra="forbid" enforces it structurally.
+        with self.assertRaises(Exception):
+            self.handler.validate_payload({"activity": "ok", "notes": "private free text"})
+
+    def test_payload_rejects_out_of_range_rpe(self):
+        with self.assertRaises(Exception):
+            self.handler.validate_payload({"activity": "ok", "rpe": 42})
+
+    def test_build_oc_data_shape(self):
+        payload = self.handler.validate_payload(
+            {
+                "activity": "Push — Chest & Shoulders",
+                "category": "strength",
+                "duration_minutes": 52,
+                "rpe": 8,
+                "pr_summary": "New PR: Bench 100 kg (prev 95 kg)",
+            }
+        )
+        data = self.handler.build_oc_data(
+            payload,
+            tenant=None,
+            name="_congrats-abc",
+            schedule=_AT_SCHEDULE,
+        )
+        self.assertEqual(data["name"], "_congrats-abc")
+        self.assertEqual(data["schedule"], _AT_SCHEDULE)
+        self.assertEqual(data["sessionTarget"], "isolated")
+        self.assertEqual(data["payload"]["kind"], "agentTurn")
+        self.assertEqual(data["payload"]["toolsAllow"], ["nbhd_send_to_user"])
+        # iOS-reachable delivery shape — send routes through Django, not OC channels.
+        self.assertEqual(data["delivery"], {"mode": "none"})
+        message = data["payload"]["message"]
+        self.assertIn("Push — Chest & Shoulders", message)
+        self.assertIn("RPE 8", message)
+        self.assertIn("New PR: Bench 100 kg", message)
+        self.assertIn("nbhd_send_to_user", message)
+
+    def test_tools_allow_has_no_mutations(self):
+        payload = self.handler.validate_payload({"activity": "x"})
+        for t in self.handler.get_tools_allow(payload):
+            self.assertNotIn(t, FORBIDDEN_MUTATION_TOOLS)
+
+    def test_validate_outbound_accepts_warm_note(self):
+        payload = self.handler.validate_payload({"activity": "Push Day"})
+        ok, reason = self.handler.validate_outbound_message(
+            "Strong push session — that's your third this week, nice work!",
+            payload,
+        )
+        self.assertTrue(ok, reason)
+
+    def test_validate_outbound_rejects_empty(self):
+        payload = self.handler.validate_payload({"activity": "Push Day"})
+        ok, reason = self.handler.validate_outbound_message("   ", payload)
+        self.assertFalse(ok)
+        self.assertIn("non-empty", reason or "")
+
+    def test_validate_outbound_rejects_over_long(self):
+        payload = self.handler.validate_payload({"activity": "Push Day"})
+        ok, _ = self.handler.validate_outbound_message("x" * 5000, payload)
+        self.assertFalse(ok)
+
+    def test_fallback_message_names_activity(self):
+        payload = self.handler.validate_payload({"activity": "Push Day"})
+        self.assertEqual(
+            self.handler.get_fallback_message(payload, name="_congrats-abc"), "Nice work finishing Push Day."
+        )

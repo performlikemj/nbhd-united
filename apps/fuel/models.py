@@ -284,6 +284,14 @@ class Workout(models.Model):
         "and the edit happened more than 24h after creation, so the UI can show an "
         "'Edited <relative>' footnote on completed sessions.",
     )
+    congratulated_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the assistant scheduled a congratulatory message for this "
+        "completion. The durable dedup guard: stamped atomically on first "
+        "genuine done-transition so a done→planned→done re-toggle never re-fires, "
+        "and reused as the per-tenant congrats-cooldown clock. Null until congratulated.",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

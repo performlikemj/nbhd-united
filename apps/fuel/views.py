@@ -309,6 +309,9 @@ class WorkoutListView(APIView):
         serializer.is_valid(raise_exception=True)
         workout = serializer.save()
         detect_prs(tenant, workout)
+        from .congrats import maybe_congratulate_workout
+
+        maybe_congratulate_workout(tenant, workout, transitioned_to_done=workout.status == WorkoutStatus.DONE)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -363,6 +366,13 @@ class WorkoutDetailView(APIView):
         if is_post_completion_edit:
             updated.last_edited_by_user_at = timezone.now()
             updated.save(update_fields=["last_edited_by_user_at"])
+        from .congrats import maybe_congratulate_workout
+
+        maybe_congratulate_workout(
+            workout.tenant,
+            updated,
+            transitioned_to_done=(not was_done and updated.status == WorkoutStatus.DONE),
+        )
         return Response(WorkoutSerializer(updated).data)
 
     def delete(self, request, workout_id):
@@ -882,6 +892,12 @@ class WorkoutCompleteView(APIView):
                 pass
         workout.save()
         detect_prs(tenant, workout)
+        # No prior-state check here — this endpoint is an explicit "complete" action.
+        # The durable congratulated_at stamp is what prevents a repeat POST from
+        # re-firing, so pass transitioned_to_done=True and let layer 1 dedup.
+        from .congrats import maybe_congratulate_workout
+
+        maybe_congratulate_workout(tenant, workout, transitioned_to_done=True)
         return Response(WorkoutSerializer(workout).data)
 
 

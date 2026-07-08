@@ -45,6 +45,7 @@ from . import (
     domain_summary,  # noqa: E402, F401
     pure_reminder,  # noqa: E402, F401
     quote_user_intent,  # noqa: E402, F401
+    workout_congrats,  # noqa: E402, F401
 )
 
 __all__ = [
