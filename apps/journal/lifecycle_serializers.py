@@ -7,6 +7,31 @@ from rest_framework import serializers
 from .models import Goal, Task
 
 
+class _RehydrateTitleDescriptionMixin:
+    """Rehydrate PII placeholders in ``title``/``description`` on output.
+
+    Opt-in via ``context={"rehydrate": True}``. These serializers back BOTH the
+    owner-facing endpoints (``apps.journal.lifecycle_views``) AND the agent /
+    runtime endpoints (``apps.integrations.runtime_views``). The runtime path
+    MUST keep titles/descriptions in placeholder space so the model never sees
+    real PII, so rehydration is never unconditional — only the owner views set
+    the flag. The tenant is read from context (owner views pass it) and falls
+    back to the instance's ``tenant`` FK.
+    """
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if self.context.get("rehydrate"):
+            from apps.pii.redactor import rehydrate_for_tenant
+
+            tenant = self.context.get("tenant") or getattr(instance, "tenant", None)
+            for field in ("title", "description"):
+                value = data.get(field)
+                if value:
+                    data[field] = rehydrate_for_tenant(tenant, value)
+        return data
+
+
 class _LazyTopicPKField(serializers.PrimaryKeyRelatedField):
     """``PrimaryKeyRelatedField`` that defers ``TopicRegistry`` import past app loading.
 
@@ -33,7 +58,7 @@ class _LazyTopicPKField(serializers.PrimaryKeyRelatedField):
         return TopicRegistry.objects.all()
 
 
-class GoalSerializer(serializers.ModelSerializer):
+class GoalSerializer(_RehydrateTitleDescriptionMixin, serializers.ModelSerializer):
     """Read/write shape for Goal lifecycle.
 
     Note: ``migrated_from_document`` is intentionally excluded — it's an
@@ -83,7 +108,7 @@ class GoalSerializer(serializers.ModelSerializer):
         return Goal.objects.create(tenant=tenant, **validated_data)
 
 
-class TaskSerializer(serializers.ModelSerializer):
+class TaskSerializer(_RehydrateTitleDescriptionMixin, serializers.ModelSerializer):
     """Read/write shape for Task lifecycle."""
 
     parent_goal_id = serializers.PrimaryKeyRelatedField(

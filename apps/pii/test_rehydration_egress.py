@@ -65,6 +65,20 @@ class RehydrateForTenantTests(SimpleTestCase):
         t = SimpleNamespace(pii_entity_map=dict(ENTITY_MAP))
         self.assertEqual(rehydrate_for_tenant(t, ""), "")
 
+    def test_rehydrates_markdown_escaped_placeholder(self):
+        # The assistant escapes brackets in journal markdown so they render
+        # literally: ``\[PERSON_1\]``. Rehydration must translate that form
+        # too (observed leaking verbatim in prod daily notes).
+        t = SimpleNamespace(pii_entity_map=dict(ENTITY_MAP))
+        self.assertEqual(
+            rehydrate_for_tenant(t, r"met \[PERSON_1\] today"),
+            "met Sarah today",
+        )
+
+    def test_unknown_escaped_placeholder_left_verbatim(self):
+        t = SimpleNamespace(pii_entity_map=dict(ENTITY_MAP))
+        self.assertEqual(rehydrate_for_tenant(t, r"\[PERSON_99\]"), r"\[PERSON_99\]")
+
 
 @override_settings(TELEGRAM_BOT_TOKEN="testtoken", LINE_CHANNEL_ACCESS_TOKEN="linetoken")
 class GateConfirmationRehydrationTests(SimpleTestCase):

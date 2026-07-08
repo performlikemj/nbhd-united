@@ -43,7 +43,7 @@ from apps.router.inbound_media import (
     store_inbound_image,
 )
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
-from apps.router.pending_queue import enqueue_message_for_tenant
+from apps.router.pending_queue import enqueue_message_for_tenant, placeholder_redactions
 from apps.router.services import build_chat_context_marker, build_datetime_context
 from apps.tenants.models import Tenant
 from apps.tenants.throttling import (
@@ -237,6 +237,12 @@ def _serialize_message(msg: AppChatMessage) -> dict:
         # the stored file's extension (no schema column needed).
         "has_image": bool(msg.attachment_path) and not msg.attachment_path.lower().endswith(".pdf"),
         "has_document": bool(msg.attachment_path) and msg.attachment_path.lower().endswith(".pdf"),
+        # Per-turn PII transparency: the real values obfuscated behind
+        # placeholders on the way to / back from the assistant, as
+        # [{"placeholder", "value"}]. null when nothing was obfuscated or the
+        # row predates the feature. Older iOS builds ignore the unknown keys.
+        "user_redactions": msg.user_redactions,
+        "reply_redactions": msg.reply_redactions,
     }
 
 
@@ -372,6 +378,18 @@ def enqueue_tenant_turn(
     from apps.pii.redactor import redact_user_message
 
     redacted_text = redact_user_message(text, tenant)
+    # Per-turn transparency metadata: which of the user's real values were
+    # obfuscated behind placeholders before this turn reached the assistant.
+    # redact_user_message has already minted+persisted any new bindings onto
+    # tenant.pii_entity_map (in-memory too), so resolving the redacted text's
+    # placeholders against it now finds even freshly-minted names. The row was
+    # created above with verbatim user_text; attach the metadata to it. Skip the
+    # write when nothing was obfuscated so the column stays null (pre-feature /
+    # no-PII rows are indistinguishable and both mean "show nothing").
+    user_redactions = placeholder_redactions(redacted_text, getattr(tenant, "pii_entity_map", None))
+    if user_redactions:
+        AppChatMessage.objects.filter(pk=turn.pk).update(user_redactions=user_redactions)
+        turn.user_redactions = user_redactions
     # A bare attachment with no caption still needs SOMETHING for the agent to
     # act on.
     if redacted_text:
