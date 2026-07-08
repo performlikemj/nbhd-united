@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from apps.router.inbound_media import MAX_APP_IMAGE_BYTES
+from apps.router.inbound_media import MAX_APP_DOCUMENT_BYTES, MAX_APP_IMAGE_BYTES
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.tenants.models import Tenant, User
 
@@ -34,6 +34,10 @@ from apps.tenants.models import Tenant, User
 _JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 _NOT_IMAGE = b"%PDF-1.4\nnot really an image"
+
+# Magic-valid but tiny PDF payload; and a renamed ZIP that is NOT a PDF.
+_PDF_BYTES = b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n" + b"\x00" * 32
+_NOT_PDF = b"PK\x03\x04" + b"\x00" * 32  # ZIP magic — must be rejected by the doc gate
 
 
 def _b64(data: bytes) -> str:
@@ -348,9 +352,12 @@ class IOSChatImageTest(TestCase):
     def test_oversized_body_rejected_early(self):
         # DRF's JSON parser bypasses DATA_UPLOAD_MAX_MEMORY_SIZE, so the view
         # guards Content-Length before materializing the body (OOM defense).
+        # The ceiling now covers a 10 MB PDF (base64 ≈ 13.4 MB), so the body
+        # must exceed THAT to trip the 413 — a payload merely over the image
+        # cap falls through to the per-field 400 (image_too_large) instead.
         resp = self.client.post(
             "/api/v1/chat/messages/",
-            {"image": "A" * 2_400_000, "client_msg_id": "huge1"},
+            {"document": "A" * 14_500_000, "client_msg_id": "huge1"},
             format="json",
         )
         self.assertEqual(resp.status_code, 413)
@@ -451,6 +458,210 @@ class IOSChatImageTest(TestCase):
         batch, _info = _claim_pending_batch_for_key(self.tenant, PendingMessage.Channel.IOS, key, 30.0)
         # The batch ends at the image boundary: only the text head is claimed.
         self.assertEqual([m.id for m in batch], [head.id])
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class IOSChatDocumentTest(TestCase):
+    """Inbound PDF ingress: an app-uploaded document is stored on the tenant
+    share as ``doc_<hash>.pdf`` and referenced from the LLM-bound text via the
+    ``[Document attached: <path>]`` marker — bytes NEVER inlined in the queue
+    payload. The agent's built-in ``pdf`` tool then reads the local file. Mirrors
+    the image ingress; the same one-attachment-per-turn ``attachment_path``
+    column is reused."""
+
+    _FAKE_STORE = (
+        "/home/node/.openclaw/workspace/media/inbound/doc_test.pdf",
+        "workspace/media/inbound/doc_test.pdf",
+    )
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.router.chat_views.store_inbound_document")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_document_only_turn_stores_and_marks(self, mock_post, mock_store):
+        mock_post.return_value = _ok_chat_response("It's a contract.")
+        mock_store.return_value = self._FAKE_STORE
+
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"document": _b64(_PDF_BYTES), "client_msg_id": "doc1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertTrue(resp.data["has_document"])
+        self.assertFalse(resp.data["has_image"])
+
+        # Stored exactly once, with the DECODED bytes + the SNIFFED extension
+        # (pdf from magic bytes, not a client-claimed mime).
+        mock_store.assert_called_once()
+        call_args = mock_store.call_args.args
+        self.assertEqual(call_args[1], _PDF_BYTES)
+        self.assertEqual(call_args[2], "pdf")
+
+        pmsg = PendingMessage.objects.get(tenant=self.tenant, channel=PendingMessage.Channel.IOS)
+        # Container-path marker baked into the LLM-bound text; is_document set so
+        # the row is a forced singleton (marker survives a cold-start burst).
+        self.assertIn(
+            "[Document attached: /home/node/.openclaw/workspace/media/inbound/doc_test.pdf]",
+            pmsg.payload["message_text"],
+        )
+        self.assertTrue(pmsg.payload["is_document"])
+        # Bytes NEVER ride the payload, and the user-facing excerpt has no marker.
+        self.assertNotIn("document", pmsg.payload)
+        self.assertNotIn("Document attached", pmsg.user_text)
+
+        turn = AppChatMessage.objects.get(client_msg_id="doc1")
+        self.assertEqual(turn.attachment_path, "workspace/media/inbound/doc_test.pdf")
+
+    @patch("apps.router.chat_views.store_inbound_document")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_document_with_caption_preserves_both(self, mock_post, mock_store):
+        mock_post.return_value = _ok_chat_response("ok")
+        mock_store.return_value = self._FAKE_STORE
+
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "summarize this", "document": _b64(_PDF_BYTES), "client_msg_id": "doc2"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+        pmsg = PendingMessage.objects.get(tenant=self.tenant)
+        marked = pmsg.payload["message_text"]
+        self.assertIn("[Document attached:", marked)
+        self.assertIn("summarize this", marked)
+        self.assertEqual(pmsg.user_text, "summarize this")
+        self.assertEqual(AppChatMessage.objects.get(client_msg_id="doc2").user_text, "summarize this")
+
+    def test_invalid_base64_document_rejected(self):
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"document": "!!! definitely not base64 !!!", "client_msg_id": "dbad1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "invalid_document")
+        self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_non_pdf_document_rejected(self):
+        # A renamed ZIP (or any non-PDF magic) must never be stored as .pdf.
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"document": _b64(_NOT_PDF), "client_msg_id": "dbad2"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "unsupported_document_type")
+
+    def test_image_bytes_as_document_rejected(self):
+        # The document gate is PDF-only: a JPEG in the document field is rejected.
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"document": _b64(_JPEG_BYTES), "client_msg_id": "dbad3"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "unsupported_document_type")
+
+    def test_oversized_document_rejected(self):
+        big = b"%PDF-1.7\n" + b"\x00" * (MAX_APP_DOCUMENT_BYTES + 50_000)
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"document": _b64(big), "client_msg_id": "dbig1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "document_too_large")
+
+    @patch("apps.router.chat_views.store_inbound_document")
+    @patch("apps.router.chat_views.store_inbound_image")
+    def test_image_and_document_together_rejected(self, mock_img, mock_doc):
+        # One attachment per turn: attachment_path is a single column.
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"image": _b64(_JPEG_BYTES), "document": _b64(_PDF_BYTES), "client_msg_id": "both1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["error"], "multiple_attachments")
+        mock_img.assert_not_called()
+        mock_doc.assert_not_called()
+        self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 0)
+
+    @patch("apps.router.chat_views.store_inbound_document")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_idempotent_document_retry_stores_once(self, mock_post, mock_store):
+        mock_post.return_value = _ok_chat_response("ok")
+        mock_store.return_value = self._FAKE_STORE
+
+        body = {"document": _b64(_PDF_BYTES), "client_msg_id": "dup-doc"}
+        first = self.client.post("/api/v1/chat/messages/", body, format="json")
+        self.assertEqual(first.status_code, 201, first.content)
+        second = self.client.post("/api/v1/chat/messages/", body, format="json")
+        self.assertEqual(second.status_code, 200, second.content)
+        mock_store.assert_called_once()
+        self.assertEqual(AppChatMessage.objects.filter(client_msg_id="dup-doc").count(), 1)
+
+    @patch("apps.router.chat_views.check_budget", return_value="personal")
+    @patch("apps.router.chat_views.store_inbound_document")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_over_budget_document_not_stored(self, mock_post, mock_store, _mock_budget):
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"document": _b64(_PDF_BYTES), "client_msg_id": "dob1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["error"], "budget_exhausted")
+        # The budget gate precedes the share write and the wake — no I/O, no send.
+        mock_store.assert_not_called()
+        mock_post.assert_not_called()
+        self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 0)
+
+    @patch("apps.router.chat_views.store_inbound_document", side_effect=RuntimeError("share down"))
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_document_store_failure_degrades_to_text_turn(self, mock_post, mock_store):
+        mock_post.return_value = _ok_chat_response("ok")
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "read this", "document": _b64(_PDF_BYTES), "client_msg_id": "dsf1"},
+            format="json",
+        )
+        # The turn is NOT dropped: it's delivered as text and the agent is told
+        # the document failed (mirrors the image degrade path).
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertFalse(resp.data["has_document"])
+        pmsg = PendingMessage.objects.get(tenant=self.tenant)
+        self.assertIn("couldn't be processed", pmsg.payload["message_text"])
+        self.assertIn("read this", pmsg.payload["message_text"])
+        self.assertTrue(pmsg.payload["is_document"])
+        self.assertEqual(AppChatMessage.objects.get(client_msg_id="dsf1").attachment_path, "")
+
+    def test_document_row_is_forced_singleton(self):
+        # A coalesced batch rebuilds content from row.user_text (no marker), so
+        # a document row MUST stay a singleton or the PDF path is silently dropped.
+        from apps.router.pending_queue import _claim_pending_batch_for_key
+
+        key = "thread-d"
+        doc = PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=key,
+            payload={"message_text": "[Document attached: /d.pdf]\nread", "is_document": True},
+        )
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=key,
+            payload={"message_text": "and this too"},
+        )
+        batch, info = _claim_pending_batch_for_key(self.tenant, PendingMessage.Channel.IOS, key, 30.0)
+        self.assertEqual([m.id for m in batch], [doc.id])  # text NOT folded in
+        self.assertEqual(info, {})
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")

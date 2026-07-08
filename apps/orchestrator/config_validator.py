@@ -75,6 +75,13 @@ _AGENTS_DEFAULTS_ALLOWED_KEYS = frozenset(
         "cliBackends",
         "params",
         "contextPruning",
+        # PDF tool config (pinned in config_generator so the built-in ``pdf``
+        # tool registers fleet-wide). Both are valid ``agents.defaults`` keys in
+        # the OpenClaw Zod schema (pdfModel: AgentToolModel, pdfMaxBytesMb:
+        # positive number) — omitting them here would make this write gate
+        # reject the very config the generator now emits.
+        "pdfModel",
+        "pdfMaxBytesMb",
     }
 )
 

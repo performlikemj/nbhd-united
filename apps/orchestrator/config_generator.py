@@ -2042,6 +2042,23 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                     "primary": models_config["primary"],
                     "fallbacks": fallbacks_list,
                 },
+                # PDF tool model + size cap for app-uploaded PDFs (chat ingress →
+                # [Document attached: <path>] marker → built-in ``pdf`` tool).
+                # The ``pdf`` tool only registers when OpenClaw can resolve a
+                # PDF-capable model, and its availability check — unlike the
+                # ``image`` tool's — has NO "resolved session model has vision"
+                # fast-path (verified in the OpenClaw factory-plan source). So we
+                # pin pdfModel explicitly instead of relying on the default.
+                # Mirroring agents.defaults.model keeps the pin in-allowlist +
+                # schema-valid and reuses the tenant's paid OpenRouter routing:
+                # text PDFs extract locally via PDFium (no model vision needed),
+                # and a scanned PDF's page-image fallback walks this same chain.
+                # 10 MB matches MAX_APP_DOCUMENT_BYTES + the tool's own default.
+                "pdfModel": {
+                    "primary": models_config["primary"],
+                    "fallbacks": fallbacks_list,
+                },
+                "pdfMaxBytesMb": 10,
                 "models": model_entries,
                 "workspace": "/home/node/.openclaw/workspace",
                 "userTimezone": str(getattr(tenant.user, "timezone", "") or "UTC"),
