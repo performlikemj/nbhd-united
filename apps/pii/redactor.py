@@ -42,6 +42,14 @@ logger = logging.getLogger(__name__)
 # Matches placeholders like [PERSON_1], [EMAIL_ADDRESS_3]
 _PLACEHOLDER_RE = re.compile(r"\[([A-Z_]+)_(\d+)\]")
 
+# Rehydration variant that also accepts markdown-escaped placeholders.
+# The assistant sometimes writes ``\[PERSON_444\]`` in journal markdown so
+# the brackets render literally; rehydration must translate that form too
+# or the escaped placeholder leaks to the owner verbatim (observed in prod
+# daily notes). Kept separate from ``_PLACEHOLDER_RE`` because detection /
+# metadata paths operate on redactor-emitted text, which is never escaped.
+_REHYDRATE_PLACEHOLDER_RE = re.compile(r"\\?\[([A-Z_]+)_(\d+)\\?\]")
+
 # A bare lift number, rep/set count, or number+unit token. Fitness logs are
 # the dominant false-positive source for the contextual (PERSON/LOCATION)
 # labels: "benched 225", "squatted 140kg", "5x5 at 315 lbs". These are never
@@ -674,14 +682,16 @@ def rehydrate_text(text: str, entity_map: dict[str, Any]) -> str:
         return text
 
     def _replace(match: re.Match) -> str:
-        placeholder = match.group(0)
+        # Normalize the (possibly markdown-escaped) match back to the
+        # canonical ``[TYPE_N]`` key the entity map is keyed by.
+        placeholder = f"[{match.group(1)}_{match.group(2)}]"
         entry = entity_map.get(placeholder)
         if entry is None:
-            return placeholder
+            return match.group(0)
         name = _entry_name(entry)
-        return name or placeholder
+        return name or match.group(0)
 
-    return _PLACEHOLDER_RE.sub(_replace, text)
+    return _REHYDRATE_PLACEHOLDER_RE.sub(_replace, text)
 
 
 def rehydrate_for_tenant(tenant: Tenant | None, text: str) -> str:
