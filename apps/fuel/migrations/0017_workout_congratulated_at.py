@@ -4,15 +4,18 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('fuel', '0016_workout_duration_seconds'),
+        ("fuel", "0016_workout_duration_seconds"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='workout',
-            name='congratulated_at',
-            field=models.DateTimeField(blank=True, help_text='When the assistant scheduled a congratulatory message for this completion. The durable dedup guard: stamped atomically on first genuine done-transition so a done→planned→done re-toggle never re-fires, and reused as the per-tenant congrats-cooldown clock. Null until congratulated.', null=True),
+            model_name="workout",
+            name="congratulated_at",
+            field=models.DateTimeField(
+                blank=True,
+                help_text="When the assistant scheduled a congratulatory message for this completion. The durable dedup guard: stamped atomically on first genuine done-transition so a done→planned→done re-toggle never re-fires, and reused as the per-tenant congrats-cooldown clock. Null until congratulated.",
+                null=True,
+            ),
         ),
     ]

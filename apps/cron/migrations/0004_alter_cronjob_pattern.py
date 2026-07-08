@@ -4,15 +4,26 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('cron', '0003_typed_cron_patterns'),
+        ("cron", "0003_typed_cron_patterns"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='cronjob',
-            name='pattern',
-            field=models.CharField(blank=True, choices=[('pure_reminder', 'Pure reminder'), ('quote_user_intent', 'Quote user intent'), ('domain_summary', 'Domain summary'), ('daily_briefing', 'Daily briefing (system)'), ('workout_congrats', 'Workout congrats (system)')], help_text="Typed pattern for this cron. NULL when creation_path is legacy/freeform/internal. NOT NULL when creation_path='typed'.", max_length=32, null=True),
+            model_name="cronjob",
+            name="pattern",
+            field=models.CharField(
+                blank=True,
+                choices=[
+                    ("pure_reminder", "Pure reminder"),
+                    ("quote_user_intent", "Quote user intent"),
+                    ("domain_summary", "Domain summary"),
+                    ("daily_briefing", "Daily briefing (system)"),
+                    ("workout_congrats", "Workout congrats (system)"),
+                ],
+                help_text="Typed pattern for this cron. NULL when creation_path is legacy/freeform/internal. NOT NULL when creation_path='typed'.",
+                max_length=32,
+                null=True,
+            ),
         ),
     ]
