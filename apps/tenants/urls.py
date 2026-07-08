@@ -15,6 +15,7 @@ from .views import (
     AvailableModelsView,
     CancelDeletionView,
     DeleteAccountView,
+    EntityRegistryBulkDeleteView,
     EntityRegistryItemView,
     EntityRegistryListView,
     HeartbeatConfigView,
@@ -48,6 +49,14 @@ urlpatterns = [
     # relationship / notes, or delete entries. Backs the privacy-placeholders
     # envelope identity-context sub-section (apps/tenants/envelope.py).
     path("settings/entity-registry/", EntityRegistryListView.as_view(), name="entity-registry-list"),
+    # NOTE: `bulk/` MUST be registered before `<str:placeholder>/` — otherwise
+    # the string path captures "bulk" as the placeholder and ItemView returns
+    # 405 for POST. Django matches paths in declaration order.
+    path(
+        "settings/entity-registry/bulk/",
+        EntityRegistryBulkDeleteView.as_view(),
+        name="entity-registry-bulk-delete",
+    ),
     path(
         "settings/entity-registry/<str:placeholder>/",
         EntityRegistryItemView.as_view(),

@@ -682,6 +682,18 @@ class AppChatMessage(models.Model):
         "for this turn. The atomic isnull→now claim makes the push idempotent: a "
         "re-drained batch (QStash retry, re-leased batch) won't push twice.",
     )
+    # Per-turn PII transparency metadata: which real values were obfuscated
+    # behind placeholders before the turn reached the assistant. Each is a list
+    # of ``{"placeholder": "[LOCATION_330]", "value": "Sydney"}`` (``value`` is
+    # null for an unbound/orphan placeholder). null/absent = nothing was
+    # obfuscated for this turn OR the row predates the feature — a pre-feature
+    # row and a no-PII turn are indistinguishable and both mean "show nothing".
+    # ``reply_redactions`` is captured from the assistant reply BEFORE
+    # rehydration (the only point it is still in placeholder space) and lives
+    # only on the representative row of a coalesced batch (siblings stay null),
+    # mirroring where ``reply_text`` lands.
+    user_redactions = models.JSONField(null=True, blank=True, default=None)
+    reply_redactions = models.JSONField(null=True, blank=True, default=None)
 
     class Meta:
         db_table = "app_chat_messages"

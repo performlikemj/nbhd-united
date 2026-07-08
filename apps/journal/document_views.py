@@ -180,7 +180,7 @@ class DocumentListCreateView(APIView):
         else:
             queryset = queryset.order_by("-updated_at")
 
-        serializer = DocumentListSerializer(queryset, many=True)
+        serializer = DocumentListSerializer(queryset, many=True, context={"tenant": tenant})
         return Response(serializer.data)
 
     def post(self, request):
@@ -207,7 +207,7 @@ class DocumentListCreateView(APIView):
         )
 
         status_code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-        return Response(DocumentSerializer(doc).data, status=status_code)
+        return Response(DocumentSerializer(doc, context={"tenant": tenant}).data, status=status_code)
 
 
 def _synthesize_tasks_markdown(tenant: Tenant) -> str:
@@ -333,7 +333,7 @@ class DocumentDetailView(APIView):
                 doc.markdown = _synthesize_tasks_markdown(tenant)
             elif kind == "goal":
                 doc.markdown = _synthesize_goals_markdown(tenant)
-        return Response(DocumentSerializer(doc).data)
+        return Response(DocumentSerializer(doc, context={"tenant": tenant}).data)
 
     def patch(self, request, kind: str, slug: str):
         tenant = _get_tenant(request.user)
@@ -365,12 +365,20 @@ class DocumentDetailView(APIView):
 
         doc = _get_or_create_document(tenant, kind, slug)
         if markdown is not None:
-            doc.markdown = markdown
+            # Re-redact owner input before persisting. The client round-trips
+            # the rehydrated (real-value) markdown back here on save; without
+            # this pass the real PII would land in Document.markdown and leak
+            # to the agent via RuntimeDailyNotesView. redact_user_message maps
+            # known names back to their existing placeholder and mints new ones;
+            # it is fail-open (returns the original text on any error).
+            from apps.pii.redactor import redact_user_message
+
+            doc.markdown = redact_user_message(markdown, tenant)
         if title is not None:
             doc.title = title
 
         doc.save()
-        return Response(DocumentSerializer(doc).data)
+        return Response(DocumentSerializer(doc, context={"tenant": tenant}).data)
 
     def delete(self, request, kind: str, slug: str):
         if kind == "daily":
@@ -406,7 +414,7 @@ class DocumentClearView(APIView):
             raise Http404("Document not found.")
         doc.markdown = ""
         doc.save()
-        return Response(DocumentSerializer(doc).data)
+        return Response(DocumentSerializer(doc, context={"tenant": tenant}).data)
 
 
 class DocumentAppendView(APIView):
@@ -425,16 +433,23 @@ class DocumentAppendView(APIView):
 
         doc = _get_or_create_document(tenant, kind, slug)
 
+        # Re-redact owner input before persisting so the appended real PII does
+        # not land in Document.markdown (agent-visible via RuntimeDailyNotesView).
+        # Fail-open: redact_user_message returns the original text on any error.
+        from apps.pii.redactor import redact_user_message
+
+        content = redact_user_message(data["content"].strip(), tenant)
+
         with transaction.atomic():
             # Re-read under a row lock to serialise concurrent appends and
             # prevent a lost-update when two writers hit the same document.
             doc = Document.objects.select_for_update().get(pk=doc.pk)
             time_str = data.get("time") or timezone.now().strftime("%H:%M")
-            entry_block = f"\n\n### {time_str} — MJ\n{data['content'].strip()}\n"
+            entry_block = f"\n\n### {time_str} — MJ\n{content}\n"
             doc.markdown = (doc.markdown or "").rstrip() + entry_block
             doc.save(update_fields=["markdown", "updated_at"])
 
-        return Response(DocumentSerializer(doc).data, status=status.HTTP_201_CREATED)
+        return Response(DocumentSerializer(doc, context={"tenant": tenant}).data, status=status.HTTP_201_CREATED)
 
 
 class TodayView(APIView):
@@ -446,7 +461,7 @@ class TodayView(APIView):
         tenant = _get_tenant(request.user)
         today = timezone.now().date()
         doc = _get_or_create_document(tenant, "daily", str(today))
-        return Response(DocumentSerializer(doc).data)
+        return Response(DocumentSerializer(doc, context={"tenant": tenant}).data)
 
 
 class SidebarTreeView(APIView):
@@ -456,6 +471,11 @@ class SidebarTreeView(APIView):
 
     @tenant_cache(ttl=120, tag="sidebar")
     def get(self, request):
+        # Titles are stored in PII placeholder space (a project titled after a
+        # redacted name reads "[PERSON_1]" until rehydrated); this is the
+        # owner-facing sidebar, so rehydrate them for display.
+        from apps.pii.redactor import rehydrate_for_tenant
+
         tenant = _get_tenant(request.user)
         today = str(timezone.now().date())
         documents = Document.objects.filter(tenant=tenant).values("kind", "slug", "title", "updated_at")
@@ -469,7 +489,7 @@ class SidebarTreeView(APIView):
             tree[doc["kind"]].append(
                 {
                     "slug": doc["slug"],
-                    "title": doc["title"],
+                    "title": rehydrate_for_tenant(tenant, doc["title"]),
                     "updated_at": doc["updated_at"].isoformat() if doc["updated_at"] else None,
                 }
             )
