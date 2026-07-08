@@ -234,13 +234,32 @@ def _push_at_cron_immediately(tenant: Tenant, cron: CronJob) -> None:
         raise
 
     # Stamp the gateway's job id so subsequent updates target the right row.
+    #
+    # Bookkeeping ONLY — the gateway already accepted the job above, so the at-cron
+    # WILL fire. A DB blip stamping the id here must NOT propagate as a push failure:
+    # callers roll back their own state (e.g. the workout-congrats stamp) when this
+    # function raises, and rolling back a LIVE cron would drop a delivered message and
+    # let it re-fire on a later retry. So the boundary is explicit — this function
+    # raises ONLY for a failure BEFORE the gateway accepted the job. Losing the id just
+    # means a later ``cron.update`` can't target this row by id; one-shots auto-delete
+    # after firing anyway. (This repo has known idle-connection wedges, so the blip is
+    # real, not theoretical.)
     details = result.get("details", result) if isinstance(result, dict) else {}
     job_id = ""
     if isinstance(details, dict):
         job_id = str(details.get("id") or details.get("jobId") or "")
     if job_id:
         cron.gateway_job_id = job_id
-        cron.save(update_fields=["gateway_job_id"])
+        try:
+            cron.save(update_fields=["gateway_job_id"])
+        except Exception:
+            logger.warning(
+                "At-cron push SUCCEEDED but gateway_job_id bookkeeping failed (tenant=%s cron=%s) — "
+                "cron is live and will fire; leaving gateway_job_id unstamped",
+                str(tenant.id)[:8],
+                cron.name,
+                exc_info=True,
+            )
 
 
 def fetch_cron_pattern_context(tenant_id: UUID | str, cron_name: str) -> dict[str, Any] | None:

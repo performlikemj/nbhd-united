@@ -227,13 +227,19 @@ def _dispatch_schedule(tenant, *, workout_id: str, payload: dict) -> None:
 
 
 def _rollback_congrats(tenant, *, workout_id: str, name: str, exc: Exception) -> None:
-    """Undo the durable claim when scheduling the congrats cron failed.
+    """Undo the durable claim when scheduling the congrats cron failed PRE-DELIVERY.
 
-    Deletes the orphan CronJob row (``create_typed_cron`` commits it before the gateway
-    push, so a failed push leaves it behind — and no reconciler re-pushes a ``kind:"at"``
-    row) and clears ``congratulated_at`` so a later completion can retry. Emits a
-    structured drop log; a hibernated-race is expected (INFO), anything else is a real
-    failure (WARNING). Fail-soft: cleanup errors are swallowed.
+    Safe to roll back unconditionally because ``create_typed_cron`` now raises ONLY when
+    nothing was delivered: the gateway ``cron.add`` failed, or a pre-push validation /
+    row-write error fired. A post-push bookkeeping blip (stamping ``gateway_job_id``) is
+    swallowed at the source (``_push_at_cron_immediately``), so a LIVE cron never reaches
+    here — no risk of clearing the stamp on an in-flight message and re-firing it later.
+
+    Deletes the orphan CronJob row (``create_typed_cron`` commits it before the push, so a
+    failed push leaves it behind — and no reconciler re-pushes a ``kind:"at"`` row) and
+    clears ``congratulated_at`` so a later completion can retry. Structured drop log; a
+    hibernated-race is expected (INFO), anything else is a real failure (WARNING).
+    Fail-soft: cleanup errors are swallowed.
     """
     from apps.cron.gateway_client import GatewayError
 

@@ -237,6 +237,43 @@ class WorkoutCongratsTriggerTests(TestCase):
         self.assertIsNone(w.congratulated_at)  # stamp rolled back → a later completion retries
         self.assertFalse(CronJob.objects.filter(tenant=self.tenant, name=f"_congrats-{w.id}").exists())
 
+    def test_gateway_success_but_bookkeeping_failure_keeps_stamp(self):
+        # The gateway ACCEPTS the cron.add (message is live) but the post-push
+        # gateway_job_id save wedges on an idle connection. That is POST-delivery, so the
+        # claim must be KEPT — clearing it would drop a live message and let a re-toggle
+        # schedule a duplicate. (_push_at_cron_immediately swallows the bookkeeping blip,
+        # so create_typed_cron returns normally and no rollback fires.)
+        from django.db import OperationalError
+
+        real_save = CronJob.save
+
+        def _flaky_save(cron_self, *args, **kwargs):
+            if kwargs.get("update_fields") == ["gateway_job_id"]:
+                raise OperationalError("idle connection wedge")
+            return real_save(cron_self, *args, **kwargs)
+
+        w = self._make_planned()
+        url = self._detail_url(w)
+        name = f"_congrats-{w.id}"
+        gw_ok = {"details": {"id": "gw-x"}}
+        with (
+            patch("apps.cron.gateway_client.invoke_gateway_tool", return_value=gw_ok) as mock_gw,
+            patch.object(CronJob, "save", autospec=True, side_effect=_flaky_save),
+        ):
+            resp = self.client.patch(url, {"status": "done"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        mock_gw.assert_called_once()  # the gateway accepted the job (cron.add)
+        w.refresh_from_db()
+        self.assertIsNotNone(w.congratulated_at)  # claim KEPT — message is live
+        self.assertTrue(CronJob.objects.filter(tenant=self.tenant, name=name).exists())
+
+        # Re-toggle done→planned→done must NOT re-push (layer-1 stamp still blocks).
+        with patch("apps.cron.gateway_client.invoke_gateway_tool", return_value=gw_ok) as mock_gw2:
+            self.client.patch(url, {"status": "planned"}, format="json")
+            self.client.patch(url, {"status": "done"}, format="json")
+        mock_gw2.assert_not_called()
+        self.assertEqual(CronJob.objects.filter(tenant=self.tenant, name=name).count(), 1)
+
     # ── fail-soft: a hook error must not fail the workout save ───────────
     @patch("apps.fuel.congrats._maybe_congratulate_workout", side_effect=RuntimeError("boom"))
     def test_exception_in_hook_does_not_fail_save(self, _mock):
