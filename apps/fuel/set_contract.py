@@ -340,6 +340,11 @@ def split_detail_errors(details: list[dict], incoming: Any, stored: Any) -> tupl
         loc = list(err.get("loc") or [])
         frag, kind = _error_offender(incoming, loc)
         if kind == "set":
+            # Deliberately count-agnostic: a fragment byte-identical to ANY
+            # stored set is grandfathered even if duplicated — that can only
+            # multiply/relocate an already-tolerated invalid shape (never
+            # introduce a new invalid class), and it keeps unchanged legacy
+            # sets grandfathered when an edit shifts their indices.
             known = any(frag == s for s in stored_sets)
         elif kind == "exercise":
             known = any(frag == e for e in stored_exercises)
