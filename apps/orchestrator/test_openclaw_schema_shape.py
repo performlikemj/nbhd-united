@@ -41,6 +41,7 @@ from django.test import TestCase
 from apps.tenants.services import create_tenant
 
 from .config_generator import generate_openclaw_config
+from .config_validator import assert_config_writable
 
 # OpenClaw-documented enum values for the keys we set. Sourced from
 # ``npm pack openclaw@2026.5.7`` — see file docstring for paths.
@@ -210,6 +211,44 @@ class OpenclawSchemaShapeTest(TestCase):
         v = _get(self.config, "agents.defaults.bootstrapTotalMaxChars")
         self.assertIsInstance(v, int)
         self.assertGreater(v, 60000)
+
+    # ── PDF tool pin ──────────────────────────────────────────────────
+
+    def test_pdf_model_pinned_and_mirrors_chat_model(self):
+        """The built-in ``pdf`` tool only registers when a PDF-capable model
+        resolves, and its factory-availability check has NO "resolved session
+        model has vision" fast-path (unlike the ``image`` tool). So we pin
+        ``agents.defaults.pdfModel`` — mirroring ``agents.defaults.model`` so the
+        pin is in-allowlist + schema-valid. If the pin ever silently drops (or
+        stops mirroring the chat model), the tool would stop registering
+        fleet-wide. Schema-shape verified against openclaw@2026.5.28
+        ``dist/zod-schema.agent-runtime-*.js`` (``pdfModel: AgentToolModel``,
+        union of string | {primary, fallbacks, timeoutMs}) and
+        ``dist/zod-schema-*.js`` (``pdfMaxBytesMb: number().positive()``).
+        """
+        pdf_model = _get(self.config, "agents.defaults.pdfModel")
+        chat_model = _get(self.config, "agents.defaults.model")
+        self.assertIsNotNone(pdf_model, "agents.defaults.pdfModel missing — pdf tool won't register")
+        self.assertEqual(pdf_model, chat_model, "pdfModel must mirror agents.defaults.model")
+        # AgentToolModel shape: primary must be a non-empty string (this is what
+        # flips OpenClaw's ``hasToolModelConfig`` → the tool becomes available).
+        self.assertIsInstance(pdf_model.get("primary"), str)
+        self.assertTrue(pdf_model["primary"].strip())
+
+        max_mb = _get(self.config, "agents.defaults.pdfMaxBytesMb")
+        self.assertEqual(max_mb, 10)
+
+    def test_generated_config_passes_write_validation_gate(self):
+        """The exact write-time gate every config-to-share write funnels through
+        (``azure_client.upload_config_to_file_share`` → ``assert_config_writable``)
+        must accept the config the generator now emits. This is the guard against
+        generator/validator drift: if ``pdfModel``/``pdfMaxBytesMb`` (or any
+        future key) are emitted but missing from the validator's
+        ``_AGENTS_DEFAULTS_ALLOWED_KEYS``, the gate would REJECT every fleet
+        config write and silently no-op the bump.
+        """
+        # Raises InvalidTenantConfigError on any Django-owned schema violation.
+        assert_config_writable(self.config)
 
     # ── Sanity: known top-level keys ──────────────────────────────────
 

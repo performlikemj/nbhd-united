@@ -74,6 +74,20 @@ class ChatContextHourThrottle(_UserScopedThrottle):
     rate = "120/hour"
 
 
+class ChatMessageSendHourThrottle(_UserScopedThrottle):
+    """Bounds the chat SEND path (POST /chat/messages/) per user. Each send
+    enqueues an OpenClaw turn and may now carry up to ~13.6 MB of base64
+    attachment, so a runaway/abusive client must not be able to hammer the
+    shared control plane or rack up model spend. Applied to POST only — the GET
+    ?since= poll on the same view is a cheap read clients hit every ~30s and
+    MUST NOT be throttled. Generous for real chat (rapid-fire follow-ups coalesce
+    downstream); the budget gate is the real spend ceiling, this is the abuse
+    ceiling."""
+
+    scope = "chat_message_send_hour"
+    rate = "300/hour"
+
+
 class SiriRespondMinuteThrottle(_UserScopedThrottle):
     """The Tier-2 fast responder calls a model on every request (platform ZDR
     key, platform-absorbed cost). Human voice pacing is a few per minute; this

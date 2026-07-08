@@ -46,7 +46,11 @@ from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.router.pending_queue import enqueue_message_for_tenant
 from apps.router.services import build_chat_context_marker, build_datetime_context
 from apps.tenants.models import Tenant
-from apps.tenants.throttling import ChatContextHourThrottle, ChatLocalTurnHourThrottle
+from apps.tenants.throttling import (
+    ChatContextHourThrottle,
+    ChatLocalTurnHourThrottle,
+    ChatMessageSendHourThrottle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -269,6 +273,14 @@ def enqueue_tenant_turn(
     turn is recorded as ERROR and returned with ``created=False`` (nothing
     enqueued, no container woken).
     """
+    # Defense in depth: one attachment per turn (attachment_path is a single
+    # column). The ChatMessageView POST already enforces this XOR before calling
+    # in; this guard makes the invariant local so a future caller can't silently
+    # store two files and clobber attachment_path. (Neither the Siri escalation
+    # path nor any current caller passes both.)
+    if image is not None and document is not None:
+        raise ValueError("enqueue_tenant_turn: pass at most one of image/document per turn")
+
     existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
     if existing:
         return existing, False
@@ -486,6 +498,15 @@ class ChatMessageView(APIView):
 
     permission_classes = [IsAuthenticated]
 
+    def get_throttles(self):
+        # Throttle the SEND (POST) path only — mirrors the per-user hourly
+        # throttles on the sibling chat endpoints. The GET ?since= feed is a
+        # cheap poll clients hit every ~30s (and from multiple devices), so it
+        # must stay unthrottled or steady-state polling would exhaust the budget.
+        if getattr(self.request, "method", None) == "POST":
+            return [ChatMessageSendHourThrottle()]
+        return []
+
     def get(self, request):
         """Ascending cross-channel message history after an opaque cursor.
 
@@ -534,7 +555,10 @@ class ChatMessageView(APIView):
         except (TypeError, ValueError):
             declared_len = 0
         if declared_len > _MAX_REQUEST_BODY_BYTES:
-            return Response({"error": "image_too_large"}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
+            # Attachment-neutral: this coarse pre-body guard can't tell an image
+            # from a PDF, and the body may now be either. (No deployed client
+            # string-matches this code — verified across frontend + iOS.)
+            return Response({"error": "request_too_large"}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
 
         if not isinstance(request.data, dict):
             return Response({"error": "invalid_body"}, status=status.HTTP_400_BAD_REQUEST)

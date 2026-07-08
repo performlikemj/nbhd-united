@@ -29,6 +29,7 @@ from rest_framework.test import APIClient
 from apps.router.inbound_media import MAX_APP_DOCUMENT_BYTES, MAX_APP_IMAGE_BYTES
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.tenants.models import Tenant, User
+from apps.tenants.throttling import ChatMessageSendHourThrottle
 
 # Magic-valid but tiny image payloads for the ingress tests.
 _JPEG_BYTES = b"\xff\xd8\xff\xe0" + b"\x00" * 32
@@ -1448,3 +1449,58 @@ class SinceFeedLateReplyTest(TestCase):
             texts,
             "late-landing reply fell behind the since watermark and was dropped",
         )
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "ios-chat-throttle-test",
+        }
+    },
+)
+class IOSChatSendThrottleTest(TestCase):
+    """The chat SEND path (POST /chat/messages/) is per-user throttled — an
+    abuse ceiling that matters now the body admits ~13.6MB attachments. The GET
+    ?since= poll on the SAME view must stay unthrottled (clients hit it ~every
+    30s from multiple devices). Cache overridden to LocMem so throttle history
+    actually stores regardless of the ambient backend."""
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch.object(ChatMessageSendHourThrottle, "rate", "2/hour")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_send_throttled_after_limit(self, mock_post):
+        mock_post.return_value = _ok_chat_response("ok")
+        # Two sends allowed at 2/hour; the third is rejected with 429.
+        for i in range(2):
+            r = self.client.post(
+                "/api/v1/chat/messages/",
+                {"text": f"hi {i}", "client_msg_id": f"thr{i}"},
+                format="json",
+            )
+            self.assertEqual(r.status_code, 201, r.content)
+        blocked = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "hi 3", "client_msg_id": "thr3"},
+            format="json",
+        )
+        self.assertEqual(blocked.status_code, 429, blocked.content)
+        # The blocked send never created a turn.
+        self.assertFalse(AppChatMessage.objects.filter(client_msg_id="thr3").exists())
+
+    @patch.object(ChatMessageSendHourThrottle, "rate", "2/hour")
+    def test_poll_get_never_throttled(self):
+        # The ?since= feed shares the view but must NOT be throttled — well past
+        # the send limit, every poll still returns 200.
+        for _ in range(5):
+            r = self.client.get("/api/v1/chat/messages/")
+            self.assertEqual(r.status_code, 200, r.content)

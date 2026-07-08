@@ -2050,9 +2050,19 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 # fast-path (verified in the OpenClaw factory-plan source). So we
                 # pin pdfModel explicitly instead of relying on the default.
                 # Mirroring agents.defaults.model keeps the pin in-allowlist +
-                # schema-valid and reuses the tenant's paid OpenRouter routing:
-                # text PDFs extract locally via PDFium (no model vision needed),
-                # and a scanned PDF's page-image fallback walks this same chain.
+                # schema-valid and reuses the tenant's paid OpenRouter routing.
+                #
+                # LIMITATION (platform-key tenants): the pinned model is the
+                # tenant's text model (DeepSeek), so ONLY text-layer PDFs work
+                # here — OpenClaw extracts their text locally via PDFium (no model
+                # vision needed). A scanned / image-only PDF (no text layer) hard-
+                # ERRORS: OpenClaw's extraction fallback throws "Model ... does not
+                # support images and PDF has no extractable text." (openclaw-tools
+                # source) because the pin short-circuits auto-resolution to a
+                # non-vision model. BYO-Anthropic tenants route to the native PDF
+                # path instead and DO handle scanned PDFs. Lifting the scanned-PDF
+                # limit fleet-wide needs an explicit vision-capable pdfModel — a
+                # documented follow-up, not wired here.
                 # 10 MB matches MAX_APP_DOCUMENT_BYTES + the tool's own default.
                 "pdfModel": {
                     "primary": models_config["primary"],
