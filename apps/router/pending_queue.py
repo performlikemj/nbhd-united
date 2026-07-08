@@ -1575,7 +1575,7 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         return
     now = timezone.now()
     if ai_text:
-        text = _clean_assistant_text_for_app(tenant, ai_text)
+        text, reply_redactions = _clean_assistant_text_for_app(tenant, ai_text)
         # A coalesced batch (N>1) yields ONE combined reply. Attach it to a single
         # representative row (the last message in the batch) so the since-feed,
         # thread history, and the USER.md digest each emit exactly one assistant
@@ -1594,6 +1594,10 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
             status=AppChatMessage.Status.READY,
             replied_at=now,
             partial_text="",
+            # Per-turn transparency metadata rides the SAME representative row as
+            # reply_text (siblings stay null — see below); null when the reply
+            # obfuscated nothing.
+            reply_redactions=reply_redactions or None,
         )
         other_ids = [cid for cid in client_ids if cid != rep_id]
         if other_ids:
@@ -1640,12 +1644,56 @@ def _store_ios_turn_error(tenant: Tenant, batch: list[PendingMessage], reason: s
     _dispatch_push(notify_app_reply_error, tenant, list(client_ids))
 
 
-def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> str:
+def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict]:
+    """Per-turn PII transparency metadata for a chat message.
+
+    Given placeholder-space ``text`` (the LLM-bound user payload, or the
+    assistant reply BEFORE rehydration) and the tenant's entity map, return the
+    distinct placeholders present, each resolved to the real value it stands in
+    for, in first-appearance order:
+
+        ``[{"placeholder": "[LOCATION_330]", "value": "Sydney"}]``
+
+    ``value`` is ``None`` for a placeholder with no binding (an orphan/unknown
+    token, e.g. a stale delete). Returns ``[]`` when nothing was obfuscated.
+    This is pure regex + dict lookup — no NER, no DB write, no minting — so it
+    is safe to fold into the write paths that already have the text in hand.
+    """
+    if not text:
+        return []
+    from apps.pii.entity_registry import get_name
+    from apps.pii.redactor import _PLACEHOLDER_RE
+
+    entity_map = entity_map or {}
+    out: list[dict] = []
+    seen: set[str] = set()
+    # ``findall`` on _PLACEHOLDER_RE returns (type, num) group tuples, not the
+    # full token — iterate matches and take group(0) to get "[LOCATION_330]".
+    for match in _PLACEHOLDER_RE.finditer(text):
+        placeholder = match.group(0)
+        if placeholder in seen:
+            continue
+        seen.add(placeholder)
+        name = get_name(entity_map.get(placeholder))
+        out.append({"placeholder": placeholder, "value": name or None})
+    return out
+
+
+def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> tuple[str, list[dict]]:
     """Rehydrate PII, record + strip ``[[insight:]]`` markers, and strip
     ``[[chart:]]`` / ``MEDIA:`` markers (the app can't render workspace
     file paths) so the stored reply is clean display text. Mirrors the
-    relevant parts of ``relay_ai_response_to_telegram``."""
+    relevant parts of ``relay_ai_response_to_telegram``.
+
+    Returns ``(clean_text, reply_redactions)``: the redaction metadata is the
+    placeholders the assistant emitted, captured BEFORE rehydration (the only
+    point the reply is still in placeholder space) and resolved to the real
+    values they were rehydrated to, so the caller can persist it for the
+    transparency UI. See :func:`placeholder_redactions` for the shape."""
     entity_map = getattr(tenant, "pii_entity_map", None)
+    # Capture BEFORE rehydrate_text substitutes the placeholders away — this is
+    # the last moment the reply carries the [TYPE_N] tokens.
+    reply_redactions = placeholder_redactions(ai_text, entity_map)
     if entity_map:
         try:
             from apps.pii.redactor import rehydrate_text
@@ -1663,7 +1711,7 @@ def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> str:
 
     ai_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", ai_text)
     ai_text = re.sub(r"MEDIA:\S+", "", ai_text)
-    return ai_text.strip()
+    return ai_text.strip(), reply_redactions
 
 
 # ---------------------------------------------------------------------------

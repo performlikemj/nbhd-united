@@ -66,21 +66,37 @@ DEPRECATION_HEADERS = {
 
 
 def _note_template_response(note: DailyNote, *, include_entries: bool = False) -> dict:
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    tenant = note.tenant
     template, sections = get_or_seed_note_template(
-        tenant=note.tenant,
+        tenant=tenant,
         date_value=note.date,
         markdown=note.markdown,
     )
+    # Owner-facing serve boundary: note.markdown + section bodies are stored in
+    # PII placeholder space (the assistant authors them on redacted input), so
+    # rehydrate the user-visible strings back to real values. Template metadata
+    # (id/slug/name) is static config and never carries PII. ``sections`` is a
+    # fresh copy from get_or_seed_note_template, so mutating in place is safe.
+    for section in sections:
+        for key in ("title", "content"):
+            if section.get(key):
+                section[key] = rehydrate_for_tenant(tenant, section[key])
     payload = {
         "date": str(note.date),
-        "markdown": note.markdown,
+        "markdown": rehydrate_for_tenant(tenant, note.markdown),
         "template_id": str(template.id),
         "template_slug": template.slug,
         "template_name": template.name,
         "sections": sections,
     }
     if include_entries:
-        payload["entries"] = parse_daily_note(note.markdown)
+        entries = parse_daily_note(note.markdown)
+        for entry in entries:
+            if entry.get("content"):
+                entry["content"] = rehydrate_for_tenant(tenant, entry["content"])
+        payload["entries"] = entries
     return payload
 
 

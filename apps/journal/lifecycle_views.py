@@ -29,6 +29,38 @@ from .document_views import _get_tenant
 _ENTITY_SEARCH_LIMIT = 20
 
 
+def _owner_ctx(tenant):
+    """Serializer context for owner-facing responses.
+
+    Sets ``rehydrate=True`` so ``TaskSerializer`` / ``GoalSerializer`` swap
+    ``[TYPE_N]`` PII placeholders in title/description back to real values for
+    the logged-in owner. The agent/runtime serializer paths
+    (``apps.integrations.runtime_views``) deliberately omit this flag so those
+    fields stay in placeholder space for the model.
+    """
+    return {"tenant": tenant, "rehydrate": True}
+
+
+def _redact_owner_input(tenant, data):
+    """Re-redact owner-typed title/description before validation/persistence.
+
+    Owner-facing reads rehydrate these fields (see ``_owner_ctx``), so an edit
+    round-trips real values back here; without this pass the real PII would
+    persist raw and leak to the agent via the runtime serializers. Known names
+    map back to their existing placeholder, new PII mints a fresh one —
+    symmetric with the document PATCH/append write path. redact_user_message
+    is fail-open (returns the original text on any error).
+    """
+    from apps.pii.redactor import redact_user_message
+
+    out = data.dict() if hasattr(data, "dict") else dict(data)
+    for field in ("title", "description"):
+        value = out.get(field)
+        if isinstance(value, str) and value:
+            out[field] = redact_user_message(value, tenant)
+    return out
+
+
 def _parse_iso_date(raw, field_name):
     """Parse a YYYY-MM-DD query param, or return None. Raise ValueError if malformed."""
     if not raw:
@@ -67,7 +99,7 @@ class TaskDetailView(APIView):
         task = Task.objects.filter(tenant=tenant, id=task_id).first()
         if task is None:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
-        return Response(TaskSerializer(task).data)
+        return Response(TaskSerializer(task, context=_owner_ctx(tenant)).data)
 
     def patch(self, request, task_id):
         from .lifecycle_serializers import TaskSerializer
@@ -78,10 +110,15 @@ class TaskDetailView(APIView):
         if task is None:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = TaskSerializer(task, data=request.data, partial=True, context={"tenant": tenant})
+        serializer = TaskSerializer(
+            task,
+            data=_redact_owner_input(tenant, request.data),
+            partial=True,
+            context={"tenant": tenant},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(TaskSerializer(task).data)
+        return Response(TaskSerializer(task, context=_owner_ctx(tenant)).data)
 
 
 class TaskCompleteView(APIView):
@@ -99,7 +136,7 @@ class TaskCompleteView(APIView):
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         task.complete()
-        return Response(TaskSerializer(task).data)
+        return Response(TaskSerializer(task, context=_owner_ctx(tenant)).data)
 
 
 class TaskReopenView(APIView):
@@ -119,7 +156,7 @@ class TaskReopenView(APIView):
         task.status = Task.Status.OPEN
         task.completed_at = None
         task.save(update_fields=["status", "completed_at", "updated_at"])
-        return Response(TaskSerializer(task).data)
+        return Response(TaskSerializer(task, context=_owner_ctx(tenant)).data)
 
 
 class GoalDetailView(APIView):
@@ -135,7 +172,7 @@ class GoalDetailView(APIView):
         goal = Goal.objects.filter(tenant=tenant, id=goal_id).first()
         if goal is None:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
-        return Response(GoalSerializer(goal).data)
+        return Response(GoalSerializer(goal, context=_owner_ctx(tenant)).data)
 
     def patch(self, request, goal_id):
         from .lifecycle_serializers import GoalSerializer
@@ -146,10 +183,15 @@ class GoalDetailView(APIView):
         if goal is None:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = GoalSerializer(goal, data=request.data, partial=True, context={"tenant": tenant})
+        serializer = GoalSerializer(
+            goal,
+            data=_redact_owner_input(tenant, request.data),
+            partial=True,
+            context={"tenant": tenant},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
-        return Response(GoalSerializer(goal).data)
+        return Response(GoalSerializer(goal, context=_owner_ctx(tenant)).data)
 
 
 class GoalAchieveView(APIView):
@@ -167,7 +209,7 @@ class GoalAchieveView(APIView):
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         goal.mark_achieved()
-        return Response(GoalSerializer(goal).data)
+        return Response(GoalSerializer(goal, context=_owner_ctx(tenant)).data)
 
 
 class GoalAbandonView(APIView):
@@ -185,7 +227,7 @@ class GoalAbandonView(APIView):
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         goal.abandon()
-        return Response(GoalSerializer(goal).data)
+        return Response(GoalSerializer(goal, context=_owner_ctx(tenant)).data)
 
 
 class TaskListCreateView(APIView):
@@ -229,13 +271,13 @@ class TaskListCreateView(APIView):
         q = (params.get("q") or "").strip()
         if q:
             qs = qs.filter(title__icontains=q)[:_ENTITY_SEARCH_LIMIT]
-        return Response(TaskSerializer(qs, many=True).data)
+        return Response(TaskSerializer(qs, many=True, context=_owner_ctx(tenant)).data)
 
     def post(self, request):
         from .lifecycle_serializers import TaskSerializer
 
         tenant = _get_tenant(request.user)
-        serializer = TaskSerializer(data=request.data, context={"tenant": tenant})
+        serializer = TaskSerializer(data=_redact_owner_input(tenant, request.data), context=_owner_ctx(tenant))
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -272,13 +314,13 @@ class GoalListCreateView(APIView):
         q = (params.get("q") or "").strip()
         if q:
             qs = qs.filter(title__icontains=q)[:_ENTITY_SEARCH_LIMIT]
-        return Response(GoalSerializer(qs, many=True).data)
+        return Response(GoalSerializer(qs, many=True, context=_owner_ctx(tenant)).data)
 
     def post(self, request):
         from .lifecycle_serializers import GoalSerializer
 
         tenant = _get_tenant(request.user)
-        serializer = GoalSerializer(data=request.data, context={"tenant": tenant})
+        serializer = GoalSerializer(data=_redact_owner_input(tenant, request.data), context=_owner_ctx(tenant))
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)

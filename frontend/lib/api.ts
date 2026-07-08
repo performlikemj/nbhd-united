@@ -392,6 +392,32 @@ export function deleteEntityRegistryEntry(placeholder: string): Promise<void> {
   );
 }
 
+export interface EntityRegistryBulkDeleteResult {
+  deleted: string[];
+  not_found: string[];
+  denied: string[];
+}
+
+// Bulk-delete entity-registry bindings by placeholder. Deletion alone only
+// removes the binding — the redactor re-mints a fresh placeholder the next
+// time it detects the same name — so `deny: true` also adds each deleted
+// binding's name to the Ignore list (denylist), which is what actually stops
+// future redaction. Partial-success contract mirrors the denylist bulk-add:
+// unknown placeholders come back in `not_found`; names added to the denylist
+// come back in `denied`.
+export function bulkDeleteEntityRegistryEntries(
+  placeholders: string[],
+  deny: boolean,
+): Promise<EntityRegistryBulkDeleteResult> {
+  return apiFetch<EntityRegistryBulkDeleteResult>(
+    "/api/v1/tenants/settings/entity-registry/bulk/",
+    {
+      method: "POST",
+      body: JSON.stringify({ placeholders, deny }),
+    },
+  );
+}
+
 // PII denylist — per-tenant canonical-keyed words the redactor should
 // never treat as PII. Populated manually via the People settings page
 // when a user spots an NER false positive ("goal", "calendar", an emoji).
