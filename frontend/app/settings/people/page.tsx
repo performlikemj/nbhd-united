@@ -4,11 +4,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
+import { BulkDeletePeopleDialog } from "@/components/settings/bulk-delete-people-dialog";
 import {
   type EntityRegistryEntry,
   type PIIDenylistEntry,
   addPIIDenylistEntry,
   bulkAddPIIDenylistEntries,
+  bulkDeleteEntityRegistryEntries,
   deleteEntityRegistryEntry,
   fetchEntityRegistry,
   fetchPIIDenylist,
@@ -82,6 +84,11 @@ export default function PeopleSettingsPage() {
   // bulk Ignore. Cleared on a successful bulk submission.
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [bulkError, setBulkError] = useState<string | null>(null);
+  // Bulk delete lives behind a confirm dialog (destructive + irreversible for
+  // history). The "also ignore" checkbox defaults ON because deletion alone
+  // lets the redactor re-mint a placeholder for the same name.
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deleteAlsoIgnore, setDeleteAlsoIgnore] = useState(true);
 
   // Seed drafts when server data first arrives, but never clobber a draft
   // the user is actively editing.
@@ -144,6 +151,18 @@ export default function PeopleSettingsPage() {
     },
   });
 
+  const bulkDeleteMutation = useMutation({
+    mutationFn: ({ placeholders, deny }: { placeholders: string[]; deny: boolean }) =>
+      bulkDeleteEntityRegistryEntries(placeholders, deny),
+    onSuccess: () => {
+      // deny=true also mutates the denylist, so refresh both sections.
+      void queryClient.invalidateQueries({ queryKey: ["entity-registry"] });
+      void queryClient.invalidateQueries({ queryKey: ["pii-denylist"] });
+      setSelectedKeys(new Set());
+      setDeleteDialogOpen(false);
+    },
+  });
+
   const handleFieldChange = (
     placeholder: string,
     field: "name" | "relationship" | "notes",
@@ -187,7 +206,7 @@ export default function PeopleSettingsPage() {
 
   const handleDelete = async (entry: EntityRegistryEntry) => {
     const confirmed = window.confirm(
-      `Delete the binding for ${entry.placeholder}? This will not rewrite past messages but stops future ones from using this name.`,
+      `Delete the binding for ${entry.placeholder}? Old journal and chat history that still contains this placeholder can no longer be translated back to the real name. This does NOT stop future redaction — your assistant may mint a new placeholder for this name again. To stop it being redacted, use "Ignore" instead.`,
     );
     if (!confirmed) return;
     try {
@@ -248,6 +267,20 @@ export default function PeopleSettingsPage() {
       }
     } catch (err) {
       setBulkError(err instanceof Error ? err.message : "Bulk ignore failed");
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    setBulkError(null);
+    // Delete is by placeholder, so operate on the FULL selection — including
+    // rows with empty names that bulk-ignore skips (a nameless binding still
+    // has a placeholder to remove).
+    const placeholders = Array.from(selectedKeys);
+    if (placeholders.length === 0) return;
+    try {
+      await bulkDeleteMutation.mutateAsync({ placeholders, deny: deleteAlsoIgnore });
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : "Bulk delete failed");
     }
   };
 
@@ -438,19 +471,31 @@ export default function PeopleSettingsPage() {
                 <p className="text-sm text-ink">
                   <span className="font-semibold">{selectedKeys.size}</span> selected
                 </p>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={clearSelection}
-                    disabled={bulkDenyMutation.isPending}
+                    disabled={bulkDenyMutation.isPending || bulkDeleteMutation.isPending}
                     className="rounded-lg border border-border bg-transparent px-3 py-2 text-xs text-ink-muted transition hover:bg-surface-hover hover:text-ink disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
                   >
                     Clear selection
                   </button>
                   <button
                     type="button"
+                    onClick={() => {
+                      setBulkError(null);
+                      setDeleteAlsoIgnore(true);
+                      setDeleteDialogOpen(true);
+                    }}
+                    disabled={bulkDenyMutation.isPending || bulkDeleteMutation.isPending}
+                    className="rounded-lg border border-rose-border bg-transparent px-4 py-2 text-xs font-medium text-rose-text transition hover:bg-rose-bg disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
+                  >
+                    Delete {selectedKeys.size} selected
+                  </button>
+                  <button
+                    type="button"
                     onClick={handleBulkIgnore}
-                    disabled={bulkDenyMutation.isPending}
+                    disabled={bulkDenyMutation.isPending || bulkDeleteMutation.isPending}
                     className="glow-purple rounded-lg bg-accent px-4 py-2 text-xs font-semibold text-white transition hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px]"
                   >
                     {bulkDenyMutation.isPending
@@ -650,6 +695,20 @@ export default function PeopleSettingsPage() {
           </ul>
         )}
       </SectionCard>
+
+      <BulkDeletePeopleDialog
+        open={deleteDialogOpen}
+        count={selectedKeys.size}
+        alsoIgnore={deleteAlsoIgnore}
+        onAlsoIgnoreChange={setDeleteAlsoIgnore}
+        busy={bulkDeleteMutation.isPending}
+        error={bulkError}
+        onConfirm={handleBulkDelete}
+        onCancel={() => {
+          setBulkError(null);
+          setDeleteDialogOpen(false);
+        }}
+      />
     </div>
   );
 }

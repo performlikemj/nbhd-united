@@ -32,24 +32,35 @@ PII redaction happens entirely in the Django control plane. No changes to OpenCl
 Workspace sync:     Django ──[REDACT]──> Azure File Share ──> OpenClaw reads
 Tool results:       Plugin ──> Django ──[REDACT]──> Plugin ──> OpenClaw LLM
 Weather URLs:       Django ──[QUANTIZE coords]──> OpenClaw config
-User messages:      Telegram/LINE ──> Django ──> OpenClaw (NOT redacted — see below)
+User messages:      Telegram/LINE/iOS ──> Django ──[REDACT]──> OpenClaw LLM
+Owner journal edit: Web/iOS ──[RE-REDACT]──> Document.markdown ──> OpenClaw reads
 
                     REHYDRATION POINTS
                     ==================
 
-Cron responses:     OpenClaw ──> Django ──[REHYDRATE]──> Telegram/LINE
-Conversation:       OpenClaw ──> Django ──[REHYDRATE]──> Telegram/LINE
+Cron responses:     OpenClaw ──> Django ──[REHYDRATE]──> Telegram/LINE/iOS
+Conversation:       OpenClaw ──> Django ──[REHYDRATE]──> Telegram/LINE/iOS
+Journal reads:      Document.markdown ──[REHYDRATE]──> Web/iOS owner surfaces
 ```
 
-### Why user messages are NOT redacted
+### Inbound user messages are redacted
 
-User messages pass through to the model unredacted. This is intentional:
+Earlier versions of this system passed user messages straight through to the model. **That is no longer true.** Inbound user text is now redacted on every channel before it reaches the assistant, and the reply is rehydrated on the way back out:
 
-1. The user explicitly shared the PII by typing it — they want the assistant to act on it
-2. Redacting user messages replaces values with `[PERSON_1]` style placeholders, which confuses the model — it interprets them as broken template variables and asks for "real" information
-3. The model handles placeholders naturally in **background context** (workspace files, tool results) but rejects them in **direct conversation**
+- **iOS / web chat** — `apps/router/chat_views.py:322` (`redact_user_message`), inside the `enqueue_tenant_turn` chokepoint. Only the LLM-bound payload is redacted; the user's own `AppChatMessage.user_text` is persisted verbatim so the `?since=` feed echoes exactly what they typed.
+- **LINE** — `apps/router/line_webhook.py:1253`.
+- **Telegram** — `apps/router/poller.py:1378`.
 
-The high-value redaction targets are workspace context and tool results, which contain PII about **other people** (contacts, email correspondents, calendar attendees) that the user didn't explicitly share in the current message.
+So the assistant reasons over placeholder space (`[LOCATION_330]`, `[PERSON_1]`), never the raw value. Newly-detected entities are minted into `Tenant.pii_entity_map` under a per-tenant row lock at detection time.
+
+**The egress seam that closes the loop is `rehydrate_for_tenant` (`apps/pii/redactor.py:230`).** Its docstring states the load-bearing invariant: *every user-facing send path that may carry agent-authored text MUST route it through `rehydrate_for_tenant` (or `rehydrate_text`) before delivery* — otherwise a raw `[PERSON_1]` leaks to the user. `apps/pii/tests/test_rehydration_egress.py` guards that contract. Unknown placeholders (e.g. a binding the owner deleted) pass through verbatim rather than crashing.
+
+**The split that makes this safe — owner sees real values, agent never does:**
+
+- **Agent-facing surfaces stay redacted** — the LLM chat payload, workspace files on the Azure File Share, tool results, and the journal content the runtime re-reads (`RuntimeDailyNotesView`) all remain in placeholder space.
+- **Owner-facing surfaces get real values** — anything the tenant themself reads (chat history, cron/proactive deliveries, action confirmations, journal documents) is rehydrated first. The owner shared the PII; they see it.
+
+The old worry that redacting direct conversation confuses the model — it treats `[PERSON_1]` as a broken template variable and asks for "real" information — is mitigated by the workspace instruction doc (`templates/openclaw/docs/privacy-redaction.md`), which tells the model to preserve placeholders verbatim, plus the rehydration seam restoring real values before the owner reads the reply. The high-value targets remain workspace context and tool results, which carry PII about **other people** (contacts, email correspondents, calendar attendees) the user never typed in the current message.
 
 ## Technology: Custom DeBERTa Model + Presidio Pattern Recognizers
 
@@ -116,12 +127,13 @@ Configuration: `apps/pii/config.py`
 
 ### Rehydration
 
-When the model responds with placeholders (e.g., "You got an email from [EMAIL_ADDRESS_1] about the review"), Django replaces them with original values before sending to the user via Telegram or LINE.
+When the model responds with placeholders (e.g., "You got an email from [EMAIL_ADDRESS_1] about the review"), Django replaces them with original values before sending to the user via Telegram, LINE, or the iOS/web app.
 
 Rehydration points:
 - `apps/router/cron_delivery.py` — cron/proactive messages (both Telegram and LINE)
 - `apps/router/poller.py` — Telegram conversation replies
 - `apps/router/line_webhook.py` — LINE conversation replies
+- `apps/router/pending_queue.py` — iOS/web app conversation replies (stored rehydrated at drain time in `_clean_assistant_text_for_app`)
 
 The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_map`). Example:
 
@@ -133,6 +145,28 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
     "[LOCATION_1]": "Brooklyn, NY"
 }
 ```
+
+### Per-message redaction metadata (owner transparency)
+
+Now that inbound chat is redacted, the owner can no longer tell — from the rendered bubble alone — that a value was hidden from their assistant. To surface that, each `AppChatMessage` carries two optional JSON columns:
+
+| Column | Covers | Shape |
+|--------|--------|-------|
+| `user_redactions` | placeholders minted/reused from the user's own message | `[{"placeholder": "[LOCATION_330]", "value": "july"}]` |
+| `reply_redactions` | placeholders that appeared in the assistant's reply before rehydration | `[{"placeholder": "[PERSON_1]", "value": "Sarah"}]` |
+
+`null`/absent means nothing was obfuscated on that turn. These are captured at the two write-time chokepoints where placeholder-space text and the entity map are both in scope — the user side in `apps/router/chat_views.py` (right after `redact_user_message`) and the reply side inside `_clean_assistant_text_for_app` (`apps/router/pending_queue.py`, immediately before `rehydrate_text`). Each is a pure `_PLACEHOLDER_RE` scan plus entity-map lookups — no extra NER inference and no read-path mint. (Re-running detection on a serve path would risk minting new placeholders as a side effect, mutating `pii_entity_map` on a read; capturing on write avoids that.) The `value` is the same real string the owner already sees in the rehydrated bubble, so exposing it adds no new PII.
+
+Both fields ride the existing chat wire shapes (`_serialize_message` and the `?since=` feed row) as additive optional keys, so older clients ignore them. The client uses them to show which substrings the assistant did not see and to offer a per-value opt-out — see `docs/ios-chat-redaction-transparency-directive.md`.
+
+### Owner-facing journal rehydration boundary
+
+Journal content (daily recaps, tasks, goals) is written by the assistant, which runs on redacted input — so a stored task title reads `Book hotel for [LOCATION_330]`. Serving that raw to the owner leaks the placeholder; that is a missing-rehydration bug, not intended behavior. The fix rehydrates at the **owner-facing serving boundary only**, never inside the shared projection:
+
+- **Read side** — `DocumentSerializer` (`apps/journal/document_serializers.py`, the owner document reads used by web + iOS) and `JournalStatusView` (`GET /api/v1/journal/status/`) rehydrate `markdown` / task + goal titles before returning them to the owner. This must NOT be done inside `build_journal_status`, which also feeds the OpenClaw runtime (`apps/integrations/runtime_views.py`) and must stay redacted.
+- **Write side** — because both clients round-trip the same `markdown` field back on edit / tap-to-complete, `DocumentDetailView.patch` and `DocumentAppendView.post` **re-redact** the incoming markdown (`redact_user_message`) before storing. Without this, a read-then-save would land the rehydrated real value in `Document.markdown`, re-expose it to the agent via `RuntimeDailyNotesView`, and destroy the placeholder (breaking future rehydration).
+
+This boundary is entirely server-side — iOS and web need no client change to benefit, since both already read and write these same Document endpoints.
 
 ## False positive mitigation
 
@@ -147,7 +181,7 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
 
 | Gap | Reason | Risk level |
 |-----|--------|-----------|
-| User's own messages | Redacting confuses the model; user intentionally shared the PII | Low — user consented |
+| Fail-open redaction | Redaction never blocks the user experience: if detection errors on a message, the original text is returned unredacted (`redact_user_message` swallows exceptions), so that one turn reaches the model with real values and carries no `user_redactions` metadata | Low — transient, per-message |
 | PII the model generates from reasoning | Mitigated by `docs/privacy-redaction.md` workspace doc instructing the model to preserve placeholders verbatim | Low — model may still hallucinate in edge cases |
 | OpenClaw's internal conversation memory | Accumulated context from past turns lives in OpenClaw, not Django | Medium — mitigated by workspace redaction covering the densest PII |
 | Tool results from non-Django plugins | If a future plugin calls external APIs directly (bypassing Django), those results won't be redacted | N/A currently — all plugins route through Django |
@@ -165,8 +199,12 @@ The entity mapping is stored as a JSON field on the `Tenant` model (`pii_entity_
 | `apps/orchestrator/config_generator.py` | Coordinate quantization |
 | `apps/integrations/runtime_views.py` | Tool result redaction (Gmail, Calendar, Reddit) |
 | `apps/router/cron_delivery.py` | Rehydration for cron/proactive messages |
-| `apps/router/poller.py` | Rehydration for Telegram replies |
-| `apps/router/line_webhook.py` | Rehydration for LINE replies |
+| `apps/router/poller.py` | Inbound Telegram redaction + rehydration for Telegram replies |
+| `apps/router/line_webhook.py` | Inbound LINE redaction + rehydration for LINE replies |
+| `apps/router/chat_views.py` | Inbound iOS/web chat redaction + `user_redactions` capture |
+| `apps/router/pending_queue.py` | iOS/web reply rehydration + `reply_redactions` capture |
+| `apps/journal/document_serializers.py` | Owner-facing journal document rehydration (read side) |
+| `apps/journal/status_views.py` | Owner-facing journal status rehydration (read side) |
 | `templates/openclaw/docs/privacy-redaction.md` | Model instructions for preserving placeholders (starter tier only) |
 | `apps/tenants/models.py` | `pii_entity_map` JSONField on Tenant |
 | `Dockerfile` | ONNX model baked into image at `/app/pii-model` |

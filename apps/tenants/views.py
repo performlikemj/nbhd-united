@@ -1173,6 +1173,110 @@ class EntityRegistryItemView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+class EntityRegistryBulkDeleteView(APIView):
+    """Bulk-delete entity-registry bindings in a single request.
+
+    Backs the People settings page's "Delete N selected" action. Deleting
+    hundreds of bindings via sequential single-entry DELETEs is slow and
+    racy against the inbound redactor's full-dict overwrites; this drains
+    them under one row lock in a single round trip.
+
+    Body: ``{"placeholders": ["[PERSON_1]", ...], "deny": false}``.
+
+    When ``deny`` is true, each deleted entry's name is ALSO added to the
+    tenant's pii_denylist. Deletion alone does NOT stop future redaction —
+    the redactor's NER pass re-mints a fresh ``[TYPE_N]`` for the same real
+    name on the next inbound message unless the value is on the denylist
+    (see apps/pii/redactor.py and the PIIDenylistListView docstring). So
+    ``deny=true`` is the "actually stop obfuscating this value" lever;
+    deleting the row without denying just re-mints the value under a new
+    placeholder and breaks rehydration of any stored text still referencing
+    the old one.
+    """
+
+    permission_classes = [IsAuthenticated]
+    _MAX_BATCH = 1000
+
+    def post(self, request):
+        from apps.pii.entity_registry import get_name, normalize_denylist_key
+
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        body = request.data or {}
+        placeholders = body.get("placeholders")
+        if not isinstance(placeholders, list):
+            return Response(
+                {"detail": "placeholders must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not placeholders:
+            return Response(
+                {"detail": "placeholders is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(placeholders) > self._MAX_BATCH:
+            return Response(
+                {"detail": f"batch exceeds max size {self._MAX_BATCH}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not all(isinstance(p, str) for p in placeholders):
+            return Response(
+                {"detail": "placeholders must be a list of strings"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        deny = bool(body.get("deny", False))
+
+        deleted: list[str] = []
+        not_found: list[str] = []
+        denied: list[str] = []
+
+        # Serialize the read-modify-write per tenant: the inbound redactor,
+        # the arbiter sweep, and concurrent edits all overwrite the whole
+        # pii_entity_map / pii_denylist dicts. Re-read both rows under one
+        # lock so this batch can't be clobbered by — or clobber — a
+        # concurrent mint/delete, and write both fields in a single UPDATE
+        # so the delete and the deny commit atomically.
+        with transaction.atomic():
+            locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
+            entity_map = dict((locked.pii_entity_map if locked else None) or {})
+            denylist = dict((locked.pii_denylist if locked else None) or {})
+
+            now = timezone.now().isoformat()
+            for placeholder in placeholders:
+                if placeholder not in entity_map:
+                    not_found.append(placeholder)
+                    continue
+                entry = entity_map.pop(placeholder)
+                deleted.append(placeholder)
+                if deny:
+                    # get_name reads both the dict and legacy bare-string
+                    # entry shapes; normalize_denylist_key casefold+strips
+                    # to the canonical denylist key. Skip empties and keep
+                    # existing denylist entries untouched (only genuinely
+                    # new keys are added and reported in ``denied``).
+                    key = normalize_denylist_key(get_name(entry))
+                    if key and key not in denylist:
+                        denylist[key] = {"reason": "bulk-delete", "decided_at": now}
+                        denied.append(key)
+
+            update_fields = {"pii_entity_map": entity_map}
+            if deny:
+                update_fields["pii_denylist"] = denylist
+            Tenant.objects.filter(pk=tenant.pk).update(**update_fields)
+        tenant.pii_entity_map = entity_map
+        if deny:
+            tenant.pii_denylist = denylist
+
+        return Response(
+            {"deleted": deleted, "not_found": not_found, "denied": denied},
+            status=status.HTTP_200_OK,
+        )
+
+
 class PIIDenylistListView(APIView):
     """List / add tenant PII denylist entries.
 

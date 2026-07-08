@@ -17,7 +17,13 @@ Shape per message row (the contract iOS dedups/merges against):
       "created_at": "<ISO8601 UTC>",
       "source": "app" | "telegram" | "line" | "cron",
       "thread_id": "<stable thread id>",
+      "user_redactions": [{"placeholder", "value"}],   # optional; user rows only
+      "reply_redactions": [{"placeholder", "value"}],  # optional; assistant rows only
     }
+
+Both ``*_redactions`` keys are OMITTED when nothing was obfuscated (and are only
+ever present on ``source="app"`` rows), so pre-feature clients see the unchanged
+shape. See ``apps.router.pending_queue.placeholder_redactions``.
 
 Design notes
 ------------
@@ -110,7 +116,18 @@ def decode_cursor(cursor: str | None) -> tuple[datetime, str]:
 # ---------------------------------------------------------------------------
 
 
-def _row(*, row_id, created_at, role, text, source, thread_id, client_msg_id=None):
+def _row(
+    *,
+    row_id,
+    created_at,
+    role,
+    text,
+    source,
+    thread_id,
+    client_msg_id=None,
+    user_redactions=None,
+    reply_redactions=None,
+):
     """A single message row + its (created_at, id) sort key.
 
     ``_sort`` is stripped before the row leaves the view; it only drives the
@@ -126,6 +143,13 @@ def _row(*, row_id, created_at, role, text, source, thread_id, client_msg_id=Non
     }
     if client_msg_id:
         msg["client_msg_id"] = client_msg_id
+    # Per-turn PII transparency metadata (optional; only AppChatMessage rows
+    # carry it). Omitted entirely when nothing was obfuscated so older iOS
+    # builds — which ignore the keys anyway — see the same shape as before.
+    if user_redactions:
+        msg["user_redactions"] = user_redactions
+    if reply_redactions:
+        msg["reply_redactions"] = reply_redactions
     return {"_sort": (created_at, row_id), "msg": msg}
 
 
@@ -146,6 +170,7 @@ def _app_rows(m, main_thread_id):
                 source="app",
                 thread_id=thread_id,
                 client_msg_id=m.client_msg_id,  # device-originated → echo for dedup
+                user_redactions=m.user_redactions,
             )
         )
     if m.status == AppChatMessage.Status.READY and (m.reply_text or "").strip():
@@ -171,6 +196,7 @@ def _app_rows(m, main_thread_id):
                 # needs a shared key for the merge to backfill it instead of
                 # inserting a duplicate. The client dedups by (client_msg_id, role).
                 client_msg_id=m.client_msg_id,
+                reply_redactions=m.reply_redactions,
             )
         )
     return out
