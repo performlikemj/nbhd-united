@@ -23,6 +23,18 @@ Only the JWT views hook this. The runtime/agent paths and HealthKit ingest are
 excluded structurally (they never call in) so agent self-completions and batch
 backfills never congratulate.
 
+Hibernation posture: the JWT completion path hits Django, not the container, so a
+completion can land while the tenant's container is idle-hibernated. A one-shot
+``kind:"at"`` cron created against a hibernated container CANNOT be delivered — the
+gateway push fails, and no reconcile/restore path re-pushes it (the reconciler
+excludes ``kind:"at"`` by design, and wake-restore replays only the pre-hibernation
+snapshot). We deliberately do NOT spin up a whole AI container just to deliver a
+congrats (a nice-to-have, not a user-scheduled commitment like a reminder). Instead
+we skip hibernated tenants cleanly and roll back on any push failure — the stamp only
+ever means "a congrats was actually scheduled," so the tenant's NEXT completion while
+awake congratulates, and dropped attempts are counted via a structured log. See the
+PR body for the wake-to-deliver upgrade left for MJ to decide.
+
 Nothing here may break or slow the workout save: the public entry point is wrapped
 fail-soft and the slow gateway push is dispatched OFF the request path.
 """
@@ -96,6 +108,21 @@ def _maybe_congratulate_workout(tenant, workout, transitioned_to_done: bool) -> 
     if workout.date is None or (today - workout.date).days > CONGRATS_RECENCY_DAYS:
         return
 
+    # Hibernation gate. The JWT completion path hits Django, not the container, so this
+    # can run while the container is idle-hibernated — and a one-shot at-cron can't be
+    # delivered to a hibernated container (the push fails and nothing re-pushes it). We
+    # do NOT wake a whole AI container just to say "nice work"; skip cleanly WITHOUT
+    # stamping, so the tenant's next completion while awake congratulates. Counted as a
+    # drop for visibility. (A race where the tenant hibernates AFTER this check is caught
+    # by the push-failure rollback in _dispatch_schedule.)
+    if getattr(tenant, "hibernated_at", None) is not None:
+        logger.info(
+            "workout_congrats drop: tenant=%s workout=%s reason=hibernated",
+            getattr(tenant, "id", "?"),
+            getattr(workout, "id", "?"),
+        )
+        return
+
     # Layer 2: per-tenant cooldown, read off the shared congratulated_at clock. Checked
     # BEFORE we stamp this workout, so this workout's own (still-null) stamp can't trip
     # it and only prior congrats count.
@@ -157,45 +184,94 @@ def _fmt_num(value) -> str:
     return f"{float(value):g}"
 
 
+def _congrats_cron_name(workout_id: str) -> str:
+    """Stable per-workout cron name. Hyphen (not colon): the workout uuid carries
+    hyphens only, so the name is safe even if it ever feeds a QStash dedup id
+    (which rejects ':' / whitespace)."""
+    return f"_congrats-{workout_id}"
+
+
 def _dispatch_schedule(tenant, *, workout_id: str, payload: dict) -> None:
     """Schedule the congrats cron OFF the request path.
 
     Mirrors ``apps.router.proactive_context._dispatch_ios_push``: a background daemon
     thread in prod (the gateway push can take up to ~90s with retry), synchronous under
-    ``NBHD_DISABLE_BACKGROUND_THREADS`` (tests) for determinism. Fail-soft.
+    ``NBHD_DISABLE_BACKGROUND_THREADS`` (tests) for determinism. Fail-soft — a push
+    failure rolls the claim back so the stamp only ever means "a congrats was scheduled."
     """
+    name = _congrats_cron_name(workout_id)
 
-    def _run() -> None:
+    def _work() -> None:
         try:
-            _schedule_congrats_cron(tenant, workout_id=workout_id, payload=payload)
-        except Exception:
-            logger.warning(
-                "workout congrats scheduling failed (non-fatal) tenant=%s workout=%s",
-                getattr(tenant, "id", "?"),
-                workout_id,
-                exc_info=True,
-            )
+            _schedule_congrats_cron(tenant, name=name, payload=payload)
+        except Exception as exc:
+            _rollback_congrats(tenant, workout_id=workout_id, name=name, exc=exc)
 
     if getattr(settings, "NBHD_DISABLE_BACKGROUND_THREADS", False):
-        _run()
+        # Runs on the caller's connection (tests / sync setting) — do NOT close it here.
+        _work()
     else:
-        threading.Thread(target=_run, daemon=True).start()
+
+        def _threaded() -> None:
+            from django.db import connection
+
+            try:
+                _work()
+            finally:
+                # This thread opened its own pooled connection on first query; release
+                # it now instead of leaning on thread-death GC (CONN_MAX_AGE keeps it
+                # otherwise held ~10min, and a completion burst would pin pooler slots).
+                connection.close()
+
+        threading.Thread(target=_threaded, daemon=True).start()
 
 
-def _schedule_congrats_cron(tenant, *, workout_id: str, payload: dict) -> None:
+def _rollback_congrats(tenant, *, workout_id: str, name: str, exc: Exception) -> None:
+    """Undo the durable claim when scheduling the congrats cron failed.
+
+    Deletes the orphan CronJob row (``create_typed_cron`` commits it before the gateway
+    push, so a failed push leaves it behind — and no reconciler re-pushes a ``kind:"at"``
+    row) and clears ``congratulated_at`` so a later completion can retry. Emits a
+    structured drop log; a hibernated-race is expected (INFO), anything else is a real
+    failure (WARNING). Fail-soft: cleanup errors are swallowed.
+    """
+    from apps.cron.gateway_client import GatewayError
+
+    unavailable = isinstance(exc, GatewayError) and getattr(exc, "unavailable", False)
+    reason = "hibernated_race" if unavailable else type(exc).__name__
+    (logger.info if unavailable else logger.warning)(
+        "workout_congrats drop: tenant=%s workout=%s reason=%s — clearing claim so a later completion can retry",
+        getattr(tenant, "id", "?"),
+        workout_id,
+        reason,
+        exc_info=not unavailable,
+    )
+    try:
+        from apps.cron.models import CronJob
+
+        CronJob.objects.filter(tenant=tenant, name=name).delete()
+        Workout.objects.filter(id=workout_id).update(congratulated_at=None)
+    except Exception:
+        logger.warning(
+            "workout_congrats rollback cleanup failed tenant=%s workout=%s",
+            getattr(tenant, "id", "?"),
+            workout_id,
+            exc_info=True,
+        )
+
+
+def _schedule_congrats_cron(tenant, *, name: str, payload: dict) -> None:
     """Create the one-shot ``workout_congrats`` at-cron via the typed-cron service.
 
-    Local imports: the cron service pulls in the patterns package (which touches Django
-    models), so defer to avoid a fuel→cron import cycle at module load.
+    Raises ``GatewayError`` when the immediate push fails (e.g. a hibernated container)
+    — the caller rolls the claim back. Local imports: the cron service pulls in the
+    patterns package (which touches Django models), so defer to avoid a fuel→cron import
+    cycle at module load.
     """
     from apps.cron.models import CronJobSource, CronPattern
     from apps.cron.services import create_typed_cron
 
     fire_at = timezone.now() + timedelta(seconds=CONGRATS_FIRE_DELAY_SECONDS)
-    # Hyphen, not colon: the workout uuid carries hyphens only, and a hyphenated name
-    # is safe even if it ever feeds a QStash dedup id (which rejects ':' / whitespace).
-    name = f"_congrats-{workout_id}"
-
     create_typed_cron(
         tenant=tenant,
         pattern=CronPattern.WORKOUT_CONGRATS,

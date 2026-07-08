@@ -309,9 +309,16 @@ class WorkoutListView(APIView):
         serializer.is_valid(raise_exception=True)
         workout = serializer.save()
         detect_prs(tenant, workout)
+        # Fire only when the client EXPLICITLY logged a finished workout — not when a
+        # caller omits status and lands on the model's DONE default (scripts, backfills,
+        # a future "quick add planned" that forgets the field). Both real clients (iOS
+        # logWorkout, web new-workout-dialog) always send an explicit status.
         from .congrats import maybe_congratulate_workout
 
-        maybe_congratulate_workout(tenant, workout, transitioned_to_done=workout.status == WorkoutStatus.DONE)
+        explicitly_done = (
+            str(request.data.get("status", "")) == WorkoutStatus.DONE and workout.status == WorkoutStatus.DONE
+        )
+        maybe_congratulate_workout(tenant, workout, transitioned_to_done=explicitly_done)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
