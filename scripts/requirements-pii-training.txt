@@ -1,7 +1,7 @@
 # Training dependencies — install on your GPU machine (Colab, Azure ML, etc.)
 # NOT added to the Django requirements.txt
 
-torch>=2.12.1
+torch>=2.13.0
 transformers>=5.9.0
 datasets>=5.0.0
 accelerate>=1.14.0
