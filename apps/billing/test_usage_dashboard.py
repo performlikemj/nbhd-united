@@ -204,6 +204,71 @@ class UsageSummaryReconciliationTest(TestCase):
         self.assertAlmostEqual(haiku["cost"], 0.002, places=6)
 
 
+class UsageSummaryTrueCostTest(TestCase):
+    """The additive 'true monthly cost' fields (llm_cost / infra_cost /
+    infra_source / true_total_cost / infra_breakdown) on the usage summary.
+
+    Covers BOTH the azure-snapshot path and the DoesNotExist→estimate fallback —
+    CI historically only exercised the estimate branch, so both are pinned here.
+    The quota-driving budget block is asserted untouched.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="TrueCost", telegram_chat_id=991200)
+        self.tenant.estimated_cost_this_month = Decimal("1.50")
+        self.tenant.save(update_fields=["estimated_cost_this_month"])
+        self.month = get_month_boundaries()[0]
+
+    def test_estimate_path_true_cost_fields(self):
+        # No snapshot → estimate fallback. Fresh tenant (not active / no
+        # container) → db share capped $0.50, flat platform estimate $2.00.
+        summary = get_usage_summary(self.tenant)
+        self.assertEqual(summary["llm_cost"], 1.50)
+        self.assertEqual(summary["infra_source"], "estimate")
+        self.assertEqual(summary["infra_cost"], 6.75)  # 4.00 + 0.25 + 0.50 + 2.00
+        self.assertAlmostEqual(summary["true_total_cost"], 1.50 + 6.75, places=4)
+        self.assertEqual(
+            summary["infra_breakdown"],
+            {
+                "container": 4.00,
+                "database_share": 0.5,
+                "storage_share": 0.25,
+                "platform_share": 2.00,
+            },
+        )
+        # Budget block (quota) is untouched by the true-cost fields.
+        self.assertIn("tenant_cost_budget", summary["budget"])
+
+    def test_azure_snapshot_path_true_cost_fields(self):
+        from .models import InfraCostSnapshot
+
+        InfraCostSnapshot.objects.create(
+            tenant=self.tenant,
+            month=self.month,
+            container_cost=Decimal("3.50"),
+            storage_cost=Decimal("0.10"),
+            database_share=Decimal("0.25"),
+            platform_share=Decimal("12.0000"),
+            total_cost=Decimal("15.85"),
+            source="azure",
+        )
+        summary = get_usage_summary(self.tenant)
+        self.assertEqual(summary["infra_source"], "azure")
+        self.assertAlmostEqual(summary["infra_cost"], 15.85, places=4)
+        self.assertEqual(summary["llm_cost"], 1.50)
+        self.assertAlmostEqual(summary["true_total_cost"], 1.50 + 15.85, places=4)
+        self.assertEqual(summary["infra_breakdown"]["platform_share"], 12.0)
+        self.assertEqual(summary["infra_breakdown"]["container"], 3.50)
+
+    def test_true_total_is_llm_plus_infra(self):
+        summary = get_usage_summary(self.tenant)
+        self.assertAlmostEqual(
+            summary["true_total_cost"],
+            summary["llm_cost"] + summary["infra_cost"],
+            places=4,
+        )
+
+
 class DailyUsageServiceTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Daily Test", telegram_chat_id=999333)
@@ -279,7 +344,8 @@ class TransparencyServiceTest(TestCase):
 
     def test_transparency_infra_value(self):
         data = get_transparency_data(self.tenant)
-        self.assertEqual(data["platform_infra"], 4.75)
+        # container 4.00 + db 0.50 + storage 0.25 + platform 2.00 (estimate).
+        self.assertEqual(data["platform_infra"], 6.75)
 
     def test_transparency_infra_breakdown(self):
         data = get_transparency_data(self.tenant)
@@ -289,7 +355,8 @@ class TransparencyServiceTest(TestCase):
                 "container": 4.00,
                 "database_share": 0.5,
                 "storage_share": 0.25,
-                "total": 4.75,
+                "platform_share": 2.00,
+                "total": 6.75,
                 "source": "estimate",
             },
         )
@@ -308,12 +375,16 @@ class TransparencyServiceTest(TestCase):
         tenant2 = create_tenant(display_name="NoUse", telegram_chat_id=999666)
         data = get_transparency_data(tenant2)
         self.assertEqual(data["your_actual_cost"], 0.0)
-        self.assertEqual(data["platform_infra"], 4.75)
+        self.assertEqual(data["platform_infra"], 6.75)
 
     def test_surplus_calculation(self):
         data = get_transparency_data(self.tenant)
-        expected_surplus = max(0, 12.0 - data["your_actual_cost"] - 4.75)
+        expected_surplus = max(0, 12.0 - data["your_actual_cost"] - data["platform_infra"])
         self.assertAlmostEqual(data["surplus"], expected_surplus, places=4)
+
+    def test_transparency_explanation_mentions_platform_share(self):
+        data = get_transparency_data(self.tenant)
+        self.assertIn("platform share", data["explanation"].lower())
 
     def test_donation_zero_for_non_paying_subscriber(self):
         # Revenue-% model: donation comes from collected subscription revenue, so a
@@ -418,6 +489,12 @@ class UsageAPITest(TestCase):
         self.assertIn("total_tokens", response.data)
         self.assertIn("by_model", response.data)
         self.assertIn("budget", response.data)
+        # True-cost fields survive serialization (UsageSummarySerializer).
+        self.assertIn("llm_cost", response.data)
+        self.assertIn("infra_cost", response.data)
+        self.assertIn("infra_source", response.data)
+        self.assertIn("true_total_cost", response.data)
+        self.assertIn("platform_share", response.data["infra_breakdown"])
 
     def test_daily_authenticated(self):
         self.client.force_authenticate(user=self.tenant.user)

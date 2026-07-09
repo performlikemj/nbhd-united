@@ -149,6 +149,16 @@ def get_usage_summary(tenant: Tenant, ref_date: date | None = None) -> dict:
 
     rows.sort(key=lambda e: e["cost"], reverse=True)
 
+    # "True monthly cost to run your assistant" = reconciled AI (LLM) spend PLUS
+    # the fully-loaded infrastructure cost. This is a SEPARATE display from the
+    # quota-driving budget block below (which stays untouched): the budget tracks
+    # only AI usage against the monthly allowance, while true_total_cost surfaces
+    # what the assistant actually costs to run end to end.
+    llm_cost = float(reconciled_total)
+    infra = _get_infra_breakdown(tenant, first)
+    infra_cost = infra["total"]
+    true_total_cost = round(llm_cost + infra_cost, 4)
+
     return {
         "period": {"start": first.isoformat(), "end": last.isoformat()},
         "total_input_tokens": totals["total_input"],
@@ -169,6 +179,17 @@ def get_usage_summary(tenant: Tenant, ref_date: date | None = None) -> dict:
             for e in rows
         ],
         "budget": budget_info,
+        # True-cost display (additive; budget above is unchanged):
+        "llm_cost": llm_cost,
+        "infra_cost": infra_cost,
+        "infra_source": infra["source"],
+        "true_total_cost": true_total_cost,
+        "infra_breakdown": {
+            "container": infra["container"],
+            "database_share": infra["database_share"],
+            "storage_share": infra["storage_share"],
+            "platform_share": infra["platform_share"],
+        },
     }
 
 
@@ -259,15 +280,22 @@ def _get_infra_breakdown(tenant: Tenant, month: date) -> dict:
             "container": float(snapshot.container_cost),
             "database_share": float(snapshot.database_share),
             "storage_share": float(snapshot.storage_cost),
+            "platform_share": float(snapshot.platform_share),
             "total": float(snapshot.total_cost),
             "source": snapshot.source,
         }
     except InfraCostSnapshot.DoesNotExist:
         # No snapshot yet (brand-new tenant / before the first cron run). Mirror
-        # the cron's estimate exactly — same container/storage estimates and the
-        # same capped database share — so the transparency figure doesn't jump
-        # when the first snapshot lands.
-        from .infra_cost_service import ESTIMATE_CONTAINER, ESTIMATE_STORAGE, calculate_database_share
+        # the cron's estimate exactly — same container/storage estimates, the
+        # same capped database share, and the same flat platform-share
+        # placeholder — so the transparency figure doesn't jump when the first
+        # snapshot lands.
+        from .infra_cost_service import (
+            ESTIMATE_CONTAINER,
+            ESTIMATE_STORAGE,
+            _estimate_platform_share,
+            calculate_database_share,
+        )
 
         active_count = (
             Tenant.objects.filter(status="active", container_id__isnull=False).exclude(container_id="").count()
@@ -275,11 +303,13 @@ def _get_infra_breakdown(tenant: Tenant, month: date) -> dict:
         container = float(ESTIMATE_CONTAINER)
         storage = float(ESTIMATE_STORAGE)
         db_share = float(calculate_database_share(active_count))
+        platform_share = float(_estimate_platform_share())
         return {
             "container": container,
             "database_share": db_share,
             "storage_share": storage,
-            "total": round(container + storage + db_share, 4),
+            "platform_share": platform_share,
+            "total": round(container + storage + db_share + platform_share, 4),
             "source": "estimate",
         }
 
@@ -375,7 +405,8 @@ def get_transparency_data(tenant: Tenant) -> dict:
             f"This month your AI usage cost ${actual_cost:.4f}. "
             f"Platform infrastructure is estimated at "
             f"${infra_breakdown['total']:.2f}/mo (container ${infra_breakdown['container']:.2f}, "
-            f"database ${infra_breakdown['database_share']:.2f}, storage ${infra_breakdown['storage_share']:.2f})."
+            f"database ${infra_breakdown['database_share']:.2f}, storage ${infra_breakdown['storage_share']:.2f}, "
+            f"platform share ${infra_breakdown['platform_share']:.2f})."
         ),
     }
 
