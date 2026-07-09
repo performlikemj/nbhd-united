@@ -5,7 +5,7 @@ from __future__ import annotations
 from django.test import TestCase
 from django.test.utils import override_settings
 
-from apps.billing.constants import MINIMAX_MODEL
+from apps.billing.constants import MINIMAX_MODEL, canonical_model_id
 from apps.billing.models import UsageRecord
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -48,7 +48,9 @@ class RuntimeUsageReportTests(TestCase):
         self.assertEqual(record.event_type, "message")
         self.assertEqual(record.input_tokens, 1234)
         self.assertEqual(record.output_tokens, 567)
-        self.assertEqual(record.model_used, MINIMAX_MODEL)
+        # record_usage stores the canonical model id (openrouter/ prefix stripped),
+        # so the stored value is the canonicalized spelling, not the raw input.
+        self.assertEqual(record.model_used, canonical_model_id(MINIMAX_MODEL))
 
     def test_missing_auth_returns_401(self):
         response = self.client.post(
