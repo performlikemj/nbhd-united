@@ -67,9 +67,11 @@ _LOAD_BEARING_PHRASES = [
     "you can't make yourself un-read what you already read",
 ]
 
-# A synthetic stand-in for another feature's canary block (e.g. the
-# concurrently-shipping quick-replies block), used only to prove
-# concatenation composes rather than clobbers.
+# A synthetic stand-in for a hypothetical future block that, unlike
+# quick-replies (which owns its own `quick_replies_md` section and composes
+# automatically — see docs/canary/README.md), has no dedicated section of
+# its own and must share `agents_md`. Used only to prove the concat fallback
+# actually composes rather than clobbers.
 _SYNTHETIC_SECOND_BLOCK = (
     "## Some Other Canary Feature (synthetic, for test)\n\n"
     "Marker text proving a second concatenated block survives composition.\n"
