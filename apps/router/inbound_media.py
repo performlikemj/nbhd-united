@@ -19,6 +19,9 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Workspace-relative directory (under the share) and the container mount point
 # OpenClaw reads from. The share is mounted into the container at
@@ -225,6 +228,18 @@ def _store_inbound_media(
     workspace_path = f"{INBOUND_MEDIA_DIR}/{filename}"
     upload_workspace_file_binary(str(tenant_id), workspace_path, data)
     container_path = f"{_CONTAINER_WORKSPACE_ROOT}/{workspace_path}"
+    if prefix == "doc":
+        # Document information-keeping directive (Phase 1, §4 telemetry):
+        # upload-volume signal. Never log the filename or extracted content —
+        # only the content-addressed hash prefix and byte count (pii_mint
+        # no-raw-value discipline, apps/pii/redactor.py).
+        logger.info(
+            "doc_ingest_attached tenant=%s ext=%s bytes=%d path_hash=%s",
+            tenant_id,
+            safe_ext,
+            len(data),
+            name_hash,
+        )
     return container_path, workspace_path
 
 
