@@ -41,6 +41,10 @@ harness:
 # lint/test targets — the train runs this from a throwaway worktree with no
 # .venv, so it relies on the activated venv on PATH, not a relative .venv/ path.
 # One gate per recipe line — make aborts on the first non-zero, so it fails fast.
+# The test step gets its own DB name (DJANGO_TEST_DB_NAME, wired in base.py) plus
+# --noinput because ~25 worktrees share one Postgres: a shared default test DB got
+# destroyed mid-run by a concurrent session, and a leftover one blocked on the
+# interactive recreate prompt. Its own name + auto-recreate makes the train hermetic.
 #
 # Deliberately NOT mirrored: the backend secret-scan and config-validator +
 # security-audit shell steps, and the whole openclaw-config-smoke job (plugin
@@ -52,7 +56,7 @@ integrate-gate:
 	ruff check .
 	ruff format --check .
 	python manage.py makemigrations --check --dry-run
-	python manage.py test apps/
+	DJANGO_TEST_DB_NAME=test_nbhd_united_train python manage.py test apps/ --noinput
 	cd frontend && npm ci && npm run lint && npm run build
 
 compile-deps:
