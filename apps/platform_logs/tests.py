@@ -126,3 +126,61 @@ class PlatformIssueReportTests(TestCase):
         resp2 = self.client.post(self.url, payload, format="json", **self.headers)
         self.assertEqual(resp2.status_code, 201)
         self.assertEqual(PlatformIssueLog.objects.count(), 2)
+
+    def _set_entity_map(self, entity_map: dict) -> None:
+        self.tenant.pii_entity_map = entity_map
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+    def test_known_pii_redacted_at_write(self):
+        """summary/detail persist with known PII swapped for its placeholder —
+        the agent claimed 'no user PII' but a name slipped in anyway."""
+        self._set_entity_map({"[PERSON_1]": {"name": "Jay Haughton"}})
+        payload = {
+            "category": "tool_error",
+            "severity": "medium",
+            "tool_name": "web_search",
+            "summary": "web_search failed while helping Jay Haughton",
+            "detail": "Jay Haughton asked twice and it errored",
+        }
+        resp = self.client.post(self.url, payload, format="json", **self.headers)
+        self.assertEqual(resp.status_code, 201)
+        issue = PlatformIssueLog.objects.get(id=resp.json()["id"])
+        self.assertNotIn("Jay Haughton", issue.summary)
+        self.assertNotIn("Jay Haughton", issue.detail)
+        self.assertIn("[PERSON_1]", issue.summary)
+        self.assertIn("[PERSON_1]", issue.detail)
+
+    def test_no_new_placeholders_minted_from_issue_text(self):
+        """Reuse-only: an unknown name in issue text must NOT be minted into the
+        tenant map (map-hygiene protection)."""
+        self._set_entity_map({"[PERSON_1]": {"name": "Jay Haughton"}})
+        payload = {
+            "category": "other",
+            "severity": "low",
+            "tool_name": "calendar",
+            "summary": "calendar sync broke for Bob Newcomer",
+        }
+        resp = self.client.post(self.url, payload, format="json", **self.headers)
+        self.assertEqual(resp.status_code, 201)
+        self.tenant.refresh_from_db()
+        # Map unchanged — no [PERSON_2] coined from "Bob Newcomer".
+        self.assertEqual(self.tenant.pii_entity_map, {"[PERSON_1]": {"name": "Jay Haughton"}})
+        issue = PlatformIssueLog.objects.get(id=resp.json()["id"])
+        self.assertIn("Bob Newcomer", issue.summary)  # left verbatim, not masked
+
+    def test_log_line_uses_redacted_summary(self):
+        """The INFO log line must carry the already-redacted summary, never the
+        raw value (this line ships to Log Analytics)."""
+        self._set_entity_map({"[PERSON_1]": {"name": "Jay Haughton"}})
+        payload = {
+            "category": "tool_error",
+            "severity": "medium",
+            "tool_name": "web_search",
+            "summary": "web_search failed while helping Jay Haughton",
+        }
+        with self.assertLogs("apps.platform_logs.views", level="INFO") as cm:
+            resp = self.client.post(self.url, payload, format="json", **self.headers)
+        self.assertEqual(resp.status_code, 201)
+        blob = "\n".join(cm.output)
+        self.assertNotIn("Jay Haughton", blob)
+        self.assertIn("[PERSON_1]", blob)

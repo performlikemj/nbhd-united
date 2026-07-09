@@ -103,13 +103,24 @@ class PlatformIssueReportView(APIView):
                     status=http_status.HTTP_200_OK,
                 )
 
+        # Redact-at-write: these fields say "no user PII" but nothing enforces
+        # it, and they're stored plaintext (admin triage searches them). Swap
+        # any value the tenant map ALREADY knows for its placeholder before we
+        # persist — reuse-only, no minting, so agent-authored issue text can't
+        # coin junk entries into the map (there is active map-hygiene work in
+        # flight). Fields stay plaintext/searchable; only known PII is masked.
+        from apps.pii.redactor import redact_known_entities
+
+        safe_summary = redact_known_entities(tenant, data["summary"])
+        safe_detail = redact_known_entities(tenant, data.get("detail", ""))
+
         issue = PlatformIssueLog.objects.create(
             tenant=tenant,
             category=data["category"],
             severity=data["severity"],
             tool_name=data.get("tool_name", ""),
-            summary=data["summary"],
-            detail=data.get("detail", ""),
+            summary=safe_summary,
+            detail=safe_detail,
         )
 
         logger.info(
@@ -117,7 +128,7 @@ class PlatformIssueReportView(APIView):
             tenant.id,
             data["category"],
             data.get("tool_name", ""),
-            data["summary"][:100],
+            safe_summary[:100],
         )
 
         return Response(

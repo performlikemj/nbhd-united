@@ -899,6 +899,32 @@ def rehydrate_for_tenant(tenant: Tenant | None, text: str) -> str:
     return rehydrate_text(text, entity_map)
 
 
+def redact_known_entities(tenant: Tenant | None, text: str) -> str:
+    """Mask only PII the tenant map ALREADY knows — reuse-only, mints nothing.
+
+    Runs NO model detection and NEVER writes to ``tenant.pii_entity_map``. It
+    rewrites only spans that already have a placeholder in the tenant's map,
+    case-insensitively and longest-match-first (so ``Jay Haughton`` beats
+    ``Jay``), skipping denylisted entries and never touching the interior of an
+    existing ``[TYPE_N]`` placeholder. Legacy string-shaped map entries are
+    coerced transparently via ``entity_registry``.
+
+    Use this for text that is NOT the user's own message — e.g. agent-authored
+    platform-issue reports — where minting new placeholders would pollute the
+    map with tooling text. For actual user ingress use ``redact_user_message``
+    (which does detect + mint). Safe on a None tenant, empty/absent map, or
+    empty text: returns text unchanged.
+    """
+    if not text or tenant is None:
+        return text
+    existing_map = getattr(tenant, "pii_entity_map", None) or {}
+    if not existing_map:
+        return text
+    denylist = getattr(tenant, "pii_denylist", None) or {}
+    inverted_ci = _inverted_names_ci(existing_map)
+    return _replace_known_only(text, inverted_ci, denylist)
+
+
 def redact_user_message(
     text: str,
     tenant: Tenant,
