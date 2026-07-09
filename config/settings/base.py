@@ -562,6 +562,19 @@ SUPABASE_MONTHLY_COST = env.float("SUPABASE_MONTHLY_COST", default=25.0)
 # fair per-tenant DB cost at target scale so donations stay viable before scale.
 INFRA_DB_SHARE_CAP = env.float("INFRA_DB_SHARE_CAP", default=0.50)
 
+# Flat per-tenant estimate of the amortized shared *platform* overhead — the
+# always-on Django control plane (nbhd-django-westus2), container registry, Key
+# Vault and Log Analytics, i.e. the rg-nbhd-prod costs not attributed to any
+# per-tenant oc-*/ws-* resource. Used ONLY when live Azure Cost Management data
+# is unavailable (brand-new tenant before the first cron run, AZURE_MOCK, or a
+# failed/empty query). The real figure is computed daily by the cron as
+# (total resource-group cost − attributed container/storage cost) / active
+# tenants; this flat placeholder keeps the "true monthly cost" figure stable and
+# deliberately conservative before real data lands, mirroring how
+# ESTIMATE_CONTAINER/ESTIMATE_STORAGE seed the container/storage lines. Has a
+# sane default so no Azure Container App env change is required to ship.
+INFRA_PLATFORM_SHARE_ESTIMATE = env.float("INFRA_PLATFORM_SHARE_ESTIMATE", default=2.0)
+
 # The platform's pledged share of gross subscription revenue that goes to food
 # initiatives. Owner-tunable via env. The donation ledger records
 # `subscription_price * DONATION_REVENUE_PCT / 100` for every paying subscriber

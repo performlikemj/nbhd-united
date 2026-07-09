@@ -28,6 +28,13 @@ class PeriodSerializer(serializers.Serializer):
     end = serializers.CharField()
 
 
+class SummaryInfraBreakdownSerializer(serializers.Serializer):
+    container = serializers.FloatField()
+    database_share = serializers.FloatField()
+    storage_share = serializers.FloatField()
+    platform_share = serializers.FloatField()
+
+
 class UsageSummarySerializer(serializers.Serializer):
     period = PeriodSerializer()
     total_input_tokens = serializers.IntegerField()
@@ -37,6 +44,12 @@ class UsageSummarySerializer(serializers.Serializer):
     message_count = serializers.IntegerField()
     by_model = ModelBreakdownSerializer(many=True)
     budget = BudgetSerializer()
+    # True-cost display (additive; distinct from the quota-driving budget block).
+    llm_cost = serializers.FloatField()
+    infra_cost = serializers.FloatField()
+    infra_source = serializers.CharField()
+    true_total_cost = serializers.FloatField()
+    infra_breakdown = SummaryInfraBreakdownSerializer()
 
 
 class DailyUsageSerializer(serializers.Serializer):
@@ -58,6 +71,7 @@ class InfraBreakdownSerializer(serializers.Serializer):
     container = serializers.FloatField()
     database_share = serializers.FloatField()
     storage_share = serializers.FloatField()
+    platform_share = serializers.FloatField()
     total = serializers.FloatField()
     source = serializers.CharField(default="estimate")
 

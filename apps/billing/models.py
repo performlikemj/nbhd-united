@@ -99,6 +99,12 @@ class InfraCostSnapshot(models.Model):
     container_cost = models.DecimalField(max_digits=10, decimal_places=4, default=0)
     storage_cost = models.DecimalField(max_digits=10, decimal_places=4, default=0)
     database_share = models.DecimalField(max_digits=10, decimal_places=4, default=0)
+    platform_share = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=0,
+        help_text="Per-tenant slice of always-on shared platform overhead (Django control plane, registry, Key Vault, Log Analytics)",
+    )
     total_cost = models.DecimalField(max_digits=10, decimal_places=4, default=0)
     source = models.CharField(
         max_length=20,

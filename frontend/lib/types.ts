@@ -279,6 +279,18 @@ export interface UsageSummary {
   message_count: number;
   by_model: UsageModelBreakdown[];
   budget: UsageBudgetSummary;
+  // True monthly cost to run the assistant (AI usage + fully-loaded infra).
+  // Additive/optional so older API responses still typecheck.
+  llm_cost?: number;
+  infra_cost?: number;
+  infra_source?: string;
+  true_total_cost?: number;
+  infra_breakdown?: {
+    container: number;
+    database_share: number;
+    storage_share: number;
+    platform_share: number;
+  };
 }
 
 export interface TransparencyData {
@@ -304,6 +316,7 @@ export interface TransparencyData {
     container: number;
     database_share: number;
     storage_share: number;
+    platform_share: number;
     total: number;
     source?: string;
   };
