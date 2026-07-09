@@ -25,6 +25,9 @@ from .runtime_views import (
     RuntimeDailyNoteAppendView,
     RuntimeDailyNotesView,
     RuntimeDocumentAppendView,
+    RuntimeDocumentForgetView,
+    RuntimeDocumentIngestionsView,
+    RuntimeDocumentKeepView,
     RuntimeDocumentView,
     RuntimeGmailMessageDetailView,
     RuntimeGmailMessagesView,
@@ -249,6 +252,22 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/document/append/",
         RuntimeDocumentAppendView.as_view(),
         name="runtime-document-append",
+    ),
+    # Document information-keeping — provenance ledger keep/list/forget
+    path(
+        "runtime/<uuid:tenant_id>/documents/keep/",
+        RuntimeDocumentKeepView.as_view(),
+        name="runtime-document-keep",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/documents/ingestions/",
+        RuntimeDocumentIngestionsView.as_view(),
+        name="runtime-document-ingestions",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/documents/<uuid:ingestion_id>/forget/",
+        RuntimeDocumentForgetView.as_view(),
+        name="runtime-document-forget",
     ),
     # Memory sync — bulk export documents as workspace files
     path(

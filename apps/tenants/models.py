@@ -700,6 +700,21 @@ class Tenant(models.Model):
         ),
     )
 
+    # Document information-keeping (docs/document-information-keeping-directive.md).
+    # When on: the nbhd-document-keep plugin loads (record/list/forget tools), the
+    # flag-gated DOCUMENT_KEEP_REMOVAL_GATE lands in AGENTS.md, and the D8 same-turn
+    # write backstop is armed. Off keeps the base behavioral gate + generic rules
+    # file (fleet-wide, tool-name-free) but never names a tool the tenant lacks nor
+    # blocks a write. Canary-scoped for Phase 2; default-on at the fleet flip.
+    document_ingestion_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Enable document information-keeping: the record/list/forget tools, the "
+            "AGENTS.md tool-language block, and the same-turn write backstop that "
+            "blocks a durable write on the turn a document arrived."
+        ),
+    )
+
     # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
     # "finance"), values are ISO-8601 timestamps of successful welcome
     # delivery. The welcome prompt instructs the agent to call
