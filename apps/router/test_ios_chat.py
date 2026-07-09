@@ -1026,7 +1026,7 @@ class ChatSinceFeedTest(TestCase):
     def _at(self, minutes: int):
         return self._base + self._td(minutes=minutes)
 
-    def _app_turn(self, *, cid, user_text, reply_text, minute, status="ready"):
+    def _app_turn(self, *, cid, user_text, reply_text, minute, status="ready", attachment_path=""):
         m = AppChatMessage.objects.create(
             tenant=self.tenant,
             user=self.user,
@@ -1035,6 +1035,7 @@ class ChatSinceFeedTest(TestCase):
             user_text=user_text,
             reply_text=reply_text,
             status=status,
+            attachment_path=attachment_path,
         )
         AppChatMessage.objects.filter(pk=m.pk).update(created_at=self._at(minute))
         return m
@@ -1347,6 +1348,108 @@ class ChatSinceFeedTest(TestCase):
         # Next call re-derives + re-creates the main thread with a fresh id.
         second = _main_thread_id_cached(self.tenant, self.user)
         self.assertNotEqual(second, first)
+
+    # -- attachment flags (cross-device / reinstall attachment history) --------
+    #
+    # #1071 added has_image/has_document to the per-message DETAIL path but NOT
+    # to this poll feed, so a user's own image/PDF turns rendered as plain text
+    # on a second device or after a reinstall (which rebuild history from the
+    # feed, never the detail path). These lock the feed emitting the same flags,
+    # off the same shared source of truth (AppChatMessage.attachment_flags).
+
+    def test_feed_image_turn_flags_ride_user_row(self):
+        # An image turn surfaces has_image=True on its USER row (the attachment
+        # is the user's inbound), so a second device renders the right bubble.
+        self._app_turn(
+            cid="img1",
+            user_text="look at this",
+            reply_text="nice shot",
+            minute=1,
+            attachment_path="workspace/media/inbound/photo_ab12.jpg",
+        )
+        user_row, asst_row = self._get().data["messages"]
+        self.assertEqual(user_row["role"], "user")
+        self.assertTrue(user_row["has_image"])
+        self.assertFalse(user_row["has_document"])
+        # The reply row carries neither flag but still emits the keys.
+        self.assertFalse(asst_row["has_image"])
+        self.assertFalse(asst_row["has_document"])
+
+    def test_feed_document_turn_inverts_flags(self):
+        self._app_turn(
+            cid="doc1",
+            user_text="read this",
+            reply_text="on it",
+            minute=1,
+            attachment_path="workspace/media/inbound/doc_cd34.pdf",
+        )
+        user_row = self._get().data["messages"][0]
+        self.assertTrue(user_row["has_document"])
+        self.assertFalse(user_row["has_image"])
+
+    def test_feed_text_turn_flags_both_false_but_present(self):
+        # No attachment → both flags false, and ALWAYS emitted so the wire shape
+        # stays uniform (new client defaults absent→false; older builds ignore).
+        self._app_turn(cid="t1", user_text="just text", reply_text="ok", minute=1)
+        for row in self._get().data["messages"]:
+            self.assertIn("has_image", row)
+            self.assertIn("has_document", row)
+            self.assertFalse(row["has_image"])
+            self.assertFalse(row["has_document"])
+
+    def test_feed_other_channel_rows_carry_false_flags(self):
+        # Telegram/LINE and cron rows have no attachment_path → both flags
+        # present and false, matching the detail-path always-emit behaviour.
+        self._conv_turn(channel="telegram", user_text="tg", reply_text="yo", minute=1)
+        self._cron_send(message_text="morning", minute=2)
+        rows = self._get().data["messages"]
+        self.assertEqual(len(rows), 3)  # tg(user, asst) + cron(asst)
+        for row in rows:
+            self.assertIn("has_image", row)
+            self.assertIn("has_document", row)
+            self.assertFalse(row["has_image"])
+            self.assertFalse(row["has_document"])
+
+    def test_attachment_flags_property_is_case_insensitive(self):
+        # The extension check lowercases the path — a '.PDF' upload is a document,
+        # not an image. Pins the shared property both paths read.
+        m = self._app_turn(
+            cid="up1",
+            user_text="x",
+            reply_text="y",
+            minute=1,
+            attachment_path="workspace/media/inbound/DOC.PDF",
+        )
+        self.assertEqual(m.attachment_flags, (False, True))
+
+    def test_detail_and_feed_flags_agree(self):
+        # The per-message DETAIL serializer and this FEED both read
+        # AppChatMessage.attachment_flags, so they can never disagree on a turn's
+        # attachment type. Prove it for image / pdf / none — this is the whole
+        # point of the shared helper (anti-drift).
+        from apps.router.chat_views import _serialize_message
+
+        cases = [
+            ("workspace/media/inbound/photo.jpg", True, False),
+            ("workspace/media/inbound/doc.pdf", False, True),
+            ("", False, False),
+        ]
+        for i, (path, want_img, want_doc) in enumerate(cases):
+            m = self._app_turn(
+                cid=f"agree{i}",
+                user_text="hi",
+                reply_text="yo",
+                minute=10 + i,
+                attachment_path=path,
+            )
+            detail = _serialize_message(m)
+            self.assertEqual((detail["has_image"], detail["has_document"]), (want_img, want_doc))
+            feed_user = next(
+                row
+                for row in self._get().data["messages"]
+                if row.get("client_msg_id") == f"agree{i}" and row["role"] == "user"
+            )
+            self.assertEqual((feed_user["has_image"], feed_user["has_document"]), (want_img, want_doc))
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)

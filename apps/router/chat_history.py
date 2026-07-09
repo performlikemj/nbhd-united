@@ -17,6 +17,8 @@ Shape per message row (the contract iOS dedups/merges against):
       "created_at": "<ISO8601 UTC>",
       "source": "app" | "telegram" | "line" | "cron",
       "thread_id": "<stable thread id>",
+      "has_image": bool,                   # always present; true only on a user app row whose turn carried an image
+      "has_document": bool,                # always present; true only on a user app row whose turn carried a PDF
       "user_redactions": [{"placeholder", "value"}],   # optional; user rows only
       "reply_redactions": [{"placeholder", "value"}],  # optional; assistant rows only
     }
@@ -24,6 +26,15 @@ Shape per message row (the contract iOS dedups/merges against):
 Both ``*_redactions`` keys are OMITTED when nothing was obfuscated (and are only
 ever present on ``source="app"`` rows), so pre-feature clients see the unchanged
 shape. See ``apps.router.pending_queue.placeholder_redactions``.
+
+The ``has_image`` / ``has_document`` flags are ALWAYS emitted on every row
+(matching the per-message detail path, which always carries them) so the wire
+shape stays uniform: both false everywhere except a user ``source="app"`` row
+whose turn carried an inbound image/PDF. They are computed from
+``AppChatMessage.attachment_flags`` — the single source of truth shared with the
+detail serializer so the two rendering paths can never drift. Older iOS builds
+ignore the keys; the media-upload client reads them to render an attachment
+placeholder bubble for the user's own turns across devices/reinstalls.
 
 Design notes
 ------------
@@ -150,6 +161,8 @@ def _row(
     source,
     thread_id,
     client_msg_id=None,
+    has_image=False,
+    has_document=False,
     user_redactions=None,
     reply_redactions=None,
 ):
@@ -165,6 +178,13 @@ def _row(
         "created_at": created_at.isoformat(),
         "source": source,
         "thread_id": str(thread_id),
+        # Attachment presence for the turn — ALWAYS emitted (mirrors the
+        # per-message detail path, which always carries the keys). Both false on
+        # every row except a user app row whose turn carried an inbound
+        # image/PDF; the new iOS client reads them to render a placeholder
+        # bubble across devices/reinstalls, older builds ignore them.
+        "has_image": has_image,
+        "has_document": has_document,
     }
     if client_msg_id:
         msg["client_msg_id"] = client_msg_id
@@ -187,6 +207,10 @@ def _app_rows(m, main_thread_id, entity_map=None):
     from apps.router.models import AppChatMessage
 
     thread_id = str(m.thread_id) if m.thread_id else main_thread_id
+    # The attachment belongs to the user's inbound turn, so the flags ride the
+    # USER row; the assistant reply row (and every other channel's rows) keep
+    # _row's False defaults. Shared source of truth with the detail path.
+    has_image, has_document = m.attachment_flags
     out = []
     if (m.user_text or "").strip():
         out.append(
@@ -198,6 +222,8 @@ def _app_rows(m, main_thread_id, entity_map=None):
                 source="app",
                 thread_id=thread_id,
                 client_msg_id=m.client_msg_id,  # device-originated → echo for dedup
+                has_image=has_image,
+                has_document=has_document,
                 user_redactions=m.user_redactions,
             )
         )

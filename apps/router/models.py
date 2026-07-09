@@ -723,6 +723,24 @@ class AppChatMessage(models.Model):
     user_redactions = models.JSONField(null=True, blank=True, default=None)
     reply_redactions = models.JSONField(null=True, blank=True, default=None)
 
+    @property
+    def attachment_flags(self) -> tuple[bool, bool]:
+        """``(has_image, has_document)`` for this turn's stored attachment.
+
+        One attachment per turn, typed off the stored file's extension (no
+        schema column): a ``.pdf`` path is a document, any other non-empty path
+        is an image, an empty path is neither. Null-safe. The single source of
+        truth shared by the per-message detail serializer
+        (``chat_views._serialize_message``) and the ``?since=`` history feed
+        (``apps.router.chat_history``) so the two rendering paths can never
+        drift on how a stored path maps to an attachment bubble.
+        """
+        path = self.attachment_path
+        if not path:
+            return False, False
+        is_pdf = path.lower().endswith(".pdf")
+        return (not is_pdf, is_pdf)
+
     class Meta:
         db_table = "app_chat_messages"
         ordering = ["created_at"]
