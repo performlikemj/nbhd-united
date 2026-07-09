@@ -46,6 +46,25 @@ env:
   DJANGO_APP: nbhd-django-westus2
   SWA_NAME: nbhd-united-frontend
 
+# Serialize the pipeline so concurrent merges can never race the production
+# deploy. The app runs in single-revision mode (Telegram poller 409 avoidance),
+# so `az containerapp update` is last-writer-wins — decoupled from commit order.
+# On 2026-07-09 three PRs merged seconds apart, the OLDEST run's deploy finished
+# last, and prod served code missing two of the three features while every run
+# showed green. See docs/deploy-concurrency-directive.md.
+#
+#   - On main (cancel-in-progress: false): a running deploy is never killed
+#     mid-flight (a half-deploy is worse than a stale one). New runs queue;
+#     GitHub keeps at most one pending run per group, so a third push supersedes
+#     the older PENDING run and the newest waits. Final state converges to the
+#     newest code. Superseded runs show "cancelled" — expected, not a failure.
+#   - On PR branches (cancel-in-progress: true): a re-push cancels the obsolete
+#     run to save CI minutes. github.ref is refs/pull/<n>/merge, so each PR gets
+#     its own group and PRs never queue behind each other or behind main.
+concurrency:
+  group: ci-cd-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   # ==========================================================================
   # Frontend: lint and build
@@ -340,12 +359,34 @@ jobs:
         with:
           fetch-depth: 0 # full history so Sentry can attribute suspect commits
 
+      # Belt-and-suspenders backstop to the concurrency block: skip (green) if
+      # this commit is no longer the tip of main. Point-in-time only — it closes
+      # the "an old run was re-run by hand / concurrency was removed" hole, not
+      # the TOCTOU window during the ~2.5GB image build (that's what the
+      # concurrency block covers). `git fetch origin main` always writes
+      # FETCH_HEAD regardless of the checkout's refspec, so rev-parse never
+      # depends on refs/remotes/origin/main existing.
+      - name: Skip if superseded by a newer main commit
+        id: freshness
+        run: |
+          git fetch origin main --quiet
+          TIP=$(git rev-parse FETCH_HEAD)
+          if [ "$TIP" != "${{ github.sha }}" ]; then
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping backend deploy: origin/main is now $TIP, this run is ${{ github.sha }} (superseded). The newer run will deploy — this run ends green."
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+            echo "This run (${{ github.sha }}) is the tip of main — proceeding with deploy."
+          fi
+
       - name: Azure Login
+        if: steps.freshness.outputs.superseded != 'true'
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
       - name: Login to ACR
+        if: steps.freshness.outputs.superseded != 'true'
         run: az acr login --name ${{ env.REGISTRY }}
 
       # The PII model is cached as an immutable layer in our own ACR so the Django
@@ -353,6 +394,7 @@ jobs:
       # deploy). This step only touches HF when the tag is missing — i.e. once per
       # tag, ever. Bump PII_MODEL_TAG here + the COPY line in Dockerfile together.
       - name: Ensure PII model image
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           PII_MODEL_TAG=deberta-finetuned-pii-v2
           if az acr repository show \
@@ -369,6 +411,7 @@ jobs:
           fi
 
       - name: Build and push Django image
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           docker build --platform linux/amd64 \
             -t ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
@@ -378,6 +421,7 @@ jobs:
           docker push ${{ env.REGISTRY }}.azurecr.io/django:latest
 
       - name: Smoke-test PII stack in Django image
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Guards two regressions that have shipped before: (1) torch reinstalled
           # as the CUDA wheel (loses +cpu) which corrupts transformers' AutoModel
@@ -401,6 +445,7 @@ jobs:
             -m apps.pii.golden_check
 
       - name: Build and push OpenClaw runtime image
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Immutable, human-readable tag: <oc-version>-<short-sha>, where the
           # version is the OpenClaw binary baked into the image (Dockerfile.openclaw
@@ -418,11 +463,13 @@ jobs:
           docker push ${{ env.REGISTRY }}.azurecr.io/nbhd-openclaw:${OC_TAG}
 
       - name: Download maximal-flags config for boot smoke
+        if: steps.freshness.outputs.superseded != 'true'
         uses: actions/download-artifact@v4
         with:
           name: openclaw-maximal-config
 
       - name: OpenClaw image boot smoke (maximal-flags config)
+        if: steps.freshness.outputs.superseded != 'true'
         # The general net for the whole config/plugin class: validate the
         # maximal-flags config (friends_enabled=true + every experimental gate)
         # against the FRESHLY BUILT image's own binary and real /opt/nbhd/plugins/
@@ -450,6 +497,7 @@ jobs:
           echo "OpenClaw image boot smoke passed — maximal-flags config validates against the built image."
 
       - name: Deploy Django to Container Apps
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Ensure single-revision mode (only one active revision at a time).
           # Prevents multiple Telegram pollers competing for getUpdates (409 Conflict).
@@ -465,6 +513,7 @@ jobs:
             --set-env-vars OPENCLAW_IMAGE_TAG=${{ env.OC_IMAGE_TAG }} SENTRY_RELEASE=${{ github.sha }}
 
       - name: Wait for Django to be healthy
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
           echo "Waiting for Django to come up..."
@@ -487,12 +536,34 @@ jobs:
             exit 1
           fi
 
+      - name: Assert serving image identity (deploy-race guard)
+        if: steps.freshness.outputs.superseded != 'true'
+        run: |
+          # Liveness (the health check above) is NOT identity: old code is
+          # perfectly healthy, which is exactly why the 2026-07-09 deploy race
+          # was all-green. Assert the app is actually serving THIS run's image.
+          # Single-revision mode ⇒ the latest revision takes 100% traffic, so
+          # the app template's image IS the serving image. Compare against the
+          # immutable full-sha tag, never :latest (which always looks current).
+          EXPECTED="${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }}"
+          SERVING=$(az containerapp show \
+            --name ${{ env.DJANGO_APP }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --query "properties.template.containers[0].image" -o tsv)
+          echo "Expected serving image: $EXPECTED"
+          echo "Actual serving image:   $SERVING"
+          if [ "$SERVING" != "$EXPECTED" ]; then
+            echo "::error::Deploy-race detected — the app is serving '$SERVING' but this run built and deployed '$EXPECTED'. A concurrent or stale ci-cd run overwrote this deploy (single-revision mode is last-writer-wins). Production is NOT running this commit. Recovery: replay the deploy for origin/main's sha (docs/deploy-concurrency-directive.md §1), then re-confirm the serving image sha equals origin/main." >&2
+            exit 1
+          fi
+          echo "Serving image identity confirmed: production is running ${{ github.sha }}."
+
       # Register this deploy as a Sentry release so errors map to a specific
       # build and Sentry can surface the suspect commit. Gated on the optional
       # SENTRY_AUTH_TOKEN secret and continue-on-error, so a release-tracking
       # hiccup never fails a production deploy.
       - name: Create Sentry release (suspect commits)
-        if: ${{ env.SENTRY_AUTH_TOKEN != '' }}
+        if: ${{ env.SENTRY_AUTH_TOKEN != '' && steps.freshness.outputs.superseded != 'true' }}
         continue-on-error: true
         run: |
           curl -sL https://sentry.io/get-cli/ | bash
@@ -507,6 +578,7 @@ jobs:
           sentry-cli releases deploys "$VERSION" new -e production
 
       - name: Bump pending config version for all tenants
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Mark all active tenants as needing a config update.
           # apply-pending-configs cron will push new workspace files
@@ -519,6 +591,7 @@ jobs:
             || echo "Warning: bump-all-pending-configs failed (non-fatal)"
 
       - name: Reseed tenant cron jobs
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Delete and recreate system cron jobs for all active tenants.
           # Non-fatal: tenant containers restart asynchronously after config
@@ -531,6 +604,7 @@ jobs:
             || echo "Warning: force-reseed-crons failed — containers may still be restarting"
 
       - name: Register system QStash cron schedules
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Ensure apply-pending-configs and other system crons are
           # scheduled in QStash. Idempotent — skips existing schedules.
@@ -543,6 +617,7 @@ jobs:
             || echo "Warning: register-system-crons failed (non-fatal)"
 
       - name: Backfill Fuel/Gravity welcome crons
+        if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Schedule welcome crons for active tenants who enabled the
           # feature before the welcome mechanism shipped (or whose welcome
@@ -612,16 +687,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Same superseded-commit backstop as deploy-backend. This job uses a plain
+      # (shallow) checkout, so `git fetch origin main` + rev-parse of FETCH_HEAD
+      # is what makes the comparison work here — do not switch to origin/main,
+      # which needs a refspec this shallow checkout doesn't guarantee.
+      - name: Skip if superseded by a newer main commit
+        id: freshness
+        run: |
+          git fetch origin main --quiet
+          TIP=$(git rev-parse FETCH_HEAD)
+          if [ "$TIP" != "${{ github.sha }}" ]; then
+            echo "superseded=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping frontend deploy: origin/main is now $TIP, this run is ${{ github.sha }} (superseded). The newer run will deploy — this run ends green."
+          else
+            echo "superseded=false" >> "$GITHUB_OUTPUT"
+            echo "This run (${{ github.sha }}) is the tip of main — proceeding with deploy."
+          fi
+
       - name: Set up Node.js
+        if: steps.freshness.outputs.superseded != 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '20'
 
       - name: Install frontend dependencies
+        if: steps.freshness.outputs.superseded != 'true'
         working-directory: frontend
         run: npm ci
 
       - name: Build frontend (static export)
+        if: steps.freshness.outputs.superseded != 'true'
         working-directory: frontend
         env:
           NEXT_PUBLIC_API_BASE_URL: https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io
@@ -630,6 +725,7 @@ jobs:
         run: npm run build
 
       - name: Verify staticwebapp.config.json in output
+        if: steps.freshness.outputs.superseded != 'true'
         working-directory: frontend
         run: |
           if [ ! -f "out/staticwebapp.config.json" ]; then
@@ -639,6 +735,7 @@ jobs:
           echo "staticwebapp.config.json present in out/"
 
       - name: Verify SWA deployment token
+        if: steps.freshness.outputs.superseded != 'true'
         env:
           SWA_CLI_DEPLOYMENT_TOKEN: ${{ secrets.SWA_DEPLOYMENT_TOKEN }}
         run: |
@@ -648,6 +745,7 @@ jobs:
           fi
 
       - name: Deploy to Azure Static Web App
+        if: steps.freshness.outputs.superseded != 'true'
         working-directory: frontend
         env:
           SWA_CLI_DEPLOYMENT_TOKEN: ${{ secrets.SWA_DEPLOYMENT_TOKEN }}
