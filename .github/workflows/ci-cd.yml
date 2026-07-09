@@ -510,31 +510,39 @@ jobs:
             --name ${{ env.DJANGO_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \
             --image ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
-            --set-env-vars OPENCLAW_IMAGE_TAG=${{ env.OC_IMAGE_TAG }} SENTRY_RELEASE=${{ github.sha }}
+            --set-env-vars OPENCLAW_IMAGE_TAG=${{ env.OC_IMAGE_TAG }} SENTRY_RELEASE=${{ github.sha }} DJANGO_BASE_URL=https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io
 
-      - name: Wait for Django to be healthy
+      - name: Wait for Django to serve THIS build (identity + liveness)
         if: steps.freshness.outputs.superseded != 'true'
         run: |
+          # A blind 200-poll is liveness only: the OLD revision answers 200
+          # instantly, so post-deploy steps could fire against stale code
+          # during the cutover window (2026-07-09: register-system-crons hit
+          # the old revision 18s after `az containerapp update` returned and
+          # silently kept a retired cron alive). The deploy step stamps
+          # SENTRY_RELEASE=<sha> onto the app env and /health/ echoes it as
+          # "build" (config/health.py); succeed ONLY once the SERVING build
+          # equals this run's SHA. The az template assertion below is the
+          # complementary check — it proves nothing overwrote the template,
+          # while this proves the cutover actually completed. Bootstrap: a
+          # pre-build-field revision returns no "build" key -> not-ready ->
+          # keep polling; the first deploy of this change self-resolves.
           DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
-          echo "Waiting for Django to come up..."
-          HEALTHY=0
-          for i in $(seq 1 24); do
-            STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$DJANGO_URL/health/" 2>/dev/null || echo "000")
-            if [ "$STATUS" = "200" ]; then
-              echo "Django is up (attempt $i)"
-              HEALTHY=1
-              break
+          EXPECTED="${{ github.sha }}"
+          echo "Waiting for the serving revision to report build=$EXPECTED ..."
+          SERVED=""
+          for i in $(seq 1 30); do
+            BODY=$(curl -sf "$DJANGO_URL/health/" 2>/dev/null || echo "")
+            SERVED=$(printf '%s' "$BODY" | jq -r '.build // ""' 2>/dev/null || echo "")
+            if [ "$SERVED" = "$EXPECTED" ]; then
+              echo "Serving build matches this run (attempt $i)."
+              exit 0
             fi
-            echo "Attempt $i: status=$STATUS, retrying in 10s..."
+            echo "Attempt $i: serving build='${SERVED:-<none>}', want $EXPECTED — retrying in 10s..."
             sleep 10
           done
-          # Fail the deploy if the new revision never served a healthy 200 — a
-          # broken image must not pass silently (the /health/ route is defined
-          # in config/health.py).
-          if [ "$HEALTHY" != "1" ]; then
-            echo "::error::Django did not become healthy (no 200 from /health/ after 24 attempts)"
-            exit 1
-          fi
+          echo "::error::Cutover never completed: /health/ still reports build='${SERVED:-<none>}' but this run deployed $EXPECTED. Post-deploy steps (bump configs, reseed + register crons, backfill welcomes) would run against STALE code — failing hard instead."
+          exit 1
 
       - name: Assert serving image identity (deploy-race guard)
         if: steps.freshness.outputs.superseded != 'true'

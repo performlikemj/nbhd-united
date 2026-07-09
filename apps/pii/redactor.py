@@ -508,6 +508,45 @@ def _sub_outside_placeholders(text: str, pattern: re.Pattern, replacement: str) 
     return "".join(out_parts)
 
 
+def _seed_counters_from_map(entity_map: dict) -> dict[str, int]:
+    """Derive ``{TYPE: max suffix}`` from the placeholder keys of ``entity_map``.
+
+    Only the max-per-type is needed — a fresh mint takes ``+ 1`` of it. Malformed
+    keys are ignored (they never index a numbered placeholder).
+    """
+    counters: dict[str, int] = {}
+    for placeholder_key in entity_map:
+        match = _PLACEHOLDER_RE.match(placeholder_key)
+        if match:
+            etype, num = match.group(1), int(match.group(2))
+            counters[etype] = max(counters.get(etype, 0), num)
+    return counters
+
+
+def _apply_stored_high_water(counters: dict[str, int], stored_counters: dict[str, Any] | None) -> None:
+    """Raise each per-type counter to the tenant's stored monotonic high-water.
+
+    ``counters`` is the max suffix re-derived from the CURRENT ``pii_entity_map``
+    (via :func:`_seed_counters_from_map`); ``stored_counters`` is
+    ``Tenant.pii_type_counters`` — the highest suffix EVER minted per type, which
+    never drops on deletion. Seeding every mint from the max of the two is the
+    whole fix: even after a binding is deleted (lowering the map-derived max), the
+    next mint still allocates ABOVE the stored high-water, so a freed number can
+    never be recycled onto a different value. Mutates ``counters`` in place. Non-
+    integer stored values are skipped defensively (a hand-edited row must not
+    crash the redactor). A missing/empty ``stored_counters`` is a legacy pre-
+    migration tenant — numbering falls back to the map maxima, unchanged.
+    """
+    if not stored_counters:
+        return
+    for etype, high in stored_counters.items():
+        try:
+            high_int = int(high)
+        except (TypeError, ValueError):
+            continue
+        counters[etype] = max(counters.get(etype, 0), high_int)
+
+
 def _hit_inside_placeholder(hit: DetectedEntity, ranges: list[tuple[int, int]]) -> bool:
     """True when an NER hit overlaps any existing placeholder range.
 
@@ -762,11 +801,13 @@ class RedactionSession:
         if tenant is not None:
             existing_map = getattr(tenant, "pii_entity_map", None) or {}
             self._inverted_ci = _inverted_names_ci(existing_map)
-            for placeholder_key in existing_map:
-                match = _PLACEHOLDER_RE.match(placeholder_key)
-                if match:
-                    etype, num = match.group(1), int(match.group(2))
-                    self._type_counters[etype] = max(self._type_counters.get(etype, 0), num)
+            self._type_counters = _seed_counters_from_map(existing_map)
+            # Never number below the tenant's monotonic high-water mark, so a
+            # session mint can't reuse a suffix freed by an earlier deletion.
+            # Harmless for the mint='never' callers (memory sync, co-pilot,
+            # cluster naming) that never allocate; load-bearing for friends/scrub
+            # which mints under 'all' but never persists its session map.
+            _apply_stored_high_water(self._type_counters, getattr(tenant, "pii_type_counters", None))
             # Workspace memory sync also respects the user's denylist so
             # false-positive entities don't get re-minted from documents.
             self._denylist = getattr(tenant, "pii_denylist", None) or {}
@@ -1054,22 +1095,26 @@ def _redact_user_message(
     from django.db import transaction
 
     with transaction.atomic():
-        locked_map = (
+        # Read both the map AND the monotonic high-water counters from the LOCKED
+        # row so numbering is derived from a snapshot no concurrent redaction can
+        # mutate between our read and write.
+        locked_row = (
             type(tenant)
             .objects.select_for_update()
             .filter(pk=tenant.pk)
-            .values_list("pii_entity_map", flat=True)
+            .values("pii_entity_map", "pii_type_counters")
             .first()
         ) or {}
+        locked_map = locked_row.get("pii_entity_map") or {}
+        stored_counters = locked_row.get("pii_type_counters") or {}
 
-        # Re-derive per-type counters from the LOCKED snapshot, not the stale
-        # one read at function start.
-        locked_counters: dict[str, int] = {}
-        for placeholder_key in locked_map:
-            match = _PLACEHOLDER_RE.match(placeholder_key)
-            if match:
-                ckey_etype, num = match.group(1), int(match.group(2))
-                locked_counters[ckey_etype] = max(locked_counters.get(ckey_etype, 0), num)
+        # Re-derive per-type counters from the LOCKED snapshot, not the stale one
+        # read at function start, then raise each to the stored high-water. The
+        # high-water step is what stops recycling: a suffix freed by a prior
+        # delete (bulk-delete, junk sweep) drops out of the map maxima but the
+        # counter never fell, so the next mint still allocates above it.
+        locked_counters = _seed_counters_from_map(locked_map)
+        _apply_stored_high_water(locked_counters, stored_counters)
 
         # Case-insensitive view of the locked map so a name already present
         # collapses onto its existing placeholder instead of minting a dup.
@@ -1137,11 +1182,20 @@ def _redact_user_message(
             )
 
         if new_map_entries:
-            type(tenant).objects.filter(pk=tenant.pk).update(pii_entity_map=merged)
+            # One atomic write for the map AND the advanced high-water counters —
+            # no new race surface: the counter is only ever raised, and it is
+            # written under the same row lock as the map. ``locked_counters`` was
+            # seeded from ``stored_counters`` so it carries every previously-
+            # recorded type forward (never drops a type we didn't touch).
+            type(tenant).objects.filter(pk=tenant.pk).update(
+                pii_entity_map=merged,
+                pii_type_counters=locked_counters,
+            )
 
-    # Update in-memory too
+    # Update in-memory too, mirroring the persisted write.
     if new_map_entries:
         tenant.pii_entity_map = merged
+        tenant.pii_type_counters = locked_counters
 
     # Apply replacements (after the lock — string slicing needs no DB). Numbers
     # baked here match the persisted map because they were assigned under lock.

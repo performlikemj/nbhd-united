@@ -255,6 +255,14 @@ TASK_MAP = {
     # See apps/automations/scheduler.py:run_due_automations. NOTE: also needs a
     # SYSTEM_CRONS entry in register_system_crons.py to create the QStash schedule.
     "run_due_automations": "apps.automations.tasks.run_due_automations_task",
+    # Daily belt-and-braces reconcile of the system-cron schedules. Re-runs the
+    # same register/update/deregister core the post-deploy register-system-crons
+    # call uses, so any registration drift — e.g. a retired schedule the
+    # post-deploy swap missed because it hit a stale revision (incident
+    # 2026-07-09b) — self-heals within 24h. base_url comes from
+    # settings.DJANGO_BASE_URL. See apps/cron/system_cron_registry.py and the
+    # SYSTEM_CRONS entry in register_system_crons.py.
+    "reconcile_system_crons": "apps.cron.system_cron_registry.reconcile_system_crons_task",
 }
 
 
@@ -1012,129 +1020,22 @@ def register_system_crons(request):
     if not base_url:
         return JsonResponse({"error": "base_url required"}, status=400)
 
-    from apps.cron.management.commands.register_system_crons import (
-        RETIRED_CRON_PATHS,
-        SYSTEM_CRONS,
+    # Register/update/deregister core lives in apps/cron/system_cron_registry.py
+    # so the daily QStash-signed ``reconcile_system_crons`` task can run the exact
+    # same logic (belt-and-braces for incident 2026-07-09b). This view keeps its
+    # X-Deploy-Secret auth and just delegates.
+    from apps.cron.system_cron_registry import (
+        SystemCronConfigError,
+        sync_system_crons,
     )
 
-    qstash_token = getattr(settings, "QSTASH_TOKEN", "")
-    if not qstash_token:
+    try:
+        result = sync_system_crons(base_url)
+    except SystemCronConfigError:
+        logger.error("QSTASH_TOKEN not configured")
         return JsonResponse({"error": "QSTASH_TOKEN not configured"}, status=503)
 
-    import httpx
-
-    headers = {
-        "Authorization": f"Bearer {qstash_token}",
-        "Content-Type": "application/json",
-    }
-
-    resp = httpx.get("https://qstash.upstash.io/v2/schedules", headers=headers)
-    resp.raise_for_status()
-    existing = {s["destination"]: s for s in resp.json()}
-
-    registered = []
-    updated = []
-    skipped = []
-    failed = []
-
-    for name, cron_expr, path in SYSTEM_CRONS:
-        destination = f"{base_url}{path}"
-        if destination in existing:
-            existing_sched = existing[destination]
-            if existing_sched.get("cron") == cron_expr:
-                skipped.append(name)
-                continue
-
-            # Cron expression changed — delete old and recreate
-            schedule_id = existing_sched.get("scheduleId")
-            if not schedule_id:
-                skipped.append(name)
-                continue
-
-            del_resp = httpx.delete(
-                f"https://qstash.upstash.io/v2/schedules/{schedule_id}",
-                headers=headers,
-            )
-            if del_resp.status_code not in (200, 204):
-                logger.error(
-                    "Failed to delete old schedule %s: %s %s",
-                    name,
-                    del_resp.status_code,
-                    del_resp.text,
-                )
-                failed.append(name)
-                continue
-
-            create_resp = httpx.post(
-                f"https://qstash.upstash.io/v2/schedules/{destination}",
-                headers={**headers, "Upstash-Cron": cron_expr},
-            )
-            if create_resp.status_code in (200, 201):
-                updated.append(name)
-                logger.info("Updated QStash cron: %s → %s", name, cron_expr)
-            else:
-                failed.append(name)
-                logger.error(
-                    "Failed to recreate QStash cron %s: %s %s",
-                    name,
-                    create_resp.status_code,
-                    create_resp.text,
-                )
-            continue
-
-        create_resp = httpx.post(
-            f"https://qstash.upstash.io/v2/schedules/{destination}",
-            headers={**headers, "Upstash-Cron": cron_expr},
-        )
-        if create_resp.status_code in (200, 201):
-            registered.append(name)
-            logger.info("Registered QStash cron: %s → %s", name, cron_expr)
-        else:
-            failed.append(name)
-            logger.error(
-                "Failed to register QStash cron %s: %s %s",
-                name,
-                create_resp.status_code,
-                create_resp.text,
-            )
-
-    # Deregister retired crons — delete any live schedule at a retired path so a
-    # cron dropped from SYSTEM_CRONS actually stops firing (the loop above only
-    # ADDs/UPDATEs entries still present). See RETIRED_CRON_PATHS.
-    deregistered = []
-    for path in RETIRED_CRON_PATHS:
-        destination = f"{base_url}{path}"
-        existing_sched = existing.get(destination)
-        if not existing_sched:
-            continue
-        schedule_id = existing_sched.get("scheduleId")
-        if not schedule_id:
-            continue
-        del_resp = httpx.delete(
-            f"https://qstash.upstash.io/v2/schedules/{schedule_id}",
-            headers=headers,
-        )
-        if del_resp.status_code in (200, 204):
-            deregistered.append(path)
-            logger.info("Deregistered retired QStash cron: %s", path)
-        else:
-            failed.append(path)
-            logger.error(
-                "Failed to deregister retired QStash cron %s: %s %s",
-                path,
-                del_resp.status_code,
-                del_resp.text,
-            )
-
-    return JsonResponse(
-        {
-            "registered": registered,
-            "updated": updated,
-            "skipped": skipped,
-            "failed": failed,
-            "deregistered": deregistered,
-        }
-    )
+    return JsonResponse(result)
 
 
 @csrf_exempt

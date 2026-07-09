@@ -44,6 +44,7 @@ Multiple things in flight at once (two sessions, a person + dependabot, three PR
     --set-env-vars OPENCLAW_IMAGE_TAG=<oc-version>-<7char-sha> SENTRY_RELEASE=<full-sha>
   ```
   ALWAYS finish by re-checking the serving image sha equals `git rev-parse origin/main` — otherwise you don't know if the recovery itself raced something.
+- **Identity gate + daily reconcile** (later hardening): the "Wait for Django" step passes only when `/health/` reports `build == github.sha`, so post-deploy steps can never fire against the old revision during the cutover window; and a daily `reconcile-system-crons` QStash task (04:20 UTC) re-syncs system cron schedules so registration drift self-heals within 24h even if a deploy-time call is missed.
 - **Expand/contract discipline** (the within-run residual the pipeline can't fix): `deploy-frontend` and `deploy-backend` run in *parallel* within a run, and migrations run at container boot — so there's always a brief window of new-frontend-vs-old-backend (or an older image booting against an already-migrated schema). Keep migrations additive-first (expand/contract) and API changes additive so either side survives the handover.
 
 ## Commit convention
