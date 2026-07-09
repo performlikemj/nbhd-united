@@ -12,6 +12,31 @@ the query once they're in). All claims below were verified against source in
 this checkout; DB-role facts are the orchestrator's live `pg_roles` query
 against prod, treated as authoritative per the task brief.
 
+> **Verified update (2026-07-09).** A live `pg_stat_activity` read settles §9's
+> open question: the Django app serves requests as **`app_user` via the Supavisor
+> pooler** — the only application role with runtime connections (`authenticator`
+> is PostgREST/Data-API; `postgres`/`supabase_admin` are dashboard + pg_cron).
+> Since `app_user` is confirmed non-BYPASSRLS and does not own the tables, the
+> three-table `FORCE`-RLS Neighborhood backstop **does bind** for normal
+> app queries — the in-repo comments (`0059`, `0106`, `apps/friends/access.py`)
+> that say "Django connects as `postgres` (BYPASSRLS)" are **stale**.
+>
+> **Why RLS is off at all (the answer to "doesn't Django handle the DB?").** Yes —
+> and that's exactly why it must be off. `app_user` is non-BYPASSRLS and the
+> general tables have RLS *enabled by migrations but carry no policies*. In
+> Postgres, "RLS on + no policy" means **deny-all** for a non-owner, non-bypass
+> role — so if RLS were left on, Django would be locked out of its own tables.
+> `disable_rls` runs every boot to strip it so the app can read/write, and
+> tenant isolation is enforced in the query layer instead. Crucially, the
+> protection against the Supabase anon Data API is the **`REVOKE ALL` from
+> `anon`/`authenticated`** (verified live: those roles hold zero privileges on
+> `journal_entries`/`friend_messages`), *not* the RLS-enabled bit — so stripping
+> RLS at boot re-exposes nothing. New tables inherit this via
+> `ALTER DEFAULT PRIVILEGES … REVOKE ALL … FROM anon` and are auto-disabled by
+> the boot sweep; the only manual step is a *new cross-tenant* table that needs
+> its own `FORCE`-RLS backstop (e.g. `friend_sky_memberships`, pending per
+> `0106`'s own note — it is not yet in `RLS_KEEP_ENABLED`).
+
 ---
 
 ## 1. The model in one paragraph

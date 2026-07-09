@@ -35,7 +35,8 @@ Four boundaries carry the platform:
 **Database-level tenant isolation is deliberately disabled.** `startup.sh` runs `manage.py disable_rls` on every boot, turning RLS off on **162 of 165 tables** (verified live). Only three cross-tenant Friends tables (`shared_lessons`, `lesson_share_grants`, `friend_messages`) keep FORCE-RLS. Consequences:
 
 - For all non-Friends tenant data, **isolation is 100% application-layer ORM filters** — one query missing its `tenant=` filter leaks across tenants with no database net and no CI guard.
-- The runtime role `app_user` is confirmed **non-BYPASSRLS**; `postgres` owns the tables. So the 3-table backstop *plausibly binds today on the console surface* — but the friends-module code comments claim the opposite. `manage.py check_friends_rls` in prod is the one command that settles it, and it hasn't been run. **[Action item #1.]**
+- The runtime role is **verified** (live `pg_stat_activity`): Django serves requests as **`app_user` via the pooler**, and `app_user` is non-BYPASSRLS and does not own the tables. So the 3-table FORCE-RLS backstop **does bind** for normal app queries — the in-repo comments claiming "Django connects as `postgres` (BYPASSRLS)" are **stale** and should be corrected. (`check_friends_rls` would corroborate; the connection-role read already settles it.)
+- **Why RLS is disabled** isn't an oversight: `app_user` is non-BYPASSRLS and the general tables carry no policies, so "RLS on + no policy" would *deny the app access to its own tables*. `disable_rls` strips it each boot so the app can function; isolation lives in the query layer. The Supabase anon Data API is blocked by a `REVOKE ALL` from `anon`/`authenticated` (verified: zero privileges), independent of RLS — so disabling RLS re-exposes nothing.
 - On the internal-key/agent surface, the backstop binds nowhere (every handler sets `service_role=True`).
 
 The real, working isolation controls are: the Supabase anon-Data-API zero-grant lockdown, the single CI-enforced `apps/friends/access.py` cross-tenant chokepoint, and disciplined app-layer filtering. Full detail: [multi-tenant-isolation.md](multi-tenant-isolation.md).
@@ -56,7 +57,7 @@ Severity = impact × likelihood. Status: `open` / `partially-mitigated` / `by-de
 | SEC-6 ★ | **No SSRF egress controls** in generated container config (`config_generator.py` has no `ssrf`/`allowPrivateNetwork`); the 2026-02 interceptor/NSG plan was never built. Protection rests on an unverified OpenClaw upstream default. | open | [injection](input-handling-and-injection.md) |
 | SEC-7 | **Action-gating is not a capability check** — approval is a text string in the model's context, not a code-level binding to the gated tool call. Low blast radius *only* because destructive GWS skills aren't wired yet. | partially-mitigated | [injection](input-handling-and-injection.md) |
 | SEC-8 | **`pii_entity_map` / `pii_denylist` are plaintext** — the reversal key for every placeholder fleet-wide. Tracked as encryption-directive Phase 4; the crypto substrate (`apps/crypto`) does not exist yet. | open (tracked) | [pii-egress](pii-and-llm-egress.md) |
-| SEC-9 ★ | **Runtime-role RLS status is asserted two contradictory ways in-repo.** Resolve authoritatively (see Action item #1); until then the friends backstop's real coverage is ambiguous. | open | [isolation](multi-tenant-isolation.md) |
+| SEC-9 ★ | **In-repo comments (`0059`, `0106`, `access.py`) claim Django connects as `postgres`/BYPASSRLS — verified false**; it connects as non-BYPASSRLS `app_user`, so the friends backstop actually binds. Now a doc-correctness issue, not an unknown: fix the stale comments. | open (downgraded) | [isolation](multi-tenant-isolation.md) |
 
 ### Medium
 
@@ -93,7 +94,7 @@ So the register reads in proportion: much of the security architecture is genuin
 
 ## Action items (do these first)
 
-1. **Run `manage.py check_friends_rls` in prod** and reconcile the RLS docs to the verdict (settles SEC-5/SEC-9).
+1. **Reconcile the stale "Django is BYPASSRLS" comments** (`0059`, `0106`, `apps/friends/access.py`) — the runtime role is verified `app_user` (non-BYPASSRLS), so the friends backstop binds and the comments mislead. Add the pending `friend_sky_memberships` (`sky`) FORCE-RLS backstop to `RLS_KEEP_ENABLED` + a policy (settles SEC-5/SEC-9).
 2. **Stop persisting the Google refresh token on the share** (SEC-1) — move to short-lived on-demand tokens.
 3. **Default-deny unscoped PAT** on sensitive views, or remove the scopes UI (SEC-3, SEC-16).
 4. **Redact the onboarding `USER.md` write** (SEC-4).
