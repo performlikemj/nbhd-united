@@ -1972,6 +1972,20 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
+    # Document information-keeping plugin — record/list/forget tools, gated on
+    # document_ingestion_enabled. The plugin self-gates registration on the
+    # injected documentIngestionEnabled flag (below); config_generator only loads
+    # it for flagged tenants, so it never registers for anyone else.
+    if getattr(tenant, "document_ingestion_enabled", False):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_DOCKEEP_PLUGIN_ID", "nbhd-document-keep") or "").strip(),
+                str(
+                    getattr(settings, "OPENCLAW_DOCKEEP_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-document-keep") or ""
+                ).strip(),
+            )
+        )
+
     # Insights plugin — trajectory tools (history/drill/compare) over pillar
     # snapshots. Phase 1 only emits Gravity snapshots, so we gate on
     # finance_active (which folds in the GRAVITY_ENABLED platform pause).
@@ -2226,6 +2240,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         if friends_id and friends_id in plugin_config["entries"]:
             plugin_config["entries"][friends_id]["config"] = {
                 "proposeEnabled": bool(getattr(tenant, "friends_agent_propose_enabled", False)),
+            }
+
+        # Document information-keeping plugin — flip the record/list/forget tools
+        # on. The plugin fail-closes when documentIngestionEnabled isn't strictly
+        # true; the manifest configSchema declares it (additionalProperties:false),
+        # so it must be present whenever the plugin loads.
+        dockeep_id = str(getattr(settings, "OPENCLAW_DOCKEEP_PLUGIN_ID", "nbhd-document-keep") or "").strip()
+        if dockeep_id and dockeep_id in plugin_config["entries"]:
+            plugin_config["entries"][dockeep_id]["config"] = {
+                "documentIngestionEnabled": True,
             }
 
         paths = [ppath for _, ppath in _active_plugins if ppath]

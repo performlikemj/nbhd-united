@@ -58,6 +58,11 @@ COPY runtime/openclaw/plugins/nbhd-stream-progress /opt/nbhd/plugins/nbhd-stream
 COPY runtime/openclaw/plugins/nbhd-automation-tools /opt/nbhd/plugins/nbhd-automation-tools
 COPY runtime/openclaw/plugins/nbhd-cron-enforcement /opt/nbhd/plugins/nbhd-cron-enforcement
 COPY runtime/openclaw/plugins/nbhd-site-publishing /opt/nbhd/plugins/nbhd-site-publishing
+# nbhd-document-keep is emitted into plugins.load.paths by config_generator
+# whenever document_ingestion_enabled — omitting this COPY would hard-fail boot
+# ("plugin path not found") exactly like the 2026-07-05 friends incident.
+# Node-built-ins-only (no npm install).
+COPY runtime/openclaw/plugins/nbhd-document-keep /opt/nbhd/plugins/nbhd-document-keep
 # nbhd-friends-tools is emitted into plugins.load.paths by config_generator
 # whenever friends_enabled — omitting this COPY made OpenClaw hard-fail boot
 # with "plugin path not found: /opt/nbhd/plugins/nbhd-friends-tools", bricking
