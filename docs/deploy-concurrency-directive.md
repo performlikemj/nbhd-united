@@ -116,3 +116,5 @@ Note the checkout in these jobs must have enough history for `rev-parse` of a fe
 - Repo harness: read `CLAUDE.md` (router) → `docs/agents/workflow.md` BEFORE touching CI. Iron rules apply: worktree for the branch, stage specific files, no `--no-verify`, `gh pr merge` semantics ("no required checks → merges instantly — watch CI yourself").
 - The workflow file is ~550+ lines; the deploy jobs are `deploy-backend` (~line 283) and `deploy-frontend` (~line 520), both `needs: [frontend-test, backend-test, openclaw-config-smoke]` and gated `if: github.event_name == 'push' && github.ref == 'refs/heads/main'`. `fleet-rollout` exists and is usually `skipped` — check whether it deploys anything before deciding if it needs the guard.
 - Known trap from the same incident cluster: frontend-test failures block deploys entirely (`needs:`) — if your test PRs hit an unrelated red frontend job, check for a dependency/lockfile breakage on main before assuming your change caused it (see memory `project_dependabot_tiptap_lockfile_eresolve`).
+
+<!-- race-test A: no-op marker (deploy-serialization §5.3 live test, 2026-07-09) -->
