@@ -200,6 +200,32 @@ class DocumentWriteBackstopRealIngressTest(TestCase):
         self._upload_document("u1")
         self.assertEqual(self._create_finance_account().status_code, 409)
 
+    def test_finance_balance_update_by_nickname_blocked_on_document_turn(self):
+        # Nickname-resolved money mutations ARE a same-turn injection vector: the
+        # account is resolved by a human-guessable nickname (iexact + icontains
+        # fallback), so an injected PDF ("set my checking balance to 0") could drive
+        # it — unlike the UUID-keyed fuel transitions. Guard it.
+        acct = self.rt.post(
+            f"/api/v1/finance/runtime/{self.tenant.id}/accounts/",
+            {"nickname": "Checking", "current_balance": "500"},
+            format="json",
+            **self._rt_headers(),
+        )
+        self.assertEqual(acct.status_code, 201, acct.content)
+
+        def _update_balance():
+            return self.rt.post(
+                f"/api/v1/finance/runtime/{self.tenant.id}/balance/",
+                {"account_nickname": "Checking", "new_balance": "0"},
+                format="json",
+                **self._rt_headers(),
+            )
+
+        self._upload_document("u1")
+        self.assertEqual(_update_balance().status_code, 409)  # blocked on the doc turn
+        self._send_text("yes, update it", "u2")  # human replies → unblocks
+        self.assertEqual(_update_balance().status_code, 200, "balance update should succeed after a user turn")
+
     def test_daily_note_append_blocked_on_document_turn(self):
         self._upload_document("u1")
         self.assertEqual(self._append_daily_note().status_code, 409)

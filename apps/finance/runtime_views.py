@@ -228,6 +228,10 @@ class RuntimeFinanceBalanceUpdateView(APIView):
         if isinstance(tenant, Response):
             return tenant
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         body = request.data
         nickname = (body.get("account_nickname") or body.get("nickname") or "").strip()
 
@@ -276,6 +280,10 @@ class RuntimeFinanceArchiveAccountView(APIView):
         if isinstance(tenant, Response):
             return tenant
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         body = request.data
         nickname = (body.get("account_nickname") or body.get("nickname") or "").strip()
         if not nickname:
@@ -319,6 +327,10 @@ class RuntimeFinanceUnarchiveAccountView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         body = request.data
         nickname = (body.get("account_nickname") or body.get("nickname") or "").strip()
@@ -382,6 +394,10 @@ class RuntimeFinancePayoffView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         body = request.data
         try:
