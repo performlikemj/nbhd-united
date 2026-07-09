@@ -190,11 +190,11 @@ class DeliverBufferedResilienceTest(TestCase):
         self.assertEqual(result["failed"], 0)
         self.assertEqual(mock_post.call_count, 2)
 
-        msg.refresh_from_db()
-        # Transient retry must NOT count against the per-message attempt cap.
-        self.assertEqual(msg.delivery_attempts, 0)
-        self.assertTrue(msg.delivered)
-        self.assertEqual(msg.delivery_status, BufferedMessage.Status.DELIVERED)
+        # Delivered after a transient retry → hard-deleted on confirmed forward
+        # (PR-3 privacy sweep). Deletion is the proof the message DELIVERED
+        # rather than being dropped: the transient retry never burned the
+        # attempt cap (that path would have left a FAILED row instead).
+        self.assertFalse(BufferedMessage.objects.filter(id=msg.id).exists())
 
     @patch("apps.orchestrator.hibernation.time.sleep", return_value=None)
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
@@ -288,9 +288,8 @@ class DeliverBufferedResilienceTest(TestCase):
         self.assertEqual(result["delivered"], 1)
         # Fresh message was actually pushed.
         mock_send.assert_called_once()
-        fresh.refresh_from_db()
-        self.assertTrue(fresh.delivered)
-        self.assertEqual(fresh.delivery_status, BufferedMessage.Status.DELIVERED)
+        # Fresh message delivered → hard-deleted on confirmed forward (PR-3).
+        self.assertFalse(BufferedMessage.objects.filter(id=fresh.id).exists())
 
 
 class ApologyHelperTest(TestCase):
@@ -468,10 +467,10 @@ class DeliverBufferedInFlightLockTest(TestCase):
         # Crucially: only ONE chat completion was POSTed for the message.
         self.assertEqual(mock_post.call_count, 1)
 
-        msg.refresh_from_db()
-        self.assertTrue(msg.delivered)
-        # Lease cleared on success.
-        self.assertIsNone(msg.delivery_in_flight_until)
+        # Delivered → hard-deleted on confirmed forward (PR-3). The concurrent
+        # retry observed the live lease and skipped, so only one delivery
+        # happened and exactly one row was removed.
+        self.assertFalse(BufferedMessage.objects.filter(id=msg.id).exists())
 
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
     @patch("httpx.post")
@@ -500,9 +499,8 @@ class DeliverBufferedInFlightLockTest(TestCase):
         result = deliver_buffered_messages_task(str(tenant.id))
 
         self.assertEqual(result["delivered"], 1)
-        msg.refresh_from_db()
-        self.assertTrue(msg.delivered)
-        self.assertIsNone(msg.delivery_in_flight_until)
+        # Reclaimed after an expired lease and delivered → hard-deleted (PR-3).
+        self.assertFalse(BufferedMessage.objects.filter(id=msg.id).exists())
 
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
     @patch("httpx.post")
@@ -666,11 +664,10 @@ class DeliverBufferedLineColdStartCoalesceTest(TestCase):
         # Coalesced framing marker — agent treats as one combined request.
         self.assertIn("rapid succession", content)
 
-        # Every BufferedMessage row now marked delivered.
-        delivered_count = BufferedMessage.objects.filter(
-            tenant=tenant, delivery_status=BufferedMessage.Status.DELIVERED
-        ).count()
-        self.assertEqual(delivered_count, 3)
+        # Every BufferedMessage row was forwarded → hard-deleted on confirmed
+        # forward (PR-3): the coalesced batch delivered all three, so none of
+        # the tenant's buffered rows remain.
+        self.assertEqual(BufferedMessage.objects.filter(tenant=tenant).count(), 0)
 
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
     @patch("httpx.post")
@@ -760,3 +757,121 @@ class DeliverBufferedLineColdStartCoalesceTest(TestCase):
         content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
         self.assertEqual(content, "just one message")
         self.assertNotIn("rapid succession", content)
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    TELEGRAM_BOT_TOKEN="test-bot-token",
+)
+class DeliverBufferedTelegramDeleteOnForwardTest(TestCase):
+    """The buffered Telegram singleton path hard-deletes the row the instant
+    it is forwarded to the woken container — the raw pre-redaction webhook
+    must not linger past delivery (docs/encryption-at-rest-directive.md §7,
+    Phase 0 PR-3). A FAILED forward must keep the row so the retry/apology
+    machinery still works."""
+
+    def _make_telegram_user(self) -> User:
+        return User.objects.create_user(
+            username=f"hib_tg_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=778899,
+            preferred_channel="telegram",
+        )
+
+    def test_forwarded_telegram_row_is_deleted(self):
+        from unittest.mock import AsyncMock
+
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        user = self._make_telegram_user()
+        tenant = _make_tenant(user)
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.TELEGRAM,
+            payload={"update_id": 1, "message": {"text": "hi"}},
+            user_text="hi",
+        )
+
+        with patch("apps.router.services.forward_to_openclaw", new_callable=AsyncMock) as mock_fwd:
+            result = deliver_buffered_messages_task(str(tenant.id))
+
+        mock_fwd.assert_awaited_once()
+        self.assertEqual(result["delivered"], 1)
+        # Raw webhook hard-deleted on confirmed forward (PR-3).
+        self.assertFalse(BufferedMessage.objects.filter(id=msg.id).exists())
+
+    def test_failed_telegram_forward_keeps_row(self):
+        from unittest.mock import AsyncMock
+
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        user = self._make_telegram_user()
+        tenant = _make_tenant(user)
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.TELEGRAM,
+            payload={"update_id": 2, "message": {"text": "hi"}},
+            user_text="hi",
+        )
+
+        with (
+            patch(
+                "apps.router.services.forward_to_openclaw",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("container down"),
+            ),
+            self.assertRaises(RuntimeError),
+        ):
+            deliver_buffered_messages_task(str(tenant.id))
+
+        # Forward failed → row preserved (not deleted), attempt advanced so the
+        # retry path can re-claim it.
+        msg.refresh_from_db()
+        self.assertFalse(msg.delivered)
+        self.assertEqual(msg.delivery_attempts, 1)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class CleanupDeliveredBuffersTaskTest(TestCase):
+    """The residual sweeper deletes delivered rows older than 7 days and
+    undelivered rows older than 30 days (dead-tenant raw webhooks — the
+    highest-sensitivity rows in the system), sparing anything more recent."""
+
+    def _make_buffer(self, tenant, *, delivered: bool, age_days: int) -> BufferedMessage:
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text="x",
+            delivered=delivered,
+            delivery_status=(BufferedMessage.Status.DELIVERED if delivered else BufferedMessage.Status.PENDING),
+        )
+        BufferedMessage.objects.filter(id=msg.id).update(created_at=timezone.now() - timedelta(days=age_days))
+        return msg
+
+    def test_deletes_old_delivered_and_undelivered_spares_recent(self):
+        from apps.orchestrator.hibernation import cleanup_delivered_buffers_task
+
+        user = _make_user(line_user_id="U_cleanup")
+        tenant = _make_tenant(user)
+
+        old_delivered = self._make_buffer(tenant, delivered=True, age_days=10)
+        recent_delivered = self._make_buffer(tenant, delivered=True, age_days=2)
+        old_undelivered = self._make_buffer(tenant, delivered=False, age_days=40)
+        recent_undelivered = self._make_buffer(tenant, delivered=False, age_days=5)
+
+        result = cleanup_delivered_buffers_task()
+
+        self.assertEqual(result["delivered_deleted"], 1)
+        self.assertEqual(result["undelivered_deleted"], 1)
+        self.assertEqual(result["deleted"], 2)
+
+        remaining = set(BufferedMessage.objects.values_list("id", flat=True))
+        self.assertNotIn(old_delivered.id, remaining)
+        self.assertNotIn(old_undelivered.id, remaining)
+        self.assertIn(recent_delivered.id, remaining)
+        self.assertIn(recent_undelivered.id, remaining)

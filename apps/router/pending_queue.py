@@ -822,6 +822,29 @@ def drain_pending_messages_for_tenant_task(
             )
         delivered = batch_size
 
+        # Privacy hard-delete (docs/encryption-at-rest-directive.md §7, Phase 0
+        # PR-3): PendingMessage is a transient forwarding queue, but delivered
+        # rows were never removed — leaving payload + user_text as a permanent
+        # store of (redacted) user text. Every downstream use of these rows is
+        # complete by here: the _drain_*_batch helper above ran the OC POST,
+        # reply relay, conversation capture, iOS reply persistence (to
+        # AppChatMessage), and usage recording in the same call. Nothing past
+        # this point re-reads the rows — the stale-hibernation reconcile touches
+        # the Tenant; _has_more_pending queries PENDING rows only; the iOS
+        # client polls AppChatMessage, not this queue. We mark DELIVERED *first*
+        # (committed above) so a worker crash before the delete leaves a
+        # sweepable DELIVERED row rather than a PENDING one the reaper would
+        # re-POST (duplicate reply); the 14-day cleanup_stale_pending_messages
+        # cron sweeps any such residue.
+        try:
+            PendingMessage.objects.filter(id__in=[row.id for row in batch]).delete()
+        except Exception:
+            logger.exception(
+                "drain_pending: failed to hard-delete delivered batch for tenant %s "
+                "(rows remain DELIVERED; 14-day cleanup cron will sweep)",
+                tenant_id[:8],
+            )
+
     except Exception as exc:
         # Hibernated container on the poller path. The Telegram poller
         # (apps/router/poller.py) enqueues straight to PendingMessage with
@@ -2204,6 +2227,49 @@ def reap_stuck_inbound_messages_task() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Retention sweeper — bounds how long terminal queue rows (which still hold
+# redacted user text) live. DELIVERED rows are hard-deleted the instant the
+# drain completes; this daily cron is the residual backstop.
+# ---------------------------------------------------------------------------
+
+
+def cleanup_stale_pending_messages_task() -> dict:
+    """Delete terminal ``PendingMessage`` rows (FAILED + any residual
+    DELIVERED) older than 14 days.
+
+    ``PendingMessage`` is a transient per-tenant forwarding queue. DELIVERED
+    rows are now hard-deleted the instant the drain completes (see
+    ``drain_pending_messages_for_tenant_task``); this cron is the residual
+    sweeper for the two cases that still leave a terminal row behind:
+
+      - FAILED rows, deliberately retained short-term for apology / debug
+        (past-cap drop, stale-age drop, orphaned-tenant cleanup). Both
+        ``payload`` and ``user_text`` hold (redacted) user message content.
+      - DELIVERED rows whose post-drain hard-delete didn't land (a worker
+        crash between the terminal-state commit and the delete).
+
+    PENDING rows are never touched here — the drain + reaper own their
+    lifecycle; a genuinely stuck PENDING row is flipped to FAILED with an
+    apology on the next drain tick once it crosses the staleness threshold,
+    then swept here 14 days later. This bounds the queue's retention instead of
+    letting it stay a permanent store of user text
+    (docs/encryption-at-rest-directive.md §7, Phase 0 PR-3). Mirrors
+    ``cleanup_delivered_buffers_task``.
+    """
+    cutoff = timezone.now() - timedelta(days=14)
+    deleted, _ = PendingMessage.objects.filter(
+        delivery_status__in=[
+            PendingMessage.Status.FAILED,
+            PendingMessage.Status.DELIVERED,
+        ],
+        created_at__lt=cutoff,
+    ).delete()
+
+    logger.info("cleanup_stale_pending_messages: deleted %d old terminal rows", deleted)
+    return {"deleted": deleted}
+
+
+# ---------------------------------------------------------------------------
 # Misc — kept so callers can import this module without importing every
 # helper individually.
 # ---------------------------------------------------------------------------
@@ -2211,6 +2277,7 @@ def reap_stuck_inbound_messages_task() -> dict:
 # Some surface used by tests / callers — keep imports stable.
 __all__ = [
     "PendingMessage",
+    "cleanup_stale_pending_messages_task",
     "drain_pending_messages_for_tenant_task",
     "enqueue_message_for_tenant",
     "reap_stuck_inbound_messages_task",
