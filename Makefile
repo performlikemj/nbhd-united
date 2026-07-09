@@ -1,4 +1,4 @@
-.PHONY: setup migrate run test lint harness compile-deps sync-deps docker-up docker-down superuser tenants health \
+.PHONY: setup migrate run test lint harness integrate-gate compile-deps sync-deps docker-up docker-down superuser tenants health \
 	provision deprovision \
 	canary canary-build canary-deploy canary-logs canary-health canary-rollback canary-prune
 
@@ -30,6 +30,34 @@ lint:
 
 harness:
 	./scripts/harness-check --project . --scope staged
+
+# ---------------------------------------------------------------------------
+# Integration train gate — the single command `/integrate` runs to prove a
+# branch combination locally before it lands. Mirrors ci-cd.yml's frontend-test
+# and backend-test gates at CI strictness: a gate weaker than CI stamps a lie.
+# `ruff format --check` and `makemigrations --check` are the separate stricter
+# gates a plain `make lint`/`make test` misses; `npm ci` is CI's frozen-lockfile
+# install (lockfile drift has broken CI before). Bare `ruff`/`python` like the
+# lint/test targets — the train runs this from a throwaway worktree with no
+# .venv, so it relies on the activated venv on PATH, not a relative .venv/ path.
+# One gate per recipe line — make aborts on the first non-zero, so it fails fast.
+# The test step gets its own DB name (DJANGO_TEST_DB_NAME, wired in base.py) plus
+# --noinput because ~25 worktrees share one Postgres: a shared default test DB got
+# destroyed mid-run by a concurrent session, and a leftover one blocked on the
+# interactive recreate prompt. Its own name + auto-recreate makes the train hermetic.
+#
+# Deliberately NOT mirrored: the backend secret-scan and config-validator +
+# security-audit shell steps, and the whole openclaw-config-smoke job (plugin
+# packaging guard, doctor smoke, node --test suites). Those are heavier CI-side
+# guards that still run in CI on the PR — a green stamp here covers lint, format,
+# migration-drift, the backend suite, and the frontend lint+build only.
+# See docs/agents/workflow.md "Parallel work & deploy serialization".
+integrate-gate:
+	ruff check .
+	ruff format --check .
+	python manage.py makemigrations --check --dry-run
+	DJANGO_TEST_DB_NAME=test_nbhd_united_train python manage.py test apps/ --noinput
+	cd frontend && npm ci && npm run lint && npm run build
 
 compile-deps:
 	pip-compile requirements.in

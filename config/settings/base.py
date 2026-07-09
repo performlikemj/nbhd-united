@@ -102,6 +102,11 @@ DATABASES = {
     "default": env.db("DATABASE_URL", default="postgres://nbhd:nbhd@localhost:5432/nbhd_united"),
 }
 
+# Isolated test-DB name for the /integrate train (unset = Django default test_<name>):
+_test_db_name = env("DJANGO_TEST_DB_NAME", default=None)
+if _test_db_name:
+    DATABASES["default"].setdefault("TEST", {})["NAME"] = _test_db_name
+
 # Custom user model
 AUTH_USER_MODEL = "tenants.User"
 
