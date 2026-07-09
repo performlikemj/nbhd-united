@@ -1,5 +1,14 @@
 """LLM-as-arbiter cron task that prunes PII false positives into the denylist.
 
+RETIRED (2026-07). This task shipped PERSON/LOCATION span text to a cloud LLM
+(Claude Haiku via OpenRouter) to judge junk — that egress is retired in favor
+of the zero-egress deterministic sweep (:mod:`apps.pii.junk_sweep`) plus an
+on-device user-review flow. The hourly ``pii-arbiter`` QStash schedule is
+removed (see ``RETIRED_CRON_PATHS`` in
+``apps/cron/management/commands/register_system_crons.py``); the ``pii_arbiter``
+TASK_MAP entry is kept only so an in-flight message drains cleanly. This module
+is left in place for reference and is no longer scheduled — do not re-register.
+
 Issue #660. The DeBERTa NER model is left to mint conservatively (catches
 real people but also tags ``goal``, ``calendar``, ``intro``, ``🏆 wins`` as
 PERSON). This task sweeps recently-minted entities and asks Claude Haiku

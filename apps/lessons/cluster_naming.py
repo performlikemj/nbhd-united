@@ -230,7 +230,11 @@ def _name_one_cluster(
     None means "keep the deterministic label" — any failure (LLM error, empty
     reply, all-placeholder name) degrades cleanly.
     """
-    session = RedactionSession(tenant=tenant)
+    # mint='never': cluster labels/terms/snippets are derived evidence, the same
+    # class the prod audit flagged as a junk-mint source (copilot/memory-sync).
+    # Known people are still masked; unfamiliar machine-derived strings no longer
+    # coin new bindings before this egresses to the naming LLM.
+    session = RedactionSession(tenant=tenant, mint="never")
 
     snippets = [_cap(m.text) for m in members if (m.text or "").strip()][:SNIPPETS_PER_CLUSTER]
     fields = [deterministic, *terms[:TERMS_PER_CLUSTER], *snippets]

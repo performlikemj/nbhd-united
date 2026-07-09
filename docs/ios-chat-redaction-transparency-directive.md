@@ -174,4 +174,152 @@ The server now rehydrates `markdown` and task/goal titles at the owner-facing se
 - **Substring highlighting vs. footnote chip.** Substring underlining is more precise but needs careful range-finding (a `value` may appear multiple times, or as a case/whitespace variant of what's in `text`). If ranging is fragile, ship the footnote chip first and iterate.
 - **Fail-open redaction.** If detection errors on a turn, the message reaches the model unredacted and `user_redactions` is null — so the absence of an indicator does not *guarantee* nothing was hidden, only that nothing was recorded. This is a rare transient case; do not over-promise in copy ("hidden from your assistant" describes what we recorded, not a security guarantee).
 - **Coalesced replies.** The backend attaches a combined reply (and its `reply_redactions`) to one representative row when it coalesces a burst of user turns; sibling rows come back with empty reply text. Don't assume every assistant row carries its own `reply_redactions`.
+
+---
+
+## 8. PHASE 2 — ON-DEVICE JUNK REVIEW (APPLE FOUNDATION MODELS)
+
+### 8.1 Why this exists
+
+The redactor over-mints. The DeBERTa detector, run over text it was never
+trained on (the assistant's own markdown notes, raw email bodies, financial
+jargon), tags huge amounts of junk as PII — a production audit found **979 of
+1,103 bindings on the canary tenant were junk** (structure fragments, invisible
+characters, common words, unvalidated financial labels). Those junk bindings
+bloat the People list and drive nonsense placeholders.
+
+The backend used to prune this with an hourly cron that **shipped the flagged
+span text to Claude Haiku in the cloud** to judge each one. **That cloud
+round-trip is retired** — no PII value leaves the platform anymore except to the
+owner's own authenticated clients (this app). Deterministic backend hygiene now
+cleans the unambiguous junk automatically; what's left is the *judgment* class —
+plausible-looking names and places a rule can't rule on. That judgment moves to
+**this app**, run **on-device** via Apple Foundation Models, with the owner in
+the loop. Full backend design: `docs/pii-self-cleaning.md`.
+
+Your job: fetch the review queue, classify it on-device, and present a one-tap
+"clean up" digest. **Never delete silently.**
+
+### 8.2 The backend contract (all JWT-scoped, all `/api/v1/tenants/settings/`)
+
+| Purpose | Method + path | Body | Effect |
+|---|---|---|---|
+| Fetch review candidates | `GET pii-review-queue/` | — | Returns PERSON/LOCATION bindings that survived deterministic hygiene and aren't yet reviewed |
+| Keep — "this IS PII" | `POST pii-review-queue/keep/` | `{"placeholders": ["[PERSON_1]", …]}` | Marks bindings reviewed-and-real; they drop out of the queue permanently. Mapping untouched, redaction continues |
+| Clean — "this is junk" | `POST entity-registry/bulk/` | `{"placeholders": […], "deny": true}` | **Existing endpoint** (see §4b). Denylists + deletes the bindings. This is the "clean up" action |
+
+Queue row shape (confirm against the merged backend PR before wiring — the
+review-queue endpoints are new in this change set):
+
+```jsonc
+{
+  "placeholder": "[PERSON_1]",     // opaque token the model saw
+  "value": "Sarah Chen",           // real span — safe: same tenant, same JWT, already visible elsewhere
+  "entity_type": "PERSON"          // PERSON | LOCATION
+}
 ```
+
+`value` carries no new PII (same rationale as §2 — the owner already sees their
+own data on JWT-scoped surfaces). That is what makes on-device classification and
+a review card safe: you are reasoning over data the owner owns, never sending it
+anywhere.
+
+> **`keep` vs. `clean` map 1:1 onto the retired arbiter's two outcomes**
+> (`is_pii=true` → keep, `is_pii=false` → clean). You are replacing a cloud LLM's
+> verdict with an on-device model's *proposal* plus the owner's tap.
+
+### 8.3 Recommended flow — availability-gated FM classification
+
+1. **Gate on availability.** Foundation Models is only present on capable
+   devices/OS. Check `SystemLanguageModel.default.availability` first. If it is
+   anything other than `.available`, **skip auto-classification entirely** and
+   fall back to the plain review-card UI (§8.4). Never block the feature on FM.
+2. **Classify on-device.** For each queue row, ask the on-device model whether the
+   span is a real personal name/place worth hiding, or junk (brand, common word,
+   fragment). Use **guided generation** (`@Generable`) so the output is a typed
+   verdict, not free text you have to parse. Batch in **small groups** (see §8.5).
+3. **Propose, don't apply.** Collect the spans the model judged junk into a
+   **one-tap digest**: a single muted banner/card reading e.g.
+   **"12 junk bindings found — Clean up"**. Tapping it (a) optionally expands the
+   list so the owner can deselect any the model got wrong, then (b) calls the
+   **clean** endpoint (`entity-registry/bulk/`, `deny: true`) for the confirmed
+   set. Spans the model judged *real* need no action — they simply stay hidden;
+   optionally auto-`keep/` them so they stop reappearing in the queue.
+4. **Never auto-delete.** The model's verdict is a proposal. A wrongly-deleted
+   real binding breaks historical rehydration (old messages/journal entries go
+   raw — see §4b). Cleanup is always **propose + one owner tap**, never silent.
+
+### 8.4 Fallback — review card (FM unavailable or owner prefers manual)
+
+When FM is unavailable, present the queue as a simple review list: each row shows
+`value` + `entity_type`, with per-row **Keep** / **Clean** and a bulk
+**"Clean all selected"**. This is the same two endpoints, just without the
+model pre-sorting. It must work with zero FM dependency.
+
+### 8.5 The classification prompt (adapt the retired arbiter's rules)
+
+The backend arbiter's system prompt is the validated rule set — port it as your
+FM instructions. Keep it **span-only** (no surrounding message context; you are
+judging the word itself for a single user):
+
+- Real first names, nicknames, surnames, full names → **keep hiding** (is PII).
+- Specific places that identify a person — city, neighborhood, address, employer
+  name → **keep hiding**.
+- Common English words / noun labels ("goal", "calendar", "wins", "tracker",
+  "session") → **clean** (not PII).
+- App / brand / product names ("Spotify", "OpenAI", "ChatGPT") → **clean**.
+- Bar / restaurant / venue names ("Eleven Madison Park") → **clean**.
+- Month / weekday names, exercise/gym jargon ("deadlift", "Pallof") → **clean**.
+- Generic geographic terms ("home", "office", "the gym") → **clean**.
+- Emoji, punctuation, obvious fragments → **clean**.
+- **When in doubt, keep hiding.** A false "keep" is harmless (stays redacted); a
+  false "clean" leaks a real value to the assistant. Bias the prompt toward
+  keeping.
+
+### 8.6 Validation requirement — gate auto-apply on offline scoring
+
+**Before you let the FM verdict drive any cleanup without per-row confirmation**
+(i.e. before trusting the "Clean up" one-tap over the fully-expanded manual
+review), score your FM prompt **offline against the labeled cleanup set** the
+backend preserved: the **1,103 audited bindings in backup table
+`pii_map_backup_20260709`** (124 real PII, 979 junk). Get that set from the
+backend owner as a fixture; run your prompt over it; measure the false-clean rate
+(real PII the model called junk). Auto-apply is acceptable only when false-cleans
+are ~zero. Until then, always expand the list for explicit owner review before
+calling `entity-registry/bulk/`. Do not ship auto-apply against an unmeasured
+prompt.
+
+### 8.7 Swift-level notes
+
+- **Availability check** — branch on `SystemLanguageModel.default.availability`;
+  only proceed when `.available`. Surface nothing about "AI" in the UI when
+  unavailable; just render the §8.4 fallback.
+- **`@Generable` verdict struct** — define a small guided-generation type so the
+  model returns typed output, e.g.:
+
+  ```swift
+  @Generable
+  struct SpanVerdict {
+      @Guide(description: "true if this span is a real personal name or a place that identifies the user")
+      let isPII: Bool
+      @Guide(description: "one of: name, place, brand, common_word, fragment, other")
+      let reason: String
+  }
+  ```
+
+  Request one `SpanVerdict` per span via `LanguageModelSession.respond(to:generating:)`.
+- **Small batches** — classify a handful of spans per session call (e.g. 5–10),
+  not the whole queue at once: keeps each prompt short, latency low, and avoids
+  the model conflating spans. Reuse one `LanguageModelSession` across batches;
+  the instructions (the §8.5 rules) go in the session's `instructions`, the spans
+  in the per-call prompt.
+- **Everything stays on-device.** No queue value is sent off the phone. This is
+  the whole point of moving the judge from Haiku to Foundation Models.
+
+### 8.8 Endpoints summary (Phase 2)
+
+| Purpose | Method + path | Auth |
+|---|---|---|
+| Fetch review queue | `GET /api/v1/tenants/settings/pii-review-queue/` | tenant JWT — CONFIRM shape against merged backend PR |
+| Keep (is real PII) | `POST /api/v1/tenants/settings/pii-review-queue/keep/` `{"placeholders": […]}` | tenant JWT — CONFIRM shape |
+| Clean (junk: delete + deny) | `POST /api/v1/tenants/settings/entity-registry/bulk/` `{"placeholders": […], "deny": true}` | tenant JWT (existing, §4b) |

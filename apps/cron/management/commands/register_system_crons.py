@@ -105,13 +105,13 @@ SYSTEM_CRONS = [
     # Django-side via LiteLLM — no OpenClaw container wake, no user-quota cost.
     # Idempotent per (tenant, ISO week) via Document(kind=WEEKLY) slug check.
     ("weekly-gravity-reflection", "0 * * * *", "/api/cron/trigger/weekly_gravity_reflection/"),
-    # Hourly at :40 UTC — LLM-as-arbiter sweep over recent PII mints.
-    # Asks Claude Haiku whether each newly-minted entity is actually a
-    # person/location and promotes rejected ones to ``pii_denylist`` so
-    # the redactor stops driving redaction off them. Offset from :00,
-    # :05, :25 to avoid colliding with the other hourly system crons.
-    # See apps/pii/arbiter.py and issue #660.
-    ("pii-arbiter", "40 * * * *", "/api/cron/trigger/pii_arbiter/"),
+    # Daily at 03:45 UTC — ZERO-EGRESS PII junk sweep. Deterministic hygiene
+    # over stored bindings: heals owner-visible journal text, denies the
+    # canonical key, deletes the junk binding. Replaces the retired hourly
+    # ``pii-arbiter`` (which shipped span text to a cloud LLM — see
+    # RETIRED_CRON_PATHS below). Offset from cleanup-expired-telegram-tokens
+    # (03:00) and poll-line-quota (03:15). See apps/pii/junk_sweep.py.
+    ("pii-junk-sweep", "45 3 * * *", "/api/cron/trigger/pii_junk_sweep/"),
     # Every minute — reaper for the per-tenant inbound message queue.
     # Republishes drain tasks for PendingMessage rows whose original drain
     # never ran (publish_task raised + swallowed, QStash 5xx → DLQ, worker
@@ -152,6 +152,17 @@ SYSTEM_CRONS = [
     # delete — run `manage.py reap_orphaned_containers --apply` after lifting
     # the lock. Offset from the other crons. See apps/orchestrator/orphan_reaper.py.
     ("reap-orphaned-containers", "20 8 * * *", "/api/cron/trigger/reap_orphaned_containers/"),
+]
+
+# Destinations for crons that have been RETIRED. The register loop above only
+# ADDs/UPDATEs schedules still in SYSTEM_CRONS — a cron dropped from that list
+# keeps firing off its old QStash schedule forever. Registration deletes any
+# live schedule pointing at these paths so a retirement actually stops the cron.
+#   - pii_arbiter: shipped PERSON/LOCATION span text to a cloud LLM (Haiku via
+#     OpenRouter). That egress is retired in favor of the zero-egress
+#     ``pii-junk-sweep`` + on-device review. See apps/pii/arbiter.py.
+RETIRED_CRON_PATHS = [
+    "/api/cron/trigger/pii_arbiter/",
 ]
 
 
@@ -259,4 +270,30 @@ class Command(BaseCommand):
             else:
                 self.stderr.write(f"  FAILED: {name} — {create_resp.status_code} {create_resp.text}")
 
-        self.stdout.write(f"\nDone: {registered} registered, {updated} updated, {skipped} unchanged")
+        # Deregister retired crons — delete any live schedule at a retired path.
+        deregistered = 0
+        for path in RETIRED_CRON_PATHS:
+            destination = f"{base_url}{path}"
+            existing_sched = existing.get(destination)
+            if not existing_sched:
+                continue
+            schedule_id = existing_sched.get("scheduleId")
+            if not schedule_id:
+                continue
+            if dry_run:
+                self.stdout.write(f"  [dry-run] would deregister retired cron: {path}")
+                deregistered += 1
+                continue
+            del_resp = httpx.delete(
+                f"https://qstash.upstash.io/v2/schedules/{schedule_id}",
+                headers=headers,
+            )
+            if del_resp.status_code in (200, 204):
+                self.stdout.write(self.style.SUCCESS(f"  deregistered retired cron: {path}"))
+                deregistered += 1
+            else:
+                self.stderr.write(f"  FAILED to deregister {path}: {del_resp.status_code} {del_resp.text}")
+
+        self.stdout.write(
+            f"\nDone: {registered} registered, {updated} updated, {skipped} unchanged, {deregistered} deregistered"
+        )

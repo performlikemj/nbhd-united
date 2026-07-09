@@ -787,8 +787,15 @@ class RedactToolResponseTest(TestCase):
         # ID preserved
         self.assertEqual(result["id"], "msg123")
 
-    def test_redacts_calendar_summary(self):
+    def test_redacts_known_person_in_calendar_summary(self):
+        # Tool text runs the mint='validated' policy: a neural PERSON hit is
+        # replace-KNOWN-only (the audit retired minting neural names from machine
+        # text). A contact already in the map is still masked; Step 1's literal
+        # pass handles it with no model needed.
         from apps.pii.redactor import redact_tool_response
+
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Sarah Chen"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
 
         data = {
             "events": [
@@ -804,7 +811,8 @@ class RedactToolResponseTest(TestCase):
         }
         result = redact_tool_response(data, self.tenant)
 
-        # Person name in summary should be redacted
+        # Known person is still masked in tool text.
+        self.assertIn("[PERSON_1]", result["events"][0]["summary"])
         self.assertNotIn("Sarah Chen", result["events"][0]["summary"])
         # ID and structural fields preserved
         self.assertEqual(result["events"][0]["id"], "evt123")
@@ -837,8 +845,14 @@ class RedactToolResponseTest(TestCase):
         # Should reuse the known placeholder
         self.assertIn("[EMAIL_ADDRESS_1]", result["from"])
 
-    def test_user_own_name_redacted_in_tool_response(self):
-        """User's own name should be redacted in tool responses to prevent name mixing."""
+    def test_user_own_name_not_minted_in_tool_response(self):
+        """Tool text runs mint='validated': a neural PERSON hit — including the
+        user's own name — is replace-KNOWN-only, so an unknown name is NOT minted
+        and stays raw. Correspondent EMAILs still mint (structured), so inbound
+        addresses stay protected. This replaces the pre-audit behavior where
+        allow_user_name=False minted the user's own name into the map; minting
+        neural names from machine text was the dominant junk source and is retired.
+        """
         from apps.pii.redactor import redact_tool_response
 
         self.tenant = create_tenant(display_name="Michael Jones", telegram_chat_id=555556)
@@ -850,11 +864,11 @@ class RedactToolResponseTest(TestCase):
         }
         result = redact_tool_response(data, self.tenant)
 
-        # User's own name should be redacted in tool responses
-        self.assertNotIn("Michael Jones", result["from"])
-        self.assertNotIn("Michael Jones", result["body_text"])
-        # Should have PERSON placeholders
-        self.assertIn("[PERSON_", result["from"])
+        # Correspondent emails still mint (structured / email-shaped).
+        self.assertNotIn("mj@acme.com", result["from"])
+        self.assertNotIn("alice@acme.com", result["to"])
+        # The user's own name (unknown neural PERSON) is NOT minted — left raw.
+        self.assertIn("Michael Jones", result["from"])
 
 
 class AllowNameLastNameTest(TestCase):

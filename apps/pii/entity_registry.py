@@ -42,7 +42,11 @@ from typing import Any
 # ``arbiter_judged_at`` is an internal stamp written by the PII arbiter cron
 # (apps/pii/arbiter.py) so already-judged entries skip re-evaluation; it
 # stays out of ``get_metadata`` because it isn't user-facing identity context.
-_KNOWN_FIELDS = ("name", "relationship", "notes", "updated_at", "arbiter_judged_at")
+# ``reviewed_at`` is stamped when the user (or the on-device review flow) has
+# seen a PERSON/LOCATION binding in the tier-2 review queue and chosen to keep
+# it — it removes the entry from that queue, so it must survive coerce/
+# to_storage_value round-trips or an edit would silently resurface the entry.
+_KNOWN_FIELDS = ("name", "relationship", "notes", "updated_at", "arbiter_judged_at", "reviewed_at")
 
 _PLACEHOLDER_NUM_RE = re.compile(r"\[[A-Z_]+_(\d+)\]")
 
@@ -102,6 +106,7 @@ def to_storage_value(
     notes: str = "",
     updated_at: str | None = None,
     arbiter_judged_at: str | None = None,
+    reviewed_at: str | None = None,
 ) -> dict[str, Any]:
     """Build a canonical dict entry for writing back to
     ``Tenant.pii_entity_map``. Empty optional fields are omitted so
@@ -111,6 +116,11 @@ def to_storage_value(
     cron to record that an entry has already been evaluated, preventing
     redundant re-evaluation on the next sweep. Pass the existing stamp when
     updating a user-editable entry so it is preserved across PATCH round-trips.
+
+    ``reviewed_at`` is the stamp written when a user keeps a PERSON/LOCATION
+    binding from the tier-2 review queue. Like ``arbiter_judged_at`` it must be
+    threaded through any edit so keeping an entry is not undone by a later
+    name/relationship/notes PATCH.
     """
     out: dict[str, Any] = {"name": name}
     if relationship:
@@ -121,6 +131,8 @@ def to_storage_value(
         out["updated_at"] = updated_at
     if arbiter_judged_at:
         out["arbiter_judged_at"] = arbiter_judged_at
+    if reviewed_at:
+        out["reviewed_at"] = reviewed_at
     return out
 
 

@@ -237,10 +237,17 @@ TASK_MAP = {
     # synthesis for each tenant whose local time is Sunday 09:00.
     # Bills to platform (record_usage is_system=True), not user quota.
     "weekly_gravity_reflection": "apps.insights.tasks.weekly_gravity_reflection_task",
-    # PII arbiter — hourly sweep that asks Claude Haiku whether each
-    # newly-minted entity is actually PII. Rejected entries go on the
-    # tenant denylist so the next message stops re-minting them.
-    # See apps/pii/arbiter.py and issue #660.
+    # PII junk sweep — daily ZERO-EGRESS deterministic hygiene pass over stored
+    # bindings. Heals owner-visible journal text, denies the canonical key, then
+    # deletes the junk binding (strict order). Replaces the retired cloud
+    # ``pii_arbiter`` (which shipped span text to a cloud LLM). Residual
+    # ambiguous cases go to the on-device review flow. See apps/pii/junk_sweep.py.
+    "pii_junk_sweep": "apps.pii.junk_sweep.pii_junk_sweep_task",
+    # RETIRED: ``pii_arbiter`` (apps/pii/arbiter.py) shipped PERSON/LOCATION span
+    # text to Claude Haiku to prune false positives. That cloud egress is retired
+    # in favor of pii_junk_sweep + on-device review; the schedule is removed via
+    # RETIRED_CRON_PATHS in register_system_crons.py. The task path is left
+    # mapped so any in-flight QStash message drains cleanly rather than 404-ing.
     "pii_arbiter": "apps.pii.arbiter.pii_arbiter_task",
     # User-facing scheduled automations — per-minute dispatcher that runs
     # every ACTIVE Automation whose next_run_at has elapsed. Without this the
@@ -1005,7 +1012,10 @@ def register_system_crons(request):
     if not base_url:
         return JsonResponse({"error": "base_url required"}, status=400)
 
-    from apps.cron.management.commands.register_system_crons import SYSTEM_CRONS
+    from apps.cron.management.commands.register_system_crons import (
+        RETIRED_CRON_PATHS,
+        SYSTEM_CRONS,
+    )
 
     qstash_token = getattr(settings, "QSTASH_TOKEN", "")
     if not qstash_token:
@@ -1088,12 +1098,41 @@ def register_system_crons(request):
                 create_resp.text,
             )
 
+    # Deregister retired crons — delete any live schedule at a retired path so a
+    # cron dropped from SYSTEM_CRONS actually stops firing (the loop above only
+    # ADDs/UPDATEs entries still present). See RETIRED_CRON_PATHS.
+    deregistered = []
+    for path in RETIRED_CRON_PATHS:
+        destination = f"{base_url}{path}"
+        existing_sched = existing.get(destination)
+        if not existing_sched:
+            continue
+        schedule_id = existing_sched.get("scheduleId")
+        if not schedule_id:
+            continue
+        del_resp = httpx.delete(
+            f"https://qstash.upstash.io/v2/schedules/{schedule_id}",
+            headers=headers,
+        )
+        if del_resp.status_code in (200, 204):
+            deregistered.append(path)
+            logger.info("Deregistered retired QStash cron: %s", path)
+        else:
+            failed.append(path)
+            logger.error(
+                "Failed to deregister retired QStash cron %s: %s %s",
+                path,
+                del_resp.status_code,
+                del_resp.text,
+            )
+
     return JsonResponse(
         {
             "registered": registered,
             "updated": updated,
             "skipped": skipped,
             "failed": failed,
+            "deregistered": deregistered,
         }
     )
 
