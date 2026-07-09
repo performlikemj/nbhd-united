@@ -1099,3 +1099,144 @@ class PushUserMdInBackgroundTest(TestCase):
         mock_download.return_value = None
         push_user_md_in_background(self.tenant)
         mock_upload.assert_called_once()
+
+
+# ─── USER.md PII redaction (Phase 0 PR-2) ──────────────────────────────────
+
+
+class RedactUserMdEnvelopeTest(TestCase):
+    """USER.md must be PII-redacted before it lands on the tenant file share.
+
+    Mirrors ``memory_sync.render_memory_files`` exactly: one RedactionSession
+    with ``mint='never'`` — a deterministic, model-free, replace-known-only pass
+    that re-masks names/emails already in ``tenant.pii_entity_map`` with their
+    existing placeholders and coins nothing new (minting lives at the inbound
+    seam). The placeholder-native privacy legend is skipped so it survives
+    byte-for-byte. All assertions here are deterministic: replace-known-only is
+    pure regex over the seeded map, so these tests do not need the ONNX model.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Env Redact", telegram_chat_id=910800)
+        _clear_seed_docs(self.tenant)
+        cache.clear()
+
+    def tearDown(self):
+        cache.clear()
+
+    def _seed_map(self, entity_map: dict) -> None:
+        self.tenant.pii_entity_map = entity_map
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+    def _plant_yesterday_note(self, markdown: str, *, title: str = "Yesterday") -> None:
+        from datetime import date as _date
+        from datetime import timedelta as _td
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=(_date.today() - _td(days=1)).isoformat(),
+            title=title,
+            markdown=markdown,
+        )
+
+    def test_known_person_in_data_section_is_masked(self):
+        """A known contact appearing in a data section (recent journal) is
+        rewritten to its existing placeholder before the region is assembled."""
+        self._seed_map({"[PERSON_1]": "Voldemort"})
+        self._plant_yesterday_note("# Log\nLunch with Voldemort about the raid.")
+
+        out = render_managed_region(self.tenant)
+
+        self.assertIn("## Recent journal", out)
+        self.assertNotIn("Voldemort", out)
+        self.assertIn("[PERSON_1]", out)
+
+    def test_known_email_in_data_section_is_masked(self):
+        """Emails already in the map are re-masked too (word-boundary regex)."""
+        self._seed_map({"[EMAIL_ADDRESS_1]": "reachme@example.com"})
+        self._plant_yesterday_note("# Log\nEmailed reachme@example.com about lunch.")
+
+        out = render_managed_region(self.tenant)
+
+        self.assertNotIn("reachme@example.com", out)
+        self.assertIn("[EMAIL_ADDRESS_1]", out)
+
+    def test_unknown_name_is_not_minted(self):
+        """mint='never' parity with memory_sync: an unfamiliar name is NOT
+        coined into a placeholder here — minting is the inbound seam's job, and
+        redacting agent/machine text was the fleet's dominant junk-mint source.
+        The map stays empty; no merge-back write fires."""
+        self._plant_yesterday_note("# Log\nLunch with Mxyzptlk about the raid.")
+
+        out = render_managed_region(self.tenant)
+
+        self.assertIn("Mxyzptlk", out)  # left verbatim — not minted
+        self.assertNotIn("[PERSON_", out)
+
+        self.tenant.refresh_from_db()
+        self.assertFalse(self.tenant.pii_entity_map)
+
+    def test_empty_map_no_pii_is_passthrough(self):
+        """No map + no PII: content survives verbatim, no placeholders appear."""
+        self._plant_yesterday_note("# Log\nWent for a quiet run at dawn.")
+
+        out = render_managed_region(self.tenant)
+
+        self.assertIn("Went for a quiet run at dawn.", out)
+        self.assertNotIn("[PERSON_", out)
+        self.assertNotIn("[EMAIL_ADDRESS_", out)
+
+        self.tenant.refresh_from_db()
+        self.assertFalse(self.tenant.pii_entity_map)
+
+    def test_legend_and_identity_survive_byte_intact(self):
+        """The placeholder-native privacy legend + Identity context are skipped
+        by the redactor and survive byte-for-byte.
+
+        The map's entity is deliberately named "Ryota" — the exact name in the
+        legend's DON'T example. Replace-known-only WOULD rewrite that "Ryota" to
+        [PERSON_1] if the privacy section weren't skipped, so the byte-intact
+        assertion below is a direct, deterministic guard on the skip.
+        """
+        from apps.tenants.envelope import _PRIVACY_PLACEHOLDERS_BODY
+
+        self._seed_map({"[PERSON_1]": {"name": "Ryota", "relationship": "daughter"}})
+
+        out = render_managed_region(self.tenant)
+
+        self.assertIn(_PRIVACY_PLACEHOLDERS_BODY, out)  # whole legend, unaltered
+        self.assertIn("Ryota", out)  # legend example name intact (section skipped)
+        self.assertIn("### Identity context", out)
+        self.assertIn("`[PERSON_1]` — daughter", out)  # placeholder + relationship, not name
+
+    def test_idempotent_rerender_is_stable(self):
+        """Re-rendering keeps the same placeholder and never produces nested
+        [[...]] corruption — redaction is deterministic given the map."""
+        self._seed_map({"[PERSON_1]": "Voldemort"})
+        self._plant_yesterday_note("# Log\nCoffee with Voldemort and notes.")
+
+        first = render_managed_region(self.tenant)
+        second = render_managed_region(self.tenant)
+
+        self.assertIn("[PERSON_1]", first)
+        self.assertIn("[PERSON_1]", second)
+        self.assertNotIn("[PERSON_2]", second)
+        self.assertNotIn("[[", second)
+        self.assertNotIn("Voldemort", second)
+
+    @mock.patch("apps.orchestrator.workspace_envelope.upload_workspace_file")
+    @mock.patch("apps.orchestrator.workspace_envelope.download_workspace_file")
+    def test_push_user_md_uploads_redacted_content(self, mock_download, mock_upload):
+        """End-to-end write path: the bytes handed to the share carry the
+        placeholder, not the real name."""
+        mock_download.return_value = None
+        self._seed_map({"[PERSON_1]": "Voldemort"})
+        self._plant_yesterday_note("# Log\nDinner with Voldemort downtown.")
+
+        self.assertTrue(push_user_md(self.tenant, force=True))
+
+        args, _ = mock_upload.call_args
+        body = args[2]
+        self.assertNotIn("Voldemort", body)
+        self.assertIn("[PERSON_1]", body)

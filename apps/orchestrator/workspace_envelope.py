@@ -63,6 +63,20 @@ _SYNTHESIS_HINT = (
 )
 
 
+# Envelope sections whose bodies are ALREADY expressed in ``[TYPE_N]``
+# placeholder terms and must survive the share write byte-for-byte. The
+# privacy-placeholders section carries the legend (with an illustrative
+# real-name DON'T example) and the Identity-context sub-section (placeholder +
+# relationship metadata, never a real name) — both rendered by
+# ``apps/tenants/envelope.py``. Re-running redaction over them would corrupt
+# the legend's teaching example and mint junk entities into every tenant's
+# ``pii_entity_map``, so the assembly-loop redactor skips exactly these keys.
+# Everything else — profile, goals, tasks, fuel, finance, the (rehydrated)
+# conversation digest, recent journal — is data-bearing and gets redacted
+# before it reaches the share.
+_PLACEHOLDER_NATIVE_KEYS = frozenset({"privacy_placeholders"})
+
+
 def _render_current_time_line(tenant: Tenant) -> str:
     """Render the live ``Current local time`` line included on every USER.md push.
 
@@ -93,7 +107,30 @@ def render_managed_region(tenant: Tenant) -> str:
 
     Section content lives in per-pillar ``envelope.py`` modules — adding
     a new section is a one-file change there, not a render-loop edit.
+
+    Data-bearing section bodies are PII-redacted here, at the assembly
+    chokepoint, before the managed block is handed to ``upload_workspace_file``
+    — USER.md is mounted read-write on the tenant file share and readable by
+    anyone with the storage-account key, so real names/emails must never land
+    there in cleartext. The journal mirror in ``memory_sync.render_memory_files``
+    has always redacted for the same reason; this closes the parallel gap. The
+    sharpest concrete leak was the conversation digest, which its section
+    renderer REHYDRATES back to real names (``conversation_capture``) for the
+    on-device client path — this seam re-masks those names on the USER.md path.
+
+    Semantics mirror ``memory_sync`` exactly: one ``RedactionSession`` with
+    ``mint='never'`` (replace-known-only). It seeds the tenant's
+    ``pii_entity_map`` and regex-replaces already-known names/emails with their
+    existing placeholders — deterministic, no ML model in the loop, and no
+    NEW placeholders coined from envelope machine structure (headings, table
+    rules). Nothing to persist and no churn: known contacts entered the map at
+    the inbound seam, which is the sole minting authority. The placeholder-native
+    privacy legend is skipped (see ``_PLACEHOLDER_NATIVE_KEYS``).
     """
+    # Lazy import mirrors memory_sync — keeps the PII/ML stack off this module's
+    # load path and dodges any import cycle at app boot.
+    from apps.pii.redactor import RedactionSession
+
     refreshed_at = datetime.now(UTC).replace(microsecond=0).isoformat()
     current_time_line = _render_current_time_line(tenant)
 
@@ -108,6 +145,11 @@ def render_managed_region(tenant: Tenant) -> str:
         _SYNTHESIS_HINT,
         "",
     ]
+
+    # ``mint='never'`` matches memory_sync: re-mask KNOWN entities only, coin
+    # nothing new. One session across all sections keeps a person mentioned in
+    # two pillars on the same [PERSON_N] (seeded from ``tenant.pii_entity_map``).
+    session = RedactionSession(tenant=tenant, mint="never")
 
     for section in all_sections():
         try:
@@ -125,13 +167,61 @@ def render_managed_region(tenant: Tenant) -> str:
             continue
         if not body:
             continue
+        # Redact everything except the placeholder-native legend. Skipping is
+        # opt-OUT: any future data section is redacted automatically, so a new
+        # contributor can't reintroduce a plaintext-PII leak by forgetting to
+        # wire redaction. Only headings/markers/timestamps (scaffolding) and
+        # the legend bypass the redactor.
+        if section.key not in _PLACEHOLDER_NATIVE_KEYS:
+            body = session.redact(body)
         parts.append(section.heading)
         parts.append(body)
         parts.append("")
 
     parts.append(END_MARKER)
     parts.append("")  # trailing newline so concatenation is clean
+
+    _persist_session_entities(tenant, session)
+
     return "\n".join(parts)
+
+
+def _persist_session_entities(tenant: Tenant, session) -> None:
+    """Union any newly-minted PII entities from ``session`` back into the
+    tenant's ``pii_entity_map`` under a row lock — the same guarded block
+    ``memory_sync.render_memory_files`` runs, kept here for exact parity.
+
+    Under ``mint='never'`` (the mode render_managed_region uses) ``session.
+    entity_map`` is always empty — replace-known-only never coins a placeholder
+    — so this is a no-op guarded by the ``if`` below: no write, no churn, no
+    ``pii_type_counters`` bookkeeping (minting, and its monotonic counter, live
+    solely at the inbound seam). The block is retained so USER.md and the
+    journal mirror stay structurally identical and so a future mint-mode change
+    can't silently drop a mint on the floor. The re-read under
+    ``select_for_update`` mirrors memory_sync: it prevents an unlocked full-dict
+    overwrite from clobbering a placeholder another writer minted (or a contact
+    deleted) between our read and our write.
+    """
+    if not session.entity_map:
+        return
+
+    from django.db import transaction
+
+    with transaction.atomic():
+        existing_map = (
+            type(tenant)
+            .objects.select_for_update()
+            .filter(pk=tenant.pk)
+            .values_list("pii_entity_map", flat=True)
+            .first()
+        ) or {}
+        # Same precedence as memory_sync.render_memory_files: session mints
+        # override on key collision.
+        merged = {**existing_map, **session.entity_map}
+        type(tenant).objects.filter(pk=tenant.pk).update(pii_entity_map=merged)
+
+    # Keep the in-memory object consistent for any later use in this process.
+    tenant.pii_entity_map = merged
 
 
 # Context-digest size bounds (chars), owned here so the renderer's clamp and
