@@ -236,6 +236,7 @@ def _send_line_messages(
     messages: list[dict],
     reply_token: str | None = None,
     tenant=None,
+    excerpt_override: str | None = None,
 ) -> bool:
     """Send messages, preferring Reply API (free) with Push fallback.
 
@@ -244,13 +245,17 @@ def _send_line_messages(
     When ``tenant`` is provided, the ``sentMessages`` IDs returned by LINE
     are persisted via ``_record_line_outbound`` so future quote-replies
     can be resolved to their excerpt. Recording is best-effort and never
-    breaks the send path; omit ``tenant`` to skip it.
+    breaks the send path; omit ``tenant`` to skip it. ``excerpt_override`` (the
+    placeholder-space reply) is forwarded so the stored excerpt holds no real
+    names.
     """
     data = _post_line_messages(line_user_id, messages, reply_token=reply_token)
     if data is None:
         return False
     if tenant is not None:
-        _record_line_outbound(tenant, line_user_id, data.get("sentMessages") or [], messages)
+        _record_line_outbound(
+            tenant, line_user_id, data.get("sentMessages") or [], messages, excerpt_override=excerpt_override
+        )
     return True
 
 
@@ -374,11 +379,20 @@ def _message_text_excerpt(msg: dict) -> str:
     return (msg.get("altText") or msg.get("text") or "").strip()
 
 
+def _is_media_message(msg: dict) -> bool:
+    """True for LINE message types whose excerpt is a ``[image]``-style tag
+    (never prose): those carry no PII and keep their own excerpt even when an
+    ``excerpt_override`` is supplied for the text-bearing messages."""
+    return isinstance(msg, dict) and msg.get("type") in ("image", "video", "audio", "sticker")
+
+
 def _record_line_outbound(
     tenant,
     line_user_id: str,
     sent_messages: list[dict] | None,
     messages: list[dict],
+    *,
+    excerpt_override: str | None = None,
 ) -> None:
     """Persist ``(id, text_excerpt)`` rows from a LINE send response so an
     inbound ``quotedMessageId`` can be resolved back to what we said.
@@ -387,6 +401,12 @@ def _record_line_outbound(
     push/reply API; index-aligned with the ``messages`` we sent. We skip
     silently if either side is missing — recording is best-effort and
     must never break the send path.
+
+    ``excerpt_override`` is the assistant reply in PII-placeholder space; when
+    given, prose (non-media) messages store IT as the excerpt instead of the
+    rehydrated body we sent, so ``text_excerpt`` holds no real names at rest.
+    The one reader — ``_extract_line_reply_context`` — inlines the excerpt into
+    the INBOUND agent turn, where placeholder space is exactly what's wanted.
     """
     if not sent_messages or not tenant or not line_user_id:
         return
@@ -400,7 +420,11 @@ def _record_line_outbound(
         mid = sm.get("id")
         if not mid:
             continue
-        excerpt = _message_text_excerpt(messages[i] if i < len(messages) else {})
+        msg_dict = messages[i] if i < len(messages) else {}
+        if excerpt_override is not None and not _is_media_message(msg_dict):
+            excerpt = excerpt_override
+        else:
+            excerpt = _message_text_excerpt(msg_dict)
         rows.append(
             LineOutboundMessage(
                 tenant=tenant,
@@ -669,6 +693,15 @@ def relay_ai_response_to_line(
     if not ai_text or not line_user_id:
         return False
 
+    # Capture a placeholder-space excerpt BEFORE rehydration — this is what we
+    # persist for quote-reply lookups (``LineOutboundMessage.text_excerpt``), so
+    # no real names rest in that column. Strip only inline markers ([[chart:]],
+    # [[insight:]], MEDIA:); the [TYPE_N] placeholders stay. Its sole reader,
+    # ``_extract_line_reply_context``, feeds it back into the INBOUND agent turn,
+    # where placeholder space is correct.
+    placeholder_excerpt = re.sub(r"\[\[[^\]]*\]\]", "", ai_text)
+    placeholder_excerpt = re.sub(r"MEDIA:\S+", "", placeholder_excerpt).strip()
+
     # Rehydrate PII placeholders before sending to user
     entity_map = getattr(tenant, "pii_entity_map", None)
     if entity_map:
@@ -764,7 +797,9 @@ def relay_ai_response_to_line(
         if not messages:
             return False
 
-        sent = _send_line_messages(line_user_id, messages, reply_token=reply_token, tenant=tenant)
+        sent = _send_line_messages(
+            line_user_id, messages, reply_token=reply_token, tenant=tenant, excerpt_override=placeholder_excerpt
+        )
         if sent:
             return True
 
@@ -779,6 +814,7 @@ def relay_ai_response_to_line(
             line_user_id,
             [{"type": "text", "text": fallback_text[:5000]}],
             tenant=tenant,
+            excerpt_override=placeholder_excerpt,
         )
 
     except Exception:
@@ -789,6 +825,7 @@ def relay_ai_response_to_line(
             line_user_id,
             [{"type": "text", "text": fallback_text[:5000]}],
             tenant=tenant,
+            excerpt_override=placeholder_excerpt,
         )
 
 

@@ -74,24 +74,24 @@ _MEDIA_LINE_RE = re.compile(r"^\s*MEDIA:.*$", re.MULTILINE)
 
 
 def clean_reply_for_capture(tenant, ai_text: str | None) -> str:
-    """Rehydrate PII placeholders and strip inline markers from a raw reply.
+    """Strip inline markers from a raw reply, keeping it in PII-placeholder space.
 
-    The container emits replies in PII-placeholder space (``[PERSON_1]``);
-    rehydration to real names matches the chosen raw at-rest posture and keeps
-    the digest readable. Does NOT record insights (that side effect belongs to
-    the live relay path, not this audit capture). Fail-open on any error.
+    The container emits replies in PII-placeholder space (``[PERSON_1]``). We
+    persist that placeholder-space copy AS-IS (pseudonymize-at-rest): the stored
+    ``ConversationTurn.reply_text`` never holds real names, and rehydration to
+    real values happens only at the owner-facing read seam (the iOS ``?since=``
+    feed, ``chat_history._conv_rows``). The USER.md "Conversation so far" digest
+    (``build_conversation_digest``) is model-facing, so it reads this
+    placeholder-space text unchanged — no real PII reaches the container prompt
+    via this path.
+
+    ``tenant`` is retained for signature stability (callers pass it uniformly).
+    Does NOT record insights (that side effect belongs to the live relay path,
+    not this audit capture). Fail-open on any error.
     """
     text = (ai_text or "").strip()
     if not text:
         return ""
-    entity_map = getattr(tenant, "pii_entity_map", None)
-    if entity_map:
-        try:
-            from apps.pii.redactor import rehydrate_text
-
-            text = rehydrate_text(text, entity_map)
-        except Exception:
-            logger.exception("conversation_capture: PII rehydrate failed (non-fatal)")
     text = _MARKER_RE.sub("", text)
     text = _MEDIA_LINE_RE.sub("", text)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
@@ -318,19 +318,16 @@ def build_conversation_digest(tenant) -> str:
 
     digest = "\n".join(lines)
 
-    # Rehydrate placeholders (e.g. [PERSON_1]) so the USER.md envelope delivers
-    # real-value text to the container, matching what ChatContextView already
-    # does at render time (chat_views.py:430-437). Telegram ConversationTurn
-    # user_text is stored redacted (poller.py:1375), so without this the digest
-    # mixes placeholder user-lines with rehydrated reply-lines and raw iOS
-    # user-lines — asymmetric and less useful for proactive grounding. Fail-open.
-    entity_map = getattr(tenant, "pii_entity_map", None)
-    if entity_map:
-        try:
-            from apps.pii.redactor import rehydrate_text
-
-            digest = rehydrate_text(digest, entity_map)
-        except Exception:
-            logger.exception("conversation_capture: digest PII rehydrate failed (non-fatal)")
-
+    # Deliberately NOT rehydrated. This digest is rendered into the USER.md
+    # managed region, which is auto-loaded into the container/model prompt on
+    # EVERY agent turn — a model-facing seam. Reply lines are now stored in
+    # PII-placeholder space (see ``clean_reply_for_capture`` /
+    # ``_store_ios_turn_reply``) and Telegram/LINE ``user_text`` is likewise
+    # placeholder-space (poller.py), so keeping the whole digest in placeholder
+    # space means real names never reach the model via this path — the same
+    # posture the live redaction pipeline enforces on every inbound turn. (The
+    # on-device ``ChatContextView`` digest IS owner-facing and rehydrates the
+    # rendered context itself.) Only iOS ``AppChatMessage.user_text`` — the
+    # user's own typed words — stays verbatim here; pseudonymization can't cover
+    # a user's own words, that is what at-rest encryption (Phase 2) is for.
     return digest

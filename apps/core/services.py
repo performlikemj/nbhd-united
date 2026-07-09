@@ -491,10 +491,12 @@ def notify_meditation_ready(session: MeditationSession) -> bool:
         return False
 
     message = _ready_message(session, tenant)
+    # Placeholder-space twin of ``message`` for the at-rest records below.
+    placeholder_message = _ready_message(session, tenant, rehydrate=False)
 
     if channel == "line":
         channel_user_id = getattr(user, "line_user_id", "") or ""
-        delivered = _send_line_text(tenant, channel_user_id, message)
+        delivered = _send_line_text(tenant, channel_user_id, message, excerpt_override=placeholder_message)
     elif channel == "app":
         # iOS-only user: no Telegram/LINE to send to — the APNs push + the
         # ?since= feed row written by record_proactive_outbound are the delivery.
@@ -513,7 +515,9 @@ def notify_meditation_ready(session: MeditationSession) -> bool:
                 tenant=tenant,
                 channel=channel,
                 channel_user_id=channel_user_id,
-                message_text=message,
+                # Placeholder-space at rest; record_proactive_outbound rehydrates
+                # only for the owner-facing iOS push.
+                message_text=placeholder_message,
                 job_name=_READY_JOB_NAME,
             )
         except Exception:
@@ -522,12 +526,19 @@ def notify_meditation_ready(session: MeditationSession) -> bool:
     return bool(delivered)
 
 
-def _ready_message(session: MeditationSession, tenant: Tenant) -> str:
+def _ready_message(session: MeditationSession, tenant: Tenant, *, rehydrate: bool = True) -> str:
+    """Build the "meditation ready" body.
+
+    ``rehydrate=True`` (default) resolves PII placeholders in the title for the
+    copy actually sent to the user; ``rehydrate=False`` returns the
+    placeholder-space copy used for the at-rest records (ProactiveOutbound /
+    LINE quote-reply excerpt), so those columns store no real names.
+    """
     title = (session.title or "").strip()
     # The title is assistant-authored and may carry PII placeholders ([PERSON_N]);
     # rehydrate before it reaches the channel (same boundary as CronDeliveryView).
     entity_map = getattr(tenant, "pii_entity_map", None)
-    if title and entity_map:
+    if title and rehydrate and entity_map:
         try:
             from apps.pii.redactor import rehydrate_text
 
@@ -547,7 +558,7 @@ def _send_telegram_text(chat_id: int, text: str) -> bool:
     return send_telegram_message(chat_id, text)
 
 
-def _send_line_text(tenant: Tenant, line_user_id: str, text: str) -> bool:
+def _send_line_text(tenant: Tenant, line_user_id: str, text: str, *, excerpt_override: str | None = None) -> bool:
     if not line_user_id:
         return False
     access_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "")
@@ -582,7 +593,7 @@ def _send_line_text(tenant: Tenant, line_user_id: str, text: str) -> bool:
         from apps.router.line_webhook import _record_line_outbound
 
         sent = (resp.json() or {}).get("sentMessages") or []
-        _record_line_outbound(tenant, line_user_id, sent, messages)
+        _record_line_outbound(tenant, line_user_id, sent, messages, excerpt_override=excerpt_override)
     except Exception:
         logger.debug("Core notify: LINE outbound record failed", exc_info=True)
     return True

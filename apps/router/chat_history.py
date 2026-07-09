@@ -40,10 +40,14 @@ Design notes
   synthetic id suffix (``:0`` user, ``:1`` assistant) breaks the tie so the user
   row always precedes its reply. The sort key ``(created_at, id)`` is a TOTAL,
   deterministic order across replicas (id is globally unique + source-prefixed).
-* **PII.** Every served text is already user-safe at rest: ``AppChatMessage``
-  / ``ConversationTurn`` replies are rehydrated + marker-stripped when stored,
-  ``ProactiveOutbound`` is stored post-rehydration, and user text is the user's
-  own words. No extra rehydration here.
+* **PII.** Assistant-authored text rests in PII-placeholder space —
+  ``AppChatMessage.reply_text``, ``ConversationTurn.reply_text`` and
+  ``ProactiveOutbound.message_text`` are stored marker-stripped but NOT
+  rehydrated (pseudonymize-at-rest). This feed is owner-facing, so the row
+  builders rehydrate those fields to real values on the way out (a no-op on
+  legacy rows already stored with real names). ``AppChatMessage.user_text`` is
+  the user's own words (verbatim); Telegram/LINE ``user_text`` is already
+  placeholder-space and left as-is.
 * **thread_id.** ``ConversationTurn`` / ``ProactiveOutbound`` have no thread FK
   (OpenClaw keeps one flat rolling session per channel-user), so they are mapped
   to the tenant's single ``is_main`` thread — the shared thread every channel
@@ -116,6 +120,27 @@ def decode_cursor(cursor: str | None) -> tuple[datetime, str]:
 # ---------------------------------------------------------------------------
 
 
+def _rehydrate(text, entity_map):
+    """Rehydrate ``[TYPE_N]`` placeholders for an owner-facing feed row.
+
+    Assistant-authored text (``AppChatMessage.reply_text`` /
+    ``ConversationTurn.reply_text`` / ``ProactiveOutbound.message_text``) rests
+    in PII-placeholder space; this feed serves the OWNER, so the placeholders
+    are resolved to real values here. A no-op on legacy rows already stored with
+    real names (no placeholders present) and when the tenant has no map, so the
+    dual-read is transparent in both directions. Fail-open: any error serves the
+    text unchanged rather than dropping the row from the feed."""
+    if not text or not entity_map:
+        return text
+    try:
+        from apps.pii.redactor import rehydrate_text
+
+        return rehydrate_text(text, entity_map)
+    except Exception:
+        logger.exception("chat_history: reply rehydrate failed (non-fatal)")
+        return text
+
+
 def _row(
     *,
     row_id,
@@ -153,9 +178,12 @@ def _row(
     return {"_sort": (created_at, row_id), "msg": msg}
 
 
-def _app_rows(m, main_thread_id):
+def _app_rows(m, main_thread_id, entity_map=None):
     """An ``AppChatMessage`` → a user row (always, if there's user text) and an
-    assistant row (only once the reply has actually landed)."""
+    assistant row (only once the reply has actually landed).
+
+    ``reply_text`` is stored placeholder-space and rehydrated here (owner-facing).
+    ``user_text`` is the user's own typed words — served verbatim, no rehydration."""
     from apps.router.models import AppChatMessage
 
     thread_id = str(m.thread_id) if m.thread_id else main_thread_id
@@ -187,7 +215,7 @@ def _app_rows(m, main_thread_id):
                 # died in the background).
                 created_at=m.replied_at or m.created_at,
                 role="assistant",
-                text=m.reply_text,
+                text=_rehydrate(m.reply_text, entity_map),
                 source="app",
                 thread_id=thread_id,
                 # Both halves of a device-originated turn carry the originating
@@ -202,8 +230,12 @@ def _app_rows(m, main_thread_id):
     return out
 
 
-def _conv_rows(t, main_thread_id):
-    """A ``ConversationTurn`` (Telegram/LINE) → a user row + an assistant row."""
+def _conv_rows(t, main_thread_id, entity_map=None):
+    """A ``ConversationTurn`` (Telegram/LINE) → a user row + an assistant row.
+
+    ``reply_text`` is stored placeholder-space and rehydrated here (owner-facing).
+    ``user_text`` for Telegram/LINE is already placeholder-space at rest and is
+    left as-is — that pre-existing behaviour is out of this change's scope."""
     out = []
     if (t.user_text or "").strip():
         out.append(
@@ -222,7 +254,7 @@ def _conv_rows(t, main_thread_id):
                 row_id=f"conv:{t.id}:1",
                 created_at=t.created_at,
                 role="assistant",
-                text=t.reply_text,
+                text=_rehydrate(t.reply_text, entity_map),
                 source=t.channel,
                 thread_id=main_thread_id,
             )
@@ -230,8 +262,10 @@ def _conv_rows(t, main_thread_id):
     return out
 
 
-def _proactive_rows(p, main_thread_id):
-    """A ``ProactiveOutbound`` (cron / proactive send) → one assistant row."""
+def _proactive_rows(p, main_thread_id, entity_map=None):
+    """A ``ProactiveOutbound`` (cron / proactive send) → one assistant row.
+
+    ``message_text`` is stored placeholder-space and rehydrated here (owner-facing)."""
     if not (p.message_text or "").strip():
         return []
     return [
@@ -239,7 +273,7 @@ def _proactive_rows(p, main_thread_id):
             row_id=f"cron:{p.id}",
             created_at=p.created_at,
             role="assistant",
-            text=p.message_text,
+            text=_rehydrate(p.message_text, entity_map),
             source="cron",
             thread_id=main_thread_id,
         )
@@ -291,6 +325,11 @@ def build_since_page(tenant, main_thread_id: str, *, cursor: str | None, limit: 
     limit = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
     after_dt, after_id = decode_cursor(cursor)
 
+    # Assistant-authored text (reply_text / message_text) rests placeholder-space;
+    # this feed is owner-facing, so the row builders rehydrate it. One map read,
+    # threaded to every builder.
+    entity_map = getattr(tenant, "pii_entity_map", None)
+
     # Fetch each table's contribution as a boundary slice + a forward slice (see
     # _page_slice): the boundary materializes the FULL same-timestamp cluster at
     # the watermark so a tie-cluster larger than `fetch` is drained over
@@ -323,15 +362,15 @@ def build_since_page(tenant, main_thread_id: str, *, cursor: str | None, limit: 
         # the other; the deduping union keeps it single.
         app_slice = list(app_boundary.union(app_forward))
     for m in app_slice:
-        candidates.extend(_app_rows(m, main_thread_id))
+        candidates.extend(_app_rows(m, main_thread_id, entity_map))
 
     conv_qs = ConversationTurn.objects.filter(tenant=tenant)
     for t in _page_slice(conv_qs, after_dt, fetch):
-        candidates.extend(_conv_rows(t, main_thread_id))
+        candidates.extend(_conv_rows(t, main_thread_id, entity_map))
 
     pro_qs = ProactiveOutbound.objects.filter(tenant=tenant)
     for p in _page_slice(pro_qs, after_dt, fetch):
-        candidates.extend(_proactive_rows(p, main_thread_id))
+        candidates.extend(_proactive_rows(p, main_thread_id, entity_map))
 
     # Keyset filter: strictly after the watermark (so the cursor's own row isn't
     # re-served, and same-timestamp rows with a greater id are not skipped).

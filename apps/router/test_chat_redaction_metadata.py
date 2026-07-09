@@ -125,8 +125,9 @@ class ChatRedactionMetadataTest(TestCase):
 
     @patch("apps.pii.redactor._detect_pii", return_value=[])
     @patch("apps.router.pending_queue.httpx.post")
-    def test_reply_with_placeholder_rehydrates_and_stores_reply_redactions(self, mock_post, _mock_ner):
-        # The container replies in placeholder space; the drain rehydrates it.
+    def test_reply_stored_placeholder_space_and_rehydrated_on_read(self, mock_post, _mock_ner):
+        # The container replies in placeholder space; the drain stores it AS-IS
+        # (pseudonymize-at-rest) and rehydrates only at the owner-facing read.
         mock_post.return_value = _ok_chat_response("Tell [PERSON_5] I said hi.")
 
         resp = self.client.post(
@@ -136,7 +137,11 @@ class ChatRedactionMetadataTest(TestCase):
         )
         self.assertEqual(resp.status_code, 201, resp.content)
 
-        # Poll: the stored reply is rehydrated to the real name and the
+        # At rest: reply_text keeps the placeholder — real names never land here.
+        row = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="r1")
+        self.assertEqual(row.reply_text, "Tell [PERSON_5] I said hi.")
+
+        # Poll (owner-facing): the reply is rehydrated to the real name and the
         # transparency metadata records the placeholder it stood behind.
         poll = self.client.get("/api/v1/chat/messages/r1/")
         self.assertEqual(poll.status_code, 200, poll.content)
@@ -207,8 +212,9 @@ class ChatRedactionMetadataTest(TestCase):
 
         rep = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="c2")
         sib = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="c1")
-        # Representative row: rehydrated reply + its redaction metadata.
-        self.assertEqual(rep.reply_text, "Ping Sautai for both.")
+        # Representative row: reply stored PLACEHOLDER-SPACE (pseudonymize-at-rest)
+        # + its redaction metadata. The owner-facing read seams rehydrate it.
+        self.assertEqual(rep.reply_text, "Ping [PERSON_5] for both.")
         self.assertEqual(
             rep.reply_redactions,
             [{"placeholder": _KNOWN_PLACEHOLDER, "value": _KNOWN_NAME}],
@@ -251,6 +257,11 @@ class ChatRedactionMetadataTest(TestCase):
         self.assertNotIn("reply_redactions", user_rows[0])
         self.assertEqual(asst_rows[0]["reply_redactions"], expected)
         self.assertNotIn("user_redactions", asst_rows[0])
+        # The feed (owner-facing) rehydrates the placeholder-space reply on read.
+        self.assertEqual(asst_rows[0]["text"], "Hi Sautai!")
+        # ...even though it rests placeholder-space in the column.
+        row = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="s1")
+        self.assertEqual(row.reply_text, "Hi [PERSON_5]!")
 
     # -- (d) on-device turns are never redacted ---------------------------
 

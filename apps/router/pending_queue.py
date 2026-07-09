@@ -1587,7 +1587,7 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         return
     now = timezone.now()
     if ai_text:
-        text, reply_redactions = _clean_assistant_text_for_app(tenant, ai_text)
+        text, push_text, reply_redactions = _clean_assistant_text_for_app(tenant, ai_text)
         # A coalesced batch (N>1) yields ONE combined reply. Attach it to a single
         # representative row (the last message in the batch) so the since-feed,
         # thread history, and the USER.md digest each emit exactly one assistant
@@ -1623,8 +1623,10 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         # Siri-escalated / backgrounded turns). No-op unless APNs is configured;
         # fail-open; idempotent (notified_at claim). The app suppresses the alert
         # if the thread is foregrounded. Push only carries the representative id so
-        # the device shows one "reply ready" notification, not N.
-        _dispatch_push(notify_app_reply_ready, tenant, [rep_id], text)
+        # the device shows one "reply ready" notification, not N. The lock-screen
+        # body uses the REHYDRATED copy (``push_text``) — ``reply_text`` is stored
+        # placeholder-space, so pushing ``text`` would leak a raw ``[PERSON_1]``.
+        _dispatch_push(notify_app_reply_ready, tenant, [rep_id], push_text)
     else:
         AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
             status=AppChatMessage.Status.ERROR,
@@ -1691,39 +1693,56 @@ def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict]:
     return out
 
 
-def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> tuple[str, list[dict]]:
-    """Rehydrate PII, record + strip ``[[insight:]]`` markers, and strip
-    ``[[chart:]]`` / ``MEDIA:`` markers (the app can't render workspace
-    file paths) so the stored reply is clean display text. Mirrors the
-    relevant parts of ``relay_ai_response_to_telegram``.
+def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> tuple[str, str, list[dict]]:
+    """Split one agent reply into its at-rest form, its lock-screen form, and
+    its PII-transparency metadata.
 
-    Returns ``(clean_text, reply_redactions)``: the redaction metadata is the
-    placeholders the assistant emitted, captured BEFORE rehydration (the only
-    point the reply is still in placeholder space) and resolved to the real
-    values they were rehydrated to, so the caller can persist it for the
-    transparency UI. See :func:`placeholder_redactions` for the shape."""
+    Returns ``(stored_text, push_text, reply_redactions)``:
+
+    * ``stored_text`` — PLACEHOLDER-SPACE (``[PERSON_1]`` kept verbatim), agent
+      markers stripped. This is what lands in ``AppChatMessage.reply_text``
+      (pseudonymize-at-rest): the owner-facing read seams (``_serialize_message``
+      and the ``?since=`` feed's ``_app_rows``) rehydrate it on the way out, so
+      real names are never stored in this column.
+    * ``push_text`` — rehydrated, real-value text for the APNs lock-screen body
+      (owner-facing, so it must NOT show a raw placeholder).
+    * ``reply_redactions`` — the placeholders the assistant emitted, resolved to
+      the real values they stand for, captured from the placeholder-space text
+      (see :func:`placeholder_redactions`).
+
+    Insight recording still runs on the rehydrated copy so ``AssistantInsight``
+    statements keep their existing real-value behaviour (insights have their own
+    owner-facing read seam — ``apps.insights.views.InsightListView``); only the
+    stored ``reply_text`` moves to placeholder space. Mirrors the relevant parts
+    of ``relay_ai_response_to_telegram``."""
+    from apps.insights.markers import INSIGHT_MARKER_RE
+    from apps.pii.redactor import rehydrate_text
+
     entity_map = getattr(tenant, "pii_entity_map", None)
-    # Capture BEFORE rehydrate_text substitutes the placeholders away — this is
-    # the last moment the reply carries the [TYPE_N] tokens.
+    # Capture BEFORE any rehydration — this is the last moment the reply carries
+    # the [TYPE_N] tokens.
     reply_redactions = placeholder_redactions(ai_text, entity_map)
-    if entity_map:
-        try:
-            from apps.pii.redactor import rehydrate_text
 
-            ai_text = rehydrate_text(ai_text, entity_map)
-        except Exception:
-            logger.exception("drain_pending: PII rehydrate failed (ios)")
-
+    # Push / insight copy: rehydrate to real values, record insights (unchanged
+    # real-name behaviour), then strip the display markers.
+    push_text = rehydrate_text(ai_text, entity_map) if entity_map else ai_text
     try:
         from apps.insights.markers import extract_and_record_insights
 
-        ai_text = extract_and_record_insights(ai_text, tenant=tenant)
+        push_text = extract_and_record_insights(push_text, tenant=tenant)
     except Exception:
         logger.exception("insight marker extraction failed (ios drain)")
+    push_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", push_text)
+    push_text = re.sub(r"MEDIA:\S+", "", push_text)
 
-    ai_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", ai_text)
-    ai_text = re.sub(r"MEDIA:\S+", "", ai_text)
-    return ai_text.strip(), reply_redactions
+    # Stored copy stays placeholder-space: strip the SAME insight markers WITHOUT
+    # re-recording (already recorded above) — keeping just the visible statement,
+    # exactly as ``extract_and_record_insights`` leaves it — plus chart / MEDIA.
+    stored_text = INSIGHT_MARKER_RE.sub(lambda m: (m.group(2) or "").strip(), ai_text)
+    stored_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", stored_text)
+    stored_text = re.sub(r"MEDIA:\S+", "", stored_text)
+
+    return stored_text.strip(), push_text.strip(), reply_redactions
 
 
 # ---------------------------------------------------------------------------
