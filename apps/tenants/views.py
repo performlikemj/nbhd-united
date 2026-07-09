@@ -1019,14 +1019,63 @@ class CancelDeletionView(APIView):
 
 
 class EntityRegistryListView(APIView):
-    """List the tenant's pii_entity_map as registry entries.
+    """List (GET) the tenant's pii_entity_map, or manually add (POST) a binding.
 
-    Returns one row per placeholder with name + metadata. Legacy
+    GET returns one row per placeholder with name + metadata. Legacy
     string-shaped entries are coerced via ``apps.pii.entity_registry``
     on read so the wire format is always uniform.
+
+    POST is the "hide this too" front door: the user names a person/place the
+    detector never caught (or that they proactively want obfuscated) and it is
+    minted into the SAME map the redactor drives — so from the next inbound
+    message on it redacts, rehydrates, shows in chips, and appears in the review
+    queue exactly like any detector-minted binding. See ``post`` for the wire
+    contract.
     """
 
     permission_classes = [IsAuthenticated]
+
+    # Field caps. Name follows the add contract (1..256); relationship/notes
+    # mirror EntityRegistryItemView so the two write paths stay consistent.
+    _MAX_NAME = 256
+    _MAX_RELATIONSHIP = 80
+    _MAX_NOTES = 500
+
+    # Manual adds only ever obfuscate the two free-text contextual classes — the
+    # structured/secret types come from checksum recognizers, not user typing.
+    _ALLOWED_TYPES = frozenset({"PERSON", "LOCATION"})
+
+    # Friendly, class-naming copy for the footgun (is_junk_span) 422. Keyed by
+    # the hygiene reason code; the fallback covers the "common word / fragment"
+    # framing the UI confirm ("Hide it anyway?") is written against.
+    _DEFAULT_JUNK_WARNING = (
+        "That looks like a common word or fragment — hiding it may make conversations with your assistant confusing."
+    )
+    _JUNK_WARNINGS = {
+        "too_short": (
+            "That's very short — hiding a single letter or symbol may make conversations with your assistant confusing."
+        ),
+        "structure": (
+            "That looks like formatting or machine text rather than a name — "
+            "hiding it may make conversations with your assistant confusing."
+        ),
+        "invisible": (
+            "That contains hidden or invisible characters rather than a plain "
+            "name — hiding it may make conversations with your assistant confusing."
+        ),
+        "placeholder_fragment": (
+            "That looks like a redaction placeholder, not a real name — hiding "
+            "it may make conversations with your assistant confusing."
+        ),
+        "numeric_datelike": (
+            "That looks like a number, measurement, or date rather than a name — "
+            "hiding it may make conversations with your assistant confusing."
+        ),
+        "identifier": (
+            "That looks like a filename or code identifier rather than a name — "
+            "hiding it may make conversations with your assistant confusing."
+        ),
+    }
 
     def get(self, request):
         from apps.pii.entity_registry import iter_normalized
@@ -1050,6 +1099,190 @@ class EntityRegistryListView(APIView):
         # Sort by placeholder for stable rendering.
         entries.sort(key=lambda e: e["placeholder"])
         return Response({"entries": entries})
+
+    def post(self, request):
+        """Manually mint (or merge onto) an entity-registry binding.
+
+        Body: ``{"name": <required 1..256>, "entity_type": "PERSON"|"LOCATION"
+        (default PERSON), "relationship"?, "notes"?, "acknowledge_warning"?}``.
+
+        Responses:
+        - 201 — a NEW binding was minted. ``{"placeholder", "name",
+          "relationship", "notes", "denylist_removed"}``.
+        - 200 — the name was ALREADY bound (case-insensitive canonical match):
+          the existing placeholder is returned and relationship/notes are merged
+          onto it when provided. Same body shape.
+        - 422 — the hygiene heuristics flag the name as a probable common-word /
+          fragment footgun AND ``acknowledge_warning`` was not true. ``{"warning":
+          <sentence>}``. Clients confirm ("Hide it anyway?") and retry with
+          ``acknowledge_warning=true``.
+        - 400 — validation (missing/empty/too-long name, bad entity_type).
+
+        Minting uses the SAME per-type monotonic high-water counters as the
+        redactor (``Tenant.pii_type_counters`` via
+        ``redactor.next_placeholder_number``) so numbers are never reused; adding
+        a name REMOVES its canonical key from ``pii_denylist`` (newest user intent
+        wins). The binding then behaves like any detector-minted one on every
+        channel.
+        """
+        from apps.pii.entity_registry import (
+            canonical_key,
+            coerce,
+            inverted_names_ci,
+            normalize_denylist_key,
+            to_storage_value,
+        )
+        from apps.pii.hygiene import is_junk_span
+        from apps.pii.redactor import next_placeholder_number
+
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        body = request.data or {}
+
+        # --- name: required, stripped, 1..256 -----------------------------------
+        raw_name = body.get("name")
+        if not isinstance(raw_name, str):
+            return Response({"detail": "name must be a string"}, status=status.HTTP_400_BAD_REQUEST)
+        name = raw_name.strip()
+        if not name:
+            return Response({"detail": "name is required"}, status=status.HTTP_400_BAD_REQUEST)
+        if len(name) > self._MAX_NAME:
+            return Response(
+                {"detail": f"name exceeds max length {self._MAX_NAME}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # --- entity_type: optional, default PERSON, {PERSON, LOCATION} ----------
+        raw_etype = body.get("entity_type", "PERSON")
+        if raw_etype is None:
+            raw_etype = "PERSON"
+        if not isinstance(raw_etype, str):
+            return Response({"detail": "entity_type must be a string"}, status=status.HTTP_400_BAD_REQUEST)
+        etype = raw_etype.strip().upper()
+        if etype not in self._ALLOWED_TYPES:
+            return Response(
+                {"detail": f"entity_type must be one of {sorted(self._ALLOWED_TYPES)}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # --- relationship / notes: optional strings (None => not provided) ------
+        def _opt_str(key: str, max_len: int) -> str | None:
+            if key not in body:
+                return None
+            value = body[key]
+            if value is None:
+                return ""
+            if not isinstance(value, str):
+                raise ValueError(f"{key} must be a string")
+            value = value.strip()
+            if len(value) > max_len:
+                raise ValueError(f"{key} exceeds max length {max_len}")
+            return value
+
+        try:
+            relationship = _opt_str("relationship", self._MAX_RELATIONSHIP)
+            notes = _opt_str("notes", self._MAX_NOTES)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        acknowledge_warning = bool(body.get("acknowledge_warning", False))
+
+        # --- Footgun screen BEFORE mutating -------------------------------------
+        # The redactor uses is_junk_span to keep common-word/fragment junk from
+        # ever minting; a manual add that trips the same heuristics is almost
+        # always a mistake (hiding "the", a date, a filename) that would make the
+        # assistant's replies confusing. Surface it as a 422 the client confirms;
+        # acknowledge_warning=true is the explicit "hide it anyway" bypass.
+        junk, reason = is_junk_span(name, etype)
+        if junk and not acknowledge_warning:
+            return Response(
+                {"warning": self._JUNK_WARNINGS.get(reason, self._DEFAULT_JUNK_WARNING)},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            )
+
+        # Serialize the read-modify-write per tenant: the inbound redactor mints
+        # by overwriting the whole pii_entity_map + pii_type_counters under this
+        # same row lock. Re-read the locked snapshot so a manual add and a
+        # concurrent detector mint can never clobber each other or recycle a
+        # number. All touched fields commit in ONE update().
+        with transaction.atomic():
+            locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
+            entity_map = dict((locked.pii_entity_map if locked else None) or {})
+            denylist = dict((locked.pii_denylist if locked else None) or {})
+            stored_counters = dict((locked.pii_type_counters if locked else None) or {})
+
+            now = timezone.now().isoformat()
+
+            # Newest user intent wins: naming something to hide clears any deny
+            # key that would otherwise stop it from redacting.
+            deny_key = normalize_denylist_key(name)
+            denylist_removed = bool(deny_key and deny_key in denylist)
+            if denylist_removed:
+                del denylist[deny_key]
+
+            existing = inverted_names_ci(entity_map).get(canonical_key(name))
+            if existing is not None:
+                # Already bound (case-insensitive) — return the existing
+                # placeholder and merge provided relationship/notes onto it.
+                _display, placeholder = existing
+                current = coerce(entity_map[placeholder])
+                if relationship is not None:
+                    current["relationship"] = relationship
+                if notes is not None:
+                    current["notes"] = notes
+                new_value = to_storage_value(
+                    current.get("name", ""),
+                    relationship=current.get("relationship", ""),
+                    notes=current.get("notes", ""),
+                    updated_at=now,
+                    arbiter_judged_at=current.get("arbiter_judged_at"),
+                    reviewed_at=current.get("reviewed_at"),
+                )
+                entity_map[placeholder] = new_value
+                response_status = status.HTTP_200_OK
+                update_fields: dict = {"pii_entity_map": entity_map}
+            else:
+                # Mint a fresh binding using the SAME monotonic high-water the
+                # redactor uses, then advance the stored counter in the same
+                # write so the number can never be reissued.
+                number = next_placeholder_number(etype, entity_map, stored_counters)
+                placeholder = f"[{etype}_{number}]"
+                stored_counters[etype] = number
+                new_value = to_storage_value(
+                    name,
+                    relationship=relationship or "",
+                    notes=notes or "",
+                    updated_at=now,
+                )
+                entity_map[placeholder] = new_value
+                response_status = status.HTTP_201_CREATED
+                update_fields = {
+                    "pii_entity_map": entity_map,
+                    "pii_type_counters": stored_counters,
+                }
+
+            if denylist_removed:
+                update_fields["pii_denylist"] = denylist
+
+            Tenant.objects.filter(pk=tenant.pk).update(**update_fields)
+
+        tenant.pii_entity_map = entity_map
+        tenant.pii_type_counters = stored_counters
+        tenant.pii_denylist = denylist
+
+        return Response(
+            {
+                "placeholder": placeholder,
+                "name": new_value.get("name", ""),
+                "relationship": new_value.get("relationship", ""),
+                "notes": new_value.get("notes", ""),
+                "denylist_removed": denylist_removed,
+            },
+            status=response_status,
+        )
 
 
 class EntityRegistryItemView(APIView):

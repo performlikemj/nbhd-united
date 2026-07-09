@@ -372,6 +372,79 @@ export function fetchEntityRegistry(): Promise<{ entries: EntityRegistryEntry[] 
   return apiFetch<{ entries: EntityRegistryEntry[] }>("/api/v1/tenants/settings/entity-registry/");
 }
 
+export interface EntityRegistryAddResult {
+  placeholder: string;
+  name: string;
+  relationship: string;
+  notes: string;
+  // True when the name had been on the Ignore list and adding it here cleared
+  // that deny key (newest user intent wins).
+  denylist_removed: boolean;
+}
+
+export interface AddEntityRegistryInput {
+  name: string;
+  entity_type?: "PERSON" | "LOCATION";
+  relationship?: string;
+  notes?: string;
+  acknowledge_warning?: boolean;
+}
+
+// Manually bind a known entity, mirroring the redactor's minting. A brand-new
+// name mints the next placeholder off the same per-type high-water counter
+// (201 "created"); an already-bound name (case-insensitive canonical match)
+// returns its existing placeholder with relationship/notes merged (200
+// "exists"). Either way the name is removed from the Ignore list if present —
+// reflected in `denylist_removed`.
+//
+// A 422 {warning} is an EXPECTED branch, not a failure: the hygiene heuristics
+// flag a probable common-word/fragment footgun and want the user to confirm.
+// Like apiFetchStatus's 202/409 handling we model it as a returned value (so
+// the caller can swap into a confirm state and retry with
+// acknowledge_warning=true) rather than a thrown Error. Only 400 validation
+// and unexpected statuses throw.
+export type AddEntityRegistryResponse =
+  | { status: "created" | "exists"; entry: EntityRegistryAddResult }
+  | { status: "warning"; warning: string };
+
+export async function addEntityRegistryEntry(
+  input: AddEntityRegistryInput,
+): Promise<AddEntityRegistryResponse> {
+  const { status, data } = await apiFetchStatus<
+    EntityRegistryAddResult & { warning?: string; detail?: string }
+  >("/api/v1/tenants/settings/entity-registry/", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+
+  if (status === 200 || status === 201) {
+    return {
+      status: status === 201 ? "created" : "exists",
+      entry: {
+        placeholder: data.placeholder,
+        name: data.name,
+        relationship: data.relationship ?? "",
+        notes: data.notes ?? "",
+        denylist_removed: Boolean(data.denylist_removed),
+      },
+    };
+  }
+
+  if (status === 422) {
+    return {
+      status: "warning",
+      warning:
+        data?.warning ??
+        "This looks like a common word or fragment. Hiding it may redact ordinary text.",
+    };
+  }
+
+  const message = data?.detail ?? data?.warning ?? `Request failed: ${status}`;
+  const err = new Error(message);
+  (err as Error & { status: number }).status = status;
+  throw err;
+}
+
 export function updateEntityRegistryEntry(
   placeholder: string,
   patch: Partial<Pick<EntityRegistryEntry, "name" | "relationship" | "notes">>,

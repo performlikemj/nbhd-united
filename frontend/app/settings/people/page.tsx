@@ -4,11 +4,13 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
+import { AddPersonDialog } from "@/components/settings/add-person-dialog";
 import { BulkDeletePeopleDialog } from "@/components/settings/bulk-delete-people-dialog";
 import { PIIReviewCard } from "@/components/settings/pii-review-card";
 import {
   type EntityRegistryEntry,
   type PIIDenylistEntry,
+  addEntityRegistryEntry,
   addPIIDenylistEntry,
   bulkAddPIIDenylistEntries,
   bulkDeleteEntityRegistryEntries,
@@ -96,6 +98,16 @@ export default function PeopleSettingsPage() {
   // lets the redactor re-mint a placeholder for the same name.
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deleteAlsoIgnore, setDeleteAlsoIgnore] = useState(true);
+  // Manual add — a dialog that mints (or matches) a binding for a name the
+  // detector hasn't caught. `addNotice` is the inline confirmation shown after
+  // a successful add (persists until dismissed or replaced by the next add).
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [addNotice, setAddNotice] = useState<{
+    placeholder: string;
+    name: string;
+    existed: boolean;
+    denylistRemoved: boolean;
+  } | null>(null);
 
   // Seed drafts when server data first arrives, but never clobber a draft
   // the user is actively editing.
@@ -131,6 +143,22 @@ export default function PeopleSettingsPage() {
     mutationFn: (placeholder: string) => deleteEntityRegistryEntry(placeholder),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["entity-registry"] });
+      void queryClient.invalidateQueries({ queryKey: ["pii-review-queue"] });
+    },
+  });
+
+  // Manual add. Errors render inline in the dialog (meta.skipErrorToast). A 422
+  // hygiene warning resolves successfully as { status: "warning" } — the dialog
+  // handles the confirm, and we skip invalidation until an actual binding lands.
+  const addEntityMutation = useMutation({
+    mutationFn: addEntityRegistryEntry,
+    meta: { skipErrorToast: true },
+    onSuccess: (result) => {
+      if (result.status === "warning") return;
+      // A new binding removes its name from the denylist and behaves like any
+      // detector-minted one (so the review queue count can shift too).
+      void queryClient.invalidateQueries({ queryKey: ["entity-registry"] });
+      void queryClient.invalidateQueries({ queryKey: ["pii-denylist"] });
       void queryClient.invalidateQueries({ queryKey: ["pii-review-queue"] });
     },
   });
@@ -393,6 +421,19 @@ export default function PeopleSettingsPage() {
     if (placeholders.length > 0) stopHidingMutation.mutate(placeholders);
   };
 
+  const handleAddSuccess = (result: {
+    status: "created" | "exists";
+    entry: { placeholder: string; name: string; denylist_removed: boolean };
+  }) => {
+    setAddDialogOpen(false);
+    setAddNotice({
+      placeholder: result.entry.placeholder,
+      name: result.entry.name,
+      existed: result.status === "exists",
+      denylistRemoved: result.entry.denylist_removed,
+    });
+  };
+
   return (
     <div className="space-y-6">
       <div
@@ -425,6 +466,45 @@ export default function PeopleSettingsPage() {
         title="People your assistant knows"
         subtitle="When your assistant detects a name in a message, it tags it with a placeholder so the real name never leaves our servers in the form your AI provider sees. Edit a binding here if your assistant ever uses the wrong name, or add a relationship and notes so it can disambiguate “she” / “they” / “my coworker” more reliably."
       >
+        <div className="mb-4 flex items-center justify-end">
+          <button
+            type="button"
+            onClick={() => {
+              setAddNotice(null);
+              setAddDialogOpen(true);
+            }}
+            className="glow-purple rounded-lg bg-accent px-4 py-2.5 text-sm font-semibold text-white transition hover:brightness-110 active:scale-[0.98] min-h-[44px]"
+          >
+            Add person or place
+          </button>
+        </div>
+
+        {addNotice && (
+          <div
+            role="status"
+            className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-emerald-text/25 bg-emerald-bg px-4 py-3 text-sm text-emerald-text"
+          >
+            <p className="min-w-0">
+              {addNotice.existed ? "Already tracked as " : "Added "}
+              <code className="font-mono text-xs uppercase tracking-[0.12em]">
+                {addNotice.placeholder}
+              </code>{" "}
+              for “{addNotice.name}”.
+              {addNotice.denylistRemoved && " Removed from your Ignore list."}
+            </p>
+            <button
+              type="button"
+              onClick={() => setAddNotice(null)}
+              aria-label="Dismiss confirmation"
+              className="inline-flex min-h-[44px] min-w-[44px] shrink-0 items-center justify-center rounded-lg text-emerald-text/70 transition hover:text-emerald-text"
+            >
+              <span aria-hidden="true" className="text-lg leading-none">
+                &times;
+              </span>
+            </button>
+          </div>
+        )}
+
         {isLoading && (
           <div className="text-sm text-ink-muted" role="status">
             Loading…
@@ -768,6 +848,15 @@ export default function PeopleSettingsPage() {
           </ul>
         )}
       </SectionCard>
+
+      {addDialogOpen && (
+        <AddPersonDialog
+          busy={addEntityMutation.isPending}
+          onSubmit={(input) => addEntityMutation.mutateAsync(input)}
+          onSuccess={handleAddSuccess}
+          onCancel={() => setAddDialogOpen(false)}
+        />
+      )}
 
       <BulkDeletePeopleDialog
         open={deleteDialogOpen}

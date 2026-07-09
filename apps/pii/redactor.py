@@ -547,6 +547,31 @@ def _apply_stored_high_water(counters: dict[str, int], stored_counters: dict[str
         counters[etype] = max(counters.get(etype, 0), high_int)
 
 
+def next_placeholder_number(
+    etype: str,
+    entity_map: dict[str, Any] | None,
+    stored_counters: dict[str, Any] | None,
+) -> int:
+    """Return the next monotonic placeholder number to mint for ``etype``.
+
+    Public wrapper over the detector's own numbering so manual entity-registry
+    adds (``EntityRegistryListView.post``) and detector mints allocate from the
+    SAME high-water source and can never diverge onto a recycled number. It
+    combines the max suffix re-derived from ``entity_map``
+    (:func:`_seed_counters_from_map`) with the tenant's stored monotonic
+    high-water ``pii_type_counters`` (:func:`_apply_stored_high_water`) and
+    returns ``max(the two) + 1``.
+
+    Caller contract (identical to the mint loop): hold the tenant row lock, read
+    ``pii_entity_map`` + ``pii_type_counters`` from the LOCKED snapshot, call
+    this, then persist the returned number back into ``pii_type_counters`` in the
+    same ``update()`` — so a freed number is never reissued to a different value.
+    """
+    counters = _seed_counters_from_map(entity_map or {})
+    _apply_stored_high_water(counters, stored_counters)
+    return counters.get(etype, 0) + 1
+
+
 def _hit_inside_placeholder(hit: DetectedEntity, ranges: list[tuple[int, int]]) -> bool:
     """True when an NER hit overlaps any existing placeholder range.
 
