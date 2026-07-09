@@ -30,7 +30,6 @@ from apps.journal.models import (
     Goal,
     Task,
 )
-from apps.router.models import AppChatMessage, ChatThread
 from apps.tenants.services import create_tenant
 
 
@@ -331,64 +330,11 @@ class ReminderRemovalBothFlagStatesTest(TestCase):
         self.assertEqual(retry["status"], DocumentIngestion.Status.REMOVED)
 
 
-class CompletenessGapSignalTest(TestCase):
-    def setUp(self):
-        self.tenant = create_tenant(display_name="Gap", telegram_chat_id=940001)
-        self.user = self.tenant.user
-        self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True)
-
-    def _mk_marker(self, client_msg_id):
-        return AppChatMessage.objects.create(
-            tenant=self.tenant,
-            user=self.user,
-            thread=self.thread,
-            client_msg_id=client_msg_id,
-            user_text="[Document attached: /home/node/.openclaw/workspace/media/inbound/doc_ab12cd34.pdf]\nsummarize",
-            status=AppChatMessage.Status.READY,
-        )
-
-    def test_gap_emitted_when_window_writes_exceed_recorded(self):
-        self._mk_marker("m1")
-        # Three recordable rows created after the marker; record only two.
-        t1 = _mk_task(self.tenant)
-        t2 = _mk_task(self.tenant)
-        _mk_task(self.tenant)  # the un-manifested third
-        with self.assertLogs("apps.journal.document_ingestion", level="INFO") as cm:
-            record_keep(
-                self.tenant,
-                source={"original_filename": "d.pdf", "client_msg_id": "m1"},
-                artifacts=[
-                    {"object_type": "journal.Task", "object_id": str(t1.id)},
-                    {"object_type": "journal.Task", "object_id": str(t2.id)},
-                ],
-            )
-        gap_lines = [line for line in cm.output if "doc_ingest_gap" in line]
-        self.assertTrue(gap_lines)
-        self.assertIn("created_in_window=3", gap_lines[0])
-        self.assertIn("recorded=2", gap_lines[0])
-
-    def test_no_gap_when_all_writes_recorded(self):
-        self._mk_marker("m2")
-        t1 = _mk_task(self.tenant)
-        with self.assertLogs("apps.journal.document_ingestion", level="INFO") as cm:
-            record_keep(
-                self.tenant,
-                source={"original_filename": "d.pdf", "client_msg_id": "m2"},
-                artifacts=[{"object_type": "journal.Task", "object_id": str(t1.id)}],
-            )
-        self.assertFalse(any("doc_ingest_gap" in line for line in cm.output))
-
-    def test_ingestion_binds_thread_from_marker(self):
-        self._mk_marker("m3")
-        t1 = _mk_task(self.tenant)
-        result = record_keep(
-            self.tenant,
-            source={"original_filename": "d.pdf", "client_msg_id": "m3"},
-            artifacts=[{"object_type": "journal.Task", "object_id": str(t1.id)}],
-        )
-        ingestion = DocumentIngestion.objects.get(id=result["ingestion_id"])
-        self.assertEqual(ingestion.thread_id, self.thread.id)
-        self.assertEqual(ingestion.client_msg_id, "m3")
+# NOTE: the completeness gap signal + thread/uploaded_at binding depend on the
+# document-upload AppChatMessage carrying `attachment_path` (a stored doc_<hash>
+# file) — a state ONLY the real chat ingress produces. Those tests therefore drive
+# the real POST /api/v1/chat/messages/ ingress in
+# apps.integrations.test_document_write_backstop, not a fabricated row here.
 
 
 class TenantScopingTest(TestCase):
