@@ -946,14 +946,18 @@ def _send_apology_for_dropped_message(tenant: Tenant, msg) -> None:
     `relay_ai_response_to_line`) since this is system status, not assistant
     content. Localized via the existing `error_msg` framework — falls back
     to English for languages without a translated key."""
+    from apps.pii.redactor import rehydrate_for_tenant
     from apps.router.error_messages import error_msg, strip_internal_framing
     from apps.router.models import BufferedMessage
 
-    # Defense in depth: peel any agent-only ``[System: \u2026]`` / ``[Now: \u2026]``
-    # framing off the head before quoting back to the user. The call sites
-    # are supposed to pass clean ``raw_user_text`` but this catches any
-    # future site that forgets.
-    excerpt = strip_internal_framing(msg.user_text or "").strip().replace("\n", " ")
+    # ``user_text`` now rests REDACTED (placeholder-space). Rehydrate before
+    # quoting it back so the user sees the real words they typed, not
+    # ``[PERSON_5]`` \u2014 mirrors the PendingMessage apology seam
+    # (pending_queue._send_apology_for_dropped_pending_message). Defense in
+    # depth: peel any agent-only ``[System: \u2026]`` / ``[Now: \u2026]`` framing
+    # off the head too \u2014 call sites pass clean ``raw_user_text`` but this catches
+    # any future site that forgets.
+    excerpt = strip_internal_framing(rehydrate_for_tenant(tenant, msg.user_text or "")).strip().replace("\n", " ")
     if len(excerpt) > 50:
         excerpt = excerpt[:50] + "\u2026"
 
@@ -994,41 +998,26 @@ def _send_apology_for_dropped_message(tenant: Tenant, msg) -> None:
 
 
 def _buffered_row_is_voice(msg) -> bool:
-    """LINE/Telegram-shape buffered-row voice detection.
+    """Buffered-row voice detection over the stored envelope.
 
-    BufferedMessage stores the raw provider payload (Telegram update or
-    LINE event). For LINE we look at the first event's ``message.type``;
-    for Telegram we look at the message body. Voice rows are excluded
-    from cold-start LINE coalescing — they're a different content shape
-    (transcribed audio) and shouldn't fold into a multi-message text
-    bundle.
+    New rows carry an explicit ``is_voice`` flag in the minimal envelope; legacy
+    rows are shape-sniffed against the raw webhook (backward compat). Voice rows
+    are excluded from cold-start LINE coalescing — they're a different content
+    shape (transcribed audio) and shouldn't fold into a multi-message bundle.
     """
-    payload = msg.payload or {}
-    # LINE webhook shape: {"events": [{"message": {"type": "audio"|"text"|...}}]}
-    events = payload.get("events")
-    if isinstance(events, list) and events:
-        first = events[0]
-        if isinstance(first, dict):
-            message = first.get("message") or {}
-            mtype = (message.get("type") or "").lower() if isinstance(message, dict) else ""
-            if mtype in {"audio", "voice"}:
-                return True
-    # Telegram update shape: {"message": {"voice": {...}}} or {"voice": {...}}
-    tg_message = payload.get("message") or payload.get("edited_message") or {}
-    if isinstance(tg_message, dict) and tg_message.get("voice"):
-        return True
-    return False
+    from apps.router.buffer_envelope import envelope_is_voice
+
+    return envelope_is_voice(msg.payload)
 
 
 def _claim_next_buffered_message(tenant, timeout_seconds: float):
     """Backwards-compatible single-row claim, kept for Telegram path.
 
-    Telegram hibernation delivery forwards raw payloads to
-    ``/telegram-webhook`` one row at a time (see PR plan: coalescing the
-    Telegram hibernated path requires constructing synthetic Telegram
-    updates and is deferred). LINE hibernation delivery uses
-    ``_claim_buffered_batch_for_tenant`` instead, which can return >1
-    rows for a single coalesced ``/v1/chat/completions`` POST.
+    Telegram hibernation delivery forwards the redacted ``user_text`` one row
+    at a time via ``/v1/chat/completions`` (``_forward_buffered_telegram``);
+    coalescing the Telegram hibernated path is still deferred. LINE hibernation
+    delivery uses ``_claim_buffered_batch_for_tenant`` instead, which can return
+    >1 rows for a single coalesced ``/v1/chat/completions`` POST.
 
     Returns the claimed row (with ``delivery_in_flight_until`` extended)
     or ``None`` if no row is available — either the queue is empty for
@@ -1137,6 +1126,82 @@ def _claim_buffered_batch_for_tenant(tenant, channel: str, timeout_seconds: floa
         return (batch, {})
 
 
+def _buffered_telegram_chat_id(tenant, msg):
+    """Recipient chat_id for a buffered Telegram row.
+
+    Prefer the message's own chat_id (from the minimal envelope, or a legacy
+    raw update), fall back to the tenant's stored ``telegram_chat_id``. Returns
+    an ``int`` or ``None``.
+    """
+    from apps.router.buffer_envelope import envelope_telegram_chat_id
+
+    chat_id = envelope_telegram_chat_id(msg.payload)
+    if chat_id is None:
+        chat_id = getattr(tenant.user, "telegram_chat_id", None)
+    if chat_id is None:
+        return None
+    try:
+        return int(chat_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _forward_buffered_telegram(tenant, msg, chat_timeout: float) -> None:
+    """Forward one buffered Telegram row to the container and relay the reply.
+
+    Converges on the live poller drain (``pending_queue._drain_telegram_batch``)
+    and the buffered-LINE path: POST the redacted ``user_text`` to
+    ``/v1/chat/completions`` and relay the *rehydrated* reply via
+    ``relay_ai_response_to_telegram``. This replaces the legacy re-POST of the
+    raw provider webhook to ``/telegram-webhook`` — which required the raw update
+    at rest and could not rehydrate placeholders (it would have leaked
+    ``[PERSON_N]`` to the user). Raises on a non-2xx / transient-exhausted POST
+    so the caller advances the attempt counter, exactly like the legacy path.
+    """
+    from apps.cron.gateway_client import get_gateway_token_for_tenant
+    from apps.router.buffer_envelope import envelope_media
+    from apps.router.pending_queue import _extract_ai_response, relay_ai_response_to_telegram
+
+    chat_id = _buffered_telegram_chat_id(tenant, msg)
+    if chat_id is None:
+        raise ValueError(f"buffered telegram row {msg.id} has no resolvable chat_id")
+
+    content = msg.user_text or "..."
+    # Media parity for the (latent) Telegram webhook path: the converged
+    # /v1/chat/completions forward can't re-fetch media by file_id the way the
+    # old /telegram-webhook re-POST let the container do. We keep the file-id
+    # references at rest (envelope 'media') and tell the agent media was
+    # attached so it can ask the user to resend — mirroring the poller's media
+    # fallback markers — rather than silently dropping it. (Prod Telegram media
+    # flows through the poller/PendingMessage path, not this latent buffer.)
+    if envelope_media(msg.payload):
+        content = "[The user attached media that isn't available after wake — ask them to resend it.]\n" + content
+
+    url = f"https://{tenant.container_fqdn}/v1/chat/completions"
+    gateway_token = get_gateway_token_for_tenant(tenant)
+    user_tz = tenant.user.timezone or "UTC"
+
+    result = _post_chat_completion_with_backoff(
+        url,
+        payload={
+            "model": "openclaw",
+            "messages": [{"role": "user", "content": content}],
+            "user": str(chat_id),
+        },
+        headers={
+            "Authorization": f"Bearer {gateway_token}",
+            "X-User-Timezone": user_tz,
+            "X-Telegram-Chat-Id": str(chat_id),
+            "X-Channel": "telegram",
+        },
+        timeout=chat_timeout,
+    )
+
+    ai_text = _extract_ai_response(result)
+    if ai_text:
+        relay_ai_response_to_telegram(tenant, chat_id, ai_text)
+
+
 def deliver_buffered_messages_task(tenant_id: str) -> dict:
     """Forward all buffered messages for a tenant to its container.
 
@@ -1161,10 +1226,7 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
         ``delivered=True / status=failed`` and push a one-shot apology
         to the user so the head of the queue can never block forever.
     """
-    import asyncio
-
     from apps.router.models import BufferedMessage
-    from apps.router.services import forward_to_openclaw
 
     tenant = Tenant.objects.select_related("user").filter(id=tenant_id).first()
     if not tenant or not tenant.container_fqdn:
@@ -1180,10 +1242,8 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
 
     while True:
         # Decide channel for this iteration. We process LINE rows as
-        # coalesced batches (cold-start coalescing) and Telegram rows
-        # as singletons (the TG hibernated path forwards raw updates to
-        # ``/telegram-webhook`` which doesn't currently accept synthetic
-        # multi-message updates — out of scope for this change).
+        # coalesced batches (cold-start coalescing) and Telegram rows as
+        # singletons (Telegram cold-start coalescing is still deferred).
         next_undelivered = BufferedMessage.objects.filter(tenant=tenant, delivered=False).order_by("created_at").first()
         if next_undelivered is None:
             break
@@ -1332,7 +1392,11 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
 
             continue
 
-        # Telegram path (singleton, unchanged from pre-coalesce semantics).
+        # Telegram path (singleton). Forwarding converges on the same
+        # ``/v1/chat/completions`` + rehydrating relay the live poller drain
+        # (pending_queue._drain_telegram_batch) and the buffered-LINE path use,
+        # so we forward the redacted ``user_text`` (never a raw webhook) and the
+        # relay rehydrates the reply — see ``_forward_buffered_telegram``.
         msg = _claim_next_buffered_message(tenant, chat_timeout)
         if msg is None:
             undelivered = BufferedMessage.objects.filter(tenant=tenant, delivered=False).count()
@@ -1370,21 +1434,7 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
             continue
 
         try:
-            loop = asyncio.new_event_loop()
-            try:
-                user_tz = tenant.user.timezone or "UTC"
-                loop.run_until_complete(
-                    forward_to_openclaw(
-                        tenant.container_fqdn,
-                        msg.payload,
-                        user_timezone=user_tz,
-                        timeout=30.0,
-                        max_retries=1,
-                        retry_delay=5.0,
-                    )
-                )
-            finally:
-                loop.close()
+            _forward_buffered_telegram(tenant, msg, chat_timeout)
 
             msg.delivered = True
             msg.delivered_at = timezone.now()
@@ -1401,10 +1451,10 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
             delivered += 1
 
             # Privacy hard-delete on confirmed forward — see the LINE batch
-            # path above and docs/encryption-at-rest-directive.md §7 (Phase 0
-            # PR-3). The raw webhook is gone the moment it has been forwarded;
-            # the 7-day cleanup cron sweeps the rare row whose delete didn't
-            # land after the DELIVERED commit.
+            # path above and docs/encryption-at-rest-directive.md §7 (Phase 0).
+            # Nothing re-reads the row once forwarded; the 7-day cleanup cron
+            # sweeps the rare row whose delete didn't land after the DELIVERED
+            # commit.
             try:
                 BufferedMessage.objects.filter(id=msg.id).delete()
             except Exception:

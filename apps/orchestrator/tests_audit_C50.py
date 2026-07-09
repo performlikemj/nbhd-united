@@ -20,6 +20,9 @@ class SendApologyTelegramTest(TestCase):
         tenant = MagicMock()
         tenant.user = user
         tenant.id = "00000000-0000-0000-0000-000000000001"
+        # user_text now rests redacted; the apology rehydrates it before quoting.
+        # An empty map makes rehydrate a no-op (returns the excerpt unchanged).
+        tenant.pii_entity_map = {}
         return tenant
 
     def _make_msg(self, channel, user_text="hello"):
