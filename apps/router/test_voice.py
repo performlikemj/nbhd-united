@@ -72,11 +72,19 @@ class TranscribeVoiceTest(TestCase):
         result = self.poller._transcribe_voice("file-id-123")
         self.assertIsNone(result)
 
+    @override_settings(OPENAI_API_KEY="")
+    @patch.dict("os.environ", {"OPENAI_API_KEY": ""})
     def test_no_api_key_returns_none(self):
-        """No OpenAI API key returns None."""
-        with self.settings(OPENAI_API_KEY=""):
-            result = self.poller._transcribe_voice("file-id-123")
-            self.assertIsNone(result)
+        """No OpenAI API key returns None.
+
+        _transcribe_voice reads settings.OPENAI_API_KEY and falls back to
+        os.environ["OPENAI_API_KEY"], so both sources must be cleared. Overriding
+        only the setting left the test depending on the ambient environment — a
+        real key in a dev .env made the code proceed and return a mock instead of
+        None (passes in CI, which has no key; fails locally, which does).
+        """
+        result = self.poller._transcribe_voice("file-id-123")
+        self.assertIsNone(result)
 
 
 class ExtractVoiceMessageTest(TestCase):
