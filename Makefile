@@ -41,13 +41,19 @@ harness:
 # lint/test targets — the train runs this from a throwaway worktree with no
 # .venv, so it relies on the activated venv on PATH, not a relative .venv/ path.
 # One gate per recipe line — make aborts on the first non-zero, so it fails fast.
+#
+# Deliberately NOT mirrored: the backend secret-scan and config-validator +
+# security-audit shell steps, and the whole openclaw-config-smoke job (plugin
+# packaging guard, doctor smoke, node --test suites). Those are heavier CI-side
+# guards that still run in CI on the PR — a green stamp here covers lint, format,
+# migration-drift, the backend suite, and the frontend lint+build only.
 # See docs/agents/workflow.md "Parallel work & deploy serialization".
 integrate-gate:
 	ruff check .
 	ruff format --check .
 	python manage.py makemigrations --check --dry-run
 	python manage.py test apps/
-	cd frontend && npm ci && npm run build
+	cd frontend && npm ci && npm run lint && npm run build
 
 compile-deps:
 	pip-compile requirements.in
