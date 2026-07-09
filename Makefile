@@ -1,4 +1,4 @@
-.PHONY: setup migrate run test lint harness compile-deps sync-deps docker-up docker-down superuser tenants health \
+.PHONY: setup migrate run test lint harness integrate-gate compile-deps sync-deps docker-up docker-down superuser tenants health \
 	provision deprovision \
 	canary canary-build canary-deploy canary-logs canary-health canary-rollback canary-prune
 
@@ -30,6 +30,24 @@ lint:
 
 harness:
 	./scripts/harness-check --project . --scope staged
+
+# ---------------------------------------------------------------------------
+# Integration train gate — the single command `/integrate` runs to prove a
+# branch combination locally before it lands. Mirrors ci-cd.yml's frontend-test
+# and backend-test gates at CI strictness: a gate weaker than CI stamps a lie.
+# `ruff format --check` and `makemigrations --check` are the separate stricter
+# gates a plain `make lint`/`make test` misses; `npm ci` is CI's frozen-lockfile
+# install (lockfile drift has broken CI before). Bare `ruff`/`python` like the
+# lint/test targets — the train runs this from a throwaway worktree with no
+# .venv, so it relies on the activated venv on PATH, not a relative .venv/ path.
+# One gate per recipe line — make aborts on the first non-zero, so it fails fast.
+# See docs/agents/workflow.md "Parallel work & deploy serialization".
+integrate-gate:
+	ruff check .
+	ruff format --check .
+	python manage.py makemigrations --check --dry-run
+	python manage.py test apps/
+	cd frontend && npm ci && npm run build
 
 compile-deps:
 	pip-compile requirements.in
