@@ -764,11 +764,12 @@ class DeliverBufferedLineColdStartCoalesceTest(TestCase):
     TELEGRAM_BOT_TOKEN="test-bot-token",
 )
 class DeliverBufferedTelegramDeleteOnForwardTest(TestCase):
-    """The buffered Telegram singleton path hard-deletes the row the instant
-    it is forwarded to the woken container — the raw pre-redaction webhook
-    must not linger past delivery (docs/encryption-at-rest-directive.md §7,
-    Phase 0 PR-3). A FAILED forward must keep the row so the retry/apology
-    machinery still works."""
+    """The buffered Telegram singleton path hard-deletes the row the instant it
+    is forwarded to the woken container (docs/encryption-at-rest-directive.md §7,
+    Phase 0). Forwarding converges on ``/v1/chat/completions`` +
+    ``relay_ai_response_to_telegram`` (same as the live poller drain), so these
+    also cover LEGACY raw-payload rows still draining after the envelope change.
+    A FAILED forward must keep the row so the retry/apology machinery works."""
 
     def _make_telegram_user(self) -> User:
         return User.objects.create_user(
@@ -778,30 +779,48 @@ class DeliverBufferedTelegramDeleteOnForwardTest(TestCase):
             preferred_channel="telegram",
         )
 
-    def test_forwarded_telegram_row_is_deleted(self):
-        from unittest.mock import AsyncMock
+    def _ok_resp(self, content="hi back"):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"choices": [{"message": {"content": content}}], "usage": {}, "model": "test"}
+        resp.raise_for_status = MagicMock()
+        return resp
 
+    @patch("apps.router.pending_queue.relay_ai_response_to_telegram", return_value=True)
+    @patch("httpx.post")
+    def test_forwarded_telegram_row_is_deleted(self, mock_post, mock_relay):
         from apps.orchestrator.hibernation import deliver_buffered_messages_task
 
         user = self._make_telegram_user()
         tenant = _make_tenant(user)
+        # Legacy raw-payload row (pre-envelope) — must still drain. chat_id is
+        # absent from the raw update, so it falls back to tenant.user.
         msg = BufferedMessage.objects.create(
             tenant=tenant,
             channel=BufferedMessage.Channel.TELEGRAM,
             payload={"update_id": 1, "message": {"text": "hi"}},
             user_text="hi",
         )
+        mock_post.return_value = self._ok_resp()
 
-        with patch("apps.router.services.forward_to_openclaw", new_callable=AsyncMock) as mock_fwd:
-            result = deliver_buffered_messages_task(str(tenant.id))
+        result = deliver_buffered_messages_task(str(tenant.id))
 
-        mock_fwd.assert_awaited_once()
         self.assertEqual(result["delivered"], 1)
-        # Raw webhook hard-deleted on confirmed forward (PR-3).
+        # Converged forward: /v1/chat/completions with the redacted user_text.
+        mock_post.assert_called_once()
+        url, kwargs = mock_post.call_args[0][0], mock_post.call_args[1]
+        self.assertTrue(url.endswith("/v1/chat/completions"))
+        self.assertEqual(kwargs["json"]["messages"][0]["content"], "hi")
+        # Reply relayed to Telegram (rehydrating seam) for the fallback chat_id.
+        mock_relay.assert_called_once()
+        self.assertEqual(mock_relay.call_args[0][1], 778899)
+        # Row hard-deleted on confirmed forward.
         self.assertFalse(BufferedMessage.objects.filter(id=msg.id).exists())
 
-    def test_failed_telegram_forward_keeps_row(self):
-        from unittest.mock import AsyncMock
+    @patch("apps.router.pending_queue.relay_ai_response_to_telegram")
+    @patch("httpx.post")
+    def test_failed_telegram_forward_keeps_row(self, mock_post, mock_relay):
+        import httpx
 
         from apps.orchestrator.hibernation import deliver_buffered_messages_task
 
@@ -813,19 +832,17 @@ class DeliverBufferedTelegramDeleteOnForwardTest(TestCase):
             payload={"update_id": 2, "message": {"text": "hi"}},
             user_text="hi",
         )
+        # 4xx → raise_for_status raises immediately (no transient retry/sleep).
+        bad = MagicMock()
+        bad.status_code = 404
+        bad.raise_for_status.side_effect = httpx.HTTPStatusError("404", request=MagicMock(), response=MagicMock())
+        mock_post.return_value = bad
 
-        with (
-            patch(
-                "apps.router.services.forward_to_openclaw",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("container down"),
-            ),
-            self.assertRaises(RuntimeError),
-        ):
+        with self.assertRaises(RuntimeError):
             deliver_buffered_messages_task(str(tenant.id))
 
-        # Forward failed → row preserved (not deleted), attempt advanced so the
-        # retry path can re-claim it.
+        mock_relay.assert_not_called()
+        # Forward failed → row preserved (not deleted), attempt advanced.
         msg.refresh_from_db()
         self.assertFalse(msg.delivered)
         self.assertEqual(msg.delivery_attempts, 1)
@@ -875,3 +892,113 @@ class CleanupDeliveredBuffersTaskTest(TestCase):
         self.assertNotIn(old_undelivered.id, remaining)
         self.assertIn(recent_delivered.id, remaining)
         self.assertIn(recent_undelivered.id, remaining)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", TELEGRAM_BOT_TOKEN="test-bot-token")
+class DeliverBufferedTelegramMinimalEnvelopeTest(TestCase):
+    """The converged Telegram drain reconstructs its forward from the NEW
+    minimal envelope (schema min-v1): the redacted user_text goes to
+    /v1/chat/completions and the reply is relayed to the envelope's chat_id
+    (docs/encryption-at-rest-directive.md §7, Phase 0)."""
+
+    def _make_telegram_user(self, chat_id: int) -> User:
+        return User.objects.create_user(
+            username=f"hib_tgm_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=chat_id,
+            preferred_channel="telegram",
+        )
+
+    def _ok_resp(self, content="ok"):
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.json.return_value = {"choices": [{"message": {"content": content}}], "usage": {}, "model": "t"}
+        resp.raise_for_status = MagicMock()
+        return resp
+
+    @patch("apps.router.pending_queue.relay_ai_response_to_telegram", return_value=True)
+    @patch("httpx.post")
+    def test_new_envelope_row_drains_and_relays_to_envelope_chat_id(self, mock_post, mock_relay):
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        user = self._make_telegram_user(chat_id=111222)  # tenant's stored chat id
+        tenant = _make_tenant(user)
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.TELEGRAM,
+            payload={
+                "schema": "min-v1",
+                "channel": "telegram",
+                "is_voice": False,
+                "is_image": False,
+                "chat_id": 999888,  # the message's own chat id — must win
+            },
+            user_text="log my run",
+        )
+        mock_post.return_value = self._ok_resp()
+
+        result = deliver_buffered_messages_task(str(tenant.id))
+
+        self.assertEqual(result["delivered"], 1)
+        self.assertEqual(mock_post.call_args[1]["json"]["messages"][0]["content"], "log my run")
+        # Relayed to the MESSAGE's chat_id from the envelope, not the tenant default.
+        self.assertEqual(mock_relay.call_args[0][1], 999888)
+        self.assertFalse(BufferedMessage.objects.filter(id=msg.id).exists())
+
+    @patch("apps.router.pending_queue.relay_ai_response_to_telegram", return_value=True)
+    @patch("httpx.post")
+    def test_media_envelope_injects_resend_marker(self, mock_post, mock_relay):
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        user = self._make_telegram_user(chat_id=222333)
+        tenant = _make_tenant(user)
+        BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.TELEGRAM,
+            payload={
+                "schema": "min-v1",
+                "channel": "telegram",
+                "is_voice": False,
+                "is_image": True,
+                "chat_id": 222333,
+                "media": {"photo_file_id": "large_xyz"},
+            },
+            user_text="check my form",
+        )
+        mock_post.return_value = self._ok_resp()
+
+        deliver_buffered_messages_task(str(tenant.id))
+
+        content = mock_post.call_args[1]["json"]["messages"][0]["content"]
+        self.assertIn("check my form", content)  # caption preserved
+        self.assertIn("resend", content.lower())  # agent told media is unavailable, not silently dropped
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", LINE_CHANNEL_ACCESS_TOKEN="test-token")
+class BufferedLineVoiceSingletonTest(TestCase):
+    """The minimal envelope's explicit is_voice flag is honored by the drain's
+    batch claim — a voice head is a singleton (not coalesced with following
+    text), matching the guard's documented intent."""
+
+    def test_new_envelope_voice_head_is_singleton(self):
+        from apps.orchestrator.hibernation import _claim_buffered_batch_for_tenant
+
+        user = _make_user(line_user_id="U_voice_single")
+        tenant = _make_tenant(user)
+        voice = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"schema": "min-v1", "channel": "line", "is_voice": True},
+            user_text='🎤 Voice message: "log a 5k run"',
+        )
+        BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"schema": "min-v1", "channel": "line", "is_voice": False},
+            user_text="and note it felt easy",
+        )
+
+        batch, info = _claim_buffered_batch_for_tenant(tenant, BufferedMessage.Channel.LINE, 30.0)
+
+        self.assertEqual(info, {})
+        self.assertEqual([b.id for b in batch], [voice.id])  # voice head → singleton batch

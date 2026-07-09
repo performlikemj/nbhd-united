@@ -167,3 +167,65 @@ class WakeWatchdogTest(TestCase):
         mock_wake.assert_not_called()
         tenant.refresh_from_db()
         self.assertIsNotNone(tenant.hibernated_at)  # flag preserved
+
+
+class BufferWriteRedactsAndMinimizesTest(TestCase):
+    """Phase 0 (docs/encryption-at-rest-directive.md §7): the row a hibernated
+    message writes must hold a MINIMAL envelope (never the raw webhook) and a
+    REDACTED user_text (never the raw name the user typed). We patch
+    redact_user_message to identity so the assertion is model-independent — the
+    reuse-only second pass still masks the pre-seeded known entity."""
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=True)
+    def test_line_write_stores_minimal_envelope_and_redacted_text(self, _wake):
+        user = _make_user(line_user_id="U_secret_line_id")
+        tenant = _make_hibernated_tenant(user)
+        tenant.pii_entity_map = {"[PERSON_1]": "Alice"}
+        tenant.save(update_fields=["pii_entity_map"])
+
+        raw_event = {
+            "type": "message",
+            "replyToken": "tok",
+            "source": {"userId": "U_secret_line_id", "type": "user"},
+            "message": {"type": "text", "id": "m1", "text": "hi Alice"},
+        }
+        with patch("apps.pii.redactor.redact_user_message", side_effect=lambda text, tenant: text):
+            handle_hibernated_message(tenant, "line", raw_event, "hi Alice")
+
+        row = BufferedMessage.objects.filter(tenant=tenant).latest("created_at")
+        # Only the minimal envelope — no raw source/message fields.
+        self.assertEqual(row.payload, {"schema": "min-v1", "channel": "line", "is_voice": False})
+        self.assertNotIn("U_secret_line_id", str(row.payload))
+        # user_text redacted: raw name gone, placeholder present.
+        self.assertNotIn("Alice", row.user_text)
+        self.assertIn("[PERSON_1]", row.user_text)
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=True)
+    def test_telegram_write_drops_raw_pii_metadata(self, _wake):
+        user = User.objects.create_user(
+            username=f"wake_tg_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=44556677,
+            preferred_channel="telegram",
+        )
+        tenant = _make_hibernated_tenant(user)
+
+        raw_update = {
+            "update_id": 5,
+            "message": {
+                "message_id": 9,
+                "text": "call me",
+                "chat": {"id": 44556677, "type": "private", "first_name": "Bob", "username": "bob_x"},
+                "from": {"id": 44556677, "first_name": "Bob", "last_name": "Lee", "username": "bob_x"},
+            },
+        }
+        with patch("apps.pii.redactor.redact_user_message", side_effect=lambda text, tenant: text):
+            handle_hibernated_message(tenant, "telegram", raw_update, "call me")
+
+        row = BufferedMessage.objects.filter(tenant=tenant).latest("created_at")
+        self.assertEqual(
+            row.payload,
+            {"schema": "min-v1", "channel": "telegram", "is_voice": False, "is_image": False, "chat_id": 44556677},
+        )
+        for pii in ("Bob", "Lee", "bob_x"):
+            self.assertNotIn(pii, str(row.payload))

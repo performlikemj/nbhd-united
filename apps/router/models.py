@@ -9,9 +9,20 @@ from django.db import models
 class BufferedMessage(models.Model):
     """Messages received while a tenant's container was hibernated.
 
-    When a user sends a message to a hibernated container, the raw webhook
-    payload is stored here. After the container wakes (~45s), a QStash task
-    forwards all buffered messages in order, then marks them delivered.
+    When a user sends a message to a hibernated container, a MINIMAL redacted
+    envelope is stored here — never the raw provider webhook (which holds the
+    real name/username/phone/chat-title the subscriber typed and is the
+    highest-sensitivity row in the system; docs/encryption-at-rest-directive.md
+    §7). ``payload`` is a schema-versioned envelope (see
+    ``apps.router.buffer_envelope``) carrying only the routing/media metadata the
+    drain needs; ``user_text`` is redacted at write time through the same seam a
+    live message goes through. After the container wakes (~45s), a QStash task
+    forwards all buffered messages in order, then hard-deletes them.
+
+    Backward compat: rows written before this change hold a raw webhook in
+    ``payload`` (no ``schema`` marker) and raw ``user_text``. The drain
+    shape-sniffs and handles both; legacy rows age out via the delete-on-forward
+    + TTL sweepers (PR #1082) rather than being migrated.
     """
 
     class Channel(models.TextChoices):
@@ -26,12 +37,16 @@ class BufferedMessage(models.Model):
     )
     channel = models.CharField(max_length=16, choices=Channel.choices)
     payload = models.JSONField(
-        help_text="Raw webhook payload (Telegram update or LINE event)",
+        help_text=(
+            "Minimal schema-versioned envelope with the routing/media metadata "
+            "the drain needs (apps.router.buffer_envelope). Legacy rows hold a "
+            "raw webhook (no 'schema' marker) — the drain handles both."
+        ),
     )
     user_text = models.TextField(
         blank=True,
         default="",
-        help_text="Extracted user message text for logging (truncated)",
+        help_text="Extracted user message text, redacted at write time.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     delivered = models.BooleanField(default=False)

@@ -55,14 +55,23 @@ def handle_hibernated_message(
     oldest = BufferedMessage.objects.filter(tenant=tenant, delivered=False).order_by("created_at").first()
     stuck = bool(oldest and (timezone.now() - oldest.created_at) > _WAKE_STALL_THRESHOLD)
 
-    # Buffer the incoming message. ``user_text`` stays untruncated so the
-    # hibernated-drain coalesce path can stitch full raw user texts together
+    # Buffer the incoming message. We do NOT store the raw provider webhook —
+    # it holds the real name/username/phone/chat-title the subscriber typed, in
+    # the clear, and is the highest-sensitivity row in the system
+    # (docs/encryption-at-rest-directive.md §7). Instead we store a minimal,
+    # schema-versioned envelope with only the routing/media metadata the drain
+    # needs, and redact ``user_text`` at write time through the same seam a live
+    # message goes through — so a buffered message and a live message have the
+    # same at-rest posture. ``user_text`` stays untruncated (redacted) so the
+    # hibernated-drain coalesce path can stitch full user texts together
     # (apologies + log lines slice locally where they need a short excerpt).
+    from apps.router.buffer_envelope import build_buffer_envelope, redact_for_buffer
+
     BufferedMessage.objects.create(
         tenant=tenant,
         channel=channel,
-        payload=payload,
-        user_text=user_text or "",
+        payload=build_buffer_envelope(channel, payload),
+        user_text=redact_for_buffer(tenant, user_text or ""),
     )
 
     # Update last_message_at even while hibernated
