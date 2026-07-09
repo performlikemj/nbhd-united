@@ -709,6 +709,14 @@ if SENTRY_DSN and not _SENTRY_RUNNING_TESTS:
         environment=SENTRY_ENVIRONMENT,
         release=SENTRY_RELEASE or None,
         send_default_pii=SENTRY_SEND_DEFAULT_PII,
+        # PRIVACY constraint — load-bearing: user content in stack-frame locals
+        # (a chat/journal/message string in scope when an exception fires) must
+        # NEVER reach Sentry. send_default_pii=False does NOT cover this — the
+        # SDK captures frame local variables on error events by default. Disable
+        # it, trading some debugging context for the guarantee that no user text
+        # is exfiltrated via a traceback. Param name is for sentry-sdk 2.x
+        # (`include_local_variables`); on <1.5 SDKs it was `with_locals`.
+        include_local_variables=False,
         enable_logs=SENTRY_ENABLE_LOGS,
         # Configured LoggingIntegration: only WARNING+ reaches the Logs stream
         # (Django + other default integrations stay auto-enabled).

@@ -420,7 +420,9 @@ def get_onboarding_response(tenant: Tenant, message_text: str, *, telegram_lang:
         name = parse_name(message_text)
         tenant.user.display_name = name
         tenant.user.save(update_fields=["display_name"])
-        logger.info("Onboarding [%s]: name=%s", tenant.id, name)
+        # Never log the raw name — it's user PII and this line ships to Azure
+        # Log Analytics in cleartext. Length confirms capture without leaking it.
+        logger.info("Onboarding [%s]: name captured (len=%d)", tenant.id, len(name))
 
         from .timezone_data import build_country_keyboard
 
@@ -465,7 +467,9 @@ def get_onboarding_response(tenant: Tenant, message_text: str, *, telegram_lang:
         tz = parse_timezone(message_text)
         tenant.user.timezone = tz
         tenant.user.save(update_fields=["timezone"])
-        logger.info("Onboarding [%s]: timezone=%s (zone text: %s)", tenant.id, tz, message_text.strip())
+        # Log the resolved IANA zone (not user PII) + input length only — the
+        # raw zone text is user-typed and must not reach Log Analytics.
+        logger.info("Onboarding [%s]: timezone=%s (from zone text, len=%d)", tenant.id, tz, len(message_text.strip()))
         tenant.onboarding_step = 4
         tenant.save(update_fields=["onboarding_step", "updated_at"])
         return OnboardingReply(_msg(lang, "ask_interests"))
@@ -473,7 +477,9 @@ def get_onboarding_response(tenant: Tenant, message_text: str, *, telegram_lang:
     # Step 4: They answered the interests question → complete
     if step == 4:
         interests = message_text.strip()
-        logger.info("Onboarding [%s]: interests=%s", tenant.id, interests)
+        # Interests are free-form user content — log only that they were
+        # captured (length), never the text itself.
+        logger.info("Onboarding [%s]: interests captured (len=%d)", tenant.id, len(interests))
 
         prefs = tenant.user.preferences or {}
         prefs["onboarding_interests"] = interests
@@ -503,7 +509,9 @@ def _handle_country_input(tenant: Tenant, country_text: str, lang: str) -> Onboa
         # Single timezone country — done
         tenant.user.timezone = result
         tenant.user.save(update_fields=["timezone"])
-        logger.info("Onboarding [%s]: timezone=%s (country: %s)", tenant.id, result, country_text)
+        # Log the resolved zone + input length only — the raw country text is
+        # user-typed and must not reach Log Analytics.
+        logger.info("Onboarding [%s]: timezone=%s (from country input, len=%d)", tenant.id, result, len(country_text))
         tenant.onboarding_step = 4
         tenant.save(update_fields=["onboarding_step", "updated_at"])
         return OnboardingReply(_msg(lang, "ask_interests"))
@@ -525,7 +533,8 @@ def _handle_country_input(tenant: Tenant, country_text: str, lang: str) -> Onboa
     tz = parse_timezone(country_text)
     tenant.user.timezone = tz
     tenant.user.save(update_fields=["timezone"])
-    logger.info("Onboarding [%s]: timezone=%s (fallback: %s)", tenant.id, tz, country_text)
+    # Resolved zone + input length only — raw country text stays out of logs.
+    logger.info("Onboarding [%s]: timezone=%s (country fallback, len=%d)", tenant.id, tz, len(country_text))
     tenant.onboarding_step = 4
     tenant.save(update_fields=["onboarding_step", "updated_at"])
     return OnboardingReply(_msg(lang, "ask_interests"))

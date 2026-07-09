@@ -394,3 +394,76 @@ class ReintroductionTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertFalse(self.tenant.onboarding_complete)  # Reset for flow
         self.assertEqual(self.tenant.onboarding_step, 1)
+
+
+class OnboardingLogHygieneTest(TestCase):
+    """Onboarding INFO logs must never carry raw user-typed text.
+
+    These lines ship to Azure Log Analytics in cleartext, so the user's name,
+    interests, and typed country/timezone must be reduced to a length/outcome
+    signal — never the content itself.
+    """
+
+    _LOGGER = "apps.router.onboarding"
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="New User", telegram_chat_id=555555)
+        self.tenant.onboarding_complete = False
+        self.tenant.save(update_fields=["onboarding_complete"])
+
+    def _at_step(self, step: int):
+        self.tenant.onboarding_step = step
+        self.tenant.save(update_fields=["onboarding_step"])
+
+    def test_name_not_logged(self):
+        self._at_step(1)
+        secret = "Zebediahquirkelson"
+        with self.assertLogs(self._LOGGER, level="INFO") as cm:
+            get_onboarding_response(self.tenant, secret)
+        blob = "\n".join(cm.output)
+        self.assertNotIn(secret, blob)
+        # Still diagnostically useful: a capture line was emitted.
+        self.assertTrue(any("name captured" in line for line in cm.output))
+
+    def test_interests_not_logged(self):
+        self.tenant.user.display_name = "Alex"
+        self.tenant.user.timezone = "America/Los_Angeles"
+        self.tenant.user.language = "en"
+        self.tenant.user.save(update_fields=["display_name", "timezone", "language"])
+        self._at_step(4)
+        secret = "trainforazephyrmarathon"
+        with (
+            patch("apps.orchestrator.azure_client.upload_workspace_file"),
+            self.assertLogs(self._LOGGER, level="INFO") as cm,
+        ):
+            get_onboarding_response(self.tenant, secret)
+        blob = "\n".join(cm.output)
+        self.assertNotIn(secret, blob)
+        self.assertTrue(any("interests captured" in line for line in cm.output))
+
+    def test_country_text_not_logged(self):
+        self._at_step(3)
+        with self.assertLogs(self._LOGGER, level="INFO") as cm:
+            get_onboarding_response(self.tenant, "Japan")
+        blob = "\n".join(cm.output)
+        self.assertNotIn("Japan", blob)
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(self.tenant.user.timezone, "Asia/Tokyo")
+
+    def test_country_fallback_text_not_logged(self):
+        self._at_step(3)
+        with self.assertLogs(self._LOGGER, level="INFO") as cm:
+            get_onboarding_response(self.tenant, "PST")
+        blob = "\n".join(cm.output)
+        self.assertNotIn("PST", blob)
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(self.tenant.user.timezone, "America/Los_Angeles")
+
+    def test_zone_text_not_logged(self):
+        self._at_step(35)
+        with self.assertLogs(self._LOGGER, level="INFO") as cm:
+            get_onboarding_response(self.tenant, "New York")
+        blob = "\n".join(cm.output)
+        self.assertNotIn("New York", blob)
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(self.tenant.user.timezone, "America/New_York")
