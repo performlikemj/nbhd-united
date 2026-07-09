@@ -223,6 +223,10 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None) -> dict:
             reply_text = rehydrate_text(reply_text, entity_map)
         except Exception:
             logger.exception("chat_views: reply rehydrate failed (non-fatal)")
+    # One attachment per turn, typed off the stored file's extension. Shared
+    # with the ?since= feed via AppChatMessage.attachment_flags so the two
+    # rendering paths can't drift.
+    has_image, has_document = msg.attachment_flags
     return {
         "client_msg_id": msg.client_msg_id,
         "thread_id": str(msg.thread_id),
@@ -249,11 +253,10 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None) -> dict:
         "partial_seq": msg.partial_seq if msg.status == AppChatMessage.Status.PENDING else 0,
         # True when the user's turn carried an inbound image / PDF (stored on
         # the share; the raw path is internal and not exposed). Lets a polling
-        # client render the right attachment bubble for the turn. One
-        # attachment per turn — the two flags are mutually exclusive, keyed off
-        # the stored file's extension (no schema column needed).
-        "has_image": bool(msg.attachment_path) and not msg.attachment_path.lower().endswith(".pdf"),
-        "has_document": bool(msg.attachment_path) and msg.attachment_path.lower().endswith(".pdf"),
+        # client render the right attachment bubble for the turn. Mutually
+        # exclusive — see AppChatMessage.attachment_flags.
+        "has_image": has_image,
+        "has_document": has_document,
         # Per-turn PII transparency: the real values obfuscated behind
         # placeholders on the way to / back from the assistant, as
         # [{"placeholder", "value"}]. null when nothing was obfuscated or the
