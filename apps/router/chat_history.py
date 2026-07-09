@@ -21,6 +21,7 @@ Shape per message row (the contract iOS dedups/merges against):
       "has_document": bool,                # always present; true only on a user app row whose turn carried a PDF
       "user_redactions": [{"placeholder", "value"}],   # optional; user rows only
       "reply_redactions": [{"placeholder", "value"}],  # optional; assistant rows only
+      "quick_replies": ["Label A", "Label B"],          # optional; assistant rows only, iOS-only
     }
 
 Both ``*_redactions`` keys are OMITTED when nothing was obfuscated (and are only
@@ -165,6 +166,7 @@ def _row(
     has_document=False,
     user_redactions=None,
     reply_redactions=None,
+    quick_replies=None,
 ):
     """A single message row + its (created_at, id) sort key.
 
@@ -195,6 +197,11 @@ def _row(
         msg["user_redactions"] = user_redactions
     if reply_redactions:
         msg["reply_redactions"] = reply_redactions
+    # Quick-reply button labels (iOS-only; assistant rows only). Omitted
+    # entirely when empty, same convention as the redaction keys above —
+    # older iOS builds ignore unknown keys anyway.
+    if quick_replies:
+        msg["quick_replies"] = quick_replies
     return {"_sort": (created_at, row_id), "msg": msg}
 
 
@@ -205,6 +212,7 @@ def _app_rows(m, main_thread_id, entity_map=None):
     ``reply_text`` is stored placeholder-space and rehydrated here (owner-facing).
     ``user_text`` is the user's own typed words — served verbatim, no rehydration."""
     from apps.router.models import AppChatMessage
+    from apps.router.quick_replies import rehydrate_quick_replies
 
     thread_id = str(m.thread_id) if m.thread_id else main_thread_id
     # The attachment belongs to the user's inbound turn, so the flags ride the
@@ -227,7 +235,10 @@ def _app_rows(m, main_thread_id, entity_map=None):
                 user_redactions=m.user_redactions,
             )
         )
-    if m.status == AppChatMessage.Status.READY and (m.reply_text or "").strip():
+    # Also emit a bare quick_replies-only assistant row in the (expected rare)
+    # case the agent's entire final reply was the marker line — reply_text
+    # strips to empty, but the buttons must not silently vanish.
+    if m.status == AppChatMessage.Status.READY and ((m.reply_text or "").strip() or m.quick_replies):
         out.append(
             _row(
                 row_id=f"app:{m.id}:1",
@@ -251,6 +262,14 @@ def _app_rows(m, main_thread_id, entity_map=None):
                 # inserting a duplicate. The client dedups by (client_msg_id, role).
                 client_msg_id=m.client_msg_id,
                 reply_redactions=m.reply_redactions,
+                # Stored PLACEHOLDER-space (parsed before reply_text is
+                # rehydrated) — rehydrate via the SAME shared helper the
+                # detail seam calls (chat_views._serialize_message) so a
+                # stored "[PERSON_1]" label can't ship raw at one seam and
+                # rehydrated at the other.
+                quick_replies=rehydrate_quick_replies(
+                    m.quick_replies, entity_map, tenant_id=m.tenant_id, channel="ios_feed"
+                ),
             )
         )
     return out

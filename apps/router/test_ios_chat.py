@@ -225,6 +225,109 @@ class IOSChatRoutingTest(TestCase):
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class IOSChatQuickReplyTest(TestCase):
+    """The [[quick-replies: A | B | C]] marker end-to-end: the agent's raw
+    reply text carries it, the drain (_clean_assistant_text_for_app) parses +
+    strips it, and the polling client sees a clean reply_text plus a
+    quick_replies list."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _ask(self, ai_reply: str, cid: str = "q1"):
+        with patch("apps.router.pending_queue.httpx.post") as mock_post:
+            mock_post.return_value = _ok_chat_response(ai_reply)
+            resp = self.client.post(
+                "/api/v1/chat/messages/",
+                {"text": "save both?", "client_msg_id": cid},
+                format="json",
+            )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        return self.client.get(f"/api/v1/chat/messages/{cid}/")
+
+    def test_three_labels_parsed_stripped_and_stored(self):
+        poll = self._ask("Save both changes?\n[[quick-replies: Save both | Change something | No thanks]]")
+        self.assertEqual(poll.data["reply_text"], "Save both changes?")
+        self.assertEqual(poll.data["quick_replies"], ["Save both", "Change something", "No thanks"])
+        self.assertNotIn("quick-replies", poll.data["reply_text"])
+
+    def test_one_label_parsed(self):
+        poll = self._ask("Want a recap?\n[[quick-replies: Yes]]")
+        self.assertEqual(poll.data["reply_text"], "Want a recap?")
+        self.assertEqual(poll.data["quick_replies"], ["Yes"])
+
+    def test_two_labels_parsed(self):
+        poll = self._ask("Keep going?\n[[quick-replies: Yes | No]]")
+        self.assertEqual(poll.data["quick_replies"], ["Yes", "No"])
+
+    def test_no_marker_quick_replies_is_null(self):
+        poll = self._ask("Just a normal reply, nothing special.")
+        self.assertIsNone(poll.data["quick_replies"])
+        self.assertEqual(poll.data["reply_text"], "Just a normal reply, nothing special.")
+
+    def test_malformed_marker_stripped_but_no_buttons(self):
+        # 4 labels — over the 3-label cap. Never shown raw; no buttons stored.
+        poll = self._ask("Pick one:\n[[quick-replies: A | B | C | D]]")
+        self.assertEqual(poll.data["reply_text"], "Pick one:")
+        self.assertIsNone(poll.data["quick_replies"])
+        self.assertNotIn("quick-replies", poll.data["reply_text"])
+
+    def test_marker_mid_text_is_left_as_plain_text(self):
+        # Not on the final line → not parsed at all; passes through verbatim
+        # (rehydration/insight/chart stripping don't touch it either).
+        reply = "Note: [[quick-replies: Yes | No]] is a debug artifact. Ignore it."
+        poll = self._ask(reply)
+        self.assertIsNone(poll.data["quick_replies"])
+        self.assertIn("[[quick-replies: Yes | No]]", poll.data["reply_text"])
+
+    def test_labels_rehydrated_at_both_seams(self):
+        # F1: labels are parsed pre-rehydration (placeholder space, alongside
+        # reply_text) but must be REHYDRATED to real values at both
+        # owner-facing read seams — the detail poll AND the ?since= feed —
+        # exactly like reply_text already is. A raw "[PERSON_1]" button would
+        # both look wrong next to a rehydrated reply and, if tapped, send the
+        # literal placeholder string back as the user's next message.
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        poll = self._ask("Should I text them?\n[[quick-replies: Text [PERSON_1] | No thanks]]", cid="qr-rehydrate")
+        self.assertEqual(poll.data["quick_replies"], ["Text Alice", "No thanks"])
+        self.assertNotIn("[PERSON_1]", str(poll.data["quick_replies"]))
+
+        since = self.client.get("/api/v1/chat/messages/")
+        assistant_row = next(
+            row
+            for row in since.data["messages"]
+            if row.get("client_msg_id") == "qr-rehydrate" and row["role"] == "assistant"
+        )
+        self.assertEqual(assistant_row["quick_replies"], ["Text Alice", "No thanks"])
+
+    def test_rehydration_overflow_drops_buttons_but_reply_text_unaffected(self):
+        # A label short enough pre-rehydration (placeholder space) can overflow
+        # MAX_LABEL_LEN once the real value is substituted in. The whole set
+        # must be DROPPED (never truncated — displayed text and tap-sent text
+        # must stay identical) while reply_text rehydrates normally either way.
+        self.tenant.pii_entity_map = {"[PERSON_1]": "A Very Long Full Legal Name Indeed"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with self.assertLogs("apps.router.quick_replies", level="WARNING") as cm:
+            poll = self._ask("Reach out to [PERSON_1]?\n[[quick-replies: Call [PERSON_1]]]", cid="qr-overflow")
+
+        self.assertIsNone(poll.data["quick_replies"])
+        self.assertEqual(poll.data["reply_text"], "Reach out to A Very Long Full Legal Name Indeed?")
+        overflow_records = [r for r in cm.records if getattr(r, "reason", None) == "rehydration_overflow"]
+        self.assertTrue(overflow_records)
+        # The telemetry sample must stay PLACEHOLDER-space (no PII in logs) even
+        # though the drop decision is made on the REHYDRATED length.
+        for record in overflow_records:
+            self.assertIn("[PERSON_1]", record.sample)
+            self.assertNotIn("A Very Long Full Legal Name Indeed", record.sample)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class IOSChatImageTest(TestCase):
     """Inbound image ingress: an app-uploaded photo is stored on the tenant
     share and referenced from the LLM-bound text via the ``[Photo attached:
@@ -1026,7 +1129,7 @@ class ChatSinceFeedTest(TestCase):
     def _at(self, minutes: int):
         return self._base + self._td(minutes=minutes)
 
-    def _app_turn(self, *, cid, user_text, reply_text, minute, status="ready", attachment_path=""):
+    def _app_turn(self, *, cid, user_text, reply_text, minute, status="ready", attachment_path="", quick_replies=None):
         m = AppChatMessage.objects.create(
             tenant=self.tenant,
             user=self.user,
@@ -1036,6 +1139,7 @@ class ChatSinceFeedTest(TestCase):
             reply_text=reply_text,
             status=status,
             attachment_path=attachment_path,
+            quick_replies=quick_replies,
         )
         AppChatMessage.objects.filter(pk=m.pk).update(created_at=self._at(minute))
         return m
@@ -1450,6 +1554,28 @@ class ChatSinceFeedTest(TestCase):
                 if row.get("client_msg_id") == f"agree{i}" and row["role"] == "user"
             )
             self.assertEqual((feed_user["has_image"], feed_user["has_document"]), (want_img, want_doc))
+
+    def test_detail_and_feed_quick_replies_agree(self):
+        # Same anti-drift shape as test_detail_and_feed_flags_agree, but for
+        # quick_replies: the detail serializer always emits the key (None when
+        # empty); the feed OMITS the key when empty (mirrors user_redactions/
+        # reply_redactions), so compare via .get() on the feed side.
+        from apps.router.chat_views import _serialize_message
+
+        cases = [
+            (["Yes", "No"], ["Yes", "No"]),
+            (None, None),
+        ]
+        for i, (stored, want) in enumerate(cases):
+            m = self._app_turn(cid=f"qr{i}", user_text="hi", reply_text="yo", minute=20 + i, quick_replies=stored)
+            detail = _serialize_message(m)
+            self.assertEqual(detail["quick_replies"], want)
+            feed_assistant = next(
+                row
+                for row in self._get().data["messages"]
+                if row.get("client_msg_id") == f"qr{i}" and row["role"] == "assistant"
+            )
+            self.assertEqual(feed_assistant.get("quick_replies"), want)
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)

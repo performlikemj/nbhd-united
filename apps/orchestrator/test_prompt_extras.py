@@ -96,6 +96,31 @@ class RenderWorkspaceFilesExtrasTest(TestCase):
         self.assertIn("CANARY_ONLY", canary_files["NBHD_AGENTS_MD"])
         self.assertNotIn("CANARY_ONLY", other_files["NBHD_AGENTS_MD"])
 
+    def test_quick_replies_md_section_appended(self):
+        tenant = create_tenant(display_name="QRCanary", telegram_chat_id=900012)
+        tenant.user.preferences = {"prompt_extras": {"quick_replies_md": "QUICK_REPLY_RULE_TOKEN"}}
+        tenant.user.save(update_fields=["preferences"])
+
+        agents_md = render_workspace_files("neighbor", tenant=tenant)["NBHD_AGENTS_MD"]
+        self.assertIn("QUICK_REPLY_RULE_TOKEN", agents_md)
+
+    def test_agents_md_and_quick_replies_md_compose_without_clobbering(self):
+        """Two SEPARATE prompt_extras sections on the same tenant both land —
+        neither the management command nor render_workspace_files lets one
+        section's write/append clobber the other."""
+        tenant = create_tenant(display_name="BothCanary", telegram_chat_id=900013)
+        tenant.user.preferences = {
+            "prompt_extras": {
+                "agents_md": "AGENTS_MD_TOKEN",
+                "quick_replies_md": "QUICK_REPLY_RULE_TOKEN",
+            }
+        }
+        tenant.user.save(update_fields=["preferences"])
+
+        agents_md = render_workspace_files("neighbor", tenant=tenant)["NBHD_AGENTS_MD"]
+        self.assertIn("AGENTS_MD_TOKEN", agents_md)
+        self.assertIn("QUICK_REPLY_RULE_TOKEN", agents_md)
+
 
 class SetPromptExtrasCommandTest(TestCase):
     """set_prompt_extras management command round-trip."""
@@ -146,6 +171,28 @@ class SetPromptExtrasCommandTest(TestCase):
         self.tenant.user.refresh_from_db()
         # When the last section is cleared, prompt_extras key is also removed.
         self.assertNotIn("prompt_extras", self.tenant.user.preferences)
+
+    def test_set_quick_replies_md_section(self):
+        import sys
+
+        original_stdin = sys.stdin
+        sys.stdin = io.StringIO("quick reply rule text")
+        try:
+            self._call(
+                "--tenant-id",
+                str(self.tenant.id),
+                "--section",
+                "quick_replies_md",
+                "--stdin",
+            )
+        finally:
+            sys.stdin = original_stdin
+
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(
+            self.tenant.user.preferences["prompt_extras"]["quick_replies_md"],
+            "quick reply rule text",
+        )
 
     def test_unknown_tenant_raises(self):
         with self.assertRaises(CommandError):

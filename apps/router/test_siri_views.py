@@ -658,6 +658,33 @@ class ChatProgressEventTest(TestCase):
         self.assertEqual(turn.partial_text, "")
         self.assertEqual(turn.partial_seq, 0)
 
+    def test_quick_reply_marker_stripped_from_streaming_partial_text(self):
+        """The streaming partial_text bubble must never flash the raw
+        [[quick-replies: ...]] marker — whether it's already complete or
+        still being typed (unclosed) — while status is still PENDING (F2)."""
+        self._pending()
+        # Step 1: a COMPLETE trailing marker.
+        resp1 = self._post(
+            {"client_msg_id": "p1", "text": "Save both changes?\n[[quick-replies: Save both | No thanks]]", "seq": 1}
+        )
+        self.assertTrue(resp1.data["updated"])
+        turn = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="p1")
+        self.assertEqual(turn.partial_text, "Save both changes?")
+        self.assertNotIn("quick-replies", turn.partial_text)
+
+        # Step 2: a still-typing, UNCLOSED marker fragment at the very end.
+        resp2 = self._post({"client_msg_id": "p1", "text": "Save both changes?\n[[quick-repl", "seq": 2})
+        self.assertTrue(resp2.data["updated"])
+        turn.refresh_from_db()
+        self.assertEqual(turn.partial_text, "Save both changes?")
+        self.assertNotIn("[[", turn.partial_text)
+
+        # Surfaced on the client-facing poll endpoint too — never the raw marker.
+        poll = APIClient()
+        poll.force_authenticate(user=self.user)
+        detail = poll.get("/api/v1/chat/messages/p1/")
+        self.assertEqual(detail.data["partial_text"], "Save both changes?")
+
     def test_partial_not_exposed_after_terminal(self):
         # Serializer gates partial_text/seq on PENDING — a ready row reports '' / 0
         # regardless of any DB residue.

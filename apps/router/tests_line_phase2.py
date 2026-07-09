@@ -1031,3 +1031,54 @@ class PendingMessageApologyLocalizationTest(TestCase):
         self.assertNotIn("User's message from before", body)
         # The clean user text should still surface as the excerpt.
         self.assertIn("thanks. i'll read through these", body)
+
+
+class RelayQuickReplyMarkerStrippedTest(TestCase):
+    """The generic [[quick-replies: A | B | C]] marker (iOS-only) must never
+    leak as raw text on LINE — relay_ai_response_to_line strips it before
+    building the Flex bubble, distinct from LINE's own
+    [[button:label|data]] marker (extract_quick_reply_buttons, unaffected)."""
+
+    def _make_tenant(self):
+        from apps.tenants.models import Tenant, User
+
+        user = User.objects.create_user(
+            username="qr_line_user",
+            password="test123",
+            line_user_id="U_qr_line",
+        )
+        return Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            container_fqdn="test.example.com",
+        )
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    def test_marker_stripped_never_reaches_sent_messages(self, mock_send):
+        from apps.router.line_webhook import relay_ai_response_to_line
+
+        tenant = self._make_tenant()
+        relay_ai_response_to_line(
+            tenant,
+            "U_qr_line",
+            "Save both changes?\n[[quick-replies: Save both | Change something | No thanks]]",
+        )
+
+        mock_send.assert_called_once()
+        messages = mock_send.call_args.args[1]
+        serialized = json.dumps(messages)
+        self.assertNotIn("quick-replies", serialized)
+        self.assertIn("Save both changes", serialized)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    def test_line_button_marker_still_works_alongside_quick_reply_stripping(self, mock_send):
+        """LINE's own [[button:]] marker is a separate mechanism and must be
+        unaffected by the new quick-replies stripping."""
+        from apps.router.line_webhook import relay_ai_response_to_line
+
+        tenant = self._make_tenant()
+        relay_ai_response_to_line(tenant, "U_qr_line", "Pick one:\n[[button:Yes|yes]][[button:No|no]]")
+
+        mock_send.assert_called_once()
+        messages = mock_send.call_args.args[1]
+        self.assertTrue(any("quickReply" in m for m in messages))
