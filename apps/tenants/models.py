@@ -542,6 +542,31 @@ class Tenant(models.Model):
         'Shape: {"goal": {}, "calendar": {"reason": "manual"}}.',
     )
 
+    # Per-type monotonic high-water mark for PII placeholder numbering.
+    # Shape: {"PERSON": 537, "EMAIL_ADDRESS": 12} — the HIGHEST suffix EVER
+    # minted for each type, NOT the current count of live bindings.
+    #
+    # INVARIANT: these counters only ever increase. Deletion of a binding
+    # (bulk-delete endpoint, junk sweep, single-entry delete) NEVER lowers
+    # them. This field exists because mint numbering used to re-derive the
+    # next suffix from ``max(pii_entity_map suffix per type) + 1`` alone.
+    # Deleting bindings lowered that max, so a freed number was RECYCLED:
+    # in prod ``[ACCOUNT_4]`` was a temperature range one morning and a
+    # shipping-tracking number by afternoon, and any stale ``[TYPE_N]`` token
+    # still sitting in agent-side workspace files then rehydrated to the WRONG
+    # new value. Seeding every mint from ``max(map-derived, this counter)``
+    # makes a freed number unreachable, so numbers stay stable for the life of
+    # the tenant. Empty ({}) is the legacy pre-migration shape and mints fall
+    # back to the map maxima — still correct, just without recycle protection
+    # until the first post-migration mint records a high-water here.
+    pii_type_counters = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Per-type monotonic high-water mark for PII placeholder numbering "
+        '(highest suffix ever minted per type, e.g. {"PERSON": 537}). Never lowered '
+        "on deletion — prevents freed placeholder numbers from being recycled.",
+    )
+
     # Model preference
     task_model_preferences = models.JSONField(
         default=dict,

@@ -638,6 +638,12 @@ SENTRY_PROFILE_LIFECYCLE = env("SENTRY_PROFILE_LIFECYCLE", default="trace")
 # the Django image SHA here.
 SENTRY_RELEASE = env("SENTRY_RELEASE", default="")
 
+# Public base URL of this control plane (e.g. the Container App FQDN). Used by
+# the daily reconcile_system_crons task to (re)register QStash schedules
+# against itself — the deploy pipeline sets it alongside SENTRY_RELEASE.
+# Empty = reconcile task logs and skips (safe in dev/test).
+DJANGO_BASE_URL = env("DJANGO_BASE_URL", default="")
+
 # Never initialize Sentry during a test run. `make test` and CI both invoke
 # `manage.py test` under DEV settings, so a SENTRY_DSN present in that
 # environment would otherwise make the suite phone home (stray events + latency).

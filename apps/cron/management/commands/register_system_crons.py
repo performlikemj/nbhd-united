@@ -27,6 +27,15 @@ SYSTEM_CRONS = [
     ("cleanup-expired-telegram-tokens", "0 3 * * *", "/api/cron/trigger/cleanup_expired_telegram_tokens/"),
     # Daily at 04:00 UTC — refresh expiring OAuth integrations
     ("refresh-expiring-integrations", "0 4 * * *", "/api/cron/trigger/refresh_expiring_integrations/"),
+    # Daily at 04:20 UTC — belt-and-braces reconcile of the system-cron
+    # schedules THEMSELVES. Re-runs the same register/update/deregister core the
+    # post-deploy register-system-crons call uses, so any registration drift
+    # (e.g. a retired schedule the post-deploy swap missed because it hit a stale
+    # revision — incident 2026-07-09b) self-heals within 24h. Offset to :20 to
+    # sit between refresh-expiring-integrations (04:00) and cleanup-inbound-media
+    # (05:00) and not collide with any existing minute. See
+    # apps/cron/system_cron_registry.py.
+    ("reconcile-system-crons", "20 4 * * *", "/api/cron/trigger/reconcile_system_crons/"),
     # Daily at 05:00 UTC — clean up old inbound media files
     ("cleanup-inbound-media", "0 5 * * *", "/api/cron/trigger/cleanup_inbound_media/"),
     # Daily at 02:00 UTC — expire trials that have ended
