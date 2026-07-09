@@ -3595,10 +3595,209 @@ class SerializerValidateTests(TestCase):
         s = self._ser({"exercises": [{"name": "Custom", "sets": [{"type": "hold_time"}]}]})
         self.assertFalse(s.is_valid())
         self.assertIn("detail_json", s.errors)
+        # iOS surfaces DRF field-error ARRAYS ({"field": ["msg"]}) to users —
+        # the error must be a list of strings, not an envelope dict.
+        self.assertIsInstance(s.errors["detail_json"], list)
+        self.assertTrue(all(isinstance(m, str) for m in s.errors["detail_json"]), s.errors)
 
     def test_coherent_accepted(self):
         s = self._ser({"exercises": [{"name": "Custom", "sets": [{"reps": 8, "weight": 60}]}]})
         self.assertTrue(s.is_valid(), s.errors)
+
+
+class SplitDetailErrorsTests(UnitTestCase):
+    """`split_detail_errors` — delta partition of contract errors, no DB."""
+
+    BAD = {"type": "weighted_reps", "reps": 5}  # missing required weight
+
+    def _details(self, detail):
+        from .set_contract import validate_detail
+
+        _, err = validate_detail(detail, "strength")
+        self.assertIsNotNone(err)
+        return err.details
+
+    def test_stored_fragment_is_preexisting(self):
+        from .set_contract import split_detail_errors
+
+        incoming = {"exercises": [{"name": "Custom", "sets": [dict(self.BAD)]}]}
+        stored = {"exercises": [{"name": "Custom", "sets": [dict(self.BAD)]}]}
+        new, legacy = split_detail_errors(self._details(incoming), incoming, stored)
+        self.assertEqual(new, [])
+        self.assertEqual(len(legacy), 1)
+
+    def test_membership_survives_index_shift(self):
+        from .set_contract import split_detail_errors
+
+        # A new valid set inserted ABOVE the legacy-invalid one shifts its
+        # index; membership comparison must still grandfather it.
+        incoming = {
+            "exercises": [
+                {"name": "Custom", "sets": [{"type": "weighted_reps", "reps": 3, "weight": 50}, dict(self.BAD)]}
+            ]
+        }
+        stored = {"exercises": [{"name": "Custom", "sets": [dict(self.BAD)]}]}
+        new, legacy = split_detail_errors(self._details(incoming), incoming, stored)
+        self.assertEqual(new, [])
+        self.assertEqual(len(legacy), 1)
+
+    def test_new_fragment_is_new(self):
+        from .set_contract import split_detail_errors
+
+        incoming = {"exercises": [{"name": "Custom", "sets": [dict(self.BAD)]}]}
+        stored = {"exercises": [{"name": "Custom", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 60}]}]}
+        new, legacy = split_detail_errors(self._details(incoming), incoming, stored)
+        self.assertEqual(legacy, [])
+        self.assertEqual(len(new), 1)
+
+    def test_no_stored_all_new(self):
+        from .set_contract import split_detail_errors
+
+        incoming = {"exercises": [{"name": "Custom", "sets": [dict(self.BAD)]}]}
+        new, legacy = split_detail_errors(self._details(incoming), incoming, None)
+        self.assertEqual(legacy, [])
+        self.assertEqual(len(new), 1)
+
+    def test_duplicate_of_stored_invalid_set_is_grandfathered(self):
+        from .set_contract import split_detail_errors
+
+        # PINNED SEMANTICS (accepted trade-off): membership is deliberately
+        # count-agnostic — an incoming set byte-identical to a pre-existing
+        # invalid one is grandfathered even when duplicated ([BAD] stored,
+        # [BAD, BAD] incoming ⇒ 0 new errors). Bounded: this can only
+        # multiply/relocate an already-tolerated invalid shape, never
+        # introduce a new invalid class. A future refactor changing this in
+        # EITHER direction must consciously update this test.
+        incoming = {"exercises": [{"name": "Custom", "sets": [dict(self.BAD), dict(self.BAD)]}]}
+        stored = {"exercises": [{"name": "Custom", "sets": [dict(self.BAD)]}]}
+        new, legacy = split_detail_errors(self._details(incoming), incoming, stored)
+        self.assertEqual(new, [])
+        self.assertEqual(len(legacy), 2)
+
+
+class PoisonedDetailPatchTests(TestCase):
+    """Consumer PATCH must never be wedged by PRE-EXISTING contract-invalid
+    detail_json (production: 45 PATCH 400s/30d, one user retried a single
+    poisoned workout for 3 hours unable to mark it done)."""
+
+    # Production shape: sets missing their required metric field. The
+    # exercise name is REGISTRY-KNOWN with a set metric ("plank" ⇒
+    # hold_time) so the grandfather path exercises the real registry
+    # restamp: both sets get type=hold_time and stay contract-invalid
+    # (missing hold_s) either way. (A non-set-metric name like "row" ⇒
+    # cardio/distance_time makes normalization a coincidental no-op.)
+    BAD_SET = {"type": "weighted_reps", "reps": 5}  # missing required weight
+    WEIGHTED_SET = {"type": "weighted_reps", "reps": 5, "weight": 61.5}
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Poisoned", telegram_chat_id=800301)
+        self.workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 6, 1),
+            status="planned",
+            category="strength",
+            activity="Iso Hold Day",
+            detail_json={"exercises": [{"name": "Plank", "sets": [dict(self.BAD_SET), dict(self.WEIGHTED_SET)]}]},
+        )
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.tenant.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+    def _url(self, wid=None):
+        return f"/api/v1/fuel/workouts/{wid or self.workout.id}/"
+
+    def test_status_only_patch_succeeds_despite_poisoned_detail(self):
+        resp = self.client.patch(self._url(), {"status": "done"}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.workout.refresh_from_db()
+        self.assertEqual(self.workout.status, "done")
+        self.assertEqual(self.workout.detail_json["exercises"][0]["sets"][0], self.BAD_SET)
+
+    def test_full_draft_resend_with_status_change_succeeds(self):
+        # The web editor PATCHes its whole draft on save, re-sending stored
+        # detail_json verbatim — a no-op on that field must never re-gate
+        # the save on pre-existing invalid state.
+        resp = self.client.patch(
+            self._url(),
+            {
+                "status": "done",
+                "activity": "Iso Hold Day",
+                "category": "strength",
+                "date": "2026-06-01",
+                "notes": "solid session",
+                "detail_json": self.workout.detail_json,
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.workout.refresh_from_db()
+        self.assertEqual(self.workout.status, "done")
+        self.assertEqual(self.workout.notes, "solid session")
+        self.assertEqual(self.workout.detail_json["exercises"][0]["sets"][0], self.BAD_SET)
+
+    def test_preexisting_invalid_set_survives_unrelated_detail_edit(self):
+        # Real edit (new valid set appended) alongside the legacy-invalid
+        # sets: the save must go through with the legacy sets' VALUES
+        # preserved — never dropped, never zero-filled. Their `type`
+        # discriminator is restamped by the same deterministic registry
+        # normalization every save gets ("Plank" ⇒ hold_time), and the
+        # workout category follows (strength → calisthenics): accepted,
+        # value-preserving behavior.
+        detail = json.loads(json.dumps(self.workout.detail_json))
+        detail["exercises"][0]["sets"].append({"type": "hold_time", "hold_s": 45})
+        with self.assertLogs("apps.fuel.serializers", level="WARNING") as logs:
+            resp = self.client.patch(self._url(), {"status": "done", "detail_json": detail}, format="json")
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.workout.refresh_from_db()
+        self.assertEqual(self.workout.status, "done")
+        sets0 = self.workout.detail_json["exercises"][0]["sets"]
+        self.assertEqual(sets0[0], {"type": "hold_time", "reps": 5})  # reps preserved, type restamped
+        self.assertEqual(sets0[1], {"type": "hold_time", "reps": 5, "weight": 61.5})  # values preserved
+        self.assertEqual(sets0[2], {"type": "hold_time", "hold_s": 45})  # the new valid set persisted
+        self.assertEqual(self.workout.category, "calisthenics")  # registry correction, as on every save
+        joined = "\n".join(logs.output)
+        self.assertIn("grandfathered", joined)
+        self.assertIn("hold_time.hold_s", joined)  # failing field keys are logged...
+        self.assertNotIn("61.5", joined)  # ...but user-entered values never are
+
+    def test_new_invalid_set_rejected_with_drf_field_error_array(self):
+        detail = json.loads(json.dumps(self.workout.detail_json))
+        detail["exercises"][0]["sets"].append({"type": "hold_time"})  # newly-authored, incoherent
+        with self.assertLogs("apps.fuel.serializers", level="WARNING") as logs:
+            resp = self.client.patch(self._url(), {"status": "done", "detail_json": detail}, format="json")
+        self.assertEqual(resp.status_code, 400)
+        errs = resp.data["detail_json"]
+        self.assertIsInstance(errs, list)
+        self.assertTrue(all(isinstance(e, str) for e in errs), errs)
+        # Only the NEW offender is reported — the legacy set isn't actionable.
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("sets[2]", errs[0])
+        self.assertIn("hold_s", errs[0])
+        self.assertNotIn("detail", resp.data)  # no top-level str(exc) dump
+        self.assertIn("rejected", "\n".join(logs.output))
+        self.workout.refresh_from_db()
+        self.assertEqual(self.workout.status, "planned")
+        self.assertEqual(len(self.workout.detail_json["exercises"][0]["sets"]), 2)
+
+    def test_valid_detail_edit_persists_as_before(self):
+        w2 = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 6, 2),
+            category="strength",
+            activity="Bench",
+            detail_json={"exercises": [{"name": "Bench", "sets": [{"reps": 5, "weight": 100}]}]},
+        )
+        resp = self.client.patch(
+            self._url(wid=w2.id),
+            {"detail_json": {"exercises": [{"name": "Bench", "sets": [{"reps": 6, "weight": 102.5}]}]}},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        w2.refresh_from_db()
+        s = w2.detail_json["exercises"][0]["sets"][0]
+        self.assertEqual(s["type"], "weighted_reps")  # coercion still stamps type
+        self.assertEqual(s["reps"], 6)
+        self.assertEqual(s["weight"], 102.5)
 
 
 # ═════════════════════════════════════════════════════════════════════

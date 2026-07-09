@@ -1,5 +1,7 @@
 """Fuel serializers — workout and body-weight API representations."""
 
+import logging
+
 from rest_framework import serializers
 
 from .models import (
@@ -13,6 +15,20 @@ from .models import (
     WorkoutPlan,
     WorkoutTemplate,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _loc_path(loc) -> str:
+    """Render a pydantic error loc as a compact path string.
+
+    Field keys and list indices only — never user-entered values — so it
+    is safe for both Log Analytics lines and user-facing error messages.
+    """
+    out = ""
+    for part in loc:
+        out += f"[{part}]" if isinstance(part, int) else (f".{part}" if out else str(part))
+    return out
 
 
 class FuelProfileSerializer(serializers.ModelSerializer):
@@ -173,15 +189,58 @@ class WorkoutSerializer(serializers.ModelSerializer):
         # runtime path applies, for frontend-origin create/edit. Local
         # import keeps the lint-autofix from reaping it between edits.
         if "detail_json" in attrs:
-            from .set_contract import normalize_detail, validate_detail
+            from .set_contract import normalize_detail, split_detail_errors, validate_detail
 
             base_cat = attrs.get("category") or (self.instance.category if self.instance else "other")
             base_act = attrs.get("activity") or (self.instance.activity if self.instance else None)
-            nd, ncat = normalize_detail(attrs["detail_json"], base_cat, activity=base_act)[:2]
-            nd, verr = validate_detail(nd, ncat)
-            if verr is not None:
-                raise serializers.ValidationError({"detail_json": verr.as_tool_result()})
-            attrs["detail_json"] = nd
+            incoming = attrs["detail_json"]
+            stored = self.instance.detail_json if self.instance else None
+
+            # A structurally-identical resend of the stored detail is a
+            # no-op on this field — skip the strict contract entirely. The
+            # web editor round-trips stored detail_json on every save, so
+            # without this one legacy-invalid set (assistant- or
+            # HealthKit-authored, pre-#593) poisons the workout: every
+            # subsequent save — including a bundled status→"done" — 400s
+            # (45 PATCH 400s in 30 days, 21 of them one user retrying a
+            # single poisoned workout for 3 hours).
+            if self.instance is not None and incoming == stored:
+                return attrs
+
+            nd, ncat = normalize_detail(incoming, base_cat, activity=base_act)[:2]
+            coerced, verr = validate_detail(nd, ncat)
+            if verr is None:
+                attrs["detail_json"] = coerced
+            else:
+                new_details, legacy_details = split_detail_errors(verr.details, incoming, stored)
+                # One structured line per validation failure so incidents
+                # are attributable from Log Analytics. Field keys and set
+                # indices only — never user-entered values (PII).
+                logger.warning(
+                    "fuel.workout_detail_validation_failed workout=%s tenant=%s outcome=%s "
+                    "new_errors=%s preexisting_errors=%s",
+                    self.instance.id if self.instance else "create",
+                    getattr(self.context.get("tenant"), "id", None),
+                    "rejected" if new_details else "grandfathered",
+                    [(_loc_path(d["loc"]), d["type"]) for d in new_details],
+                    [(_loc_path(d["loc"]), d["type"]) for d in legacy_details],
+                )
+                if new_details:
+                    # Genuinely new invalid input still fails — as a DRF
+                    # field-error array ({"field": ["msg"]}): iOS surfaces
+                    # exactly that shape to users for 400/422. Only the NEW
+                    # offenders are listed; pre-existing stored ones aren't
+                    # actionable in this request.
+                    raise serializers.ValidationError(
+                        {"detail_json": [f"{_loc_path(d['loc'])}: {d['msg']}" for d in new_details]}
+                    )
+                # Every failing fragment already exists verbatim in the
+                # stored row — legacy-invalid state the user didn't author
+                # now. Persist the loss-free normalized form (registry
+                # type-stamping only; ``coerced`` would replace a non-dict
+                # set with an empty typed stub) so the save goes through
+                # and nothing the user typed or previously stored is lost.
+                attrs["detail_json"] = nd
             if ncat != base_cat:
                 attrs["category"] = ncat
         return attrs

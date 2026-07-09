@@ -41,6 +41,7 @@ __all__ = [
     "coerce_set",
     "normalize_detail",
     "validate_detail",
+    "split_detail_errors",
 ]
 
 # The three metrics a *set* can carry. (``distance_time`` / ``blocks``
@@ -280,3 +281,76 @@ def validate_detail(detail: Any, category: str) -> tuple[Any, Any]:
     except ValidationError as exc:
         return coerced, LLMValidationError.from_pydantic(exc)
     return coerced, None
+
+
+def _error_offender(detail: Any, loc: list) -> tuple[Any, str | None]:
+    """Resolve the raw fragment a validation-error ``loc`` points into.
+
+    Returns ``(fragment, kind)`` with ``kind`` one of ``"set"`` /
+    ``"exercise"`` / ``"container"``, or ``(None, None)`` when the loc
+    doesn't resolve. Error locs are computed against the coerced detail,
+    but ``normalize_detail`` and ``_coerce_container`` both rebuild
+    exercises/sets lists 1:1 in order, so the indices map safely back
+    onto the ORIGINAL (pre-coercion) detail passed here.
+    """
+    if not isinstance(detail, dict) or not loc or loc[0] not in ("exercises", "skills"):
+        return None, None
+    container = detail.get(loc[0])
+    if len(loc) < 2 or not isinstance(loc[1], int):
+        return container, "container"
+    if not isinstance(container, list) or not (0 <= loc[1] < len(container)):
+        return None, None
+    ex = container[loc[1]]
+    if len(loc) >= 4 and loc[2] == "sets" and isinstance(loc[3], int):
+        sets = ex.get("sets") if isinstance(ex, dict) else None
+        if isinstance(sets, list) and 0 <= loc[3] < len(sets):
+            return sets[loc[3]], "set"
+    return ex, "exercise"
+
+
+def split_detail_errors(details: list[dict], incoming: Any, stored: Any) -> tuple[list[dict], list[dict]]:
+    """Partition ``validate_detail`` error details into
+    ``(new_details, preexisting_details)``.
+
+    An error is *pre-existing* when the raw fragment its ``loc`` points at
+    already exists verbatim in ``stored`` — i.e. invalid state the row
+    already carried and the client merely round-tripped (the web editor
+    re-sends stored ``detail_json`` on every save), NOT values the user
+    just authored. Callers may persist round-tripped legacy fragments
+    instead of wedging every subsequent save on them, while still
+    rejecting genuinely new invalid input. Membership (not positional)
+    comparison, so inserting a set above a legacy-invalid one doesn't
+    reclassify it as new. Pure; ``stored=None`` ⇒ every error is new.
+    """
+    stored_sets: list = []
+    stored_exercises: list = []
+    if isinstance(stored, dict):
+        for key in ("exercises", "skills"):
+            container = stored.get(key)
+            if not isinstance(container, list):
+                continue
+            stored_exercises.extend(container)
+            for ex in container:
+                if isinstance(ex, dict) and isinstance(ex.get("sets"), list):
+                    stored_sets.extend(ex["sets"])
+
+    new_details: list[dict] = []
+    preexisting: list[dict] = []
+    for err in details:
+        loc = list(err.get("loc") or [])
+        frag, kind = _error_offender(incoming, loc)
+        if kind == "set":
+            # Deliberately count-agnostic: a fragment byte-identical to ANY
+            # stored set is grandfathered even if duplicated — that can only
+            # multiply/relocate an already-tolerated invalid shape (never
+            # introduce a new invalid class), and it keeps unchanged legacy
+            # sets grandfathered when an edit shifts their indices.
+            known = any(frag == s for s in stored_sets)
+        elif kind == "exercise":
+            known = any(frag == e for e in stored_exercises)
+        elif kind == "container":
+            known = isinstance(stored, dict) and frag == stored.get(loc[0])
+        else:
+            known = False
+        (preexisting if known else new_details).append(err)
+    return new_details, preexisting
