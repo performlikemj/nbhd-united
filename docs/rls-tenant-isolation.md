@@ -47,8 +47,11 @@ This executes `SELECT set_config('app.tenant_id', '<uuid>', false)` (and
 similarly for `app.user_id` and `app.service_role`). The third argument
 (`false`) makes the variable **session-scoped** — it persists for the
 lifetime of the database connection. Variables are explicitly cleared by
-`reset_rls_context()` in middleware `process_response`. Django's default
-`CONN_MAX_AGE=0` also closes connections after each request as a safety net.
+`reset_rls_context()` in middleware `process_response`. Note: production sets
+`CONN_MAX_AGE=600` (`config/settings/production.py:45`), so connections are
+**reused** across requests — the per-request GUC reset in `process_response` is
+therefore the load-bearing cleanup, not connection teardown. (An earlier version
+of this doc claimed `CONN_MAX_AGE=0`; that is incorrect.)
 
 RLS policies reference these variables via `current_setting('app.tenant_id')`.
 
