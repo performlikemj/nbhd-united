@@ -1,6 +1,7 @@
 """Tenant views."""
 
 import logging
+import re
 
 from django.db import transaction
 from django.utils import timezone
@@ -1126,13 +1127,15 @@ class EntityRegistryItemView(APIView):
             # Rebuild via to_storage_value to drop empty optionals + keep
             # JSON compact. Preserve arbiter_judged_at so the next arbiter
             # sweep does not re-evaluate an already-judged entry just because
-            # the user edited its name/relationship/notes.
+            # the user edited its name/relationship/notes, and reviewed_at so a
+            # kept entry does not bounce back into the review queue on edit.
             new_value = to_storage_value(
                 current.get("name", ""),
                 relationship=current.get("relationship", ""),
                 notes=current.get("notes", ""),
                 updated_at=current["updated_at"],
                 arbiter_judged_at=current.get("arbiter_judged_at"),
+                reviewed_at=current.get("reviewed_at"),
             )
             entity_map[placeholder] = new_value
 
@@ -1275,6 +1278,158 @@ class EntityRegistryBulkDeleteView(APIView):
             {"deleted": deleted, "not_found": not_found, "denied": denied},
             status=status.HTTP_200_OK,
         )
+
+
+# Placeholder-number parser for review-queue ordering. Mirrors
+# apps.pii.entity_registry._PLACEHOLDER_NUM_RE but is kept local so the view
+# layer doesn't reach into that module's private surface. Malformed
+# placeholders sort to 0 (oldest) and lose the "newest first" ordering tie.
+_REVIEW_PLACEHOLDER_NUM_RE = re.compile(r"\[[A-Z_]+_(\d+)\]")
+
+# Placeholders the review queue surfaces. The tier-2 flow only asks the user to
+# judge free-text PERSON / LOCATION spans — the neural-NER classes with the
+# junk long tail (see the cleanup audit). Pattern-validated classes
+# (EMAIL_ADDRESS, CREDIT_CARD, IBAN) are high-precision and never queued.
+_REVIEW_PREFIXES = ("[PERSON_", "[LOCATION_")
+_REVIEW_QUEUE_CAP = 200
+
+
+def _review_placeholder_num(placeholder: str) -> int:
+    match = _REVIEW_PLACEHOLDER_NUM_RE.match(placeholder)
+    return int(match.group(1)) if match else 0
+
+
+class PIIReviewQueueView(APIView):
+    """Tier-2 review surface — "here is what your assistant is hiding".
+
+    Returns the PERSON_*/LOCATION_* bindings the user has not yet reviewed
+    (no ``reviewed_at`` stamp). The audit that motivated this found ~89% of a
+    heavy tenant's bindings were junk minted from agent-authored notes, tool
+    responses, and unvalidated neural labels; the retired cloud arbiter used to
+    triage that. This queue replaces the cloud egress with a local, user-driven
+    (or on-device-model) keep/clean pass.
+
+    This is ALSO the contract the iOS on-device-model flow consumes: GET the
+    queue, judge each span locally, then POST keep (this view's sibling) for the
+    real bindings and the existing bulk-delete (``deny=true``) for the junk.
+
+    ``entries`` is capped at the newest ``_REVIEW_QUEUE_CAP`` placeholders
+    (highest number first); ``total`` is the full unreviewed count so the UI can
+    say "hiding N values" even when more than one page is outstanding.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from apps.pii.entity_registry import coerce
+
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        unreviewed: list[dict] = []
+        for placeholder, raw in (tenant.pii_entity_map or {}).items():
+            if not placeholder.startswith(_REVIEW_PREFIXES):
+                continue
+            entry = coerce(raw)
+            if entry.get("reviewed_at"):
+                continue
+            unreviewed.append(
+                {
+                    "placeholder": placeholder,
+                    "name": entry.get("name", ""),
+                    "relationship": entry.get("relationship", ""),
+                    "notes": entry.get("notes", ""),
+                }
+            )
+
+        total = len(unreviewed)
+        # Newest first — the freshest mints are the ones most likely to be the
+        # junk the user wants to catch before it accretes.
+        unreviewed.sort(key=lambda e: _review_placeholder_num(e["placeholder"]), reverse=True)
+        return Response({"entries": unreviewed[:_REVIEW_QUEUE_CAP], "total": total})
+
+
+class PIIReviewQueueKeepView(APIView):
+    """Mark PERSON/LOCATION bindings as reviewed-and-kept.
+
+    Body: ``{"placeholders": ["[PERSON_1]", ...]}``. Stamps ``reviewed_at``
+    (iso now) on each existing entry so it drops out of the review queue.
+    Unknown placeholders come back in ``not_found``; this is the "keep" verdict.
+    The "clean" verdict has no endpoint of its own — clients call the existing
+    bulk-delete with ``deny=true`` so the junk value is both removed and stopped
+    from being re-minted.
+    """
+
+    permission_classes = [IsAuthenticated]
+    _MAX_BATCH = 1000
+
+    def post(self, request):
+        from apps.pii.entity_registry import coerce, to_storage_value
+
+        try:
+            tenant = request.user.tenant
+        except Tenant.DoesNotExist:
+            return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
+
+        body = request.data or {}
+        placeholders = body.get("placeholders")
+        if not isinstance(placeholders, list):
+            return Response(
+                {"detail": "placeholders must be a list"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not placeholders:
+            return Response(
+                {"detail": "placeholders is required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(placeholders) > self._MAX_BATCH:
+            return Response(
+                {"detail": f"batch exceeds max size {self._MAX_BATCH}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not all(isinstance(p, str) for p in placeholders):
+            return Response(
+                {"detail": "placeholders must be a list of strings"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        kept: list[str] = []
+        not_found: list[str] = []
+
+        # Serialize the read-modify-write per tenant: the inbound redactor and
+        # the (retired) arbiter sweep overwrite the whole pii_entity_map dict.
+        # Re-read the row under a lock so stamping reviewed_at can't be
+        # clobbered by — or clobber — a concurrent mint/delete.
+        with transaction.atomic():
+            locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
+            entity_map = dict((locked.pii_entity_map if locked else None) or {})
+
+            now = timezone.now().isoformat()
+            for placeholder in placeholders:
+                if placeholder not in entity_map:
+                    not_found.append(placeholder)
+                    continue
+                current = coerce(entity_map[placeholder])
+                # Rebuild via to_storage_value to keep the entry compact and
+                # preserve every stamp (updated_at, arbiter_judged_at) alongside
+                # the new reviewed_at, so keeping never drops identity metadata.
+                entity_map[placeholder] = to_storage_value(
+                    current.get("name", ""),
+                    relationship=current.get("relationship", ""),
+                    notes=current.get("notes", ""),
+                    updated_at=current.get("updated_at"),
+                    arbiter_judged_at=current.get("arbiter_judged_at"),
+                    reviewed_at=now,
+                )
+                kept.append(placeholder)
+
+            Tenant.objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
+        tenant.pii_entity_map = entity_map
+
+        return Response({"kept": kept, "not_found": not_found}, status=status.HTTP_200_OK)
 
 
 class PIIDenylistListView(APIView):

@@ -489,7 +489,11 @@ def reflect(
     """
     ctx = build_spatial_context(target, stars, edges_by_star, recent_ids)
 
-    session = RedactionSession(tenant=tenant)
+    # mint='never': the spatial evidence is agent-authored (cluster labels,
+    # lesson summaries, pinned notes) — the audit flagged this class as a
+    # junk-mint source. Run replace-known-only so known people stay masked but no
+    # NEW bindings are coined; the reflect line is rehydrated at egress anyway.
+    session = RedactionSession(tenant=tenant, mint="never")
     redacted = _redact_context(ctx, session)
 
     source = "fallback"

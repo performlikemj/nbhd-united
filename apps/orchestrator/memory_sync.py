@@ -48,7 +48,11 @@ def render_memory_files(tenant) -> dict[str, str]:
     from apps.journal.path_validation import validate_kind_slug
     from apps.pii.redactor import RedactionSession
 
-    session = RedactionSession(tenant=tenant)
+    # mint='never': these documents are AGENT-authored markdown (table
+    # separators, headings, timestamps) — the audit's #1 junk-mint source. Run
+    # replace-known-only so known people stay masked but no NEW bindings are
+    # coined from machine structure.
+    session = RedactionSession(tenant=tenant, mint="never")
 
     files: dict[str, str] = {}
     for doc in documents:

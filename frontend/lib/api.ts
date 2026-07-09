@@ -456,6 +456,40 @@ export function bulkAddPIIDenylistEntries(names: string[]): Promise<PIIDenylistB
   });
 }
 
+// Tier-2 PII review queue — the PERSON/LOCATION bindings the assistant is
+// hiding that the user hasn't judged yet. "Keep" stamps the entry as reviewed
+// (drops it from the queue); "clean" reuses bulkDeleteEntityRegistryEntries
+// with deny=true. `total` is the full unreviewed backlog; `entries` is the
+// newest-first page (capped server-side) so the card can say "hiding N values".
+// This is also the contract the iOS on-device review flow consumes.
+export interface PIIReviewQueueEntry {
+  placeholder: string;
+  name: string;
+  relationship: string;
+  notes: string;
+}
+
+export interface PIIReviewQueue {
+  entries: PIIReviewQueueEntry[];
+  total: number;
+}
+
+export function fetchPIIReviewQueue(): Promise<PIIReviewQueue> {
+  return apiFetch<PIIReviewQueue>("/api/v1/tenants/settings/pii-review-queue/");
+}
+
+export interface PIIReviewKeepResult {
+  kept: string[];
+  not_found: string[];
+}
+
+export function keepPIIReviewEntries(placeholders: string[]): Promise<PIIReviewKeepResult> {
+  return apiFetch<PIIReviewKeepResult>("/api/v1/tenants/settings/pii-review-queue/keep/", {
+    method: "POST",
+    body: JSON.stringify({ placeholders }),
+  });
+}
+
 export function onboardTenant(data: { display_name?: string; language?: string; agent_persona?: string; invite_token?: string }): Promise<Tenant> {
   return apiFetch<Tenant>("/api/v1/tenants/onboard/", {
     method: "POST",

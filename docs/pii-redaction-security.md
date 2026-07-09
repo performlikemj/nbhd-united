@@ -177,6 +177,32 @@ This boundary is entirely server-side — iOS and web need no client change to b
 - **Overlap deduplication**: When multiple engines detect overlapping entities (e.g., DeBERTa CREDITCARDNUMBER and Presidio CREDIT_CARD), the higher-confidence match wins
 - **Graceful failure**: If detection errors, the original text is returned unredacted — redaction never blocks the user experience
 
+## Self-cleaning & review
+
+The DeBERTa model, run over text it was never trained on (agent-authored
+markdown, raw email bodies, financial jargon), over-mints: a canary audit found
+979 of 1,103 bindings were junk. Two mechanisms clean this up.
+
+**Retired: the cloud arbiter.** An hourly cron (`apps/pii/arbiter.py`) used to
+ship PERSON/LOCATION span text to Claude Haiku via OpenRouter to judge whether
+each was real PII. **That cron is retired.** It was the *only* component that
+sent a PII value to a cloud model.
+
+**Egress guarantee (after retirement):** no PII value leaves the platform
+boundary except to the owner's own authenticated clients — the JWT-scoped
+surfaces where the owner already reads their real data. Detection, validation,
+and the junk sweep all run in-process in the Django container.
+
+**Replacement: local hygiene + owner review.** Junk is now stopped at the source
+(mint-gating by source: chat mints freely, agent-authored memory-sync is
+replace-only, tool results are validated-only), validated before minting
+(financial/identifier labels must clear deterministic checks), and swept from the
+backlog by an idempotent, per-tenant `heal → deny → delete` cron. The ambiguous
+residue (plausible names/places) is surfaced to the owner via review-queue
+endpoints (`GET /api/v1/tenants/settings/pii-review-queue/`, `POST .../keep/`,
+clean via the existing `entity-registry/bulk/` with `deny: true`) — optionally
+assisted by an on-device model. **Full design: `docs/pii-self-cleaning.md`.**
+
 ## What is NOT covered
 
 | Gap | Reason | Risk level |
@@ -193,7 +219,11 @@ This boundary is entirely server-side — iOS and web need no client change to b
 | `apps/pii/__init__.py` | App init |
 | `apps/pii/config.py` | Tier policies, entity types |
 | `apps/pii/engine.py` | Lazy-singleton DeBERTa ONNX pipeline + Presidio pattern recognizers |
-| `apps/pii/redactor.py` | `redact_text()`, `RedactionSession`, `rehydrate_text()`, `redact_tool_response()`, `redact_user_message()`, `_detect_pii()` |
+| `apps/pii/redactor.py` | `redact_text()`, `RedactionSession`, `rehydrate_text()`, `redact_tool_response()`, `redact_user_message()`, `_detect_pii()`; source-based mint gating + mask-before-detect |
+| `apps/pii/hygiene.py` | P1 validators + P2 span hygiene + placeholder masking (see `docs/pii-self-cleaning.md`) |
+| `apps/pii/arbiter.py` | **RETIRED** — was the hourly cloud-egress false-positive judge (Haiku via OpenRouter) |
+| `apps/pii/entity_registry.py` | `pii_entity_map` / `pii_denylist` read-write helpers (`canonical_key`, `is_denied`, `get_name`) |
+| `apps/tenants/views.py` | `EntityRegistryBulkDeleteView` (bulk clean w/ deny) + `pii-review-queue/` list + keep |
 | `apps/pii/tests.py` | 40 tests covering all redaction and rehydration paths |
 | `apps/orchestrator/memory_sync.py` | Workspace context redaction integration |
 | `apps/orchestrator/config_generator.py` | Coordinate quantization |

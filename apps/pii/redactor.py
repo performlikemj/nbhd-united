@@ -577,6 +577,127 @@ def redact_text(
         return text
 
 
+# ---------------------------------------------------------------------------
+# Mint policy — WHO is allowed to coin NEW placeholders
+# ---------------------------------------------------------------------------
+#
+# The prod audit found 979/1103 bindings were junk, and the source was never
+# human chat: it was MACHINE text — agent-authored workspace markdown (table
+# separators, headings, timestamps NER labels PERSON/ACCOUNT) and raw tool
+# payloads (newsletter senders, email bodies, financial labels with no
+# validation). So minting is now gated by WHERE the text came from. Replacing
+# entities the tenant map ALREADY knows is allowed under every policy — the gate
+# only decides whether unfamiliar text is permitted to create a NEW binding, so
+# privacy for known people is preserved everywhere.
+MINT_ALL = "all"  # human-typed chat ingress — mint everything (legacy behavior)
+MINT_VALIDATED = "validated"  # tool responses — mint only validator-approved types
+MINT_NEVER = "never"  # agent-authored markdown (memory sync, co-pilot) — mint nothing
+_MINT_POLICIES = frozenset({MINT_ALL, MINT_VALIDATED, MINT_NEVER})
+
+
+def _structured_validator():
+    """Return ``apps.pii.hygiene.validate_structured`` or ``None`` if unavailable.
+
+    Imported lazily (repo convention for cross-app deps) so redactor import does
+    not hard-order against the hygiene module landing, and so the validated-mint
+    gate can fail CLOSED — mint nothing — rather than crash if hygiene is absent.
+    Signature: ``validate_structured(entity_type: str, text: str) -> bool``.
+    """
+    try:
+        from apps.pii.hygiene import validate_structured
+    except Exception:
+        return None
+    return validate_structured
+
+
+# Email-shape floor used ONLY until apps.pii.hygiene lands (see below). A single
+# @ with a dotted domain, no whitespace — deliberately loose: it just needs to
+# tell a real address apart from a neural mislabel, not fully RFC-validate.
+_EMAIL_SHAPE_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def _fallback_structured_valid(entity_type: str, text: str) -> bool:
+    """Conservative built-in mint floor used ONLY when ``apps.pii.hygiene`` is
+    absent (merge-order safety), fully superseded once hygiene lands.
+
+    Vouches for email-shaped ``EMAIL_ADDRESS`` spans so inbound-correspondent
+    protection never regresses — the task requires emails keep minting from tool
+    text. Checksummed types (cards, IBANs) are deliberately NOT vouched here:
+    they need real Luhn/checksum validation that is hygiene's job, and the audit
+    showed NEURAL card labels ("django" tagged CREDIT_CARD) are junk, so a
+    type-only floor would mint junk. Neural PERSON/LOCATION never pass.
+    """
+    if entity_type == "EMAIL_ADDRESS":
+        return bool(_EMAIL_SHAPE_RE.match((text or "").strip()))
+    return False
+
+
+def _should_mint_new(mint: str, entity_type: str, text: str) -> bool:
+    """Whether a NEWLY-DETECTED span (one the tenant map does not already know)
+    may coin a fresh placeholder under ``mint``.
+
+    Known-entity replacement runs BEFORE this gate on every path, so a ``False``
+    here never un-protects a known contact — it only decides whether unfamiliar
+    text mints a new binding. ``validated`` defers the per-type judgment to
+    ``hygiene.validate_structured`` (email-shaped addresses, Luhn cards, IBAN
+    checksums pass; neural PERSON/LOCATION do not). Until hygiene is importable it
+    falls back to a conservative email-only floor (``_fallback_structured_valid``)
+    so email protection never regresses, while the junk-prone classes still
+    fail closed.
+    """
+    if mint == MINT_ALL:
+        return True
+    if mint == MINT_NEVER:
+        return False
+    validate = _structured_validator()
+    if validate is None:
+        return _fallback_structured_valid(entity_type, text)
+    try:
+        return bool(validate(entity_type, text))
+    except Exception:
+        return False
+
+
+def _replace_known_only(
+    text: str,
+    inverted_ci: dict[str, tuple[str, str]],
+    denylist: dict[str, Any] | None,
+) -> str:
+    """Substitute ONLY names the tenant map already knows — mint nothing.
+
+    The ``mint='never'`` path (workspace memory-sync + galaxy co-pilot). Both feed
+    the redactor AGENT-authored markdown, the audit's dominant junk-mint source,
+    so we skip the detector entirely and coin nothing: known people stay masked via
+    a literal, case-insensitive, word-boundary pass, and machine structure
+    (headings, table rules, timestamps) is left verbatim. The guards mirror the
+    inbound Step 1 known-entity pass exactly — denylisted and degenerate stored
+    names are skipped, and substitution runs only OUTSIDE existing placeholders so
+    a stored name can never rewrite a placeholder's interior. No detection, no new
+    bindings, no DB write. Kept a small self-contained duplicate of Step 1 rather
+    than refactoring ``_redact_user_message`` so this stays surgical.
+    """
+    if not text or not inverted_ci:
+        return text
+    out = text
+    # Longest names first so "Jay Haughton" matches before "Jay".
+    for original, placeholder in sorted(
+        ((name, ph) for name, ph in inverted_ci.values()),
+        key=lambda x: -len(x[0]),
+    ):
+        if not original:
+            continue
+        if _is_denied(denylist, original):
+            continue
+        if _is_degenerate_span(original):
+            continue
+        esc = re.escape(original)
+        left = r"\b" if (original[:1].isalnum() or original[:1] == "_") else ""
+        right = r"\b" if (original[-1:].isalnum() or original[-1:] == "_") else ""
+        pattern = re.compile(left + esc + right, re.IGNORECASE)
+        out = _sub_outside_placeholders(out, pattern, placeholder)
+    return out
+
+
 class RedactionSession:
     """Maintains consistent entity numbering across multiple redact() calls.
 
@@ -590,6 +711,11 @@ class RedactionSession:
         for doc in documents:
             doc.content = session.redact(doc.content)
         tenant.pii_entity_map = session.entity_map
+
+    ``mint`` controls whether unfamiliar text may coin NEW placeholders (see the
+    MINT_* constants). Callers feeding AGENT-authored markdown (memory sync,
+    galaxy co-pilot) pass ``mint='never'`` so machine structure can't mint junk;
+    the default ``'all'`` preserves the mint-everything behavior.
     """
 
     def __init__(
@@ -598,9 +724,17 @@ class RedactionSession:
         tenant: Tenant | None = None,
         tier: str | None = None,
         allow_names: set[str] | None = None,
+        mint: str = MINT_ALL,
     ):
         self.tenant = tenant
         self.allow_names = allow_names or set()
+
+        # Mint policy for this session (see the MINT_* constants). Default
+        # ``all`` preserves the historical mint-everything behavior for callers
+        # that don't opt in; an unknown value coerces to ``all`` (least
+        # surprising — a typo must not silently stop protecting known people).
+        # Agent-authored callers (memory sync, co-pilot) pass ``never``.
+        self.mint = mint if mint in _MINT_POLICIES else MINT_ALL
 
         # Resolve tier and policy once
         if tier is None and tenant is not None:
@@ -642,6 +776,17 @@ class RedactionSession:
         if not text or not text.strip() or not self.enabled or not self.entities:
             return text
 
+        # mint='never': replace only already-known entities, coin nothing new.
+        # Agent-authored markdown is the audit's #1 junk-mint source, so this
+        # path runs no detector — known people stay masked, machine structure
+        # (headings, table rules, timestamps) is left verbatim. No mint, no write.
+        if self.mint == MINT_NEVER:
+            try:
+                return _replace_known_only(text, self._inverted_ci, self._denylist)
+            except Exception:
+                logger.exception("PII known-only replacement failed — returning original text")
+                return text
+
         try:
             result, _ = _redact(
                 text,
@@ -653,6 +798,7 @@ class RedactionSession:
                 entity_map=self.entity_map,
                 inverted_ci=self._inverted_ci,
                 denylist=self._denylist,
+                mint=self.mint,
             )
             return result
         except Exception:
@@ -717,6 +863,7 @@ def redact_user_message(
     tenant: Tenant,
     *,
     allow_user_name: bool = True,
+    mint: str = MINT_ALL,
 ) -> str:
     """Redact PII in a user's message before forwarding to OpenClaw.
 
@@ -729,6 +876,11 @@ def redact_user_message(
             excluded from redaction.  Set to False for tool responses so the
             model never sees raw name fragments it can mix with contact
             placeholders.
+        mint: Which NEW bindings this call may coin (see the MINT_* constants).
+            Human-typed chat ingress leaves the default ``'all'``; the tool-
+            response path passes ``'validated'`` so machine text only mints
+            structurally-validated types (emails, cards, IBANs) and never coins
+            a junk placeholder from a neural PERSON/LOCATION hit.
 
     Returns the redacted text. Updates tenant.pii_entity_map in the DB
     if new entities are discovered.
@@ -742,7 +894,7 @@ def redact_user_message(
         return text
 
     try:
-        return _redact_user_message(text, tenant, policy, allow_user_name=allow_user_name)
+        return _redact_user_message(text, tenant, policy, allow_user_name=allow_user_name, mint=mint)
     except Exception:
         logger.exception("User message PII redaction failed — returning original")
         return text
@@ -754,6 +906,7 @@ def _redact_user_message(
     policy: dict,
     *,
     allow_user_name: bool = True,
+    mint: str = MINT_ALL,
 ) -> str:
     """Internal: redact user message with known + new entity detection."""
     existing_map = getattr(tenant, "pii_entity_map", None) or {}
@@ -866,6 +1019,15 @@ def _redact_user_message(
         ci_key = _canonical_key(original)
         if ci_key and ci_key in inverted_ci:
             known_replacements.append((result.start, result.end, inverted_ci[ci_key][1]))
+            continue
+
+        # Mint-policy gate. Known entities were replaced above (always allowed);
+        # a NEW binding is coined only when the policy vouches for this type/text.
+        # Tool responses run ``validated`` — a neural PERSON/LOCATION span from an
+        # email body is left verbatim rather than minting a junk placeholder,
+        # while an email-shaped or checksummed span still mints so inbound
+        # correspondents stay protected. Chat ingress runs ``all`` (unchanged).
+        if not _should_mint_new(mint, etype, original):
             continue
 
         to_mint.append((result.start, result.end, etype, original, result.score))
@@ -1012,8 +1174,13 @@ def redact_telegram_update(update: dict, tenant: Tenant) -> dict:
 def redact_tool_response(data: Any, tenant: Tenant) -> Any:
     """Redact PII in a tool response (JSON dict/list) before returning to OpenClaw.
 
-    Recursively walks the JSON structure and applies redaction to string values
-    using the tenant's entity map for known entities + model for new ones.
+    Recursively walks the JSON structure and applies redaction to string values.
+    Tool text is MACHINE-generated (raw email bodies, tool JSON) — the audit's #2
+    junk-mint source (newsletter senders, invisible-char runs, unvalidated
+    financial labels). So this path mints under ``validated``: known entities are
+    still replaced, email-shaped / checksummed spans still mint (inbound
+    correspondents stay protected), but a neural PERSON/LOCATION hit is left
+    verbatim rather than coining a new junk binding.
 
     Skips keys that are identifiers/metadata (id, html_link, internal_date, etc.)
     to avoid corrupting structured data.
@@ -1065,7 +1232,9 @@ def _redact_tool_value(
         # allow_user_name=False so the user's own name gets redacted too —
         # prevents the model from mixing the user's surname with contact
         # placeholders (e.g., "[PERSON_1] Jones" -> "Mitsumasa Jones").
-        return redact_user_message(value, tenant, allow_user_name=False)
+        # mint='validated' so machine text only mints structurally-validated
+        # types; neural PERSON/LOCATION here replace-if-known but never coin new.
+        return redact_user_message(value, tenant, allow_user_name=False, mint=MINT_VALIDATED)
     elif isinstance(value, dict):
         return {
             k: (v if k in skip_keys else _redact_tool_value(v, tenant, policy, skip_keys)) for k, v in value.items()
@@ -1097,6 +1266,19 @@ def _detect_pii(
     """
     from apps.pii.engine import get_pattern_recognizers, get_pii_pipeline
 
+    # Hygiene helpers are best-effort: a missing module must degrade to raw
+    # detection, never crash the redactor. mask_placeholders keeps the model from
+    # re-detecting the interior of existing [TYPE_N] tokens; snap fixes the
+    # truncated-span class ('amaica' -> 'Jamaica'). Both preserve character
+    # offsets, so reported spans still index the ORIGINAL ``text`` unchanged.
+    try:
+        from apps.pii.hygiene import mask_placeholders, snap_to_word_boundaries
+    except Exception:
+        mask_placeholders = None
+        snap_to_word_boundaries = None
+
+    detect_text = mask_placeholders(text) if mask_placeholders is not None else text
+
     results: list[DetectedEntity] = []
 
     # 1. DeBERTa model — contextual PII (best effort).
@@ -1106,7 +1288,7 @@ def _detect_pii(
     # Pattern recognizers below still run, so financial PII stays redacted.
     try:
         pii_pipeline = get_pii_pipeline()
-        model_results = pii_pipeline(text)
+        model_results = pii_pipeline(detect_text)
     except Exception:
         model_results = []
 
@@ -1122,13 +1304,20 @@ def _detect_pii(
         entity_type = DEBERTA_LABEL_MAP.get(raw_label)
         if entity_type and entity_type in entities:
             # Trim leading/trailing whitespace from span boundaries —
-            # aggregation_strategy="simple" can include boundary spaces
+            # aggregation_strategy="simple" can include boundary spaces. Extract
+            # against the ORIGINAL text (offsets are shared with the masked copy).
             start, end = ent["start"], ent["end"]
             span_text = text[start:end]
             start += len(span_text) - len(span_text.lstrip())
             end -= len(span_text) - len(span_text.rstrip())
             if start >= end:
                 continue
+            # Snap name/place spans to word boundaries so a truncated neural span
+            # recovers the whole word instead of minting a fragment. Restricted to
+            # PERSON/LOCATION: for structured types a digit run is meaningful and
+            # expansion could grab an adjacent digit.
+            if snap_to_word_boundaries is not None and entity_type in ("PERSON", "LOCATION"):
+                start, end = snap_to_word_boundaries(text, start, end)
             results.append(
                 DetectedEntity(
                     entity_type=entity_type,
@@ -1142,11 +1331,13 @@ def _detect_pii(
     # both map to PERSON — merge into a single span covering "Sarah Chen")
     results = _merge_adjacent_spans(results)
 
-    # 2. Presidio regex — credit cards (Luhn), IBANs (checksum), emails (regex fallback)
+    # 2. Presidio regex — credit cards (Luhn), IBANs (checksum), emails (regex
+    # fallback). Runs over the placeholder-masked copy too, so a numeric
+    # recognizer can never latch onto a placeholder's counter digits.
     pattern_recognizers = get_pattern_recognizers()
     for entity_type, recognizer in pattern_recognizers.items():
         if entity_type in entities:
-            for r in recognizer.analyze(text=text, entities=[entity_type]):
+            for r in recognizer.analyze(text=detect_text, entities=[entity_type]):
                 if r.score >= score_threshold:
                     results.append(
                         DetectedEntity(
@@ -1208,6 +1399,7 @@ def _redact(
     entity_map: dict[str, str],
     inverted_ci: dict[str, tuple[str, str]] | None = None,
     denylist: dict[str, Any] | None = None,
+    mint: str = MINT_ALL,
 ) -> tuple[str, dict[str, str]]:
     """Run PII detection and replace with numbered placeholders.
 
@@ -1225,6 +1417,11 @@ def _redact(
     ``denylist`` (when non-empty) suppresses detection of spans whose
     canonical key the tenant has marked as "not PII for me". See
     ``entity_registry.is_denied``.
+
+    ``mint`` gates whether unfamiliar spans may coin NEW placeholders (see the
+    MINT_* constants). Known-entity reuse via ``inverted_ci`` is unaffected — the
+    gate only blocks fresh mints, so ``validated`` mints validator-approved types
+    and ``never`` mints nothing while both still reuse known bindings.
 
     Returns ``(redacted_text, entity_map)``.
     """
@@ -1263,6 +1460,12 @@ def _redact(
             if ci_key and ci_key in inverted_ci:
                 replacements.append((result.start, result.end, inverted_ci[ci_key][1]))
                 continue
+
+        # Mint-policy gate: known entities were reused above; a NEW binding is
+        # coined only when the policy allows it for this type/text (agent-authored
+        # sessions run ``never`` and never reach a mint here).
+        if not _should_mint_new(mint, etype, original):
+            continue
 
         count = type_counters.get(etype, 0) + 1
         type_counters[etype] = count
@@ -1321,8 +1524,18 @@ def _filter_results(
 
     Also applies the mint-time guards (degenerate span, bare
     number/unit, fitness vocabulary) that keep NER false positives from
-    minting a placeholder. ``tenant`` is used only for skip telemetry.
+    minting a placeholder, plus the deterministic ``apps.pii.hygiene`` layer
+    (structural junk + structured-type validation). ``tenant`` is used only for
+    skip telemetry.
     """
+    # Best-effort: a missing hygiene module must degrade to the legacy guards,
+    # never drop every hit. Both callables stay None when unavailable.
+    try:
+        from apps.pii.hygiene import is_junk_span, validate_structured
+    except Exception:
+        is_junk_span = None
+        validate_structured = None
+
     filtered = []
     for result in results:
         matched_text = text[result.start : result.end].strip()
@@ -1361,6 +1574,29 @@ def _filter_results(
             if result.entity_type == "LOCATION" and _DATE_LIKE_RE.match(matched_text):
                 _log_skip(tenant, result, "date_like", len(matched_text))
                 continue
+
+        # Deterministic hygiene — the audit's junk taxonomy (markdown/table
+        # structure, zero-width/HTML-entity runs, self-redacted placeholder
+        # fragments, dates/measurements, code identifiers) across ALL types.
+        if is_junk_span is not None:
+            junk, reason = is_junk_span(matched_text, result.entity_type)
+            if junk:
+                _log_skip(tenant, result, reason, len(matched_text))
+                continue
+
+        # Structured-type validation — neural CREDIT_CARD/EMAIL/PHONE/ACCOUNT/
+        # CRYPTO labels carry NO checksum, so "django" as a card or a temperature
+        # range as an account reached the mint before this. PERSON/LOCATION are
+        # free-form and validate_structured returns False for them by contract
+        # (the mint gate needs that) — so they are NEVER gated here, only the
+        # structurally-shaped types are.
+        if (
+            validate_structured is not None
+            and result.entity_type not in ("PERSON", "LOCATION")
+            and not validate_structured(result.entity_type, matched_text)
+        ):
+            _log_skip(tenant, result, "structured_invalid", len(matched_text))
+            continue
 
         filtered.append(result)
 

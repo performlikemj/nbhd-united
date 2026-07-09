@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { SectionCard } from "@/components/section-card";
 import { BulkDeletePeopleDialog } from "@/components/settings/bulk-delete-people-dialog";
+import { PIIReviewCard } from "@/components/settings/pii-review-card";
 import {
   type EntityRegistryEntry,
   type PIIDenylistEntry,
@@ -14,6 +15,8 @@ import {
   deleteEntityRegistryEntry,
   fetchEntityRegistry,
   fetchPIIDenylist,
+  fetchPIIReviewQueue,
+  keepPIIReviewEntries,
   removePIIDenylistEntry,
   updateEntityRegistryEntry,
 } from "@/lib/api";
@@ -72,6 +75,10 @@ export default function PeopleSettingsPage() {
     queryKey: ["pii-denylist"],
     queryFn: fetchPIIDenylist,
   });
+  const reviewQueueQuery = useQuery({
+    queryKey: ["pii-review-queue"],
+    queryFn: fetchPIIReviewQueue,
+  });
 
   const [drafts, setDrafts] = useState<DraftMap>({});
   const [errorMap, setErrorMap] = useState<Record<string, string>>({});
@@ -115,6 +122,8 @@ export default function PeopleSettingsPage() {
       updateEntityRegistryEntry(placeholder, patch),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["entity-registry"] });
+      // A rename changes how the row reads in the review queue too.
+      void queryClient.invalidateQueries({ queryKey: ["pii-review-queue"] });
     },
   });
 
@@ -122,6 +131,7 @@ export default function PeopleSettingsPage() {
     mutationFn: (placeholder: string) => deleteEntityRegistryEntry(placeholder),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["entity-registry"] });
+      void queryClient.invalidateQueries({ queryKey: ["pii-review-queue"] });
     },
   });
 
@@ -158,8 +168,32 @@ export default function PeopleSettingsPage() {
       // deny=true also mutates the denylist, so refresh both sections.
       void queryClient.invalidateQueries({ queryKey: ["entity-registry"] });
       void queryClient.invalidateQueries({ queryKey: ["pii-denylist"] });
+      void queryClient.invalidateQueries({ queryKey: ["pii-review-queue"] });
       setSelectedKeys(new Set());
       setDeleteDialogOpen(false);
+    },
+  });
+
+  // ── Tier-2 review queue ──────────────────────────────────────────────────
+  // "Keep" stamps reviewed_at (drops the entry from the queue); "Stop hiding"
+  // reuses the entity-registry bulk-delete with deny=true so the junk value is
+  // removed AND stopped from being re-minted. Both invalidate the queue; stop
+  // also touches the registry + denylist. Per-row spinners read the in-flight
+  // mutation variables so simultaneous single-row actions stay independent.
+  const keepReviewMutation = useMutation({
+    mutationFn: (placeholders: string[]) => keepPIIReviewEntries(placeholders),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pii-review-queue"] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-registry"] });
+    },
+  });
+
+  const stopHidingMutation = useMutation({
+    mutationFn: (placeholders: string[]) => bulkDeleteEntityRegistryEntries(placeholders, true),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["pii-review-queue"] });
+      void queryClient.invalidateQueries({ queryKey: ["entity-registry"] });
+      void queryClient.invalidateQueries({ queryKey: ["pii-denylist"] });
     },
   });
 
@@ -334,6 +368,31 @@ export default function PeopleSettingsPage() {
 
   const clearSelection = () => setSelectedKeys(new Set());
 
+  // ── Review queue derived state + handlers ────────────────────────────────
+  const reviewEntries = useMemo(
+    () => reviewQueueQuery.data?.entries ?? [],
+    [reviewQueueQuery.data],
+  );
+  const reviewTotal = reviewQueueQuery.data?.total ?? 0;
+  const pendingKeep = useMemo(
+    () => new Set(keepReviewMutation.isPending ? (keepReviewMutation.variables ?? []) : []),
+    [keepReviewMutation.isPending, keepReviewMutation.variables],
+  );
+  const pendingStop = useMemo(
+    () => new Set(stopHidingMutation.isPending ? (stopHidingMutation.variables ?? []) : []),
+    [stopHidingMutation.isPending, stopHidingMutation.variables],
+  );
+  const reviewBulkBusy = keepReviewMutation.isPending || stopHidingMutation.isPending;
+
+  const handleReviewKeepAll = () => {
+    const placeholders = reviewEntries.map((e) => e.placeholder);
+    if (placeholders.length > 0) keepReviewMutation.mutate(placeholders);
+  };
+  const handleReviewStopAll = () => {
+    const placeholders = reviewEntries.map((e) => e.placeholder);
+    if (placeholders.length > 0) stopHidingMutation.mutate(placeholders);
+  };
+
   return (
     <div className="space-y-6">
       <div
@@ -347,6 +406,20 @@ export default function PeopleSettingsPage() {
           you can help your experience by occasionally marking those entries as “Ignore.”
         </p>
       </div>
+
+      {!reviewQueueQuery.isLoading && !reviewQueueQuery.error && (
+        <PIIReviewCard
+          entries={reviewEntries}
+          total={reviewTotal}
+          onKeep={(placeholder) => keepReviewMutation.mutate([placeholder])}
+          onStopHiding={(placeholder) => stopHidingMutation.mutate([placeholder])}
+          onKeepAll={handleReviewKeepAll}
+          onStopHidingAll={handleReviewStopAll}
+          pendingKeep={pendingKeep}
+          pendingStop={pendingStop}
+          bulkBusy={reviewBulkBusy}
+        />
+      )}
 
       <SectionCard
         title="People your assistant knows"

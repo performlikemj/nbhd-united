@@ -24,6 +24,8 @@ from .views import (
     PIIDenylistBulkView,
     PIIDenylistItemView,
     PIIDenylistListView,
+    PIIReviewQueueKeepView,
+    PIIReviewQueueView,
     PreferredModelView,
     ProfileView,
     ProvisioningStatusView,
@@ -78,6 +80,17 @@ urlpatterns = [
         "settings/pii-denylist/<str:key>/",
         PIIDenylistItemView.as_view(),
         name="pii-denylist-item",
+    ),
+    # Tier-2 PII review queue: the PERSON/LOCATION bindings the assistant is
+    # hiding that the user has not yet judged. GET the queue, POST keep/ to
+    # stamp reviewed_at on the ones worth keeping; "clean" verdicts reuse the
+    # entity-registry bulk-delete (deny=true) above. This is also the contract
+    # the iOS on-device review flow consumes.
+    path("settings/pii-review-queue/", PIIReviewQueueView.as_view(), name="pii-review-queue"),
+    path(
+        "settings/pii-review-queue/keep/",
+        PIIReviewQueueKeepView.as_view(),
+        name="pii-review-queue-keep",
     ),
     path("telegram/generate-link/", telegram_generate_link, name="telegram-generate-link"),
     path("telegram/unlink/", telegram_unlink, name="telegram-unlink"),
