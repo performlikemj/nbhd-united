@@ -285,6 +285,27 @@ class TelegramPollerForwardTest(TestCase):
         resp.json.return_value = {"choices": [{"message": {"content": "ok"}}], "usage": {}}
         return resp
 
+    def _snapshot_row_on_completions(self):
+        """Side-effect for the patched httpx.post that snapshots the queued
+        PendingMessage row at chat-completions time. Delete-on-drain (privacy
+        PR-3) removes the row before ``_forward_to_container`` returns (the
+        drain runs inline in tests), so payload-shape assertions must capture
+        the row while it is actually in flight."""
+        from apps.router.models import PendingMessage
+
+        captured: dict = {}
+
+        def _post(url, *args, **kwargs):
+            if "/v1/chat/completions" in url:
+                captured["row"] = PendingMessage.objects.filter(tenant=self.tenant, channel="telegram").first()
+                return self._completions_resp()
+            ok = MagicMock()
+            ok.is_success = True
+            ok.status_code = 200
+            return ok
+
+        return _post, captured
+
     @patch("apps.router.pending_queue.httpx.post")
     def test_photo_forward_is_marked_is_image_singleton(self, mock_post):
         # A Telegram photo carries its [Photo attached: <path>] marker ONLY in
@@ -294,7 +315,8 @@ class TelegramPollerForwardTest(TestCase):
         from apps.router.models import PendingMessage
         from apps.router.pending_queue import _row_is_singleton_media
 
-        mock_post.return_value = self._completions_resp()
+        side_effect, captured = self._snapshot_row_on_completions()
+        mock_post.side_effect = side_effect
         self.poller._forward_to_container(
             123,
             self.tenant,
@@ -302,22 +324,27 @@ class TelegramPollerForwardTest(TestCase):
             raw_user_text="look",
             is_image=True,
         )
-        row = PendingMessage.objects.filter(tenant=self.tenant, channel="telegram").first()
+        row = captured.get("row")
         self.assertIsNotNone(row)
         self.assertTrue(row.payload.get("is_image"))
         self.assertTrue(_row_is_singleton_media(row))
+        # Delivered → hard-deleted (PR-3): the transient queue keeps nothing.
+        self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
 
     @patch("apps.router.pending_queue.httpx.post")
     def test_text_forward_is_not_flagged_is_image(self, mock_post):
         from apps.router.models import PendingMessage
         from apps.router.pending_queue import _row_is_singleton_media
 
-        mock_post.return_value = self._completions_resp()
+        side_effect, captured = self._snapshot_row_on_completions()
+        mock_post.side_effect = side_effect
         self.poller._forward_to_container(123, self.tenant, "just text")
-        row = PendingMessage.objects.filter(tenant=self.tenant, channel="telegram").first()
+        row = captured.get("row")
         self.assertIsNotNone(row)
         self.assertNotIn("is_image", row.payload)
         self.assertFalse(_row_is_singleton_media(row))
+        # Delivered → hard-deleted (PR-3).
+        self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
 
     @patch("apps.router.pending_queue.httpx.post")
     def test_forward_via_chat_completions(self, mock_post):

@@ -324,10 +324,13 @@ class SiriRespondTest(TestCase):
         self.assertFalse(resp.data["answered"])
         self.assertTrue(resp.data["escalated"])
         self.assertEqual(resp.data["client_msg_id"], "s1")
-        # The ask was routed to the full tenant agent (Tier 3).
+        # The ask was routed to the full tenant agent (Tier 3): the turn was
+        # persisted for polling and the inline drain POSTed the tenant gateway.
         turn = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="s1")
         self.assertEqual(turn.user_text, "summarize my whole month and email it")
-        self.assertTrue(PendingMessage.objects.filter(tenant=self.tenant, channel=PendingMessage.Channel.IOS).exists())
+        self.assertTrue(any("/v1/chat/completions" in (c.args[0] if c.args else "") for c in mock_post.call_args_list))
+        # Delivered → queue row hard-deleted (delete-on-drain, privacy PR-3).
+        self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
 
     @patch("apps.router.pending_queue.httpx.post")
     @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
@@ -357,8 +360,12 @@ class SiriRespondTest(TestCase):
         self.client.post("/api/v1/siri/respond/", body, format="json")
         self.client.post("/api/v1/siri/respond/", body, format="json")
         self.assertEqual(AppChatMessage.objects.filter(tenant=self.tenant, client_msg_id="dup").count(), 1)
-        # Exactly one tenant turn enqueued despite two requests.
-        self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 1)
+        # Exactly one tenant turn enqueued despite two requests: the queue row
+        # is hard-deleted after the inline drain (PR-3), so count the gateway
+        # POSTs — the replayed second request must not enqueue/POST again.
+        completions = [c for c in mock_post.call_args_list if "/v1/chat/completions" in (c.args[0] if c.args else "")]
+        self.assertEqual(len(completions), 1)
+        self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
 
     @patch("apps.router.chat_views.check_budget", return_value="over budget")
     @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
