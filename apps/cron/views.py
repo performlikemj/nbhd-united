@@ -217,6 +217,13 @@ TASK_MAP = {
     # for QStash publish failures, DLQ-bound drain attempts, and worker
     # deaths mid-claim. See pending_queue.reap_stuck_inbound_messages_task.
     "reap_stuck_inbound_messages": "apps.router.pending_queue.reap_stuck_inbound_messages_task",
+    # Daily privacy sweep for the per-tenant message queue. Deletes terminal
+    # PendingMessage rows (FAILED + residual DELIVERED) older than 14 days so
+    # the transient forwarding queue stops accumulating (redacted) user text.
+    # DELIVERED rows are hard-deleted on drain; this backstops the crash-window
+    # residue and bounds FAILED-row retention. See
+    # pending_queue.cleanup_stale_pending_messages_task.
+    "cleanup_stale_pending_messages": "apps.router.pending_queue.cleanup_stale_pending_messages_task",
     # Atomic fleet-bump fan-out (rollout-atomic-bump endpoint). Per-tenant
     # version + config + image bump that survives gunicorn 300s budget
     # for any fleet size. Differs from apply_single_tenant_image (image-only,

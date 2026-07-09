@@ -102,11 +102,14 @@ class PendingMessageEnqueueTest(TestCase):
         )
 
         self.assertIsInstance(msg, PendingMessage)
-        # publish_task in tests has no QStash -> sync-fallback drain.
-        # The drain ran inline so the row should now be delivered.
-        msg.refresh_from_db()
-        self.assertEqual(msg.delivery_status, PendingMessage.Status.DELIVERED)
-        self.assertIsNone(msg.delivery_in_flight_until)
+        # publish_task in tests has no QStash -> sync-fallback drain. The drain
+        # ran inline so the row should now be delivered AND hard-deleted
+        # (delete-on-drain privacy sweep, PR-3): the transient queue must not
+        # retain (redacted) user text past delivery.
+        self.assertFalse(
+            PendingMessage.objects.filter(id=msg.id).exists(),
+            "delivered row must be hard-deleted on drain",
+        )
         self.assertEqual(mock_post.call_count, 1)
 
 
@@ -171,9 +174,8 @@ class PendingMessageInFlightLockTest(TestCase):
         # Crucially: only ONE chat completion was POSTed.
         self.assertEqual(mock_post.call_count, 1)
 
-        msg.refresh_from_db()
-        self.assertEqual(msg.delivery_status, PendingMessage.Status.DELIVERED)
-        self.assertIsNone(msg.delivery_in_flight_until)
+        # Delivered → hard-deleted on drain (PR-3 privacy sweep).
+        self.assertFalse(PendingMessage.objects.filter(id=msg.id).exists())
 
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
     @patch("apps.router.pending_queue.httpx.post")
@@ -201,9 +203,8 @@ class PendingMessageInFlightLockTest(TestCase):
         result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_stale")
 
         self.assertEqual(result["delivered"], 1)
-        msg.refresh_from_db()
-        self.assertEqual(msg.delivery_status, PendingMessage.Status.DELIVERED)
-        self.assertIsNone(msg.delivery_in_flight_until)
+        # Delivered → hard-deleted on drain (PR-3 privacy sweep).
+        self.assertFalse(PendingMessage.objects.filter(id=msg.id).exists())
 
 
 @override_settings(
@@ -251,10 +252,8 @@ class PendingMessageOrderingTest(TestCase):
         self.assertEqual(result1["delivered"], 2)
         self.assertEqual(result1["batch_size"], 2)
 
-        m1.refresh_from_db()
-        m2.refresh_from_db()
-        self.assertEqual(m1.delivery_status, PendingMessage.Status.DELIVERED)
-        self.assertEqual(m2.delivery_status, PendingMessage.Status.DELIVERED)
+        # Both delivered → hard-deleted on drain (PR-3 privacy sweep).
+        self.assertFalse(PendingMessage.objects.filter(id__in=[m1.id, m2.id]).exists())
 
         # One POST with both texts in arrival order in the coalesced content.
         self.assertEqual(mock_post.call_count, 1)
@@ -312,8 +311,8 @@ class PendingMessageTenantIsolationTest(TestCase):
         result = drain_pending_messages_for_tenant_task(str(tenant_b.id), "line", "U_B")
         self.assertEqual(result["delivered"], 1)
 
-        b_row.refresh_from_db()
-        self.assertEqual(b_row.delivery_status, PendingMessage.Status.DELIVERED)
+        # Delivered → hard-deleted on drain (PR-3 privacy sweep).
+        self.assertFalse(PendingMessage.objects.filter(id=b_row.id).exists())
         # The container POSTed for B was tenant B's container, not A's.
         url = mock_post.call_args[0][0]
         self.assertIn("oc-B.example.com", url)
@@ -397,8 +396,8 @@ class PendingMessageAttemptsCapTest(TestCase):
         # processes that re-schedule inline and delivers the fresh row.
         drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_head")
 
-        fresh.refresh_from_db()
-        self.assertEqual(fresh.delivery_status, PendingMessage.Status.DELIVERED)
+        # Fresh row behind the dropped head was delivered → hard-deleted.
+        self.assertFalse(PendingMessage.objects.filter(id=fresh.id).exists())
         mock_send.assert_called()
 
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
@@ -471,8 +470,8 @@ class PendingMessageTelegramTest(TestCase):
         result = drain_pending_messages_for_tenant_task(str(tenant.id), "telegram", "42424242")
 
         self.assertEqual(result["delivered"], 1)
-        msg.refresh_from_db()
-        self.assertEqual(msg.delivery_status, PendingMessage.Status.DELIVERED)
+        # Delivered → hard-deleted on drain (PR-3 privacy sweep).
+        self.assertFalse(PendingMessage.objects.filter(id=msg.id).exists())
 
         # At least one POST went to /v1/chat/completions and at least
         # one went to the Telegram Bot API for the reply delivery.
@@ -1095,8 +1094,8 @@ class StaleMessageGuardTest(TestCase):
 
         self.assertEqual(result["delivered"], 1)
         self.assertIsNone(result.get("stale"))
-        msg.refresh_from_db()
-        self.assertEqual(msg.delivery_status, PendingMessage.Status.DELIVERED)
+        # Delivered → hard-deleted on drain (PR-3 privacy sweep).
+        self.assertFalse(PendingMessage.objects.filter(id=msg.id).exists())
         mock_apology.assert_not_called()
 
     @patch("apps.router.pending_queue._send_apology_for_stale_pending_message")
@@ -1239,12 +1238,8 @@ class PendingMessageColdStartCoalesceTest(TestCase):
         # exit (no more pending). Total = 2 POSTs.
         drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_voice")
 
-        text1.refresh_from_db()
-        text2.refresh_from_db()
-        voice.refresh_from_db()
-        self.assertEqual(text1.delivery_status, PendingMessage.Status.DELIVERED)
-        self.assertEqual(text2.delivery_status, PendingMessage.Status.DELIVERED)
-        self.assertEqual(voice.delivery_status, PendingMessage.Status.DELIVERED)
+        # All three delivered → hard-deleted on drain (PR-3 privacy sweep).
+        self.assertFalse(PendingMessage.objects.filter(id__in=[text1.id, text2.id, voice.id]).exists())
 
         # First POST: coalesced text1+text2. Second POST: voice singleton.
         self.assertEqual(mock_post.call_count, 2)
@@ -1289,10 +1284,8 @@ class PendingMessageColdStartCoalesceTest(TestCase):
 
         drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_vhead")
 
-        voice.refresh_from_db()
-        text_row.refresh_from_db()
-        self.assertEqual(voice.delivery_status, PendingMessage.Status.DELIVERED)
-        self.assertEqual(text_row.delivery_status, PendingMessage.Status.DELIVERED)
+        # Both delivered → hard-deleted on drain (PR-3 privacy sweep).
+        self.assertFalse(PendingMessage.objects.filter(id__in=[voice.id, text_row.id]).exists())
 
         # Two POSTs total — voice alone, then text alone (no coalescing
         # framing since the next batch was a singleton too).
@@ -1628,8 +1621,8 @@ class DrainDuringProvisioningTest(TestCase):
 
         # The next drain delivers the buffered message — the first "Hello" lands.
         drain_pending_messages_for_tenant_task(str(tenant.id), "line", "Udeliver")
-        msg.refresh_from_db()
-        self.assertEqual(msg.delivery_status, PendingMessage.Status.DELIVERED)
+        # Delivered on the second drain → hard-deleted (PR-3 privacy sweep).
+        self.assertFalse(PendingMessage.objects.filter(id=msg.id).exists())
         self.assertEqual(mock_post.call_count, 1)
 
     @patch("apps.router.pending_queue._reschedule_drain")
@@ -1668,3 +1661,45 @@ class DrainDuringProvisioningTest(TestCase):
         self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
         self.assertIsNotNone(turn.waking_at)
         mock_post.assert_not_called()
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class CleanupStalePendingMessagesTest(TestCase):
+    """The 14-day retention sweeper deletes terminal rows (FAILED + any
+    residual DELIVERED that escaped delete-on-drain) and never touches
+    PENDING or recent rows — bounding how long the transient queue can hold
+    (redacted) user text (docs/encryption-at-rest-directive.md §7, PR-3)."""
+
+    def _make(self, tenant, status, age_days):
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_x",
+            payload={"message_text": "x", "user_param": "U_x", "user_timezone": "UTC"},
+            user_text="x",
+            delivery_status=status,
+        )
+        PendingMessage.objects.filter(id=msg.id).update(created_at=timezone.now() - timedelta(days=age_days))
+        return msg
+
+    def test_deletes_old_terminal_spares_recent_and_pending(self):
+        from apps.router.pending_queue import cleanup_stale_pending_messages_task
+
+        user = _make_user(line_user_id="U_sweep")
+        tenant = _make_tenant(user)
+
+        old_failed = self._make(tenant, PendingMessage.Status.FAILED, 20)
+        old_delivered = self._make(tenant, PendingMessage.Status.DELIVERED, 20)
+        recent_failed = self._make(tenant, PendingMessage.Status.FAILED, 3)
+        old_pending = self._make(tenant, PendingMessage.Status.PENDING, 30)
+
+        result = cleanup_stale_pending_messages_task()
+
+        self.assertEqual(result["deleted"], 2)
+        remaining = set(PendingMessage.objects.values_list("id", flat=True))
+        self.assertNotIn(old_failed.id, remaining)
+        self.assertNotIn(old_delivered.id, remaining)
+        self.assertIn(recent_failed.id, remaining)
+        # PENDING rows are owned by the drain / reaper — never swept here even
+        # when ancient (the drain flips them to FAILED on the next tick).
+        self.assertIn(old_pending.id, remaining)

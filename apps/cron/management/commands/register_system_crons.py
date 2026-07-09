@@ -63,7 +63,16 @@ SYSTEM_CRONS = [
     # Every hour — hibernate idle tenants (no messages in 2h)
     ("hibernate-idle-tenants", "0 * * * *", "/api/cron/trigger/hibernate_idle_tenants/"),
     # Daily at 07:00 UTC — clean up delivered message buffers older than 7 days
+    # (residual sweeper; delivered/undelivered BufferedMessage rows). Also
+    # deletes undelivered raw webhooks older than 30 days (dead-tenant buffers).
     ("cleanup-delivered-buffers", "0 7 * * *", "/api/cron/trigger/cleanup_delivered_buffers/"),
+    # Daily at 07:30 UTC — privacy sweep for the per-tenant message queue.
+    # Deletes terminal PendingMessage rows (FAILED + residual DELIVERED) older
+    # than 14 days. DELIVERED rows are hard-deleted on drain; this backstops the
+    # crash-window residue and bounds FAILED-row retention so the transient
+    # queue stops being a permanent store of (redacted) user text. Offset from
+    # cleanup-delivered-buffers (07:00) so the two daily cleanups don't collide.
+    ("cleanup-stale-pending-messages", "30 7 * * *", "/api/cron/trigger/cleanup_stale_pending_messages/"),
     # Hourly dispatcher for nightly extraction. Fires for each tenant whose
     # local time is 21:xx (timezone-aware). The dispatcher's own idempotency
     # guard (Tenant.last_nightly_extraction_at) prevents double-fires within

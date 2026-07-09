@@ -1295,6 +1295,24 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                     )
                 delivered += batch_size
 
+                # Privacy hard-delete on confirmed forward
+                # (docs/encryption-at-rest-directive.md §7, Phase 0 PR-3):
+                # BufferedMessage holds the RAW pre-redaction webhook — the
+                # highest-sensitivity payload in the system. The forward
+                # succeeded and the reply was relayed above, so nothing re-reads
+                # these rows. We mark DELIVERED *first* (committed above) so a
+                # crash before the delete leaves a sweepable DELIVERED row, not
+                # an undelivered one that would be re-forwarded (duplicate
+                # reply); cleanup_delivered_buffers_task sweeps any residue.
+                try:
+                    BufferedMessage.objects.filter(id__in=[row.id for row in line_batch]).delete()
+                except Exception:
+                    logger.exception(
+                        "deliver_buffered: failed to hard-delete forwarded LINE batch for tenant %s "
+                        "(rows remain DELIVERED; 7-day cleanup cron will sweep)",
+                        tenant_id[:8],
+                    )
+
             except Exception:
                 logger.exception(
                     "deliver_buffered: failed to deliver LINE batch of %d for tenant %s (rows %s)",
@@ -1382,6 +1400,21 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
             )
             delivered += 1
 
+            # Privacy hard-delete on confirmed forward — see the LINE batch
+            # path above and docs/encryption-at-rest-directive.md §7 (Phase 0
+            # PR-3). The raw webhook is gone the moment it has been forwarded;
+            # the 7-day cleanup cron sweeps the rare row whose delete didn't
+            # land after the DELIVERED commit.
+            try:
+                BufferedMessage.objects.filter(id=msg.id).delete()
+            except Exception:
+                logger.exception(
+                    "deliver_buffered: failed to hard-delete forwarded msg %s for tenant %s "
+                    "(row remains DELIVERED; 7-day cleanup cron will sweep)",
+                    msg.id,
+                    tenant_id[:8],
+                )
+
         except Exception:
             logger.exception(
                 "deliver_buffered: failed to deliver msg %s for tenant %s (attempt %d/%d)",
@@ -1444,16 +1477,44 @@ def resume_hibernated_crons_task(tenant_id: str) -> None:
 
 
 def cleanup_delivered_buffers_task() -> dict:
-    """Delete delivered BufferedMessage rows older than 7 days."""
+    """Delete delivered BufferedMessage rows older than 7 days, and
+    undelivered rows older than 30 days.
+
+    Delivered rows are now hard-deleted the instant
+    ``deliver_buffered_messages_task`` confirms a successful forward, so the
+    7-day pass is a residual sweeper for the rare row whose post-forward delete
+    didn't land (a worker crash between the DELIVERED commit and the delete).
+
+    Undelivered rows are the highest-sensitivity data in the system: RAW
+    pre-redaction webhooks buffered for a tenant that never woke (a dead or
+    permanently-hibernated tenant). Nothing else prunes them — before this pass
+    they lived forever. 30 days is well past any legitimate wake-and-deliver
+    window; a tenant offline for a month is not resuming a buffered
+    conversation mid-thread. See docs/encryption-at-rest-directive.md §7
+    (Phase 0 PR-3).
+    """
     from datetime import timedelta
 
     from apps.router.models import BufferedMessage
 
-    cutoff = timezone.now() - timedelta(days=7)
-    deleted, _ = BufferedMessage.objects.filter(
+    now = timezone.now()
+    delivered_deleted, _ = BufferedMessage.objects.filter(
         delivered=True,
-        created_at__lt=cutoff,
+        created_at__lt=now - timedelta(days=7),
+    ).delete()
+    undelivered_deleted, _ = BufferedMessage.objects.filter(
+        delivered=False,
+        created_at__lt=now - timedelta(days=30),
     ).delete()
 
-    logger.info("cleanup_delivered_buffers: deleted %d old messages", deleted)
-    return {"deleted": deleted}
+    total = delivered_deleted + undelivered_deleted
+    logger.info(
+        "cleanup_delivered_buffers: deleted %d delivered (>7d) + %d undelivered (>30d)",
+        delivered_deleted,
+        undelivered_deleted,
+    )
+    return {
+        "deleted": total,
+        "delivered_deleted": delivered_deleted,
+        "undelivered_deleted": undelivered_deleted,
+    }

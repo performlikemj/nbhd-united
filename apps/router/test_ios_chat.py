@@ -74,6 +74,32 @@ def _ok_chat_response(text: str = "ok"):
     return resp
 
 
+def _snapshot_pending_on_post(tenant, text: str = "ok"):
+    """Gateway-boundary capture for queue-payload-shape assertions.
+
+    Delete-on-drain (privacy PR-3) hard-deletes delivered ``PendingMessage``
+    rows before the ingress view returns, so a test can no longer fetch the
+    queue row after the POST. The row DOES still exist while the drain's
+    gateway POST is in flight — so tests that legitimately inspect the
+    mid-flow payload shape (markers, is_image/is_document flags, redacted
+    excerpt) snapshot it here, at the moment it is actually on the wire.
+
+    Returns ``(side_effect, captured)``: assign ``side_effect`` to
+    ``mock_post.side_effect``; after the request, ``captured["pmsg"]`` is the
+    in-memory row instance (safe to inspect post-deletion).
+    """
+    captured: dict = {}
+
+    def _post(url, *args, **kwargs):
+        rows = list(PendingMessage.objects.filter(tenant=tenant).order_by("created_at"))
+        if rows:
+            captured["pmsg"] = rows[-1]
+            captured["rows"] = rows
+        return _ok_chat_response(text)
+
+    return _post, captured
+
+
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class IOSChatRoutingTest(TestCase):
     def setUp(self):
@@ -84,7 +110,8 @@ class IOSChatRoutingTest(TestCase):
 
     @patch("apps.router.pending_queue.httpx.post")
     def test_message_routes_through_tenant_and_persists_reply(self, mock_post):
-        mock_post.return_value = _ok_chat_response("Of course I know you, MJ.")
+        side_effect, captured = _snapshot_pending_on_post(self.tenant, "Of course I know you, MJ.")
+        mock_post.side_effect = side_effect
 
         resp = self.client.post(
             "/api/v1/chat/messages/",
@@ -96,12 +123,17 @@ class IOSChatRoutingTest(TestCase):
         self.assertEqual(resp.data["client_msg_id"], "c1")
 
         # A PendingMessage was enqueued on the ios channel with a thread-scoped
-        # user param (NOT a channel id) and the client_msg_id on its payload.
-        pmsg = PendingMessage.objects.get(tenant=self.tenant, channel=PendingMessage.Channel.IOS)
+        # user param (NOT a channel id) and the client_msg_id on its payload —
+        # snapshotted at gateway-POST time, because delete-on-drain removes the
+        # row the moment delivery completes.
+        pmsg = captured["pmsg"]
+        self.assertEqual(pmsg.channel, PendingMessage.Channel.IOS)
         main = ChatThread.objects.get(tenant=self.tenant, is_main=True)
         self.assertEqual(pmsg.channel_user_id, str(main.id))
         self.assertEqual(pmsg.payload["user_param"], f"thread:{main.id}")
         self.assertEqual(pmsg.payload["client_msg_id"], "c1")
+        # Delivered → hard-deleted (PR-3): the transient queue keeps nothing.
+        self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
 
         # The gateway POST carried the thread user param + the ios channel header.
         sent = mock_post.call_args.kwargs
@@ -144,10 +176,14 @@ class IOSChatRoutingTest(TestCase):
         self.client.post("/api/v1/chat/messages/", {"text": "one", "client_msg_id": "a"}, format="json")
         self.client.post("/api/v1/chat/messages/", {"text": "two", "client_msg_id": "b"}, format="json")
 
-        # Both default to the single shared main thread.
+        # Both default to the single shared main thread. The queue rows are
+        # hard-deleted after drain (PR-3), so assert on the wire: both gateway
+        # POSTs must carry the SAME thread-scoped user param.
         self.assertEqual(ChatThread.objects.filter(tenant=self.tenant, is_main=True).count(), 1)
-        params = {p.payload["user_param"] for p in PendingMessage.objects.filter(tenant=self.tenant)}
+        params = {c.kwargs["json"]["user"] for c in mock_post.call_args_list}
         self.assertEqual(len(params), 1)  # same thread → same user_param
+        main = ChatThread.objects.get(tenant=self.tenant, is_main=True)
+        self.assertEqual(params, {f"thread:{main.id}"})
 
     @patch("apps.router.pending_queue.httpx.post")
     def test_named_thread_has_own_session(self, mock_post):
@@ -163,8 +199,9 @@ class IOSChatRoutingTest(TestCase):
             {"text": "work stuff", "thread_id": thread_id, "client_msg_id": "w1"},
             format="json",
         )
-        pmsg = PendingMessage.objects.get(tenant=self.tenant, channel_user_id=thread_id)
-        self.assertEqual(pmsg.payload["user_param"], f"thread:{thread_id}")
+        # Queue rows are hard-deleted after drain (PR-3) — the wire POST is the
+        # durable proof the named thread got its own OpenClaw session.
+        self.assertEqual(mock_post.call_args.kwargs["json"]["user"], f"thread:{thread_id}")
 
     @patch("apps.router.chat_views.check_budget", return_value="personal")
     @patch("apps.router.pending_queue.httpx.post")
@@ -209,7 +246,8 @@ class IOSChatImageTest(TestCase):
     @patch("apps.router.chat_views.store_inbound_image")
     @patch("apps.router.pending_queue.httpx.post")
     def test_image_only_turn_stores_and_marks(self, mock_post, mock_store):
-        mock_post.return_value = _ok_chat_response("It's a cat.")
+        side_effect, captured = _snapshot_pending_on_post(self.tenant, "It's a cat.")
+        mock_post.side_effect = side_effect
         mock_store.return_value = self._FAKE_STORE
 
         resp = self.client.post(
@@ -227,7 +265,10 @@ class IOSChatImageTest(TestCase):
         self.assertEqual(call_args[1], _JPEG_BYTES)
         self.assertEqual(call_args[2], "jpg")
 
-        pmsg = PendingMessage.objects.get(tenant=self.tenant, channel=PendingMessage.Channel.IOS)
+        # Queue-payload shape, snapshotted at gateway-POST time (the row is
+        # hard-deleted once the drain completes — PR-3).
+        pmsg = captured["pmsg"]
+        self.assertEqual(pmsg.channel, PendingMessage.Channel.IOS)
         # Container-path marker baked into the LLM-bound text; is_image set so
         # the row is a forced singleton (marker survives a cold-start burst).
         self.assertIn(
@@ -238,6 +279,8 @@ class IOSChatImageTest(TestCase):
         # Bytes NEVER ride the payload, and the user-facing excerpt has no marker.
         self.assertNotIn("image", pmsg.payload)
         self.assertNotIn("Photo attached", pmsg.user_text)
+        # Delivered → hard-deleted (PR-3).
+        self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
 
         # The model records the share-relative path for the turn.
         turn = AppChatMessage.objects.get(client_msg_id="img1")
@@ -246,7 +289,8 @@ class IOSChatImageTest(TestCase):
     @patch("apps.router.chat_views.store_inbound_image")
     @patch("apps.router.pending_queue.httpx.post")
     def test_image_with_caption_preserves_both(self, mock_post, mock_store):
-        mock_post.return_value = _ok_chat_response("ok")
+        side_effect, captured = _snapshot_pending_on_post(self.tenant)
+        mock_post.side_effect = side_effect
         mock_store.return_value = self._FAKE_STORE
 
         resp = self.client.post(
@@ -257,7 +301,8 @@ class IOSChatImageTest(TestCase):
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertEqual(mock_store.call_args.args[2], "png")  # sniffed png
 
-        pmsg = PendingMessage.objects.get(tenant=self.tenant)
+        # Snapshotted at gateway-POST time (row hard-deleted post-drain, PR-3).
+        pmsg = captured["pmsg"]
         marked = pmsg.payload["message_text"]
         self.assertIn("[Photo attached:", marked)
         self.assertIn("what is this?", marked)
@@ -333,7 +378,8 @@ class IOSChatImageTest(TestCase):
     @patch("apps.router.chat_views.store_inbound_image", side_effect=RuntimeError("share down"))
     @patch("apps.router.pending_queue.httpx.post")
     def test_store_failure_degrades_to_text_turn(self, mock_post, mock_store):
-        mock_post.return_value = _ok_chat_response("ok")
+        side_effect, captured = _snapshot_pending_on_post(self.tenant)
+        mock_post.side_effect = side_effect
         resp = self.client.post(
             "/api/v1/chat/messages/",
             {"text": "look at this", "image": _b64(_JPEG_BYTES), "client_msg_id": "sf1"},
@@ -343,7 +389,8 @@ class IOSChatImageTest(TestCase):
         # the photo failed (mirrors the poller's >5 MB fallback).
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertFalse(resp.data["has_image"])
-        pmsg = PendingMessage.objects.get(tenant=self.tenant)
+        # Snapshotted at gateway-POST time (row hard-deleted post-drain, PR-3).
+        pmsg = captured["pmsg"]
         self.assertIn("couldn't be processed", pmsg.payload["message_text"])
         self.assertIn("look at this", pmsg.payload["message_text"])
         # Still a singleton (the bytes were valid; only the write failed).
@@ -407,15 +454,16 @@ class IOSChatImageTest(TestCase):
         # The queue-row excerpt feeds the coalesced-batch rebuild, so it must be
         # REDACTED (a raw excerpt would leak PII to the model on a cold-start
         # burst). The verbatim text stays on AppChatMessage for the display feed.
-        mock_post.return_value = _ok_chat_response("ok")
+        side_effect, captured = _snapshot_pending_on_post(self.tenant)
+        mock_post.side_effect = side_effect
         resp = self.client.post(
             "/api/v1/chat/messages/",
             {"text": "my number is 555-1234", "client_msg_id": "red1"},
             format="json",
         )
         self.assertEqual(resp.status_code, 201, resp.content)
-        pmsg = PendingMessage.objects.get(tenant=self.tenant)
-        self.assertEqual(pmsg.user_text, "REDACTED")
+        # Snapshotted at gateway-POST time (row hard-deleted post-drain, PR-3).
+        self.assertEqual(captured["pmsg"].user_text, "REDACTED")
         self.assertEqual(AppChatMessage.objects.get(client_msg_id="red1").user_text, "my number is 555-1234")
 
     def test_image_row_is_forced_singleton(self):
@@ -484,7 +532,8 @@ class IOSChatDocumentTest(TestCase):
     @patch("apps.router.chat_views.store_inbound_document")
     @patch("apps.router.pending_queue.httpx.post")
     def test_document_only_turn_stores_and_marks(self, mock_post, mock_store):
-        mock_post.return_value = _ok_chat_response("It's a contract.")
+        side_effect, captured = _snapshot_pending_on_post(self.tenant, "It's a contract.")
+        mock_post.side_effect = side_effect
         mock_store.return_value = self._FAKE_STORE
 
         resp = self.client.post(
@@ -503,7 +552,10 @@ class IOSChatDocumentTest(TestCase):
         self.assertEqual(call_args[1], _PDF_BYTES)
         self.assertEqual(call_args[2], "pdf")
 
-        pmsg = PendingMessage.objects.get(tenant=self.tenant, channel=PendingMessage.Channel.IOS)
+        # Queue-payload shape, snapshotted at gateway-POST time (the row is
+        # hard-deleted once the drain completes — PR-3).
+        pmsg = captured["pmsg"]
+        self.assertEqual(pmsg.channel, PendingMessage.Channel.IOS)
         # Container-path marker baked into the LLM-bound text; is_document set so
         # the row is a forced singleton (marker survives a cold-start burst).
         self.assertIn(
@@ -514,6 +566,8 @@ class IOSChatDocumentTest(TestCase):
         # Bytes NEVER ride the payload, and the user-facing excerpt has no marker.
         self.assertNotIn("document", pmsg.payload)
         self.assertNotIn("Document attached", pmsg.user_text)
+        # Delivered → hard-deleted (PR-3).
+        self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
 
         turn = AppChatMessage.objects.get(client_msg_id="doc1")
         self.assertEqual(turn.attachment_path, "workspace/media/inbound/doc_test.pdf")
@@ -521,7 +575,8 @@ class IOSChatDocumentTest(TestCase):
     @patch("apps.router.chat_views.store_inbound_document")
     @patch("apps.router.pending_queue.httpx.post")
     def test_document_with_caption_preserves_both(self, mock_post, mock_store):
-        mock_post.return_value = _ok_chat_response("ok")
+        side_effect, captured = _snapshot_pending_on_post(self.tenant)
+        mock_post.side_effect = side_effect
         mock_store.return_value = self._FAKE_STORE
 
         resp = self.client.post(
@@ -531,7 +586,8 @@ class IOSChatDocumentTest(TestCase):
         )
         self.assertEqual(resp.status_code, 201, resp.content)
 
-        pmsg = PendingMessage.objects.get(tenant=self.tenant)
+        # Snapshotted at gateway-POST time (row hard-deleted post-drain, PR-3).
+        pmsg = captured["pmsg"]
         marked = pmsg.payload["message_text"]
         self.assertIn("[Document attached:", marked)
         self.assertIn("summarize this", marked)
@@ -626,7 +682,8 @@ class IOSChatDocumentTest(TestCase):
     @patch("apps.router.chat_views.store_inbound_document", side_effect=RuntimeError("share down"))
     @patch("apps.router.pending_queue.httpx.post")
     def test_document_store_failure_degrades_to_text_turn(self, mock_post, mock_store):
-        mock_post.return_value = _ok_chat_response("ok")
+        side_effect, captured = _snapshot_pending_on_post(self.tenant)
+        mock_post.side_effect = side_effect
         resp = self.client.post(
             "/api/v1/chat/messages/",
             {"text": "read this", "document": _b64(_PDF_BYTES), "client_msg_id": "dsf1"},
@@ -636,7 +693,8 @@ class IOSChatDocumentTest(TestCase):
         # the document failed (mirrors the image degrade path).
         self.assertEqual(resp.status_code, 201, resp.content)
         self.assertFalse(resp.data["has_document"])
-        pmsg = PendingMessage.objects.get(tenant=self.tenant)
+        # Snapshotted at gateway-POST time (row hard-deleted post-drain, PR-3).
+        pmsg = captured["pmsg"]
         self.assertIn("couldn't be processed", pmsg.payload["message_text"])
         self.assertIn("read this", pmsg.payload["message_text"])
         self.assertTrue(pmsg.payload["is_document"])
