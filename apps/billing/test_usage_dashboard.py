@@ -11,7 +11,12 @@ from rest_framework.test import APIClient
 
 from apps.tenants.services import create_tenant
 
-from .constants import DEEPSEEK_FLASH_DISPLAY, MODEL_RATES
+from .constants import (
+    ANTHROPIC_SONNET_MODEL,
+    DEEPSEEK_FLASH_DISPLAY,
+    DEEPSEEK_MODEL,
+    MODEL_RATES,
+)
 from .models import UsageRecord
 from .usage_services import (
     _get_subscription_price,
@@ -121,6 +126,82 @@ class UsageSummaryServiceTest(TestCase):
         self.assertEqual(summary["total_cost"], 0.0)
         self.assertEqual(summary["message_count"], 0)
         self.assertEqual(summary["by_model"], [])
+
+
+class UsageSummaryReconciliationTest(TestCase):
+    """The totals card and budget bar must agree, per-model spellings must
+    collapse, and metered rows must scale to the reconciled provider total
+    while BYO rows stay $0."""
+
+    def _mk(self, model_used, cost, *, tokens=1000):
+        UsageRecord.objects.create(
+            tenant=self.tenant,
+            event_type="message",
+            input_tokens=tokens,
+            output_tokens=tokens,
+            model_used=model_used,
+            cost_estimate=Decimal(str(cost)),
+        )
+
+    def _set_reconciled(self, amount):
+        self.tenant.estimated_cost_this_month = Decimal(str(amount))
+        self.tenant.save(update_fields=["estimated_cost_this_month"])
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Reconcile", telegram_chat_id=990001)
+
+    def test_two_spellings_collapse_and_scale_to_reconciled_total(self):
+        # Same model, two spellings (the screenshot bug) + one other metered model.
+        self._mk("anthropic/claude-haiku-4-5", "0.002")
+        self._mk("anthropic/claude-haiku-4.5", "0.001")
+        self._mk(DEEPSEEK_MODEL, "0.003")
+        self._set_reconciled("0.60")
+
+        summary = get_usage_summary(self.tenant)
+
+        # Headline total == authoritative reconciled spend == budget bar.
+        self.assertAlmostEqual(summary["total_cost"], 0.60, places=6)
+        self.assertAlmostEqual(summary["budget"]["tenant_cost_used"], 0.60, places=6)
+
+        by_model = summary["by_model"]
+        # Haiku's two spellings collapsed into a single row → 2 rows total.
+        self.assertEqual(len(by_model), 2)
+        haiku = next(m for m in by_model if m["model"] == "anthropic/claude-haiku-4-5")
+        self.assertEqual(haiku["count"], 2)
+        self.assertEqual(haiku["billing"], "metered")
+
+        # Metered rows scaled proportionally so they sum to the reconciled total.
+        self.assertAlmostEqual(sum(m["cost"] for m in by_model), 0.60, places=6)
+
+    def test_byo_rows_pinned_zero_and_synthetic_other_carries_remainder(self):
+        # Only a BYO (subscription) row exists, but the tenant has real reconciled
+        # metered spend — the remainder must land on a synthetic "other" row.
+        self._mk(ANTHROPIC_SONNET_MODEL, "0")
+        self._set_reconciled("0.25")
+
+        summary = get_usage_summary(self.tenant)
+        self.assertAlmostEqual(summary["total_cost"], 0.25, places=6)
+
+        by_model = {m["model"]: m for m in summary["by_model"]}
+        sonnet = by_model[ANTHROPIC_SONNET_MODEL]
+        self.assertEqual(sonnet["cost"], 0.0)
+        self.assertEqual(sonnet["billing"], "subscription")
+
+        other = by_model["other"]
+        self.assertAlmostEqual(other["cost"], 0.25, places=6)
+        self.assertEqual(other["display_name"], "Other usage")
+        self.assertEqual(other["billing"], "metered")
+        self.assertAlmostEqual(sum(m["cost"] for m in summary["by_model"]), 0.25, places=6)
+
+    def test_zero_reconciled_total_leaves_raw_estimates(self):
+        # Fresh tenant (no reconciliation yet) → estimated_cost_this_month == 0.
+        # Rows keep their raw estimate rather than being scaled to zero.
+        self._mk("anthropic/claude-haiku-4-5", "0.002")
+
+        summary = get_usage_summary(self.tenant)
+        self.assertEqual(summary["total_cost"], 0.0)
+        haiku = next(m for m in summary["by_model"] if m["model"] == "anthropic/claude-haiku-4-5")
+        self.assertAlmostEqual(haiku["cost"], 0.002, places=6)
 
 
 class DailyUsageServiceTest(TestCase):
