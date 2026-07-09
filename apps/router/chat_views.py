@@ -227,6 +227,15 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None) -> dict:
     # with the ?since= feed via AppChatMessage.attachment_flags so the two
     # rendering paths can't drift.
     has_image, has_document = msg.attachment_flags
+    # quick_replies is stored PLACEHOLDER-space (parsed before reply_text is
+    # rehydrated — see _clean_assistant_text_for_app); rehydrate here via the
+    # SAME shared helper the ?since= feed calls (_app_rows) so a stored
+    # "[PERSON_1]" label can't ship raw at one seam and rehydrated at the other.
+    from apps.router.quick_replies import rehydrate_quick_replies
+
+    quick_replies = rehydrate_quick_replies(
+        msg.quick_replies, entity_map, tenant_id=msg.tenant_id, channel="ios_detail"
+    )
     return {
         "client_msg_id": msg.client_msg_id,
         "thread_id": str(msg.thread_id),
@@ -264,11 +273,10 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None) -> dict:
         "user_redactions": msg.user_redactions,
         "reply_redactions": msg.reply_redactions,
         # Up to 3 tappable choice labels parsed from a trailing
-        # [[quick-replies: A | B | C]] marker on the reply (iOS-only). null
-        # when the turn carried no marker. Shared source of truth with the
-        # ?since= feed via the stored field itself (no computed property
-        # needed — quick_replies is stored directly, unlike attachment_flags).
-        "quick_replies": msg.quick_replies,
+        # [[quick-replies: A | B | C]] marker on the reply (iOS-only), REHYDRATED
+        # to real values above. null when the turn carried no marker, or the
+        # rehydrated labels overflowed the length cap (dropped, not truncated).
+        "quick_replies": quick_replies,
     }
 
 
@@ -900,6 +908,14 @@ def _parse_partial(data: dict) -> tuple[str | None, int | None]:
     valid partial: ``text`` is a string (truncated to 32k chars, matching the
     plugin's cap) and ``seq`` is a positive int. Any missing/malformed field
     yields ``(None, None)`` — the caller treats that as "no partial in this event".
+
+    Strips a trailing (complete OR still-typing/unclosed) ``[[quick-replies:``
+    marker at WRITE time — the same cumulative ``text`` is persisted verbatim
+    to ``AppChatMessage.partial_text`` and served unstripped while pending
+    (``_serialize_message``), so without this the streaming bubble would flash
+    the raw marker for however long it takes the terminal reply to land.
+    Truncating first (so a boundary cut mid-marker still leaves a strippable
+    trailing fragment), then stripping.
     """
     raw_text = data.get("text")
     if not isinstance(raw_text, str):
@@ -910,7 +926,10 @@ def _parse_partial(data: dict) -> tuple[str | None, int | None]:
         return None, None
     if seq <= 0:
         return None, None
-    return raw_text[:_MAX_PARTIAL_TEXT_CHARS], seq
+    from apps.router.quick_replies import strip_streaming_quick_reply_marker
+
+    text = strip_streaming_quick_reply_marker(raw_text[:_MAX_PARTIAL_TEXT_CHARS])
+    return text, seq
 
 
 class ChatProgressEventView(APIView):

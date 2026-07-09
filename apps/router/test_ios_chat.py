@@ -283,6 +283,43 @@ class IOSChatQuickReplyTest(TestCase):
         self.assertIsNone(poll.data["quick_replies"])
         self.assertIn("[[quick-replies: Yes | No]]", poll.data["reply_text"])
 
+    def test_labels_rehydrated_at_both_seams(self):
+        # F1: labels are parsed pre-rehydration (placeholder space, alongside
+        # reply_text) but must be REHYDRATED to real values at both
+        # owner-facing read seams — the detail poll AND the ?since= feed —
+        # exactly like reply_text already is. A raw "[PERSON_1]" button would
+        # both look wrong next to a rehydrated reply and, if tapped, send the
+        # literal placeholder string back as the user's next message.
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        poll = self._ask("Should I text them?\n[[quick-replies: Text [PERSON_1] | No thanks]]", cid="qr-rehydrate")
+        self.assertEqual(poll.data["quick_replies"], ["Text Alice", "No thanks"])
+        self.assertNotIn("[PERSON_1]", str(poll.data["quick_replies"]))
+
+        since = self.client.get("/api/v1/chat/messages/")
+        assistant_row = next(
+            row
+            for row in since.data["messages"]
+            if row.get("client_msg_id") == "qr-rehydrate" and row["role"] == "assistant"
+        )
+        self.assertEqual(assistant_row["quick_replies"], ["Text Alice", "No thanks"])
+
+    def test_rehydration_overflow_drops_buttons_but_reply_text_unaffected(self):
+        # A label short enough pre-rehydration (placeholder space) can overflow
+        # MAX_LABEL_LEN once the real value is substituted in. The whole set
+        # must be DROPPED (never truncated — displayed text and tap-sent text
+        # must stay identical) while reply_text rehydrates normally either way.
+        self.tenant.pii_entity_map = {"[PERSON_1]": "A Very Long Full Legal Name Indeed"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        with self.assertLogs("apps.router.quick_replies", level="WARNING") as cm:
+            poll = self._ask("Reach out to [PERSON_1]?\n[[quick-replies: Call [PERSON_1]]]", cid="qr-overflow")
+
+        self.assertIsNone(poll.data["quick_replies"])
+        self.assertEqual(poll.data["reply_text"], "Reach out to A Very Long Full Legal Name Indeed?")
+        self.assertTrue(any(getattr(r, "reason", None) == "rehydration_overflow" for r in cm.records))
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class IOSChatImageTest(TestCase):

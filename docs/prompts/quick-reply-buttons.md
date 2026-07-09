@@ -23,6 +23,7 @@ Rules:
 - The marker must be the LAST line of your reply, alone on that line — nothing else on it, and no marker anywhere else in the reply.
 - Only use this for a genuine short-choice prompt. NEVER for open-ended questions, requests for details, or anything that needs a free-text answer.
 - Write labels as things the user would naturally say — tapping one sends that exact label back to you as their next message, so it should read like a real reply, not a menu item.
+- Labels must NEVER contain a name, a personal detail, or a bracketed placeholder like `[PERSON_1]`. Keep them generic actions or answers — "Send the text", "Yes, save it", "Call them" — never "Call [PERSON_1]" or "Text Alice". The system rehydrates placeholders elsewhere in your reply, but a label carrying one either shows a raw placeholder to the user or gets silently dropped if the real name is too long for the button — write generic labels so this never comes up.
 ```
 
 ## Deployment
@@ -68,6 +69,7 @@ python manage.py force_apply_configs --tenant-id <CANARY_TENANT_UUID>
 - [ ] Poll `GET /api/v1/chat/messages/<client_msg_id>/` — `reply_text` has NO trace of the marker; `quick_replies` is a JSON list of the labels.
 - [ ] `GET /api/v1/chat/messages/?since=` for the same turn's assistant row shows the identical `quick_replies` value (anti-drift with the detail poll).
 - [ ] The agent does NOT emit the marker on an open-ended question in the same session (no over-triggering).
+- [ ] The agent does NOT put a name or `[PLACEHOLDER]` inside a label, even when the surrounding reply text does (e.g. "Text Alice about the interview?" → labels "Yes" / "No thanks", not "Text Alice"). If it slips through, rehydration is the backstop — check the `quick_reply_marker_malformed` log for `reason=rehydration_overflow` to see how often that backstop actually fires.
 - [ ] Non-canary tenants' AGENTS.md is unchanged; their replies never carry the marker's stripped remnants (they never see the rule at all).
 
 If this passes across a few real days of canary use with clean iOS rendering, promote the rule into the base AGENTS.md template (a separate, all-tenant change) and clear the canary extras.

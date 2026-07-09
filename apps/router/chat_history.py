@@ -21,6 +21,7 @@ Shape per message row (the contract iOS dedups/merges against):
       "has_document": bool,                # always present; true only on a user app row whose turn carried a PDF
       "user_redactions": [{"placeholder", "value"}],   # optional; user rows only
       "reply_redactions": [{"placeholder", "value"}],  # optional; assistant rows only
+      "quick_replies": ["Label A", "Label B"],          # optional; assistant rows only, iOS-only
     }
 
 Both ``*_redactions`` keys are OMITTED when nothing was obfuscated (and are only
@@ -211,6 +212,7 @@ def _app_rows(m, main_thread_id, entity_map=None):
     ``reply_text`` is stored placeholder-space and rehydrated here (owner-facing).
     ``user_text`` is the user's own typed words — served verbatim, no rehydration."""
     from apps.router.models import AppChatMessage
+    from apps.router.quick_replies import rehydrate_quick_replies
 
     thread_id = str(m.thread_id) if m.thread_id else main_thread_id
     # The attachment belongs to the user's inbound turn, so the flags ride the
@@ -260,7 +262,14 @@ def _app_rows(m, main_thread_id, entity_map=None):
                 # inserting a duplicate. The client dedups by (client_msg_id, role).
                 client_msg_id=m.client_msg_id,
                 reply_redactions=m.reply_redactions,
-                quick_replies=m.quick_replies,
+                # Stored PLACEHOLDER-space (parsed before reply_text is
+                # rehydrated) — rehydrate via the SAME shared helper the
+                # detail seam calls (chat_views._serialize_message) so a
+                # stored "[PERSON_1]" label can't ship raw at one seam and
+                # rehydrated at the other.
+                quick_replies=rehydrate_quick_replies(
+                    m.quick_replies, entity_map, tenant_id=m.tenant_id, channel="ios_feed"
+                ),
             )
         )
     return out
