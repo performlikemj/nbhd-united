@@ -138,11 +138,15 @@ def rehydrate_quick_replies(
             return list(labels)
 
     if any(len(label) > MAX_LABEL_LEN for label in rehydrated):
+        # sample is the PLACEHOLDER-space labels arg, never `rehydrated` — the
+        # latter holds real values (names), and this warning lands in Azure
+        # console logs (Sentry's PII-off setting doesn't govern custom `extra`
+        # fields on our own logger calls).
         _log_malformed(
             tenant_id=tenant_id,
             channel=channel,
-            label_count=len(rehydrated),
-            sample=" | ".join(rehydrated),
+            label_count=len(labels),
+            sample=" | ".join(labels),
             reason="rehydration_overflow",
         )
         return None

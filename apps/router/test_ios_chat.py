@@ -318,7 +318,13 @@ class IOSChatQuickReplyTest(TestCase):
 
         self.assertIsNone(poll.data["quick_replies"])
         self.assertEqual(poll.data["reply_text"], "Reach out to A Very Long Full Legal Name Indeed?")
-        self.assertTrue(any(getattr(r, "reason", None) == "rehydration_overflow" for r in cm.records))
+        overflow_records = [r for r in cm.records if getattr(r, "reason", None) == "rehydration_overflow"]
+        self.assertTrue(overflow_records)
+        # The telemetry sample must stay PLACEHOLDER-space (no PII in logs) even
+        # though the drop decision is made on the REHYDRATED length.
+        for record in overflow_records:
+            self.assertIn("[PERSON_1]", record.sample)
+            self.assertNotIn("A Very Long Full Legal Name Indeed", record.sample)
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
