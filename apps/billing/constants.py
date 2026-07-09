@@ -3,6 +3,7 @@
 Rates are per 1M tokens in USD. Update when providers change pricing.
 """
 
+import re
 from decimal import Decimal
 
 # ── Canonical model IDs ────────────────────────────────────────────────────
@@ -75,6 +76,22 @@ ANTHROPIC_SONNET_DISPLAY = "Claude Sonnet 4.6"
 ANTHROPIC_OPUS_MODEL = "anthropic/claude-opus-4-7"
 ANTHROPIC_OPUS_DISPLAY = "Claude Opus 4.7"
 
+# Claude Haiku 4.5 — Anthropic's small/fast model. It is NOT a tenant-selectable
+# chat model (it's in neither TIER_MODEL_CONFIGS nor the BYO extras). It only
+# ever appears on a tenant's usage rollup because PLATFORM-side system tasks —
+# the PII arbiter, galaxy copilot, lesson cluster naming, tutoring — call it via
+# OpenRouter using the shared platform key (see apps/pii/arbiter.py, which routes
+# it through apps.common.openrouter rather than any per-tenant BYO credential).
+# Those turns are metered (the platform pays OpenRouter), so haiku belongs in
+# MODEL_RATES, not BYO_MODEL_DISPLAY. The rate is Anthropic's published Claude
+# Haiku 4.5 list price ($1/MTok in, $5/MTok out), which OpenRouter passes
+# through; it matches the estimate hard-coded in apps/pii/arbiter.py. Only the
+# canonical hyphenated id is registered — canonical_model_id() folds the dotted
+# ``claude-haiku-4.5`` spelling (used by copilot / cluster_naming) onto it.
+ANTHROPIC_HAIKU_MODEL = "anthropic/claude-haiku-4-5"
+ANTHROPIC_HAIKU_DISPLAY = "Claude Haiku 4.5"
+ANTHROPIC_HAIKU_RATE = {"input": 1.0, "output": 5.0}
+
 MODEL_RATES: dict[str, dict[str, float]] = {
     MINIMAX_MODEL: {
         **MINIMAX_RATE,
@@ -125,6 +142,12 @@ MODEL_RATES: dict[str, dict[str, float]] = {
         **NEMOTRON_FREE_RATE,
         "display_name": NEMOTRON_FREE_DISPLAY,
     },
+    # Platform-metered (shared OpenRouter key). No openrouter/ prefix to strip
+    # and canonical_model_id normalizes the dotted spelling, so one key suffices.
+    ANTHROPIC_HAIKU_MODEL: {
+        **ANTHROPIC_HAIKU_RATE,
+        "display_name": ANTHROPIC_HAIKU_DISPLAY,
+    },
 }
 
 DEFAULT_RATE = {"input": 0.3, "output": 1.2, "display_name": "Unknown Model"}
@@ -160,6 +183,34 @@ def display_name_for_model(model_used: str) -> str:
     if byo is not None:
         return byo
     return model_used
+
+
+# A dotted version token that immediately follows a hyphen, e.g. the ``-4.5`` in
+# ``claude-haiku-4.5``. Rewritten to the hyphenated ``-4-5`` form. Anchoring on a
+# leading hyphen keeps provider/model slugs that legitimately contain a dot after
+# a letter (``minimax-m2.7``, ``kimi-k2.6``) untouched.
+_VERSION_DOT_RE = re.compile(r"-(\d+)\.(\d+)")
+
+
+def canonical_model_id(model_used: str) -> str:
+    """Return a single canonical spelling for a raw ``model_used`` string.
+
+    OpenClaw usage payloads report the same model under several spellings: with
+    or without the ``openrouter/`` routing prefix, mixed casing, and dotted vs
+    hyphenated version suffixes (``claude-haiku-4.5`` vs ``claude-haiku-4-5``).
+    Grouping or pricing on the raw string splits one model into duplicate rows
+    and misses rate-table lookups, so both the write path (``record_usage``) and
+    the read path (``get_usage_summary``) canonicalize first and agree on a key.
+
+    Steps: trim + lowercase, strip a leading ``openrouter/`` routing prefix
+    (mirroring the dual keys enumerated in ``MODEL_RATES``), and rewrite dotted
+    version tokens (``-N.M`` → ``-N-M``). Provider slashes, ``:free`` suffixes,
+    and any non-version content are left untouched.
+    """
+    if not model_used:
+        return ""
+    canonical = model_used.strip().lower().removeprefix("openrouter/")
+    return _VERSION_DOT_RE.sub(r"-\1-\2", canonical)
 
 
 # ── Reasoning / slow-inference models ─────────────────────────────────────

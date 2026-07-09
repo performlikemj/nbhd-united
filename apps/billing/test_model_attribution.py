@@ -8,12 +8,16 @@ request-side placeholder instead of the upstream model id, collapsing
 from django.test import SimpleTestCase
 
 from .constants import (
+    ANTHROPIC_HAIKU_DISPLAY,
+    ANTHROPIC_HAIKU_MODEL,
     ANTHROPIC_OPUS_DISPLAY,
     ANTHROPIC_SONNET_DISPLAY,
     ANTHROPIC_SONNET_MODEL,
+    DEEPSEEK_MODEL,
     KIMI_MODEL,
     MINIMAX_DISPLAY,
     MINIMAX_MODEL,
+    canonical_model_id,
     display_name_for_model,
 )
 from .services import extract_model_from_response
@@ -86,3 +90,44 @@ class DisplayNameForModelTest(SimpleTestCase):
 
     def test_empty_string_returns_unknown_model(self):
         self.assertEqual(display_name_for_model(""), "Unknown Model")
+
+    def test_haiku_canonical_id_uses_mapped_display_name(self):
+        # Haiku is now registered (platform-metered via OpenRouter), so the
+        # rollup labels it instead of falling through to the raw id.
+        self.assertEqual(display_name_for_model(ANTHROPIC_HAIKU_MODEL), ANTHROPIC_HAIKU_DISPLAY)
+
+
+class CanonicalModelIdTest(SimpleTestCase):
+    def test_strips_openrouter_prefix(self):
+        self.assertEqual(canonical_model_id(DEEPSEEK_MODEL), DEEPSEEK_MODEL.removeprefix("openrouter/"))
+
+    def test_dotted_version_becomes_hyphenated(self):
+        self.assertEqual(canonical_model_id("anthropic/claude-haiku-4.5"), "anthropic/claude-haiku-4-5")
+        self.assertEqual(canonical_model_id("anthropic/claude-sonnet-4.6"), "anthropic/claude-sonnet-4-6")
+
+    def test_two_spellings_map_to_same_canonical(self):
+        # The exact bug from the screenshot: two haiku spellings, one model.
+        self.assertEqual(
+            canonical_model_id("anthropic/claude-haiku-4.5"),
+            canonical_model_id("anthropic/claude-haiku-4-5"),
+        )
+        self.assertEqual(canonical_model_id("anthropic/claude-haiku-4-5"), ANTHROPIC_HAIKU_MODEL)
+
+    def test_lowercases_and_trims(self):
+        self.assertEqual(
+            canonical_model_id("  OpenRouter/DeepSeek/DeepSeek-V4-Pro  "),
+            "deepseek/deepseek-v4-pro",
+        )
+
+    def test_already_canonical_is_idempotent(self):
+        canon = canonical_model_id("anthropic/claude-haiku-4.5")
+        self.assertEqual(canonical_model_id(canon), canon)
+
+    def test_letter_prefixed_dot_is_left_untouched(self):
+        # ``minimax-m2.7`` has a dot after a letter, not a hyphenated version
+        # token like ``-4.5`` — it must not be rewritten.
+        self.assertEqual(canonical_model_id(MINIMAX_MODEL), MINIMAX_MODEL.removeprefix("openrouter/"))
+        self.assertEqual(canonical_model_id("openrouter/minimax/minimax-m2.7"), "minimax/minimax-m2.7")
+
+    def test_empty_string(self):
+        self.assertEqual(canonical_model_id(""), "")
