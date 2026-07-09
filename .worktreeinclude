@@ -1,0 +1,5 @@
+# Gitignored local files Claude Code copies into each new worktree so a fresh
+# per-session checkout can run the gate (make lint / make test / frontend build).
+# .gitignore syntax; only files that also match .gitignore are copied.
+.env
+frontend/.env.local
