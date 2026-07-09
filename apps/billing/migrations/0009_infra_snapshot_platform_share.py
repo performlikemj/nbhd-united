@@ -4,15 +4,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('billing', '0008_creditledger'),
+        ("billing", "0008_creditledger"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='infracostsnapshot',
-            name='platform_share',
-            field=models.DecimalField(decimal_places=4, default=0, help_text='Per-tenant slice of always-on shared platform overhead (Django control plane, registry, Key Vault, Log Analytics)', max_digits=10),
+            model_name="infracostsnapshot",
+            name="platform_share",
+            field=models.DecimalField(
+                decimal_places=4,
+                default=0,
+                help_text="Per-tenant slice of always-on shared platform overhead (Django control plane, registry, Key Vault, Log Analytics)",
+                max_digits=10,
+            ),
         ),
     ]
