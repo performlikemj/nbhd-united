@@ -279,7 +279,10 @@ class ProactiveOutbound(models.Model):
         help_text=("Per-channel user identifier (line_user_id for LINE, Telegram chat_id stringified for Telegram)."),
     )
     message_text = models.TextField(
-        help_text="Full proactive message body as sent (post-PII-rehydration).",
+        help_text="Full proactive message body in PII-placeholder space ([PERSON_1]), "
+        "as the agent authored it. Stored placeholder-space at rest "
+        "(pseudonymize-at-rest); rehydrated only at owner-facing egress "
+        "(the iOS APNs push and the ?since= feed builder).",
     )
     job_name = models.CharField(
         max_length=64,
@@ -374,7 +377,11 @@ class LineOutboundMessage(models.Model):
     text_excerpt = models.TextField(
         blank=True,
         default="",
-        help_text="First ~500 chars of the message we sent — used as the quoted excerpt.",
+        help_text="First ~500 chars of the message we sent, in PII-placeholder space "
+        "([PERSON_1]) — pseudonymize-at-rest. Its only reader "
+        "(_extract_line_reply_context) inlines it into the INBOUND agent turn, "
+        "which is model-facing, so placeholder space is correct and needs no "
+        "rehydration.",
     )
     sent_at = models.DateTimeField(auto_now_add=True, db_index=True)
 
@@ -604,6 +611,12 @@ class AppChatMessage(models.Model):
         help_text="Client-supplied stable id. Idempotency key + poll key.",
     )
     user_text = models.TextField()
+    # Assistant reply, marker-stripped and kept in PII-placeholder space
+    # ([PERSON_1]) at rest (pseudonymize-at-rest) for tenant-produced replies;
+    # rehydrated at the owner-facing seams (_serialize_message, the ?since=
+    # feed). ON_DEVICE replies (ChatLocalTurnView) are authored in real-name
+    # space on the device and stored verbatim — rehydration is a harmless no-op
+    # on them. reply_redactions carries the placeholder→real mapping.
     reply_text = models.TextField(blank=True, default="")
     status = models.CharField(
         max_length=16,
@@ -744,9 +757,15 @@ class ConversationTurn(models.Model):
 
     Rows are pruned probabilistically on insert (35-day window) so the table is
     self-bounding without a janitor cron — same pattern as
-    :class:`ProcessedInboundEvent` / :class:`LineOutboundMessage`. Storage is
-    raw (real content) by design decision — consistent with the at-rest posture
-    of ``AppChatMessage`` / journal ``Document`` and bounded shorter than either.
+    :class:`ProcessedInboundEvent` / :class:`LineOutboundMessage`.
+
+    At-rest posture (pseudonymize-at-rest): ``reply_text`` is stored in
+    PII-placeholder space ([PERSON_1]) and ``user_text`` is already
+    placeholder-space for Telegram/LINE. Rehydration to real values happens only
+    at the owner-facing read seam (the iOS ``?since=`` feed,
+    ``chat_history._conv_rows``); the model-facing USER.md digest reads the
+    placeholder-space text unchanged. (This supersedes the earlier "storage is
+    raw real content by design" decision.)
     """
 
     class Channel(models.TextChoices):
@@ -779,7 +798,9 @@ class ConversationTurn(models.Model):
     reply_text = models.TextField(
         blank=True,
         default="",
-        help_text="The assistant's reply, PII-rehydrated and marker-stripped. May be empty on a failed turn.",
+        help_text="The assistant's reply, marker-stripped and kept in PII-placeholder "
+        "space ([PERSON_1]) at rest; rehydrated at the owner-facing ?since= "
+        "feed. May be empty on a failed turn.",
     )
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 

@@ -205,14 +205,31 @@ def _serialize_thread(thread: ChatThread) -> dict:
     }
 
 
-def _serialize_message(msg: AppChatMessage) -> dict:
+def _serialize_message(msg: AppChatMessage, *, entity_map=None) -> dict:
+    # ``reply_text`` rests in PII-placeholder space (pseudonymize-at-rest); this
+    # is an owner-facing serializer, so rehydrate it to real values on the way
+    # out. A no-op on legacy rows already stored with real names and on
+    # on-device (``ChatLocalTurnView``) replies authored in real-name space.
+    # ``user_text`` is the user's own typed words — served verbatim. Callers with
+    # the tenant in hand pass ``entity_map`` to avoid a per-row FK read; else it
+    # resolves from ``msg.tenant`` (cached on freshly-created rows).
+    if entity_map is None:
+        entity_map = getattr(getattr(msg, "tenant", None), "pii_entity_map", None)
+    reply_text = msg.reply_text
+    if reply_text and entity_map:
+        try:
+            from apps.pii.redactor import rehydrate_text
+
+            reply_text = rehydrate_text(reply_text, entity_map)
+        except Exception:
+            logger.exception("chat_views: reply rehydrate failed (non-fatal)")
     return {
         "client_msg_id": msg.client_msg_id,
         "thread_id": str(msg.thread_id),
         "status": msg.status,
         "source": msg.source,
         "user_text": msg.user_text,
-        "reply_text": msg.reply_text,
+        "reply_text": reply_text,
         "error": msg.error,
         "created_at": msg.created_at.isoformat(),
         "replied_at": msg.replied_at.isoformat() if msg.replied_at else None,
@@ -496,11 +513,14 @@ class ChatThreadMessagesView(APIView):
         # Newest N, returned oldest→newest so the app can append in order.
         rows = list(AppChatMessage.objects.filter(thread=thread).order_by("-created_at")[:limit])
         rows.reverse()
+        # One map read for the whole page (rehydrating reply_text) — avoids a
+        # per-row tenant FK lookup in _serialize_message.
+        entity_map = getattr(tenant, "pii_entity_map", None)
         return _no_store(
             Response(
                 {
                     "thread": _serialize_thread(thread),
-                    "messages": [_serialize_message(m) for m in rows],
+                    "messages": [_serialize_message(m, entity_map=entity_map) for m in rows],
                 }
             )
         )
@@ -653,8 +673,10 @@ class ChatContextView(APIView):
     flows DOWN to the device; nothing flows out to a model provider.
 
     Unlike USER.md (consumed inside the tenant's placeholder-space pipeline),
-    this digest is user-facing: PII placeholders are rehydrated to real
-    values before it leaves, mirroring ``clean_reply_for_capture``.
+    this digest is user-facing: the whole rendered snapshot has its PII
+    placeholders rehydrated to real values (below) before it leaves — including
+    the placeholder-space conversation digest that ``build_conversation_digest``
+    now emits unrehydrated for the model-facing USER.md path.
     """
 
     permission_classes = [IsAuthenticated]

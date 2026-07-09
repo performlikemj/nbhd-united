@@ -80,6 +80,16 @@ def record_proactive_outbound(
 ) -> ProactiveOutbound | None:
     """Persist a row describing one successful proactive push.
 
+    ``message_text`` is expected in PII-placeholder space (``[PERSON_1]``) — the
+    space the agent authored it in. It is stored verbatim placeholder-space
+    (pseudonymize-at-rest): ``message_text`` and its derived ``parsed_items``
+    never hold real names at rest. Rehydration to real values happens only at
+    owner-facing egress — the iOS APNs body below and the ``?since=`` feed
+    builder (``chat_history._proactive_rows``). The model-facing reader
+    (``surface_proactive_context``'s ``[earlier-from-you]`` block) reads the
+    placeholder-space copy unchanged, which is correct — real names must not
+    re-enter the agent turn.
+
     Failure to write must NOT fail the calling request — the message
     has already been delivered to the user; losing the audit row is a
     smaller wrong than 500ing the cron tool call. Errors are logged.
@@ -109,8 +119,12 @@ def record_proactive_outbound(
     # the SINGLE chokepoint every ProactiveOutbound funnels through, so it covers
     # both CronDeliveryView and core.services.notify_meditation_ready. Dispatched
     # off the request path + fail-soft so an APNs send never delays or loses the
-    # already-delivered cron message.
-    _dispatch_ios_push(tenant, str(row.id), message_text)
+    # already-delivered cron message. The push body is OWNER-facing (lock screen)
+    # so it rehydrates the placeholders — the stored ``message_text`` stays
+    # placeholder-space, but the notification the user reads shows real names.
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    _dispatch_ios_push(tenant, str(row.id), rehydrate_for_tenant(tenant, message_text))
     return row
 
 

@@ -814,7 +814,12 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
                 tenant=tenant,
                 channel="app",
                 channel_user_id=str(tenant.user_id),
-                message_text=_build_summary_text(added_items, task_actions, tenant.pii_entity_map),
+                # Placeholder-space at rest (entity_map=None → no rehydration):
+                # PendingExtraction.text is already placeholder-space, so this
+                # keeps ProactiveOutbound.message_text real-name-free.
+                # record_proactive_outbound rehydrates for the owner-facing iOS
+                # push and the ?since= feed rehydrates on read.
+                message_text=_build_summary_text(added_items, task_actions, entity_map=None),
                 job_name="nightly_extraction",
             )
         else:  # channel == "none": the work above still ran; nothing to deliver to

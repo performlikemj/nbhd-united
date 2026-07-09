@@ -164,15 +164,20 @@ class CronDeliveryView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=http_status.HTTP_400_BAD_REQUEST)
 
-        message_text = serializer.validated_data["message"]
+        # As authored by the agent — PII-placeholder space ([PERSON_1]). Retained
+        # so the at-rest copies (ProactiveOutbound.message_text, the LINE
+        # quote-reply excerpt) are stored placeholder-space; only the copy
+        # actually sent to the user is rehydrated.
+        placeholder_message_text = serializer.validated_data["message"]
         parse_mode = serializer.validated_data.get("parse_mode", "Markdown")
 
-        # Rehydrate PII placeholders before sending to user
+        # Rehydrate PII placeholders before sending to user (owner-facing egress).
         entity_map = tenant.pii_entity_map
+        message_text = placeholder_message_text
         if entity_map:
             from apps.pii.redactor import rehydrate_text
 
-            message_text = rehydrate_text(message_text, entity_map)
+            message_text = rehydrate_text(placeholder_message_text, entity_map)
 
         # Log-only instrumentation: ASCII chart leakage when no marker emitted.
         from apps.router.output_guards import log_ascii_chart_leak
@@ -186,6 +191,9 @@ class CronDeliveryView(APIView):
                 tenant_id=tid,
                 line_user_id=channel_user_id,
                 message_text=message_text,
+                # Store the quote-reply excerpt in placeholder space, not the
+                # rehydrated body we actually push.
+                excerpt_override=placeholder_message_text,
             )
         elif channel == "app":
             # iOS-only user: there's no Telegram/LINE chat to send to. The APNs
@@ -220,7 +228,9 @@ class CronDeliveryView(APIView):
                 tenant=tenant,
                 channel=channel,
                 channel_user_id=channel_user_id,
-                message_text=message_text,
+                # Placeholder-space at rest; record_proactive_outbound rehydrates
+                # only for the owner-facing iOS push it fires.
+                message_text=placeholder_message_text,
                 job_name=request.headers.get("X-NBHD-Job-Name", ""),
             )
 
@@ -319,8 +329,15 @@ class CronDeliveryView(APIView):
         tenant_id: str,
         line_user_id: str,
         message_text: str,
+        excerpt_override: str | None = None,
     ) -> Response:
-        """Send via LINE Push Message API with branded Flex messages."""
+        """Send via LINE Push Message API with branded Flex messages.
+
+        ``message_text`` is the rehydrated body sent to the user; when
+        ``excerpt_override`` is given it is the placeholder-space copy stored as
+        the quote-reply excerpt (so ``LineOutboundMessage.text_excerpt`` holds no
+        real names).
+        """
         access_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "")
         if not access_token:
             logger.error("LINE_CHANNEL_ACCESS_TOKEN not configured for cron delivery")
@@ -398,7 +415,9 @@ class CronDeliveryView(APIView):
                             sent_messages = (resp.json() or {}).get("sentMessages") or []
                         except Exception:
                             sent_messages = []
-                        _record_line_outbound(tenant_obj, line_user_id, sent_messages, batch)
+                        _record_line_outbound(
+                            tenant_obj, line_user_id, sent_messages, batch, excerpt_override=excerpt_override
+                        )
                     sent_count += len(batch)
 
         except httpx.HTTPError as exc:

@@ -1,22 +1,21 @@
 """Adversarial-audit cluster A25 regression tests.
 
-FA-0914 — build_conversation_digest rehydrates PII placeholders before
-returning so the USER.md envelope is in real-value space.
-
-Background: the audit fix (commit c1124d28) redacted user_text_excerpt at the
-poller before enqueue, which meant ConversationTurn.user_text is stored with
-PII placeholders (e.g. "[PERSON_1] emailed me at [EMAIL_ADDRESS_1]").
-build_conversation_digest rendered those placeholders verbatim into the USER.md
-envelope, while the reply side (clean_reply_for_capture) was already
-rehydrated. The fix adds a rehydrate_text call on the assembled digest string
-before returning, mirroring what ChatContextView already does at request time.
+FA-0914 (superseded) — ``build_conversation_digest`` used to rehydrate PII
+placeholders before returning, so the USER.md envelope reached the container in
+real-value space. The encryption-at-rest directive (§5/§7, Phase 0 PR-4)
+REVERSES that: the digest renders into the USER.md managed region, which the
+container loads into the model prompt on every turn — a MODEL-facing seam.
+Real names must NOT reach the model there, so the digest now stays
+placeholder-space (both user AND reply lines). The owner-facing on-device digest
+(``ChatContextView``) rehydrates the rendered snapshot separately; the ``?since=``
+feed rehydrates reply lines on read. These tests pin the model-facing invariant:
+placeholders stay placeholders in ``build_conversation_digest``.
 """
 
 from __future__ import annotations
 
 import secrets
 from datetime import date
-from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -40,11 +39,11 @@ def _make_tenant(entity_map: dict | None = None) -> Tenant:
     return t
 
 
-class DigestRehydratesPlaceholdersTest(TestCase):
-    """Telegram ConversationTurn with placeholder user_text renders real name."""
+class DigestStaysPlaceholderSpaceTest(TestCase):
+    """The USER.md conversation digest is model-facing: placeholders stay."""
 
-    def test_placeholder_user_text_rehydrated_in_digest(self):
-        """FA-0914: digest renders real name, not [PERSON_1], in user lines."""
+    def test_placeholder_user_text_stays_placeholder_in_digest(self):
+        """Model-facing digest keeps [PERSON_1] in user lines — no real name leaks."""
         from apps.router.conversation_capture import build_conversation_digest
         from apps.router.models import ConversationTurn
 
@@ -63,11 +62,34 @@ class DigestRehydratesPlaceholdersTest(TestCase):
 
         digest = build_conversation_digest(tenant)
 
-        self.assertIn("Alice Smith", digest, "Real name should appear in digest after rehydration")
-        self.assertNotIn("[PERSON_1]", digest, "Placeholder should not appear in digest — must be rehydrated")
+        self.assertIn("[PERSON_1]", digest, "Model-facing digest must keep the placeholder")
+        self.assertNotIn("Alice Smith", digest, "Real name must NOT reach the model prompt via the digest")
+
+    def test_placeholder_reply_text_stays_placeholder_in_digest(self):
+        """The live-leak fix on the reply side: a placeholder-space reply is NOT
+        rehydrated into the model-facing digest."""
+        from apps.router.conversation_capture import build_conversation_digest
+        from apps.router.models import ConversationTurn
+
+        entity_map = {"[PERSON_1]": "Alice Smith"}
+        tenant = _make_tenant(entity_map=entity_map)
+
+        ConversationTurn.objects.create(
+            tenant=tenant,
+            channel="telegram",
+            channel_user_id="99998",
+            local_date=date.today(),
+            user_text="did you email them?",
+            reply_text="Yes — I told [PERSON_1] you'd call.",
+        )
+
+        digest = build_conversation_digest(tenant)
+
+        self.assertIn("[PERSON_1]", digest)
+        self.assertNotIn("Alice Smith", digest)
 
     def test_digest_without_entity_map_passes_through(self):
-        """FA-0914: tenants without an entity map still get a valid digest."""
+        """Tenants without an entity map still get a valid digest (no placeholders)."""
         from apps.router.conversation_capture import build_conversation_digest
         from apps.router.models import ConversationTurn
 
@@ -86,27 +108,3 @@ class DigestRehydratesPlaceholdersTest(TestCase):
 
         self.assertIn("Hello from the test", digest)
         self.assertIn("Hello back.", digest)
-
-    def test_digest_rehydrate_error_falls_back_to_placeholder(self):
-        """FA-0914: a rehydrate_text exception must not raise — digest is returned as-is."""
-        from apps.router.conversation_capture import build_conversation_digest
-        from apps.router.models import ConversationTurn
-
-        entity_map = {"PERSON_1": "Bob"}
-        tenant = _make_tenant(entity_map=entity_map)
-
-        ConversationTurn.objects.create(
-            tenant=tenant,
-            channel="telegram",
-            channel_user_id="77777",
-            local_date=date.today(),
-            user_text="[PERSON_1] asked me something",
-            reply_text="Sure thing.",
-        )
-
-        with patch("apps.pii.redactor.rehydrate_text", side_effect=RuntimeError("boom")):
-            # Must not raise; fall-open returns the un-rehydrated digest.
-            digest = build_conversation_digest(tenant)
-
-        self.assertIsInstance(digest, str)
-        self.assertGreater(len(digest), 0, "Digest should not be empty on rehydrate error")
