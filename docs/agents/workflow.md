@@ -50,3 +50,5 @@ Multiple things in flight at once (two sessions, a person + dependabot, three PR
 ## Commit convention
 
 Prefixes `feat:` `fix:` `fix(scope):` `refactor:` `docs:` `merge:` — concise, focused on the why. Plan complex features first in a `CONTINUITY_<feature>.md` and implement phase by phase.
+
+<!-- race-test B: no-op marker (deploy-serialization §5.3 live test, 2026-07-09) -->
