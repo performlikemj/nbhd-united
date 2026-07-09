@@ -471,9 +471,13 @@ Highest sensitivity first:
   name/email**), `Tenant.pii_denylist`, `Tenant.identity_growth`; `users`
   (telegram/line ids, email, location); `Integration.provider_email`;
   `DeviceToken.token`.
-- **Message bodies (raw at rest):** `ConversationTurn`, `AppChatMessage`,
+- **Message bodies (pseudonymized at rest):** `ConversationTurn`, `AppChatMessage`,
   `ProactiveOutbound`, `BufferedMessage`/`PendingMessage` payloads,
-  `LineOutboundMessage`, `FriendMessage`.
+  `LineOutboundMessage`, `FriendMessage`. As of the encryption-at-rest Phase-0 work
+  (#1084 pseudonymize-at-rest, #1082 queue hard-delete + TTL), assistant-authored
+  copies are stored in placeholder space (`[PERSON_1]`) and rehydrated only at
+  owner-facing egress; transient queue rows are hard-deleted after drain. See
+  [`../security/pii-and-llm-egress.md`](../security/pii-and-llm-egress.md).
 - **Health:** `fuel_body_weight`, `fuel_sleep`, `fuel_resting_heart_rate`,
   `Workout.notes/detail_json`, `FuelProfile.limitations` (injuries).
 - **Finance:** all `finance_*` tables.
@@ -519,12 +523,14 @@ Highest sensitivity first:
   denormalized `tenant` FK (as `PlanSlot` already does for the same reason) or ensure
   every access path is chokepoint-guarded.
 
-- **[med] Raw message content retained at rest.** `ConversationTurn`, `AppChatMessage`,
-  `ProactiveOutbound`, and `FriendMessage` store real (un-redacted) user/assistant text.
-  Retention is bounded only by *probabilistic* pruning (35-day window, insert-time
-  sampling) with no guaranteed janitor — a low-traffic tenant may retain rows well past
-  the intended window. Confirm the retention posture is intended and consider a
-  deterministic sweep for the PII-heaviest tables.
+- **[med → partially-mitigated] Message content at rest.** Since encryption-at-rest
+  Phase 0 (#1082/#1084, ~2026-07-09) `ConversationTurn`, `AppChatMessage`,
+  `ProactiveOutbound` assistant copies are stored **pseudonymized** (placeholder space,
+  rehydrated at owner-facing egress), and transient queue rows are hard-deleted after
+  drain with TTL sweepers. Residual: the rehydration key (`Tenant.pii_entity_map`) is
+  still plaintext (directive Phase 4, not built), and probabilistic 35-day pruning on the
+  long-lived tables still has no guaranteed janitor. See
+  [`../security/pii-and-llm-egress.md`](../security/pii-and-llm-egress.md).
 
 - **[low] `pii_entity_map` on `Tenant` is a high-value plaintext target.** It maps
   redaction placeholders back to **real names and emails** and sits on the hot control-plane

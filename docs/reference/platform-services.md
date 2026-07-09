@@ -93,7 +93,7 @@ per-tenant when the tenant's local clock matches (see invariant #7).
 | `0 * * * *` | weekly-gravity-reflection | `weekly_gravity_reflection` | Per-tenant Sun 09:00 local reflection |
 | `10 * * * *` | reconcile-openrouter-spend | `reconcile_openrouter_spend` | True up per-tenant + platform spend |
 | `25 * * * *` | refresh-user-md-fleet | `refresh_user_md_fleet` | Keep USER.md local-time line fresh |
-| `40 * * * *` | pii-arbiter | `pii_arbiter` | LLM sweep of new PII mints → denylist (§2.6) |
+| ~~`40 * * * *`~~ | ~~pii-arbiter~~ | ~~`pii_arbiter`~~ | **RETIRED (#1074)** — replaced by zero-egress self-cleaning (§2.6) |
 | `* * * * *` | reap-stuck-inbound-messages | `reap_stuck_inbound_messages` | Republish stuck PendingMessage drains |
 | `* * * * *` | run-due-automations | `run_due_automations` | Fire user Automations past `next_run_at` |
 | `*/5 * * * *` | ensure-at-cron-wakes | `ensure_at_cron_wakes` | Queue wakes for one-off `kind:"at"` crons |
@@ -293,7 +293,14 @@ I). `inverted_names_ci` collapses legacy duplicate placeholders to the lowest-nu
 > cannot be disambiguated. This is by design (the USER.md envelope denies the agent identity
 > context to avoid hallucinated name restoration); noted as a residual privacy/UX trade-off.
 
-### 2.6 Arbiter cron (`arbiter.py`) — false-positive pruning
+### 2.6 Arbiter cron (`arbiter.py`) — false-positive pruning — ⚠️ RETIRED (#1074)
+
+> **Retired as of the PII self-cleaning work (#1074, `15dda3fe`).** The hourly
+> cloud-egress arbiter below no longer runs — it was replaced by zero-egress,
+> on-device self-cleaning (mint-gating + hygiene + junk sweep + a review queue).
+> The mechanics are retained here for historical context only; the `pii-arbiter`
+> row in the cron table above is likewise no longer scheduled. See
+> [`../security/pii-and-llm-egress.md`](../security/pii-and-llm-egress.md).
 
 NER mints conservatively (tags `goal`, `calendar`, `🏆 wins` as PERSON). The hourly `pii_arbiter`
 task (`arbiter.py:326`, schedule `40 * * * *`) sweeps recently-minted `PERSON_*`/`LOCATION_*`
