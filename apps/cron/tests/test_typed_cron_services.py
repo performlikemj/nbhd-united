@@ -155,6 +155,37 @@ class CreateTypedCronTests(TestCase):
         job = call_args.args[2]["job"]
         self.assertEqual(job["schedule"], _ONE_OFF)
 
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_at_cron_bookkeeping_failure_does_not_raise(self, mock_invoke):
+        # The gateway ACCEPTS the job, but stamping gateway_job_id wedges on an idle
+        # connection. That is a post-delivery bookkeeping blip — it must NOT propagate as
+        # a push failure (callers roll back their own state on failure, and rolling back a
+        # LIVE cron would drop a delivered message). The boundary is explicit: this raises
+        # only for a failure BEFORE the gateway accepted the job.
+        from django.db import OperationalError
+
+        mock_invoke.return_value = {"details": {"id": "gw-id-xyz"}}
+        real_save = CronJob.save
+
+        def _flaky_save(cron_self, *args, **kwargs):
+            if kwargs.get("update_fields") == ["gateway_job_id"]:
+                raise OperationalError("idle connection wedge")
+            return real_save(cron_self, *args, **kwargs)
+
+        with patch.object(CronJob, "save", autospec=True, side_effect=_flaky_save):
+            cron = create_typed_cron(
+                tenant=self.tenant,
+                pattern=CronPattern.PURE_REMINDER,
+                typed_payload={"text": "x"},
+                name="bookkeeping-blip",
+                schedule=_ONE_OFF,
+            )
+        # No raise → the row survives, is unmanaged, and just misses the gateway_job_id.
+        cron.refresh_from_db()
+        self.assertFalse(cron.managed)
+        self.assertEqual(cron.gateway_job_id, "")
+        mock_invoke.assert_called_once()
+
 
 class FreeformCronTests(TestCase):
     def setUp(self):
