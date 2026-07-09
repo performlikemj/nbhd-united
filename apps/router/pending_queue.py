@@ -443,9 +443,21 @@ def _row_is_image(msg: PendingMessage) -> bool:
     return bool(payload.get("is_image"))
 
 
+def _row_is_document(msg: PendingMessage) -> bool:
+    """A row is "document" if its payload carries ``is_document=True``.
+
+    Same load-bearing reason as ``_row_is_image``: the ``[Document attached:
+    <path>]`` marker lives only in ``payload.message_text``, and a coalesced
+    rebuild from ``user_text`` would drop it — so a PDF row must stay a
+    singleton or the agent never sees the document path.
+    """
+    payload = msg.payload or {}
+    return bool(payload.get("is_document"))
+
+
 def _row_is_singleton_media(msg: PendingMessage) -> bool:
-    """Rows that must never fold into a coalesced text batch (voice + image)."""
-    return _row_is_voice(msg) or _row_is_image(msg)
+    """Rows that must never fold into a coalesced text batch (voice/image/PDF)."""
+    return _row_is_voice(msg) or _row_is_image(msg) or _row_is_document(msg)
 
 
 def _claim_pending_batch_for_key(

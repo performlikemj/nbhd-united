@@ -3,7 +3,7 @@
 from django.test import TestCase
 
 from apps.orchestrator.tool_policy import (
-    _STARTER_ALLOW_2026_4_15,
+    _STARTER_ALLOW_2026_5_28,
     DENIED_TOOLS,
     STARTER_ALLOW,
     generate_tool_config,
@@ -13,18 +13,20 @@ from apps.orchestrator.tool_policy import (
 
 class ToolPolicyTest(TestCase):
     def test_starter_allowlist_has_expected_groups(self):
-        """Default version (4.21) resolves to the 4.15 policy."""
+        """Default version (OPENCLAW_CURRENT_VERSION) resolves to the 5.28 policy."""
         allowed = get_allowed_tools("starter")
-        self.assertEqual(allowed, list(_STARTER_ALLOW_2026_4_15))
+        self.assertEqual(allowed, list(_STARTER_ALLOW_2026_5_28))
         self.assertNotIn("group:ui", allowed)
         self.assertNotIn("group:runtime", allowed)
         # Workspace file tools excluded — persistence via journal plugins only
         self.assertNotIn("group:fs", allowed)
         self.assertNotIn("group:memory", allowed)
         self.assertIn("group:plugins", allowed)
+        # 5.28 adds the built-in `pdf` tool by name (not a member of any group).
+        self.assertIn("pdf", allowed)
 
     def test_unknown_tier_defaults_to_starter(self):
-        self.assertEqual(get_allowed_tools("unknown"), list(_STARTER_ALLOW_2026_4_15))
+        self.assertEqual(get_allowed_tools("unknown"), list(_STARTER_ALLOW_2026_5_28))
 
     def test_policy_denies_runtime_management_tools(self):
         config = generate_tool_config("starter")
@@ -94,6 +96,14 @@ class VersionAwareToolPolicyTest(TestCase):
     def test_future_version_uses_latest_policy(self):
         allowed = get_allowed_tools("starter", version="2026.5.1")
         self.assertIn("group:openclaw", allowed)
+
+    def test_2026_5_28_allows_pdf_tool(self):
+        """The built-in ``pdf`` tool is granted by name at 5.28 (app-uploaded
+        PDFs → [Document attached] marker). It is NOT in group:openclaw, so
+        earlier policies must NOT grant it."""
+        self.assertIn("pdf", get_allowed_tools("starter", version="2026.5.28"))
+        self.assertNotIn("pdf", get_allowed_tools("starter", version="2026.5.7"))
+        self.assertNotIn("pdf", get_allowed_tools("starter", version="2026.4.15"))
 
     def test_backward_compat_module_constants(self):
         self.assertIsInstance(DENIED_TOOLS, tuple)

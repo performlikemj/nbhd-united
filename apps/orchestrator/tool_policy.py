@@ -111,9 +111,24 @@ _DENIED_TOOLS_2026_5_7: tuple[str, ...] = tuple(
 
 _STARTER_ALLOW_2026_5_7: tuple[str, ...] = _STARTER_ALLOW_2026_4_15
 
+# ── 2026.5.28 policy ────────────────────────────────────────────────
+# Adds the built-in ``pdf`` tool to the allow surface so an app-uploaded PDF
+# (chat ingress, [Document attached: <path>] marker) is readable via the tool's
+# native + PDFium extraction-fallback modes. ``pdf`` is NOT a member of
+# ``group:openclaw`` or ``group:plugins`` (verified against the OpenClaw
+# POLICY_TOOL_GROUPS), so it must be granted by name. Tool availability ALSO
+# requires a resolvable PDF-capable model — see ``config_generator`` where
+# ``agents.defaults.pdfModel`` is pinned (the pdf factory-availability check has
+# no ``modelHasVision`` fast-path, unlike the ``image`` tool).
+
+_DENIED_TOOLS_2026_5_28: tuple[str, ...] = _DENIED_TOOLS_2026_5_7
+
+_STARTER_ALLOW_2026_5_28: tuple[str, ...] = _STARTER_ALLOW_2026_5_7 + ("pdf",)
+
 # ── Version registry (newest first) ─────────────────────────────────
 
 _POLICY_VERSIONS: list[tuple[str, tuple[str, ...], tuple[str, ...]]] = [
+    ("2026.5.28", _STARTER_ALLOW_2026_5_28, _DENIED_TOOLS_2026_5_28),
     ("2026.5.7", _STARTER_ALLOW_2026_5_7, _DENIED_TOOLS_2026_5_7),
     ("2026.4.15", _STARTER_ALLOW_2026_4_15, _DENIED_TOOLS_2026_4_15),
     ("2026.4.5", _STARTER_ALLOW_2026_4_5, _DENIED_TOOLS_2026_4_5),
