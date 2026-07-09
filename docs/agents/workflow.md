@@ -29,6 +29,23 @@ frontend lint+build → backend checks+tests (incl. `ruff format --check`, `make
 
 After deploy: verify per `docs/agents/debugging.md` §post-deploy. OpenClaw fleet rollouts are separate (`workflow_dispatch`); merging to main does NOT roll tenant images.
 
+## Parallel work & deploy serialization
+
+Multiple things in flight at once (two sessions, a person + dependabot, three PRs going green in the same minute) used to race the production deploy. Single-revision mode makes `az containerapp update` last-writer-wins, so on 2026-07-09 the *oldest* of three near-simultaneous merges deployed last and prod served stale code — with every run green. Full write-up: `docs/deploy-concurrency-directive.md`. What's now in place (`ci-cd.yml`):
+
+- **Main deploys are serialized** by a workflow-level `concurrency` group (`ci-cd-${{ github.ref }}`, `cancel-in-progress: false` on main). Only one deploy is ever in flight; the rest queue. A multi-merge burst therefore deploys strictly one-at-a-time — expect a full ~15–20 min run of queue latency, that's the design working, not a hang.
+- **A "cancelled (superseded)" main run is expected, not a failure.** With at most one running + one pending run per group, a third push supersedes the *pending* (middle) run. The newest commit already contains the middle one's code, so this converges to newest faster. Do not treat those cancelled runs as broken.
+- **The freshness guard skips green.** Each deploy job first checks whether its commit is still the tip of `origin/main`; if not, every step is skipped and the job ends green with a loud `::notice::`. This is the backstop if concurrency is ever removed/misconfigured or an old run is re-run by hand (`gh run rerun`).
+- **The identity assertion fails the run RED.** After the health check, the backend job asserts the serving revision's image tag equals the run's own `github.sha` (the immutable full-sha tag, never `:latest`). Liveness ≠ identity — old code is healthy too, which is why the incident was all-green. A mismatch now means a deploy race/overwrite and the run goes red.
+- **Emergency recovery** (a raced/overwritten deploy) — replay the deploy directly with the correct sha; the image already exists in ACR tagged by full sha:
+  ```bash
+  az containerapp update --name nbhd-django-westus2 --resource-group rg-nbhd-prod \
+    --image nbhdunited.azurecr.io/django:<full-sha-of-origin/main> \
+    --set-env-vars OPENCLAW_IMAGE_TAG=<oc-version>-<7char-sha> SENTRY_RELEASE=<full-sha>
+  ```
+  ALWAYS finish by re-checking the serving image sha equals `git rev-parse origin/main` — otherwise you don't know if the recovery itself raced something.
+- **Expand/contract discipline** (the within-run residual the pipeline can't fix): `deploy-frontend` and `deploy-backend` run in *parallel* within a run, and migrations run at container boot — so there's always a brief window of new-frontend-vs-old-backend (or an older image booting against an already-migrated schema). Keep migrations additive-first (expand/contract) and API changes additive so either side survives the handover.
+
 ## Commit convention
 
 Prefixes `feat:` `fix:` `fix(scope):` `refactor:` `docs:` `merge:` — concise, focused on the why. Plan complex features first in a `CONTINUITY_<feature>.md` and implement phase by phase.
