@@ -171,6 +171,16 @@ class CronDeliveryView(APIView):
         placeholder_message_text = serializer.validated_data["message"]
         parse_mode = serializer.validated_data.get("parse_mode", "Markdown")
 
+        # Quick-reply buttons aren't wired for cron/proactive sends (no
+        # ProactiveOutbound column, no iOS UI for it this cycle — see PR
+        # description). Still strip the marker here so it can never leak as
+        # raw text on ANY channel if an agent emits it on a proactive send.
+        from apps.router.quick_replies import extract_quick_replies
+
+        placeholder_message_text, _quick_replies = extract_quick_replies(
+            placeholder_message_text, tenant_id=tenant.id, channel=f"cron_{channel}"
+        )
+
         # Rehydrate PII placeholders before sending to user (owner-facing egress).
         entity_map = tenant.pii_entity_map
         message_text = placeholder_message_text

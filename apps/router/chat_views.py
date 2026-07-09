@@ -263,6 +263,12 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None) -> dict:
         # row predates the feature. Older iOS builds ignore the unknown keys.
         "user_redactions": msg.user_redactions,
         "reply_redactions": msg.reply_redactions,
+        # Up to 3 tappable choice labels parsed from a trailing
+        # [[quick-replies: A | B | C]] marker on the reply (iOS-only). null
+        # when the turn carried no marker. Shared source of truth with the
+        # ?since= feed via the stored field itself (no computed property
+        # needed — quick_replies is stored directly, unlike attachment_flags).
+        "quick_replies": msg.quick_replies,
     }
 
 

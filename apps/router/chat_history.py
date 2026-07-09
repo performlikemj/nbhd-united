@@ -165,6 +165,7 @@ def _row(
     has_document=False,
     user_redactions=None,
     reply_redactions=None,
+    quick_replies=None,
 ):
     """A single message row + its (created_at, id) sort key.
 
@@ -195,6 +196,11 @@ def _row(
         msg["user_redactions"] = user_redactions
     if reply_redactions:
         msg["reply_redactions"] = reply_redactions
+    # Quick-reply button labels (iOS-only; assistant rows only). Omitted
+    # entirely when empty, same convention as the redaction keys above —
+    # older iOS builds ignore unknown keys anyway.
+    if quick_replies:
+        msg["quick_replies"] = quick_replies
     return {"_sort": (created_at, row_id), "msg": msg}
 
 
@@ -227,7 +233,10 @@ def _app_rows(m, main_thread_id, entity_map=None):
                 user_redactions=m.user_redactions,
             )
         )
-    if m.status == AppChatMessage.Status.READY and (m.reply_text or "").strip():
+    # Also emit a bare quick_replies-only assistant row in the (expected rare)
+    # case the agent's entire final reply was the marker line — reply_text
+    # strips to empty, but the buttons must not silently vanish.
+    if m.status == AppChatMessage.Status.READY and ((m.reply_text or "").strip() or m.quick_replies):
         out.append(
             _row(
                 row_id=f"app:{m.id}:1",
@@ -251,6 +260,7 @@ def _app_rows(m, main_thread_id, entity_map=None):
                 # inserting a duplicate. The client dedups by (client_msg_id, role).
                 client_msg_id=m.client_msg_id,
                 reply_redactions=m.reply_redactions,
+                quick_replies=m.quick_replies,
             )
         )
     return out
