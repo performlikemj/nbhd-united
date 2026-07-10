@@ -98,7 +98,12 @@ def sniff_document_type(data: bytes) -> str | None:
 # include `_ : - .` etc. This lookahead expresses the actual rule: "the next
 # byte (if any) must be whitespace/delimiter", so `/JS_backup` or
 # `/AA:custom` (longer, unrelated names) don't falsely trip a token match.
-_NAME_BOUNDARY = rb"(?![^\s()<>\[\]{}/%])"
+# NUL-inclusive (`\x00`), matching `_PDF_WS` below: NUL is legal PDF
+# whitespace (ISO 32000-1 §7.2.2) that terminates a name token for a
+# compliant reader, but Python's `\s` excludes it — without `\x00` here,
+# `/JS\x00(app.alert(1))` would be honored as `/JS` by a real reader yet
+# slip past this gate.
+_NAME_BOUNDARY = rb"(?![^\x00\s()<>\[\]{}/%])"
 
 # PDF name tokens (the `/Name` form) whose presence marks active content we
 # never want stored, let alone executed by some future richer consumer.

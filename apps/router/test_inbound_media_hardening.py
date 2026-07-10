@@ -170,6 +170,27 @@ class ActiveContentRejectionTests(SimpleTestCase):
                 self.assertIsNone(error)
                 self.assertEqual(ext, "pdf")
 
+    def test_nul_separated_tokens_still_reject(self):
+        # Fable-5 verification follow-up: NUL (`\x00`) is legal PDF
+        # whitespace (ISO 32000-1 §7.2.2) that terminates a name token for a
+        # compliant reader, but plain `\s` doesn't include it — `/JS\x00(...)`
+        # is honored as the `/JS` name yet would slip past a `\s`-only
+        # boundary. `_NAME_BOUNDARY` must be NUL-inclusive so all five
+        # tokens still reject when NUL-separated from what follows.
+        cases = (
+            b" /JS\x00(app.alert(1))",
+            b" /Launch\x00 5 0 R",
+            b" /JavaScript\x00 5 0 R",
+            b" /AA\x00 << /WC 5 0 R >>",
+            b" /EmbeddedFile\x00 5 0 R",
+        )
+        for catalog_extra in cases:
+            with self.subTest(catalog_extra=catalog_extra):
+                data = _pdf_with(catalog_extra=catalog_extra)
+                _, ext, error = decode_and_validate_document(_b64(data))
+                self.assertIsNone(ext)
+                self.assertEqual(error, "unsafe_document")
+
 
 class EncryptedPdfRejectionTests(SimpleTestCase):
     def test_encrypt_trailer_rejects(self):
