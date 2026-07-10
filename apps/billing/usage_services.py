@@ -386,7 +386,7 @@ def get_transparency_data(tenant: Tenant) -> dict:
 
     donation_amount = 0.0
     if _is_paying_subscriber(tenant):
-        _, donation, _ = compute_donation(tenant)
+        _, donation, _, _ = compute_donation(tenant)
         donation_amount = float(donation)
 
     return {
@@ -511,17 +511,20 @@ def _fetch_subscription_price_from_stripe(subscription_id: str) -> float | None:
         return None
 
 
-def _get_subscription_price(tenant: Tenant) -> float:
-    """Resolve the tenant's monthly subscription price in USD.
+def _get_subscription_price_with_source(tenant: Tenant) -> tuple[float, str]:
+    """Resolve the tenant's monthly subscription price in USD *and* where it came from.
 
-    Drives the surplus/donation figures on the transparency dashboard — and an
-    in-flight donation ledger will use it to compute real disbursement amounts —
-    so a wrong number becomes wrong money. Reads the live price from Stripe
-    (cached ~1h per subscription) instead of trusting a hardcoded figure, but
-    NEVER raises: any failure falls back to ``USAGE_DASHBOARD_SUBSCRIPTION_PRICE``.
+    Returns ``(price, source)`` where ``source`` is:
+      - ``"stripe"`` — the price was verified against Stripe, either freshly
+        fetched or served from the ~1h positive cache (which only ever holds a
+        successfully-fetched Stripe price).
+      - ``"fallback"`` — the price is ``USAGE_DASHBOARD_SUBSCRIPTION_PRICE`` because
+        there is no subscription id (trial/comped), a recent lookup failed (negative
+        cache), or the live Stripe fetch failed.
 
-    Tenants with no ``stripe_subscription_id`` (trials, comped accounts) fall
-    back to the setting, preserving the previous flat-$12 behavior.
+    Same never-raises contract as ``_get_subscription_price``. The source lets the
+    donation ledger refuse to book a pledge against a price it couldn't verify was
+    real revenue.
     """
     from django.core.cache import cache
 
@@ -530,19 +533,20 @@ def _get_subscription_price(tenant: Tenant) -> float:
     subscription_id = (tenant.stripe_subscription_id or "").strip()
     if not subscription_id:
         # No subscription to price against (trial/comped) — expected, not drift.
-        return fallback
+        return fallback, "fallback"
 
     cache_key = f"billing:sub_price:{subscription_id}"
     cached = cache.get(cache_key)
     if cached is not None:
-        return float(cached)
+        # A positive cache entry is written only after a successful Stripe fetch.
+        return float(cached), "stripe"
 
     # Negative cache: if a recent lookup for this subscription failed, serve the
     # fallback without touching Stripe. We store a marker (not the price) so a
     # setting change during an outage is still honored via the fresh `fallback`.
     failure_key = f"billing:sub_price_fallback:{subscription_id}"
     if cache.get(failure_key) is not None:
-        return fallback
+        return fallback, "fallback"
 
     price = _fetch_subscription_price_from_stripe(subscription_id)
     if price is None:
@@ -553,7 +557,26 @@ def _get_subscription_price(tenant: Tenant) -> float:
             subscription_id,
             fallback,
         )
-        return fallback
+        return fallback, "fallback"
 
     cache.set(cache_key, price, _SUBSCRIPTION_PRICE_CACHE_TTL)
+    return price, "stripe"
+
+
+def _get_subscription_price(tenant: Tenant) -> float:
+    """Resolve the tenant's monthly subscription price in USD.
+
+    Drives the surplus/donation figures on the transparency dashboard — and the
+    donation ledger uses it to compute real disbursement amounts — so a wrong
+    number becomes wrong money. Reads the live price from Stripe (cached ~1h per
+    subscription) instead of trusting a hardcoded figure, but NEVER raises: any
+    failure falls back to ``USAGE_DASHBOARD_SUBSCRIPTION_PRICE``.
+
+    Tenants with no ``stripe_subscription_id`` (trials, comped accounts) fall
+    back to the setting, preserving the previous flat-$12 behavior. Callers that
+    also need to know whether the price was Stripe-verified use
+    ``_get_subscription_price_with_source``; this thin wrapper keeps the plain
+    float contract its existing callers rely on.
+    """
+    price, _source = _get_subscription_price_with_source(tenant)
     return price
