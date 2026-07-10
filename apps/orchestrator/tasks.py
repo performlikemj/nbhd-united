@@ -1552,3 +1552,79 @@ def backfill_tenant_deks_task() -> dict:
     tail = buf.getvalue()[-4000:]
     logger.info("backfill_tenant_deks: %s", tail)
     return {"output": tail}
+
+
+def crypto_roundtrip_smoke_task() -> dict:
+    """Encryption-at-rest Phase 1->2 bridge — prove the full encrypt/decrypt path.
+
+    One-off operator smoke. Zero-arg by contract (the QStash publish path we
+    use can't carry a body), registered in apps/cron/views.py TASK_MAP, and
+    fired by a no-body QStash publish to
+    ``/api/cron/trigger/crypto_roundtrip_smoke/``. The broker gate (prewarm)
+    only ever proved DEK *unwrap*; this proves the whole box path — envelope
+    codec + AAD binding + per-process DEK cache + broker unwrap — end-to-end
+    against a REAL tenant DEK, before Phase 2 wires the first content column
+    through it.
+
+    Picks ONE deterministic tenant that already has an epoch-0 ``TenantDek``
+    row (oldest by tenant ``created_at``) and does a pure in-memory round-trip
+    with a THROWAWAY, non-sensitive sentinel: ``box.encrypt`` -> ``box.decrypt``
+    -> assert equality. NO DB writes, no user data anywhere near it — the
+    sentinel is a fixed constant and the table/column names are synthetic
+    (``smoke_test``/``smoke``), so nothing touches a real row. Emits exactly one
+    log line (PASS with tenant + epoch, or FAIL with the exception class +
+    message; never any key material or plaintext beyond the fixed sentinel) so
+    the result is visible in ``ContainerAppConsoleLogs_CL``.
+
+    Safe to re-fire anytime — read-only and idempotent. On FAIL it RAISES so
+    QStash marks the delivery failed (surfaces in the DLQ); a silent-green
+    failure would defeat the purpose.
+    """
+    import logging
+
+    from apps.crypto import box
+    from apps.tenants.models import TenantDek
+
+    logger = logging.getLogger(__name__)
+
+    sentinel = "crypto-roundtrip-smoke"
+    table = "smoke_test"
+    column = "smoke"
+
+    # Deterministic pick: oldest keyed tenant. Phase 1 only ever mints epoch 0,
+    # and box.encrypt targets epoch 0, so filter to that epoch to guarantee the
+    # chosen tenant can actually be encrypted for. tenant_id breaks created_at
+    # ties so the pick is stable across runs.
+    dek_row = (
+        TenantDek.objects.filter(dek_epoch=0)
+        .select_related("tenant")
+        .order_by("tenant__created_at", "tenant_id")
+        .first()
+    )
+    if dek_row is None:
+        # No keyed tenant to exercise the path against — surface loudly (DLQ)
+        # rather than passing vacuously.
+        raise RuntimeError("crypto_roundtrip_smoke: no epoch-0 TenantDek row found — nothing to round-trip")
+
+    tenant_id = dek_row.tenant_id
+    epoch = dek_row.dek_epoch
+
+    try:
+        envelope = box.encrypt(tenant_id, table, column, sentinel)
+        revealed = box.decrypt(tenant_id, table, column, envelope).reveal()
+        if revealed != sentinel:
+            raise ValueError("round-trip mismatch: decrypted value != sentinel")
+    except Exception as exc:
+        logger.error(
+            "crypto_roundtrip_smoke: FAIL tenant=%s epoch=%s %s: %s",
+            tenant_id,
+            epoch,
+            type(exc).__name__,
+            exc,
+        )
+        # Re-raise so QStash marks the delivery failed (DLQ-visible). A
+        # silent-green failure would defeat the purpose of the smoke.
+        raise
+
+    logger.info("crypto_roundtrip_smoke: PASS tenant=%s epoch=%s", tenant_id, epoch)
+    return {"result": "pass", "tenant": str(tenant_id), "epoch": epoch}

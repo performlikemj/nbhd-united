@@ -119,6 +119,14 @@ TASK_MAP = {
     # idempotent, so once every tenant has a DEK a re-fire is a no-op.
     "backfill_tenant_deks": "apps.orchestrator.tasks.backfill_tenant_deks_task",
     "backfill_tenant_deks_dry_run": "apps.orchestrator.tasks.backfill_tenant_deks_dry_run_task",
+    # Encryption-at-rest Phase 1->2 bridge smoke. Operator-fired via a no-body
+    # QStash publish to /api/cron/trigger/crypto_roundtrip_smoke/. Proves the
+    # full box path — envelope codec + AAD + per-process DEK cache + broker
+    # unwrap — end-to-end on a real DEK (the broker gate proved unwrap only).
+    # Pure in-memory round-trip on ONE keyed tenant with a throwaway sentinel:
+    # no DB writes, no user data. Raises on failure so QStash DLQs it; safe to
+    # re-fire anytime.
+    "crypto_roundtrip_smoke": "apps.orchestrator.tasks.crypto_roundtrip_smoke_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.
