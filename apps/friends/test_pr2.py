@@ -392,3 +392,60 @@ class ShareHttpTest(TestCase):
         resp = _client(self.a.user).delete(f"/api/v1/lessons/{self.lesson.id}/share/{grant.id}/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(access.shared_star_qs(self.b, self.a).count(), 0)
+
+
+class SharePreviewContract404Test(TestCase):
+    """The exact contract the iOS in-app 'Share a spark' flow depends on
+    (NeighborProfileSheet → LessonPickerSheet → SharePreviewSheet): the preview
+    GET the client polls must never 404 while a share is genuinely in progress.
+
+    Regression for the prod 404 on 2026-07-10 (canary tenant 148ccf1c sharing
+    lesson 899 to the accepted MJ↔Kiho edge): the owner's own SharedLesson read
+    fail-closed to ``None`` under a transient RLS ``app.tenant_id`` GUC flicker on
+    a pooled connection and surfaced as "No share in progress" (404) mid-scrub,
+    dead-ending the trust surface. CI runs as a BYPASSRLS role, so these lock the
+    *contract* (never 404 while a pending share exists) and the service-context
+    read path — not the live-RLS behaviour itself."""
+
+    def setUp(self):
+        self.owner = _tenant("preview_owner")
+        self.other = _tenant("preview_other")
+        self.edge = _accepted_edge(self.owner, self.other)
+        self.lesson = _lesson(self.owner)
+
+    def _preview_url(self) -> str:
+        # The literal path + query params NeighborhoodViewModel.previewShare builds.
+        return f"/api/v1/friends/shares/preview/?lesson_id={self.lesson.id}&friendship_id={self.edge.id}"
+
+    def test_preview_in_progress_is_202_not_404(self):
+        # Share started, snapshot still PENDING (scrub not run) → keep polling (202).
+        with mock.patch("apps.friends.services._enqueue_scrub"):
+            services.share_lesson(self.owner, self.owner.user, self.lesson, str(self.edge.id))
+        resp = _client(self.owner.user).get(self._preview_url())
+        self.assertEqual(resp.status_code, 202, resp.content)
+
+    def test_preview_404_only_when_no_share_started(self):
+        # No share started at all → a genuine 404 is correct.
+        resp = _client(self.owner.user).get(self._preview_url())
+        self.assertEqual(resp.status_code, 404, resp.content)
+
+    def test_preview_survives_unreadable_snapshot_while_pending_exists(self):
+        # Reproduces the prod symptom in the BYPASSRLS test role: the snapshot read
+        # comes back empty (here the row is simply absent) while a PendingShare
+        # exists → the owner must keep polling (202), never dead-end on a 404.
+        with mock.patch("apps.friends.services._enqueue_scrub"):
+            services.share_lesson(self.owner, self.owner.user, self.lesson, str(self.edge.id))
+        SharedLesson.objects.filter(source_lesson_id=self.lesson.id, owner_tenant=self.owner).delete()
+        _payload, code = services.preview_share(self.owner, str(self.lesson.id), friendship_id=str(self.edge.id))
+        self.assertEqual(code, 202)
+
+    def test_owner_snapshot_read_uses_service_context(self):
+        # (A) The owner reads their OWN snapshot under backstop_service_context so a
+        # momentarily-unset app.tenant_id GUC cannot hide it. Guards against a
+        # revert to a GUC-dependent read of shared_lessons.
+        with mock.patch("apps.friends.services._enqueue_scrub"):
+            services.share_lesson(self.owner, self.owner.user, self.lesson, str(self.edge.id))
+        with mock.patch("apps.friends.access.backstop_service_context", wraps=access.backstop_service_context) as spy:
+            snap = access.get_shared_lesson_by_lesson_id(str(self.lesson.id), self.owner)
+        self.assertTrue(spy.called)
+        self.assertIsNotNone(snap)

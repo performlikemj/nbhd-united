@@ -737,12 +737,38 @@ def _resolve_share_audience(tenant, friendship_id, circle_id):
     raise ValidationError("A friendship_id or circle_id is required.")
 
 
+def _has_pending_share(owner_tenant, lesson_id, edge, circle) -> bool:
+    """True iff a still-PENDING share for this lesson + resolved audience exists —
+    i.e. a share really is in progress. Keeps ``preview_share`` from reporting a
+    transient empty snapshot read as a hard 404."""
+    qs = PendingShare.objects.filter(
+        tenant=owner_tenant, source_lesson_id=lesson_id, status=PendingShare.Status.PENDING
+    )
+    if circle is not None:
+        qs = qs.filter(target_circle=circle)
+    elif edge is not None:
+        qs = qs.filter(target_friendship=edge)
+    try:
+        return qs.exists()
+    except (ValueError, TypeError):
+        return False
+
+
 def preview_share(owner_tenant, lesson_id, friendship_id=None, circle_id=None) -> tuple[dict, int]:
     """Preview-before-share: the LITERAL ``redacted_text`` the audience will see.
     202 while scrubbing, 409 if the scrub failed (fail-closed), 200 when ready."""
     edge, circle = _resolve_share_audience(owner_tenant, friendship_id, circle_id)
     shared_lesson = access.get_shared_lesson_by_lesson_id(lesson_id, owner_tenant)
     if shared_lesson is None:
+        # A PendingShare for this lesson + audience IS the definition of a share
+        # in progress, so never answer "no share in progress" (404) while one
+        # exists — the iOS SharePreviewSheet dead-ends on a 404. The snapshot read
+        # can come back empty for a beat even when the row is present (an RLS GUC
+        # flicker on a pooled/reconnected connection, or read-replica lag); tell
+        # the client to keep polling (202) and let the next poll settle. Only a
+        # genuinely un-started share (no pending row) is a true 404.
+        if _has_pending_share(owner_tenant, lesson_id, edge, circle):
+            return {"detail": "Preparing your preview safely — try again in a moment."}, 202
         raise NotFound("No share in progress for this lesson.")
     if shared_lesson.scrub_status == SharedLesson.ScrubStatus.PENDING:
         return {"detail": "Preparing your preview safely — try again in a moment."}, 202
