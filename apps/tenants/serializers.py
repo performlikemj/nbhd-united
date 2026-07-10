@@ -112,6 +112,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "gravity_available",
             "fuel_enabled",
             "core_enabled",
+            "constellation_enabled",
             "friends_enabled",
             "friends_agent_propose_enabled",
             "byo_models_enabled",
