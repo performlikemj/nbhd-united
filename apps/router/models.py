@@ -553,6 +553,10 @@ class ChatThread(models.Model):
         related_name="chat_threads",
     )
     title = models.CharField(max_length=120, blank=True, default="")
+    # Encryption-at-rest Phase 2 (expand/contract): sealed envelope of the same
+    # value as ``title``, under box.encrypt with AAD
+    # ``enc_columns.CHAT_THREAD_TITLE``. Ships DARK — see AppChatMessage.user_text_enc.
+    title_enc = models.BinaryField(null=True)
     is_main = models.BooleanField(
         default=False,
         help_text="The shared default thread resumed by every channel. One per tenant.",
@@ -626,6 +630,13 @@ class AppChatMessage(models.Model):
         help_text="Client-supplied stable id. Idempotency key + poll key.",
     )
     user_text = models.TextField()
+    # Encryption-at-rest Phase 2 (expand/contract): sealed envelope of the same
+    # value as ``user_text``, under box.encrypt with AAD
+    # ``enc_columns.APP_CHAT_MESSAGE_USER_TEXT``. Ships DARK — nothing reads or
+    # writes it yet (PR-2 turns on dual-write behind ``Tenant.encrypt_chat_writes``,
+    # PR-4 reads behind ``Tenant.read_encrypted_chat``). NULL = not-yet-encrypted;
+    # ``b""`` = encrypted empty string (see apps/crypto/box.py sentinels).
+    user_text_enc = models.BinaryField(null=True)
     # Assistant reply, marker-stripped and kept in PII-placeholder space
     # ([PERSON_1]) at rest (pseudonymize-at-rest) for tenant-produced replies;
     # rehydrated at the owner-facing seams (_serialize_message, the ?since=
