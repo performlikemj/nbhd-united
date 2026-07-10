@@ -306,9 +306,14 @@ def trigger_task(request, task_name):
         return JsonResponse({"error": "Invalid signature"}, status=401)
 
     # Signature verified — set RLS service role so tasks can access all tenants
+    from apps.crypto import audit
     from apps.tenants.middleware import set_rls_context
 
     set_rls_context(service_role=True)
+    # Attribute any decrypt done by a QStash-dispatched task to system_cron
+    # (silent). These are the service running scheduled/on-demand work, not a
+    # human read. runtime_views deliberately stay on the ambient "system".
+    audit.set_principal("system_cron")
 
     if task_name not in TASK_MAP:
         logger.warning("Unknown task requested: %s", task_name)

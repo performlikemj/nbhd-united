@@ -9,6 +9,8 @@ from django.db import connection
 from django.utils import timezone as dj_timezone
 from django.utils.deprecation import MiddlewareMixin
 
+from apps.crypto import audit
+
 logger = logging.getLogger(__name__)
 
 _tenant_context = threading.local()
@@ -81,6 +83,14 @@ class TenantContextMiddleware(MiddlewareMixin):
     """
 
     def process_request(self, request):
+        # Reset the decrypt-audit principal to "system" at the very start of
+        # every request, BEFORE auth runs. On a reused gunicorn worker thread a
+        # prior request's principal (e.g. "owner_request") would otherwise
+        # persist in the ContextVar and silently mis-attribute this request's
+        # decrypts. Auth (JWT/PAT) upgrades it to "owner_request" a moment
+        # later; process_response resets it again. Mirrors set_rls_context.
+        audit.set_principal("system")
+
         if hasattr(request, "user") and request.user.is_authenticated:
             _tenant_context.tenant = getattr(request.user, "tenant", None)
             tenant = _tenant_context.tenant
@@ -99,6 +109,10 @@ class TenantContextMiddleware(MiddlewareMixin):
             reset_rls_context()
         except Exception:
             pass  # Connection may already be closed
+        # Clear the decrypt-audit principal too, next to the RLS reset — belt to
+        # process_request's braces against cross-request principal bleed on a
+        # reused worker thread.
+        audit.reset_principal()
         return response
 
 

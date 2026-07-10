@@ -438,6 +438,19 @@ class DecryptSingleAuditTest(BoxTestCase):
 
         self.assertEqual(records, [])
 
+    def test_emits_one_line_for_owner_request(self):
+        # The principal the auth classes set (PR H) must produce exactly one
+        # audit line when an owner reads their own row through box.decrypt.
+        tenant = _create_tenant(suffix="single-audit-owner")
+        mint_and_wrap_dek(tenant)
+        blob = box.encrypt(tenant.id, TABLE, COLUMN, "x")
+
+        self._set_principal("owner_request")
+        records = self._capture_audit(lambda: box.decrypt(tenant.id, TABLE, COLUMN, blob))
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(json.loads(records[0].getMessage())["principal"], "owner_request")
+
 
 class SubkeyFormatContractTest(BoxTestCase):
     """Pins the PERMANENT on-disk format: content is sealed under

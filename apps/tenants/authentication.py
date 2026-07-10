@@ -10,6 +10,8 @@ from rest_framework_simplejwt.exceptions import AuthenticationFailed as JWTAuthe
 from rest_framework_simplejwt.exceptions import InvalidToken
 from rest_framework_simplejwt.settings import api_settings as jwt_settings
 
+from apps.crypto import audit
+
 from .middleware import _tenant_context, set_rls_context
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,10 @@ class JWTAuthenticationWithRLS(JWTAuthentication):
         if tenant:
             _tenant_context.tenant = tenant
             set_rls_context(tenant_id=tenant.id, user_id=user.id)
+            # Subscriber authenticated: any synchronous decrypt under this
+            # request is an owner reading their own data. Upgrades the "system"
+            # the middleware set at request entry.
+            audit.set_principal("owner_request")
 
         return result
 
@@ -134,6 +140,9 @@ class PersonalAccessTokenAuthentication(BaseAuthentication):
         if tenant:
             _tenant_context.tenant = tenant
             set_rls_context(tenant_id=tenant.id, user_id=user.id)
+            # PAT authenticates the subscriber; a synchronous decrypt under it
+            # is an owner-initiated read. Same upgrade as the JWT path.
+            audit.set_principal("owner_request")
 
         # Stamp last_used_at, throttled to once a minute — the unconditional
         # UPDATE added a cross-region write round trip to every PAT request.
