@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0109_seed_pii_type_counters"),
+        ("tenants", "0112_constellation_enabled_flag"),
     ]
 
     operations = [
