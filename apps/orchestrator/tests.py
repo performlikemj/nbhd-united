@@ -96,6 +96,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -117,6 +118,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -131,11 +133,25 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
         self.assertEqual(config["plugins"]["allow"], ["nbhd-google-tools"])
         self.assertNotIn("nbhd-journal-tools", config["plugins"]["entries"])
+
+    def test_cron_enforcement_plugin_ships_by_default(self):
+        """Regression test: OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID/_PATH must be
+        declared in config/settings/base.py so the plugin actually emits.
+        Previously undeclared -> getattr fallback to "" -> silently dropped
+        from every tenant config despite the config_generator comment
+        claiming it loads unconditionally in production."""
+        config = generate_openclaw_config(self.tenant)
+        self.assertIn("plugins", config)
+        self.assertIn("nbhd-cron-enforcement", config["plugins"]["allow"])
+        self.assertTrue(config["plugins"]["entries"]["nbhd-cron-enforcement"]["enabled"])
+        paths = config["plugins"]["load"]["paths"]
+        self.assertIn("/opt/nbhd/plugins/nbhd-cron-enforcement", paths)
 
     def test_tools_policy_uses_allow_and_deny_lists(self):
         self.tenant.model_tier = "starter"
@@ -381,6 +397,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)
@@ -403,6 +420,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)

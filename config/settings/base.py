@@ -366,6 +366,23 @@ OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH = env(
     "OPENCLAW_ROUTING_CONTEXT_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-routing-context",
 )
+# Cron-enforcement plugin — fire-time hooks that validate typed-cron output
+# against its pattern contract (config_generator.py loads it unconditionally
+# in production; see the comment there). This declaration was previously
+# missing, so the config_generator getattr fell back to "" and the plugin
+# was silently dropped from every tenant's config despite that comment
+# claiming otherwise. Declaring it here makes it actually ship fleet-wide.
+# scripts/openclaw_config_doctor_smoke.sh already exports
+# OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID="" to disable it in CI, so that smoke
+# test continues to behave the same now that env() reads a real default.
+OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID = env(
+    "OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID",
+    default="nbhd-cron-enforcement",
+)
+OPENCLAW_CRON_ENFORCEMENT_PLUGIN_PATH = env(
+    "OPENCLAW_CRON_ENFORCEMENT_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-cron-enforcement",
+)
 # Activity-stream plugin — narrates agent tool-use/composing to the control plane
 # for the in-app "thinking" state + iOS-27 Siri Live Activity (HER_SIRI_ARCHITECTURE
 # §4.3). OPT-IN: ID defaults to "" so it's built into the image but inert (no fleet
