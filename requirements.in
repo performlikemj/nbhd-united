@@ -65,6 +65,7 @@ azure-mgmt-authorization
 azure-mgmt-storage
 azure-storage-file-share
 azure-keyvault-secrets
+azure-keyvault-keys>=4.9,<5
 
 # Charts (server-side rendering for chat channels)
 matplotlib
