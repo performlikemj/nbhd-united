@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from apps.crypto import audit, box, cache
+from apps.crypto import audit, box, cache, codec, kdf
 from apps.crypto.keys import mint_and_wrap_dek
 from apps.crypto.nolog import RedactedStr
 from apps.orchestrator import azure_client
@@ -437,3 +437,63 @@ class DecryptSingleAuditTest(BoxTestCase):
         records = self._capture_audit(lambda: box.decrypt(tenant.id, TABLE, COLUMN, blob))
 
         self.assertEqual(records, [])
+
+
+class SubkeyFormatContractTest(BoxTestCase):
+    """Pins the PERMANENT on-disk format: content is sealed under
+    ``HKDF(dek, domain)``, NOT the raw DEK (directive §3.1). These tests fail
+    if box.py ever regresses to raw-DEK sealing or drops domain separation —
+    which, once real ciphertext exists, would be an unrecoverable format break.
+    """
+
+    def test_content_v1_is_the_default_domain(self):
+        tenant = _create_tenant(suffix="subkey-default")
+        mint_and_wrap_dek(tenant)
+
+        # A default encrypt reads back with explicit content-v1, and an
+        # explicit content-v1 encrypt reads back with the default — proving the
+        # default domain IS content-v1.
+        blob_default = box.encrypt(tenant.id, TABLE, COLUMN, "hello")
+        self.assertEqual(
+            box.decrypt(tenant.id, TABLE, COLUMN, blob_default, domain=kdf.CONTENT_V1).reveal(),
+            "hello",
+        )
+        blob_explicit = box.encrypt(tenant.id, TABLE, COLUMN, "hello", domain=kdf.CONTENT_V1)
+        self.assertEqual(box.decrypt(tenant.id, TABLE, COLUMN, blob_explicit).reveal(), "hello")
+
+    def test_domain_separation_fails_closed(self):
+        tenant = _create_tenant(suffix="subkey-domainsep")
+        mint_and_wrap_dek(tenant)
+
+        # A different domain derives a different subkey from the same DEK, so
+        # the GCM tag check fails closed — no cross-domain read either way.
+        content_blob = box.encrypt(tenant.id, TABLE, COLUMN, "content secret", domain=kdf.CONTENT_V1)
+        with self.assertRaises(box.CryptoError):
+            box.decrypt(tenant.id, TABLE, COLUMN, content_blob, domain=kdf.MAP_V1)
+
+        map_blob = box.encrypt(tenant.id, TABLE, COLUMN, "map secret", domain=kdf.MAP_V1)
+        with self.assertRaises(box.CryptoError):
+            box.decrypt(tenant.id, TABLE, COLUMN, map_blob)  # default content-v1
+
+    def test_raw_dek_ciphertext_no_longer_decrypts(self):
+        # The pin that makes the format permanent: a blob sealed directly under
+        # the RAW DEK (the pre-subkey format) must NOT decrypt through box,
+        # which now derives HKDF(dek, "content-v1"). If box ever regressed to
+        # raw-DEK sealing, this raw blob would decrypt and this test would fail.
+        tenant = _create_tenant(suffix="subkey-rawdek")
+        mint_and_wrap_dek(tenant)
+
+        # Positive control — a properly sealed blob DOES decrypt.
+        good = box.encrypt(tenant.id, TABLE, COLUMN, "sealed under the subkey")
+        self.assertEqual(box.decrypt(tenant.id, TABLE, COLUMN, good).reveal(), "sealed under the subkey")
+
+        # Seal a blob under the raw DEK, bypassing the subkey derivation, using
+        # the SAME AAD box would build — so the ONLY thing that differs is the
+        # key (raw DEK vs HKDF subkey).
+        raw_dek = cache.get_dek(tenant.id, 0)
+        self.assertNotEqual(kdf.subkey(raw_dek, kdf.CONTENT_V1), raw_dek)  # sanity: really different key material
+        aad = codec.build_aad(tenant.id, TABLE, COLUMN)
+        raw_blob = codec.seal(raw_dek, 0, aad, b"sealed under the RAW dek")
+
+        with self.assertRaises(box.CryptoError):
+            box.decrypt(tenant.id, TABLE, COLUMN, raw_blob)
