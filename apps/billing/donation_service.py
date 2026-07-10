@@ -38,7 +38,7 @@ import logging
 from datetime import UTC, date, datetime, time
 from decimal import Decimal
 
-from django.db.models import Q, Sum
+from django.db.models import Q
 from django.utils import timezone
 
 from .constants import CREDIT_PACKS
@@ -118,33 +118,39 @@ def _month_topup_revenue(tenant, month_first: date) -> Decimal:
     """Net top-up revenue in USD actually collected from ``tenant`` in the
     calendar month starting ``month_first`` — cash basis, so a refund/dispute
     clawback reduces the month it lands in rather than the month of the
-    original grant.
+    original grant. Grants and refunds are netted in the SAME unit —
+    collected-revenue dollars, never the credit-dollar value of the pack (the
+    two differ by the pack's margin, e.g. $6.00 charged for $5.00 of credit).
 
     Each ``GRANT`` row prefers ``amount_paid_cents`` (what Stripe actually
     charged); when that's NULL it falls back to the pack's server-defined
     ``price_cents`` via the row's ``pack_id`` (still server-authoritative,
     logged loudly) and a grant with neither is skipped with a warning — the
-    truth rule is to never guess revenue. ``REVERSAL`` rows (already stored
-    negative — see ``credits.handle_credit_refund``) net the clawback out of
-    the same month. The result is floored at ``Decimal("0")`` — a refund-heavy
-    month must never produce a negative donation base — with a warning logged
-    when flooring kicks in.
+    truth rule is to never guess revenue. Each ``REVERSAL`` row (already
+    stored negative, in credit dollars — see ``credits.handle_credit_refund``)
+    is matched back to its original grant by ``stripe_payment_intent_id`` and
+    converted to revenue dollars via the refunded *fraction* of that grant
+    (``abs(reversal.amount) / grant.amount``, clamped to ``[0, 1]``) applied to
+    the grant's own resolved revenue — so a fully-refunded pack claws back the
+    full price charged, not just the smaller credit value. A reversal with no
+    matching grant, or whose grant's revenue can't be resolved either, falls
+    back to netting the raw credit-dollar clawback directly (under-subtracts
+    by the pack margin, which errs toward donating slightly MORE, never less).
+    The result is floored at ``Decimal("0")`` — a refund-heavy month must never
+    produce a negative donation base — with a warning logged when flooring
+    kicks in.
     """
     from .models import CreditLedger
 
     window_start, window_end = _month_window(month_first)
     revenue = Decimal("0")
 
-    grants = CreditLedger.objects.filter(
-        tenant=tenant,
-        kind=CreditLedger.Kind.GRANT,
-        created_at__gte=window_start,
-        created_at__lt=window_end,
-    )
-    for grant in grants:
+    def _grant_revenue(grant) -> Decimal | None:
+        """Resolve a GRANT row's actual collected-revenue dollars, or None if
+        unresolvable. Shared by the grant-counting loop below and the
+        refund-matching loop, so both sides value the same grant identically."""
         if grant.amount_paid_cents is not None:
-            revenue += Decimal(grant.amount_paid_cents) / Decimal("100")
-            continue
+            return Decimal(grant.amount_paid_cents) / Decimal("100")
         pack = CREDIT_PACKS.get(grant.pack_id or "")
         if pack:
             logger.warning(
@@ -154,24 +160,71 @@ def _month_topup_revenue(tenant, month_first: date) -> Decimal:
                 tenant.id,
                 grant.pack_id,
             )
-            revenue += Decimal(pack["price_cents"]) / Decimal("100")
-        else:
-            logger.warning(
-                "Donation snapshot: top-up grant %s (tenant %s) has neither "
-                "amount_paid_cents nor a resolvable pack_id (%r) — skipping it "
-                "(truth rule: never guess revenue).",
-                grant.id,
-                tenant.id,
-                grant.pack_id,
-            )
+            return Decimal(pack["price_cents"]) / Decimal("100")
+        logger.warning(
+            "Donation snapshot: top-up grant %s (tenant %s) has neither "
+            "amount_paid_cents nor a resolvable pack_id (%r) — skipping it "
+            "(truth rule: never guess revenue).",
+            grant.id,
+            tenant.id,
+            grant.pack_id,
+        )
+        return None
 
-    clawback = CreditLedger.objects.filter(
+    grants = CreditLedger.objects.filter(
+        tenant=tenant,
+        kind=CreditLedger.Kind.GRANT,
+        created_at__gte=window_start,
+        created_at__lt=window_end,
+    )
+    for grant in grants:
+        grant_revenue = _grant_revenue(grant)
+        if grant_revenue is not None:
+            revenue += grant_revenue
+
+    reversals = CreditLedger.objects.filter(
         tenant=tenant,
         kind=CreditLedger.Kind.REVERSAL,
         created_at__gte=window_start,
         created_at__lt=window_end,
-    ).aggregate(total=Sum("amount"))["total"] or Decimal("0")
-    revenue += clawback  # reversal amounts are already stored negative
+    )
+    for reversal in reversals:
+        refunded_credit = abs(reversal.amount)
+        matching_grant = None
+        if reversal.stripe_payment_intent_id:
+            # Not window-limited — the original grant may have landed in an
+            # earlier month than the refund. Mirrors the lookup in
+            # credits.handle_credit_refund (oldest grant on the PI).
+            matching_grant = (
+                CreditLedger.objects.filter(
+                    tenant=tenant,
+                    kind=CreditLedger.Kind.GRANT,
+                    stripe_payment_intent_id=reversal.stripe_payment_intent_id,
+                )
+                .order_by("created_at")
+                .first()
+            )
+
+        grant_revenue = None
+        if matching_grant and matching_grant.amount and matching_grant.amount > 0:
+            grant_revenue = _grant_revenue(matching_grant)
+        if grant_revenue is not None:
+            frac = max(Decimal("0"), min(Decimal("1"), refunded_credit / matching_grant.amount))
+            revenue -= frac * grant_revenue
+            continue
+
+        # No matching grant, or its revenue couldn't be resolved: net the raw
+        # credit-dollar clawback directly. This under-subtracts (credit
+        # dollars < revenue dollars, by the pack margin), which errs toward
+        # donating slightly more than truly collected — never less.
+        logger.warning(
+            "Donation snapshot: refund clawback %s (tenant %s) has no resolvable "
+            "matching grant revenue — netting the raw credit-dollar clawback "
+            "instead (under-subtracts by the pack margin).",
+            reversal.id,
+            tenant.id,
+        )
+        revenue -= refunded_credit
 
     result = revenue.quantize(Decimal("0.0001"))
     if result < 0:
