@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import TestCase
@@ -15,6 +16,19 @@ from apps.tenants.services import create_tenant
 
 class BackfillTenantDeksTest(TestCase):
     def setUp(self):
+        # Force the azure_client mock branch for the whole test (setUp AND
+        # the test body). A class-level @patch decorator would NOT cover
+        # setUp — and setUp calls mint_and_wrap_dek directly below — so we
+        # start the patcher here and addCleanup it. Do NOT rely on the
+        # ambient AZURE_MOCK env var: CI's full-suite run pollutes
+        # os.environ, `_is_mock()` can flip False, and mint_and_wrap_dek ->
+        # create_tenant_kek would then reach for REAL Key Vault. Matches the
+        # intent of the merged PR1 test (test_azure_client_keys.py), which
+        # patches _is_mock rather than trusting the env.
+        patcher = patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
         # Candidate: ACTIVE, no TenantDek row yet.
         self.tenant_active_no_dek = create_tenant(display_name="Active No DEK", telegram_chat_id=700101)
         self.tenant_active_no_dek.status = Tenant.Status.ACTIVE

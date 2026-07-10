@@ -34,7 +34,15 @@ _EXPECTED_CONTAINER_SPEC_KEYS = {
 }
 
 
+# Force the azure_client mock branch explicitly rather than relying on the
+# ambient AZURE_MOCK env var. In CI's full-suite run os.environ is polluted
+# by earlier tests, so `_is_mock()` can flip False mid-run and
+# provision_tenant -> mint_and_wrap_dek -> create_tenant_kek would reach for
+# REAL Key Vault. Patching `_is_mock` on the azure_client module (where the
+# DEK-mint path calls it) is strictly more robust than the env var — matches
+# the merged PR1 test (test_azure_client_keys.py).
 @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
+@patch("apps.orchestrator.azure_client._is_mock", return_value=True)
 class ProvisionMintsDekTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Crypto Provision", telegram_chat_id=616161)
@@ -79,10 +87,12 @@ class ProvisionMintsDekTest(TestCase):
         _mock_create_identity,
         _mock_config_json,
         _mock_generate_config,
+        _mock_is_mock,
     ):
-        # mint_and_wrap_dek runs for real against the stateful AZURE_MOCK
-        # KEK registry (not mocked out) — this proves the actual TenantDek
-        # row + KEK get created, not just that a function was called.
+        # mint_and_wrap_dek runs for real against the stateful mock KEK
+        # registry (create_container_app etc. are mocked, but the DEK-mint
+        # path is NOT — this proves the actual TenantDek row + KEK get
+        # created, not just that a function was called).
         provision_tenant(str(self.tenant.id))
         self.tenant.refresh_from_db()
 
@@ -129,6 +139,7 @@ class ProvisionMintsDekTest(TestCase):
         _mock_create_identity,
         _mock_config_json,
         _mock_generate_config,
+        _mock_is_mock,
     ):
         with self.assertRaises(RuntimeError):
             provision_tenant(str(self.tenant.id))
@@ -147,6 +158,7 @@ class ProvisionMintsDekTest(TestCase):
         self.assertFalse(TenantDek.objects.filter(tenant=self.tenant).exists())
 
 
+@patch("apps.orchestrator.azure_client._is_mock", return_value=True)
 class DeprovisionKekSoftDeleteTest(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Crypto Deprovision", telegram_chat_id=616162)
@@ -163,7 +175,12 @@ class DeprovisionKekSoftDeleteTest(TestCase):
     @patch("apps.orchestrator.services.delete_tenant_file_share")
     @patch("apps.orchestrator.services.delete_container_app")
     def test_deprovision_calls_begin_delete_kek(
-        self, _mock_delete_container, _mock_delete_file_share, _mock_delete_identity, mock_begin_delete_kek
+        self,
+        _mock_delete_container,
+        _mock_delete_file_share,
+        _mock_delete_identity,
+        mock_begin_delete_kek,
+        _mock_is_mock,
     ):
         deprovision_tenant(str(self.tenant.id))
         self.tenant.refresh_from_db()
@@ -176,7 +193,12 @@ class DeprovisionKekSoftDeleteTest(TestCase):
     @patch("apps.orchestrator.services.delete_tenant_file_share")
     @patch("apps.orchestrator.services.delete_container_app")
     def test_deprovision_tolerates_kek_delete_failure(
-        self, _mock_delete_container, _mock_delete_file_share, _mock_delete_identity, mock_begin_delete_kek
+        self,
+        _mock_delete_container,
+        _mock_delete_file_share,
+        _mock_delete_identity,
+        mock_begin_delete_kek,
+        _mock_is_mock,
     ):
         # Must NOT raise — a KEK soft-delete failure has its own
         # log-and-continue try/except and must never block the rest of
