@@ -193,3 +193,19 @@ class BroadcastSingleTenantEntitlementTest(TestCase):
 
         broadcast_single_tenant_task(str(tenant.id), "hello")
         mock_post.assert_called_once()
+
+    @patch("httpx.post")
+    def test_sends_to_budget_exempt_tenant(self, mock_post):
+        from unittest.mock import MagicMock
+
+        mock_post.return_value = MagicMock(status_code=200, raise_for_status=MagicMock())
+
+        # Budget-exempt canary/internal tenant: no subscription id, not trialing —
+        # still entitled, so the broadcast must go through. Regression guard for the
+        # canary being skipped after its stale stripe_subscription_id was cleared.
+        tenant = _make_tenant(suffix=32, stripe_sub="", is_budget_exempt=True)
+
+        from apps.orchestrator.tasks import broadcast_single_tenant_task
+
+        broadcast_single_tenant_task(str(tenant.id), "hello")
+        mock_post.assert_called_once()

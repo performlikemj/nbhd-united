@@ -856,12 +856,18 @@ class Tenant(models.Model):
 
     @property
     def has_entitlement(self) -> bool:
-        """True if tenant has a paid subscription or an unexpired trial."""
+        """True if tenant has a paid subscription, an unexpired trial, or is budget-exempt.
+
+        Budget-exempt tenants (canary/internal accounts that sit outside the
+        billing lifecycle) are always entitled — this mirrors ``entitled_active()``
+        below and ``_unentitled_active_tenants()`` in apps/cron/views.py, which
+        both already include ``is_budget_exempt``.
+        """
         from django.utils import timezone
 
         has_subscription = bool(self.stripe_subscription_id)
         on_valid_trial = bool(self.is_trial) and self.trial_ends_at and self.trial_ends_at > timezone.now()
-        return has_subscription or on_valid_trial
+        return has_subscription or on_valid_trial or bool(self.is_budget_exempt)
 
     @classmethod
     def entitled_active(cls):
