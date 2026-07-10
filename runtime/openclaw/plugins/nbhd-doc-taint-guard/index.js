@@ -33,12 +33,15 @@ import {
  *    `extractDispatchedToolId` (duplicated here, not imported, to keep this
  *    plugin free of cross-plugin coupling — keep both in sync if the
  *    dispatch envelope ever changes).
- *  - tool_result_persist: wrap pdf/image tool output in the instruction-
- *    isolation boundary (treat-as-data framing) before the model reads it on
- *    its next step within the same turn, and run detectSuspiciousPatterns
- *    over the raw text first, emitting a hash-only telemetry line (never the
- *    raw content — mirrors the doc_ingest_attached/pii_reuse discipline in
- *    apps/router/inbound_media.py / apps/pii/redactor.py).
+ *  - tool_result_persist: ALWAYS wrap pdf/image tool output in the
+ *    instruction-isolation boundary (treat-as-data framing) before the model
+ *    reads it on its next step within the same turn, and run
+ *    detectSuspiciousPatterns over the raw text first, emitting a hash-only
+ *    telemetry line (never the raw content — mirrors the
+ *    doc_ingest_attached/pii_reuse discipline in apps/router/inbound_media.py
+ *    / apps/pii/redactor.py). A fresh result whose text already looks wrapped
+ *    is itself flagged (forged-trust attempt — see buildWrappedToolResultMessage)
+ *    and STILL gets detected + wrapped, never skipped.
  *  - agent_end: clear this turn's taint entry so a long-lived tenant process
  *    doesn't accumulate state forever.
  *
@@ -184,19 +187,31 @@ const MAX_DETECTION_SCAN_CHARS = 32768; // 32 KiB
  * `scanText` is the (possibly capped) text actually scanned, not necessarily
  * the full block text — hashing/telemetry over it is fine since detection is
  * telemetry-only; the cap only trims tail telemetry, never the wrap.
+ * `onPrewrapped(text)` is called when a FRESH result already looks wrapped
+ * (see the comment inline below) — before the detect+wrap that always runs
+ * regardless.
  */
-export function buildWrappedToolResultMessage(message, realId, onSuspicious) {
+export function buildWrappedToolResultMessage(message, realId, onSuspicious, onPrewrapped) {
   if (!WRAP_SOURCE_TOOL_IDS.has(realId)) return null;
   if (!message || !Array.isArray(message.content)) return null;
   let changed = false;
   const nextContent = message.content.map((block) => {
     if (!block || block.type !== "text" || typeof block.text !== "string") return block;
-    // Idempotency guard: never re-wrap text that's already wrapped (would
-    // sanitize the inner, real boundary markers to [[MARKER_SANITIZED]]).
-    // Normally impossible on a fresh tool result, but the tool_result_persist
-    // handler's observedToolName fallback (see register() below) could in
-    // principle re-persist an already-wrapped message on a synthetic replay.
-    if (looksAlreadyWrapped(block.text)) return block;
+    // A FRESH pdf/image tool result should NEVER legitimately look already
+    // wrapped — upstream OpenClaw doesn't wrap the upload path at all (that's
+    // the whole reason this plugin exists), so nothing upstream of us could
+    // have produced this shape. If it does, the only explanation is an
+    // attacker's extracted text starting with the wrap's public, deterministic
+    // prefix (WRAPPED_CONTENT_PREFIX in external-content-wrap.js) — forging a
+    // fake "already trusted" boundary to try to dodge detection. Treat that as
+    // suspicious in its own right (flag it), then ALWAYS detect + wrap anyway:
+    // wrapExternalContent's own marker-sanitization turns the attacker's
+    // forged `<<<EXTERNAL_UNTRUSTED_CONTENT` into `[[MARKER_SANITIZED]]`,
+    // neutralizing the forgery. Double-wrapping here is the correct outcome,
+    // not a bug — there is no legitimate case to skip wrapping a fresh result.
+    if (looksAlreadyWrapped(block.text) && typeof onPrewrapped === "function") {
+      onPrewrapped(block.text);
+    }
     const scanText =
       block.text.length > MAX_DETECTION_SCAN_CHARS ? block.text.slice(0, MAX_DETECTION_SCAN_CHARS) : block.text;
     const suspicious = detectSuspiciousPatterns(scanText);
@@ -332,12 +347,20 @@ export default function register(api) {
       }
 
       const realId = mappedId || observedToolName;
-      const mutated = buildWrappedToolResultMessage(event && event.message, realId, (patternCount, text) => {
-        const hash = createHash("sha256").update(text).digest("hex").slice(0, 12);
-        api.logger.warn(
-          `doc_injection_suspected tool=${realId} pattern_count=${patternCount} content_sha256_prefix=${hash}`,
-        );
-      });
+      const mutated = buildWrappedToolResultMessage(
+        event && event.message,
+        realId,
+        (patternCount, text) => {
+          const hash = createHash("sha256").update(text).digest("hex").slice(0, 12);
+          api.logger.warn(
+            `doc_injection_suspected tool=${realId} pattern_count=${patternCount} content_sha256_prefix=${hash}`,
+          );
+        },
+        (text) => {
+          const hash = createHash("sha256").update(text).digest("hex").slice(0, 12);
+          api.logger.warn(`doc_prewrapped_result tool=${realId} sha256_prefix=${hash}`);
+        },
+      );
       if (!mutated) return undefined;
       return { message: mutated };
     } catch (err) {
