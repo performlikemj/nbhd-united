@@ -8,9 +8,10 @@ def refresh_infra_costs_task():
 
 
 def snapshot_donations_monthly_task():
-    """Record each paying subscriber's revenue-percentage donation for the
-    just-closed month as a pending ``DonationLedger`` row (disbursed manually via
-    the ``reconcile_donations`` command). See ``apps.billing.donation_service``."""
+    """Record each revenue-generating tenant's (paying subscribers AND credit
+    top-up buyers) revenue-percentage donation for the just-closed month as a
+    pending ``DonationLedger`` row (disbursed manually via the
+    ``reconcile_donations`` command). See ``apps.billing.donation_service``."""
     from apps.billing.donation_service import snapshot_donations_for_month
 
     return snapshot_donations_for_month()
