@@ -29,7 +29,7 @@ Discovery constants: SUB `63ceeeac-fe3f-4bcb-b6d2-b7aa7fd6bf52`, RG `rg-nbhd-pro
 All four activation steps ran and self-verified on 2026-07-11. Nothing encrypts user data
 yet — this only means every tenant now HAS a DEK and the container can unwrap it.
 
-**1. Backfill — DONE.** Ran in-container 2026-07-11 (~17:08 UTC) via a no-body QStash
+**1. Backfill — DONE.** Ran in-container 2026-07-11 02:08 JST (2026-07-10 17:08 UTC) via a no-body QStash
 publish to `/api/cron/trigger/backfill_tenant_deks/`: `Minted: 33, Failed: 0` (HTTP 200 in
 22.8s). DB verified: 33 rows / 33 distinct tenants / all `dek_epoch=0` in `tenants_tenantdek`.
 The two backfill `TASK_MAP` entries (`backfill_tenant_deks` + `backfill_tenant_deks_dry_run`,
