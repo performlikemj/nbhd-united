@@ -483,6 +483,11 @@ def unwrap_dek(tenant_id: str, wrapped: bytes) -> bytes:
         entry = _MOCK_KEK_REGISTRY.get(tid)
         if entry is None:
             raise LookupError(f"Cannot unwrap DEK for tenant {tid} — KEK was purged or never minted")
+        if entry.get("deleted"):
+            # Real Key Vault disables crypto operations the instant a key is
+            # soft-deleted: the recovery window keeps the key RECOVERABLE, not
+            # usable. Unwrap only works again after `recover_kek`.
+            raise LookupError(f"Cannot unwrap DEK for tenant {tid} — KEK is soft-deleted (recover it first)")
         unwrapped = _mock_kek_xor(wrapped, entry["key"])
         logger.info("[MOCK] Unwrapped DEK for tenant %s", tid)
         return unwrapped
@@ -507,10 +512,12 @@ def begin_delete_kek(tenant_id: str) -> None:
     """Soft-delete a tenant's KEK (provisioner credential).
 
     The key enters Key Vault's recovery window (soft-delete ON, 7 days per
-    the az-CLI pre-work) — recoverable until `purge_kek` is called. Mock:
-    marks the registry entry deleted but leaves the key material in place,
-    so `unwrap_dek` keeps working until a real `purge_kek` call — mirrors
-    the grace-window design (deletion alone must not destroy access).
+    the az-CLI pre-work): the key material stays RECOVERABLE (`recover_kek`)
+    until `purge_kek` is called, but crypto operations are disabled the moment
+    it's deleted — a soft-deleted key can neither wrap nor unwrap. Mock: marks
+    the registry entry deleted (so `unwrap_dek` now raises) while keeping the
+    material so `recover_kek` can restore it — mirroring real Key Vault, where
+    the grace window preserves recoverability, not usability.
     """
     tid = str(tenant_id)
 
@@ -532,6 +539,89 @@ def begin_delete_kek(tenant_id: str) -> None:
     client = KeyClient(vault_url=vault_url, credential=_get_provisioner_credential())
     client.begin_delete_key(key_name).result()
     logger.info("Soft-deleted tenant KEK %s for tenant %s (recovery window open)", key_name, tid)
+
+
+def recover_kek(tenant_id: str) -> None:
+    """Recover a soft-deleted KEK back to enabled state (provisioner credential).
+
+    The grace-window resurrection path: a tenant deprovisioned and then
+    re-provisioned inside Key Vault's 7-day recovery window gets the SAME KEK
+    back, so its existing wrapped DEK — and any ciphertext already under it —
+    stays decryptable. Only reachable while the key is soft-deleted-not-purged;
+    recovering an absent/purged key raises.
+
+    Needs the `keys/recover/action` dataAction on the provisioner role, in
+    addition to the create/rotate/delete/wrap it already holds.
+    """
+    tid = str(tenant_id)
+
+    if _is_mock():
+        entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None:
+            raise LookupError(f"Cannot recover KEK for tenant {tid} — already purged or never minted")
+        entry["deleted"] = False
+        logger.info("[MOCK] Recovered tenant KEK for tenant %s", tid)
+        return
+
+    from azure.keyvault.keys import KeyClient
+
+    vault_name = str(getattr(settings, "AZURE_KEK_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEK_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    key_name = f"kek-{tid}"
+    client = KeyClient(vault_url=vault_url, credential=_get_provisioner_credential())
+    client.begin_recover_deleted_key(key_name).result()
+    logger.info("Recovered tenant KEK %s for tenant %s (restored from recovery window)", key_name, tid)
+
+
+def kek_liveness(tenant_id: str) -> str:
+    """Report whether a tenant's KEK is usable, recoverable, or gone.
+
+    Returns exactly one of:
+      - ``"live"``        — key exists and is enabled; wrap/unwrap work now.
+      - ``"recoverable"`` — key is soft-deleted but still inside the recovery
+                            window; `recover_kek` restores it (and its DEK).
+      - ``"absent"``      — key is purged or was never minted; any ciphertext
+                            wrapped under it is cryptographically unrecoverable.
+
+    Provisioner credential — a read/management op, never a decrypt. Only a
+    DEFINITIVE not-found maps to ``"absent"``; every other failure (throttle,
+    403, transient network) propagates. That distinction is load-bearing:
+    callers act DESTRUCTIVELY on ``"absent"`` (drop the stale DEK rows and
+    re-key), and must never do that to a KEK that is merely unreachable.
+
+    Needs `keys/read` (active + deleted) on the provisioner role.
+    """
+    tid = str(tenant_id)
+
+    if _is_mock():
+        entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None:
+            return "absent"
+        return "recoverable" if entry.get("deleted") else "live"
+
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.keyvault.keys import KeyClient
+
+    vault_name = str(getattr(settings, "AZURE_KEK_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEK_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    key_name = f"kek-{tid}"
+    client = KeyClient(vault_url=vault_url, credential=_get_provisioner_credential())
+    try:
+        client.get_key(key_name)
+        return "live"
+    except ResourceNotFoundError:
+        pass
+    try:
+        client.get_deleted_key(key_name)
+        return "recoverable"
+    except ResourceNotFoundError:
+        return "absent"
 
 
 def purge_kek(tenant_id: str) -> None:

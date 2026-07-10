@@ -24,7 +24,9 @@ from apps.orchestrator.azure_client import (
     _get_provisioner_credential,
     begin_delete_kek,
     create_tenant_kek,
+    kek_liveness,
     purge_kek,
+    recover_kek,
     unwrap_dek,
     wrap_dek,
 )
@@ -67,9 +69,10 @@ class MockKekLifecycleTest(SimpleTestCase):
         with self.assertRaises(LookupError):
             unwrap_dek(tenant_id, b"whatever")
 
-    def test_begin_delete_kek_still_unwrappable(self, _mock_is_mock):
-        """Soft-delete (begin_delete_kek) must NOT break existing unwraps —
-        that's the whole point of a recovery window. Only purge does."""
+    def test_begin_delete_kek_disables_unwrap(self, _mock_is_mock):
+        """Soft-delete must break unwrap IMMEDIATELY — real Key Vault disables
+        crypto ops the instant a key is deleted. The recovery window preserves
+        recoverability (`recover_kek`), not usability."""
         tenant_id = _fresh_tenant_id()
         dek = os.urandom(32)
         create_tenant_kek(tenant_id)
@@ -77,12 +80,57 @@ class MockKekLifecycleTest(SimpleTestCase):
 
         begin_delete_kek(tenant_id)
 
-        unwrapped = unwrap_dek(tenant_id, wrapped)
-        self.assertEqual(unwrapped, dek)
+        with self.assertRaises(LookupError):
+            unwrap_dek(tenant_id, wrapped)
+
+    def test_recover_kek_restores_unwrap_after_soft_delete(self, _mock_is_mock):
+        """Grace-window resurrection: recover a soft-deleted KEK and the
+        original DEK unwraps again under the SAME key material (this is what
+        lets an in-grace re-provision keep its data)."""
+        tenant_id = _fresh_tenant_id()
+        dek = os.urandom(32)
+        create_tenant_kek(tenant_id)
+        wrapped, _ = wrap_dek(tenant_id, dek)
+        begin_delete_kek(tenant_id)
+
+        recover_kek(tenant_id)
+
+        self.assertEqual(unwrap_dek(tenant_id, wrapped), dek)
+
+    def test_recover_of_purged_kek_raises(self, _mock_is_mock):
+        """A purged key is gone for good — recover must fail loudly, never
+        silently re-mint (that would fabricate a key, not restore one)."""
+        tenant_id = _fresh_tenant_id()
+        create_tenant_kek(tenant_id)
+        begin_delete_kek(tenant_id)
+        purge_kek(tenant_id)
+
+        with self.assertRaises(LookupError):
+            recover_kek(tenant_id)
+
+    def test_kek_liveness_tracks_the_full_lifecycle(self, _mock_is_mock):
+        """`kek_liveness` must distinguish live / recoverable / absent across
+        every transition — the re-provision path branches on it, and only a
+        DEFINITIVE absent is allowed to trigger a destructive re-key."""
+        tenant_id = _fresh_tenant_id()
+        self.assertEqual(kek_liveness(tenant_id), "absent")  # never minted
+
+        create_tenant_kek(tenant_id)
+        self.assertEqual(kek_liveness(tenant_id), "live")
+
+        begin_delete_kek(tenant_id)
+        self.assertEqual(kek_liveness(tenant_id), "recoverable")
+
+        recover_kek(tenant_id)
+        self.assertEqual(kek_liveness(tenant_id), "live")
+
+        begin_delete_kek(tenant_id)
+        purge_kek(tenant_id)
+        self.assertEqual(kek_liveness(tenant_id), "absent")
 
     def test_create_delete_purge_then_unwrap_raises(self, _mock_is_mock):
         """The T4 shred invariant: create -> wrap/unwrap round-trip ->
-        begin_delete (still unwrappable) -> purge -> unwrap RAISES.
+        begin_delete (unwrap now disabled) -> purge -> unwrap RAISES for good.
 
         This is the one property a deterministic mock (derive-key-from-
         tenant-id) could never prove, since there'd be no state to destroy —
@@ -96,7 +144,8 @@ class MockKekLifecycleTest(SimpleTestCase):
         self.assertEqual(unwrap_dek(tenant_id, wrapped), dek)
 
         begin_delete_kek(tenant_id)
-        self.assertEqual(unwrap_dek(tenant_id, wrapped), dek)  # still recoverable
+        with self.assertRaises(LookupError):  # soft-delete disables crypto ops
+            unwrap_dek(tenant_id, wrapped)
 
         purge_kek(tenant_id)
 
