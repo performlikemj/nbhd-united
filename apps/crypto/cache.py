@@ -1,9 +1,15 @@
 """Per-process DEK cache — encryption-at-rest Phase 1 (PR3).
 
-Maps `(tenant_id, dek_epoch) -> plaintext DEK bytes`. A DEK is immutable
-once minted for a given epoch — rotation (Phase 5) mints a NEW epoch rather
-than overwriting one — so a cached `(tenant, epoch)` entry never needs
-invalidation; it only ever grows for the life of the process.
+Maps `(tenant_id, dek_epoch) -> plaintext DEK bytes`. A DEK is normally
+immutable once minted for a given epoch — rotation (Phase 5) mints a NEW
+epoch rather than overwriting one — so an entry is only added, never changed.
+The ONE exception is a re-key: a purged tenant re-provisioned from scratch
+mints a brand-new DEK at the SAME epoch 0 (`keys.mint_and_wrap_dek`'s
+fresh-start path), so the process that performs the re-key must `evict` its
+now-dead cached DEK. Eviction is for that deliberate re-key ONLY — a Key
+Vault FAILURE must never evict, because a cached DEK stays valid across an
+arbitrarily long KV outage and that immutability is what keeps decrypt
+working through one.
 
 A cache HIT never touches Key Vault. That's deliberate: it's what lets
 decrypt keep working through a Key Vault outage for any tenant whose DEK is
@@ -84,3 +90,37 @@ def prime(tenant_id: str, dek_epoch: int, dek: bytes) -> None:
     key = (str(tenant_id), int(dek_epoch))
     with _LOCK:
         _CACHE[key] = dek
+
+
+def evict(tenant_id: str, dek_epoch: int) -> None:
+    """Drop the cached DEK for `(tenant_id, dek_epoch)` — deliberate re-key ONLY.
+
+    Exists solely for the fresh-start re-key path: a purged tenant that gets
+    re-provisioned mints a brand-new DEK at the SAME epoch 0, so the process
+    that performs the re-key must not keep serving the dead DEK it may have
+    cached. This is NOT an outage/error hook — a Key Vault unwrap failure must
+    NEVER evict (a cached DEK stays valid across an arbitrarily long KV outage;
+    that is what keeps decrypt working through one). Evicting an entry that
+    isn't cached is a no-op.
+
+    Per-process only — this clears THIS process's cache; siblings are not
+    signalled (see `keys.mint_and_wrap_dek`'s fresh-start comment).
+    """
+    key = (str(tenant_id), int(dek_epoch))
+    with _LOCK:
+        _CACHE.pop(key, None)
+
+
+def evict_tenant(tenant_id: str) -> None:
+    """Drop every cached epoch for `tenant_id` — deliberate re-key ONLY.
+
+    Same contract as `evict` (never an outage hook, per-process only). The
+    fresh-start re-key drops ALL of a tenant's `TenantDek` rows, so it evicts
+    ALL of the tenant's cached epochs to match — Phase 1 only ever caches epoch
+    0, so today this coincides with `evict(tenant_id, 0)`, but it stays correct
+    once DEK rotation (Phase 5) lets multiple epochs coexist.
+    """
+    tid = str(tenant_id)
+    with _LOCK:
+        for key in [k for k in _CACHE if k[0] == tid]:
+            del _CACHE[key]
