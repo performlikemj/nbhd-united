@@ -272,11 +272,12 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
     donations are recorded ``SKIPPED``. Because ``update_or_create`` is
     idempotent, re-running the snapshot after Stripe recovers upgrades a
     previously ``SKIPPED``-for-unverified row to ``PENDING``; ``completed``
-    rows are still never rewritten — and neither is an already-``PENDING`` row
-    ever rewritten DOWNWARD: a closed month's real revenue never decreases, so
-    a lower recompute (e.g. a Stripe outage after a prior verified run) is a
-    verification regression, not new truth, and the existing row is left
-    untouched with a loud warning instead.
+    rows are still never rewritten — and an already-``PENDING`` row is never
+    rewritten to a LOWER base NOR downgraded to ``SKIPPED``: a closed month's
+    real revenue never decreases, so either would be a verification regression
+    (e.g. a Stripe outage after a prior verified run), never new truth, and the
+    existing row is left untouched with a loud warning instead. Equal-or-higher
+    verified recomputes still proceed and update the row normally.
 
     ``month_first`` defaults to the first day of the previous month. Returns a
     summary dict for cron logging.
@@ -366,20 +367,35 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
                 else DonationLedger.Status.SKIPPED
             )
 
-        if existing and existing.status == DonationLedger.Status.PENDING and revenue_base < existing.surplus_amount:
-            # A closed month's true revenue never decreases — a lower
-            # recompute against an already-verified PENDING row is a
-            # verification regression (e.g. a Stripe price-cache outage
-            # after a verified run), never new truth. Keep the existing row
-            # untouched rather than quietly rewriting it downward.
+        lower_base = bool(existing) and revenue_base < existing.surplus_amount
+        downgrade_to_skipped = bool(existing) and status == DonationLedger.Status.SKIPPED
+        if existing and existing.status == DonationLedger.Status.PENDING and (lower_base or downgrade_to_skipped):
+            # A closed month's true revenue never decreases, so either a lower
+            # recomputed base OR a recompute that would downgrade the status
+            # PENDING -> SKIPPED is a verification regression (e.g. a Stripe
+            # price-cache outage after a prior verified run) — never new
+            # truth. A legitimate PENDING -> SKIPPED transition would require
+            # the base to fall below threshold, which is impossible once the
+            # month is closed. Keep the existing row untouched rather than
+            # quietly rewriting it downward or downgrading it.
+            if lower_base and downgrade_to_skipped:
+                reason = (
+                    "the recomputed base is LOWER than the existing PENDING row's base, "
+                    "and the recompute would also downgrade the status to SKIPPED"
+                )
+            elif lower_base:
+                reason = "the recomputed base is LOWER than the existing PENDING row's base"
+            else:
+                reason = "the recompute would downgrade the status from PENDING to SKIPPED (without a lower base)"
             logger.warning(
-                "Donation snapshot: recomputed revenue_base ($%s) for tenant %s in %s "
-                "is LOWER than the existing PENDING row's surplus_amount ($%s) — "
-                "keeping the existing verified row untouched.",
-                revenue_base,
+                "Donation snapshot: %s for tenant %s in %s (existing base $%s, "
+                "recomputed base $%s) — keeping the existing verified PENDING row "
+                "untouched.",
+                reason,
                 tenant.id,
                 month_first.isoformat(),
                 existing.surplus_amount,
+                revenue_base,
             )
             pending += 1
             total_pending += existing.donation_amount
