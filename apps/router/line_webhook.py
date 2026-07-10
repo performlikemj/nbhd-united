@@ -693,6 +693,13 @@ def relay_ai_response_to_line(
     if not ai_text or not line_user_id:
         return False
 
+    # Quick-reply buttons are iOS-only for now — LINE has its own
+    # [[button:label|data]] marker (extract_quick_reply_buttons below) for
+    # postback buttons; this one is just stripped so it never leaks as raw text.
+    from apps.router.quick_replies import extract_quick_replies
+
+    ai_text, _quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="line")
+
     # Capture a placeholder-space excerpt BEFORE rehydration — this is what we
     # persist for quote-reply lookups (``LineOutboundMessage.text_excerpt``), so
     # no real names rest in that column. Strip only inline markers ([[chart:]],

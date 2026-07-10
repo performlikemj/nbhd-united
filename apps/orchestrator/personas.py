@@ -597,7 +597,9 @@ def _get_tenant_prompt_extras(tenant, section: str) -> str:
     This is the hook for canary-style per-tenant prompt overrides without a
     schema migration. Populate via the ``set_prompt_extras`` management
     command. Known sections: ``agents_md``, ``soul_md``, ``identity_md`` (the
-    latter two are spliced INSIDE the managed SOUL/IDENTITY region).
+    latter two are spliced INSIDE the managed SOUL/IDENTITY region),
+    ``quick_replies_md`` (its own block, appended separately so it composes
+    alongside ``agents_md`` extras without either clobbering the other).
 
     Unknown or malformed values are silently ignored (returns "").
     """
@@ -637,6 +639,14 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     agents_extras = _get_tenant_prompt_extras(tenant, "agents_md")
     if agents_extras:
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + agents_extras
+
+    # Quick-reply buttons — canary-only for now (see set_prompt_extras
+    # --section quick_replies_md). A SEPARATE block from agents_extras above
+    # so the two compose instead of one clobbering the other in the same
+    # tenant.user.preferences['prompt_extras'] map.
+    quick_replies_extras = _get_tenant_prompt_extras(tenant, "quick_replies_md")
+    if quick_replies_extras:
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + quick_replies_extras
 
     # Site publishing gate — behavioral, per-tenant. Only tenants with their own
     # website connected (site_publishing_enabled) load the publish_portfolio_image

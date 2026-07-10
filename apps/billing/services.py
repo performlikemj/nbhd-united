@@ -10,7 +10,7 @@ from django.db.models import F
 
 from apps.tenants.models import Tenant
 
-from .constants import BYO_MODEL_DISPLAY, MODEL_RATES
+from .constants import BYO_MODEL_DISPLAY, MODEL_RATES, canonical_model_id
 from .constants import DEFAULT_RATE as MODELS_DEFAULT_RATE
 from .models import MonthlyBudget, UsageRecord
 
@@ -199,11 +199,30 @@ def record_usage(
     the shared key, so even when they target an ``anthropic/...`` model
     the platform IS paying OR. Those rows keep their computed cost.
     """
+    # Canonicalize the reported id up front so BYO/rate lookups hit regardless of
+    # the spelling OpenClaw sent (openrouter/ prefix, casing, dotted vs hyphenated
+    # version) and so the stored row is already canonical — the read path groups
+    # on the same key, so future rows never split into duplicate per-model rows.
+    model_used = canonical_model_id(model_used)
+
     is_byo_user_call = model_used in BYO_MODEL_DISPLAY and not is_system
     if is_byo_user_call:
         cost = Decimal("0")
     else:
-        costs = MODEL_COSTS.get(model_used, DEFAULT_COST)
+        costs = MODEL_COSTS.get(model_used)
+        if costs is None:
+            # No rate registered for this model — we price it at DEFAULT_COST,
+            # which is almost certainly wrong. Surface it (loudly) so unmapped
+            # models get a real rate instead of silently mispricing forever.
+            costs = DEFAULT_COST
+            logger.warning(
+                "record_usage: unmapped model %r for tenant=%s priced at DEFAULT_COST "
+                "($%.2f/$%.2f per 1M) — add it to MODEL_RATES or BYO_MODEL_DISPLAY",
+                model_used or "<empty>",
+                str(getattr(tenant, "id", ""))[:8],
+                DEFAULT_COST["input"],
+                DEFAULT_COST["output"],
+            )
         cost = Decimal(str((input_tokens * costs["input"] + output_tokens * costs["output"]) / 1_000_000))
 
     record = UsageRecord.objects.create(

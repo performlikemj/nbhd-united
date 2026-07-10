@@ -84,3 +84,34 @@ class CronDeliveryViewTest(TestCase):
 
         resp = self.client.post(self.url, {"message": "hello"}, format="json", **self._headers())
         self.assertEqual(resp.status_code, 429)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_quick_reply_marker_stripped_before_send_and_persist(self, mock_client_cls):
+        """Proactive/cron sends don't wire up quick-reply buttons (no
+        ProactiveOutbound column, no iOS UI for it yet) but the marker must
+        still never leak as raw text if an agent emits it on a cron message."""
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        resp = self.client.post(
+            self.url,
+            {"message": "Good morning!\n[[quick-replies: Snooze | Done]]"},
+            format="json",
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        sent_text = mock_http.post.call_args.kwargs["json"]["text"]
+        self.assertNotIn("quick-replies", sent_text)
+        self.assertIn("Good morning!", sent_text)
+
+        from apps.router.models import ProactiveOutbound
+
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertNotIn("quick-replies", stored.message_text)

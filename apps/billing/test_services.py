@@ -1,5 +1,6 @@
 """Additional billing service coverage."""
 
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.core import mail
@@ -8,11 +9,13 @@ from django.test import TestCase
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
+from .constants import ANTHROPIC_HAIKU_MODEL
 from .services import (
     handle_checkout_completed,
     handle_invoice_paid,
     handle_invoice_payment_failed,
     handle_subscription_deleted,
+    record_usage,
 )
 
 
@@ -459,3 +462,52 @@ class InvoicePaidReactivationTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.status, Tenant.Status.SUSPENDED)
         mock_restore.assert_not_called()
+
+
+class RecordUsagePricingTest(TestCase):
+    """record_usage canonicalizes model ids, prices registered models at their
+    real rate, and warns (instead of silently mispricing) on unmapped ones."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Pricing", telegram_chat_id=717171)
+
+    def test_haiku_priced_at_registered_rate_not_default(self):
+        record = record_usage(
+            self.tenant,
+            event_type="pii_arbiter",
+            input_tokens=1000,
+            output_tokens=1000,
+            model_used="anthropic/claude-haiku-4-5",
+            is_system=True,
+        )
+        # 1000*$1/M in + 1000*$5/M out = $0.006 — NOT the DEFAULT_COST $0.0015.
+        self.assertEqual(record.cost_estimate, Decimal("0.006"))
+
+    def test_dotted_haiku_spelling_stored_canonical_and_priced(self):
+        record = record_usage(
+            self.tenant,
+            event_type="copilot",
+            input_tokens=1000,
+            output_tokens=1000,
+            model_used="anthropic/claude-haiku-4.5",
+            is_system=True,
+        )
+        # The dotted spelling is folded onto the canonical id at write time.
+        self.assertEqual(record.model_used, ANTHROPIC_HAIKU_MODEL)
+        self.assertEqual(record.cost_estimate, Decimal("0.006"))
+
+    def test_unmapped_model_warns_and_uses_default_cost(self):
+        with self.assertLogs("apps.billing.services", level="WARNING") as logs:
+            record = record_usage(
+                self.tenant,
+                event_type="message",
+                input_tokens=1000,
+                output_tokens=1000,
+                model_used="openai/gpt-4o-mini",
+                is_system=True,
+            )
+        # DEFAULT_COST: 1000*$0.3/M + 1000*$1.2/M = $0.0015.
+        self.assertEqual(record.cost_estimate, Decimal("0.0015"))
+        joined = "\n".join(logs.output)
+        self.assertIn("unmapped model", joined)
+        self.assertIn("openai/gpt-4o-mini", joined)

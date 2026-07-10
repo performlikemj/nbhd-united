@@ -91,3 +91,15 @@ class RichResponseIntegrationTest(TestCase):
         self.assertEqual(len(keyboard), 2)
         self.assertEqual(keyboard[0][0]["text"], "Yes")
         self.assertEqual(keyboard[0][0]["callback_data"], "agent:yes")
+
+    def test_quick_reply_marker_stripped_never_leaks(self):
+        """The generic [[quick-replies: ...]] marker is iOS-only — Telegram's
+        live poller has no button transport for it, so it must be stripped
+        before the message goes out, never sent raw."""
+        from apps.tenants.models import Tenant
+
+        tenant = MagicMock(spec=Tenant)
+        tenant.id = "poller-tenant"
+        text = "Save both changes?\n[[quick-replies: Save both | Change something | No thanks]]"
+        self.poller._send_rich_response(123, tenant, text)
+        self.poller._send_markdown.assert_called_once_with(123, "Save both changes?")

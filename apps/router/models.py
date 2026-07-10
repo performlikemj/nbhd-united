@@ -722,6 +722,14 @@ class AppChatMessage(models.Model):
     # mirroring where ``reply_text`` lands.
     user_redactions = models.JSONField(null=True, blank=True, default=None)
     reply_redactions = models.JSONField(null=True, blank=True, default=None)
+    # Up to 3 short tappable choice labels parsed from a trailing
+    # ``[[quick-replies: A | B | C]]`` marker on the assistant reply (see
+    # ``apps.router.quick_replies.extract_quick_replies``). Rides the SAME
+    # representative row as ``reply_text`` (siblings stay null). null/absent
+    # means the turn carried no marker (or predates the feature) — the two
+    # are indistinguishable and both mean "show no buttons". iOS-only for
+    # now; Telegram/LINE strip the marker but never populate this field.
+    quick_replies = models.JSONField(null=True, blank=True, default=None)
 
     @property
     def attachment_flags(self) -> tuple[bool, bool]:

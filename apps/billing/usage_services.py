@@ -13,7 +13,9 @@ from django.utils import timezone
 from apps.tenants.models import Tenant
 
 from .constants import (
+    BYO_MODEL_DISPLAY,
     MODEL_RATES,
+    canonical_model_id,
     display_name_for_model,
 )
 from .models import MonthlyBudget, UsageRecord
@@ -46,7 +48,23 @@ def get_month_boundaries(ref: date | None = None) -> tuple[date, date]:
 
 
 def get_usage_summary(tenant: Tenant, ref_date: date | None = None) -> dict:
-    """Current month summary: totals + per-model breakdown."""
+    """Current month summary: totals + per-model breakdown.
+
+    The headline ``total_cost`` and the per-model costs are reconciled to
+    ``tenant.estimated_cost_this_month`` — the figure the hourly OpenRouter
+    reconciliation trues up to real provider spend and that drives quota
+    enforcement — rather than the raw ``UsageRecord.cost_estimate`` sum (a stale
+    local estimate that was never reconciled). This keeps the totals card and the
+    budget bar from contradicting each other. The metered per-model rows are
+    scaled proportionally so they add up to that reconciled total; BYO
+    subscription rows stay at $0 (the tenant pays the provider directly).
+
+    Per-model rows are grouped by ``canonical_model_id`` so the same model under
+    two spellings (e.g. dotted ``claude-haiku-4.5`` and hyphenated
+    ``claude-haiku-4-5``) collapses into one row. Each row carries a ``billing``
+    field ("subscription" for BYO, "metered" otherwise) so a client can label a
+    $0.00 BYO row honestly instead of implying it was free metered usage.
+    """
     first, last = get_month_boundaries(ref_date)
     qs = UsageRecord.objects.filter(
         tenant=tenant,
@@ -57,43 +75,121 @@ def get_usage_summary(tenant: Tenant, ref_date: date | None = None) -> dict:
     totals = qs.aggregate(
         total_input=Sum("input_tokens", default=0),
         total_output=Sum("output_tokens", default=0),
-        total_cost=Sum("cost_estimate", default=Decimal("0")),
         message_count=Count("id"),
     )
 
-    by_model = (
-        qs.values("model_used")
-        .annotate(
-            input_tokens=Sum("input_tokens", default=0),
-            output_tokens=Sum("output_tokens", default=0),
-            cost=Sum("cost_estimate", default=Decimal("0")),
-            count=Count("id"),
-        )
-        .order_by("-cost")
+    # Aggregate by RAW model id in the DB (a handful of rows), then merge in
+    # Python by canonical id so historical rows stored under different spellings
+    # collapse into a single per-model entry.
+    by_model_raw = qs.values("model_used").annotate(
+        input_tokens=Sum("input_tokens", default=0),
+        output_tokens=Sum("output_tokens", default=0),
+        cost=Sum("cost_estimate", default=Decimal("0")),
+        count=Count("id"),
     )
 
-    # Budget info
+    grouped: dict[str, dict] = {}
+    for row in by_model_raw:
+        key = canonical_model_id(row["model_used"] or "")
+        entry = grouped.get(key)
+        if entry is None:
+            entry = {
+                "model": key,
+                "display_name": display_name_for_model(key),
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cost": Decimal("0"),
+                "count": 0,
+                "billing": "subscription" if key in BYO_MODEL_DISPLAY else "metered",
+            }
+            grouped[key] = entry
+        entry["input_tokens"] += row["input_tokens"]
+        entry["output_tokens"] += row["output_tokens"]
+        entry["cost"] += row["cost"]
+        entry["count"] += row["count"]
+
+    rows = list(grouped.values())
+
+    # _get_budget_info refreshes the tenant, so read the reconciled counter after.
     budget_info = _get_budget_info(tenant, first)
+    reconciled_total = Decimal(str(tenant.estimated_cost_this_month or 0))
+
+    # BYO rows are subscription-billed — always shown as $0 on our side.
+    for entry in rows:
+        if entry["billing"] == "subscription":
+            entry["cost"] = Decimal("0")
+
+    # Reconcile the metered rows to the authoritative total so the breakdown sums
+    # to the totals card. BYO rows contribute $0, so the whole reconciled total
+    # belongs to the metered rows.
+    if reconciled_total > 0:
+        metered = [e for e in rows if e["billing"] == "metered" and e["cost"] > 0]
+        metered_sum = sum((e["cost"] for e in metered), Decimal("0"))
+        if metered_sum > 0:
+            factor = reconciled_total / metered_sum
+            for entry in metered:
+                entry["cost"] = entry["cost"] * factor
+        else:
+            # Real reconciled spend but no nonzero metered estimate to scale
+            # (e.g. every row was BYO/zero-cost, or estimates rounded to 0).
+            # Carry the remainder on a single synthetic row rather than dividing
+            # by zero or dropping the dollars.
+            rows.append(
+                {
+                    "model": "other",
+                    "display_name": "Other usage",
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cost": reconciled_total,
+                    "count": 0,
+                    "billing": "metered",
+                }
+            )
+    # reconciled_total == 0 → leave the raw per-model estimates as-is.
+
+    rows.sort(key=lambda e: e["cost"], reverse=True)
+
+    # "True monthly cost to run your assistant" = reconciled AI (LLM) spend PLUS
+    # the fully-loaded infrastructure cost. This is a SEPARATE display from the
+    # quota-driving budget block below (which stays untouched): the budget tracks
+    # only AI usage against the monthly allowance, while true_total_cost surfaces
+    # what the assistant actually costs to run end to end.
+    llm_cost = float(reconciled_total)
+    infra = _get_infra_breakdown(tenant, first)
+    infra_cost = infra["total"]
+    true_total_cost = round(llm_cost + infra_cost, 4)
 
     return {
         "period": {"start": first.isoformat(), "end": last.isoformat()},
         "total_input_tokens": totals["total_input"],
         "total_output_tokens": totals["total_output"],
         "total_tokens": totals["total_input"] + totals["total_output"],
-        "total_cost": float(totals["total_cost"]),
+        "total_cost": float(reconciled_total),
         "message_count": totals["message_count"],
         "by_model": [
             {
-                "model": row["model_used"],
-                "display_name": display_name_for_model(row["model_used"] or ""),
-                "input_tokens": row["input_tokens"],
-                "output_tokens": row["output_tokens"],
-                "cost": float(row["cost"]),
-                "count": row["count"],
+                "model": e["model"],
+                "display_name": e["display_name"],
+                "input_tokens": e["input_tokens"],
+                "output_tokens": e["output_tokens"],
+                "cost": float(e["cost"]),
+                "count": e["count"],
+                "billing": e["billing"],
             }
-            for row in by_model
+            for e in rows
         ],
         "budget": budget_info,
+        # True-cost display (additive; budget above is unchanged):
+        "llm_cost": llm_cost,
+        "infra_cost": infra_cost,
+        "infra_source": infra["source"],
+        "true_total_cost": true_total_cost,
+        "infra_breakdown": {
+            "container": infra["container"],
+            "database_share": infra["database_share"],
+            "storage_share": infra["storage_share"],
+            "platform_share": infra["platform_share"],
+        },
     }
 
 
@@ -184,15 +280,22 @@ def _get_infra_breakdown(tenant: Tenant, month: date) -> dict:
             "container": float(snapshot.container_cost),
             "database_share": float(snapshot.database_share),
             "storage_share": float(snapshot.storage_cost),
+            "platform_share": float(snapshot.platform_share),
             "total": float(snapshot.total_cost),
             "source": snapshot.source,
         }
     except InfraCostSnapshot.DoesNotExist:
         # No snapshot yet (brand-new tenant / before the first cron run). Mirror
-        # the cron's estimate exactly — same container/storage estimates and the
-        # same capped database share — so the transparency figure doesn't jump
-        # when the first snapshot lands.
-        from .infra_cost_service import ESTIMATE_CONTAINER, ESTIMATE_STORAGE, calculate_database_share
+        # the cron's estimate exactly — same container/storage estimates, the
+        # same capped database share, and the same flat platform-share
+        # placeholder — so the transparency figure doesn't jump when the first
+        # snapshot lands.
+        from .infra_cost_service import (
+            ESTIMATE_CONTAINER,
+            ESTIMATE_STORAGE,
+            _estimate_platform_share,
+            calculate_database_share,
+        )
 
         active_count = (
             Tenant.objects.filter(status="active", container_id__isnull=False).exclude(container_id="").count()
@@ -200,11 +303,13 @@ def _get_infra_breakdown(tenant: Tenant, month: date) -> dict:
         container = float(ESTIMATE_CONTAINER)
         storage = float(ESTIMATE_STORAGE)
         db_share = float(calculate_database_share(active_count))
+        platform_share = float(_estimate_platform_share())
         return {
             "container": container,
             "database_share": db_share,
             "storage_share": storage,
-            "total": round(container + storage + db_share, 4),
+            "platform_share": platform_share,
+            "total": round(container + storage + db_share + platform_share, 4),
             "source": "estimate",
         }
 
@@ -300,7 +405,8 @@ def get_transparency_data(tenant: Tenant) -> dict:
             f"This month your AI usage cost ${actual_cost:.4f}. "
             f"Platform infrastructure is estimated at "
             f"${infra_breakdown['total']:.2f}/mo (container ${infra_breakdown['container']:.2f}, "
-            f"database ${infra_breakdown['database_share']:.2f}, storage ${infra_breakdown['storage_share']:.2f})."
+            f"database ${infra_breakdown['database_share']:.2f}, storage ${infra_breakdown['storage_share']:.2f}, "
+            f"platform share ${infra_breakdown['platform_share']:.2f})."
         ),
     }
 

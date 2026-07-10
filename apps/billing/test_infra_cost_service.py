@@ -23,6 +23,7 @@ from apps.billing.infra_cost_service import (
     _alert_cost_degradation,
     _query_resource_costs,
     calculate_database_share,
+    calculate_platform_share,
     refresh_infra_costs,
 )
 from apps.billing.models import InfraCostSnapshot
@@ -269,6 +270,48 @@ class RefreshInfraCostsTest(TestCase):
         self.assertEqual(snap.source, "azure")
         self.assertEqual(snap.container_cost, Decimal("3.50"))
 
+    # --- fully-loaded platform share flows into the snapshot + total ---
+
+    @patch(f"{MODULE}._alert_cost_degradation")
+    @patch(f"{MODULE}._query_resource_costs")
+    def test_azure_row_includes_platform_share_and_total(self, mock_query, mock_alert):
+        # Residual (non oc-*/ws-*) rg cost is amortized across active tenants and
+        # folded into total_cost. One active tenant → the whole residual lands on it.
+        mock_query.return_value = {
+            "oc-abc": Decimal("3.50"),
+            "ws-abc": Decimal("0.10"),
+            "nbhd-django-westus2": Decimal("40.00"),  # always-on control plane
+        }
+
+        result = refresh_infra_costs()
+
+        self.assertEqual(result["source"], "azure")
+        snap = self._snapshot()
+        # platform = (43.60 total − 3.60 attributed) / 1 active tenant = 40.00
+        self.assertEqual(snap.platform_share, Decimal("40.0000"))
+        # db share capped at 0.50 for a single-tenant fleet.
+        self.assertEqual(snap.database_share, Decimal("0.5000"))
+        self.assertEqual(
+            snap.total_cost,
+            Decimal("3.50") + Decimal("0.10") + Decimal("0.5000") + Decimal("40.0000"),
+        )
+        mock_alert.assert_not_called()
+
+    @patch(f"{MODULE}._alert_cost_degradation")
+    @patch(f"{MODULE}._query_resource_costs")
+    def test_estimate_fallback_writes_flat_platform_share(self, mock_query, mock_alert):
+        # A hard query failure falls back to estimates — the platform line uses
+        # the flat INFRA_PLATFORM_SHARE_ESTIMATE (default $2.00), folded into total.
+        mock_query.side_effect = RuntimeError("boom")
+
+        refresh_infra_costs()
+
+        snap = self._snapshot()
+        self.assertEqual(snap.source, "estimate")
+        self.assertEqual(snap.platform_share, Decimal("2.0000"))
+        # 4.00 container + 0.25 storage + 0.50 db + 2.00 platform.
+        self.assertEqual(snap.total_cost, Decimal("6.75"))
+
     @override_settings()
     @patch(f"{MODULE}._alert_cost_degradation")
     def test_mock_mode_uses_estimates_without_alert(self, mock_alert):
@@ -340,3 +383,32 @@ class CalculateDatabaseShareTest(TestCase):
     def test_cap_is_configurable(self):
         # $25 / 10 = $2.50 capped to the configured $1.00.
         self.assertEqual(calculate_database_share(10), Decimal("1.0000"))
+
+
+class CalculatePlatformShareTest(TestCase):
+    """Fully-loaded attribution: the rg-nbhd-prod residual not attributed to any
+    per-tenant oc-*/ws-* resource is split evenly across active tenants."""
+
+    def test_even_split_of_unattributed_cost(self):
+        resource_costs = {
+            "oc-abc": Decimal("4.00"),
+            "ws-abc": Decimal("0.25"),
+            "nbhd-django-westus2": Decimal("40.00"),
+            "nbhdunited": Decimal("5.00"),  # container registry
+            "kv-nbhd-prod": Decimal("1.00"),  # key vault
+        }
+        # residual = 50.25 total − 4.25 attributed = 46.00; / 2 tenants = 23.00
+        self.assertEqual(calculate_platform_share(resource_costs, 2), Decimal("23.0000"))
+
+    def test_zero_active_tenants_guarded(self):
+        # Degenerate N<=0 must not load the whole platform bill onto a phantom tenant.
+        resource_costs = {"nbhd-django-westus2": Decimal("40.00")}
+        self.assertEqual(calculate_platform_share(resource_costs, 0), Decimal("0.0000"))
+
+    def test_all_cost_attributed_yields_zero(self):
+        # Every resource maps to a tenant → no shared residual to spread.
+        resource_costs = {"oc-abc": Decimal("4.00"), "ws-abc": Decimal("0.25")}
+        self.assertEqual(calculate_platform_share(resource_costs, 3), Decimal("0.0000"))
+
+    def test_empty_costs_yields_zero(self):
+        self.assertEqual(calculate_platform_share({}, 3), Decimal("0.0000"))

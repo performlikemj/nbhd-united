@@ -163,6 +163,44 @@ def calculate_database_share(active_tenant_count: int) -> Decimal:
     return min(even_split, cap).quantize(Decimal("0.0001"))
 
 
+def calculate_platform_share(resource_costs: dict[str, Decimal], active_tenant_count: int) -> Decimal:
+    """Per-tenant slice of the always-on shared *platform* overhead.
+
+    Fully-loaded attribution: every rg-nbhd-prod cost that is NOT a per-tenant
+    ``oc-*`` container or ``ws-*`` file share — the always-on Django control
+    plane, container registry, Key Vault, Log Analytics, the storage account
+    itself — is a fixed platform cost the fleet exists to run. We amortize it
+    evenly across active tenants so the "true monthly cost" figure reflects the
+    real, fully-loaded cost of running one assistant rather than only its
+    marginal container/storage spend.
+
+    Unlike the DB share this is derived from live Azure data (the residual after
+    subtracting attributed resources), so there's no separate cap — it's the
+    honest even split of whatever platform overhead Azure actually billed.
+    Guards the zero/negative fleet (returns 0) so a degenerate run never loads
+    the entire platform bill onto a phantom tenant.
+    """
+    if active_tenant_count <= 0:
+        return Decimal("0.0000")
+    attributed = sum(
+        (cost for name, cost in resource_costs.items() if name.startswith("oc-") or name.startswith("ws-")),
+        Decimal("0"),
+    )
+    total = sum(resource_costs.values(), Decimal("0"))
+    platform_total = max(total - attributed, Decimal("0"))
+    return (platform_total / active_tenant_count).quantize(Decimal("0.0001"))
+
+
+def _estimate_platform_share() -> Decimal:
+    """Flat conservative platform-share placeholder for the estimate path.
+
+    Used when live Azure data is unavailable (AZURE_MOCK, failed/empty query, or
+    a brand-new tenant before the first snapshot). Derived from a settings
+    constant with a sane default so no Azure env change is required to ship.
+    """
+    return Decimal(str(getattr(settings, "INFRA_PLATFORM_SHARE_ESTIMATE", 2.0))).quantize(Decimal("0.0001"))
+
+
 def _write_estimate_snapshots(active_tenants, month_start: date, db_share: Decimal) -> int:
     """Upsert flat-estimate snapshots for every active tenant.
 
@@ -179,7 +217,8 @@ def _write_estimate_snapshots(active_tenants, month_start: date, db_share: Decim
     had_real_azure_ids = set(
         InfraCostSnapshot.objects.filter(month=month_start, source="azure").values_list("tenant_id", flat=True)
     )
-    total = ESTIMATE_CONTAINER + ESTIMATE_STORAGE + db_share
+    platform_share = _estimate_platform_share()
+    total = ESTIMATE_CONTAINER + ESTIMATE_STORAGE + db_share + platform_share
     count = 0
     for tenant in active_tenants:
         if tenant.id in had_real_azure_ids:
@@ -191,6 +230,7 @@ def _write_estimate_snapshots(active_tenants, month_start: date, db_share: Decim
                 "container_cost": ESTIMATE_CONTAINER,
                 "storage_cost": ESTIMATE_STORAGE,
                 "database_share": db_share,
+                "platform_share": platform_share,
                 "total_cost": total,
                 "source": "estimate",
             },
@@ -286,6 +326,13 @@ def refresh_infra_costs() -> dict:
     container_costs = fetch_all_container_costs(resource_costs)
     storage_costs = fetch_all_storage_costs(resource_costs)
 
+    # Fully-loaded: the residual rg-nbhd-prod cost not attributed to any tenant
+    # container/share (always-on Django control plane, registry, Key Vault, Log
+    # Analytics) split evenly across active tenants. Azure-derived, so it applies
+    # to the real "azure" rows; estimate rows keep the flat placeholder below.
+    platform_share_real = calculate_platform_share(resource_costs, active_count)
+    platform_share_estimate = _estimate_platform_share()
+
     # Tenants already holding REAL Azure data for this month. A transient empty
     # return or a partial early-month posting must not overwrite those rows back
     # to flat estimates (that whipsaws the displayed infra cost → surplus →
@@ -307,6 +354,7 @@ def refresh_infra_costs() -> dict:
             source = "azure"
             container_cost = container_costs[container_name]
             storage_cost = storage_costs.get(storage_name, ESTIMATE_STORAGE)
+            platform_share = platform_share_real
         elif tenant.id in had_real_azure_ids:
             # We already collected real Azure data for this tenant this month and
             # this run missed it (transient/partial) — keep the real row instead
@@ -318,8 +366,9 @@ def refresh_infra_costs() -> dict:
             estimated += 1
             container_cost = ESTIMATE_CONTAINER
             storage_cost = ESTIMATE_STORAGE
+            platform_share = platform_share_estimate
 
-        total = container_cost + storage_cost + db_share
+        total = container_cost + storage_cost + db_share + platform_share
 
         InfraCostSnapshot.objects.update_or_create(
             tenant=tenant,
@@ -328,6 +377,7 @@ def refresh_infra_costs() -> dict:
                 "container_cost": container_cost,
                 "storage_cost": storage_cost,
                 "database_share": db_share,
+                "platform_share": platform_share,
                 "total_cost": total,
                 "source": source,
             },
