@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { PlatformShareInfo } from "@/components/platform-share-info";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton, StatCardSkeleton } from "@/components/skeleton";
 import { StatCard } from "@/components/stat-card";
@@ -74,16 +75,19 @@ export default function SettingsUsagePage() {
               <article className="glass-card rounded-xl border-t-2 border-accent/30 p-5 transition-transform duration-300 hover:scale-[1.02] hover:shadow-[0_0_20px_rgba(124,107,240,0.1)]">
                 <div className="flex items-center justify-between gap-2">
                   <p className="text-xs font-medium uppercase tracking-[0.12em] text-ink-faint">True Monthly Cost</p>
-                  {infraCost > 0 &&
-                    (infraIsActual ? (
-                      <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
-                        actual
-                      </span>
-                    ) : (
-                      <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
-                        estimate
-                      </span>
-                    ))}
+                  <div className="flex items-center gap-1">
+                    {infraCost > 0 &&
+                      (infraIsActual ? (
+                        <span className="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
+                          actual
+                        </span>
+                      ) : (
+                        <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+                          estimate
+                        </span>
+                      ))}
+                    <PlatformShareInfo amount={usageSummary?.infra_breakdown?.platform_share} variant="icon" />
+                  </div>
                 </div>
                 <p className="mt-2 font-headline text-2xl font-bold text-ink">${trueMonthlyCost.toFixed(2)}</p>
                 <p className="mt-2 text-xs text-ink-muted">
@@ -293,6 +297,7 @@ export default function SettingsUsagePage() {
                   database ${transparency.infra_breakdown.database_share.toFixed(2)} •
                   storage ${transparency.infra_breakdown.storage_share.toFixed(2)} •
                   platform share ${transparency.infra_breakdown.platform_share.toFixed(2)}
+                  <PlatformShareInfo amount={transparency.infra_breakdown.platform_share} variant="inline" />
                   {" • total "}
                   ${transparency.infra_breakdown.total.toFixed(2)}
                 </p>
