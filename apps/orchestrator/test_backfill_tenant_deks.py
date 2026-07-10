@@ -112,3 +112,66 @@ class BackfillTenantDeksTest(TestCase):
         ).count()
         self.assertEqual(minted_count, 1)
         self.assertIn("Minted: 1, Failed: 0", out.getvalue())
+
+
+class BackfillTenantDeksTaskTest(TestCase):
+    """Tests for the QStash-triggered zero-arg task wrappers (Phase 1 activation).
+
+    These fire the ``backfill_tenant_deks`` command from inside the running
+    container via ``/api/cron/trigger/<name>/`` — see the TASK_MAP entries in
+    apps/cron/views.py and the wrappers in apps/orchestrator/tasks.py.
+    """
+
+    def setUp(self):
+        # Same rationale as BackfillTenantDeksTest.setUp: patch _is_mock rather
+        # than trusting the ambient AZURE_MOCK env var, so the crypto layer uses
+        # its stateful mock KEK/DEK vault instead of reaching real Key Vault.
+        patcher = patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.tenant = create_tenant(display_name="Active No DEK (task)", telegram_chat_id=700201)
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.save(update_fields=["status", "updated_at"])
+
+    def test_dry_run_task_reports_candidates_and_writes_nothing(self):
+        from apps.orchestrator.tasks import backfill_tenant_deks_dry_run_task
+
+        result = backfill_tenant_deks_dry_run_task()
+
+        self.assertIn("output", result)
+        # Candidate count line from the command, plus the dry-run marker.
+        self.assertIn("Found 1 tenant(s) needing a DEK", result["output"])
+        self.assertIn("dry-run", result["output"])
+        # No rows minted.
+        self.assertFalse(TenantDek.objects.filter(tenant=self.tenant).exists())
+
+    def test_real_task_mints_epoch_zero_dek(self):
+        from apps.orchestrator.tasks import backfill_tenant_deks_task
+
+        result = backfill_tenant_deks_task()
+
+        self.assertIn("output", result)
+        self.assertIn("Minted: 1, Failed: 0", result["output"])
+        self.assertTrue(TenantDek.objects.filter(tenant=self.tenant, dek_epoch=0).exists())
+
+    def test_task_map_names_resolve_zero_arg(self):
+        """Both new names resolve through the same import path trigger_task uses.
+
+        ``trigger_task`` resolves a TASK_MAP entry via ``import_module`` +
+        ``getattr`` (see execute_task_sync / _validate_task_signature) and binds
+        the request args. Mirror that here and assert each is a zero-arg callable
+        — the contract that lets a no-body QStash publish drive it.
+        """
+        import inspect
+        from importlib import import_module
+
+        from apps.cron.views import TASK_MAP
+
+        for name in ("backfill_tenant_deks", "backfill_tenant_deks_dry_run"):
+            self.assertIn(name, TASK_MAP)
+            module_path, func_name = TASK_MAP[name].rsplit(".", 1)
+            func = getattr(import_module(module_path), func_name)
+            self.assertTrue(callable(func))
+            # Binds with no positional/keyword args — the no-body contract.
+            inspect.signature(func).bind()
