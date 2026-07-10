@@ -1544,6 +1544,24 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
     thread_id = batch[0].channel_user_id
     content, user_param, user_tz = _build_batch_chat_content(batch, thread_id)
 
+    # Bridge proactive-message continuity into the iOS turn. Unlike the
+    # Telegram/LINE ingress handlers (which prepend this block before enqueue),
+    # the iOS ingress (``enqueue_tenant_turn``) does NOT surface it — so the
+    # bridge lives HERE, at the drain, the single point where iOS content
+    # becomes container-bound. Prepending once onto the assembled ``content``
+    # (singleton passthrough OR coalesced rebuild) puts the block at the top of
+    # the turn exactly once, never once per pending message. ``surface_proactive_
+    # context`` marks the rows consumed at this same point — mirroring how the
+    # other channels surface+consume where the text enters the container payload.
+    # Tenant-scoped: a cron delivered over Telegram/LINE while the user has since
+    # gone iOS-only still threads. Placeholder-space, like the other call sites —
+    # the container operates in placeholder space, so we do NOT rehydrate here.
+    from apps.router.proactive_context import surface_proactive_context
+
+    proactive_block = surface_proactive_context(tenant=tenant)
+    if proactive_block:
+        content = proactive_block + content
+
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     from apps.cron.gateway_client import get_gateway_token_for_tenant
 

@@ -9,12 +9,22 @@ replies to the original question and conflates them.
 This module is the deterministic fix:
 
 * ``record_proactive_outbound`` is called from ``CronDeliveryView``
-  after a successful Telegram/LINE push and persists a
-  ``ProactiveOutbound`` row.
-* ``surface_proactive_context`` is called from each inbound envelope
-  composer (LINE webhook, Telegram webhook, Telegram poller) and
-  returns a marker block to prepend to the user's text so the agent
+  after a successful Telegram/LINE/app push and persists a
+  ``ProactiveOutbound`` row, keyed by the OUTBOUND transport that was
+  used (telegram/line/app) for audit.
+* ``surface_proactive_context`` is called from each inbound path (LINE
+  webhook, Telegram webhook, Telegram poller, and the iOS/app drain)
+  and returns a marker block to prepend to the user's text so the agent
   sees the prior outbound(s) as conversation context.
+
+Surfacing is TENANT-scoped and transport-agnostic: one tenant is one
+human user on this platform, so a reply is threaded back to the prior
+outbound(s) regardless of which channel each was recorded under. This is
+deliberate — a cron delivered over Telegram while the user has since gone
+iOS-only (Telegram still linked, so ``resolve_user_channel`` recorded the
+row ``channel='telegram'``) must still surface when they reply from the
+app. The ``channel`` / ``channel_user_id`` columns stay populated for
+audit; they no longer scope the surface query.
 
 The legacy ``_phase2_sync_block`` mechanism (which prompts the agent
 to create a hidden ``_sync:`` cron) stays in place as a belt-and-
@@ -196,12 +206,17 @@ def _format_block(rows: Iterable[ProactiveOutbound]) -> str:
 def surface_proactive_context(
     *,
     tenant,
-    channel: str,
-    channel_user_id: str,
     window_hours: int = DEFAULT_WINDOW_HOURS,
     limit: int = DEFAULT_LIMIT,
 ) -> str:
-    """Look up recent proactive outbounds and return a prepend block.
+    """Look up recent proactive outbounds for ``tenant`` and return a prepend block.
+
+    TENANT-scoped, transport-agnostic (see module docstring): the query
+    matches the tenant's recent rows regardless of which ``channel`` /
+    ``channel_user_id`` they were recorded under, so a reply on ANY inbound
+    path (iOS/app, Telegram, LINE) threads back to a proactive send that may
+    have gone out over a different transport. The recency window + cap are
+    unchanged — they now bound the tenant's rows across all channels.
 
     Marks the surfaced rows ``consumed_at = now`` in the same DB
     transaction. Surfaces both unconsumed rows AND consumed-but-recent
@@ -217,10 +232,12 @@ def surface_proactive_context(
     # surfacing a stale message forever.
     follow_up_cutoff = timezone.now() - timedelta(minutes=5)
 
+    # Tenant-scoped only — the (tenant, created_at) index (proactive_tenant_
+    # created_idx) already backs this walk. channel/channel_user_id are NOT
+    # filtered: one tenant = one human, and the outbound transport a row was
+    # recorded under must not gate whether the reply threads back to it.
     qs = ProactiveOutbound.objects.filter(
         tenant=tenant,
-        channel=channel,
-        channel_user_id=channel_user_id,
         created_at__gte=cutoff,
     ).order_by("-created_at")[:limit]
 

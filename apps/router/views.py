@@ -325,8 +325,8 @@ def telegram_webhook(request):
 
         # Inject current time into message text so the agent knows "now"
         # Surface any proactive outbound sent to this user in the last
-        # 24h so the agent can thread the reply back to it. See
-        # apps.router.proactive_context.
+        # 24h so the agent can thread the reply back to it. Tenant-scoped
+        # (transport-agnostic) — see apps.router.proactive_context.
         from apps.router.proactive_context import surface_proactive_context
         from apps.router.services import (
             build_chat_context_marker,
@@ -334,11 +334,7 @@ def telegram_webhook(request):
             get_forwarding_timeout,
         )
 
-        proactive_block = surface_proactive_context(
-            tenant=tenant,
-            channel="telegram",
-            channel_user_id=str(chat_id),
-        )
+        proactive_block = surface_proactive_context(tenant=tenant)
 
         msg = update.get("message") or update.get("edited_message") or {}
         # Capture the user's original text BEFORE the in-place decoration below
