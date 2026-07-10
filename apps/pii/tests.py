@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.pii.config import TIER_POLICIES
 from apps.pii.redactor import RedactionSession, redact_text, rehydrate_text
@@ -1230,7 +1230,8 @@ class MintGuardUnitTest(TestCase):
 class FitnessFalsePositiveTest(TestCase):
     """Bug B: lift numbers / exercise names must not redact, but real PII in
     the same message still does. NER is mocked at the pipeline level so the
-    label-map (BUILDINGNUMBER dropped) and the guards both run for real.
+    label-map and the guards both run for real. BUILDINGNUMBER is now handled
+    by the adjacency guard in _detect_pii rather than being omitted from the map.
     """
 
     def setUp(self):
@@ -1246,7 +1247,7 @@ class FitnessFalsePositiveTest(TestCase):
             return redact_user_message(message, self.tenant)
 
     def test_lift_numbers_not_redacted(self):
-        # BUILDINGNUMBER is now dropped by the label map entirely.
+        # Bare BUILDINGNUMBER with no adjacent address-family span → guard skips it.
         result = self._redact("I benched 225", [("BUILDINGNUMBER", "225", 0.707)])
         self.assertEqual(result, "I benched 225")
 
@@ -1303,6 +1304,169 @@ class PinScoreOverrideTest(TestCase):
         result = self._redact("my PIN is 4821", [("PIN", "4821", 0.8)])
         self.assertNotIn("4821", result)
         self.assertIn("[PASSWORD_1]", result)
+
+
+class BuildingNumberMeasurementGuardTest(SimpleTestCase):
+    """BUILDINGNUMBER spans that are bare measurements (body weight, lift numbers)
+    must not redact when no address-family raw span is adjacent.  When a real
+    street/city span sits alongside, the number is kept and merges into the
+    address placeholder.
+
+    Uses SimpleTestCase (DB-free).  Tested at two levels:
+      - _detect_pii() directly (exceptions surface here)
+      - redact_text() end-to-end with tenant=None
+    """
+
+    def _hits(self, text, hits):
+        """Run _detect_pii with a fake pipeline and return the raw DetectedEntity list."""
+        from apps.pii.config import TIER_POLICIES
+        from apps.pii.redactor import _detect_pii
+
+        policy = TIER_POLICIES["starter"]
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=_fake_pipeline(hits)),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            return _detect_pii(text, policy["entities"], policy["score_threshold"])
+
+    def _redact(self, text, hits):
+        """Run redact_text end-to-end with a fake pipeline (no DB needed)."""
+        with (
+            patch("apps.pii.engine.get_pii_pipeline", return_value=_fake_pipeline(hits)),
+            patch("apps.pii.engine.get_pattern_recognizers", return_value={}),
+        ):
+            return redact_text(text, tier="starter")
+
+    # -----------------------------------------------------------------------
+    # Weight / measurement spans — must NOT redact
+    # -----------------------------------------------------------------------
+
+    def test_weight_kg_not_detected(self):
+        text = "my weight is 82kg"
+        self.assertEqual(self._hits(text, [("BUILDINGNUMBER", "82kg", 0.8)]), [])
+
+    def test_weight_kg_not_redacted_end_to_end(self):
+        text = "my weight is 82kg"
+        self.assertEqual(self._redact(text, [("BUILDINGNUMBER", "82kg", 0.8)]), text)
+
+    def test_weight_pounds_space_not_detected(self):
+        text = "weighed 180 lbs this morning"
+        self.assertEqual(self._hits(text, [("BUILDINGNUMBER", "180 lbs", 0.75)]), [])
+
+    def test_bare_decimal_not_detected(self):
+        text = "82.5"
+        self.assertEqual(self._hits(text, [("BUILDINGNUMBER", "82.5", 0.9)]), [])
+
+    def test_bare_decimal_not_redacted_end_to_end(self):
+        self.assertEqual(self._redact("82.5", [("BUILDINGNUMBER", "82.5", 0.9)]), "82.5")
+
+    def test_intl_decimal_comma_weight_not_redacted(self):
+        # German-style decimal weight "82,5 kg" — the comma decimal must read as
+        # a measurement, not an address number (intl tenant base). Regressed
+        # before the _BARE_MEASUREMENT_RE decimal part accepted a comma.
+        text = "weight 82,5 kg"
+        self.assertEqual(self._hits(text, [("BUILDINGNUMBER", "82,5", 0.8)]), [])
+        self.assertEqual(self._redact(text, [("BUILDINGNUMBER", "82,5", 0.8)]), text)
+
+    def test_bare_integer_not_detected(self):
+        # The original repro: "my weight is 82" — bare number, no street nearby.
+        text = "my weight is 82"
+        self.assertEqual(self._hits(text, [("BUILDINGNUMBER", "82", 0.8)]), [])
+
+    # -----------------------------------------------------------------------
+    # Real address — numeric part MUST survive into a merged LOCATION span
+    # -----------------------------------------------------------------------
+
+    def test_numeric_building_number_in_address_redacts(self):
+        # "82 Baker Street": BUILDINGNUMBER adjacent to STREET → guard keeps 82,
+        # map collapses both to LOCATION, _merge_adjacent_spans fuses them.
+        text = "I live at 82 Baker Street"
+        detected = self._hits(
+            text,
+            [("BUILDINGNUMBER", "82", 0.8), ("STREET", "Baker Street", 0.9)],
+        )
+        self.assertEqual(len(detected), 1)
+        self.assertEqual(detected[0].entity_type, "LOCATION")
+        self.assertEqual(text[detected[0].start : detected[0].end], "82 Baker Street")
+
+    def test_address_redacts_end_to_end(self):
+        text = "I live at 82 Baker Street"
+        result = self._redact(
+            text,
+            [("BUILDINGNUMBER", "82", 0.8), ("STREET", "Baker Street", 0.9)],
+        )
+        self.assertEqual(result, "I live at [LOCATION_1]")
+
+    def test_european_order_adjacency(self):
+        # "Hauptstrasse 82" — STREET to the LEFT of BUILDINGNUMBER.
+        text = "Hauptstrasse 82 is home"
+        detected = self._hits(
+            text,
+            [("STREET", "Hauptstrasse", 0.9), ("BUILDINGNUMBER", "82", 0.8)],
+        )
+        self.assertEqual(len(detected), 1)
+        self.assertEqual(detected[0].entity_type, "LOCATION")
+        self.assertIn("Hauptstrasse", text[detected[0].start : detected[0].end])
+        self.assertIn("82", text[detected[0].start : detected[0].end])
+
+    # -----------------------------------------------------------------------
+    # ZIP / postal codes — must always redact regardless of label used
+    # -----------------------------------------------------------------------
+
+    def test_zip_via_zipcode_label_redacts(self):
+        # Correctly labeled ZIPCODE never enters the BUILDINGNUMBER guard.
+        text = "zip is 90210"
+        detected = self._hits(text, [("ZIPCODE", "90210", 0.9)])
+        self.assertEqual(len(detected), 1)
+        self.assertEqual(detected[0].entity_type, "LOCATION")
+
+    def test_zip_via_zipcode_end_to_end(self):
+        text = "zip is 90210"
+        result = self._redact(text, [("ZIPCODE", "90210", 0.9)])
+        self.assertEqual(result, "zip is [LOCATION_1]")
+
+    def test_five_digit_number_mislabeled_buildingnumber_redacts(self):
+        # Belt-and-suspenders: a 5-digit number tagged BUILDINGNUMBER. The
+        # _BARE_MEASUREMENT_RE integer-part cap (max 4 digits) means 90210
+        # never matches → guard passes → redacts as LOCATION.
+        text = "code 90210"
+        detected = self._hits(text, [("BUILDINGNUMBER", "90210", 0.9)])
+        self.assertEqual(len(detected), 1)
+        self.assertEqual(detected[0].entity_type, "LOCATION")
+
+    # -----------------------------------------------------------------------
+    # Alphanumeric house numbers — must always redact (not matched by regex)
+    # -----------------------------------------------------------------------
+
+    def test_alphanumeric_house_number_with_street_redacts(self):
+        # "221B Baker Street": "221B" is non-numeric → guard never skips it.
+        text = "ship to 221B Baker Street, London"
+        detected = self._hits(
+            text,
+            [
+                ("BUILDINGNUMBER", "221B", 0.85),
+                ("STREET", "Baker Street", 0.9),
+                ("CITY", "London", 0.9),
+            ],
+        )
+        # 221B+Baker Street merges; London is a separate LOCATION
+        self.assertEqual(len(detected), 2)
+        span_texts = {text[h.start : h.end] for h in detected}
+        self.assertIn("London", span_texts)
+        fused = next(t for t in span_texts if "Baker" in t)
+        self.assertIn("221B", fused)
+
+    # -----------------------------------------------------------------------
+    # Accepted trade-off (pinned, not a bug)
+    # -----------------------------------------------------------------------
+
+    def test_lone_building_number_no_street_span_goes_unredacted(self):
+        # A genuine lone building number with no street/city in the same message
+        # is not redacted. This is identical to current main (which dropped ALL
+        # BUILDINGNUMBER) — a bare number alone is non-identifying, and DeBERTa
+        # reliably emits STREET/CITY alongside real addresses.
+        text = "I'm at number 82"
+        self.assertEqual(self._hits(text, [("BUILDINGNUMBER", "82", 0.9)]), [])
 
 
 class PhoneRecognizerTest(TestCase):

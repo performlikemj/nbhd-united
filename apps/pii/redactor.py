@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from apps.pii.config import DEBERTA_LABEL_MAP, LABEL_SCORE_OVERRIDES, TIER_POLICIES
+from apps.pii.config import ADDRESS_CONTEXT_LABELS, DEBERTA_LABEL_MAP, LABEL_SCORE_OVERRIDES, TIER_POLICIES
 from apps.pii.entity_registry import (
     canonical_key as _canonical_key,
 )
@@ -64,6 +64,23 @@ _NUMERIC_OR_UNIT_RE = re.compile(
         | x\d+                                                       # x10
         | \d{1,4}x\d+                                                # 5x5, 3x12
     )$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# A BUILDINGNUMBER span that is really a measurement: bare number with optional
+# thousands separators / decimal part and an optional trailing unit (same
+# whitelist as _NUMERIC_OR_UNIT_RE). Anchored fullmatch against the stripped
+# span. Integer part deliberately capped at 4 leading digits so a 5-digit ZIP
+# mislabeled BUILDINGNUMBER can never match; alphanumeric house numbers
+# ("221B", "82-4") don't match either — both keep flowing to redaction.
+_BARE_MEASUREMENT_RE = re.compile(
+    r"""
+    ^
+    \d{1,4}(?:,\d{3})*                  # 82 · 180 · 1,050
+    (?:[.,]\d+)?                        # 82.5 · 82,5 (intl decimal comma)
+    (?:\s?(?:kg|kgs|lb|lbs|reps?|sets?|km|mi|min|sec|hrs?|bpm|cal|kcal))?  # 82kg · 180 lbs
+    $
     """,
     re.IGNORECASE | re.VERBOSE,
 )
@@ -1355,6 +1372,19 @@ def _redact_tool_value(
 # ---------------------------------------------------------------------------
 
 
+def _has_adjacent_address_label(ent: dict, model_results: list[dict], max_gap: int = 2) -> bool:
+    """True when another RAW model span with an address-family label
+    (ADDRESS_CONTEXT_LABELS) overlaps or sits within ``max_gap`` characters
+    of ``ent`` on either side."""
+    for other in model_results:
+        if other is ent or other["entity_group"] not in ADDRESS_CONTEXT_LABELS:
+            continue
+        gap = max(other["start"] - ent["end"], ent["start"] - other["end"])
+        if gap <= max_gap:
+            return True
+    return False
+
+
 def _detect_pii(
     text: str,
     entities: list[str],
@@ -1406,6 +1436,17 @@ def _detect_pii(
         effective_threshold = max(score_threshold, LABEL_SCORE_OVERRIDES.get(raw_label, 0.0))
         if ent["score"] < effective_threshold:
             continue
+        # BUILDINGNUMBER is the one label we distrust: DeBERTa fires it on
+        # bare measurements (body weight "82kg", "180 lbs", daily "82.5").
+        # Skip it ONLY when the span is numeric-only AND no address-family
+        # raw span sits adjacent — "82 Baker Street" keeps its 82 (STREET is
+        # 1 char away), a lone weight never mints [LOCATION_n]. Checked on
+        # the RAW label: after DEBERTA_LABEL_MAP collapses to LOCATION and
+        # _merge_adjacent_spans runs, this distinction no longer exists.
+        if raw_label == "BUILDINGNUMBER":
+            span_text = text[ent["start"] : ent["end"]].strip()
+            if _BARE_MEASUREMENT_RE.match(span_text) and not _has_adjacent_address_label(ent, model_results):
+                continue
         entity_type = DEBERTA_LABEL_MAP.get(raw_label)
         if entity_type and entity_type in entities:
             # Trim leading/trailing whitespace from span boundaries —
