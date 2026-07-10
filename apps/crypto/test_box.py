@@ -39,15 +39,29 @@ class _ListHandler(logging.Handler):
 
 
 class BoxTestCase(TestCase):
-    """Common setUp/tearDown: reset the ambient audit principal per test.
+    """Common setUp/tearDown for every box test that touches encrypt/decrypt.
 
-    `decrypt_bulk` mutates the ambient `audit._PRINCIPAL` ContextVar as a
-    side effect (it calls `audit.set_principal(principal)`), and that
-    ContextVar persists across tests running in the same thread — reset it
-    so test order never matters.
+    Two responsibilities:
+
+    1. Force `azure_client` into mock mode by patching `_is_mock` -> True,
+       NOT by relying on the ambient `AZURE_MOCK` env var. In CI's full
+       suite (~5k tests) another test can mutate `os.environ`, leaving
+       `AZURE_MOCK` unset by the time these run — then `cache.get_dek` ->
+       `azure_client.unwrap_dek` would take the REAL Azure branch and error.
+       This mirrors the merged PR1 pattern in
+       `apps/orchestrator/test_azure_client_keys.py`. Started here in setUp
+       (with addCleanup(stop)) rather than as a class decorator so it also
+       covers subclasses that encrypt/decrypt inside their OWN setUp — a
+       class-level `@patch` only wraps `test*` methods, never setUp.
+    2. Reset the ambient audit principal per test: `decrypt_bulk` mutates the
+       `audit._PRINCIPAL` ContextVar as a side effect, and it persists across
+       tests in the same thread — reset it so test order never matters.
     """
 
     def setUp(self):
+        mock_patcher = patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+        mock_patcher.start()
+        self.addCleanup(mock_patcher.stop)
         self._principal_token = audit._PRINCIPAL.set("system")
 
     def tearDown(self):

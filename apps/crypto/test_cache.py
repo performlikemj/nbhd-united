@@ -24,7 +24,28 @@ def _create_tenant(*, suffix: str) -> Tenant:
     return Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, model_tier=Tenant.ModelTier.STARTER)
 
 
-class GetDekColdMissTest(TestCase):
+class _ForceMockAzureMixin:
+    """Force `azure_client` into mock mode via patch, never the ambient env var.
+
+    `cache.get_dek` -> `azure_client.unwrap_dek` (and the tests' own
+    `purge_kek`/`unwrap_dek` calls) branch on `azure_client._is_mock()`. In
+    CI's full suite another test can leave `AZURE_MOCK` unset in
+    `os.environ`, so these must not depend on it — patch `_is_mock` -> True
+    directly, matching the merged PR1 pattern in
+    `apps/orchestrator/test_azure_client_keys.py`. The patch replaces a
+    module-level attribute, so it's visible to the worker threads in
+    `ConcurrentColdMissTest` too (not thread-local). Started in setUp with
+    addCleanup(stop) so it wraps the whole test — including any thread joins.
+    """
+
+    def setUp(self):
+        super().setUp()
+        mock_patcher = patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+        mock_patcher.start()
+        self.addCleanup(mock_patcher.stop)
+
+
+class GetDekColdMissTest(_ForceMockAzureMixin, TestCase):
     def test_returns_the_real_unwrapped_dek(self):
         tenant = _create_tenant(suffix="cold")
         row = mint_and_wrap_dek(tenant)
@@ -49,7 +70,7 @@ class GetDekColdMissTest(TestCase):
             cache.get_dek(tenant.id, 0)
 
 
-class GetDekCacheHitTest(TestCase):
+class GetDekCacheHitTest(_ForceMockAzureMixin, TestCase):
     def test_second_call_does_zero_unwraps(self):
         tenant = _create_tenant(suffix="hit")
         mint_and_wrap_dek(tenant)
@@ -78,7 +99,7 @@ class GetDekCacheHitTest(TestCase):
         self.assertEqual(served, warm)
 
 
-class PrimeTest(TestCase):
+class PrimeTest(_ForceMockAzureMixin, TestCase):
     def test_prime_populates_without_touching_broker(self):
         fake_dek = b"P" * 32
         with patch("apps.crypto.cache.azure_client.unwrap_dek") as mock_unwrap:
@@ -93,7 +114,7 @@ class PrimeTest(TestCase):
         self.assertEqual(cache.get_dek("prime-visibility-tenant", 5), b"Q" * 32)
 
 
-class ConcurrentColdMissTest(TransactionTestCase):
+class ConcurrentColdMissTest(_ForceMockAzureMixin, TransactionTestCase):
     """Real threads need a real (committed) DB row visible from every
     connection — plain TestCase's per-test atomic wrapper is only visible on
     the main thread's connection, so worker threads would see no tenant/DEK
