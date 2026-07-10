@@ -277,31 +277,20 @@ def provision_tenant(tenant_id: str) -> None:
         # their defining module (apps.crypto.keys.mint_and_wrap_dek),
         # mirroring the OpenRouter sub-key block below.
         #
-        # DARK-WINDOW POSTURE (temporary, reversible): the whole crypto
-        # substrate is dark right now — nothing encrypts user data yet —
-        # and the KEK vault (`settings.AZURE_KEK_VAULT_NAME`) does not
-        # exist in Azure until the one-time az pre-work lands. Until then
-        # a mint failure must NOT fail provisioning: a tenant with no
-        # `TenantDek` row is identical to every existing tenant today, and
-        # `backfill_tenant_deks` mints DEKs for all rowless tenants once
-        # the vault exists (a Phase-2 precondition already requires that
-        # backfill to have run for ALL tenants before any column is
-        # encrypted). So we log and continue rather than raise.
-        # TODO(encryption Phase 2): restore fail-closed mint once
-        # kv-nbhd-keks + broker RBAC exist — a mint failure at that point
-        # is a real error and provisioning should abort on it again (a
-        # tenant with a container but no DEK could never encrypt anything).
+        # FAIL-CLOSED (restored 2026-07-11): the KEK vault (kv-nbhd-keks) and
+        # the provisioner/broker RBAC roles are live in Azure, and the 2026-07
+        # in-container backfill (`backfill_tenant_deks`) has minted a DEK for
+        # every pre-existing tenant. A mint failure here is now a real error,
+        # not a tolerable dark-window gap: a tenant that gets a container but no
+        # `TenantDek` row could never encrypt anything, so provisioning MUST
+        # abort and surface the failure rather than strand a half-provisioned,
+        # un-encryptable tenant. `mint_and_wrap_dek` is idempotent (a second
+        # call for an already-keyed tenant is a no-op), so letting it raise is
+        # also safe under provision re-runs / QStash retries. Let it raise.
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="mint_tenant_dek")
         from apps.crypto.keys import mint_and_wrap_dek
 
-        try:
-            mint_and_wrap_dek(tenant)
-        except Exception:
-            logger.warning(
-                "DEK mint failed for tenant %s during dark-window provisioning; continuing without a DEK",
-                tenant_id,
-                exc_info=True,
-            )
+        mint_and_wrap_dek(tenant)
 
         # 2a2. (PR #1.6) Per-tenant OpenRouter sub-key. When the feature
         # flag is on AND the management key is configured, create a

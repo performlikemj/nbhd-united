@@ -1,6 +1,6 @@
 # Encryption-at-Rest — Phase 1 Status & Azure Activation Runbook
 
-**As of 2026-07-11.** Companion to `docs/encryption-at-rest-directive.md` (master design) and `CONTINUITY_encryption-phase1.md` (Phase 1 PR plan). This is the live handoff doc: what's done, what's left, and the exact commands to finish.
+**As of 2026-07-11 — Phase 1 ACTIVATED.** Companion to `docs/encryption-at-rest-directive.md` (master design) and `CONTINUITY_encryption-phase1.md` (Phase 1 PR plan). This is the live handoff doc: what's done, what's left, and the exact commands to finish.
 
 ---
 
@@ -8,7 +8,7 @@
 
 **Phase 1 code: COMPLETE + deployed, DARK.** Six PRs merged to main (#1101 KEK SDK, #1102 CI predicate guard, #1103 tenant_deks+keys, #1105 box/codec/cache/RedactedStr/audit, #1106 provision wiring+backfill, #1114 prewarm). Two Fable-5 reviews fixed 3 crypto-core bugs + 1 live provisioning regression. Nothing encrypts user data yet; no `_enc` column exists.
 
-**Hotfix live (#1115):** the provision-time DEK mint is currently NON-FATAL (dark-window band-aid) so a missing vault can't break signups. Carries `# TODO(encryption Phase 2): restore fail-closed mint once kv-nbhd-keks + broker RBAC exist` in `apps/orchestrator/services.py`. **Must be reverted to fail-closed after the backfill covers all tenants.**
+**Provisioning mint: FAIL-CLOSED (restored by PR B, this change).** The #1115 dark-window soft-fail is gone. Now that the vault + RBAC are live and every tenant has a DEK (2026-07 backfill), a provision-time mint failure raises and aborts provisioning (tenant resets to PENDING) rather than stranding a container-having, DEK-less tenant. The `# TODO(encryption Phase 2)` in `apps/orchestrator/services.py` is removed.
 
 **Azure Phase A + 4a: DONE + independently verified (2026-07-11).**
 - Vault `kv-nbhd-keks` — standard SKU, RBAC auth, 7-day retention, **purge-protection OFF** (`enablePurgeProtection: null`; Azure rejects explicit `false`, so the flag is omitted — off is correct and required for crypto-shred).
@@ -24,42 +24,37 @@ Discovery constants: SUB `63ceeeac-fe3f-4bcb-b6d2-b7aa7fd6bf52`, RG `rg-nbhd-pro
 
 ---
 
-## Remaining steps to ACTIVATE (each still DARK — nothing gets encrypted)
+## ACTIVATED 2026-07-11 — Phase 1 keys are live (still no ciphertext)
 
-Recommended order bundles the one restart with the backfill so production restarts ONCE and self-verifies.
+All four activation steps ran and self-verified on 2026-07-11. Nothing encrypts user data
+yet — this only means every tenant now HAS a DEK and the container can unwrap it.
 
-### 1. Mint the 33 real keys (backfill) — RESOLVED: in-container via QStash trigger
-Decision (2026-07-11, Fable): run the backfill inside the running container through the
-existing QStash-signed task dispatcher — no new auth surface, no secret leaves Azure, and
-the container already holds prod DB access + the provisioner MI. Operator-local was
-rejected (it would put the prod `DATABASE_URL` on a laptop). Two zero-arg `TASK_MAP`
-entries (this PR) because the QStash publish path can't carry a body:
-- `POST {base}/api/cron/trigger/backfill_tenant_deks_dry_run/` — logs the candidate list (expect 33 — verified against prod 2026-07-11: 33 active+suspended tenants, 0 DEK rows), zero Azure/DB writes.
-- `POST {base}/api/cron/trigger/backfill_tenant_deks/` — real run (idempotent, per-tenant isolated, safe under QStash retries).
-Publish with no body via the upstash QStash tooling. Output returns in the HTTP response
-AND as an INFO line in `ContainerAppConsoleLogs_CL`. Verify after the real run:
-`SELECT count(*), min(dek_epoch), max(dek_epoch) FROM tenants_tenantdek` ≈ fleet size, all epoch 0.
+**1. Backfill — DONE.** Ran in-container 2026-07-11 02:08 JST (2026-07-10 17:08 UTC) via a no-body QStash
+publish to `/api/cron/trigger/backfill_tenant_deks/`: `Minted: 33, Failed: 0` (HTTP 200 in
+22.8s). DB verified: 33 rows / 33 distinct tenants / all `dek_epoch=0` in `tenants_tenantdek`.
+The two backfill `TASK_MAP` entries (`backfill_tenant_deks` + `backfill_tenant_deks_dry_run`,
+PR #1116) STAY REGISTERED — the command is idempotent, so a re-fire is now a harmless no-op;
+no de-registration needed.
 
-### 2. 4b — env var (GATED: this is the app restart)
-```bash
-az containerapp update -n nbhd-django-westus2 -g rg-nbhd-prod \
-  --set-env-vars AZURE_DECRYPT_BROKER_CLIENT_ID=92660daf-e31d-458c-bcc3-7906938bca28
-```
-Value = broker **clientId** (not principal/resource id). Do NOT set `AZURE_KEK_VAULT_NAME` (default already matches). **Creates a new revision — single-revision app, wedge risk** ([[project memory: same-tag re-bump wedges single-revision apps]]).
-- VERIFY: revision advanced past `--0001064`, `provisioningState: Succeeded`, env var present, exactly one active healthy revision at traffic 100.
-- WEDGE RECOVERY: recover-at-point-of-failure via direct `az containerapp update` re-apply (OPENCLAW_IMAGE_TAG+SENTRY_RELEASE pattern), NOT rollback-then-retry.
-- ROLLBACK: `--remove-env-vars AZURE_DECRYPT_BROKER_CLIENT_ID` (harmless to leave — dark code no-ops on empty TenantDek lookup).
+**2. 4b env var — DONE.** `AZURE_DECRYPT_BROKER_CLIENT_ID=92660daf-e31d-458c-bcc3-7906938bca28`
+(broker **clientId**) set on `nbhd-django-westus2`. Revision `--0001066` is Healthy and the
+sole active revision at 100% traffic. Kept for posterity — rollback is
+`--remove-env-vars AZURE_DECRYPT_BROKER_CLIENT_ID` (harmless to leave; dark code no-ops on an
+empty TenantDek lookup); a wedge on the restart is recovered at the point of failure via a
+direct `az containerapp update` re-apply (OPENCLAW_IMAGE_TAG+SENTRY_RELEASE pattern), NOT
+rollback-then-retry.
 
-### 3. Broker gate (the real proof) — after keys exist + 4b restart
-Prewarm runs on gunicorn/poller start; with keys present + the env var set, it unwraps via the broker identity.
-```bash
-az monitor log-analytics query --workspace 035a49db-1da5-452d-8b32-b074d7a5d606 \
-  --analytics-query "ContainerAppConsoleLogs_CL | where ContainerAppName_s == 'nbhd-django-westus2' | where TimeGenerated > ago(15m) | where Log_s has 'DEK warm failed' or Log_s has 'Unwrapped DEK' | project TimeGenerated, Log_s" -o table
-```
-PASS = **zero** `DEK warm failed` warnings + ~fleet-size `Unwrapped DEK for tenant …` INFO lines. Proves the CONTAINER's `mi-nbhd-decrypt` identity unwraps through real RBAC (a laptop round-trip proves nothing — the operator holds no data-plane key role).
+**3. Broker gate — PASS.** On `--0001066`, Log Analytics showed 99 `Unwrapped DEK` INFO lines
+and 0 `DEK warm failed` warnings (3 gunicorn workers × 33 tenants). The draining `--0001065`
+logged 99 warm-fails (keys existed, env var did not) — expected fallback noise that died with
+that revision. Proves the container's `mi-nbhd-decrypt` identity unwraps through real RBAC
+(a laptop round-trip would prove nothing — the operator holds no data-plane key role).
 
-### 4. Restore fail-closed provisioning
-Revert the hotfix soft-fail in `apps/orchestrator/services.py` (the `try/except` around `mint_and_wrap_dek`) back to a raising call — safe once every tenant has a DEK. Remove the TODO.
+**4. Fail-closed provisioning — DONE (this PR).** The #1115 dark-window soft-fail around
+`mint_and_wrap_dek` in `apps/orchestrator/services.py` is reverted to a plain raising call and
+the `TODO(encryption Phase 2)` is removed: a provision-time mint failure now aborts
+provisioning (tenant resets to PENDING) instead of stranding a container-having, DEK-less
+tenant. Safe now that every tenant has a DEK.
 
 ---
 
