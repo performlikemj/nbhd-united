@@ -1,10 +1,17 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { APP_STORE_URL } from "@/components/app-store-badge";
 
 const SHARE_TEXT = "Join me on NBHD United — your AI-powered personal assistant.";
+
+// Hydration-safe mount detection for the portal target: false during
+// prerender/SSR (no document.body), true once on the client — without a
+// setState-in-effect (which triggers the react-hooks/set-state-in-effect lint).
+const subscribeNoop = () => () => {};
+const getClientSnapshot = () => true;
+const getServerSnapshot = () => false;
 
 /**
  * Info affordance on the transparency page that turns the "platform share" line
@@ -27,15 +34,11 @@ export function PlatformShareInfo({
 }) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const [mounted, setMounted] = useState(false);
+  const mounted = useSyncExternalStore(subscribeNoop, getClientSnapshot, getServerSnapshot);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const bodyId = useId();
-
-  // Portal target is only available after mount (static export has no document
-  // during prerender).
-  useEffect(() => setMounted(true), []);
 
   const close = useCallback(() => {
     setOpen(false);
