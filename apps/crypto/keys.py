@@ -55,9 +55,27 @@ def mint_and_wrap_dek(tenant: Tenant) -> TenantDek:
             logger.info("crypto: DEK recovered for tenant %s (KEK restored from grace window)", tenant.id)
             return existing
         # "absent": KEK purged/gone -> prior ciphertext is unrecoverable by
-        # design. Re-key from scratch at epoch 0.
+        # design. Re-key from scratch at epoch 0, and evict any DEK this process
+        # cached for the tenant so it can't keep sealing/reading under the dead
+        # key material once the fresh row is minted below.
+        #
+        # Residual (honest): this evicts only THIS process's cache. Other
+        # processes (the second gunicorn worker, the poller) are NOT signalled —
+        # a per-process cache has no cross-process invalidation. In practice the
+        # deprovision -> 7-day grace -> purge -> re-provision timeline spans
+        # gunicorn --max-requests recycles and deploys, so a sibling still
+        # holding the old (tenant, 0) DEK is not a realistic window today. Phase
+        # 5 live DEK rotation (a re-key WITHOUT a deprovision gap) will need a
+        # real cross-process eviction signal; this closes only the same-process
+        # window.
+        from apps.crypto import cache
+
         TenantDek.objects.filter(tenant=tenant).delete()
-        logger.info("crypto: DEK fresh-start for tenant %s (prior KEK purged; stale rows dropped)", tenant.id)
+        cache.evict_tenant(tenant.id)
+        logger.info(
+            "crypto: DEK fresh-start for tenant %s (prior KEK purged; stale rows dropped, cache evicted)",
+            tenant.id,
+        )
 
     return _mint_fresh_dek(tenant)
 

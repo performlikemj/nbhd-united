@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, TransactionTestCase
 
-from apps.crypto import cache
+from apps.crypto import box, cache
 from apps.crypto.keys import mint_and_wrap_dek
 from apps.orchestrator import azure_client
 from apps.tenants.models import Tenant, TenantDek, User
@@ -151,3 +151,105 @@ class ConcurrentColdMissTest(_ForceMockAzureMixin, TransactionTestCase):
         self.assertEqual(len(results), 8)
         self.assertTrue(all(r == results[0] for r in results))
         spy_unwrap.assert_called_once()
+
+
+class EvictTest(_ForceMockAzureMixin, TestCase):
+    """`evict`/`evict_tenant` drop cached DEKs for a DELIBERATE re-key only —
+    never as a side effect of a Key Vault failure."""
+
+    def tearDown(self):
+        cache._CACHE.clear()
+        azure_client._MOCK_KEK_REGISTRY.clear()
+        super().tearDown()
+
+    def test_evict_removes_the_cached_entry(self):
+        cache.prime("evict-one", 0, b"A" * 32)
+        self.assertIn(("evict-one", 0), cache._CACHE)
+
+        cache.evict("evict-one", 0)
+
+        self.assertNotIn(("evict-one", 0), cache._CACHE)
+
+    def test_evict_of_a_missing_entry_is_a_noop(self):
+        cache.evict("evict-never-cached", 7)  # must not raise
+        self.assertNotIn(("evict-never-cached", 7), cache._CACHE)
+
+    def test_evict_tenant_drops_all_epochs_for_that_tenant_only(self):
+        cache.prime("evict-multi", 0, b"A" * 32)
+        cache.prime("evict-multi", 1, b"B" * 32)
+        cache.prime("evict-other", 0, b"C" * 32)
+
+        cache.evict_tenant("evict-multi")
+
+        self.assertNotIn(("evict-multi", 0), cache._CACHE)
+        self.assertNotIn(("evict-multi", 1), cache._CACHE)
+        self.assertIn(("evict-other", 0), cache._CACHE)  # a different tenant is untouched
+
+    def test_kv_unwrap_failure_never_evicts_a_warm_entry(self):
+        """A broker failure resolving one tenant must not disturb another's
+        already-cached DEK — eviction is re-key-only, never an outage hook."""
+        warm = _create_tenant(suffix="warm")
+        mint_and_wrap_dek(warm)
+        warm_dek = cache.get_dek(warm.id, 0)  # populate the cache
+
+        cold = _create_tenant(suffix="cold-fail")
+        mint_and_wrap_dek(cold)
+
+        with (
+            patch(
+                "apps.crypto.cache.azure_client.unwrap_dek",
+                side_effect=RuntimeError("Key Vault down"),
+            ),
+            self.assertRaises(RuntimeError),
+        ):
+            cache.get_dek(cold.id, 0)
+
+        # `warm` is still served from cache, unchanged, with zero broker calls.
+        self.assertIn((str(warm.id), 0), cache._CACHE)
+        with patch("apps.crypto.cache.azure_client.unwrap_dek") as mock_unwrap:
+            still_warm = cache.get_dek(warm.id, 0)
+        mock_unwrap.assert_not_called()
+        self.assertEqual(still_warm, warm_dek)
+
+
+class FreshStartEvictsCacheTest(_ForceMockAzureMixin, TestCase):
+    """End-to-end: after a fresh-start re-key (purged KEK -> new epoch-0 DEK),
+    the re-keying process must seal new content under the NEW DEK — not the
+    stale one it had cached — so any other process can read it back."""
+
+    def tearDown(self):
+        cache._CACHE.clear()
+        azure_client._MOCK_KEK_REGISTRY.clear()
+        super().tearDown()
+
+    def test_fresh_start_evicts_stale_dek_so_new_ciphertext_round_trips(self):
+        tenant = _create_tenant(suffix="rekey")
+        mint_and_wrap_dek(tenant)
+
+        # Warm THIS process's cache with the OLD DEK by encrypting under it.
+        blob_old = box.encrypt(tenant.id, "appchatmessage", "user_text", "before re-key")
+        self.assertIn((str(tenant.id), 0), cache._CACHE)
+
+        # Deprovision + post-grace purge, then re-provision -> fresh-start branch.
+        azure_client.begin_delete_kek(tenant.id)
+        azure_client.purge_kek(tenant.id)
+        mint_and_wrap_dek(tenant)
+
+        # The stale DEK is gone from this process's cache (the fix).
+        self.assertNotIn((str(tenant.id), 0), cache._CACHE)
+
+        # New writes seal under the NEW DEK: encrypt, then decrypt from a COLD
+        # cache (standing in for any OTHER process) resolves the CURRENT row and
+        # reads it back cleanly. Without the evict, box.encrypt would seal under
+        # the stale cached DEK and this cold-cache read would fail closed.
+        blob_new = box.encrypt(tenant.id, "appchatmessage", "user_text", "after re-key")
+        cache._CACHE.clear()
+        self.assertEqual(
+            box.decrypt(tenant.id, "appchatmessage", "user_text", blob_new).reveal(),
+            "after re-key",
+        )
+
+        # The pre-re-key ciphertext is unrecoverable — crypto-shred by design.
+        cache._CACHE.clear()
+        with self.assertRaises(box.CryptoError):
+            box.decrypt(tenant.id, "appchatmessage", "user_text", blob_old)
