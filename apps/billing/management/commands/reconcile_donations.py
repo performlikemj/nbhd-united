@@ -1,12 +1,12 @@
 """Manually reconcile monthly donation disbursements.
 
 The ``snapshot-donations-monthly`` cron writes one PENDING ``DonationLedger`` row
-per paying subscriber for the just-closed month (see
-``apps.billing.donation_service``). Disbursement is manual (MVP): donate the
-listed total to the food initiative out of band, then run this command with the
-receipt to flip those rows PENDING → COMPLETED so the ledger becomes an auditable
-record of money actually sent. This command only RECORDS the disbursement — it
-never moves money.
+per revenue-generating tenant (paying subscribers and credit top-up buyers) for
+the just-closed month (see ``apps.billing.donation_service``). Disbursement is
+manual (MVP): donate the listed total to the food initiative out of band, then
+run this command with the receipt to flip those rows PENDING → COMPLETED so the
+ledger becomes an auditable record of money actually sent. This command only
+RECORDS the disbursement — it never moves money.
 
 Usage:
     python manage.py reconcile_donations                          # list pending for the last closed month
@@ -79,7 +79,7 @@ class Command(BaseCommand):
             return
 
         total = sum((r.donation_amount for r in rows), Decimal("0"))
-        self.stdout.write(f"Pending donations for {month:%Y-%m} ({len(rows)} subscriber(s)):")
+        self.stdout.write(f"Pending donations for {month:%Y-%m} ({len(rows)} tenant(s)):")
         for r in rows:
             self.stdout.write(
                 f"  {r.tenant_id}  ${r.donation_amount}  (revenue base ${r.surplus_amount}, {r.donation_percentage}%)"

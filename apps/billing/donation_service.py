@@ -205,26 +205,43 @@ def _month_topup_revenue(tenant, month_first: date) -> Decimal:
                 .first()
             )
 
-        grant_revenue = None
-        if matching_grant and matching_grant.amount and matching_grant.amount > 0:
-            grant_revenue = _grant_revenue(matching_grant)
-        if grant_revenue is not None:
-            frac = max(Decimal("0"), min(Decimal("1"), refunded_credit / matching_grant.amount))
-            revenue -= frac * grant_revenue
+        if matching_grant is None:
+            # No grant to match against at all — the raw credit-dollar
+            # clawback is the only signal we have. This under-subtracts
+            # (credit dollars < revenue dollars, by the pack margin), which
+            # errs toward donating slightly MORE than truly collected — never
+            # less.
+            logger.warning(
+                "Donation snapshot: refund clawback %s (tenant %s) has no resolvable "
+                "matching grant revenue — netting the raw credit-dollar clawback "
+                "instead (under-subtracts by the pack margin).",
+                reversal.id,
+                tenant.id,
+            )
+            revenue -= refunded_credit
             continue
 
-        # No matching grant, or its revenue couldn't be resolved: net the raw
-        # credit-dollar clawback directly. This under-subtracts (credit
-        # dollars < revenue dollars, by the pack margin), which errs toward
-        # donating slightly more than truly collected — never less.
-        logger.warning(
-            "Donation snapshot: refund clawback %s (tenant %s) has no resolvable "
-            "matching grant revenue — netting the raw credit-dollar clawback "
-            "instead (under-subtracts by the pack margin).",
-            reversal.id,
-            tenant.id,
-        )
-        revenue -= refunded_credit
+        grant_revenue = None
+        if matching_grant.amount and matching_grant.amount > 0:
+            grant_revenue = _grant_revenue(matching_grant)
+        if grant_revenue is None:
+            # A matching grant EXISTS but its revenue is unresolvable, which
+            # means it contributed $0 to the base above — subtracting the raw
+            # clawback here would take money away from OTHER grants' revenue,
+            # the one donate-LESS path. Skip this reversal instead: the
+            # grant/reversal pair then nets $0 on both sides, symmetric.
+            logger.warning(
+                "Donation snapshot: refund clawback %s (tenant %s) matches grant "
+                "%s whose revenue is unresolvable — skipping this reversal so the "
+                "pair nets $0 on both sides instead of subtracting from others.",
+                reversal.id,
+                tenant.id,
+                matching_grant.id,
+            )
+            continue
+
+        frac = max(Decimal("0"), min(Decimal("1"), refunded_credit / matching_grant.amount))
+        revenue -= frac * grant_revenue
 
     result = revenue.quantize(Decimal("0.0001"))
     if result < 0:
@@ -251,11 +268,15 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
     the counted base, and when the tenant also has no top-up activity that
     month its row still records the raw unverified numbers as SKIPPED with a
     warning — exactly the behavior before top-ups existed. Budget-exempt
-    tenants are skipped entirely (debug-logged). Below-threshold donations are
-    recorded ``SKIPPED``. Because ``update_or_create`` is idempotent, re-running
-    the snapshot after Stripe recovers upgrades a previously
-    ``SKIPPED``-for-unverified row to ``PENDING``; ``completed`` rows are still
-    never rewritten.
+    tenants are skipped entirely (counted + info-logged). Below-threshold
+    donations are recorded ``SKIPPED``. Because ``update_or_create`` is
+    idempotent, re-running the snapshot after Stripe recovers upgrades a
+    previously ``SKIPPED``-for-unverified row to ``PENDING``; ``completed``
+    rows are still never rewritten — and neither is an already-``PENDING`` row
+    ever rewritten DOWNWARD: a closed month's real revenue never decreases, so
+    a lower recompute (e.g. a Stripe outage after a prior verified run) is a
+    verification regression, not new truth, and the existing row is left
+    untouched with a loud warning instead.
 
     ``month_first`` defaults to the first day of the previous month. Returns a
     summary dict for cron logging.
@@ -267,7 +288,7 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
     if month_first is None:
         month_first = _closed_month_first(timezone.now().date())
 
-    pending = skipped = completed_seen = 0
+    pending = skipped = completed_seen = exempt = 0
     total_pending = Decimal("0")
 
     window_start, window_end = _month_window(month_first)
@@ -295,7 +316,8 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
 
     for tenant in candidates:
         if tenant.is_budget_exempt:
-            logger.debug("Donation snapshot: skipping budget-exempt tenant %s", tenant.id)
+            exempt += 1
+            logger.info("Donation snapshot: skipping budget-exempt tenant %s", tenant.id)
             continue
 
         existing = DonationLedger.objects.filter(tenant=tenant, month=month_first).first()
@@ -344,6 +366,25 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
                 else DonationLedger.Status.SKIPPED
             )
 
+        if existing and existing.status == DonationLedger.Status.PENDING and revenue_base < existing.surplus_amount:
+            # A closed month's true revenue never decreases — a lower
+            # recompute against an already-verified PENDING row is a
+            # verification regression (e.g. a Stripe price-cache outage
+            # after a verified run), never new truth. Keep the existing row
+            # untouched rather than quietly rewriting it downward.
+            logger.warning(
+                "Donation snapshot: recomputed revenue_base ($%s) for tenant %s in %s "
+                "is LOWER than the existing PENDING row's surplus_amount ($%s) — "
+                "keeping the existing verified row untouched.",
+                revenue_base,
+                tenant.id,
+                month_first.isoformat(),
+                existing.surplus_amount,
+            )
+            pending += 1
+            total_pending += existing.donation_amount
+            continue
+
         DonationLedger.objects.update_or_create(
             tenant=tenant,
             month=month_first,
@@ -365,12 +406,13 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
             skipped += 1
 
     logger.info(
-        "Donation ledger for %s: %d pending ($%s), %d skipped, %d already completed",
+        "Donation ledger for %s: %d pending ($%s), %d skipped, %d already completed, %d exempt",
         month_first.isoformat(),
         pending,
         total_pending.quantize(Decimal("0.01")),
         skipped,
         completed_seen,
+        exempt,
     )
     return {
         "month": month_first.isoformat(),
@@ -378,4 +420,5 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
         "pending_total": float(total_pending),
         "skipped": skipped,
         "already_completed": completed_seen,
+        "exempt": exempt,
     }
