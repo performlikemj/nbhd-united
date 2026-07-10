@@ -14,6 +14,7 @@ from .unsubscribe_views import unsubscribe
 from .views import (
     AvailableModelsView,
     CancelDeletionView,
+    ConstellationSettingsView,
     DeleteAccountView,
     EntityRegistryBulkDeleteView,
     EntityRegistryItemView,
@@ -114,6 +115,9 @@ urlpatterns = [
     path("settings/preferred-model/", PreferredModelView.as_view(), name="preferred-model"),
     path("settings/task-model-preferences/", TaskModelPreferencesView.as_view(), name="task-model-preferences"),
     path("settings/available-models/", AvailableModelsView.as_view(), name="available-models"),
+    # Constellation is a pure client-side visualization — no assistant plugin,
+    # no config bump, no restart. See ConstellationSettingsView.
+    path("settings/constellation/", ConstellationSettingsView.as_view(), name="constellation-settings"),
     # Internal runtime endpoint for the agent to acknowledge welcome delivery.
     path(
         "runtime/<uuid:tenant_id>/welcomes/<str:feature>/",

@@ -319,13 +319,25 @@ def get_shared_lesson_for_lesson(lesson) -> SharedLesson | None:
 
 def get_shared_lesson_by_lesson_id(lesson_id, owner_tenant) -> SharedLesson | None:
     """The owner's SharedLesson for a lesson id — owner-scoped, so a foreign
-    lesson_id resolves to None (never a cross-tenant read)."""
+    lesson_id resolves to None (never a cross-tenant read).
+
+    Read under the service context. This is the OWNER reading their OWN frozen
+    snapshot, and the explicit ``owner_tenant_id`` filter below is the real
+    security boundary. Leaving this read to depend on the per-connection
+    ``app.tenant_id`` RLS GUC made the owner's own row fail-close to ``None``
+    whenever that GUC was momentarily unset on a pooled / reconnected connection
+    (e.g. one the scrub task had just borrowed under its own
+    ``backstop_service_context``) — surfacing as a spurious 404 on
+    ``shares/preview`` mid-scrub while the row was present the whole time. The
+    service role removes that fragility without widening exposure: the owner
+    filter still scopes the result to the caller's own snapshot."""
     try:
-        return (
-            SharedLesson.objects.filter(source_lesson_id=lesson_id, owner_tenant_id=_tenant_id(owner_tenant))
-            .select_related("source_lesson")
-            .first()
-        )
+        with backstop_service_context():
+            return (
+                SharedLesson.objects.filter(source_lesson_id=lesson_id, owner_tenant_id=_tenant_id(owner_tenant))
+                .select_related("source_lesson")
+                .first()
+            )
     except (ValueError, ValidationError):
         return None
 

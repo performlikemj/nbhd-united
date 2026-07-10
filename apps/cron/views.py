@@ -110,6 +110,23 @@ TASK_MAP = {
     "update_tenant_config": "apps.orchestrator.tasks.update_tenant_config_task",
     "seed_cron_jobs": "apps.orchestrator.tasks.seed_cron_jobs_task",
     "repair_stale_tenant_provisioning": "apps.orchestrator.tasks.repair_stale_tenant_provisioning_task",
+    # Encryption-at-rest Phase 1 activation (2026-07) — one-off operator fire that
+    # runs the DEK backfill INSIDE the running container (which holds prod DB
+    # access + the provisioner managed identity), so no secret leaves Azure and
+    # no new auth surface is added. Fired via a no-body QStash publish to
+    # /api/cron/trigger/<name>/ — hence the zero-arg pair (the publish path we
+    # use can't carry a body). Safe to leave registered: the backfill is
+    # idempotent, so once every tenant has a DEK a re-fire is a no-op.
+    "backfill_tenant_deks": "apps.orchestrator.tasks.backfill_tenant_deks_task",
+    "backfill_tenant_deks_dry_run": "apps.orchestrator.tasks.backfill_tenant_deks_dry_run_task",
+    # Encryption-at-rest Phase 1->2 bridge smoke. Operator-fired via a no-body
+    # QStash publish to /api/cron/trigger/crypto_roundtrip_smoke/. Proves the
+    # full box path — envelope codec + AAD + per-process DEK cache + broker
+    # unwrap — end-to-end on a real DEK (the broker gate proved unwrap only).
+    # Pure in-memory round-trip on ONE keyed tenant with a throwaway sentinel:
+    # no DB writes, no user data. Raises on failure so QStash DLQs it; safe to
+    # re-fire anytime.
+    "crypto_roundtrip_smoke": "apps.orchestrator.tasks.crypto_roundtrip_smoke_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.
@@ -289,9 +306,14 @@ def trigger_task(request, task_name):
         return JsonResponse({"error": "Invalid signature"}, status=401)
 
     # Signature verified — set RLS service role so tasks can access all tenants
+    from apps.crypto import audit
     from apps.tenants.middleware import set_rls_context
 
     set_rls_context(service_role=True)
+    # Attribute any decrypt done by a QStash-dispatched task to system_cron
+    # (silent). These are the service running scheduled/on-demand work, not a
+    # human read. runtime_views deliberately stay on the ambient "system".
+    audit.set_principal("system_cron")
 
     if task_name not in TASK_MAP:
         logger.warning("Unknown task requested: %s", task_name)

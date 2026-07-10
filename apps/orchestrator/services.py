@@ -22,6 +22,7 @@ from .azure_client import (
     _is_mock,
     assign_acr_pull_role,
     assign_key_vault_role,
+    begin_delete_kek,
     create_container_app,
     create_managed_identity,
     create_tenant_file_share,
@@ -263,6 +264,36 @@ def provision_tenant(tenant_id: str) -> None:
             )
         tenant.internal_api_key = internal_api_key_plain
         tenant.save(update_fields=["internal_api_key", "updated_at"])
+
+        # 2a3. (Encryption-at-rest Phase 1 PR5) Mint the tenant's Data
+        # Encryption Key (DEK), wrapped under a freshly-created per-tenant
+        # Key Encryption Key (KEK) in the KEK vault. It must equally NEVER
+        # be threaded into the container spec/env — OpenClaw never sees
+        # key material; only the control plane (and, later, the
+        # decrypt-broker identity) ever touches a DEK. That is the T3
+        # guarantee. Local import: apps.crypto is a new cross-app
+        # dependency services.py otherwise has no reason to import at
+        # module scope, and this codebase's tests patch local imports at
+        # their defining module (apps.crypto.keys.mint_and_wrap_dek),
+        # mirroring the OpenRouter sub-key block below.
+        #
+        # FAIL-CLOSED (restored 2026-07-11): the KEK vault (kv-nbhd-keks) and
+        # the provisioner/broker RBAC roles are live in Azure, and the 2026-07
+        # in-container backfill (`backfill_tenant_deks`) has minted a DEK for
+        # every pre-existing tenant. A mint failure here is now a real error,
+        # not a tolerable dark-window gap: a tenant that gets a container but no
+        # `TenantDek` row could never encrypt anything, so provisioning MUST
+        # abort and surface the failure rather than strand a half-provisioned,
+        # un-encryptable tenant. `mint_and_wrap_dek` is re-entrant: for an
+        # already-keyed tenant it verifies the KEK is still live (reusing the
+        # row), recovers it if soft-deleted in-grace, or fresh-starts if it was
+        # purged — so letting it raise is also safe under provision re-runs /
+        # QStash retries (including a cancelled subscriber's re-provision). Let
+        # it raise.
+        _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="mint_tenant_dek")
+        from apps.crypto.keys import mint_and_wrap_dek
+
+        mint_and_wrap_dek(tenant)
 
         # 2a2. (PR #1.6) Per-tenant OpenRouter sub-key. When the feature
         # flag is on AND the management key is configured, create a
@@ -930,6 +961,26 @@ def deprovision_tenant(tenant_id: str) -> None:
 
         # 2. Delete managed identity
         delete_managed_identity(str(tenant.id))
+
+        # 2c. (Encryption-at-rest Phase 1 PR5) Soft-delete the tenant's KEK.
+        # This is a SOFT delete only — the key enters Key Vault's 7-day
+        # recovery window; it is never purged here (purge is break-glass
+        # only, gated on a role with no standing assignment — see
+        # azure_client.purge_kek and Phase 5). A KEK-delete failure must
+        # NEVER block the rest of deprovision: by this point the container,
+        # file share, and managed identity are already gone/going, and an
+        # un-deleted KEK is harmless (it just sits in the vault under a
+        # tenant id nothing points to anymore) versus a tenant stuck in
+        # SUSPENDED because Key Vault hiccuped. Own log-and-continue
+        # try/except, deliberately NOT riding the outer try/except.
+        try:
+            begin_delete_kek(str(tenant.id))
+        except Exception:
+            logger.warning(
+                "KEK soft-delete failed for tenant %s; recoverable in Key Vault, retry manually",
+                tenant_id,
+                exc_info=True,
+            )
 
         # 3. Update tenant
         tenant.status = Tenant.Status.DELETED

@@ -161,6 +161,118 @@ class ScrubFailClosedTest(TestCase):
         self.assertEqual(self.sl.scrub_status, "ready")
 
 
+class Belt2PrecisionTest(TestCase):
+    """Belt-2 must judge the scrubbed output with the SAME deliberate-skip
+    semantics the redaction pass applied — never fail-close on policy residue,
+    never pass a real leak.
+
+    Pins the prod lesson-899 failure (canary, 2026-07-10): the raw pipeline
+    flagged sub-word FRAGMENTS of a tenant-denylisted brand name plus the
+    owner's own display name as PERSON (≥0.7) in a *correctly* scrubbed
+    output, so every scrub attempt fail-closed and the share was unshareable
+    by design contradiction. Synthetic equivalents of the same shape — the raw
+    text stays out of fixtures."""
+
+    def setUp(self):
+        self.owner = _tenant("belt_owner")
+        self.owner.user.display_name = "Mika"
+        self.owner.user.save(update_fields=["display_name"])
+        self.owner.pii_denylist = {"braveno": {"reason": "brand, not a person"}}
+        self.owner.save(update_fields=["pii_denylist"])
+
+    def test_denylisted_brand_fragments_do_not_fail_close(self):
+        # The lesson-899 shape: the raw pipe reports sub-word fragments of a
+        # coined brand ("B", "ave") — snapping recovers "Braveno", which the
+        # tenant explicitly denylisted as not-PII. Policy residue, not a leak.
+        out = "Carving out time for project work (Braveno, NBHD) keeps momentum alive."
+        i = out.index("Braveno")
+
+        def pipe(text):
+            if text != out:
+                return []
+            return [
+                {"entity_group": "FIRSTNAME", "score": 0.86, "start": i, "end": i + 1},
+                {"entity_group": "FIRSTNAME", "score": 0.85, "start": i + 2, "end": i + 5},
+            ]
+
+        scrub._assert_output_clean(pipe, [out], owner_tenant=self.owner)  # must not raise
+
+    def test_owner_display_name_does_not_fail_close(self):
+        # The share publishes AS the owner, name attached — their own name in
+        # the text adds zero identity information (mirrors _redact allow_names).
+        out = "Mika worked on the project between family pickups."
+
+        def pipe(text):
+            return [{"entity_group": "FIRSTNAME", "score": 0.97, "start": 0, "end": 4}] if text == out else []
+
+        scrub._assert_output_clean(pipe, [out], owner_tenant=self.owner)  # must not raise
+
+    def test_real_name_still_fails_closed(self):
+        # THE NON-NEGOTIABLE: a real leaked name (redaction degraded) matches
+        # no excuse and still fail-closes.
+        out = "Talked with Sarah about batch-cooking."
+        i = out.index("Sarah")
+
+        def pipe(text):
+            return [{"entity_group": "FIRSTNAME", "score": 0.99, "start": i, "end": i + 5}] if text == out else []
+
+        with self.assertRaises(scrub.NerUnavailable):
+            scrub._assert_output_clean(pipe, [out], owner_tenant=self.owner)
+
+    def test_real_name_fragment_snaps_and_still_fails_closed(self):
+        # A FRAGMENT of a real name can't slip through the snapping path: it
+        # expands to the full word, which matches no excuse.
+        out = "Talked with Sarah about batch-cooking."
+        i = out.index("Sarah")
+
+        def pipe(text):
+            return [{"entity_group": "FIRSTNAME", "score": 0.99, "start": i + 1, "end": i + 4}] if text == out else []
+
+        with self.assertRaises(scrub.NerUnavailable):
+            scrub._assert_output_clean(pipe, [out], owner_tenant=self.owner)
+
+    def test_no_owner_stays_strict(self):
+        # owner_tenant=None applies no owner-specific excuse — strictly MORE
+        # fail-closed than the owner-aware call, never less.
+        out = "Project work (Braveno) continues."
+        i = out.index("Braveno")
+
+        def pipe(text):
+            return [{"entity_group": "FIRSTNAME", "score": 0.86, "start": i + 2, "end": i + 5}] if text == out else []
+
+        with self.assertRaises(scrub.NerUnavailable):
+            scrub._assert_output_clean(pipe, [out])
+
+    def test_scrub_ends_ready_on_lesson_899_shape(self):
+        # End-to-end: the synthetic 899 shape (denylisted brand + owner's own
+        # name + a dangling [PERSON_N] placeholder) scrubs to READY, and the
+        # placeholder is neutralized — never published raw.
+        lesson = _lesson(
+            self.owner,
+            "Even with family pickup and errands, project work (Braveno, NBHD) keeps momentum alive.",
+            context="Mika worked on Braveno and NBHD between pickups with [PERSON_61] at work",
+        )
+        sl = access.ensure_shared_lesson(lesson, self.owner)
+
+        def fragment_pipe(text):
+            hits = []
+            for token in ("Braveno", "Mika"):
+                j = text.find(token)
+                if j >= 0:
+                    hits.append({"entity_group": "FIRSTNAME", "score": 0.9, "start": j + 1, "end": j + 3})
+            return hits
+
+        with (
+            mock.patch("apps.friends.scrub._assert_ner_available", return_value=fragment_pipe),
+            mock.patch("apps.friends.scrub._redact_identities", side_effect=lambda owner, text: text),
+        ):
+            result = scrub.scrub_shared_lesson(str(sl.id))
+        self.assertTrue(result["ok"], result)
+        sl.refresh_from_db()
+        self.assertEqual(sl.scrub_status, "ready")
+        self.assertNotIn("[PERSON_61]", sl.redacted_context)
+
+
 # ── Share intent → PendingShare + snapshot (no grant yet) ─────────────────────
 
 
@@ -392,3 +504,60 @@ class ShareHttpTest(TestCase):
         resp = _client(self.a.user).delete(f"/api/v1/lessons/{self.lesson.id}/share/{grant.id}/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(access.shared_star_qs(self.b, self.a).count(), 0)
+
+
+class SharePreviewContract404Test(TestCase):
+    """The exact contract the iOS in-app 'Share a spark' flow depends on
+    (NeighborProfileSheet → LessonPickerSheet → SharePreviewSheet): the preview
+    GET the client polls must never 404 while a share is genuinely in progress.
+
+    Regression for the prod 404 on 2026-07-10 (canary tenant 148ccf1c sharing
+    lesson 899 to the accepted MJ↔Kiho edge): the owner's own SharedLesson read
+    fail-closed to ``None`` under a transient RLS ``app.tenant_id`` GUC flicker on
+    a pooled connection and surfaced as "No share in progress" (404) mid-scrub,
+    dead-ending the trust surface. CI runs as a BYPASSRLS role, so these lock the
+    *contract* (never 404 while a pending share exists) and the service-context
+    read path — not the live-RLS behaviour itself."""
+
+    def setUp(self):
+        self.owner = _tenant("preview_owner")
+        self.other = _tenant("preview_other")
+        self.edge = _accepted_edge(self.owner, self.other)
+        self.lesson = _lesson(self.owner)
+
+    def _preview_url(self) -> str:
+        # The literal path + query params NeighborhoodViewModel.previewShare builds.
+        return f"/api/v1/friends/shares/preview/?lesson_id={self.lesson.id}&friendship_id={self.edge.id}"
+
+    def test_preview_in_progress_is_202_not_404(self):
+        # Share started, snapshot still PENDING (scrub not run) → keep polling (202).
+        with mock.patch("apps.friends.services._enqueue_scrub"):
+            services.share_lesson(self.owner, self.owner.user, self.lesson, str(self.edge.id))
+        resp = _client(self.owner.user).get(self._preview_url())
+        self.assertEqual(resp.status_code, 202, resp.content)
+
+    def test_preview_404_only_when_no_share_started(self):
+        # No share started at all → a genuine 404 is correct.
+        resp = _client(self.owner.user).get(self._preview_url())
+        self.assertEqual(resp.status_code, 404, resp.content)
+
+    def test_preview_survives_unreadable_snapshot_while_pending_exists(self):
+        # Reproduces the prod symptom in the BYPASSRLS test role: the snapshot read
+        # comes back empty (here the row is simply absent) while a PendingShare
+        # exists → the owner must keep polling (202), never dead-end on a 404.
+        with mock.patch("apps.friends.services._enqueue_scrub"):
+            services.share_lesson(self.owner, self.owner.user, self.lesson, str(self.edge.id))
+        SharedLesson.objects.filter(source_lesson_id=self.lesson.id, owner_tenant=self.owner).delete()
+        _payload, code = services.preview_share(self.owner, str(self.lesson.id), friendship_id=str(self.edge.id))
+        self.assertEqual(code, 202)
+
+    def test_owner_snapshot_read_uses_service_context(self):
+        # (A) The owner reads their OWN snapshot under backstop_service_context so a
+        # momentarily-unset app.tenant_id GUC cannot hide it. Guards against a
+        # revert to a GUC-dependent read of shared_lessons.
+        with mock.patch("apps.friends.services._enqueue_scrub"):
+            services.share_lesson(self.owner, self.owner.user, self.lesson, str(self.edge.id))
+        with mock.patch("apps.friends.access.backstop_service_context", wraps=access.backstop_service_context) as spy:
+            snap = access.get_shared_lesson_by_lesson_id(str(self.lesson.id), self.owner)
+        self.assertTrue(spy.called)
+        self.assertIsNotNone(snap)

@@ -45,6 +45,39 @@ def _get_provisioner_credential():
     return _provisioner_credential
 
 
+_decrypt_broker_credential = None
+
+
+def _get_decrypt_broker_credential():
+    """Get credential for the decrypt-broker identity (unwrap-only).
+
+    Deliberately a SEPARATE cached identity from `_get_provisioner_credential`.
+    The provisioner's Azure RBAC role (`nbhd-kek-provisioner`) can create,
+    wrap, rotate, and soft-delete KEKs but is never granted `keys/unwrap/
+    action`; only the broker's role (`nbhd-kek-decrypt-broker`) can unwrap.
+    A compromised provisioner token can therefore mint or destroy keys but
+    can never read plaintext DEKs — that split is the whole point (T3
+    guarantee, encryption-at-rest directive). `unwrap_dek` is the only
+    caller; every other KEK operation uses `_get_provisioner_credential`.
+
+    In production, uses the dedicated `mi-nbhd-decrypt` managed identity via
+    `AZURE_DECRYPT_BROKER_CLIENT_ID`. In local dev, falls back to
+    DefaultAzureCredential (Azure CLI login) — same fallback shape as the
+    provisioner, but cached in its own module-level global so the two are
+    always distinct objects even when both fall back.
+    """
+    global _decrypt_broker_credential
+    if _decrypt_broker_credential is None:
+        from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+
+        client_id = str(getattr(settings, "AZURE_DECRYPT_BROKER_CLIENT_ID", "") or "").strip()
+        if client_id:
+            _decrypt_broker_credential = ManagedIdentityCredential(client_id=client_id)
+        else:
+            _decrypt_broker_credential = DefaultAzureCredential()
+    return _decrypt_broker_credential
+
+
 def get_container_client():
     """Get Azure Container Apps API client (cached per process)."""
     if _is_mock():
@@ -323,6 +356,310 @@ def read_key_vault_secret(secret_name: str) -> str | None:
     except Exception as exc:
         logger.warning("Failed to read KV secret %s: %s", secret_name, exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Encryption-at-rest (Phase 1, dark): tenant KEK lifecycle.
+#
+# Lives in a SEPARATE vault (AZURE_KEY_VAULT_NAME) from the platform's
+# operational secrets (AZURE_KEY_VAULT_NAME) — AZURE_KEK_VAULT_NAME. Every
+# tenant gets one RSA-3072 key named ``kek-<tenant_id>`` (the tenant's own
+# UUID makes the name deterministic — no separate name↔tenant mapping needs
+# to be persisted by this module; PR2's ``tenant_deks`` table is the actual
+# system of record for wrapped DEKs + kek_version).
+#
+# Credential split is load-bearing: every operation here except `unwrap_dek`
+# uses `_get_provisioner_credential()` (create/wrap/rotate/delete — never
+# unwrap). Only `unwrap_dek` uses `_get_decrypt_broker_credential()`. This
+# means a compromised provisioner token can mint or destroy tenant keys but
+# can never read a plaintext DEK (T3 guarantee).
+# ---------------------------------------------------------------------------
+
+# Stateful mock KEK registry (AZURE_MOCK=true only) — real Key Vault is never
+# touched when mocked. Deliberately STATEFUL (not a deterministic derivation
+# from tenant_id) so tests can prove the T4 shred invariant end-to-end:
+# create -> wrap/unwrap round-trip -> begin_delete (soft delete, STILL
+# unwrappable — Key Vault's own recovery window) -> purge (irreversibly
+# removed) -> unwrap raises. A deterministic mock has no state to destroy and
+# cannot exercise that path at all.
+#
+# Shape: {tenant_id: {"key": bytes, "kek_version": str, "deleted": bool}}
+_MOCK_KEK_REGISTRY: dict[str, dict[str, Any]] = {}
+
+
+def _mock_kek_xor(data: bytes, key: bytes) -> bytes:
+    """Reversible XOR standing in for RSA wrap/unwrap in mock mode.
+
+    XOR is its own inverse, so `wrap_dek`/`unwrap_dek` can share this one
+    helper and round-trip without touching real Key Vault. `key` is the
+    tenant's mock KEK material from `_MOCK_KEK_REGISTRY`; repeating it over
+    `data` keeps this correct even if a future caller wraps something longer
+    than the key (Phase 1 DEKs are a fixed 32 bytes, so no repeat is
+    actually exercised today).
+    """
+    if not key:
+        return data
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+
+def create_tenant_kek(tenant_id: str) -> str:
+    """Create a tenant's RSA-3072 Key Encryption Key in the KEK vault.
+
+    Returns the kek_version. Uses the provisioner credential — creating a
+    key is a management operation, not a decrypt, so the provisioner (which
+    can never unwrap) is the right identity.
+    """
+    tid = str(tenant_id)
+
+    if _is_mock():
+        kek_version = "mock-v1"
+        _MOCK_KEK_REGISTRY[tid] = {"key": os.urandom(32), "kek_version": kek_version, "deleted": False}
+        logger.info("[MOCK] Created tenant KEK for tenant %s (version=%s)", tid, kek_version)
+        return kek_version
+
+    from azure.keyvault.keys import KeyClient
+
+    vault_name = str(getattr(settings, "AZURE_KEK_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEK_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    key_name = f"kek-{tid}"
+    client = KeyClient(vault_url=vault_url, credential=_get_provisioner_credential())
+    created = client.create_rsa_key(key_name, size=3072)
+    kek_version = created.properties.version
+    logger.info("Created tenant KEK %s for tenant %s (version=%s)", key_name, tid, kek_version)
+    return kek_version
+
+
+def wrap_dek(tenant_id: str, dek: bytes) -> tuple[bytes, str]:
+    """Wrap a plaintext DEK under the tenant's KEK (RSA-OAEP-256).
+
+    Returns (wrapped_bytes, kek_version). Provisioner credential — wrap is
+    a one-way operation the provisioner is allowed to perform; only unwrap
+    is broker-only.
+    """
+    tid = str(tenant_id)
+
+    if _is_mock():
+        entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None:
+            raise LookupError(f"No KEK minted for tenant {tid} — call create_tenant_kek first")
+        wrapped = _mock_kek_xor(dek, entry["key"])
+        logger.info("[MOCK] Wrapped DEK for tenant %s (version=%s)", tid, entry["kek_version"])
+        return wrapped, entry["kek_version"]
+
+    from azure.keyvault.keys import KeyClient
+    from azure.keyvault.keys.crypto import KeyWrapAlgorithm
+
+    vault_name = str(getattr(settings, "AZURE_KEK_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEK_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    key_name = f"kek-{tid}"
+    client = KeyClient(vault_url=vault_url, credential=_get_provisioner_credential())
+    crypto_client = client.get_cryptography_client(key_name)
+    result = crypto_client.wrap_key(KeyWrapAlgorithm.rsa_oaep_256, dek)
+    kek_version = result.key_id.rsplit("/", 1)[-1] if result.key_id else ""
+    logger.info("Wrapped DEK for tenant %s (version=%s)", tid, kek_version)
+    return result.encrypted_key, kek_version
+
+
+def unwrap_dek(tenant_id: str, wrapped: bytes) -> bytes:
+    """Unwrap a tenant's DEK — the ONE operation gated on the decrypt-broker
+    identity, never the provisioner.
+
+    Phase 1 has no KEK rotation yet, so this always targets the key's
+    current/latest version (no explicit kek_version routing). Multi-version
+    routing lands with Phase 5 rotation.
+
+    Raises if the tenant's KEK was purged (or never minted) — fail-closed,
+    never returns garbage.
+    """
+    tid = str(tenant_id)
+
+    if _is_mock():
+        entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None:
+            raise LookupError(f"Cannot unwrap DEK for tenant {tid} — KEK was purged or never minted")
+        if entry.get("deleted"):
+            # Real Key Vault disables crypto operations the instant a key is
+            # soft-deleted: the recovery window keeps the key RECOVERABLE, not
+            # usable. Unwrap only works again after `recover_kek`.
+            raise LookupError(f"Cannot unwrap DEK for tenant {tid} — KEK is soft-deleted (recover it first)")
+        unwrapped = _mock_kek_xor(wrapped, entry["key"])
+        logger.info("[MOCK] Unwrapped DEK for tenant %s", tid)
+        return unwrapped
+
+    from azure.keyvault.keys import KeyClient
+    from azure.keyvault.keys.crypto import KeyWrapAlgorithm
+
+    vault_name = str(getattr(settings, "AZURE_KEK_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEK_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    key_name = f"kek-{tid}"
+    client = KeyClient(vault_url=vault_url, credential=_get_decrypt_broker_credential())
+    crypto_client = client.get_cryptography_client(key_name)
+    result = crypto_client.unwrap_key(KeyWrapAlgorithm.rsa_oaep_256, wrapped)
+    logger.info("Unwrapped DEK for tenant %s", tid)
+    return result.key
+
+
+def begin_delete_kek(tenant_id: str) -> None:
+    """Soft-delete a tenant's KEK (provisioner credential).
+
+    The key enters Key Vault's recovery window (soft-delete ON, 7 days per
+    the az-CLI pre-work): the key material stays RECOVERABLE (`recover_kek`)
+    until `purge_kek` is called, but crypto operations are disabled the moment
+    it's deleted — a soft-deleted key can neither wrap nor unwrap. Mock: marks
+    the registry entry deleted (so `unwrap_dek` now raises) while keeping the
+    material so `recover_kek` can restore it — mirroring real Key Vault, where
+    the grace window preserves recoverability, not usability.
+    """
+    tid = str(tenant_id)
+
+    if _is_mock():
+        entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is not None:
+            entry["deleted"] = True
+        logger.info("[MOCK] Soft-deleted tenant KEK for tenant %s", tid)
+        return
+
+    from azure.keyvault.keys import KeyClient
+
+    vault_name = str(getattr(settings, "AZURE_KEK_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEK_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    key_name = f"kek-{tid}"
+    client = KeyClient(vault_url=vault_url, credential=_get_provisioner_credential())
+    client.begin_delete_key(key_name).result()
+    logger.info("Soft-deleted tenant KEK %s for tenant %s (recovery window open)", key_name, tid)
+
+
+def recover_kek(tenant_id: str) -> None:
+    """Recover a soft-deleted KEK back to enabled state (provisioner credential).
+
+    The grace-window resurrection path: a tenant deprovisioned and then
+    re-provisioned inside Key Vault's 7-day recovery window gets the SAME KEK
+    back, so its existing wrapped DEK — and any ciphertext already under it —
+    stays decryptable. Only reachable while the key is soft-deleted-not-purged;
+    recovering an absent/purged key raises.
+
+    Needs the `keys/recover/action` dataAction on the provisioner role, in
+    addition to the create/rotate/delete/wrap it already holds.
+    """
+    tid = str(tenant_id)
+
+    if _is_mock():
+        entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None:
+            raise LookupError(f"Cannot recover KEK for tenant {tid} — already purged or never minted")
+        entry["deleted"] = False
+        logger.info("[MOCK] Recovered tenant KEK for tenant %s", tid)
+        return
+
+    from azure.keyvault.keys import KeyClient
+
+    vault_name = str(getattr(settings, "AZURE_KEK_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEK_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    key_name = f"kek-{tid}"
+    client = KeyClient(vault_url=vault_url, credential=_get_provisioner_credential())
+    client.begin_recover_deleted_key(key_name).result()
+    logger.info("Recovered tenant KEK %s for tenant %s (restored from recovery window)", key_name, tid)
+
+
+def kek_liveness(tenant_id: str) -> str:
+    """Report whether a tenant's KEK is usable, recoverable, or gone.
+
+    Returns exactly one of:
+      - ``"live"``        — key exists and is enabled; wrap/unwrap work now.
+      - ``"recoverable"`` — key is soft-deleted but still inside the recovery
+                            window; `recover_kek` restores it (and its DEK).
+      - ``"absent"``      — key is purged or was never minted; any ciphertext
+                            wrapped under it is cryptographically unrecoverable.
+
+    Provisioner credential — a read/management op, never a decrypt. Only a
+    DEFINITIVE not-found maps to ``"absent"``; every other failure (throttle,
+    403, transient network) propagates. That distinction is load-bearing:
+    callers act DESTRUCTIVELY on ``"absent"`` (drop the stale DEK rows and
+    re-key), and must never do that to a KEK that is merely unreachable.
+
+    Needs `keys/read` (active + deleted) on the provisioner role.
+    """
+    tid = str(tenant_id)
+
+    if _is_mock():
+        entry = _MOCK_KEK_REGISTRY.get(tid)
+        if entry is None:
+            return "absent"
+        return "recoverable" if entry.get("deleted") else "live"
+
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.keyvault.keys import KeyClient
+
+    vault_name = str(getattr(settings, "AZURE_KEK_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEK_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    key_name = f"kek-{tid}"
+    client = KeyClient(vault_url=vault_url, credential=_get_provisioner_credential())
+    try:
+        client.get_key(key_name)
+        return "live"
+    except ResourceNotFoundError:
+        pass
+    try:
+        client.get_deleted_key(key_name)
+        return "recoverable"
+    except ResourceNotFoundError:
+        return "absent"
+
+
+def purge_kek(tenant_id: str) -> None:
+    """Irreversibly purge a tenant's soft-deleted KEK — break-glass only.
+
+    This is the T4 shred primitive: once purged, every DEK ever wrapped
+    under this KEK becomes permanently unrecoverable (`unwrap_dek` raises
+    from this point on, for every epoch that used this key).
+
+    In prod, purge is gated by the `nbhd-kek-breakglass-purge` RBAC role,
+    which — unlike the provisioner and broker roles — has NO standing
+    assignment; it's JIT/interactive-granted only (az-CLI pre-work,
+    CONTINUITY_encryption-phase1.md §1). This function uses the provisioner
+    credential as a CODE STAND-IN for that role: the provisioner identity
+    does not actually carry `keys/purge/action` in prod, so calling this
+    without an active JIT grant 403s at the Azure layer regardless of what
+    this code does. Never wire this into an automated/scheduled path.
+    """
+    tid = str(tenant_id)
+
+    if _is_mock():
+        _MOCK_KEK_REGISTRY.pop(tid, None)
+        logger.info("[MOCK] Purged tenant KEK for tenant %s", tid)
+        return
+
+    from azure.keyvault.keys import KeyClient
+
+    vault_name = str(getattr(settings, "AZURE_KEK_VAULT_NAME", "") or "").strip()
+    if not vault_name:
+        raise ValueError("AZURE_KEK_VAULT_NAME is not configured")
+
+    vault_url = f"https://{vault_name}.vault.azure.net"
+    key_name = f"kek-{tid}"
+    # Break-glass stand-in — see docstring: prod authorization comes from a
+    # JIT role grant on this same identity, not from a different credential.
+    client = KeyClient(vault_url=vault_url, credential=_get_provisioner_credential())
+    client.purge_deleted_key(key_name)
+    logger.info("PURGED tenant KEK %s for tenant %s — IRREVERSIBLE", key_name, tid)
 
 
 def get_storage_client():

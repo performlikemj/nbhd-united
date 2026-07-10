@@ -59,6 +59,11 @@ INSTALLED_APPS = [
     # apps.pii is a library module (no models); registered so its management
     # commands (denylist_degenerate_pii) are discoverable.
     "apps.pii",
+    # apps.crypto is a library module (no models) — the envelope-encryption
+    # key service (encryption-at-rest Phase 1). Registered for app discovery
+    # only; ready() intentionally stays empty (pre-warm is Phase 1 PR4, and
+    # must never run during migrate — see apps/crypto/apps.py).
+    "apps.crypto",
 ]
 
 MIDDLEWARE = [
@@ -519,6 +524,15 @@ OPENCLAW_IMAGE_TAG = os.environ.get("OPENCLAW_IMAGE_TAG", "latest")
 AZURE_KEY_VAULT_NAME = env("AZURE_KEY_VAULT_NAME", default="kv-nbhd-prod")
 AZURE_PROVISIONER_CLIENT_ID = env("AZURE_PROVISIONER_CLIENT_ID", default="")
 AZURE_STORAGE_ACCOUNT_NAME = env("AZURE_STORAGE_ACCOUNT_NAME", default="")
+# Encryption-at-rest (Phase 1, dark — no user data encrypted yet). Separate
+# vault from AZURE_KEY_VAULT_NAME: KEKs never live alongside the platform's
+# operational secrets. AZURE_DECRYPT_BROKER_CLIENT_ID is a DIFFERENT managed
+# identity from AZURE_PROVISIONER_CLIENT_ID — the provisioner can wrap/create/
+# delete KEKs but must NOT be able to unwrap; only the decrypt-broker identity
+# can. See apps/orchestrator/azure_client.py create_tenant_kek/wrap_dek/
+# unwrap_dek and CONTINUITY_encryption-phase1.md.
+AZURE_KEK_VAULT_NAME = env("AZURE_KEK_VAULT_NAME", default="kv-nbhd-keks")
+AZURE_DECRYPT_BROKER_CLIENT_ID = env("AZURE_DECRYPT_BROKER_CLIENT_ID", default="")
 
 # Stripe pricing — single plan.
 # NOTE: the Django setting is STRIPE_PRICE_ID, but the env var it reads is

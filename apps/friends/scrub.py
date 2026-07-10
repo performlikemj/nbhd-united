@@ -88,14 +88,77 @@ _OUTPUT_FORBIDDEN_LABELS = frozenset({"PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER"}
 _OUTPUT_SCORE_FLOOR = 0.7
 
 
-def _assert_output_clean(pipe, outputs) -> None:
+def _identity_allow_names(owner_tenant) -> set[str]:
+    """The owner's own display name (full + first/last parts), lowercased —
+    mirrors ``_redact``'s allow-list construction. A share is overtly
+    attributed to the owner (it publishes as them, name attached), so their own
+    name inside the text adds zero identity information and the redaction pass
+    deliberately leaves it raw."""
+    user = getattr(owner_tenant, "user", None)
+    display_name = (getattr(user, "display_name", "") or "").strip()
+    if not display_name:
+        return set()
+    names = {display_name}
+    parts = display_name.split()
+    if len(parts) > 1:
+        names |= {parts[0], parts[-1]}
+    return {n.lower() for n in names}
+
+
+def _deliberately_unredacted(span: str, label: str, owner_tenant, allow_lower: set[str]) -> bool:
+    """True when the redaction pass would have DELIBERATELY left ``span`` raw —
+    i.e. its presence in the output is policy, not a degradation.
+
+    Mirrors the identity-label skips in ``apps.pii.redactor._filter_results``:
+    the owner's own name (PERSON only — overt in an attributed share), the
+    tenant's denylist ("not PII for me", type-agnostic by design), and the
+    degenerate-span floor (< 3 chars is never real PII, the redactor's own
+    rule). WITHOUT this, any lesson containing one of those spans fail-closes
+    on every attempt and is unshareable by design contradiction — the prod
+    lesson-899 case: DeBERTa flagged sub-word fragments of a denylisted brand
+    plus the owner's own initials as PERSON in the *correctly* scrubbed output.
+    Anything not excused here still fail-closes, so a REAL leaked name (which
+    ``_filter_results`` would have redacted, not skipped) is caught exactly as
+    before."""
+    from apps.pii.entity_registry import is_denied
+    from apps.pii.redactor import _is_degenerate_span
+
+    stripped = (span or "").strip()
+    if not stripped:
+        return True
+    if label == "PERSON" and stripped.lower() in allow_lower:
+        return True
+    if is_denied(getattr(owner_tenant, "pii_denylist", None) or {}, stripped):
+        return True
+    if _is_degenerate_span(stripped):
+        return True
+    return False
+
+
+def _assert_output_clean(pipe, outputs, owner_tenant=None) -> None:
     """The SECOND belt (design §4.3): ``RedactionSession.redact()`` swallows
     per-call inference errors and returns near-raw text, so a failure AFTER the
     probe passed could otherwise publish real names as "scrubbed". The
     probe-verified NER pass must find no high-confidence identity entity in the
     text we are about to freeze — a hit means some upstream step silently
-    degraded on THIS text. Fail closed; the owner can edit and retry."""
+    degraded on THIS text. Fail closed; the owner can edit and retry.
+
+    Precision (parity with the redaction pass, never more permissive on real
+    names): PERSON spans are snapped to word boundaries first — the raw
+    pipeline reports sub-word fragments ("aut" inside a brand name) that the
+    redactor's own detection path snaps before judging — and a hit is excused
+    ONLY when the redaction pass deliberately leaves that exact span raw
+    (owner's own name / tenant denylist / degenerate floor; see
+    :func:`_deliberately_unredacted`). ``owner_tenant=None`` applies no
+    owner-specific excuse — strictly MORE fail-closed, never less."""
     from apps.pii.config import DEBERTA_LABEL_MAP
+
+    try:
+        from apps.pii.hygiene import snap_to_word_boundaries
+    except Exception:  # pragma: no cover — hygiene absent → judge raw spans (stricter)
+        snap_to_word_boundaries = None
+
+    allow_lower = _identity_allow_names(owner_tenant) if owner_tenant is not None else set()
 
     for out in outputs:
         if not out:
@@ -104,17 +167,26 @@ def _assert_output_clean(pipe, outputs) -> None:
             detections = pipe(out)
         except Exception as exc:  # noqa: BLE001 — verification failure is fail-closed
             raise NerUnavailable(f"output verification inference failed: {exc}") from exc
-        hits = sorted(
-            {
-                DEBERTA_LABEL_MAP.get(d.get("entity_group") or "")
-                for d in (detections or [])
-                if float(d.get("score") or 0.0) >= _OUTPUT_SCORE_FLOOR
-            }
-            & _OUTPUT_FORBIDDEN_LABELS
-        )
+        hits = set()
+        for d in detections or []:
+            label = DEBERTA_LABEL_MAP.get(d.get("entity_group") or "")
+            if label not in _OUTPUT_FORBIDDEN_LABELS:
+                continue
+            if float(d.get("score") or 0.0) < _OUTPUT_SCORE_FLOOR:
+                continue
+            start, end = int(d.get("start") or 0), int(d.get("end") or 0)
+            if label == "PERSON" and snap_to_word_boundaries is not None:
+                # Expansion-only (mirrors _detect_pii): recover the whole word so
+                # we judge "Sautai", never the fragment "aut". It cannot cross
+                # whitespace, so it can never excuse more than the touched word.
+                start, end = snap_to_word_boundaries(out, start, end)
+            span = out[start:end]
+            if _deliberately_unredacted(span, label, owner_tenant, allow_lower):
+                continue
+            hits.add(label)
         if hits:
             raise NerUnavailable(
-                f"scrubbed output still contains identity entities ({', '.join(hits)}) — refusing to publish"
+                f"scrubbed output still contains identity entities ({', '.join(sorted(hits))}) — refusing to publish"
             )
 
 
@@ -195,8 +267,10 @@ def scrub_shared_lesson(shared_lesson_id, pending_share_id: str | None = None) -
     # ── FAIL-CLOSED gate (belt 2: THIS text actually got cleaned) ──
     # RedactionSession.redact() swallows per-call inference errors and returns
     # near-raw text; without this check such a failure would publish real names.
+    # ``owner`` carries the deliberate-skip semantics (own name / denylist) so
+    # the belt judges the output by the same policy the redaction pass applied.
     try:
-        _assert_output_clean(pipe, [redacted_text, redacted_context, redacted_cluster])
+        _assert_output_clean(pipe, [redacted_text, redacted_context, redacted_cluster], owner_tenant=owner)
     except Exception as exc:  # noqa: BLE001 — verification failure is fail-closed
         access.save_scrub_failed(shared_lesson, f"output verification failed (fail-closed): {exc}")
         logger.warning("share scrub fail-closed for %s: output not clean", shared_lesson_id)

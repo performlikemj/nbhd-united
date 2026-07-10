@@ -440,6 +440,37 @@ class HeartbeatConfigView(APIView):
         )
 
 
+class ConstellationSettingsView(APIView):
+    """PATCH: toggle constellation_enabled for the tenant.
+
+    Constellation is a pure client-side visualization — unlike the other
+    pillar toggles (Core, Finance, Fuel), there is no assistant plugin, no
+    config bump, and no container restart. ``restart_required`` is always
+    False; it's included only because the shared iOS pillar-toggle client
+    expects the key.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def patch(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+        constellation_enabled = request.data.get("constellation_enabled")
+        if constellation_enabled is None:
+            return Response({"error": "constellation_enabled is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        tenant.constellation_enabled = bool(constellation_enabled)
+        tenant.save(update_fields=["constellation_enabled"])
+
+        return Response(
+            {
+                "constellation_enabled": tenant.constellation_enabled,
+                "restart_required": False,
+            }
+        )
+
+
 class UpdatePreferencesView(APIView):
     """Update user preferences (e.g. agent persona)."""
 

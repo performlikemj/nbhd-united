@@ -36,11 +36,13 @@ DEBERTA_LABEL_MAP = {
     "STREET": "LOCATION",
     "STREETADDRESS": "LOCATION",
     "SECONDARYADDRESS": "LOCATION",
-    # BUILDINGNUMBER omitted on purpose: a bare building number is
-    # indistinguishable from a lift weight/rep count ("benched 225",
-    # "squatted 140") and fired [LOCATION_N] over fitness logs fleet-wide.
-    # Street and city names still redact via STREET/STREETADDRESS/CITY, which
-    # carry the actual identifying token; the number alone is not load-bearing.
+    # BUILDINGNUMBER re-added WITH a raw-label guard in redactor._detect_pii:
+    # a bare numeric span ("82", "82.5", "180 lbs") with no adjacent
+    # street/address raw span is a measurement (body weight, lift number),
+    # not an address — the guard skips it before this LOCATION collapse.
+    # A number sitting next to a STREET/CITY/... span still redacts as part
+    # of the merged address.
+    "BUILDINGNUMBER": "LOCATION",
     "CITY": "LOCATION",
     "STATE": "LOCATION",
     "COUNTY": "LOCATION",
@@ -84,6 +86,14 @@ DEBERTA_LABEL_MAP = {
     # identifying PII. (NUMBER in particular fires on credit-card digits
     # we already catch via Presidio's Luhn-validated CreditCardRecognizer.)
 }
+
+# Raw labels that signal real street/address context around a BUILDINGNUMBER
+# hit (see redactor._detect_pii). Derived from the map so it can never drift:
+# every raw label that collapses to LOCATION except BUILDINGNUMBER itself —
+# a bare number must not vouch for another bare number.
+ADDRESS_CONTEXT_LABELS = frozenset(
+    raw for raw, mapped in DEBERTA_LABEL_MAP.items() if mapped == "LOCATION" and raw != "BUILDINGNUMBER"
+)
 
 # Per-label minimum-score overrides, keyed by the model's RAW label (checked
 # before DEBERTA_LABEL_MAP collapses it). A detection must clear both the
