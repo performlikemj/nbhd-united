@@ -1,10 +1,16 @@
 """Tests for DEK-minting wiring in provision_tenant / deprovision_tenant
 (Encryption-at-rest Phase 1 PR5).
 
-Covers the T3 dark-rollout guarantee: keys must exist before the container
-is created, but must never be threaded into the container spec/env — and a
-KEK soft-delete failure during deprovision must never block the rest of
-deprovision.
+Covers the T3 dark-rollout guarantee: when minting succeeds, keys must
+exist before the container is created and must never be threaded into the
+container spec/env — and a KEK soft-delete failure during deprovision must
+never block the rest of deprovision.
+
+Also covers the dark-window soft-fail posture (see services.py TODO):
+until `kv-nbhd-keks` + the az pre-work exist, a DEK-mint failure must be
+logged and swallowed rather than aborting provisioning — a DEK-less tenant
+is no different from any pre-Phase-1 tenant today, and backfill_tenant_deks
+mints the missing row once the vault exists.
 """
 
 from __future__ import annotations
@@ -127,34 +133,64 @@ class ProvisionMintsDekTest(TestCase):
         "apps.orchestrator.services.store_tenant_internal_key_in_key_vault",
         return_value="tenant-fixture-internal-key",
     )
-    @patch("apps.orchestrator.services.create_container_app")
+    @patch("apps.orchestrator.services.assign_key_vault_role")
+    @patch("apps.orchestrator.services.assign_acr_pull_role")
+    @patch(
+        "apps.orchestrator.services.seed_cron_jobs",
+        return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0},
+    )
+    @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
+    @patch("apps.orchestrator.services.create_tenant_file_share")
+    @patch("apps.orchestrator.services.register_environment_storage")
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
+    @patch(
+        "apps.orchestrator.services.create_container_app",
+        return_value={"name": "oc-prov5-tenant-2", "fqdn": "oc-prov5-tenant-2.internal.azurecontainerapps.io"},
+    )
     @patch("apps.orchestrator.services._audit_and_log")
     @patch("apps.crypto.keys.mint_and_wrap_dek", side_effect=RuntimeError("KEK vault unreachable"))
-    def test_dek_mint_failure_aborts_before_container_create(
+    def test_dek_mint_failure_does_not_block_provisioning_dark_window(
         self,
         _mock_mint,
         _mock_audit,
         mock_create_container,
+        _mock_upload_config,
+        _mock_register_storage,
+        _mock_create_file_share,
+        _mock_schedule_qstash,
+        _mock_seed_cron_jobs,
+        _mock_assign_acr_role,
+        _mock_assign_kv_role,
         _mock_store_kv_key,
         _mock_create_identity,
         _mock_config_json,
         _mock_generate_config,
         _mock_is_mock,
     ):
-        with self.assertRaises(RuntimeError):
+        # Dark-window posture: the KEK vault doesn't exist in Azure yet, so
+        # a mint failure must be logged and swallowed, not fail
+        # provisioning. Assert on the module logger so this test breaks
+        # loudly if the warning is ever dropped.
+        with self.assertLogs("apps.orchestrator.services", level="WARNING") as log_ctx:
             provision_tenant(str(self.tenant.id))
 
+        self.assertTrue(
+            any(str(self.tenant.id) in message and "DEK mint failed" in message for message in log_ctx.output)
+        )
+
         self.tenant.refresh_from_db()
-        # Provisioning failed cleanly: tenant reset to PENDING, exactly as
-        # the pre-existing failure path (test_provision_failure_resets_to_pending)
-        # already proves for other early-stage failures.
-        self.assertEqual(self.tenant.status, Tenant.Status.PENDING)
-        self.assertEqual(self.tenant.container_id, "")
+        # Provisioning reached its normal post-mint flow and completed —
+        # the tenant must NOT get stuck PENDING, unlike a real (non-mint)
+        # failure (see test_provision_failure_resets_to_pending).
+        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
+        self.assertEqual(self.tenant.container_id, "oc-prov5-tenant-2")
 
-        # No orphan container: create_container_app must never be reached.
-        mock_create_container.assert_not_called()
+        # Provisioning continued past the mint call to create the container.
+        mock_create_container.assert_called_once()
 
-        # No orphan DEK row either — the mint call itself raised.
+        # No DEK row exists — the mint call raised — and that's expected
+        # and harmless during the dark window (backfill_tenant_deks mints
+        # it later once kv-nbhd-keks exists).
         self.assertFalse(TenantDek.objects.filter(tenant=self.tenant).exists())
 
 

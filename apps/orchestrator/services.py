@@ -267,25 +267,41 @@ def provision_tenant(tenant_id: str) -> None:
 
         # 2a3. (Encryption-at-rest Phase 1 PR5) Mint the tenant's Data
         # Encryption Key (DEK), wrapped under a freshly-created per-tenant
-        # Key Encryption Key (KEK) in the KEK vault. This MUST run before
-        # the container is created — once `create_container_app` returns,
-        # other code treats the tenant as having a live oc-* resource, and
-        # a tenant with a container but no DEK can never encrypt anything.
-        # It must equally NEVER be threaded into the container spec/env —
-        # OpenClaw never sees key material; only the control plane (and,
-        # later, the decrypt-broker identity) ever touches a DEK. That is
-        # the T3 guarantee. Local import: apps.crypto is a new cross-app
+        # Key Encryption Key (KEK) in the KEK vault. It must equally NEVER
+        # be threaded into the container spec/env — OpenClaw never sees
+        # key material; only the control plane (and, later, the
+        # decrypt-broker identity) ever touches a DEK. That is the T3
+        # guarantee. Local import: apps.crypto is a new cross-app
         # dependency services.py otherwise has no reason to import at
         # module scope, and this codebase's tests patch local imports at
         # their defining module (apps.crypto.keys.mint_and_wrap_dek),
-        # mirroring the OpenRouter sub-key block below. A mint failure
-        # raises here and is caught by the outer except below, which
-        # resets the tenant to PENDING before any container exists — so a
-        # DEK-mint failure can never leave an orphan container behind.
+        # mirroring the OpenRouter sub-key block below.
+        #
+        # DARK-WINDOW POSTURE (temporary, reversible): the whole crypto
+        # substrate is dark right now — nothing encrypts user data yet —
+        # and the KEK vault (`settings.AZURE_KEK_VAULT_NAME`) does not
+        # exist in Azure until the one-time az pre-work lands. Until then
+        # a mint failure must NOT fail provisioning: a tenant with no
+        # `TenantDek` row is identical to every existing tenant today, and
+        # `backfill_tenant_deks` mints DEKs for all rowless tenants once
+        # the vault exists (a Phase-2 precondition already requires that
+        # backfill to have run for ALL tenants before any column is
+        # encrypted). So we log and continue rather than raise.
+        # TODO(encryption Phase 2): restore fail-closed mint once
+        # kv-nbhd-keks + broker RBAC exist — a mint failure at that point
+        # is a real error and provisioning should abort on it again (a
+        # tenant with a container but no DEK could never encrypt anything).
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="mint_tenant_dek")
         from apps.crypto.keys import mint_and_wrap_dek
 
-        mint_and_wrap_dek(tenant)
+        try:
+            mint_and_wrap_dek(tenant)
+        except Exception:
+            logger.warning(
+                "DEK mint failed for tenant %s during dark-window provisioning; continuing without a DEK",
+                tenant_id,
+                exc_info=True,
+            )
 
         # 2a2. (PR #1.6) Per-tenant OpenRouter sub-key. When the feature
         # flag is on AND the management key is configured, create a
