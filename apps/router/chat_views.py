@@ -34,6 +34,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.billing.services import check_budget
+from apps.router import enc_columns
 from apps.router.inbound_media import (
     MAX_APP_DOCUMENT_BYTES,
     MAX_APP_IMAGE_BYTES,
@@ -111,13 +112,50 @@ def _parse_occurred_at(raw: object) -> timezone.datetime | None:
 _HISTORY_LIMIT = 50
 
 
+def _encrypt_chat_value(tenant, aad: tuple[str, str], value: str) -> bytes | None:
+    """Dual-write seal of a chat column value (encryption-at-rest Phase 2, PR-2).
+
+    Returns the sealed envelope bytes when ``tenant.encrypt_chat_writes`` is on,
+    else ``None`` (plaintext-only row). ``aad`` is an ``enc_columns`` ``(table,
+    column)`` tuple — never a hand-typed string (plan risk #6).
+
+    Soft-fail BY DESIGN at this stage: a ``box.encrypt`` failure logs ONE
+    count-only line (tenant prefix + column name, never content) and returns
+    ``None`` so the row is still fully readable via its plaintext column. This is
+    availability-correct ONLY while the plaintext column is still written
+    alongside; PR-6 (erase) MUST invert this to fail-closed once writers go
+    ``_enc``-only. See docs/encryption-at-rest-phase2-plan.md §5 PR-2/PR-6.
+    """
+    if not getattr(tenant, "encrypt_chat_writes", False):
+        return None
+    # Local import so tests can patch ``apps.crypto.box.encrypt`` at call time —
+    # a module-level alias would bind before the patch and silently no-op it.
+    from apps.crypto import box
+
+    try:
+        return box.encrypt(tenant.id, aad[0], aad[1], value)
+    except Exception:
+        logger.warning(
+            "chat dual-write encrypt failed for tenant %s column %s — row stored plaintext-only",
+            str(tenant.id)[:8],
+            aad[1],
+        )
+        return None
+
+
 def _get_or_create_main_thread(tenant, user) -> ChatThread:
     """The shared default thread every channel resumes. One per tenant —
     the partial unique constraint makes the get_or_create race-safe."""
     thread, _ = ChatThread.objects.get_or_create(
         tenant=tenant,
         is_main=True,
-        defaults={"user": user, "title": "Main"},
+        defaults={
+            "user": user,
+            "title": "Main",
+            # Sealed only on CREATE (defaults are ignored on get) — matches the
+            # column's insert-once contract.
+            "title_enc": _encrypt_chat_value(tenant, enc_columns.CHAT_THREAD_TITLE, "Main"),
+        },
     )
     return thread
 
@@ -325,6 +363,11 @@ def enqueue_tenant_turn(
     if existing:
         return existing, False
 
+    # Dual-write ciphertext (Phase 2, PR-2): the same `text` seals both the
+    # budget-exhausted and the normal turn below, so compute it once. None when
+    # the tenant's write-flag is off.
+    user_text_enc = _encrypt_chat_value(tenant, enc_columns.APP_CHAT_MESSAGE_USER_TEXT, text)
+
     # Budget gate — don't enqueue work (or wake a container) for an over-budget
     # tenant. Recorded as an error so the client surfaces the reason.
     budget_reason = check_budget(tenant)
@@ -336,6 +379,7 @@ def enqueue_tenant_turn(
                 thread=thread,
                 client_msg_id=client_msg_id,
                 user_text=text,
+                user_text_enc=user_text_enc,
                 status=AppChatMessage.Status.ERROR,
                 error="budget_exhausted",
                 replied_at=timezone.now(),
@@ -351,6 +395,7 @@ def enqueue_tenant_turn(
             thread=thread,
             client_msg_id=client_msg_id,
             user_text=text,
+            user_text_enc=user_text_enc,
             status=AppChatMessage.Status.PENDING,
         )
     except IntegrityError:
@@ -505,6 +550,7 @@ class ChatThreadListView(APIView):
             tenant=tenant,
             user=request.user,
             title=title,
+            title_enc=_encrypt_chat_value(tenant, enc_columns.CHAT_THREAD_TITLE, title),
             is_main=False,
         )
         return Response(_serialize_thread(thread), status=status.HTTP_201_CREATED)
@@ -798,6 +844,7 @@ class ChatLocalTurnView(APIView):
 
         now = timezone.now()
         occurred_at = _parse_occurred_at(request.data.get("occurred_at"))
+        user_text_enc = _encrypt_chat_value(tenant, enc_columns.APP_CHAT_MESSAGE_USER_TEXT, user_text)
         try:
             turn = AppChatMessage.objects.create(
                 tenant=tenant,
@@ -805,6 +852,7 @@ class ChatLocalTurnView(APIView):
                 thread=thread,
                 client_msg_id=client_msg_id,
                 user_text=user_text,
+                user_text_enc=user_text_enc,
                 reply_text=reply_text,
                 status=AppChatMessage.Status.READY,
                 source=AppChatMessage.Source.ON_DEVICE,
