@@ -104,3 +104,24 @@ class DecryptAuditTest(SimpleTestCase):
         self.assertEqual(audit.get_principal(), "admin")
         audit.set_principal("system")
         self.assertEqual(audit.get_principal(), "system")
+
+    def test_principal_override_audits_without_mutating_the_shared_var(self):
+        # Ambient is "system" (silent). A one-shot override of "admin" logs
+        # THIS event, but must leave the shared ContextVar untouched.
+        audit.set_principal("system")
+        records = self._capture(
+            lambda: audit.emit("t", "tbl", "col", row_count=2, principal_override="admin"),
+        )
+        self.assertEqual(len(records), 1)
+        self.assertEqual(json.loads(records[0].getMessage())["principal"], "admin")
+        self.assertEqual(audit.get_principal(), "system")  # var NOT mutated
+
+    def test_principal_override_system_is_silent_even_when_ambient_is_admin(self):
+        # Symmetric case: an ambient "admin" must not be able to force a
+        # `system` override to log — the override decides, one-shot.
+        audit.set_principal("admin")
+        records = self._capture(
+            lambda: audit.emit("t", "tbl", "col", row_count=1, principal_override="system"),
+        )
+        self.assertEqual(records, [])
+        self.assertEqual(audit.get_principal(), "admin")  # var NOT mutated

@@ -39,33 +39,40 @@ class _ListHandler(logging.Handler):
 
 
 class BoxTestCase(TestCase):
-    """Common setUp/tearDown for every box test that touches encrypt/decrypt.
+    """Common setUp for every box test that touches encrypt/decrypt.
 
-    Two responsibilities:
+    Forces `azure_client` into mock mode by patching `_is_mock` -> True, NOT
+    by relying on the ambient `AZURE_MOCK` env var. In CI's full suite (~5k
+    tests) another test can mutate `os.environ`, leaving `AZURE_MOCK` unset
+    by the time these run — then `cache.get_dek` -> `azure_client.unwrap_dek`
+    would take the REAL Azure branch and error. This mirrors the merged PR1
+    pattern in `apps/orchestrator/test_azure_client_keys.py`. Started here in
+    setUp (with addCleanup(stop)) rather than as a class decorator so it also
+    covers subclasses that encrypt/decrypt inside their OWN setUp — a
+    class-level `@patch` only wraps `test*` methods, never setUp.
 
-    1. Force `azure_client` into mock mode by patching `_is_mock` -> True,
-       NOT by relying on the ambient `AZURE_MOCK` env var. In CI's full
-       suite (~5k tests) another test can mutate `os.environ`, leaving
-       `AZURE_MOCK` unset by the time these run — then `cache.get_dek` ->
-       `azure_client.unwrap_dek` would take the REAL Azure branch and error.
-       This mirrors the merged PR1 pattern in
-       `apps/orchestrator/test_azure_client_keys.py`. Started here in setUp
-       (with addCleanup(stop)) rather than as a class decorator so it also
-       covers subclasses that encrypt/decrypt inside their OWN setUp — a
-       class-level `@patch` only wraps `test*` methods, never setUp.
-    2. Reset the ambient audit principal per test: `decrypt_bulk` mutates the
-       `audit._PRINCIPAL` ContextVar as a side effect, and it persists across
-       tests in the same thread — reset it so test order never matters.
+    There is deliberately NO blanket `_PRINCIPAL` reset here. It used to exist
+    to paper over `decrypt_bulk` mutating the shared ambient ContextVar; that
+    leak is now fixed at the source (bulk passes a one-shot
+    `principal_override` instead of writing the var), so the mask is gone. The
+    handful of tests that DO set an ambient principal manage their own cleanup
+    via `_set_principal` below.
     """
 
     def setUp(self):
         mock_patcher = patch("apps.orchestrator.azure_client._is_mock", return_value=True)
         mock_patcher.start()
         self.addCleanup(mock_patcher.stop)
-        self._principal_token = audit._PRINCIPAL.set("system")
 
-    def tearDown(self):
-        audit._PRINCIPAL.reset(self._principal_token)
+    def _set_principal(self, kind: str) -> None:
+        """Set the ambient audit principal for this test and auto-reset after.
+
+        Uses a ContextVar token + addCleanup so a test that sets "admin" can
+        never leak it into a later test on the same thread — self-contained
+        per test, not a blanket mask.
+        """
+        token = audit._PRINCIPAL.set(kind)
+        self.addCleanup(audit._PRINCIPAL.reset, token)
 
     def _capture_audit(self, fn):
         handler = _ListHandler()
@@ -172,13 +179,15 @@ class DualReadTest(BoxTestCase):
         self.assertIsInstance(result, RedactedStr)
         self.assertEqual(result.reveal(), "plain old text, never encrypted")
 
-    def test_legacy_bytes_without_marker_returns_verbatim(self):
-        tenant = _create_tenant(suffix="legacy-bytes")
+    def test_unmarked_nonempty_bytes_fail_closed(self):
+        # A `bytea` `_enc` column never legitimately holds unmarked non-empty
+        # bytes (legacy plaintext is a `str` in the OLD text column). Reading
+        # them verbatim would be a fail-open auth bypass — FIX 3 makes it raise.
+        tenant = _create_tenant(suffix="unmarked-bytes")
         mint_and_wrap_dek(tenant)
 
-        result = box.decrypt(tenant.id, TABLE, COLUMN, b"raw legacy bytes, no marker")
-
-        self.assertEqual(result.reveal(), "raw legacy bytes, no marker")
+        with self.assertRaises(box.CryptoError):
+            box.decrypt(tenant.id, TABLE, COLUMN, b"raw unmarked bytes, no marker")
 
     def test_legacy_read_never_touches_the_dek_cache(self):
         tenant = _create_tenant(suffix="legacy-no-cache")
@@ -253,6 +262,41 @@ class AadFailClosedTest(BoxTestCase):
         with self.assertRaises(box.CryptoError):
             box.decrypt(tenant.id, TABLE, COLUMN, bytes([0x01, 0x00, 0x00]))
 
+    def test_unmarked_nonempty_bytes_raise_crypto_error(self):
+        # FIX 3: unmarked non-empty bytes in a ciphertext column must fail
+        # closed (not read back as attacker-chosen plaintext, no key needed).
+        tenant = _create_tenant(suffix="aad-unmarked")
+        mint_and_wrap_dek(tenant)
+
+        with self.assertRaises(box.CryptoError):
+            box.decrypt(tenant.id, TABLE, COLUMN, b"\x02attacker chosen plaintext")
+
+    def test_unmarked_non_utf8_bytes_raise_crypto_error_not_unicode_error(self):
+        # The non-UTF-8 crash the old verbatim-decode path could raise is
+        # subsumed by FIX 3: the marker check rejects these BEFORE any decode,
+        # so the failure is a CryptoError, never a raw UnicodeDecodeError.
+        tenant = _create_tenant(suffix="aad-unmarked-binary")
+        mint_and_wrap_dek(tenant)
+
+        with self.assertRaises(box.CryptoError):
+            box.decrypt(tenant.id, TABLE, COLUMN, b"\xff\xfe\xfd not utf-8 and unmarked")
+
+    def test_purged_kek_raises_crypto_error_not_raw_lookup(self):
+        # FIX 2: an envelope whose DEK can't be resolved (KEK purged / no
+        # TenantDek row) must surface as CryptoError, not a raw
+        # TenantDek.DoesNotExist / broker LookupError escaping the boundary.
+        tenant = _create_tenant(suffix="aad-purged-kek")
+        mint_and_wrap_dek(tenant)
+        blob = box.encrypt(tenant.id, TABLE, COLUMN, "secret before the shred")
+
+        # Force a cold DEK resolution on the next decrypt, then shred the KEK
+        # so that resolution fails at the broker.
+        cache._CACHE.pop((str(tenant.id), 0), None)
+        azure_client.purge_kek(tenant.id)
+
+        with self.assertRaises(box.CryptoError):
+            box.decrypt(tenant.id, TABLE, COLUMN, blob)
+
 
 class DecryptBulkTest(BoxTestCase):
     def test_one_unwrap_and_one_audit_event_for_the_whole_batch(self):
@@ -325,13 +369,60 @@ class DecryptBulkTest(BoxTestCase):
         self.assertEqual(results[3].reveal(), "legacy plaintext")
 
 
+class DecryptBulkPrincipalIsolationTest(BoxTestCase):
+    """Regression for FIX 1: `decrypt_bulk`'s `principal=` audits THIS call as
+    a one-shot override, and must NOT write the shared, process-lived
+    `_PRINCIPAL` ContextVar. On a reused worker thread, writing the var would
+    (a) false-attribute a later `system` decrypt as the bulk's principal, and
+    (b) let a bulk defaulting to `system` silence a genuinely-ambient `admin`.
+    """
+
+    def test_bulk_admin_does_not_leave_admin_ambient(self):
+        # Ambient principal is the default "system" (nothing set this test).
+        tenant = _create_tenant(suffix="bulk-iso-a")
+        mint_and_wrap_dek(tenant)
+        blob = box.encrypt(tenant.id, TABLE, COLUMN, "x")
+
+        bulk_records = self._capture_audit(
+            lambda: box.decrypt_bulk(tenant.id, TABLE, COLUMN, [blob], principal="admin"),
+        )
+        self.assertEqual(len(bulk_records), 1)  # the bulk itself audits as admin
+
+        # A following single decrypt in the SAME context must see ambient
+        # "system" again — bulk must not have written "admin" into the var.
+        after_records = self._capture_audit(
+            lambda: box.decrypt(tenant.id, TABLE, COLUMN, blob),
+        )
+        self.assertEqual(after_records, [])
+
+    def test_bulk_default_system_does_not_clobber_ambient_admin(self):
+        self._set_principal("admin")  # a genuinely-ambient admin read context
+        tenant = _create_tenant(suffix="bulk-iso-b")
+        mint_and_wrap_dek(tenant)
+        blob = box.encrypt(tenant.id, TABLE, COLUMN, "x")
+
+        # decrypt_bulk with NO principal (defaults to "system"): its own event
+        # is silent, but it must NOT overwrite the ambient "admin".
+        bulk_records = self._capture_audit(
+            lambda: box.decrypt_bulk(tenant.id, TABLE, COLUMN, [blob]),
+        )
+        self.assertEqual(bulk_records, [])
+
+        # The ambient "admin" must survive — a following single decrypt audits.
+        after_records = self._capture_audit(
+            lambda: box.decrypt(tenant.id, TABLE, COLUMN, blob),
+        )
+        self.assertEqual(len(after_records), 1)
+        self.assertEqual(json.loads(after_records[0].getMessage())["principal"], "admin")
+
+
 class DecryptSingleAuditTest(BoxTestCase):
     def test_emits_row_count_1_for_admin(self):
         tenant = _create_tenant(suffix="single-audit-admin")
         mint_and_wrap_dek(tenant)
         blob = box.encrypt(tenant.id, TABLE, COLUMN, "x")
 
-        audit.set_principal("admin")
+        self._set_principal("admin")
         records = self._capture_audit(lambda: box.decrypt(tenant.id, TABLE, COLUMN, blob))
 
         self.assertEqual(len(records), 1)

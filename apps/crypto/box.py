@@ -60,15 +60,28 @@ def _decrypt_one(tenant_id: object, table: str, column: str, blob: Blob) -> Reda
         blob = bytes(blob)
         if blob == b"":
             return RedactedStr("")
-        if blob[0] == codec.MARKER:
-            dek_epoch = codec.unpack(blob)[0]
+        if blob[0] != codec.MARKER:
+            # A `bytea` `_enc` column only ever holds a 0x01 envelope, b"",
+            # or NULL — legacy plaintext lives in the OLD `str` TextField and
+            # arrives above via `isinstance(str)`. There is NO legitimate
+            # producer of unmarked non-empty bytes here, so treating them as
+            # "legacy verbatim" would be a fail-OPEN auth bypass: bytes planted
+            # in an `_enc` column would read back as attacker-chosen plaintext
+            # with no key and no GCM check. Fail closed instead.
+            raise codec.CryptoError("unmarked non-empty bytes in a ciphertext column — refusing to read")
+        dek_epoch = codec.unpack(blob)[0]
+        try:
             dek = cache.get_dek(tenant_id, dek_epoch)
-            aad = codec.build_aad(tenant_id, table, column)
-            plaintext = codec.open_envelope(dek, aad, blob)
-            return RedactedStr(plaintext.decode("utf-8"))
-        # Legacy bytes with no marker: verbatim pass-through, decoded as
-        # text (this is what "legacy plaintext bytes" actually contain).
-        return RedactedStr(blob.decode("utf-8"))
+        except Exception as exc:
+            # An envelope naming an epoch with no TenantDek row, or a purged/
+            # unreachable KEK, surfaces as TenantDek.DoesNotExist / a broker
+            # LookupError. decrypt()'s contract is RedactedStr | None | raise
+            # CryptoError — so normalize these to CryptoError rather than
+            # letting a raw DB/broker exception escape the crypto boundary.
+            raise codec.CryptoError(f"cannot resolve DEK for epoch {dek_epoch}: {type(exc).__name__}") from exc
+        aad = codec.build_aad(tenant_id, table, column)
+        plaintext = codec.open_envelope(dek, aad, blob)
+        return RedactedStr(plaintext.decode("utf-8"))
 
     # Unexpected type — fail soft into the legacy/verbatim contract rather
     # than raising on a shape we didn't anticipate.
@@ -83,12 +96,17 @@ def decrypt(tenant_id: object, table: str, column: str, blob: Blob) -> RedactedS
     - `blob` is bytes/bytearray/memoryview starting with the `0x01` marker
       -> AES-GCM decrypted under the DEK for the epoch named in the envelope
       header, AAD-bound to `(tenant_id, table, column)`.
-    - anything else (legacy plaintext `str`, or bytes/memoryview with no
-      marker) -> returned verbatim, wrapped in `RedactedStr`.
+    - legacy plaintext `str` (from a not-yet-migrated text column) -> returned
+      verbatim, wrapped in `RedactedStr`. This is the ONLY dual-read path.
+    - non-empty bytes/bytearray/memoryview WITHOUT the marker -> `CryptoError`.
+      A `bytea` `_enc` column never legitimately holds unmarked bytes, so
+      reading them verbatim would be a fail-open auth bypass (planted bytes
+      returning as attacker-chosen plaintext with no key/GCM check).
 
-    Fails closed: a tampered/mismatched envelope raises `CryptoError`, never
-    a garbage or partial plaintext. Caller must call `.reveal()` on the
-    result to see the real string — see `nolog.RedactedStr`.
+    Fails closed: a tampered/mismatched envelope, unmarked ciphertext-column
+    bytes, or an unresolvable DEK (missing/ purged KEK) all raise
+    `CryptoError` — never garbage or partial plaintext. Caller must call
+    `.reveal()` on the result to see the real string — see `nolog.RedactedStr`.
 
     Emits ONE decrypt-audit event (`row_count=1`) via the ambient principal
     set by `audit.set_principal()` — silent unless that principal is
@@ -115,14 +133,16 @@ def decrypt_bulk(
     the whole batch (the first item's cache miss; every subsequent item —
     including different rows at the same epoch — is a cache hit).
 
-    `principal` sets the ambient decrypt-audit principal for this call (see
-    `audit.set_principal`) before emitting ONE audit event covering the
-    whole batch (`row_count=len(blobs)`) — silent unless `principal` is
-    `admin`/`owner_request`. Defaults to `"system"` (silent) since most
-    bulk-decrypt call sites are the service itself (rendering a feed,
-    running a cron), not a human reading through the admin console.
+    `principal` attributes THIS call's single audit event (`row_count=len(blobs)`)
+    — silent unless `principal` is `admin`/`owner_request`. It is passed as a
+    one-shot `principal_override` and does NOT mutate the shared ambient
+    `_PRINCIPAL` ContextVar: on a reused worker thread that would leak into
+    the next request (a later `system` decrypt false-audited as `admin`, or a
+    bulk defaulting to `system` silencing a genuinely-ambient `admin` read).
+    Defaults to `"system"` (silent) since most bulk-decrypt call sites are the
+    service itself (rendering a feed, running a cron), not a human reading
+    through the admin console.
     """
     results = [_decrypt_one(tenant_id, table, column, blob) for blob in blobs]
-    audit.set_principal(principal)
-    audit.emit(tenant_id, table, column, row_count=len(blobs))
+    audit.emit(tenant_id, table, column, row_count=len(blobs), principal_override=principal)
     return results

@@ -52,14 +52,28 @@ def get_principal() -> str:
     return _PRINCIPAL.get()
 
 
-def emit(tenant_id: object, table: str, column: str, row_count: int) -> None:
-    """Log a decrypt-audit event if the current principal is human-initiated.
+def emit(
+    tenant_id: object,
+    table: str,
+    column: str,
+    row_count: int,
+    principal_override: str | None = None,
+) -> None:
+    """Log a decrypt-audit event if the effective principal is human-initiated.
 
     No-op for `system`/`system_cron`/`runtime_endpoint` (or anything else
     outside `_AUDITED_PRINCIPALS`) — see module docstring. Never includes
     decrypted content, only identifying/counting metadata.
+
+    `principal_override` attributes THIS event to a given principal WITHOUT
+    touching the shared, process-lived `_PRINCIPAL` ContextVar. That matters
+    for `decrypt_bulk`, which takes a per-call `principal=` argument: mutating
+    the ambient var there would leak across calls on a reused worker thread —
+    a later `system` decrypt would false-audit as the last bulk principal, and
+    a bulk call defaulting to `system` would silence a genuinely-ambient
+    `admin` read. A one-shot override sidesteps both.
     """
-    principal = _PRINCIPAL.get()
+    principal = principal_override or _PRINCIPAL.get()
     if principal not in _AUDITED_PRINCIPALS:
         return
 
