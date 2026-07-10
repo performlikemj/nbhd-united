@@ -920,3 +920,44 @@ class Tenant(models.Model):
         """Signal that agent config needs refreshing."""
         self.pending_config_version = (self.pending_config_version or 0) + 1
         self.save(update_fields=["pending_config_version"])
+
+
+class TenantDek(models.Model):
+    """A tenant's Data Encryption Key, wrapped under its Key Encryption Key.
+
+    Encryption-at-rest Phase 1 (envelope encryption, see
+    ``CONTINUITY_encryption-phase1.md``): each tenant gets a 32-byte DEK
+    used to encrypt content columns directly; the DEK itself never touches
+    disk in plaintext — it is wrapped (RSA-OAEP-256) under the tenant's KEK
+    in Azure Key Vault (``apps.orchestrator.azure_client.wrap_dek``) and only
+    that ciphertext is stored here. ``apps.crypto.keys`` is the only code
+    that should read/write this table directly.
+
+    ``dek_epoch`` is the rotation counter (Phase 5) — epoch 0 is minted at
+    provisioning time and is the only epoch Phase 1 ever creates. A future
+    rotation inserts a new row at ``dek_epoch + 1`` rather than overwriting
+    this one, so old ciphertext (still tagged with its original epoch in the
+    envelope header) keeps decrypting under the DEK that encrypted it.
+
+    RLS posture: intentionally NOT force-RLS, NOT in the friends
+    ``RLS_KEEP_ENABLED`` keep-set — this table runs RLS-off in prod like the
+    rest of the fleet default (see ``apps/tenants/management/commands/
+    disable_rls.py``); Django itself is the tenant boundary here, same as
+    every other control-plane table. The migration-time relock (see the
+    migration immediately after this table's creation migration) exists only
+    to satisfy ``apps.tenants.test_public_schema_lockdown`` at migration
+    time, before the boot-time ``disable_rls`` sweep runs. Do not add a
+    FORCE-RLS policy for this table as part of Phase 1.
+    """
+
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="deks")
+    dek_epoch = models.PositiveSmallIntegerField(default=0)
+    wrapped_dek = models.BinaryField()
+    kek_version = models.CharField(max_length=128)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = (("tenant", "dek_epoch"),)
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:epoch{self.dek_epoch}"
