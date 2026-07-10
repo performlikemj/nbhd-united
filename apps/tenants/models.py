@@ -665,6 +665,19 @@ class Tenant(models.Model):
         help_text="Enable the Core mindfulness pillar (on-demand guided meditations)",
     )
 
+    # Constellation module — a pure client-side visualization of the tenant's
+    # journal/data graph. No assistant plugin, no config bump, no restart:
+    # toggling this only gates the tab in the client apps. Default False for
+    # everyone, including existing tenants — deliberate, not a backfill gap.
+    constellation_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Gate the Constellation visualization tab in the client apps. Pure "
+            "client-side feature — involves no assistant plugin, config bump, "
+            "or container restart."
+        ),
+    )
+
     # Site publishing module — lets the assistant push portfolio images to the
     # subscriber's own website (Azure Blob + Cosmos) via the tenant managed
     # identity. Gated per tenant in config_generator; the plugin self-gates on
