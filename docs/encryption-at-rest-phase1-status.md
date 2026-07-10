@@ -28,17 +28,17 @@ Discovery constants: SUB `63ceeeac-fe3f-4bcb-b6d2-b7aa7fd6bf52`, RG `rg-nbhd-pro
 
 Recommended order bundles the one restart with the backfill so production restarts ONCE and self-verifies.
 
-### 1. Mint the ~35 real keys (backfill) — RESOLVED: in-container via QStash trigger
+### 1. Mint the 33 real keys (backfill) — RESOLVED: in-container via QStash trigger
 Decision (2026-07-11, Fable): run the backfill inside the running container through the
 existing QStash-signed task dispatcher — no new auth surface, no secret leaves Azure, and
 the container already holds prod DB access + the provisioner MI. Operator-local was
 rejected (it would put the prod `DATABASE_URL` on a laptop). Two zero-arg `TASK_MAP`
 entries (this PR) because the QStash publish path can't carry a body:
-- `POST {base}/api/cron/trigger/backfill_tenant_deks_dry_run/` — logs the candidate list (expect ~35), zero Azure/DB writes.
+- `POST {base}/api/cron/trigger/backfill_tenant_deks_dry_run/` — logs the candidate list (expect 33 — verified against prod 2026-07-11: 33 active+suspended tenants, 0 DEK rows), zero Azure/DB writes.
 - `POST {base}/api/cron/trigger/backfill_tenant_deks/` — real run (idempotent, per-tenant isolated, safe under QStash retries).
 Publish with no body via the upstash QStash tooling. Output returns in the HTTP response
 AND as an INFO line in `ContainerAppConsoleLogs_CL`. Verify after the real run:
-`SELECT count(*), min(dek_epoch), max(dek_epoch) FROM tenant_deks` ≈ fleet size, all epoch 0.
+`SELECT count(*), min(dek_epoch), max(dek_epoch) FROM tenants_tenantdek` ≈ fleet size, all epoch 0.
 
 ### 2. 4b — env var (GATED: this is the app restart)
 ```bash
