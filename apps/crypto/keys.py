@@ -4,11 +4,10 @@ Mints, wraps, and unwraps each tenant's Data Encryption Key. Callers should
 go through this module rather than touching ``apps.tenants.models.TenantDek``
 or ``apps.orchestrator.azure_client`` directly — this is the seam.
 
-Phase 1 has no per-process cache yet (that lands in Phase 1 PR3 as
-``apps.crypto.cache``); ``unwrap_dek_for`` calls the decrypt broker directly
-on every invocation so the service is usable/testable now. PR3 wires a cache
-in front of it so repeated unwraps of the same (tenant, epoch) become free
-after the first cold miss.
+``unwrap_dek_for`` routes through the per-process cache (``apps.crypto.cache``):
+a warm ``(tenant, epoch)`` returns with zero I/O, and a cold miss does exactly
+one broker unwrap under a lock. That's the same cache ``box`` decrypts through,
+so the two share warmed DEKs rather than each unwrapping independently.
 """
 
 from __future__ import annotations
@@ -93,9 +92,12 @@ def get_wrapped_dek(tenant: Tenant, epoch: int = 0) -> tuple[bytes, str]:
 def unwrap_dek_for(tenant: Tenant, epoch: int = 0) -> bytes:
     """Return the plaintext DEK for a tenant at ``epoch``.
 
-    Phase 1: calls the decrypt broker directly, no cache in front yet.
-    Fail-closed — raises on a missing row, a purged KEK, or a broker error;
-    never returns garbage.
+    Routes through the per-process cache (``apps.crypto.cache``): a warm
+    ``(tenant, epoch)`` returns with zero I/O; a cold miss does exactly one
+    broker unwrap under a lock and memoizes it. Fail-closed — raises on a
+    missing row, a purged/soft-deleted KEK, or a broker error; never returns
+    garbage and never caches on failure.
     """
-    wrapped, _kek_version = get_wrapped_dek(tenant, epoch)
-    return azure_client.unwrap_dek(tenant.id, wrapped)
+    from apps.crypto import cache
+
+    return cache.get_dek(tenant.id, epoch)
