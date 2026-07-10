@@ -168,7 +168,7 @@ class BackfillTenantDeksTaskTest(TestCase):
 
         from apps.cron.views import TASK_MAP
 
-        for name in ("backfill_tenant_deks", "backfill_tenant_deks_dry_run"):
+        for name in ("backfill_tenant_deks", "backfill_tenant_deks_dry_run", "crypto_roundtrip_smoke"):
             self.assertIn(name, TASK_MAP)
             module_path, func_name = TASK_MAP[name].rsplit(".", 1)
             func = getattr(import_module(module_path), func_name)
