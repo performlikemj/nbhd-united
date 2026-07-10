@@ -6,14 +6,25 @@ tamper, dual-read of legacy plaintext, audited bulk decrypt) before any
 Phase 2+ content column is wired through it.
 
 Composition: `codec.py` (envelope + AES-GCM), `cache.py` (per-process DEK
-cache, one broker unwrap per cold `(tenant, epoch)`), `nolog.py`
-(`RedactedStr` — decrypted values that refuse to print themselves), and
-`audit.py` (fires only for human-initiated `admin`/`owner_request` reads).
+cache, one broker unwrap per cold `(tenant, epoch)`), `kdf.py` (HKDF subkey
+derivation), `nolog.py` (`RedactedStr` — decrypted values that refuse to print
+themselves), and `audit.py` (fires only for human-initiated
+`admin`/`owner_request` reads).
+
+FORMAT CONTRACT (permanent on-disk format as of 2026-07-11): content is
+AES-256-GCM-sealed under the WORKING KEY `HKDF(dek, domain)`, NOT the raw DEK.
+`domain` defaults to `content-v1` (directive §3.1's `K_content`) and is a
+parameter so Phase 3/4 can derive `search-v1` / `map-v1` subkeys off the same
+DEK. The envelope layout (`codec.py`) and the AAD are unchanged — the subkey
+substitutes for the DEK at the AES-GCM step only. Whatever `domain` seals the
+first persisted row is that column's format forever (short of a re-encrypt
+migration); today zero ciphertext is persisted, so this is the free moment to
+fix it. A raw-DEK-sealed blob will NOT decrypt through this module.
 """
 
 from __future__ import annotations
 
-from . import audit, cache, codec
+from . import audit, cache, codec, kdf
 from .codec import CryptoError  # noqa: F401  (re-exported — box is the public surface)
 from .nolog import RedactedStr
 
@@ -22,7 +33,14 @@ __all__ = ["CryptoError", "RedactedStr", "encrypt", "decrypt", "decrypt_bulk"]
 Blob = bytes | bytearray | memoryview | str | None
 
 
-def encrypt(tenant_id: object, table: str, column: str, plaintext: str | None) -> bytes | None:
+def encrypt(
+    tenant_id: object,
+    table: str,
+    column: str,
+    plaintext: str | None,
+    *,
+    domain: str = kdf.CONTENT_V1,
+) -> bytes | None:
     """Encrypt `plaintext` for `(tenant_id, table, column)`.
 
     - `None` -> `None` (nothing to store).
@@ -30,9 +48,12 @@ def encrypt(tenant_id: object, table: str, column: str, plaintext: str | None) -
       waste (~30+ bytes to say "nothing"); `b""` is an unambiguous sentinel,
       distinguishable from any real envelope (always >= 15 bytes) and from
       legacy plaintext (which would be a non-empty `str`).
-    - Anything else -> a sealed envelope (see `codec.py`) under the tenant's
-      DEK at epoch 0 — Phase 1 has no rotation yet, so encryption always
-      targets the current (only) epoch.
+    - Anything else -> a sealed envelope (see `codec.py`) under the working key
+      `HKDF(dek, domain)` at epoch 0 — Phase 1 has no rotation yet, so
+      encryption always targets the current (only) epoch. `domain` defaults to
+      `content-v1` (directive §3.1); Phase 3/4 pass `search-v1` / `map-v1` for
+      their own subkeys. This working-key derivation is the PERMANENT on-disk
+      format — see the module docstring.
     """
     if plaintext is None:
         return None
@@ -40,11 +61,12 @@ def encrypt(tenant_id: object, table: str, column: str, plaintext: str | None) -
         return b""
 
     dek = cache.get_dek(tenant_id, 0)
+    working_key = kdf.subkey(dek, domain)
     aad = codec.build_aad(tenant_id, table, column)
-    return codec.seal(dek, 0, aad, plaintext.encode("utf-8"))
+    return codec.seal(working_key, 0, aad, plaintext.encode("utf-8"))
 
 
-def _decrypt_one(tenant_id: object, table: str, column: str, blob: Blob) -> RedactedStr | None:
+def _decrypt_one(tenant_id: object, table: str, column: str, blob: Blob, *, domain: str) -> RedactedStr | None:
     """Dual-read a single stored value. See `decrypt`'s docstring for the contract."""
     if blob is None:
         return None
@@ -79,8 +101,9 @@ def _decrypt_one(tenant_id: object, table: str, column: str, blob: Blob) -> Reda
             # CryptoError — so normalize these to CryptoError rather than
             # letting a raw DB/broker exception escape the crypto boundary.
             raise codec.CryptoError(f"cannot resolve DEK for epoch {dek_epoch}: {type(exc).__name__}") from exc
+        working_key = kdf.subkey(dek, domain)
         aad = codec.build_aad(tenant_id, table, column)
-        plaintext = codec.open_envelope(dek, aad, blob)
+        plaintext = codec.open_envelope(working_key, aad, blob)
         return RedactedStr(plaintext.decode("utf-8"))
 
     # Unexpected type — fail soft into the legacy/verbatim contract rather
@@ -88,14 +111,23 @@ def _decrypt_one(tenant_id: object, table: str, column: str, blob: Blob) -> Reda
     return RedactedStr(str(blob))
 
 
-def decrypt(tenant_id: object, table: str, column: str, blob: Blob) -> RedactedStr | None:
+def decrypt(
+    tenant_id: object,
+    table: str,
+    column: str,
+    blob: Blob,
+    *,
+    domain: str = kdf.CONTENT_V1,
+) -> RedactedStr | None:
     """Dual-read decrypt of one stored value. ALWAYS returns a `RedactedStr` (or `None`).
 
     - `blob is None` -> `None`.
     - `blob == b""` -> `RedactedStr("")`.
     - `blob` is bytes/bytearray/memoryview starting with the `0x01` marker
-      -> AES-GCM decrypted under the DEK for the epoch named in the envelope
-      header, AAD-bound to `(tenant_id, table, column)`.
+      -> AES-GCM decrypted under the working key `HKDF(dek, domain)` for the
+      epoch named in the envelope header, AAD-bound to `(tenant_id, table,
+      column)`. `domain` MUST match the one that encrypted the value (defaults
+      to `content-v1`); a mismatch fails closed at the GCM tag check.
     - legacy plaintext `str` (from a not-yet-migrated text column) -> returned
       verbatim, wrapped in `RedactedStr`. This is the ONLY dual-read path.
     - non-empty bytes/bytearray/memoryview WITHOUT the marker -> `CryptoError`.
@@ -112,7 +144,7 @@ def decrypt(tenant_id: object, table: str, column: str, blob: Blob) -> RedactedS
     set by `audit.set_principal()` — silent unless that principal is
     `admin`/`owner_request`.
     """
-    result = _decrypt_one(tenant_id, table, column, blob)
+    result = _decrypt_one(tenant_id, table, column, blob, domain=domain)
     audit.emit(tenant_id, table, column, row_count=1)
     return result
 
@@ -124,6 +156,7 @@ def decrypt_bulk(
     blobs: list[Blob],
     *,
     principal: str = "system",
+    domain: str = kdf.CONTENT_V1,
 ) -> list[RedactedStr | None]:
     """Dual-read decrypt of many stored values from the same `(tenant, table, column)`.
 
@@ -143,6 +176,6 @@ def decrypt_bulk(
     service itself (rendering a feed, running a cron), not a human reading
     through the admin console.
     """
-    results = [_decrypt_one(tenant_id, table, column, blob) for blob in blobs]
+    results = [_decrypt_one(tenant_id, table, column, blob, domain=domain) for blob in blobs]
     audit.emit(tenant_id, table, column, row_count=len(blobs), principal_override=principal)
     return results
