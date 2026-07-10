@@ -238,7 +238,6 @@ Rules:
 | Tool | Purpose |
 |------|---------|
 | `web_search` | Search the web (Brave Search) |
-| `web_fetch` | Fetch and extract content from a URL |
 | `tts` | Text-to-speech |
 | `image` | Analyze images with vision model |
 | `nbhd_send_to_user` | Send a proactive Telegram message. **Do NOT use in normal conversation — just reply directly.** |

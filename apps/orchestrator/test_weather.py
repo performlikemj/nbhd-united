@@ -11,6 +11,8 @@ from apps.orchestrator.weather import (
     build_weather_url,
     build_weather_url_from_coords,
     get_coords_for_timezone,
+    get_place_label_for_timezone,
+    resolve_weather_search_location,
 )
 
 
@@ -94,3 +96,34 @@ class GetCoordsForTimezoneTest(SimpleTestCase):
 
     def test_falls_back_to_london_for_completely_unknown(self):
         self.assertEqual(get_coords_for_timezone("Mars/Olympus_Mons"), (51.51, -0.13))
+
+
+class GetPlaceLabelForTimezoneTest(SimpleTestCase):
+    """web_search takes a place name, not coordinates (P0-0b: web_fetch is
+    now denied, so the morning-briefing weather step no longer builds an
+    Open-Meteo URL — it resolves a search-query location label instead)."""
+
+    def test_derives_label_from_timezone_last_segment(self):
+        self.assertEqual(get_place_label_for_timezone("America/New_York"), "New York")
+        self.assertEqual(get_place_label_for_timezone("Asia/Tokyo"), "Tokyo")
+        self.assertEqual(get_place_label_for_timezone("Europe/London"), "London")
+
+    def test_no_slash_returns_whole_string(self):
+        self.assertEqual(get_place_label_for_timezone("UTC"), "UTC")
+
+    def test_empty_timezone_falls_back(self):
+        self.assertEqual(get_place_label_for_timezone(""), "your area")
+
+
+class ResolveWeatherSearchLocationTest(SimpleTestCase):
+    def test_prefers_profile_city_when_set(self):
+        self.assertEqual(resolve_weather_search_location("Osaka", "America/New_York"), "Osaka")
+
+    def test_strips_whitespace_on_profile_city(self):
+        self.assertEqual(resolve_weather_search_location("  Brooklyn  ", "UTC"), "Brooklyn")
+
+    def test_falls_back_to_timezone_label_when_city_blank(self):
+        self.assertEqual(resolve_weather_search_location("", "Asia/Tokyo"), "Tokyo")
+
+    def test_falls_back_to_timezone_label_when_city_none(self):
+        self.assertEqual(resolve_weather_search_location(None, "Europe/Paris"), "Paris")

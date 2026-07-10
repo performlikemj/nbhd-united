@@ -509,17 +509,42 @@ class ConfigGeneratorTest(TestCase):
         morning = next(j for j in jobs if j["name"] == "Morning Briefing")
         return morning["payload"]["message"]
 
-    def test_morning_briefing_prompt_has_hourly_weather_url(self):
+    def test_morning_briefing_prompt_uses_web_search_not_web_fetch(self):
+        """web_fetch is denied fleet-wide (tool_policy.py P0-0/P0-0b — see
+        docs/upload-security-threat-model.md). The weather step must route
+        through web_search, tell the agent NOT to use web_fetch (a denied
+        tool call would just error), and must not reference the old
+        Open-Meteo API URL at all."""
         prompt = self._morning_briefing_prompt()
-        self.assertIn("api.open-meteo.com/v1/forecast", prompt)
-        # hourly=... is url-encoded in the embedded URL
-        self.assertIn("hourly=", prompt)
-        self.assertIn("precipitation_probability", prompt)
+        self.assertIn("web_search` for", prompt)
+        self.assertIn("Do NOT use web_fetch", prompt)
+        self.assertNotIn("Use the web_fetch tool", prompt)
+        self.assertNotIn("api.open-meteo.com", prompt)
+
+    def test_morning_briefing_prompt_resolves_location_for_search_query(self):
+        """No location_city set on this tenant → falls back to a
+        timezone-derived place label rather than raw lat/lon (web_search
+        takes a place name, not coordinates)."""
+        prompt = self._morning_briefing_prompt()
+        self.assertIn("weather forecast today", prompt)
+
+    def test_morning_briefing_prompt_uses_profile_city_when_set(self):
+        self.tenant.user.location_city = "Osaka"
+        self.tenant.user.save()
+        prompt = self._morning_briefing_prompt()
+        self.assertIn("Osaka weather forecast today", prompt)
+
+    def test_morning_briefing_prompt_degrades_gracefully_on_search_failure(self):
+        prompt = self._morning_briefing_prompt()
+        self.assertIn("Weather unavailable", prompt)
 
     def test_morning_briefing_prompt_has_intraday_threshold_rule(self):
         prompt = self._morning_briefing_prompt()
-        # Agent is told which intraday patterns warrant mention
-        self.assertIn("hourly.precipitation_probability", prompt)
+        # Agent is told which intraday patterns warrant mention — no longer
+        # tied to Open-Meteo's structured hourly JSON fields (web_search
+        # doesn't return those); the rule is now best-effort over whatever
+        # structure the search results actually contain.
+        self.assertIn("temperature swing", prompt)
         self.assertIn("thunderstorm", prompt.lower())
         # And told NOT to enumerate stable days
         self.assertIn("Sunny all day", prompt)

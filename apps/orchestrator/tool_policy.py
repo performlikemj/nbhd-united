@@ -120,8 +120,22 @@ _STARTER_ALLOW_2026_5_7: tuple[str, ...] = _STARTER_ALLOW_2026_4_15
 # requires a resolvable PDF-capable model — see ``config_generator`` where
 # ``agents.defaults.pdfModel`` is pinned (the pdf factory-availability check has
 # no ``modelHasVision`` fast-path, unlike the ``image`` tool).
+#
+# Also denies ``web_fetch`` (docs/upload-security-threat-model.md P0-0/P0-0b).
+# ``web_fetch`` is a member of ``group:openclaw`` (verified against the
+# extracted OpenClaw 2026.5.28 ``POLICY_TOOL_GROUPS``) and registers by
+# default — its own ``enabled`` flag defaults to ``true`` and NBHD never sets
+# ``tools.web.fetch.enabled``/``.provider``, so a keyless bundled provider
+# auto-activates fleet-wide with zero API keys configured. On a
+# document-injection turn (AC-1 in the threat model) that's a zero-click GET
+# with tenant data in the query string to an attacker-controlled URL —
+# wrapping the tool's *response* via ``wrapExternalContent`` does nothing to
+# stop the outbound request itself. The only production dependency was the
+# morning-briefing weather step, rerouted to ``web_search`` (already
+# allowed, already wrapped) in ``config_generator._MORNING_BRIEFING_PROMPT_TEMPLATE``
+# — see that template for the graceful-degradation handling.
 
-_DENIED_TOOLS_2026_5_28: tuple[str, ...] = _DENIED_TOOLS_2026_5_7
+_DENIED_TOOLS_2026_5_28: tuple[str, ...] = _DENIED_TOOLS_2026_5_7 + ("web_fetch",)
 
 _STARTER_ALLOW_2026_5_28: tuple[str, ...] = _STARTER_ALLOW_2026_5_7 + ("pdf",)
 
