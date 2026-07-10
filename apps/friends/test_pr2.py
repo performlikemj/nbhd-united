@@ -161,6 +161,118 @@ class ScrubFailClosedTest(TestCase):
         self.assertEqual(self.sl.scrub_status, "ready")
 
 
+class Belt2PrecisionTest(TestCase):
+    """Belt-2 must judge the scrubbed output with the SAME deliberate-skip
+    semantics the redaction pass applied — never fail-close on policy residue,
+    never pass a real leak.
+
+    Pins the prod lesson-899 failure (canary, 2026-07-10): the raw pipeline
+    flagged sub-word FRAGMENTS of a tenant-denylisted brand name plus the
+    owner's own display name as PERSON (≥0.7) in a *correctly* scrubbed
+    output, so every scrub attempt fail-closed and the share was unshareable
+    by design contradiction. Synthetic equivalents of the same shape — the raw
+    text stays out of fixtures."""
+
+    def setUp(self):
+        self.owner = _tenant("belt_owner")
+        self.owner.user.display_name = "Mika"
+        self.owner.user.save(update_fields=["display_name"])
+        self.owner.pii_denylist = {"braveno": {"reason": "brand, not a person"}}
+        self.owner.save(update_fields=["pii_denylist"])
+
+    def test_denylisted_brand_fragments_do_not_fail_close(self):
+        # The lesson-899 shape: the raw pipe reports sub-word fragments of a
+        # coined brand ("B", "ave") — snapping recovers "Braveno", which the
+        # tenant explicitly denylisted as not-PII. Policy residue, not a leak.
+        out = "Carving out time for project work (Braveno, NBHD) keeps momentum alive."
+        i = out.index("Braveno")
+
+        def pipe(text):
+            if text != out:
+                return []
+            return [
+                {"entity_group": "FIRSTNAME", "score": 0.86, "start": i, "end": i + 1},
+                {"entity_group": "FIRSTNAME", "score": 0.85, "start": i + 2, "end": i + 5},
+            ]
+
+        scrub._assert_output_clean(pipe, [out], owner_tenant=self.owner)  # must not raise
+
+    def test_owner_display_name_does_not_fail_close(self):
+        # The share publishes AS the owner, name attached — their own name in
+        # the text adds zero identity information (mirrors _redact allow_names).
+        out = "Mika worked on the project between family pickups."
+
+        def pipe(text):
+            return [{"entity_group": "FIRSTNAME", "score": 0.97, "start": 0, "end": 4}] if text == out else []
+
+        scrub._assert_output_clean(pipe, [out], owner_tenant=self.owner)  # must not raise
+
+    def test_real_name_still_fails_closed(self):
+        # THE NON-NEGOTIABLE: a real leaked name (redaction degraded) matches
+        # no excuse and still fail-closes.
+        out = "Talked with Sarah about batch-cooking."
+        i = out.index("Sarah")
+
+        def pipe(text):
+            return [{"entity_group": "FIRSTNAME", "score": 0.99, "start": i, "end": i + 5}] if text == out else []
+
+        with self.assertRaises(scrub.NerUnavailable):
+            scrub._assert_output_clean(pipe, [out], owner_tenant=self.owner)
+
+    def test_real_name_fragment_snaps_and_still_fails_closed(self):
+        # A FRAGMENT of a real name can't slip through the snapping path: it
+        # expands to the full word, which matches no excuse.
+        out = "Talked with Sarah about batch-cooking."
+        i = out.index("Sarah")
+
+        def pipe(text):
+            return [{"entity_group": "FIRSTNAME", "score": 0.99, "start": i + 1, "end": i + 4}] if text == out else []
+
+        with self.assertRaises(scrub.NerUnavailable):
+            scrub._assert_output_clean(pipe, [out], owner_tenant=self.owner)
+
+    def test_no_owner_stays_strict(self):
+        # owner_tenant=None applies no owner-specific excuse — strictly MORE
+        # fail-closed than the owner-aware call, never less.
+        out = "Project work (Braveno) continues."
+        i = out.index("Braveno")
+
+        def pipe(text):
+            return [{"entity_group": "FIRSTNAME", "score": 0.86, "start": i + 2, "end": i + 5}] if text == out else []
+
+        with self.assertRaises(scrub.NerUnavailable):
+            scrub._assert_output_clean(pipe, [out])
+
+    def test_scrub_ends_ready_on_lesson_899_shape(self):
+        # End-to-end: the synthetic 899 shape (denylisted brand + owner's own
+        # name + a dangling [PERSON_N] placeholder) scrubs to READY, and the
+        # placeholder is neutralized — never published raw.
+        lesson = _lesson(
+            self.owner,
+            "Even with family pickup and errands, project work (Braveno, NBHD) keeps momentum alive.",
+            context="Mika worked on Braveno and NBHD between pickups with [PERSON_61] at work",
+        )
+        sl = access.ensure_shared_lesson(lesson, self.owner)
+
+        def fragment_pipe(text):
+            hits = []
+            for token in ("Braveno", "Mika"):
+                j = text.find(token)
+                if j >= 0:
+                    hits.append({"entity_group": "FIRSTNAME", "score": 0.9, "start": j + 1, "end": j + 3})
+            return hits
+
+        with (
+            mock.patch("apps.friends.scrub._assert_ner_available", return_value=fragment_pipe),
+            mock.patch("apps.friends.scrub._redact_identities", side_effect=lambda owner, text: text),
+        ):
+            result = scrub.scrub_shared_lesson(str(sl.id))
+        self.assertTrue(result["ok"], result)
+        sl.refresh_from_db()
+        self.assertEqual(sl.scrub_status, "ready")
+        self.assertNotIn("[PERSON_61]", sl.redacted_context)
+
+
 # ── Share intent → PendingShare + snapshot (no grant yet) ─────────────────────
 
 
