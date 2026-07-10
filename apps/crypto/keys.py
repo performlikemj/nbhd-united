@@ -13,24 +13,62 @@ after the first cold miss.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from apps.orchestrator import azure_client
 from apps.tenants.models import Tenant, TenantDek
 
+logger = logging.getLogger(__name__)
+
 
 def mint_and_wrap_dek(tenant: Tenant) -> TenantDek:
-    """Idempotently mint a tenant's epoch-0 DEK, wrapped under a fresh KEK.
+    """Ensure a tenant has a usable epoch-0 DEK, minting/recovering as needed.
 
-    Returns the existing epoch-0 row if one already exists — NEVER re-mints.
-    Phase 1 has no rotation/re-encryption logic, so minting a second DEK for
-    an existing epoch would silently orphan any ciphertext already encrypted
-    under the first one.
+    Provisioning is re-entrant: a cancelled subscriber's Tenant row is REUSED
+    when they resubscribe, and deprovision soft-deletes (then, after the grace
+    window, purges) the tenant's KEK while KEEPING its ``TenantDek`` row. So the
+    old "a row already exists -> no-op reuse" rule pointed a re-provisioned
+    tenant at a DEAD KEK. Instead, branch on the KEK's actual liveness:
+
+      - live        -> reuse the existing row unchanged (the steady-state path,
+                       and the safe outcome of a QStash provision retry).
+      - recoverable -> the KEK is soft-deleted but still inside its recovery
+                       window; recover it and reuse the row, so an accidental or
+                       undone deprovision comes back WITH its data intact.
+      - absent      -> the KEK was purged: every ciphertext wrapped under it is
+                       already cryptographically shredded by design. Drop the
+                       stale row(s) and mint a FRESH epoch-0 DEK + KEK.
+
+    Fresh material MUST land at epoch 0 (never an incremented epoch): Phase 1
+    ``box.encrypt`` always targets epoch 0, so a purged tenant's stale rows are
+    DELETED rather than epoch-bumped — otherwise new writes would encrypt at
+    epoch 0 against a key stored at some other epoch and never decrypt.
     """
     existing = TenantDek.objects.filter(tenant=tenant, dek_epoch=0).first()
     if existing is not None:
-        return existing
+        state = azure_client.kek_liveness(tenant.id)
+        if state == "live":
+            logger.info("crypto: DEK reuse for tenant %s (KEK live)", tenant.id)
+            return existing
+        if state == "recoverable":
+            azure_client.recover_kek(tenant.id)
+            logger.info("crypto: DEK recovered for tenant %s (KEK restored from grace window)", tenant.id)
+            return existing
+        # "absent": KEK purged/gone -> prior ciphertext is unrecoverable by
+        # design. Re-key from scratch at epoch 0.
+        TenantDek.objects.filter(tenant=tenant).delete()
+        logger.info("crypto: DEK fresh-start for tenant %s (prior KEK purged; stale rows dropped)", tenant.id)
 
+    return _mint_fresh_dek(tenant)
+
+
+def _mint_fresh_dek(tenant: Tenant) -> TenantDek:
+    """Mint a fresh KEK + wrapped epoch-0 DEK and persist the ``TenantDek`` row.
+
+    Assumes no live epoch-0 row exists for the tenant — the caller has already
+    reused/recovered a live KEK, or dropped the stale rows left by a purged one.
+    """
     azure_client.create_tenant_kek(tenant.id)
     dek = os.urandom(32)
     wrapped, kek_version = azure_client.wrap_dek(tenant.id, dek)

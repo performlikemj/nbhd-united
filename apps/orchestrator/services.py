@@ -284,9 +284,12 @@ def provision_tenant(tenant_id: str) -> None:
         # not a tolerable dark-window gap: a tenant that gets a container but no
         # `TenantDek` row could never encrypt anything, so provisioning MUST
         # abort and surface the failure rather than strand a half-provisioned,
-        # un-encryptable tenant. `mint_and_wrap_dek` is idempotent (a second
-        # call for an already-keyed tenant is a no-op), so letting it raise is
-        # also safe under provision re-runs / QStash retries. Let it raise.
+        # un-encryptable tenant. `mint_and_wrap_dek` is re-entrant: for an
+        # already-keyed tenant it verifies the KEK is still live (reusing the
+        # row), recovers it if soft-deleted in-grace, or fresh-starts if it was
+        # purged — so letting it raise is also safe under provision re-runs /
+        # QStash retries (including a cancelled subscriber's re-provision). Let
+        # it raise.
         _log_provisioning_event(tenant_id=str(tenant.id), user_id=user_id, stage="mint_tenant_dek")
         from apps.crypto.keys import mint_and_wrap_dek
 

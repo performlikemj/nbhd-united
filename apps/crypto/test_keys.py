@@ -56,6 +56,52 @@ class MintAndWrapDekTest(TestCase):
         self.assertEqual(bytes(first.wrapped_dek), bytes(second.wrapped_dek))
         self.assertEqual(TenantDek.objects.filter(tenant=tenant).count(), 1)
 
+    def test_reprovision_within_grace_recovers_kek_and_reuses_row(self, _mock_is_mock):
+        """A cancelled subscriber re-provisioned INSIDE the KEK grace window:
+        the soft-deleted KEK is recovered and the same DEK row is reused, so
+        the tenant comes back with its data decryptable."""
+        tenant = _create_tenant(suffix="recover")
+        first = mint_and_wrap_dek(tenant)
+
+        # Deprovision soft-deletes the KEK but keeps the DEK row.
+        azure_client.begin_delete_kek(tenant.id)
+        # While soft-deleted, the DEK cannot unwrap (crypto ops disabled).
+        with self.assertRaises(LookupError):
+            unwrap_dek_for(tenant)
+
+        second = mint_and_wrap_dek(tenant)
+
+        # Same row, same wrapped material — no re-key happened.
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(bytes(first.wrapped_dek), bytes(second.wrapped_dek))
+        self.assertEqual(TenantDek.objects.filter(tenant=tenant).count(), 1)
+        # Recovered KEK -> the ORIGINAL DEK unwraps again.
+        self.assertEqual(len(unwrap_dek_for(tenant)), 32)
+
+    def test_reprovision_after_purge_fresh_starts_new_epoch0(self, _mock_is_mock):
+        """A tenant re-provisioned AFTER the grace window (KEK purged): the
+        prior ciphertext is cryptographically shredded, so the stale DEK row is
+        dropped and a fresh epoch-0 DEK + KEK is minted."""
+        tenant = _create_tenant(suffix="fresh")
+        first = mint_and_wrap_dek(tenant)
+        first_pk = first.pk
+        first_wrapped = bytes(first.wrapped_dek)
+
+        # Deprovision + post-grace purge (crypto-shred).
+        azure_client.begin_delete_kek(tenant.id)
+        azure_client.purge_kek(tenant.id)
+
+        second = mint_and_wrap_dek(tenant)
+
+        # Stale row gone; brand-new epoch-0 row with fresh key material.
+        self.assertNotEqual(first_pk, second.pk)
+        self.assertFalse(TenantDek.objects.filter(pk=first_pk).exists())
+        self.assertEqual(second.dek_epoch, 0)
+        self.assertNotEqual(bytes(second.wrapped_dek), first_wrapped)
+        self.assertEqual(TenantDek.objects.filter(tenant=tenant).count(), 1)
+        # The fresh DEK unwraps under the fresh KEK.
+        self.assertEqual(len(unwrap_dek_for(tenant)), 32)
+
 
 @patch("apps.orchestrator.azure_client._is_mock", return_value=True)
 class GetWrappedDekTest(TestCase):
