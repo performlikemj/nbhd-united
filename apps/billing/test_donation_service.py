@@ -561,6 +561,42 @@ class TopupDonationRevenueTest(TestCase):
         self.assertEqual(row.status, DonationLedger.Status.PENDING)
         self.assertEqual(result3["pending"], 1)
 
+    def test_pending_immune_to_pure_status_downgrade_on_equal_base_unverified_rerun(self):
+        # Sub-only tenant, no top-ups: run1 verified $12 -> PENDING 12.0000.
+        # run2's price mock flips to ("fallback") with the SAME $12 base — the
+        # legacy branch would normally book this SKIPPED (unverified price),
+        # but the base is EQUAL, not lower, so the lower-base guard alone
+        # would not fire. This pins the separate pure-downgrade guard.
+        t = self._subscriber(831019)
+
+        with patch(PRICE_PATH, return_value=(12.0, "stripe")):
+            result1 = snapshot_donations_for_month(JUNE)
+        row = DonationLedger.objects.get(tenant=t, month=JUNE)
+        self.assertEqual(row.surplus_amount, Decimal("12.0000"))
+        self.assertEqual(row.status, DonationLedger.Status.PENDING)
+        self.assertEqual(row.donation_amount, Decimal("1.2000"))
+        self.assertEqual(result1["pending"], 1)
+
+        with (
+            patch(PRICE_PATH, return_value=(12.0, "fallback")),
+            self.assertLogs("apps.billing.donation_service", level="WARNING") as logs,
+        ):
+            result2 = snapshot_donations_for_month(JUNE)
+        row.refresh_from_db()
+        self.assertEqual(row.status, DonationLedger.Status.PENDING)  # NOT downgraded to SKIPPED
+        self.assertEqual(row.surplus_amount, Decimal("12.0000"))
+        self.assertEqual(row.donation_amount, Decimal("1.2000"))
+        self.assertEqual(result2["pending"], 1)
+        self.assertTrue(any("downgrade the status from PENDING to SKIPPED" in m for m in logs.output))
+
+        # Stripe recovers again: an equal recompute is a normal no-op rewrite.
+        with patch(PRICE_PATH, return_value=(12.0, "stripe")):
+            result3 = snapshot_donations_for_month(JUNE)
+        row.refresh_from_db()
+        self.assertEqual(row.surplus_amount, Decimal("12.0000"))
+        self.assertEqual(row.status, DonationLedger.Status.PENDING)
+        self.assertEqual(result3["pending"], 1)
+
 
 class ReconcileDonationsCommandTest(TestCase):
     def _pending_row(self, chat_id, amount):
