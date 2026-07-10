@@ -256,6 +256,17 @@ jobs:
         run: |
           python scripts/check_openclaw_plugin_packaging.py
 
+      - name: Encrypted-column predicate guard
+        # Static, no-DB: blocks new raw DB value-predicates (icontains, gt,
+        # bare equality, ...) against columns registered for Phase 2-4
+        # encryption-at-rest (CONTINUITY_encryption-phase1.md §1 PR6). A
+        # predicate like this against an already-encrypted column doesn't
+        # error — it silently stops matching real content. Pre-existing
+        # sites are allowlisted in-script; this only fires on a NEW raw
+        # predicate a future PR adds.
+        run: |
+          python scripts/check_encrypted_column_predicates.py
+
       - name: Run OpenClaw doctor smoke
         env:
           DJANGO_SETTINGS_MODULE: config.settings.development
