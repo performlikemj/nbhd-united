@@ -23,9 +23,12 @@ from apps.tenants.services import create_tenant
 
 JUNE = date(2026, 6, 1)
 
-# Where compute_donation resolves the subscription price. Patch here to simulate
-# either the real Stripe price or the settings fallback without touching Stripe.
-PRICE_PATH = "apps.billing.usage_services._get_subscription_price"
+# Where compute_donation resolves the subscription price (+ its source). Patched
+# here — where the name is defined and re-imported at call time — to simulate a
+# Stripe-verified price or the settings fallback without touching Stripe. The
+# mock returns a (price, source) tuple; source "stripe" books a PENDING pledge,
+# "fallback" is booked SKIPPED.
+PRICE_PATH = "apps.billing.usage_services._get_subscription_price_with_source"
 
 
 @override_settings(DONATION_REVENUE_PCT=10.0)
@@ -39,7 +42,7 @@ class DonationLedgerTest(TestCase):
         t.save()
         return t
 
-    @patch(PRICE_PATH, return_value=12.0)
+    @patch(PRICE_PATH, return_value=(12.0, "stripe"))
     def test_paying_subscriber_gets_pending_row(self, _price):
         t = self._paying_tenant(811001)
         result = snapshot_donations_for_month(JUNE)
@@ -52,7 +55,7 @@ class DonationLedgerTest(TestCase):
         self.assertEqual(row.surplus_amount, Decimal("12.0000"))
         self.assertEqual(row.donation_percentage, 10)
 
-    @patch(PRICE_PATH, return_value=12.0)
+    @patch(PRICE_PATH, return_value=(12.0, "stripe"))
     def test_non_paying_no_row(self, _price):
         t = self._paying_tenant(811002)
         t.stripe_subscription_id = ""  # never subscribed
@@ -61,7 +64,7 @@ class DonationLedgerTest(TestCase):
         self.assertEqual(result["pending"], 0)
         self.assertFalse(DonationLedger.objects.filter(tenant=t, month=JUNE).exists())
 
-    @patch(PRICE_PATH, return_value=12.0)
+    @patch(PRICE_PATH, return_value=(12.0, "stripe"))
     def test_trialing_skipped_no_row(self, _price):
         t = self._paying_tenant(811003)
         t.is_trial = True
@@ -72,7 +75,7 @@ class DonationLedgerTest(TestCase):
         self.assertEqual(result["skipped"], 1)
         self.assertFalse(DonationLedger.objects.filter(tenant=t, month=JUNE).exists())
 
-    @patch(PRICE_PATH, return_value=0.05)
+    @patch(PRICE_PATH, return_value=(0.05, "stripe"))
     def test_below_threshold_writes_skipped_status(self, _price):
         # $0.05 * 10% = $0.005 < $0.01 threshold → recorded but SKIPPED.
         t = self._paying_tenant(811004)
@@ -83,7 +86,7 @@ class DonationLedgerTest(TestCase):
         self.assertEqual(row.donation_amount, Decimal("0.0050"))
 
     @override_settings(DONATION_REVENUE_PCT=25.0)
-    @patch(PRICE_PATH, return_value=12.0)
+    @patch(PRICE_PATH, return_value=(12.0, "stripe"))
     def test_pct_setting_override(self, _price):
         t = self._paying_tenant(811005)
         snapshot_donations_for_month(JUNE)
@@ -92,17 +95,17 @@ class DonationLedgerTest(TestCase):
         self.assertEqual(row.donation_amount, Decimal("3.0000"))
         self.assertEqual(row.donation_percentage, 25)
 
-    @patch(PRICE_PATH, return_value=20.0)
+    @patch(PRICE_PATH, return_value=(20.0, "stripe"))
     def test_donation_tracks_resolved_price(self, _price):
-        # Whatever _get_subscription_price resolves (real Stripe price OR the
-        # settings fallback), the donation is that price * pledge %.
+        # A Stripe-verified price of any amount books a PENDING pledge of
+        # price * pledge %.
         t = self._paying_tenant(811006)
         snapshot_donations_for_month(JUNE)
         row = DonationLedger.objects.get(tenant=t, month=JUNE)
         self.assertEqual(row.surplus_amount, Decimal("20.0000"))
         self.assertEqual(row.donation_amount, Decimal("2.0000"))  # 20 * 10%
 
-    @patch(PRICE_PATH, return_value=12.0)
+    @patch(PRICE_PATH, return_value=(12.0, "stripe"))
     def test_donation_enabled_false_still_donates(self, _price):
         # The revenue pledge is a platform commitment — the per-tenant toggle does
         # NOT gate it. A paying subscriber who opted their surplus out still counts.
@@ -112,7 +115,7 @@ class DonationLedgerTest(TestCase):
         row = DonationLedger.objects.get(tenant=t, month=JUNE)
         self.assertEqual(row.donation_amount, Decimal("1.2000"))
 
-    @patch(PRICE_PATH, return_value=12.0)
+    @patch(PRICE_PATH, return_value=(12.0, "stripe"))
     def test_idempotent_and_completed_not_rewritten(self, _price):
         t = self._paying_tenant(811008)
         snapshot_donations_for_month(JUNE)
@@ -126,6 +129,40 @@ class DonationLedgerTest(TestCase):
         row.refresh_from_db()
         self.assertEqual(row.status, DonationLedger.Status.COMPLETED)
         self.assertEqual(row.receipt_reference, "receipt-1")
+        self.assertEqual(DonationLedger.objects.filter(tenant=t, month=JUNE).count(), 1)
+
+    @patch(PRICE_PATH, return_value=(12.0, "fallback"))
+    def test_unverified_price_writes_skipped_not_pending(self, _price):
+        # A fallback (non-Stripe-verified) price must NOT book a pending pledge —
+        # we won't promise money against revenue we couldn't verify was collected.
+        # A warning is logged so this is loud in production.
+        t = self._paying_tenant(811010)
+        with self.assertLogs("apps.billing.donation_service", level="WARNING") as logs:
+            result = snapshot_donations_for_month(JUNE)
+        self.assertEqual(result["pending"], 0)
+        self.assertEqual(result["pending_total"], 0.0)
+        self.assertEqual(result["skipped"], 1)
+        row = DonationLedger.objects.get(tenant=t, month=JUNE)
+        self.assertEqual(row.status, DonationLedger.Status.SKIPPED)
+        # Revenue base is still recorded for auditability, but no pledge is made.
+        self.assertEqual(row.surplus_amount, Decimal("12.0000"))
+        self.assertTrue(any("unverified subscription price" in m for m in logs.output))
+
+    def test_unverified_upgrades_to_pending_on_rerun(self):
+        # First snapshot: Stripe unavailable → the price falls back → SKIPPED, no pledge.
+        t = self._paying_tenant(811011)
+        with patch(PRICE_PATH, return_value=(12.0, "fallback")):
+            snapshot_donations_for_month(JUNE)
+        row = DonationLedger.objects.get(tenant=t, month=JUNE)
+        self.assertEqual(row.status, DonationLedger.Status.SKIPPED)
+        # Re-run once Stripe recovers: the same row upgrades to PENDING (update_or_create
+        # is idempotent — one row, now with the real verified price).
+        with patch(PRICE_PATH, return_value=(12.0, "stripe")):
+            result = snapshot_donations_for_month(JUNE)
+        self.assertEqual(result["pending"], 1)
+        row.refresh_from_db()
+        self.assertEqual(row.status, DonationLedger.Status.PENDING)
+        self.assertEqual(row.donation_amount, Decimal("1.2000"))
         self.assertEqual(DonationLedger.objects.filter(tenant=t, month=JUNE).count(), 1)
 
     def test_closed_month_first_wraps_january(self):

@@ -66,26 +66,40 @@ def _donation_percentage() -> Decimal:
     return Decimal(str(getattr(settings, "DONATION_REVENUE_PCT", 10.0)))
 
 
-def compute_donation(tenant) -> tuple[Decimal, Decimal, int]:
-    """Return ``(revenue_base, donation, pct)`` for ``tenant``.
+def compute_donation(tenant) -> tuple[Decimal, Decimal, int, str]:
+    """Return ``(revenue_base, donation, pct, price_source)`` for ``tenant``.
 
     ``revenue_base`` is the tenant's real monthly subscription price (from
     Stripe, with a safe settings fallback); ``donation`` is that price times the
     platform's pledged percentage; ``pct`` is the pledged percentage as an int
-    snapshot recorded on the row. Deliberately independent of usage and infra —
-    that is the whole point of the revenue-% model.
+    snapshot recorded on the row; ``price_source`` is ``"stripe"`` when the price
+    was verified against Stripe or ``"fallback"`` when the settings default was
+    used (no/unpriceable subscription, or Stripe was unavailable). The snapshot
+    refuses to book a PENDING pledge against a ``"fallback"`` price. Deliberately
+    independent of usage and infra — that is the whole point of the revenue-% model.
     """
-    from .usage_services import _get_subscription_price
+    from .usage_services import _get_subscription_price_with_source
 
     pct = _donation_percentage()
-    revenue_base = Decimal(str(_get_subscription_price(tenant))).quantize(Decimal("0.0001"))
+    price, price_source = _get_subscription_price_with_source(tenant)
+    revenue_base = Decimal(str(price)).quantize(Decimal("0.0001"))
     donation = (revenue_base * pct / Decimal("100")).quantize(Decimal("0.0001"))
-    return revenue_base, donation, int(round(pct))
+    return revenue_base, donation, int(round(pct)), price_source
 
 
 def snapshot_donations_for_month(month_first: date | None = None) -> dict:
     """Write a ``DonationLedger`` row per paying subscriber for the just-closed
     month (idempotent; a ``completed`` row is never rewritten).
+
+    Only Stripe-verified subscription prices book a PENDING pledge. When the price
+    could only be resolved via the settings fallback (Stripe unavailable, or a
+    stale/test-mode subscription id that Stripe won't price) the row is written
+    with status ``SKIPPED`` and a warning is logged, so we never pledge real money
+    against revenue we couldn't verify was collected. Below-threshold donations are
+    also recorded ``SKIPPED`` (unchanged). Because ``update_or_create`` is
+    idempotent, re-running the snapshot after Stripe recovers upgrades a previously
+    ``SKIPPED``-for-unverified row to ``PENDING`` with the real price; ``completed``
+    rows are still never rewritten.
 
     ``month_first`` defaults to the first day of the previous month. Returns a
     summary dict for cron logging.
@@ -115,8 +129,23 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
             completed_seen += 1
             continue  # already disbursed — never rewrite an auditable record
 
-        revenue_base, donation, pct = compute_donation(tenant)
-        status = DonationLedger.Status.PENDING if donation >= DONATION_MIN_THRESHOLD else DonationLedger.Status.SKIPPED
+        revenue_base, donation, pct, price_source = compute_donation(tenant)
+        if price_source != "stripe":
+            # Unverified price (Stripe unavailable or a stale/test-mode sub id) —
+            # book SKIPPED, not PENDING, so we never pledge against unverified
+            # revenue. Loud in prod logs; re-run upgrades it once Stripe recovers.
+            status = DonationLedger.Status.SKIPPED
+            logger.warning(
+                "Donation snapshot: unverified subscription price for tenant %s "
+                "(source=%s) — recording SKIPPED instead of PENDING; re-run after "
+                "Stripe recovers to upgrade this row.",
+                tenant.id,
+                price_source,
+            )
+        elif donation >= DONATION_MIN_THRESHOLD:
+            status = DonationLedger.Status.PENDING
+        else:
+            status = DonationLedger.Status.SKIPPED
         DonationLedger.objects.update_or_create(
             tenant=tenant,
             month=month_first,
