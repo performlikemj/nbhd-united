@@ -61,6 +61,19 @@ class TelegramPoller:
 
     def start(self) -> None:
         """Run the polling loop. Blocks until signalled to stop."""
+        # Encryption-at-rest Phase 1 (PR4): best-effort DEK cache pre-warm,
+        # dark (nothing decrypts yet). The poller holds fleet DEKs today for
+        # redaction mints and will decrypt contextual-recall in a later
+        # phase, so it needs the same warm cache as a gunicorn worker.
+        # Fire-and-forget on a daemon thread — never blocks poller startup.
+        # startup.sh restarts the poller process (and re-invokes `start()`)
+        # whenever it dies, so this re-warms on every restart; a DEK is
+        # immutable per (tenant, epoch) once cached (see apps.crypto.cache),
+        # so a redundant warm on restart is a cheap no-op, not a bug.
+        from apps.crypto.prewarm import start_prewarm_thread
+
+        start_prewarm_thread()
+
         if not self.bot_token:
             raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
 

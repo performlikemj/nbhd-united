@@ -28,3 +28,16 @@ def post_worker_init(worker):
         worker.log.info("post_worker_init: PII pipeline warmed")
     except Exception as exc:
         worker.log.warning("post_worker_init: PII warm skipped (%s)", exc)
+
+    # Encryption-at-rest Phase 1 (PR4): best-effort DEK cache pre-warm, dark
+    # (nothing decrypts yet — this only populates apps.crypto.cache so a
+    # later phase's first decrypt isn't a cold Key Vault unwrap). Runs on
+    # its own daemon thread, so this call returns immediately; same
+    # never-fail posture as the PII warm above.
+    try:
+        from apps.crypto.prewarm import start_prewarm_thread
+
+        start_prewarm_thread()
+        worker.log.info("post_worker_init: DEK pre-warm thread started")
+    except Exception as exc:
+        worker.log.warning("post_worker_init: DEK pre-warm skipped (%s)", exc)
