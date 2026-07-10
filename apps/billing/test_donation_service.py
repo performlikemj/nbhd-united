@@ -461,6 +461,106 @@ class TopupDonationRevenueTest(TestCase):
         self.assertEqual(row.donation_amount, Decimal("0.0050"))
         self.assertEqual(result["pending"], 0)
 
+    def test_discounted_charge_books_amount_paid_not_list_price(self):
+        # A promo/coupon charged $5.00 for the credit_5 pack (list price
+        # $6.00) — revenue must book what was actually collected, never the
+        # pack's list price. This is the "never book MORE than collected"
+        # direction of the truth rule.
+        t = self._credit_tenant(831015)
+        self._grant(t, event_id="evt_831015", amount="5.00", amount_paid_cents=500, pack_id="credit_5", when=IN_JUNE)
+        result = snapshot_donations_for_month(JUNE)
+        row = DonationLedger.objects.get(tenant=t, month=JUNE)
+        self.assertEqual(row.surplus_amount, Decimal("5.0000"))  # NOT 6.0000 (list price)
+        self.assertEqual(row.status, DonationLedger.Status.PENDING)
+        self.assertEqual(row.donation_amount, Decimal("0.5000"))
+        self.assertEqual(result["pending"], 1)
+
+    def test_double_partial_refunds_net_to_exactly_zero(self):
+        # Two $2.50 partial refunds against the same $6.00-revenue/$5.00-credit
+        # grant, same PI: 2 * (2.50/5.00)*6.00 = $6.00 clawed back == the
+        # grant's full revenue — nets to exactly 0, not -0.50 or a rounding drift.
+        t = self._credit_tenant(831016)
+        self._grant(
+            t,
+            event_id="evt_831016_g",
+            amount="5.00",
+            amount_paid_cents=600,
+            pack_id="credit_5",
+            pi="pi_831016",
+            when=IN_JUNE,
+        )
+        self._reversal(t, event_id="evt_831016_r1", amount="-2.50", pi="pi_831016", when=IN_JUNE)
+        self._reversal(t, event_id="evt_831016_r2", amount="-2.50", pi="pi_831016", when=IN_JUNE)
+        result = snapshot_donations_for_month(JUNE)
+        self.assertFalse(DonationLedger.objects.filter(tenant=t, month=JUNE).exists())
+        self.assertEqual(result["pending"], 0)
+        self.assertEqual(result["skipped"], 1)
+
+    def test_matched_unresolvable_grant_reversal_pair_nets_zero_symmetrically(self):
+        # F1: a reversal matched to a grant whose revenue is unresolvable must
+        # be SKIPPED (the pair nets $0 on both sides), never subtracted raw —
+        # subtracting raw would take money away from a DIFFERENT grant's
+        # revenue in the same month (the pre-fix bug).
+        t = self._credit_tenant(831017)
+        self._grant(
+            t,
+            event_id="evt_831017_g_bad",
+            amount="5.00",
+            amount_paid_cents=None,
+            pack_id="retired_pack",
+            pi="pi_831017_bad",
+            when=IN_JUNE,
+        )
+        self._reversal(t, event_id="evt_831017_r_bad", amount="-5.00", pi="pi_831017_bad", when=IN_JUNE)
+        self._grant(
+            t, event_id="evt_831017_g_clean", amount="10.00", amount_paid_cents=1100, pack_id="credit_10", when=IN_JUNE
+        )
+        with self.assertLogs("apps.billing.donation_service", level="WARNING") as logs:
+            result = snapshot_donations_for_month(JUNE)
+        row = DonationLedger.objects.get(tenant=t, month=JUNE)
+        # $11.00 from the clean grant only. The old bug would have subtracted
+        # the unmatched-fallback raw clawback ($5.00) from this total, giving
+        # $6.00 instead of the correct $11.00.
+        self.assertEqual(row.surplus_amount, Decimal("11.0000"))
+        self.assertEqual(row.status, DonationLedger.Status.PENDING)
+        self.assertEqual(result["pending"], 1)
+        self.assertTrue(any("skipping this reversal so the pair nets" in m for m in logs.output))
+
+    def test_no_downward_pending_rewrite_after_verification_regression(self):
+        t = self._subscriber(831018)
+        self._grant(t, event_id="evt_831018", amount="5.00", amount_paid_cents=600, pack_id="credit_5", when=IN_JUNE)
+
+        with patch(PRICE_PATH, return_value=(12.0, "stripe")):
+            result1 = snapshot_donations_for_month(JUNE)
+        row = DonationLedger.objects.get(tenant=t, month=JUNE)
+        self.assertEqual(row.surplus_amount, Decimal("18.0000"))  # $12 sub + $6 topup
+        self.assertEqual(row.status, DonationLedger.Status.PENDING)
+        self.assertEqual(row.donation_amount, Decimal("1.8000"))
+        self.assertEqual(result1["pending"], 1)
+
+        # Stripe becomes unavailable: the sub component would drop to $0, so the
+        # recomputed base ($6.00 topup-only) is LOWER than the existing verified
+        # PENDING row ($18.00) — must NOT rewrite downward.
+        with (
+            patch(PRICE_PATH, return_value=(12.0, "fallback")),
+            self.assertLogs("apps.billing.donation_service", level="WARNING") as logs,
+        ):
+            result2 = snapshot_donations_for_month(JUNE)
+        row.refresh_from_db()
+        self.assertEqual(row.surplus_amount, Decimal("18.0000"))  # untouched
+        self.assertEqual(row.donation_amount, Decimal("1.8000"))
+        self.assertEqual(row.status, DonationLedger.Status.PENDING)
+        self.assertEqual(result2["pending"], 1)  # still counted pending in the summary
+        self.assertTrue(any("is LOWER than the existing PENDING row" in m for m in logs.output))
+
+        # Stripe recovers again: an equal recompute is a normal no-op rewrite.
+        with patch(PRICE_PATH, return_value=(12.0, "stripe")):
+            result3 = snapshot_donations_for_month(JUNE)
+        row.refresh_from_db()
+        self.assertEqual(row.surplus_amount, Decimal("18.0000"))
+        self.assertEqual(row.status, DonationLedger.Status.PENDING)
+        self.assertEqual(result3["pending"], 1)
+
 
 class ReconcileDonationsCommandTest(TestCase):
     def _pending_row(self, chat_id, amount):
