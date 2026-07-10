@@ -110,6 +110,15 @@ TASK_MAP = {
     "update_tenant_config": "apps.orchestrator.tasks.update_tenant_config_task",
     "seed_cron_jobs": "apps.orchestrator.tasks.seed_cron_jobs_task",
     "repair_stale_tenant_provisioning": "apps.orchestrator.tasks.repair_stale_tenant_provisioning_task",
+    # Encryption-at-rest Phase 1 activation (2026-07) — one-off operator fire that
+    # runs the DEK backfill INSIDE the running container (which holds prod DB
+    # access + the provisioner managed identity), so no secret leaves Azure and
+    # no new auth surface is added. Fired via a no-body QStash publish to
+    # /api/cron/trigger/<name>/ — hence the zero-arg pair (the publish path we
+    # use can't carry a body). Safe to leave registered: the backfill is
+    # idempotent, so once every tenant has a DEK a re-fire is a no-op.
+    "backfill_tenant_deks": "apps.orchestrator.tasks.backfill_tenant_deks_task",
+    "backfill_tenant_deks_dry_run": "apps.orchestrator.tasks.backfill_tenant_deks_dry_run_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.
