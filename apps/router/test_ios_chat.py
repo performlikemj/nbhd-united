@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from apps.router.inbound_media import MAX_APP_DOCUMENT_BYTES, MAX_APP_IMAGE_BYTES
+from apps.router.inbound_media import MAX_APP_DOCUMENT_BYTES, MAX_APP_IMAGE_BYTES, attachment_marker
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.tenants.models import Tenant, User
 from apps.tenants.throttling import ChatMessageSendHourThrottle
@@ -374,10 +374,14 @@ class IOSChatImageTest(TestCase):
         self.assertEqual(pmsg.channel, PendingMessage.Channel.IOS)
         # Container-path marker baked into the LLM-bound text; is_image set so
         # the row is a forced singleton (marker survives a cold-start burst).
+        # Built via the shared attachment_marker helper — same call both
+        # channels make — so this pins the exact untrusted-content framing,
+        # not just a bare path.
         self.assertIn(
-            "[Photo attached: /home/node/.openclaw/workspace/media/inbound/photo_test.jpg]",
+            attachment_marker("photo", "/home/node/.openclaw/workspace/media/inbound/photo_test.jpg"),
             pmsg.payload["message_text"],
         )
+        self.assertIn("UNTRUSTED DATA", pmsg.payload["message_text"])
         self.assertTrue(pmsg.payload["is_image"])
         # Bytes NEVER ride the payload, and the user-facing excerpt has no marker.
         self.assertNotIn("image", pmsg.payload)
@@ -496,6 +500,10 @@ class IOSChatImageTest(TestCase):
         pmsg = captured["pmsg"]
         self.assertIn("couldn't be processed", pmsg.payload["message_text"])
         self.assertIn("look at this", pmsg.payload["message_text"])
+        # The "couldn't be processed" fallback is NOT untrusted content (there's
+        # no file for the agent to read), so it stays a bare notice — no
+        # attachment_marker framing.
+        self.assertNotIn("UNTRUSTED DATA", pmsg.payload["message_text"])
         # Still a singleton (the bytes were valid; only the write failed).
         self.assertTrue(pmsg.payload["is_image"])
         self.assertEqual(AppChatMessage.objects.get(client_msg_id="sf1").attachment_path, "")
@@ -661,10 +669,13 @@ class IOSChatDocumentTest(TestCase):
         self.assertEqual(pmsg.channel, PendingMessage.Channel.IOS)
         # Container-path marker baked into the LLM-bound text; is_document set so
         # the row is a forced singleton (marker survives a cold-start burst).
+        # Built via the shared attachment_marker helper — pins the exact
+        # untrusted-content framing, not just a bare path.
         self.assertIn(
-            "[Document attached: /home/node/.openclaw/workspace/media/inbound/doc_test.pdf]",
+            attachment_marker("document", "/home/node/.openclaw/workspace/media/inbound/doc_test.pdf"),
             pmsg.payload["message_text"],
         )
+        self.assertIn("UNTRUSTED DATA", pmsg.payload["message_text"])
         self.assertTrue(pmsg.payload["is_document"])
         # Bytes NEVER ride the payload, and the user-facing excerpt has no marker.
         self.assertNotIn("document", pmsg.payload)
@@ -800,6 +811,9 @@ class IOSChatDocumentTest(TestCase):
         pmsg = captured["pmsg"]
         self.assertIn("couldn't be processed", pmsg.payload["message_text"])
         self.assertIn("read this", pmsg.payload["message_text"])
+        # No file was actually stored, so the fallback is a bare notice — no
+        # attachment_marker framing.
+        self.assertNotIn("UNTRUSTED DATA", pmsg.payload["message_text"])
         self.assertTrue(pmsg.payload["is_document"])
         self.assertEqual(AppChatMessage.objects.get(client_msg_id="dsf1").attachment_path, "")
 

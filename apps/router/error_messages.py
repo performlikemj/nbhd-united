@@ -1006,6 +1006,7 @@ _INTERNAL_FRAMING_TAGS: tuple[str, ...] = (
     "chat",
     "User tapped button",
     "Photo attached",
+    "Document attached",
 )
 _INTERNAL_FRAMING_RE = re.compile(
     r"^\s*\[(?:" + "|".join(re.escape(t) for t in _INTERNAL_FRAMING_TAGS) + r")\b[^\]]*\]\s*",
