@@ -6,11 +6,11 @@ exist before the container is created and must never be threaded into the
 container spec/env — and a KEK soft-delete failure during deprovision must
 never block the rest of deprovision.
 
-Also covers the dark-window soft-fail posture (see services.py TODO):
-until `kv-nbhd-keks` + the az pre-work exist, a DEK-mint failure must be
-logged and swallowed rather than aborting provisioning — a DEK-less tenant
-is no different from any pre-Phase-1 tenant today, and backfill_tenant_deks
-mints the missing row once the vault exists.
+Also covers the fail-closed mint posture (restored 2026-07-11, PR B):
+now that `kv-nbhd-keks` + the provisioner/broker RBAC are live and every
+pre-existing tenant has a DEK (via the 2026-07 backfill), a DEK-mint failure
+is a real error — provisioning must abort and reset the tenant to PENDING
+rather than strand a container-having, DEK-less (un-encryptable) tenant.
 """
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ class ProvisionMintsDekTest(TestCase):
     )
     @patch("apps.orchestrator.services._audit_and_log")
     @patch("apps.crypto.keys.mint_and_wrap_dek", side_effect=RuntimeError("KEK vault unreachable"))
-    def test_dek_mint_failure_does_not_block_provisioning_dark_window(
+    def test_dek_mint_failure_aborts_provisioning_fail_closed(
         self,
         _mock_mint,
         _mock_audit,
@@ -167,30 +167,26 @@ class ProvisionMintsDekTest(TestCase):
         _mock_generate_config,
         _mock_is_mock,
     ):
-        # Dark-window posture: the KEK vault doesn't exist in Azure yet, so
-        # a mint failure must be logged and swallowed, not fail
-        # provisioning. Assert on the module logger so this test breaks
-        # loudly if the warning is ever dropped.
-        with self.assertLogs("apps.orchestrator.services", level="WARNING") as log_ctx:
+        # Fail-closed posture (restored 2026-07-11): kv-nbhd-keks + broker RBAC
+        # are live and every tenant has a DEK via the 2026-07 backfill, so a
+        # mint failure is now a real error. Provisioning must propagate it and
+        # reset the tenant to PENDING (like any other critical-step failure —
+        # see test_provision_failure_resets_to_pending), NOT swallow it and
+        # strand a container-having, DEK-less tenant.
+        with self.assertRaises(RuntimeError):
             provision_tenant(str(self.tenant.id))
 
-        self.assertTrue(
-            any(str(self.tenant.id) in message and "DEK mint failed" in message for message in log_ctx.output)
-        )
-
         self.tenant.refresh_from_db()
-        # Provisioning reached its normal post-mint flow and completed —
-        # the tenant must NOT get stuck PENDING, unlike a real (non-mint)
-        # failure (see test_provision_failure_resets_to_pending).
-        self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
-        self.assertEqual(self.tenant.container_id, "oc-prov5-tenant-2")
+        # Reset to PENDING by the provision_tenant error handler, so the
+        # natural QStash retry / re-provision path picks it back up.
+        self.assertEqual(self.tenant.status, Tenant.Status.PENDING)
 
-        # Provisioning continued past the mint call to create the container.
-        mock_create_container.assert_called_once()
+        # The mint aborts BEFORE the container is created (mint precedes
+        # create_container_app in provision_tenant), so no half-provisioned
+        # container is left behind.
+        mock_create_container.assert_not_called()
 
-        # No DEK row exists — the mint call raised — and that's expected
-        # and harmless during the dark window (backfill_tenant_deks mints
-        # it later once kv-nbhd-keks exists).
+        # No DEK row was written.
         self.assertFalse(TenantDek.objects.filter(tenant=self.tenant).exists())
 
 
