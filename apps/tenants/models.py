@@ -678,6 +678,22 @@ class Tenant(models.Model):
         ),
     )
 
+    # Encryption-at-rest Phase 2 (expand/contract) — chat content columns.
+    # Two independent gates so write and read flip separately per tenant:
+    #   encrypt_chat_writes — dual-write the sealed ``*_enc`` envelope alongside
+    #     the plaintext column (PR-2). Dark default; nothing writes _enc until on.
+    #   read_encrypted_chat — read back through the ``*_enc`` column when present,
+    #     falling back to plaintext (PR-4). Kept OFF until a tenant's backfill has
+    #     populated _enc for every row, so a read never misses ciphertext-only data.
+    encrypt_chat_writes = models.BooleanField(
+        default=False,
+        help_text="Dual-write sealed *_enc envelopes for chat content (encryption-at-rest Phase 2).",
+    )
+    read_encrypted_chat = models.BooleanField(
+        default=False,
+        help_text="Read chat content back through the *_enc column when present (encryption-at-rest Phase 2).",
+    )
+
     # Site publishing module — lets the assistant push portfolio images to the
     # subscriber's own website (Azure Blob + Cosmos) via the tenant managed
     # identity. Gated per tenant in config_generator; the plugin self-gates on

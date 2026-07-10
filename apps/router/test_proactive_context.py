@@ -137,7 +137,7 @@ class RecordProactiveOutboundTest(_TenantFixture):
 
 class SurfaceProactiveContextTest(_TenantFixture):
     def test_empty_when_no_rows(self):
-        block = surface_proactive_context(tenant=self.tenant, channel="line", channel_user_id="Unone")
+        block = surface_proactive_context(tenant=self.tenant)
         self.assertEqual(block, "")
 
     def test_surfaces_recent_row_and_marks_consumed(self):
@@ -148,7 +148,7 @@ class SurfaceProactiveContextTest(_TenantFixture):
             message_text="proactive message body",
             job_name="Evening Check-in",
         )
-        block = surface_proactive_context(tenant=self.tenant, channel="line", channel_user_id="Utest")
+        block = surface_proactive_context(tenant=self.tenant)
         self.assertIn("earlier-from-you", block)
         self.assertIn("proactive message body", block)
         self.assertIn("Evening Check-in", block)
@@ -162,21 +162,47 @@ class SurfaceProactiveContextTest(_TenantFixture):
             channel_user_id="Utest",
             message_text="things:\n- alpha\n- beta\n- gamma",
         )
-        block = surface_proactive_context(tenant=self.tenant, channel="line", channel_user_id="Utest")
+        block = surface_proactive_context(tenant=self.tenant)
         self.assertIn("thread-rule", block)
         self.assertIn("[1] alpha", block)
         self.assertIn("[2] beta", block)
         self.assertIn("[3] gamma", block)
 
-    def test_scoped_per_channel_user(self):
+    def test_surfaced_tenant_wide_across_channels(self):
+        # Surfacing is now TENANT-scoped, transport-agnostic (one tenant = one
+        # human). A row recorded under ANY channel/channel_user_id surfaces on
+        # the tenant's next inbound regardless of the reply transport — this is
+        # the production fix (rows recorded channel='telegram'/'line' must
+        # surface when the user replies from the iOS app). This inverts the old
+        # ``test_scoped_per_channel_user`` assertion, which required a different
+        # channel_user_id row to be EXCLUDED; that channel-scoping was the bug.
         record_proactive_outbound(
-            tenant=self.tenant,
-            channel="line",
-            channel_user_id="UserA",
-            message_text="for A",
+            tenant=self.tenant, channel="telegram", channel_user_id="55", message_text="from telegram cron"
         )
-        block_b = surface_proactive_context(tenant=self.tenant, channel="line", channel_user_id="UserB")
-        self.assertEqual(block_b, "")
+        record_proactive_outbound(
+            tenant=self.tenant, channel="line", channel_user_id="Uxyz", message_text="from line cron"
+        )
+        record_proactive_outbound(
+            tenant=self.tenant, channel="app", channel_user_id="u-app", message_text="from app cron"
+        )
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertIn("from telegram cron", block)
+        self.assertIn("from line cron", block)
+        self.assertIn("from app cron", block)
+
+    def test_other_tenant_rows_not_surfaced(self):
+        # Tenant-wide scoping stops at the tenant boundary — a different
+        # tenant's proactive rows must never leak into this tenant's turn.
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        other_user = User.objects.create_user(username="proactive_other", password="pw")
+        other_tenant = Tenant.objects.create(user=other_user, status=Tenant.Status.ACTIVE)
+        record_proactive_outbound(
+            tenant=other_tenant, channel="telegram", channel_user_id="999", message_text="someone else's cron"
+        )
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertEqual(block, "")
 
     def test_stale_row_outside_window_dropped(self):
         row = record_proactive_outbound(
@@ -187,7 +213,7 @@ class SurfaceProactiveContextTest(_TenantFixture):
         )
         assert row is not None
         ProactiveOutbound.objects.filter(id=row.id).update(created_at=timezone.now() - timedelta(hours=48))
-        block = surface_proactive_context(tenant=self.tenant, channel="telegram", channel_user_id="123")
+        block = surface_proactive_context(tenant=self.tenant)
         self.assertEqual(block, "")
 
     def test_consumed_row_resurfaces_within_followup_window(self):
@@ -198,14 +224,14 @@ class SurfaceProactiveContextTest(_TenantFixture):
             message_text="first reach-out",
         )
         # First inbound surfaces and consumes.
-        first = surface_proactive_context(tenant=self.tenant, channel="line", channel_user_id="Utest")
+        first = surface_proactive_context(tenant=self.tenant)
         self.assertNotEqual(first, "")
         # Second inbound, same minute, still sees it (follow-up window).
-        second = surface_proactive_context(tenant=self.tenant, channel="line", channel_user_id="Utest")
+        second = surface_proactive_context(tenant=self.tenant)
         self.assertIn("first reach-out", second)
         # But once we push consumption past the 5-min window…
         ProactiveOutbound.objects.filter(id=row.id).update(consumed_at=timezone.now() - timedelta(minutes=10))
-        third = surface_proactive_context(tenant=self.tenant, channel="line", channel_user_id="Utest")
+        third = surface_proactive_context(tenant=self.tenant)
         self.assertEqual(third, "")
 
     def test_multiple_rows_ordered_oldest_first(self):
@@ -223,7 +249,7 @@ class SurfaceProactiveContextTest(_TenantFixture):
             channel_user_id="123",
             message_text="NEWER",
         )
-        block = surface_proactive_context(tenant=self.tenant, channel="telegram", channel_user_id="123")
+        block = surface_proactive_context(tenant=self.tenant)
         # Oldest first so the agent reads in conversational order.
         self.assertLess(block.index("OLDER"), block.index("NEWER"))
 

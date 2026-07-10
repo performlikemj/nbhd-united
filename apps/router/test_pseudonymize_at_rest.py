@@ -150,7 +150,7 @@ class ProactiveOutboundPseudonymizeTest(TestCase):
         record_proactive_outbound(
             tenant=self.tenant, channel="telegram", channel_user_id="42", message_text="Did you reach [PERSON_5]?"
         )
-        block = surface_proactive_context(tenant=self.tenant, channel="telegram", channel_user_id="42")
+        block = surface_proactive_context(tenant=self.tenant)
         self.assertIn("[PERSON_5]", block)
         self.assertNotIn(_NAME, block)
 

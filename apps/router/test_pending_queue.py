@@ -1727,3 +1727,206 @@ class CleanupStalePendingMessagesTest(TestCase):
         # PENDING rows are owned by the drain / reaper — never swept here even
         # when ancient (the drain flips them to FAILED on the next tick).
         self.assertIn(old_pending.id, remaining)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
+class ProactiveContextIOSBridgeTest(TestCase):
+    """The [earlier-from-you ...] continuity bridge on the iOS/app inbound path.
+
+    Production failure (tenant 148ccf1c, iOS-only since 2026-06-25): the
+    assistant sends a proactive cron question, the user replies from the iOS
+    app, and the reply reaches the container with NO record of the question —
+    because (1) the iOS inbound path never called ``surface_proactive_context``
+    (only Telegram/LINE ingress did), and (2) rows were recorded under the
+    OUTBOUND transport chosen by ``resolve_user_channel`` (telegram/line, since
+    those links still exist), which an app-side channel-scoped lookup would
+    never have matched. The fix surfaces TENANT-wide at the iOS drain — the
+    single point where iOS content becomes container-bound.
+    """
+
+    def setUp(self):
+        from apps.router.models import ChatThread
+
+        # telegram_chat_id is still linked → the old code recorded proactive rows
+        # under channel='telegram' even though the user now replies via the app.
+        self.user = User.objects.create_user(
+            username=f"iosbridge_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=99123,
+            preferred_channel="telegram",
+        )
+        self.tenant = _make_tenant(self.user, container_fqdn="oc-iosbridge.example.com")
+        self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True)
+
+    def _make_pending(self, client_msg_id: str, *, user_text: str):
+        """A PENDING AppChatMessage + its iOS PendingMessage queue row, keyed by
+        the thread (the coalesce key) — mirrors the real iOS ingress shape
+        (``payload.message_text`` carries NO proactive block; the bridge is added
+        only at the drain)."""
+        from apps.router.models import AppChatMessage
+
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=self.thread,
+            client_msg_id=client_msg_id,
+            user_text=user_text,
+            status=AppChatMessage.Status.PENDING,
+        )
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(self.thread.id),
+            payload={
+                "message_text": user_text,
+                "user_param": f"thread:{self.thread.id}",
+                "user_timezone": "UTC",
+                "client_msg_id": client_msg_id,
+                "thread_id": str(self.thread.id),
+            },
+            user_text=user_text,
+        )
+
+    def _drain(self):
+        return drain_pending_messages_for_tenant_task(str(self.tenant.id), "ios", str(self.thread.id))
+
+    @staticmethod
+    def _posted_content(mock_post):
+        return mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_telegram_recorded_row_surfaces_and_consumes_on_ios_reply(self, mock_post):
+        # The EXACT production failure: outbound recorded channel='telegram',
+        # reply arrives via the iOS app. Must surface AND consume.
+        from apps.router.models import ProactiveOutbound
+        from apps.router.proactive_context import record_proactive_outbound
+
+        mock_post.return_value = _ok_chat_response("it went great")
+        row = record_proactive_outbound(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="99123",
+            message_text="How did the Jasmine call go?",
+            job_name="Personal Question",
+        )
+        assert row is not None
+        self._make_pending("ios-1", user_text="It went great, thanks for asking")
+
+        self._drain()
+
+        content = self._posted_content(mock_post)
+        self.assertIn("earlier-from-you", content)
+        self.assertIn("How did the Jasmine call go?", content)
+        # Consumed at the drain (the point the text became container-bound).
+        row.refresh_from_db()
+        self.assertIsNotNone(row.consumed_at)
+        # Row still exists with its recorded transport for audit (only consumed).
+        self.assertEqual(ProactiveOutbound.objects.get(id=row.id).channel, "telegram")
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_block_prepended_once_at_top_of_singleton(self, mock_post):
+        from apps.router.proactive_context import record_proactive_outbound
+
+        mock_post.return_value = _ok_chat_response("ok")
+        record_proactive_outbound(
+            tenant=self.tenant, channel="app", channel_user_id="u-app", message_text="ping question body"
+        )
+        self._make_pending("ios-s", user_text="my reply text")
+
+        self._drain()
+
+        content = self._posted_content(mock_post)
+        # Exactly once (never injected at ingress AND drain), at the top.
+        self.assertEqual(content.count("earlier-from-you"), 1)
+        self.assertLess(content.index("ping question body"), content.index("my reply text"))
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_block_prepended_once_for_coalesced_batch(self, mock_post):
+        from apps.router.proactive_context import record_proactive_outbound
+
+        mock_post.return_value = _ok_chat_response("ok")
+        record_proactive_outbound(
+            tenant=self.tenant, channel="telegram", channel_user_id="99123", message_text="cron question body"
+        )
+        # Two rapid iOS messages for the same thread → coalesce into one OC turn.
+        self._make_pending("ios-c1", user_text="reply one")
+        self._make_pending("ios-c2", user_text="reply two")
+
+        result = self._drain()
+        self.assertEqual(result["batch_size"], 2)
+        self.assertEqual(mock_post.call_count, 1)
+
+        content = self._posted_content(mock_post)
+        # Once at the top of the coalesced turn — NOT once per pending message.
+        self.assertEqual(content.count("earlier-from-you"), 1)
+        self.assertLess(content.index("cron question body"), content.index("reply one"))
+        self.assertLess(content.index("reply one"), content.index("reply two"))
+
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_consumed_row_not_resurfaced_on_separate_later_turn(self, mock_post):
+        # Consumption idempotence: once consumed and past the 5-min follow-up
+        # window, a later independent iOS turn does not re-surface the row.
+        from apps.router.models import ProactiveOutbound
+        from apps.router.proactive_context import record_proactive_outbound
+
+        mock_post.return_value = _ok_chat_response("ok")
+        row = record_proactive_outbound(
+            tenant=self.tenant, channel="telegram", channel_user_id="99123", message_text="only once please"
+        )
+        assert row is not None
+        self._make_pending("ios-first", user_text="first turn")
+        self._drain()
+        # Push consumption outside the 5-minute follow-up window.
+        ProactiveOutbound.objects.filter(id=row.id).update(consumed_at=timezone.now() - timedelta(minutes=10))
+
+        self._make_pending("ios-second", user_text="second turn")
+        self._drain()
+
+        content = self._posted_content(mock_post)
+        self.assertNotIn("earlier-from-you", content)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
+class ProactiveContextIOSEndToEndTest(TestCase):
+    """Full iOS ingress → drain, to prove a single enqueue→drain turn includes
+    the bridge block exactly ONCE (injected at the drain only, never also at
+    ingress). ``publish_task`` runs synchronously in tests (no QStash token), so
+    the POST drives the container POST inline."""
+
+    def setUp(self):
+        from rest_framework.test import APIClient
+
+        self.user = User.objects.create_user(
+            username=f"iose2e_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=99456,
+            preferred_channel="telegram",
+        )
+        self.tenant = _make_tenant(self.user, container_fqdn="oc-iose2e.example.com")
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_enqueue_then_drain_includes_block_exactly_once(self, mock_post, _mock_ner):
+        from apps.router.proactive_context import record_proactive_outbound
+
+        mock_post.return_value = _ok_chat_response("noted")
+        record_proactive_outbound(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="99456",
+            message_text="did you finish the report?",
+        )
+
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "yes, all done", "client_msg_id": "e2e-1"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+
+        content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertEqual(content.count("earlier-from-you"), 1)
+        self.assertIn("did you finish the report?", content)
+        self.assertIn("yes, all done", content)

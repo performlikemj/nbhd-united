@@ -69,4 +69,6 @@ From the Fable-5 holistic review — settle each before any column flips:
 
 Then Phase 2 encrypts `AppChatMessage.user_text` first (the one still-verbatim column), behind a flag, backfill, flip. Phases 3–6 per the directive. Phase 0b (storage CMK) is independent, ~1h, whenever.
 
+Phase 2 rollout plan: `docs/encryption-at-rest-phase2-plan.md`.
+
 **Decision already locked:** software keys (not HSM) — amend directive §3.1 "HSM-resident" wording and the Phase-4 user claim ("hardware-backed" → "a dedicated key vault, separate from your data").
