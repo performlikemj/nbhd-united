@@ -1,8 +1,25 @@
 """Base classes for typed cron pattern handlers.
 
 Each pattern (pure_reminder, quote_user_intent, domain_summary,
-daily_briefing) implements a subclass of ``PatternHandler`` and
-registers itself via ``register_handler()`` in ``apps/cron/patterns/__init__.py``.
+daily_briefing, workout_congrats) implements a subclass of
+``PatternHandler`` and registers itself via ``register_handler()`` in
+``apps/cron/patterns/__init__.py``.
+
+Outbound enforcement is baked, not fetched. At save time,
+``apps/cron/signals.py`` calls ``get_outbound_contract()`` and stamps the
+result into ``CronJob.data["description"]`` as ``"nbhd.v1 " + json.dumps(...)``.
+The ``nbhd-cron-enforcement`` OpenClaw plugin reads that contract off the
+firing job (via the ``cron_changed`` hook) and evaluates every
+``nbhd_send_to_user`` dispatch against it in-container, at
+``before_tool_call`` — zero Django calls at fire time.
+
+``validate_outbound_message()`` remains the canonical Python spec for the
+same contract: it is no longer an RPC target (the old
+``pattern_context`` / ``grounding`` / ``validate_outbound`` runtime
+endpoints are gone — the plugin was their only caller), but it is the
+Python side of the parity test that keeps the JS evaluator's
+``contains`` / ``marker`` / ``bounded`` check kinds from drifting away
+from what this file actually enforces.
 
 The handler owns the full lifecycle for its pattern:
 
@@ -12,17 +29,15 @@ The handler owns the full lifecycle for its pattern:
   get_tools_allow()           — list of tools the agent turn is allowed
                                 to call. This is the lever that prevents
                                 cron-turn mutation cascades.
-  get_prompt_injection()      — system-prompt addition shown at fire
-                                time (injected via the enforcement
-                                plugin's before_prompt_build hook,
-                                appendSystemContext to avoid collision
-                                with nbhd-routing-context which uses
-                                prependSystemContext).
-  validate_outbound_message() — invoked by the enforcement plugin's
-                                message_sending hook to confirm the
-                                outbound content satisfies the pattern's
-                                contract (e.g., contains the verbatim
-                                reminder text).
+  get_outbound_contract()     — the declarative ``{check, on_fail}`` fire-time
+                                contract, baked into ``data["description"]``
+                                by the pre_save signal. ``None`` for patterns
+                                with nothing to enforce (none currently — every
+                                registered pattern defines one).
+  validate_outbound_message() — the same contract, evaluated in Python.
+                                Canonical spec for the parity test against
+                                the plugin's JS evaluator; no longer called
+                                at fire time.
   get_fallback_message()      — what to send when validation fails
                                 after the retry budget is exhausted.
 """
@@ -84,20 +99,37 @@ class PatternHandler(ABC):
         Default for most patterns: ``["nbhd_send_to_user"]`` only.
         """
 
-    def get_prompt_injection(
+    def get_outbound_contract(
         self,
         payload: PatternPayload,
         *,
-        tenant: Any,
         name: str,
-    ) -> str:
-        """System-prompt addition shown at fire time.
+    ) -> dict[str, Any] | None:
+        """The declarative fire-time outbound contract for this pattern.
 
-        Returned as ``appendSystemContext`` from the enforcement plugin's
-        ``before_prompt_build`` hook. Default: empty string (the message
-        in the agent turn payload carries the instructions).
+        Returns ``{"check": {...}, "on_fail": {...}}`` (see
+        ``apps/cron/signals.py`` for the exact envelope it gets wrapped
+        in — ``{"v": 1, "pattern": ..., **this}``). ``None`` means
+        nothing is baked into ``data["description"]`` for this cron
+        (today: never — every registered pattern defines a contract).
+
+        ``check.kind`` is one of ``contains`` (``{text}``), ``marker``
+        (``{marker}``), or ``bounded`` (``{max}``). ``on_fail.action`` is
+        one of ``rewrite`` (``{content}``), ``revise_then_rewrite``
+        (``{content, max_revisions}``), or ``revise_then_allow``
+        (``{max_revisions}``). This shape MUST stay in lockstep with the
+        ``nbhd-cron-enforcement`` plugin's ``evaluateCheck`` /
+        ``decideGuardAction`` — see the parity test.
+
+        Per-pattern matrix (the actual contracts each handler bakes):
+
+          pure_reminder      — contains(text) / rewrite(text)
+          quote_user_intent  — contains(text) / revise_then_rewrite(text, max_revisions=1)
+          domain_summary     — marker([block: <render_block>]) / revise_then_allow(max_revisions=1)
+          daily_briefing     — marker([block: daily_briefing]) / revise_then_allow(max_revisions=1)
+          workout_congrats   — bounded(800) / rewrite(get_fallback_message())
         """
-        return ""
+        return None
 
     @abstractmethod
     def validate_outbound_message(

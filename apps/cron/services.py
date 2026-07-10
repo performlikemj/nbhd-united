@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from uuid import UUID
 
 from django.db import IntegrityError, transaction
 
@@ -260,87 +259,3 @@ def _push_at_cron_immediately(tenant: Tenant, cron: CronJob) -> None:
                 cron.name,
                 exc_info=True,
             )
-
-
-def fetch_cron_pattern_context(tenant_id: UUID | str, cron_name: str) -> dict[str, Any] | None:
-    """Look up pattern + typed_payload for a firing cron.
-
-    Used by the ``nbhd-cron-enforcement`` plugin's ``cron_changed`` /
-    ``before_prompt_build`` hooks: when a cron starts, the plugin needs
-    the typed-pattern context (pattern name, payload) so it can pull
-    the right validator + prompt injection.
-
-    Returns None if the cron isn't typed or doesn't exist.
-    """
-    row = (
-        CronJob.objects.filter(
-            tenant_id=tenant_id,
-            name=cron_name,
-            creation_path=CronCreationPath.TYPED,
-        )
-        .only("pattern", "typed_payload", "name")
-        .first()
-    )
-    if row is None or not row.pattern:
-        return None
-    handler = get_handler(row.pattern)
-    payload = handler.validate_payload(row.typed_payload or {})
-    return {
-        "pattern": row.pattern,
-        "typed_payload": row.typed_payload or {},
-        "name": row.name,
-        "prompt_injection": handler.get_prompt_injection(payload, tenant=None, name=row.name),
-    }
-
-
-def validate_typed_cron_outbound(
-    *,
-    tenant_id: UUID | str,
-    cron_name: str,
-    content: str,
-) -> dict[str, Any]:
-    """Validate an outbound message against a typed cron's pattern contract.
-
-    Called by the enforcement plugin's ``message_sending`` hook. Returns
-    a dict the plugin can act on:
-
-      {ok: True}                       — pass; ship the message unchanged
-      {ok: False, reason: "...",       — fail; plugin rewrites content
-       fallback_content: "..."}          to fallback_content
-
-    Returns ``ok=True`` for non-typed crons (nothing to validate) and
-    for unknown patterns (defensive — don't block delivery on a stale
-    pattern name).
-    """
-    row = (
-        CronJob.objects.filter(
-            tenant_id=tenant_id,
-            name=cron_name,
-            creation_path=CronCreationPath.TYPED,
-        )
-        .only("pattern", "typed_payload", "name")
-        .first()
-    )
-    if row is None or not row.pattern:
-        return {"ok": True}
-
-    try:
-        handler = get_handler(row.pattern)
-    except KeyError:
-        logger.warning(
-            "validate_typed_cron_outbound: unknown pattern %r on cron %r (tenant=%s) — passing through",
-            row.pattern,
-            row.name,
-            str(tenant_id)[:8],
-        )
-        return {"ok": True}
-
-    payload = handler.validate_payload(row.typed_payload or {})
-    ok, reason = handler.validate_outbound_message(content, payload)
-    if ok:
-        return {"ok": True}
-    return {
-        "ok": False,
-        "reason": reason or "outbound_validation_failed",
-        "fallback_content": handler.get_fallback_message(payload, name=row.name),
-    }

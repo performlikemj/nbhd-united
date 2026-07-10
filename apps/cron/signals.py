@@ -14,12 +14,21 @@ from ``apps/fuel/signals.py``.
 
 from __future__ import annotations
 
+import json
 import logging
 
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
 
 from .models import CronCreationPath, CronJob
+
+# Prefix marking the fire-time outbound-enforcement contract baked into
+# ``CronJob.data["description"]`` (see ``cronjob_derive_data_from_typed_payload``
+# below). Parsed by the ``nbhd-cron-enforcement`` plugin's ``cron_changed`` hook.
+# ``description`` is schema-legal on ``cron.add`` and passed through the gateway
+# verbatim (unlike custom ``payload`` keys, which the agentTurn schema rejects) —
+# see CONTINUITY_cron-typed-patterns.md for why this field was chosen.
+CRON_CONTRACT_PREFIX = "nbhd.v1 "
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +120,23 @@ def cronjob_derive_data_from_typed_payload(sender, instance, **kwargs):
         name=instance.name,
         schedule=schedule,
     )
+
+    # Bake the fire-time outbound-enforcement contract (if this pattern
+    # defines one) into data["description"]. Single chokepoint: covers both
+    # push paths (immediate at-cron push + reconciler render of managed
+    # rows) because both read CronJob.data verbatim. See CRON_CONTRACT_PREFIX
+    # above and apps/cron/patterns/base.py:get_outbound_contract.
+    contract = handler.get_outbound_contract(payload, name=instance.name)
+    if contract is not None:
+        full_contract = {
+            "v": 1,
+            "pattern": instance.pattern,
+            "check": contract.get("check"),
+            "on_fail": contract.get("on_fail"),
+        }
+        instance.data["description"] = CRON_CONTRACT_PREFIX + json.dumps(
+            full_contract, separators=(",", ":"), ensure_ascii=False
+        )
 
 
 @receiver(post_save, sender=CronJob)

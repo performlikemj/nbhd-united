@@ -83,23 +83,17 @@ class PureReminderHandler(PatternHandler):
     def get_tools_allow(self, payload: PureReminderPayload) -> list[str]:
         return ["nbhd_send_to_user"]
 
-    def get_prompt_injection(
+    def get_outbound_contract(
         self,
         payload: PureReminderPayload,
         *,
-        tenant: Any,
         name: str,
-    ) -> str:
-        # Appended to system prompt at fire time via the enforcement plugin.
-        # Belt-and-braces reinforcement of the verbatim rule — the model
-        # sometimes ignores user-message constraints but obeys system-prompt
-        # constraints more reliably.
-        return (
-            "## Cron pattern: pure_reminder\n"
-            "This turn fires a scheduled reminder. Your only valid action is "
-            "to call `nbhd_send_to_user` once with the verbatim text from "
-            "the user message. Do not call any other tool. Do not add prose."
-        )
+    ) -> dict[str, Any]:
+        text = payload.text.strip()
+        return {
+            "check": {"kind": "contains", "text": text},
+            "on_fail": {"action": "rewrite", "content": text},
+        }
 
     def validate_outbound_message(
         self,

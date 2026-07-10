@@ -17,10 +17,7 @@ from .runtime_views import (
     RuntimeCronCreateDomainSummaryView,
     RuntimeCronCreatePureReminderView,
     RuntimeCronCreateQuoteUserIntentView,
-    RuntimeCronGroundingView,
-    RuntimeCronPatternContextView,
     RuntimeCronPhase2SummaryView,
-    RuntimeCronValidateOutboundView,
     RuntimeCurrentStatusView,
     RuntimeDailyNoteAppendView,
     RuntimeDailyNotesView,
@@ -325,27 +322,6 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/crons/domain_summary/",
         RuntimeCronCreateDomainSummaryView.as_view(),
         name="runtime-cron-create-domain-summary",
-    ),
-    # Pattern-context lookup — consumed by the nbhd-cron-enforcement
-    # plugin's cron_changed hook to resolve which validator/prompt
-    # injection to apply for a firing cron.
-    path(
-        "runtime/<uuid:tenant_id>/crons/<str:cron_name>/pattern_context/",
-        RuntimeCronPatternContextView.as_view(),
-        name="runtime-cron-pattern-context",
-    ),
-    path(
-        "runtime/<uuid:tenant_id>/crons/<str:cron_name>/validate_outbound/",
-        RuntimeCronValidateOutboundView.as_view(),
-        name="runtime-cron-validate-outbound",
-    ),
-    # Fire-time grounding directive — tells the enforcement plugin whether to
-    # inject the lightweight grounding rule into a firing cron. All custom
-    # crons: yes; system crons that bake the full preamble: no.
-    path(
-        "runtime/<uuid:tenant_id>/crons/<str:cron_name>/grounding/",
-        RuntimeCronGroundingView.as_view(),
-        name="runtime-cron-grounding",
     ),
     # Reddit runtime endpoints
     path(
