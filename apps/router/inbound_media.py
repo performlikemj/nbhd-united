@@ -253,17 +253,7 @@ def store_inbound_image(tenant_id: str, data: bytes, ext: str) -> tuple[str, str
     return _store_inbound_media(tenant_id, data, ext, prefix="photo", allowed_exts=_ALLOWED_EXTS, default_ext="jpg")
 
 
-def store_inbound_document(tenant_id: str, data: bytes, ext: str) -> tuple[str, str]:
-    """Write document bytes to the tenant's share as ``doc_<hash>.<ext>``.
-
-    The ``doc_`` prefix keeps documents distinguishable from ``photo_`` images
-    in the same inbound directory; both are GC'd together by
-    ``cleanup_inbound_media_task`` (24h, directory-wide).
-    """
-    return _store_inbound_media(tenant_id, data, ext, prefix="doc", allowed_exts=_ALLOWED_DOC_EXTS, default_ext="pdf")
-
-
-# Basename prefix ``store_inbound_document`` stamps (``prefix="doc"`` above).
+# Basename prefix ``store_inbound_document`` stamps (``prefix="doc"`` below).
 _DOC_FILENAME_PREFIX = "doc_"
 
 
@@ -280,3 +270,13 @@ def is_inbound_document_path(path: str | None) -> bool:
     if not path:
         return False
     return path.rsplit("/", 1)[-1].startswith(_DOC_FILENAME_PREFIX)
+
+
+def store_inbound_document(tenant_id: str, data: bytes, ext: str) -> tuple[str, str]:
+    """Write document bytes to the tenant's share as ``doc_<hash>.<ext>``.
+
+    The ``doc_`` prefix keeps documents distinguishable from ``photo_`` images
+    in the same inbound directory; both are GC'd together by
+    ``cleanup_inbound_media_task`` (24h, directory-wide).
+    """
+    return _store_inbound_media(tenant_id, data, ext, prefix="doc", allowed_exts=_ALLOWED_DOC_EXTS, default_ext="pdf")
