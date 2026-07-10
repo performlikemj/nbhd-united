@@ -2230,6 +2230,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
             plugin_config["entries"][sitepub_id]["config"] = {k: _sc[k] for k in _sc_keys if _sc.get(k)}
 
+        # Document information-keeping plugin — flip the record/list/forget tools
+        # on. The plugin fail-closes when documentIngestionEnabled isn't strictly
+        # true; the manifest configSchema declares it (additionalProperties:false),
+        # so it must be present whenever the plugin loads.
+        dockeep_id = str(getattr(settings, "OPENCLAW_DOCKEEP_PLUGIN_ID", "nbhd-document-keep") or "").strip()
+        if dockeep_id and dockeep_id in plugin_config["entries"]:
+            plugin_config["entries"][dockeep_id]["config"] = {
+                "documentIngestionEnabled": True,
+            }
+
         # Neighborhood plugin — gate the PROPOSE tools (nbhd_propose_lesson_share
         # + nbhd_propose_mission_task) on friends_agent_propose_enabled. The
         # context/absorb tools stay available on friends_enabled alone; the
@@ -2240,16 +2250,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         if friends_id and friends_id in plugin_config["entries"]:
             plugin_config["entries"][friends_id]["config"] = {
                 "proposeEnabled": bool(getattr(tenant, "friends_agent_propose_enabled", False)),
-            }
-
-        # Document information-keeping plugin — flip the record/list/forget tools
-        # on. The plugin fail-closes when documentIngestionEnabled isn't strictly
-        # true; the manifest configSchema declares it (additionalProperties:false),
-        # so it must be present whenever the plugin loads.
-        dockeep_id = str(getattr(settings, "OPENCLAW_DOCKEEP_PLUGIN_ID", "nbhd-document-keep") or "").strip()
-        if dockeep_id and dockeep_id in plugin_config["entries"]:
-            plugin_config["entries"][dockeep_id]["config"] = {
-                "documentIngestionEnabled": True,
             }
 
         paths = [ppath for _, ppath in _active_plugins if ppath]
