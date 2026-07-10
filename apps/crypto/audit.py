@@ -16,6 +16,31 @@ explicitly requesting their own decrypted content). `system` / `system_cron`
 / `runtime_endpoint` decrypts are the service doing its normal job (composing
 a reply, running a scheduled task) — auditing those would drown the real
 signal in noise for zero security value, so they're silent by design.
+
+Principal boundaries (who sets what, and why the wiring is where it is):
+  - Every request enters as `system`: ``TenantContextMiddleware.process_request``
+    sets it UNCONDITIONALLY at entry (before auth) and ``process_response``
+    calls ``reset_principal()`` at teardown — same shape as ``set_rls_context``
+    / ``reset_rls_context``. Without the unconditional set + reset, a principal
+    from one request would bleed into the next request served on the same
+    reused gunicorn worker thread (a stale `owner_request` silently
+    false-auditing an unrelated later read).
+  - A subscriber authenticating upgrades the request to `owner_request`:
+    ``JWTAuthenticationWithRLS`` and ``PersonalAccessTokenAuthentication`` set
+    it right after ``set_rls_context`` — any synchronous decrypt under an
+    authenticated subscriber is an owner-initiated read of their own data. For
+    an owner reading MANY rows, prefer ``box.decrypt_bulk(..., principal="owner_request")``
+    (one audit event for the batch) over N single decrypts.
+  - QStash task dispatch (`cron.views.trigger_task`) sets `system_cron` — silent.
+  - `admin` is intentionally UNWIRED today: there is no admin read path for the
+    encrypted columns (they aren't registered on any AdminSite). It slots in
+    later — at a PAT admin scope check, or a custom AdminSite boundary — when
+    such a path first exists.
+  - Background threads (``threading.Thread`` / ``ThreadPoolExecutor``) do NOT
+    inherit the spawning request's principal — a fresh thread starts with a new
+    context where the ContextVar holds its `system` default. That is correct BY
+    DESIGN: a human did not perform a read that happens on a background worker,
+    so it audits as `system` (silent), not as whatever principal spawned it.
 """
 
 from __future__ import annotations
@@ -45,6 +70,20 @@ def set_principal(kind: str) -> None:
     the remainder of this context is attributed to `kind` until changed.
     """
     _PRINCIPAL.set(kind)
+
+
+def reset_principal() -> None:
+    """Reset the current context's decrypt principal back to "system".
+
+    Call at the request/task teardown boundary (``TenantContextMiddleware.
+    process_response``, next to ``reset_rls_context``) so a principal set for
+    one request can never bleed into the next request served on the same reused
+    worker thread — the identical stale-context hazard ``reset_rls_context``
+    guards against. Belt to ``set_principal``'s braces: ``process_request`` also
+    sets "system" up front, so a missed reset is still corrected at the next
+    request's entry.
+    """
+    _PRINCIPAL.set("system")
 
 
 def get_principal() -> str:

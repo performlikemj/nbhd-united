@@ -10,6 +10,7 @@ from django.test import TestCase
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.crypto import audit
 from apps.tenants.models import Tenant, User
 
 
@@ -466,3 +467,34 @@ class TriggerTaskArgValidationTest(TestCase):
             )
         self.assertEqual(response.status_code, 200)
         mock_task.assert_called_once_with("uuid", _is_followup_retry=True)
+
+
+class TriggerTaskPrincipalTest(TestCase):
+    """trigger_task attributes any decrypt done by a dispatched task to the
+    silent ``system_cron`` principal (PR H). Probed DURING task execution —
+    the middleware resets the principal to ``system`` on response, so it can't
+    be observed after the request completes.
+    """
+
+    def setUp(self):
+        self.client = APIClient()
+        token = audit._PRINCIPAL.set("system")
+        self.addCleanup(audit._PRINCIPAL.reset, token)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_dispatched_task_runs_under_system_cron(self, mock_verify):
+        captured = {}
+
+        def probe():
+            captured["principal"] = audit.get_principal()
+            return None
+
+        with patch("apps.tenants.tasks.reset_daily_counters_task", side_effect=probe):
+            response = self.client.post(
+                "/api/v1/cron/trigger/reset_daily_counters/",
+                data=b"",
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(captured.get("principal"), "system_cron")
