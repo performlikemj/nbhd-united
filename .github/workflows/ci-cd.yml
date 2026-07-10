@@ -267,6 +267,19 @@ jobs:
         run: |
           python scripts/check_encrypted_column_predicates.py
 
+      - name: RedactedStr raw-buffer egress guard
+        # Static, no-DB: blocks a decrypted `RedactedStr` (apps.crypto.nolog)
+        # from slipping through a RAW-buffer consumer — json.dumps/.encode/
+        # concat/"".join/slice/str-method/.write — which all reach past the
+        # redacting format dunders and emit the real plaintext. The seam is
+        # closed by calling `.reveal()` at a deliberate egress; this guard
+        # narrows it so a value that should have been revealed can't leak
+        # through a raw buffer instead. Phase-2 precondition
+        # (docs/encryption-at-rest-phase1-status.md, item 3). Escape hatch:
+        # `# noqa: redactedstr-egress — seam: <name>` on the flagged line.
+        run: |
+          python scripts/check_redactedstr_egress.py
+
       - name: Run OpenClaw doctor smoke
         env:
           DJANGO_SETTINGS_MODULE: config.settings.development
