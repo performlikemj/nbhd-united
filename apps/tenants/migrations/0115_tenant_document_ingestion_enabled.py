@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0112_constellation_enabled_flag"),
+        ("tenants", "0114_relock_after_chat_enc"),
     ]
 
     operations = [

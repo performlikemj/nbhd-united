@@ -10,7 +10,7 @@ class Migration(migrations.Migration):
     dependencies = [
         ("journal", "0021_purpose_north_star"),
         ("router", "0022_buffered_message_minimal_envelope_help_text"),
-        ("tenants", "0113_tenant_document_ingestion_enabled"),
+        ("tenants", "0115_tenant_document_ingestion_enabled"),
     ]
 
     operations = [

@@ -45,7 +45,7 @@ REVERSE_SQL = (
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0113_tenant_document_ingestion_enabled"),
+        ("tenants", "0115_tenant_document_ingestion_enabled"),
         ("journal", "0022_document_ingestion"),
     ]
 
