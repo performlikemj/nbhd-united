@@ -116,3 +116,34 @@ class NeutralizeRemoteImageMarkdownTests(SimpleTestCase):
             neutralize_remote_image_markdown("![a[b]c](https://evil.example/x)"),
             "[a[b]c](https://evil.example/x)",
         )
+
+    def test_double_backslash_bang_is_unescaped_and_neutralized(self):
+        # Two backslashes = one literal "\\", so the "!" that follows is
+        # NOT escaped — this is a real image and must be neutralized. The
+        # backslashes themselves are preserved; only the bang is dropped.
+        self.assertEqual(
+            neutralize_remote_image_markdown(r"\\![](https://evil.example/x)"),
+            r"\\[](https://evil.example/x)",
+        )
+
+    def test_single_backslash_bang_is_escaped_and_untouched(self):
+        text = r"\![](https://evil.example/x)"
+        self.assertEqual(neutralize_remote_image_markdown(text), text)
+
+    def test_triple_backslash_bang_is_escaped_and_untouched(self):
+        # Three backslashes = one literal "\\" plus one backslash escaping
+        # the "!" — still escaped, so left untouched.
+        text = r"\\\![](https://evil.example/x)"
+        self.assertEqual(neutralize_remote_image_markdown(text), text)
+
+    def test_two_level_nested_bracket_alt_stripped(self):
+        self.assertEqual(
+            neutralize_remote_image_markdown("![a[b[c]d]e](https://evil.example/x)"),
+            "[a[b[c]d]e](https://evil.example/x)",
+        )
+
+    def test_three_level_nested_bracket_alt_stripped(self):
+        self.assertEqual(
+            neutralize_remote_image_markdown("![a[b[c[d]e]f]g](https://evil.example/x)"),
+            "[a[b[c[d]e]f]g](https://evil.example/x)",
+        )
