@@ -59,6 +59,11 @@ INSTALLED_APPS = [
     # apps.pii is a library module (no models); registered so its management
     # commands (denylist_degenerate_pii) are discoverable.
     "apps.pii",
+    # apps.crypto is a library module (no models) — the envelope-encryption
+    # key service (encryption-at-rest Phase 1). Registered for app discovery
+    # only; ready() intentionally stays empty (pre-warm is Phase 1 PR4, and
+    # must never run during migrate — see apps/crypto/apps.py).
+    "apps.crypto",
 ]
 
 MIDDLEWARE = [
