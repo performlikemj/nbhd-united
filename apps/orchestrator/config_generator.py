@@ -2015,6 +2015,21 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         )
     )
 
+    # nbhd-doc-taint-guard — instruction isolation + egress taint gate for
+    # uploaded documents/photos (docs/upload-security-threat-model.md
+    # P0-1/P0-2/P1-2). Loads UNCONDITIONALLY, like nbhd-cron-enforcement —
+    # the built-in `pdf`/`image` tools are fleet-wide (tool_policy.py), so
+    # this guard must be too, independent of any per-tenant flag (in
+    # particular, independent of `document_ingestion_enabled`, which only
+    # gates the separate nbhd-document-keep retention plugin and is off by
+    # default). Tests / smoke disable by setting the ID to "".
+    _plugin_defs.append(
+        (
+            str(getattr(settings, "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID", "") or "").strip(),
+            str(getattr(settings, "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_PATH", "") or "").strip(),
+        )
+    )
+
     _active_plugins = [(pid, ppath) for pid, ppath in _plugin_defs if pid]
 
     api_base = str(getattr(settings, "API_BASE_URL", "") or "").strip().rstrip("/")
@@ -2227,6 +2242,41 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             plugin_config["entries"][friends_id]["config"] = {
                 "proposeEnabled": bool(getattr(tenant, "friends_agent_propose_enabled", False)),
             }
+
+        # Document taint guard — mode ("log_only" | "enforce") controls
+        # whether before_tool_call hard-blocks publish_portfolio_image/
+        # reddit/web_fetch on a document-tainted turn or only logs what
+        # would have been blocked. Single settings-level default (not a
+        # per-tenant DB flag) so a fleet-wide flip is one env var +
+        # apply-pending-configs, no migration needed.
+        #
+        # The plugin's manifest (openclaw.plugin.json) declares `mode` as
+        # `enum: ["log_only", "enforce"]` with `additionalProperties: false`,
+        # and OpenClaw validates each enabled plugin's config against its
+        # schema at config LOAD time. So a typo'd DOC_TAINT_GATE_MODE
+        # ("Enforce", "enforced", "true", ...) would make the generated
+        # config invalid — a #917-class fleet wedge across every regenerated
+        # tenant, not just this plugin misbehaving. Normalize against the
+        # allowed set here (Django side) so the generator can never emit
+        # anything the schema would reject; keep the manifest enum too (it's
+        # still useful for `openclaw doctor` to catch a future generator bug).
+        doc_taint_guard_id = str(getattr(settings, "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID", "") or "").strip()
+        if doc_taint_guard_id and doc_taint_guard_id in plugin_config["entries"]:
+            _doc_taint_gate_raw_mode = str(getattr(settings, "DOC_TAINT_GATE_MODE", "log_only") or "log_only").strip()
+            if _doc_taint_gate_raw_mode in ("log_only", "enforce"):
+                _doc_taint_gate_mode = _doc_taint_gate_raw_mode
+            else:
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "DOC_TAINT_GATE_MODE=%r is not a valid nbhd-doc-taint-guard mode "
+                    "(expected 'log_only' or 'enforce') — falling back to 'log_only' "
+                    "so the generated config can't fail the plugin's schema "
+                    "(additionalProperties:false + enum) at OpenClaw load time.",
+                    _doc_taint_gate_raw_mode,
+                )
+                _doc_taint_gate_mode = "log_only"
+            plugin_config["entries"][doc_taint_guard_id]["config"] = {"mode": _doc_taint_gate_mode}
 
         paths = [ppath for _, ppath in _active_plugins if ppath]
         if paths:

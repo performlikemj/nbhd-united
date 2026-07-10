@@ -1,0 +1,19 @@
+{
+  "id": "nbhd-doc-taint-guard",
+  "name": "NBHD Document Taint Guard",
+  "description": "Instruction isolation + egress taint gate for uploaded documents/photos. Wraps pdf/image tool output in a treat-as-data boundary (tool_result_persist), blocks or logs calls to publish_portfolio_image/reddit/web_fetch on a document-tainted turn (before_tool_call), and emits hash-only injection-suspected telemetry. See docs/upload-security-threat-model.md P0-1/P0-2/P1-2.",
+  "contracts": {
+    "tools": []
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": ["log_only", "enforce"],
+        "description": "log_only: log what the exfil gate would have blocked but let the call proceed. enforce: hard-block the call. Default log_only."
+      }
+    }
+  }
+}

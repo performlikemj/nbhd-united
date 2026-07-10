@@ -388,6 +388,24 @@ OPENCLAW_STREAM_PROGRESS_PLUGIN_PATH = env(
     "OPENCLAW_STREAM_PROGRESS_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-stream-progress",
 )
+# Document taint guard plugin — instruction isolation + egress taint gate for
+# uploaded documents/photos (docs/upload-security-threat-model.md
+# P0-1/P0-2/P1-2). Unconditional in production so every tenant gets the
+# guard, same as nbhd-routing-context — the pdf/image tools are fleet-wide.
+# Tests disable via OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="".
+OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID = env(
+    "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID",
+    default="nbhd-doc-taint-guard",
+)
+OPENCLAW_DOC_TAINT_GUARD_PLUGIN_PATH = env(
+    "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-doc-taint-guard",
+)
+# "log_only" (default) logs what the egress gate would have blocked without
+# blocking it; "enforce" hard-blocks. Fleet-wide flip = one env var change +
+# apply-pending-configs, no per-tenant migration. See the rollout plan in
+# docs/upload-security-threat-model.md.
+DOC_TAINT_GATE_MODE = env("DOC_TAINT_GATE_MODE", default="log_only")
 COMPOSIO_REDDIT_AUTH_CONFIG_ID = env("COMPOSIO_REDDIT_AUTH_CONFIG_ID", default="")
 
 OPENCLAW_CONTAINER_SECRET_BACKEND = env(
