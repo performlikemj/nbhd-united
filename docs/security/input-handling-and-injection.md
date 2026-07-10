@@ -155,7 +155,8 @@ here from the client side too).
 - **Fail-open PII redaction** (messaging doc Risks #4) means a redaction
   outage sends raw PII to the model provider silently — orthogonal to
   injection but compounds the blast radius of a successful one.
-- **No web_fetch SSRF config in this repo** — see §3.
+- **`web_fetch` is denied fleet-wide at OpenClaw ≥ 2026.5.28** (PR #1110) —
+  see §3 for what remains.
 
 ## 2. Webhook / API input validation
 
@@ -193,23 +194,29 @@ write surface found among the webhook/API handlers reviewed.
 
 ## 3. SSRF
 
-**No `web_fetch`/SSRF configuration exists in this repo.** `grep` for
-`ssrf`, `allowPrivateNetwork`, `web_fetch`, and `"fetch"` across
-`apps/orchestrator/config_generator.py` returns nothing; `generate_tool_config`
-(`tool_policy.py:165-180`) sets only `"web": {"search": {"enabled": True}}` —
-no `fetch` block, no explicit `ssrf` policy. `docs/agent-tool-security-plan.md`
-(2026-02-14, **status: Draft**) proposed exactly this — an explicit
+**`web_fetch` is denied fleet-wide at OpenClaw ≥ 2026.5.28** (PR #1110,
+P0-0b of `docs/upload-security-threat-model.md`): `tool_policy.py` adds
+`web_fetch` to the ≥ 2026.5.28 denied-tools list, a regression test pins
+that the deny (not an allow-gap) does the blocking, and the one legitimate
+user — the morning-briefing weather step — was rerouted to `web_search`.
+That closes the tenant-facing `web_fetch` SSRF surface on current fleet
+versions; tenants recorded on older OpenClaw versions keep the tool
+(post-deploy audit item in #1110). Beyond the deny, no SSRF *policy*
+configuration exists in this repo: `generate_tool_config` sets no `fetch`
+block and no explicit `ssrf` policy. `docs/agent-tool-security-plan.md`
+(2026-02-14, **status: Draft**) proposed an explicit
 `allowPrivateNetwork: False` config, an application-level `url_validator.py`
 tool interceptor, and Azure NSG rules blocking IMDS (`169.254.169.254`),
-Azure wireserver (`168.63.129.16`), and the CGNAT range — **none of it was
-implemented**: `apps/orchestrator/tool_interceptors.py` and
+Azure wireserver (`168.63.129.16`), and the CGNAT range — none of it was
+implemented, and the fleet-wide deny has largely superseded it:
+`apps/orchestrator/tool_interceptors.py` and
 `apps/orchestrator/url_validator.py` don't exist, and `infra/README.md` is a
 Terraform TODO list with no NSG/VNet module checked in, so network-layer
-mitigation can't be verified from this repo at all. Current protection rests
-entirely on OpenClaw's own upstream default (`allowPrivateNetwork: false`
-per the draft plan's read of `infra/net/ssrf.ts`, unverified here since
-OpenClaw's source isn't in this repo) — a vendor default with no
-defense-in-depth layer and no test in this codebase asserting it.
+mitigation still can't be verified from this repo. For pre-2026.5.28
+tenants, protection still rests on OpenClaw's own upstream default
+(`allowPrivateNetwork: false` per the draft plan's read of
+`infra/net/ssrf.ts`, unverified here since OpenClaw's source isn't in this
+repo).
 
 Django-side outbound calls reviewed are all to fixed, hardcoded hosts —
 Google's OAuth userinfo endpoint (`apps/integrations/views.py:142-146`),
@@ -297,7 +304,7 @@ not by a sanitizer that could regress. [by-design]
 |---|---|---|---|
 | 1 | Action-gating (`nbhd_request_action_approval`) has no code-level link to the tool call it gates — approval is a text string in model context, not a capability check. Currently low-blast-radius because GWS write/delete skills aren't wired (§1.2), but the gap ships unmitigated the moment they are. | [high] | [partially-mitigated] — mitigated today by non-deployment of the gated actions, not by the gate itself |
 | 2 | `gws-credentials.json` (Google OAuth `client_id`/`client_secret`/`refresh_token`, plaintext) sits on the tenant's mounted file share, reachable by the LLM's own file surface if unscoped — no path-scoping evidence found in this repo. | [high] | [open] |
-| 3 | No SSRF configuration (`ssrf`/`allowPrivateNetwork`) in `config_generator.py`; the 2026-02-14 draft plan's interceptor/validator/NSG proposals were never implemented (files don't exist; `infra/` has no NSG module). Protection rests solely on an unverified OpenClaw upstream default. | [high] | [open] |
+| 3 | `web_fetch` denied fleet-wide at OpenClaw ≥ 2026.5.28 (`tool_policy.py`, PR #1110) closes the tenant-facing SSRF surface on current fleet versions. Explicit SSRF policy config (`ssrf`/`allowPrivateNetwork`) and the 2026-02-14 draft plan's interceptor/validator/NSG proposals remain unimplemented, so pre-2026.5.28 tenants still rest on the unverified OpenClaw upstream default. | [med] | [mitigated] — by the fleet-wide deny, not by SSRF policy |
 | 4 | `gws-credentials.json` is written via a hand-rolled `ShareFileClient` call that bypasses `_put_share_file`/`sanitize_share_text`, violating the "single writer" invariant (#2) the rest of the platform relies on. | [med] | [open] |
 | 5 | Binary share writes (`data=`) bypass the sanitize chokepoint by design — correct for current image/PDF use, but no guard prevents a future binary-derived-text path from reintroducing null-byte injection. | [med] | [by-design] (tracked, already flagged in tenant-runtime doc) |
 | 6 | Gate endpoints (`apps/actions/views.py`) and the gate client script both use non-canonical `X-Internal-Key`/`X-Tenant-Id` headers instead of the platform's canonical `X-NBHD-Internal-Key`/`X-NBHD-Tenant-Id` — internally consistent, but a latent trap if anything is unified later without checking both sides. | [low] | [open] |

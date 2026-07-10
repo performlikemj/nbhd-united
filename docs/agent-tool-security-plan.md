@@ -4,6 +4,7 @@
 > **Date:** 2026-02-14  
 > **Audience:** Platform engineering  
 > **Context:** Each subscriber ($10/mo) gets an OpenClaw agent on Azure Container Apps. This doc covers tool-level restrictions beyond the existing `tool_policy.py` (which blocks gateway/cron/sessions).
+> **Update (2026-07):** Items #2 and #5 (web_fetch SSRF prevention / cloud-metadata denylist) are largely superseded — `web_fetch` is denied fleet-wide at OpenClaw ≥ 2026.5.28 via `tool_policy.py` (PR #1110, P0-0b of `docs/upload-security-threat-model.md`), and the morning-briefing weather step was rerouted to `web_search`. The interceptor/validator/NSG layers proposed below were never built; they remain relevant only as defense-in-depth for tenants on older OpenClaw versions.
 
 ---
 
