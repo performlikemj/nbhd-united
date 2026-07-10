@@ -20,6 +20,7 @@ import base64
 import binascii
 import hashlib
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +82,155 @@ def sniff_document_type(data: bytes) -> str | None:
     """
     if len(data) >= 5 and data[:5] == b"%PDF-":
         return "pdf"
+    return None
+
+
+# --- P1-1: PDF structure hardening (docs/upload-security-threat-model.md) --
+#
+# Beyond the 5-byte magic sniff above, a lightweight structural gate runs on
+# the raw decoded bytes before a PDF is stored. Pure-Python byte/regex scan,
+# deliberately NO new dependency (pikepdf would give a fuller structural
+# validator but is a new Linux-only dep requiring a hand-add to requirements
+# per the macOS pip-compile caveat — not done here; see the TODO below).
+
+# A PDF name token is terminated by PDF whitespace or a PDF delimiter
+# (`()<>[]{}/%`) — NOT by "any non-alphanumeric", since real name characters
+# include `_ : - .` etc. This lookahead expresses the actual rule: "the next
+# byte (if any) must be whitespace/delimiter", so `/JS_backup` or
+# `/AA:custom` (longer, unrelated names) don't falsely trip a token match.
+_NAME_BOUNDARY = rb"(?![^\s()<>\[\]{}/%])"
+
+# PDF name tokens (the `/Name` form) whose presence marks active content we
+# never want stored, let alone executed by some future richer consumer.
+# Today's `pdf` tool only extracts text and does not execute PDF JavaScript,
+# but the file still lands on the tenant share — see threat-model AC-3.
+# Matched as `/Token` + `_NAME_BOUNDARY`, so plain body text like
+# "JavaScript" (no leading slash), a longer unrelated name like
+# `/JavaScriptFoo`, or a differently-suffixed name like `/JS_backup` never
+# trips this. Order matters for the alternation: `JavaScript` must precede
+# `JS` so the engine consumes the longer token first rather than matching
+# `JS` and failing the boundary check.
+#
+# Deliberately EXCLUDES `/OpenAction`: it also fires on benign PDFs (e.g.
+# LaTeX/hyperref "open at page N" documents), and a genuinely malicious
+# OpenAction must itself reference a `/JavaScript`, `/JS`, or `/Launch`
+# action — already caught independently — so dropping it removes a
+# false-positive class at ~zero security cost.
+_ACTIVE_CONTENT_RE = re.compile(rb"/(?:AA|Launch|JavaScript|JS|EmbeddedFile)" + _NAME_BOUNDARY)
+
+# Binary stream payloads (`stream...endstream`) — compressed image/font/
+# content data — can contain the 2-3 byte tokens above (`/AA`, `/JS`) by pure
+# byte-coincidence. Empirically this false-rejected ~15% of real scanned
+# PDFs at 1 MB and ~70% at 10 MB before this mask was added. A LIVE
+# active-content name is always a dictionary VALUE outside any stream body —
+# never inside the compressed/binary payload itself — so masking stream
+# payloads before the active-content scan loses no real detection.
+_STREAM_BODY_RE = re.compile(rb"stream\r?\n(.*?)endstream", re.DOTALL)
+
+
+def _mask_stream_bodies(data: bytes) -> bytes:
+    """Return a COPY of ``data`` with every stream payload blanked out.
+
+    ONLY used for the active-content token scan below — never for storage,
+    the size cap, or the `/Encrypt`/object/page checks (those run on the
+    real bytes; see their comments for why they don't need this). Non-greedy
+    + DOTALL: matches from each `stream` keyword to the NEAREST following
+    `endstream`, correct for well-formed PDFs (one payload per pair).
+    """
+    return _STREAM_BODY_RE.sub(lambda m: b"stream" + b"." * len(m.group(1)) + b"endstream", data)
+
+
+# The `/Encrypt` trailer entry marks an encrypted PDF. We can't safely
+# extract text from (or structurally validate the rest of) an encrypted
+# PDF, and encryption is a common evasion wrapper for the checks above — so
+# an encrypted document is rejected outright rather than partially scanned.
+# Same boundary guard as above: `/EncryptMetadata` (a real key that lives
+# *inside* an encryption dictionary, only present when `/Encrypt` already
+# exists anyway) doesn't falsely trip this on its own. Scanned on the FULL,
+# unmasked bytes — `/Encrypt` is an 8-byte token that always lives in the
+# (uncompressed) trailer dict, so a stream-body chance collision is
+# negligible; no masking needed here.
+_ENCRYPT_RE = re.compile(rb"/Encrypt" + _NAME_BOUNDARY)
+
+# PDF whitespace per spec (ISO 32000-1 §7.2.2): NUL, HT, LF, FF, CR, SPACE.
+# Python's `\s` does NOT include NUL, so a `\s`-based count regex can be
+# evaded by using NUL as the separator between object/generation numbers —
+# legal PDF whitespace the naive regex wouldn't recognize. Use the real
+# class for both count regexes below.
+_PDF_WS = rb"[\x00\t\n\x0c\r ]"
+
+# Indirect object markers (`<n> <gen> obj`). A real invoice/statement/report
+# — even a long one with embedded images — lands in the low hundreds to low
+# thousands of objects. 50,000 gives ~1-2 orders of magnitude of headroom
+# above that, so no legitimate document is at risk of tripping it, while a
+# hand-crafted many-tiny-objects bomb still gets caught. Scanned on the FULL
+# bytes (structural markers, not name tokens — no stream-body FP risk).
+_OBJECT_RE = re.compile(rb"\d+" + _PDF_WS + rb"+\d+" + _PDF_WS + rb"+obj\b")
+_MAX_PDF_OBJECTS = 50_000
+
+# `/Type /Page` — a single page dict — deliberately NOT `/Type /Pages` (the
+# page *tree* node, usually just one per document): the trailing `s` in
+# "Pages" fails `_NAME_BOUNDARY`, so the tree root is never counted as a
+# page. Whitespace between `/Type` and `/Page` is arbitrary PDF whitespace
+# (`_PDF_WS`), including newlines. 2,000 pages comfortably covers even a
+# multi-year daily statement; anything above that is either a bomb or a
+# document this platform was never meant to ingest as a chat attachment.
+_PAGE_RE = re.compile(rb"/Type" + _PDF_WS + rb"*/Page" + _NAME_BOUNDARY)
+_MAX_PDF_PAGES = 2_000
+
+# TODO(P1-1-followup): this remains a PARTIAL gate, not a complete one.
+# (1) A PDF using object streams / cross-reference streams (`/Type /ObjStm`)
+#     can hide arbitrarily many objects, pages, or active-content names
+#     inside a COMPRESSED stream — invisible to a raw byte scan entirely.
+# (2) A single object / single page / one ~10 MB Flate stream with a
+#     pathological compression ratio is a decompression bomb that STILL
+#     passes both count checks below (they count markers, not decompressed
+#     size).
+# (3) Hex-escaped PDF names (`/J#4A#53` == `/JS` once decoded) and a
+#     `%`-comment spliced between token bytes both evade the plain-text
+#     token match.
+# A fuller validator (pikepdf) would parse the real xref/object table,
+# decompress streams, and normalize hex-escaped names. Until then: the
+# highest-confidence, most-common-in-the-wild case (uncompressed
+# `/JavaScript` etc. sitting in an object dictionary) is caught, but AC-3
+# and AC-8 from the threat model are only PARTIALLY closed by this gate —
+# not fully closed.
+
+
+def _count_exceeds(pattern: re.Pattern[bytes], data: bytes, ceiling: int) -> bool:
+    """Return True once ``pattern`` matches more than ``ceiling`` times.
+
+    Stops counting the instant the ceiling is crossed. A plain
+    ``len(pattern.findall(data))`` would materialize every match first —
+    up to ~1.25M match objects for a maximal 50,000-object bomb sized to
+    the 10 MB cap — before we could even compare; ``finditer`` + early exit
+    avoids that allocation.
+    """
+    # `any()` short-circuits, so the underlying `finditer` iterator stops
+    # producing matches the instant the ceiling is crossed — same early-exit
+    # property as the explicit loop this replaces.
+    return any(count > ceiling for count, _ in enumerate(pattern.finditer(data), start=1))
+
+
+def _scan_pdf_structure(data: bytes) -> str | None:
+    """Return an error code if ``data`` fails the PDF structural gate, else None.
+
+    Runs AFTER the magic-byte sniff has confirmed ``%PDF-``, BEFORE the
+    document is stored. Single pass, O(n) regex scans over bytes already
+    resident in memory (``data`` is already capped at
+    ``MAX_APP_DOCUMENT_BYTES``, so this is bounded work).
+
+    Returns ``"unsafe_document"`` for active-content tokens or encryption,
+    ``"document_too_complex"`` for an object- or page-count bomb, else None.
+    """
+    if _ACTIVE_CONTENT_RE.search(_mask_stream_bodies(data)) is not None:
+        return "unsafe_document"
+    if _ENCRYPT_RE.search(data) is not None:
+        return "unsafe_document"
+    if _count_exceeds(_OBJECT_RE, data, _MAX_PDF_OBJECTS):
+        return "document_too_complex"
+    if _count_exceeds(_PAGE_RE, data, _MAX_PDF_PAGES):
+        return "document_too_complex"
     return None
 
 
@@ -171,7 +321,7 @@ def decode_and_validate_image(
 
 
 def decode_and_validate_document(
-    raw: object, *, max_bytes: int = MAX_APP_DOCUMENT_BYTES
+    raw: object, *, max_bytes: int = MAX_APP_DOCUMENT_BYTES, tenant_id: str | None = None
 ) -> tuple[bytes | None, str | None, str | None]:
     """Decode + validate a client-supplied document (PDF) field.
 
@@ -182,7 +332,18 @@ def decode_and_validate_document(
     Error codes: ``invalid_document`` (not a string / not base64 / empty after
     decode), ``document_too_large`` (decoded > ``max_bytes``),
     ``unsupported_document_type`` (magic bytes not a PDF — a renamed archive /
-    executable can never be stored as a ``.pdf`` or reach the ``pdf`` tool).
+    executable can never be stored as a ``.pdf`` or reach the ``pdf`` tool),
+    ``unsafe_document`` (active-content token — ``/AA``, ``/Launch``,
+    ``/JavaScript``, ``/JS``, ``/EmbeddedFile`` — or an ``/Encrypt`` trailer
+    entry), ``document_too_complex`` (pathological object or page count —
+    see ``_scan_pdf_structure``).
+
+    ``tenant_id``, when supplied, is used ONLY to attribute the
+    ``doc_ingest_rejected`` telemetry line emitted for a structural reject
+    (``unsafe_document`` / ``document_too_complex``) — the canary reject-rate
+    signal the P1-1 rollout watches for false positives. Never logs raw
+    content, mirroring ``_store_inbound_media``'s ``doc_ingest_attached``
+    no-raw-value discipline.
     """
     data, error = _decode_base64_field(
         raw,
@@ -195,6 +356,15 @@ def decode_and_validate_document(
     ext = sniff_document_type(data)
     if ext is None:
         return (None, None, "unsupported_document_type")
+    structure_error = _scan_pdf_structure(data)
+    if structure_error is not None:
+        logger.info(
+            "doc_ingest_rejected tenant=%s code=%s bytes=%d",
+            tenant_id,
+            structure_error,
+            len(data),
+        )
+        return (None, None, structure_error)
     return (data, ext, None)
 
 

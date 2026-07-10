@@ -642,7 +642,7 @@ class ChatMessageView(APIView):
             return Response({"error": image_err}, status=status.HTTP_400_BAD_REQUEST)
 
         document_bytes, document_ext, document_err = decode_and_validate_document(
-            request.data.get("document"), max_bytes=MAX_APP_DOCUMENT_BYTES
+            request.data.get("document"), max_bytes=MAX_APP_DOCUMENT_BYTES, tenant_id=str(tenant.id)
         )
         if document_err:
             return Response({"error": document_err}, status=status.HTTP_400_BAD_REQUEST)
