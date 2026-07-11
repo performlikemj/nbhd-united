@@ -779,6 +779,62 @@ class RuntimeUserMemoryAPITest(TestCase):
         mem = Document.objects.get(tenant=self.tenant, kind="memory", slug="long-term")
         self.assertEqual(mem.markdown, "v2")
 
+    def test_section_write_preserves_a_concurrent_committed_flush(self):
+        """P2 prerequisite: a scoped person-fact write must not silently clobber
+        a compaction memoryFlush that committed between the reflex's read and its
+        write. Because the scoped write re-reads under select_for_update it merges
+        against the CURRENT document, so both the flush's summary and the person
+        fact survive — the directive's "a person-fact write + a memory flush both
+        survive" gate. Deterministic: the .update() stands in for the racing
+        full-document writer this endpoint used to lose to.
+        """
+        url = f"/api/v1/integrations/runtime/{self.tenant.id}/long-term-memory/"
+        self.client.put(
+            url,
+            {"markdown": "# Memory\n\n## Preferences\n- likes tea\n"},
+            format="json",
+            **self.headers,
+        )
+        # A concurrent compaction flush commits a full rewrite (session summary)
+        # after the reflex would have read but before it writes.
+        Document.objects.filter(tenant=self.tenant, kind="memory", slug="long-term").update(
+            markdown="# Memory\n\n## Preferences\n- likes tea\n\n## Session\n- flushed session summary\n"
+        )
+        resp = self.client.put(
+            url,
+            {"markdown": "- Jasmine — coworker in Japan", "section": "People & Context"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        mem = Document.objects.get(tenant=self.tenant, kind="memory", slug="long-term")
+        self.assertIn("flushed session summary", mem.markdown)  # concurrent flush survives
+        self.assertIn("Jasmine — coworker in Japan", mem.markdown)  # person fact survives
+        self.assertIn("## People & Context", mem.markdown)
+        self.assertIn("likes tea", mem.markdown)  # untouched section intact
+
+    def test_section_write_replaces_only_its_own_section(self):
+        """A scoped write REPLACES its section's body and leaves every sibling
+        section intact — no duplicate heading, no collateral edit."""
+        url = f"/api/v1/integrations/runtime/{self.tenant.id}/long-term-memory/"
+        self.client.put(
+            url,
+            {"markdown": "# Memory\n\n## People & Context\n- old note\n\n## Preferences\n- likes tea\n"},
+            format="json",
+            **self.headers,
+        )
+        self.client.put(
+            url,
+            {"markdown": "- Jasmine — coworker in Japan", "section": "People & Context"},
+            format="json",
+            **self.headers,
+        )
+        mem = Document.objects.get(tenant=self.tenant, kind="memory", slug="long-term")
+        self.assertIn("- Jasmine — coworker in Japan", mem.markdown)
+        self.assertNotIn("- old note", mem.markdown)  # body replaced, not duplicated
+        self.assertEqual(mem.markdown.count("## People & Context"), 1)
+        self.assertIn("- likes tea", mem.markdown)  # sibling section untouched
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class RuntimeJournalContextAPITest(TestCase):

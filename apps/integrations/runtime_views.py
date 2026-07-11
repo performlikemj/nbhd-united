@@ -1336,6 +1336,38 @@ class RuntimeDailyNoteAppendView(APIView):
         )
 
 
+def _upsert_markdown_section(md: str, heading: str, body: str) -> str:
+    """Replace the body of a ``## <heading>`` section, or append it if absent.
+
+    Mirrors ``RuntimeDailyNoteAppendView``'s section-merge so a scoped memory
+    write touches ONLY its own section and leaves the rest of the document
+    intact — the difference between a durable person-fact surviving a
+    concurrent compaction ``memoryFlush`` full-document write and being
+    silently clobbered by it. The heading match is anchored to a full line so
+    ``## People`` cannot match ``## People & Context`` and a ``## `` embedded
+    mid-body cannot shift the slice boundary.
+    """
+    md = md or ""
+    body = (body or "").strip()
+    marker = f"## {heading}"
+    head_match = re.search(r"(?m)^" + re.escape(marker) + r"[ \t]*$", md)
+    if head_match is None:
+        # Section heading doesn't exist yet — append it.
+        return md.rstrip() + f"\n\n{marker}\n{body}\n"
+
+    heading_end = md.find("\n", head_match.end())
+    if heading_end == -1:
+        heading_end = len(md)
+    else:
+        heading_end += 1  # include the newline after the heading line
+    # Replace everything between this heading and the next "## " heading.
+    next_match = re.search(r"(?:^|\n)(## )", md[heading_end:])
+    if next_match is None:
+        return md[:heading_end] + body + "\n"
+    next_heading = heading_end + next_match.start(1) - 1
+    return md[:heading_end] + body + "\n" + md[next_heading:]
+
+
 class RuntimeUserMemoryView(APIView):
     """GET/PUT raw markdown long-term memory (agent access). Backed by Document model."""
 
@@ -1377,18 +1409,39 @@ class RuntimeUserMemoryView(APIView):
         # P0-3: strip agent-written markdown-image beacons before they reach
         # any durable store — see apps/integrations/content_sanitize.py.
         markdown = neutralize_remote_image_markdown(str(request.data.get("markdown", "")))
-        doc, created = Document.objects.get_or_create(
+        # Optional scoped write: when ``section`` names a ``## <heading>``, only
+        # that section is replaced/inserted (a tight person-fact note) rather
+        # than the whole document — see P2 capture reflex in AGENTS.md.
+        section_raw = request.data.get("section")
+        section = str(section_raw).strip() if section_raw else ""
+
+        # get_or_create outside the lock only races on the very first write to a
+        # brand-new row; the select_for_update inside the atomic block serialises
+        # every write after that. Without it this endpoint's read-modify-write
+        # raced the compaction ``memoryFlush`` writer (both drive nbhd_memory_update)
+        # and silently lost whichever committed first — the clobber the P2 capture
+        # reflex would otherwise amplify (mirrors RuntimeDailyNoteAppendView /
+        # EntityRegistryItemView lost-update guards).
+        doc, _created = Document.objects.get_or_create(
             tenant=tenant,
             kind="memory",
             slug="long-term",
             defaults={
                 "title": _default_title("memory", "long-term"),
-                "markdown": markdown,
+                "markdown": (_default_markdown("memory", "long-term", tenant=tenant) if section else markdown),
             },
         )
-        if not created:
-            doc.markdown = markdown
-            doc.save()
+
+        with transaction.atomic():
+            # Re-read under a row lock so a scoped section write merges against
+            # the CURRENT document — including anything a concurrent full-document
+            # writer just committed — instead of overwriting a stale copy.
+            doc = Document.objects.select_for_update().get(pk=doc.pk)
+            if section:
+                doc.markdown = _upsert_markdown_section(doc.markdown or "", section, markdown)
+            else:
+                doc.markdown = markdown
+            doc.save(update_fields=["markdown", "updated_at"])
 
         return Response(
             {"tenant_id": str(tenant.id), "markdown": doc.markdown},
