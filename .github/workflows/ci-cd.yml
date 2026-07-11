@@ -357,6 +357,7 @@ jobs:
           node --test runtime/openclaw/plugins/nbhd-friends-tools/index.test.mjs
           node --test runtime/openclaw/external-content-wrap.test.js
           node --test runtime/openclaw/plugins/nbhd-doc-taint-guard/test.js
+          node --test runtime/openclaw/evals/upload_security_corpus.test.js
 
       - name: Audit OpenClaw chmod call-site inventory
         # Diffs the chmod-family callee shapes in the pinned OpenClaw npm
