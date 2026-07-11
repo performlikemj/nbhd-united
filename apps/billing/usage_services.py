@@ -297,8 +297,13 @@ def _get_infra_breakdown(tenant: Tenant, month: date) -> dict:
             calculate_database_share,
         )
 
+        # Exclude eval synthetic tenants from the shared-cost denominator so the
+        # displayed per-tenant "true cost" isn't diluted (INVARIANT #5).
         active_count = (
-            Tenant.objects.filter(status="active", container_id__isnull=False).exclude(container_id="").count()
+            Tenant.objects.filter(status="active", container_id__isnull=False)
+            .exclude(container_id="")
+            .exclude(is_synthetic=True)
+            .count()
         )
         container = float(ESTIMATE_CONTAINER)
         storage = float(ESTIMATE_STORAGE)

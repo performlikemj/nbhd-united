@@ -108,6 +108,14 @@ def _reconcile_platform_total() -> None:
     """
     from apps.billing.models import MonthlyBudget
 
+    # Synthetic (eval) tenants are DELIBERATELY NOT excluded here (unlike the
+    # revenue/donation/infra aggregates). Two reasons: (1) this Sum feeds the
+    # runaway-spend GUARD — synthetic tenants incur REAL, capped OpenRouter
+    # spend (the behavior suite + judge, ~$10-20/mo), and that real money SHOULD
+    # count against the platform budget; a blind spot in a safety control is
+    # worse than a negligible display inflation. (2) record_usage also writes
+    # spent_dollars per-turn, so gating only this Sum would desync the true-up.
+    # A display-only "subtract synthetic" is a deferred follow-up, not a gate.
     per_tenant_total = Tenant.objects.aggregate(s=Sum("estimated_cost_this_month"))["s"] or Decimal("0")
     shared_truth = get_shared_key_usage()
     platform_truth = per_tenant_total + shared_truth

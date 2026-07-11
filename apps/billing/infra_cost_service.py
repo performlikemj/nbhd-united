@@ -295,11 +295,16 @@ def refresh_infra_costs() -> dict:
     today = timezone.now().date()
     month_start = today.replace(day=1)
 
+    # Exclude eval synthetic tenants from shared-infra cost reporting: they must
+    # not dilute each REAL tenant's database/platform share (the "true monthly
+    # cost" number) — docs/evals-directive.md INVARIANT #5.
     active_tenants = list(
         Tenant.objects.filter(
             status="active",
             container_id__isnull=False,
-        ).exclude(container_id="")
+        )
+        .exclude(container_id="")
+        .exclude(is_synthetic=True)
     )
 
     active_count = len(active_tenants)

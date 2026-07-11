@@ -310,7 +310,11 @@ def snapshot_donations_for_month(month_first: date | None = None) -> dict:
     # Stripe-verification below; this only widens who gets considered. NOT
     # filtered by ``donation_enabled`` — the revenue pledge is a platform
     # commitment, not a per-user opt-in.
-    candidates = Tenant.objects.filter(Q(stripe_subscription_id__gt="") | Q(id__in=topup_tenant_ids))
+    # Exclude eval synthetic tenants: their (synthetic) revenue must never become
+    # a real, human-disbursed cash pledge (docs/evals-directive.md INVARIANT #5).
+    candidates = Tenant.objects.filter(Q(stripe_subscription_id__gt="") | Q(id__in=topup_tenant_ids)).exclude(
+        is_synthetic=True
+    )
 
     pledge_pct = _donation_percentage()
     pledge_pct_int = int(round(pledge_pct))

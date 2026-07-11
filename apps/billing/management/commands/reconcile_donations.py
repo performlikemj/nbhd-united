@@ -54,7 +54,26 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         month = self._target_month(options["month"])
-        pending = DonationLedger.objects.filter(month=month, status=DonationLedger.Status.PENDING)
+        # Backstop: never disburse against a synthetic tenant's ledger row. The
+        # primary gate is at snapshot time (donation_service excludes synthetic),
+        # so in practice no such row exists — this is defense-in-depth on the
+        # cash-out path (docs/evals-directive.md INVARIANT #5).
+        # Loudly surface the failure mode: if a synthetic PENDING row exists at
+        # all, the snapshot gate leaked — warn the operator before the (excluded)
+        # disbursement so it's visible, not silently swallowed.
+        leaked = DonationLedger.objects.filter(
+            month=month, status=DonationLedger.Status.PENDING, tenant__is_synthetic=True
+        ).count()
+        if leaked:
+            self.stderr.write(
+                self.style.WARNING(
+                    f"{leaked} synthetic-tenant PENDING donation row(s) for {month} — the snapshot "
+                    "is_synthetic gate leaked; excluded from disbursement but investigate donation_service."
+                )
+            )
+        pending = DonationLedger.objects.filter(month=month, status=DonationLedger.Status.PENDING).exclude(
+            tenant__is_synthetic=True
+        )
 
         if options["complete"]:
             receipt = options["receipt"].strip()

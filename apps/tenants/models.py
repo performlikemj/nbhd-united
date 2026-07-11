@@ -277,6 +277,16 @@ class Tenant(models.Model):
         default=False,
         help_text="Exempt from personal and global budget enforcement. Usage still tracked.",
     )
+    is_synthetic = models.BooleanField(
+        default=False,
+        help_text=(
+            "Eval-system synthetic tenant (see docs/evals-directive.md). Behaves EXACTLY "
+            "like a real tenant operationally (provisions, drains, crons, hibernates/wakes) "
+            "— that is the point — but is EXCLUDED from business-facing aggregates "
+            "(revenue, donation, campaign audiences, usage/true-cost, growth counts) so it "
+            "never distorts a number. Never set for a real subscriber."
+        ),
+    )
     purchased_credit = models.DecimalField(
         max_digits=10,
         decimal_places=4,

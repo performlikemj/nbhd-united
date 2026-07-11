@@ -204,7 +204,15 @@ class Command(BaseCommand):
           account, including those few completed-onboarding-but-silent
           tenants. Only never-onboarded shells are excluded.
         """
-        base = User.objects.filter(tenant__isnull=False).exclude(email="").exclude(email_opt_out=True)
+        # Exclude eval synthetic tenants from every audience mode — no real
+        # marketing mail or promo token is ever issued against a synthetic
+        # account (docs/evals-directive.md INVARIANT #5).
+        base = (
+            User.objects.filter(tenant__isnull=False)
+            .exclude(email="")
+            .exclude(email_opt_out=True)
+            .exclude(tenant__is_synthetic=True)
+        )
 
         if audience == AUDIENCE_COMEBACK:
             audience_qs = base.filter(
