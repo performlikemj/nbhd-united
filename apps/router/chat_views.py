@@ -34,7 +34,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.billing.services import check_budget
-from apps.router import enc_columns
+from apps.crypto.nolog import RedactedStr
+from apps.router import enc_columns, enc_read
 from apps.router.inbound_media import (
     MAX_APP_DOCUMENT_BYTES,
     MAX_APP_IMAGE_BYTES,
@@ -234,17 +235,23 @@ def _no_store(response):
     return response
 
 
-def _serialize_thread(thread: ChatThread) -> dict:
+def _serialize_thread(thread: ChatThread, *, tenant=None) -> dict:
+    # Owner-facing single-row read of the title (dual-read behind
+    # read_encrypted_chat; audits under the ambient owner_request — no per-view
+    # set_principal, amendment b). Callers with the tenant in hand pass it to
+    # avoid a per-row FK read.
+    tenant = tenant if tenant is not None else getattr(thread, "tenant", None)
+    title = enc_read.read_value(tenant, enc_columns.CHAT_THREAD_TITLE, thread.title_enc, thread.title).reveal()
     return {
         "id": str(thread.id),
-        "title": thread.title,
+        "title": title,
         "is_main": thread.is_main,
         "created_at": thread.created_at.isoformat(),
         "last_active_at": thread.last_active_at.isoformat() if thread.last_active_at else None,
     }
 
 
-def _serialize_message(msg: AppChatMessage, *, entity_map=None) -> dict:
+def _serialize_message(msg: AppChatMessage, *, entity_map=None, user_text: RedactedStr | None = None) -> dict:
     # ``reply_text`` rests in PII-placeholder space (pseudonymize-at-rest); this
     # is an owner-facing serializer, so rehydrate it to real values on the way
     # out. A no-op on legacy rows already stored with real names and on
@@ -254,6 +261,17 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None) -> dict:
     # resolves from ``msg.tenant`` (cached on freshly-created rows).
     if entity_map is None:
         entity_map = getattr(getattr(msg, "tenant", None), "pii_entity_map", None)
+    # user_text: bulk callers (ChatThreadMessagesView) pre-decrypt the whole page
+    # via one decrypt_bulk and pass the RedactedStr in; single-row callers
+    # (poll/detail/post/on-device/siri) leave it None and we dual-read here, which
+    # audits under the ambient owner_request (amendment b — no per-view principal).
+    if user_text is None:
+        user_text = enc_read.read_value(
+            getattr(msg, "tenant", None),
+            enc_columns.APP_CHAT_MESSAGE_USER_TEXT,
+            msg.user_text_enc,
+            msg.user_text,
+        )
     reply_text = msg.reply_text
     if reply_text and entity_map:
         try:
@@ -280,7 +298,7 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None) -> dict:
         "thread_id": str(msg.thread_id),
         "status": msg.status,
         "source": msg.source,
-        "user_text": msg.user_text,
+        "user_text": user_text.reveal(),
         "reply_text": reply_text,
         "error": msg.error,
         "created_at": msg.created_at.isoformat(),
@@ -542,7 +560,7 @@ class ChatThreadListView(APIView):
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         _get_or_create_main_thread(tenant, request.user)
         threads = ChatThread.objects.filter(tenant=tenant)
-        return _no_store(Response({"threads": [_serialize_thread(t) for t in threads]}))
+        return _no_store(Response({"threads": [_serialize_thread(t, tenant=tenant) for t in threads]}))
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -556,7 +574,7 @@ class ChatThreadListView(APIView):
             title_enc=_encrypt_chat_value(tenant, enc_columns.CHAT_THREAD_TITLE, title),
             is_main=False,
         )
-        return Response(_serialize_thread(thread), status=status.HTTP_201_CREATED)
+        return Response(_serialize_thread(thread, tenant=tenant), status=status.HTTP_201_CREATED)
 
 
 class ChatThreadMessagesView(APIView):
@@ -582,11 +600,22 @@ class ChatThreadMessagesView(APIView):
         # One map read for the whole page (rehydrating reply_text) — avoids a
         # per-row tenant FK lookup in _serialize_message.
         entity_map = getattr(tenant, "pii_entity_map", None)
+        # Bulk-decrypt the whole page's user_text in ONE decrypt_bulk (one audit
+        # event, row_count=N, owner_request) instead of N single reads — plan
+        # amendment b. _serialize_message then just reveals the passed value.
+        page_user_texts = enc_read.read_values_bulk(
+            tenant,
+            enc_columns.APP_CHAT_MESSAGE_USER_TEXT,
+            [(m.user_text_enc, m.user_text) for m in rows],
+        )
         return _no_store(
             Response(
                 {
-                    "thread": _serialize_thread(thread),
-                    "messages": [_serialize_message(m, entity_map=entity_map) for m in rows],
+                    "thread": _serialize_thread(thread, tenant=tenant),
+                    "messages": [
+                        _serialize_message(m, entity_map=entity_map, user_text=ut)
+                        for m, ut in zip(rows, page_user_texts)
+                    ],
                 }
             )
         )

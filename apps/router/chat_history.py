@@ -205,28 +205,35 @@ def _row(
     return {"_sort": (created_at, row_id), "msg": msg}
 
 
-def _app_rows(m, main_thread_id, entity_map=None):
+def _app_rows(m, main_thread_id, entity_map=None, *, user_text=None):
     """An ``AppChatMessage`` → a user row (always, if there's user text) and an
     assistant row (only once the reply has actually landed).
 
     ``reply_text`` is stored placeholder-space and rehydrated here (owner-facing).
-    ``user_text`` is the user's own typed words — served verbatim, no rehydration."""
+    ``user_text`` is the user's own typed words — served verbatim, no rehydration.
+    ``build_since_page`` pre-decrypts the page's user_text once (one bulk read,
+    owner_request) and passes each ``RedactedStr`` in; we ``.reveal()`` it at the
+    row-build egress. The emptiness check runs on the decrypted value so a
+    ``b""``-sealed empty turn is dropped exactly like a legacy empty one."""
+    from apps.crypto.nolog import RedactedStr
     from apps.router.models import AppChatMessage
     from apps.router.quick_replies import rehydrate_quick_replies
 
+    if user_text is None:
+        user_text = RedactedStr(m.user_text)
     thread_id = str(m.thread_id) if m.thread_id else main_thread_id
     # The attachment belongs to the user's inbound turn, so the flags ride the
     # USER row; the assistant reply row (and every other channel's rows) keep
     # _row's False defaults. Shared source of truth with the detail path.
     has_image, has_document = m.attachment_flags
     out = []
-    if (m.user_text or "").strip():
+    if (user_text or "").strip():
         out.append(
             _row(
                 row_id=f"app:{m.id}:0",
                 created_at=m.created_at,
                 role="user",
-                text=m.user_text,
+                text=user_text.reveal(),
                 source="app",
                 thread_id=thread_id,
                 client_msg_id=m.client_msg_id,  # device-originated → echo for dedup
@@ -365,6 +372,7 @@ def build_since_page(tenant, main_thread_id: str, *, cursor: str | None, limit: 
     incoming cursor is echoed back unchanged so iOS does not advance (and so a
     boundary row can never be skipped).
     """
+    from apps.router import enc_columns, enc_read
     from apps.router.models import AppChatMessage, ConversationTurn, ProactiveOutbound
 
     limit = max(1, min(int(limit or DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE))
@@ -406,8 +414,16 @@ def build_since_page(tenant, main_thread_id: str, *, cursor: str | None, limit: 
         # all=False: a row can match boundary on one timestamp and forward on
         # the other; the deduping union keeps it single.
         app_slice = list(app_boundary.union(app_forward))
-    for m in app_slice:
-        candidates.extend(_app_rows(m, main_thread_id, entity_map))
+    # Bulk-decrypt the app slice's user_text ONCE (one audit event, row_count=N,
+    # owner_request — amendment b), then hand each RedactedStr to _app_rows. The
+    # slice loads all columns (no .only(), see above), so user_text_enc is present.
+    app_user_texts = enc_read.read_values_bulk(
+        tenant,
+        enc_columns.APP_CHAT_MESSAGE_USER_TEXT,
+        [(m.user_text_enc, m.user_text) for m in app_slice],
+    )
+    for m, ut in zip(app_slice, app_user_texts):
+        candidates.extend(_app_rows(m, main_thread_id, entity_map, user_text=ut))
 
     conv_qs = ConversationTurn.objects.filter(tenant=tenant)
     for t in _page_slice(conv_qs, after_dt, fetch):
