@@ -52,3 +52,60 @@ def resolve_journey_tenant() -> Tenant:
             "refusing to run a journey probe against a real subscriber."
         )
     return tenant
+
+
+# --- Synthetic iOS delivery channel (journey_cron precondition) --------------
+#
+# ``resolve_user_channel`` (apps/router/cron_delivery.py) routes to the "app"
+# channel — and ``CronDeliveryView`` only writes the ``ProactiveOutbound`` row
+# the cron probe asserts on — when the user has at least one ``DeviceToken``. The
+# synthetic journey user has no Telegram/LINE link, so the cron probe MUST plant
+# an iOS ``DeviceToken`` before it arms, or the delivery view returns
+# ``422 no_channel_linked``.
+#
+# The catch that makes this a per-run STEP, not one-time setup: a SUCCESSFUL fire
+# pushes to this (fabricated) token, APNs rejects it as ``BadDeviceToken``
+# (apps/common/apns.py), and ``_push_to_user_devices`` prunes the row
+# (apps/router/push_views.py) so the table self-heals on reinstall. So every pass
+# destroys the channel for the next fire — a daily schedule alternated pass/fail
+# forever (prod runs 8→9: run 8 PASS pruned the token → run 9 no_channel_linked).
+# Re-ensuring the token before each arm heals it.
+#
+# The token value is a fixed, obviously-synthetic 64-hex string. It never reaches
+# a real device — the only push it could ever receive is the probe's own, which
+# APNs rejects — and carries the same ``bundle_id`` / ``sandbox`` environment an
+# eval-synthetic iOS install would.
+SYNTHETIC_DEVICE_TOKEN = "0" * 64
+SYNTHETIC_DEVICE_BUNDLE_ID = "org.hoodunited.nbhd.eval-synthetic"
+SYNTHETIC_DEVICE_ENVIRONMENT = "sandbox"
+
+
+def ensure_synthetic_delivery_channel(tenant) -> bool:
+    """Get-or-create the synthetic tenant's iOS ``DeviceToken``; return ``created``.
+
+    ``resolve_user_channel`` only routes to the app channel when a ``DeviceToken``
+    exists for the user, and a successful cron fire prunes the fabricated token
+    (see the module comment above), so the cron probe calls this BEFORE every arm.
+
+    Returns ``True`` when a new row was created (the prior fire pruned it, or it
+    never existed) and ``False`` when the row was already present — content-free
+    metadata for the run details, never any user data.
+
+    Raises on failure (does not swallow) so the caller's ``record_run`` closes the
+    run ERROR: a probe that cannot set up its own delivery precondition is broken,
+    never a silent skip (docs/evals-directive.md INVARIANT #3).
+    """
+    from apps.router.models import DeviceToken
+
+    # Keyed on ``token`` (its sole unique constraint) so the call is idempotent —
+    # a second run returns the existing row instead of colliding on the constraint.
+    _row, created = DeviceToken.objects.get_or_create(
+        token=SYNTHETIC_DEVICE_TOKEN,
+        defaults={
+            "tenant": tenant,
+            "user": tenant.user,
+            "environment": SYNTHETIC_DEVICE_ENVIRONMENT,
+            "bundle_id": SYNTHETIC_DEVICE_BUNDLE_ID,
+        },
+    )
+    return created
