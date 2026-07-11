@@ -21,6 +21,14 @@ from apps.billing.constants import (
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
 from apps.tenants.models import Tenant
 
+# Per-file workspace bootstrap budget (chars). OpenClaw silently truncates each
+# bootstrap file's TAIL past this at injection time — see the inline comment at
+# the ``bootstrapMaxChars`` emission site for the incident history. Tests that
+# assert "this block survives bootstrap" import THIS constant rather than
+# re-hardcoding the number, so a future bump can't silently strand them on a
+# stale bound.
+BOOTSTRAP_MAX_CHARS = 24000
+
 _CRON_CONTEXT_PREAMBLE = (
     "**MANDATORY — do this BEFORE following the instructions below:**\n"
     "1. Load today's daily note (`nbhd_daily_note_get`). Read EVERY section — "
@@ -2101,10 +2109,18 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 # observation-mode prompt enabled (the static rule block is ~6 KB,
                 # tenant state pushes it past 15 KB) — the tail (Privacy Placeholders,
                 # Recent journal, Fuel/Gravity state) is silently dropped before
-                # injection, causing degraded replies. 18 000 / 80 000 restores the
-                # full envelope with margin. Long term: move the static rule text
-                # out of USER.md into AGENTS.md or the system-prompt block (Phase C1).
-                "bootstrapMaxChars": 18000,
+                # injection, causing degraded replies. 18 000 / 80 000 restored the
+                # full envelope with margin at the time. Same disease recurred
+                # 2026-07-11 on AGENTS.md: the canary tenant's RENDERED file
+                # (measured from the share) was 21 689 chars — per-tenant
+                # substitutions + conditional blocks put the base render at
+                # ~18.8 K, so the appended agents_md prompt-extras (person-capture
+                # reflex, task-discipline block) and ~800 chars of base tail were
+                # silently dropped at injection. 24 000 restores the full file
+                # with margin; total stays 80 000 (canary worst-case sum of all
+                # bootstrap files is comfortably under). Tests import
+                # BOOTSTRAP_MAX_CHARS (module top) instead of hardcoding this.
+                "bootstrapMaxChars": BOOTSTRAP_MAX_CHARS,
                 "bootstrapTotalMaxChars": 80000,
                 "compaction": {
                     "mode": "safeguard",
