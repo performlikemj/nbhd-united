@@ -219,6 +219,8 @@ _TODAY_MAX_LINES = 6
 _TODAY_LINE_CHARS = 130
 _PREV_DAYS = 3
 _PREV_LINE_CHARS = 80
+# Per-line cap for the recent-proactive-sends dedup block (D2).
+_PROACTIVE_LINE_CHARS = 130
 
 
 def _one_line(text: str, limit: int) -> str:
@@ -234,6 +236,7 @@ def _collect_turns(tenant, *, since):
     Each item: ``{"dt": datetime, "date": local date, "user": str, "reply": str}``.
     """
     from apps.common.tenant_tz import tenant_tz
+    from apps.pii.redactor import redact_known_entities
     from apps.router import enc_columns, enc_read
     from apps.router.models import AppChatMessage, ConversationTurn
 
@@ -268,7 +271,25 @@ def _collect_turns(tenant, *, since):
             {
                 "dt": m.created_at,
                 "date": m.created_at.astimezone(tz).date(),
-                "user": ut.reveal(),
+                # ``AppChatMessage.user_text`` is stored VERBATIM (the user's OWN
+                # typed words, real values) so the owner-facing ``?since=`` feed can
+                # echo exactly what was typed. But this digest is MODEL-facing —
+                # USER.md is auto-loaded into every non-lightContext agent turn — so
+                # a raw third-party name here leaks into the container prompt (and
+                # then to the share via push_user_md). Reverse-map known names to
+                # their placeholders against the tenant map (directive D3): a pure
+                # dict + regex pass, reuse-only, that mints NOTHING. The iOS turn was
+                # already redacted+minted once at ingress, so every name the detector
+                # caught then already has a binding to reuse now; a NER-missed name
+                # has no binding and is deliberately NOT coined here (no junk mint on
+                # a render path, tenant.pii_entity_map is never mutated). No NER, no
+                # DB write — safe on every debounced digest build.
+                "user": redact_known_entities(tenant, ut.reveal()),
+                # reply_text is placeholder-space at rest (pseudonymize-at-rest via
+                # ``_store_ios_turn_reply``), so it is emitted unchanged. TODO
+                # (directive D3): an ON_DEVICE / private-mode reply that stored real
+                # values would need scrubbing here too; today the store path is
+                # always placeholder-space, so no re-processing is required.
                 "reply": m.reply_text,
             }
         )
@@ -277,12 +298,54 @@ def _collect_turns(tenant, *, since):
     return turns, tz
 
 
+def _recent_proactive_lines(tenant, tz) -> list[str]:
+    """Render the last few proactive sends into a compact dedup block (D2).
+
+    Cron sessions and the heartbeat run as SEPARATE isolated OpenClaw sessions,
+    so two routines firing the same morning each speak into apparent silence and
+    can re-ask the same question. ``ProactiveOutbound`` records every proactive
+    push but is read only on the *inbound* reply path — never cron-to-cron. By
+    rendering "what you/a sibling routine already sent in the last 24h" into the
+    same USER.md digest the isolated session already reads, a composing cron can
+    see the heartbeat/briefing already asked it and not repeat.
+
+    ``message_text`` is stored placeholder-space at rest (see
+    ``record_proactive_outbound`` — pseudonymize-at-rest), so it is rendered
+    unchanged; no scrub is needed here. Bounds reuse the inbound bridge's
+    constants (24h window, 3 rows). Returns ``[]`` when nothing was sent
+    in-window (the section is then omitted).
+    """
+    from apps.router.models import ProactiveOutbound
+    from apps.router.proactive_context import DEFAULT_LIMIT, DEFAULT_WINDOW_HOURS
+
+    since = timezone.now() - timedelta(hours=DEFAULT_WINDOW_HOURS)
+    rows = list(
+        ProactiveOutbound.objects.filter(tenant=tenant, created_at__gte=since)
+        .only("created_at", "message_text", "job_name")
+        .order_by("-created_at")[:DEFAULT_LIMIT]
+    )
+    if not rows:
+        return []
+
+    lines = [
+        "\n**Already sent to the user proactively (last 24h) — do NOT re-ask these in a proactive turn:**",
+    ]
+    for r in reversed(rows):  # oldest → newest so the block reads in time order
+        hhmm = r.created_at.astimezone(tz).strftime("%H:%M")
+        label = (r.job_name or "").strip() or "proactive"
+        body = _one_line(r.message_text, _PROACTIVE_LINE_CHARS)
+        lines.append(f"- {hhmm} · {label}: {body}")
+    return lines
+
+
 def build_conversation_digest(tenant) -> str:
     """Render the body of the USER.md "Conversation so far" section.
 
-    Returns ``""`` when there are no turns in the window (the registry then
-    omits the section). Today is the tenant-local date; previous days are a
-    terse per-day rollup. Deterministic — no LLM, no summarization.
+    Returns ``""`` when the window holds neither a captured turn NOR a recent
+    proactive send (the registry then omits the section). Today is the
+    tenant-local date; previous days are a terse per-day rollup; a trailing block
+    replays recent proactive sends for cron-to-cron dedup (D2). Deterministic —
+    no LLM, no summarization.
     """
     from apps.common.tenant_tz import tenant_today
 
@@ -295,56 +358,71 @@ def build_conversation_digest(tenant) -> str:
         logger.exception("conversation_capture: digest collection failed (non-fatal)")
         return ""
 
-    if not turns:
+    try:
+        proactive_lines = _recent_proactive_lines(tenant, tz)
+    except Exception:
+        logger.exception("conversation_capture: proactive digest block failed (non-fatal)")
+        proactive_lines = []
+
+    # Crons fire precisely when the user was quiet, so a proactive-only digest
+    # (no captured turns) is still worth rendering — it is the sibling-cron dedup
+    # signal. Omit the section only when BOTH sources are empty.
+    if not turns and not proactive_lines:
         return ""
 
-    today_turns = [t for t in turns if t["date"] == today]
-    horizon = today - timedelta(days=_PREV_DAYS)
-    prev_turns = [t for t in turns if horizon <= t["date"] < today]
+    lines: list[str] = []
 
-    lines: list[str] = [
-        "_Recent chat with the user, captured across channels. Ground proactive "
-        "turns in it — if turns appear here, the day was NOT quiet._",
-    ]
+    if turns:
+        today_turns = [t for t in turns if t["date"] == today]
+        horizon = today - timedelta(days=_PREV_DAYS)
+        prev_turns = [t for t in turns if horizon <= t["date"] < today]
 
-    if today_turns:
-        lines.append(f"\n**Today ({today.isoformat()}) · {len(today_turns)} message(s):**")
-        for t in today_turns[-_TODAY_MAX_LINES:]:
-            hhmm = t["dt"].astimezone(tz).strftime("%H:%M")
-            user = _one_line(t["user"], _TODAY_LINE_CHARS)
-            if user:
-                lines.append(f"- {hhmm} — user: {user}")
-            reply = _one_line(t["reply"], _TODAY_LINE_CHARS)
-            if reply:
-                lines.append(f"    ↳ you: {reply}")
-    else:
-        lines.append(f"\n**Today ({today.isoformat()}):** no messages yet.")
+        lines.append(
+            "_Recent chat with the user, captured across channels. Ground proactive "
+            "turns in it — if turns appear here, the day was NOT quiet._"
+        )
 
-    if prev_turns:
-        by_day: dict[str, list[dict]] = {}
-        for t in prev_turns:
-            by_day.setdefault(t["date"].isoformat(), []).append(t)
-        lines.append("\n**Earlier this week:**")
-        for day in sorted(by_day, reverse=True):
-            day_turns = by_day[day]
-            first_user = next(
-                (_one_line(t["user"], _PREV_LINE_CHARS) for t in day_turns if (t["user"] or "").strip()), ""
-            )
-            tail = f' — "{first_user}…"' if first_user else ""
-            lines.append(f"- {day} · {len(day_turns)} message(s){tail}")
+        if today_turns:
+            lines.append(f"\n**Today ({today.isoformat()}) · {len(today_turns)} message(s):**")
+            for t in today_turns[-_TODAY_MAX_LINES:]:
+                hhmm = t["dt"].astimezone(tz).strftime("%H:%M")
+                user = _one_line(t["user"], _TODAY_LINE_CHARS)
+                if user:
+                    lines.append(f"- {hhmm} — user: {user}")
+                reply = _one_line(t["reply"], _TODAY_LINE_CHARS)
+                if reply:
+                    lines.append(f"    ↳ you: {reply}")
+        else:
+            lines.append(f"\n**Today ({today.isoformat()}):** no messages yet.")
+
+        if prev_turns:
+            by_day: dict[str, list[dict]] = {}
+            for t in prev_turns:
+                by_day.setdefault(t["date"].isoformat(), []).append(t)
+            lines.append("\n**Earlier this week:**")
+            for day in sorted(by_day, reverse=True):
+                day_turns = by_day[day]
+                first_user = next(
+                    (_one_line(t["user"], _PREV_LINE_CHARS) for t in day_turns if (t["user"] or "").strip()), ""
+                )
+                tail = f' — "{first_user}…"' if first_user else ""
+                lines.append(f"- {day} · {len(day_turns)} message(s){tail}")
+
+    lines.extend(proactive_lines)
 
     digest = "\n".join(lines)
 
     # Deliberately NOT rehydrated. This digest is rendered into the USER.md
     # managed region, which is auto-loaded into the container/model prompt on
-    # EVERY agent turn — a model-facing seam. Reply lines are now stored in
+    # EVERY agent turn — a model-facing seam. Reply lines are stored in
     # PII-placeholder space (see ``clean_reply_for_capture`` /
-    # ``_store_ios_turn_reply``) and Telegram/LINE ``user_text`` is likewise
-    # placeholder-space (poller.py), so keeping the whole digest in placeholder
-    # space means real names never reach the model via this path — the same
-    # posture the live redaction pipeline enforces on every inbound turn. (The
-    # on-device ``ChatContextView`` digest IS owner-facing and rehydrates the
-    # rendered context itself.) Only iOS ``AppChatMessage.user_text`` — the
-    # user's own typed words — stays verbatim here; pseudonymization can't cover
-    # a user's own words, that is what at-rest encryption (Phase 2) is for.
+    # ``_store_ios_turn_reply``), Telegram/LINE ``user_text`` is likewise
+    # placeholder-space (poller.py), the proactive block reads placeholder-space
+    # ``message_text`` at rest, and iOS ``AppChatMessage.user_text`` — the user's
+    # OWN typed words, stored verbatim — is reverse-mapped to placeholders in
+    # ``_collect_turns`` (directive D3). So the whole digest stays in placeholder
+    # space and real third-party names never reach the model via this path — the
+    # same posture the live redaction pipeline enforces on every inbound turn.
+    # (The on-device ``ChatContextView`` digest IS owner-facing and rehydrates the
+    # rendered context itself, so the scrub is transparent to the owner.)
     return digest

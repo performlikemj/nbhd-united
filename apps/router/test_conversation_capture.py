@@ -170,6 +170,114 @@ class ConversationCaptureTest(TestCase):
         ConversationTurn.objects.filter(id=row.id).update(created_at=timezone.now() - timedelta(days=10))
         self.assertEqual(build_conversation_digest(self.tenant), "")
 
+    # ── D2: recent proactive-sends dedup block ─────────────────────────────
+    def test_digest_renders_recent_proactive_sends(self):
+        """Proactive-only digest (no captured turns) still renders the dedup
+        block — crons fire precisely when the user was quiet, and a sibling cron
+        must see what was already sent."""
+        from apps.router.models import ProactiveOutbound
+
+        ProactiveOutbound.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="1",
+            message_text="Did the budget meeting go ok?",
+            job_name="morning_briefing",
+        )
+        digest = build_conversation_digest(self.tenant)
+        self.assertIn("Already sent to the user proactively", digest)
+        self.assertIn("Did the budget meeting go ok?", digest)
+        self.assertIn("morning_briefing", digest)
+
+    def test_digest_proactive_block_caps_at_limit(self):
+        from apps.router.models import ProactiveOutbound
+        from apps.router.proactive_context import DEFAULT_LIMIT
+
+        for i in range(DEFAULT_LIMIT + 2):
+            ProactiveOutbound.objects.create(
+                tenant=self.tenant,
+                channel="telegram",
+                channel_user_id="1",
+                message_text=f"proactive number {i}",
+                job_name="heartbeat_checkin",
+            )
+        digest = build_conversation_digest(self.tenant)
+        rendered = [ln for ln in digest.splitlines() if "heartbeat_checkin" in ln]
+        self.assertEqual(len(rendered), DEFAULT_LIMIT)
+
+    def test_digest_omits_proactive_block_when_none(self):
+        record_conversation_turn(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="1",
+            user_text="just chatting",
+            reply_text="hi",
+        )
+        digest = build_conversation_digest(self.tenant)
+        self.assertNotIn("Already sent to the user proactively", digest)
+
+    def test_proactive_message_text_stays_placeholder_in_digest(self):
+        """message_text is placeholder-space at rest → rendered unchanged, never
+        rehydrated into the model-facing digest."""
+        from apps.router.models import ProactiveOutbound
+
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice Smith"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        ProactiveOutbound.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="1",
+            message_text="Have you heard back from [PERSON_1]?",
+            job_name="evening_checkin",
+        )
+        digest = build_conversation_digest(self.tenant)
+        self.assertIn("[PERSON_1]", digest)
+        self.assertNotIn("Alice Smith", digest)
+
+    # ── D3: iOS user_text scrub (verbatim → placeholder, reuse-only) ────────
+    def test_ios_user_text_with_binding_scrubbed_to_placeholder(self):
+        """A real name in verbatim iOS user_text that HAS a tenant-map binding
+        renders as its placeholder in the model-facing digest — closing the
+        pre-existing leak of the user's own typed third-party names."""
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice Smith"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True)
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=thread,
+            client_msg_id="scrub1",
+            user_text="Alice Smith emailed me about the meeting",
+            reply_text="got it",
+            status=AppChatMessage.Status.READY,
+        )
+        digest = build_conversation_digest(self.tenant)
+        self.assertIn("[PERSON_1]", digest)
+        self.assertNotIn("Alice Smith", digest)
+
+    def test_ios_user_text_without_binding_mints_nothing(self):
+        """A name with NO binding is not coined into a junk placeholder on this
+        render path — reuse-only, the tenant map is left unchanged."""
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice Smith"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        before = dict(self.tenant.pii_entity_map)
+        thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True)
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=thread,
+            client_msg_id="scrub2",
+            user_text="Bob Jones has no binding in the map",
+            reply_text="ok",
+            status=AppChatMessage.Status.READY,
+        )
+        digest = build_conversation_digest(self.tenant)
+        # Nothing minted: the map is byte-for-byte unchanged and no fresh
+        # [PERSON_2] placeholder was coined from the render path.
+        self.tenant.refresh_from_db(fields=["pii_entity_map"])
+        self.assertEqual(self.tenant.pii_entity_map, before)
+        self.assertNotIn("[PERSON_2]", digest)
+
     # ── envelope section wiring ────────────────────────────────────────────
     def test_envelope_section_renders(self):
         record_conversation_turn(

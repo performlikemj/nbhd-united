@@ -1612,7 +1612,44 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
     ai_text = _extract_ai_response(result)
     _store_ios_turn_reply(tenant, batch, ai_text)
     _record_usage_safe(tenant, result, message_count=len(batch))
+    # Refresh the USER.md "Conversation so far" digest so isolated proactive /
+    # cron sessions (Morning Briefing, Evening Check-in, the cron heartbeat)
+    # ground on this iOS turn instead of an hours-stale snapshot — the verified
+    # golden-case root cause (docs/assistant-context-continuity-directive.md
+    # D1 / §3 Phase 1). Telegram/LINE get this via _capture_conversation_turn →
+    # record_conversation_turn; iOS content is already durable in AppChatMessage
+    # (build_conversation_digest reads it directly), so ONLY the debounced push
+    # was missing. Fires on a healthy gateway response, exactly where the other
+    # channels capture; skipped on the credit-limit early return and on a POST
+    # that raised (container down) — a stale digest must never be pushed off a
+    # turn that didn't actually happen. Fail-open, off the delivery path.
+    _schedule_ios_digest_refresh(tenant)
     return True
+
+
+def _schedule_ios_digest_refresh(tenant: Tenant) -> None:
+    """Schedule the debounced USER.md conversation-digest push after a
+    successful iOS drain.
+
+    Reuses the SAME seam Telegram/LINE turns fire
+    (``conversation_capture.schedule_user_md_refresh`` — a leading-edge debounced
+    ``push_user_md`` through the sanitize chokepoint), so there is no parallel
+    debounce. iOS turns are already durable in ``AppChatMessage`` and the digest
+    reads that table directly, so — unlike Telegram/LINE — no ``ConversationTurn``
+    is written here; only the previously-missing push is scheduled. Honors the
+    module's threading contract (the seam itself is synchronous-on-commit under
+    ``NBHD_DISABLE_BACKGROUND_THREADS``). Fail-open — a refresh hiccup must never
+    fail message delivery."""
+    try:
+        from apps.router.conversation_capture import schedule_user_md_refresh
+
+        schedule_user_md_refresh(tenant)
+    except Exception:
+        logger.warning(
+            "drain_pending: ios USER.md digest refresh scheduling failed for tenant %s (non-fatal)",
+            str(getattr(tenant, "id", "?"))[:8],
+            exc_info=True,
+        )
 
 
 def _ios_client_msg_ids(batch: list[PendingMessage]) -> list[str]:
