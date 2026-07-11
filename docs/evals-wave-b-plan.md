@@ -1,16 +1,14 @@
 # Wave B — Journey Canary Suite build plan
 
-*Canonical build plan for Wave B of the production eval system. Companion to `docs/evals-directive.md` (the standing invariants every suite conforms to) and `project_evals_system` memory. Authored by the Wave B planner against `origin/main` @ `4e4b60af`; committed as the reference all Wave B PRs (B0–B6) are cut against.*
+*Canonical build plan for Wave B of the production eval system. Companion to `docs/evals-directive.md` (the standing invariants every suite conforms to) and the `project_evals_system` memory. Authored by the Wave B planner against `origin/main` @ `4e4b60af` (the working tree is stale — read anchors via `git show origin/main:<path>`), and committed as the single reference all Wave B PRs (B0–B6) are cut against.*
 
-> **[team-lead amendment — provisioning scope]** This plan was drafted for **two** synthetic tenants (`eval-journey` + `eval-behavior`). The team lead has narrowed Wave B to **`eval-journey` only** — `eval-behavior` is **deferred to Wave D** (no idle container spun up now). Wherever the plan below says "two synthetic tenants" or "create both," read it as: **provision/target only `eval-journey` in Wave B; `eval-behavior` stays a settings/plumbing stub**. PR-B0 still plumbs **both** env-var names (`EVAL_JOURNEY_TENANT_ID` *and* `EVAL_BEHAVIOR_TENANT_ID`) so Wave D needs no settings change — only `eval-journey` gets a real tenant id + PAT + container in Wave B. Inline `[team-lead amendment]` markers below flag the two provisioning spots.
+> **Scope note (team-lead decision, woven into the prose below):** Wave B provisions and targets **`eval-journey` only**; `eval-behavior` is **deferred to Wave D** (no idle container spun up now). PR-B0 still plumbs **both** env-var names (`EVAL_JOURNEY_TENANT_ID` *and* `EVAL_BEHAVIOR_TENANT_ID`) so Wave D needs no settings change — only `eval-journey` gets a real tenant id + PAT + container in Wave B.
 
 ---
 
 ═══════════════════════════════════════════════════════════════════
-PART 1 — probes + provisioning
-═══════════════════════════════════════════════════════════════════
-
 # Wave B — Journey Canary Suite build plan (1/2: probes + provisioning)
+═══════════════════════════════════════════════════════════════════
 
 *Investigated against `origin/main` @ `4e4b60af` (local checkout is 94 commits stale — every anchor is at that sha). **Zero migrations in this wave:** `eval_runs`/`eval_results` and `Tenant.is_synthetic` already exist from Wave A. Wave B is pure app code + settings + QStash schedules.*
 
@@ -46,10 +44,7 @@ PART 1 — probes + provisioning
 - *300s + scheduling:* cold start "regularly past 2 min, hit 3 in worst case" (`hibernation.py:29-41`) → SLO ~180s, deadline ~240s (60s headroom). **Interacts with Probe 1:** the 30-min chat probe keeps the tenant warm and could wake it mid-test → schedule `journey_wake` well off the `:00/:30` boundary (e.g. `12 5 * * *`); ground-truth precondition catches residual races. Two-phase fallback if cold starts brush the ceiling.
 
 ## Synthetic-tenant provisioning & budget (A2 constraint, settled)
-
-> **[team-lead amendment]** Provision **`eval-journey` only** in Wave B. Create the `eval-behavior` row + provision its container in **Wave D**, not now — but keep its `EVAL_BEHAVIOR_TENANT_ID` setting stub (empty) so no settings change is needed later. The field values below apply to `eval-journey`; apply them to `eval-behavior` when Wave D provisions it.
-
-Create both `eval-journey` and `eval-behavior` as normal `Tenant` rows **before** provisioning (no create-command exists; `provision_tenant` needs an existing PENDING row and never touches these fields — `apps/orchestrator/management/commands/provision_tenant.py`, `Makefile:84`). Set:
+Create the synthetic `Tenant` row(s) **before** provisioning (no create-command exists; `provision_tenant` needs an existing PENDING row and never touches these fields — `apps/orchestrator/management/commands/provision_tenant.py`, `Makefile:84`). **Wave B provisions only `eval-journey`; `eval-behavior` is deferred to Wave D (no idle container), though PR-B0 plumbs both env var names now.** Set on the row:
 - `is_synthetic=True` — business-aggregate exclusion (`apps/tenants/models.py:280`), orthogonal to budget.
 - **`is_budget_exempt=False`** — the load-bearing safety field (fact #3).
 - `monthly_cost_budget=Decimal("10.00")` (explicit; `0` defaults to $5 starter tier) — self-caps its own spend with `"personal"` while staying far under the $100 global cap even in runaway; $10 gives headroom for a month of cheap 30-min chat probes.
@@ -57,23 +52,21 @@ Create both `eval-journey` and `eval-behavior` as normal `Tenant` rows **before*
 
 When the per-tenant cap trips, only *this* tenant's turns get `budget_exhausted` — acceptable canary behavior, no other tenant touched. Optionally call `sync_or_key_limit(tenant)` once post-provision to pin the OpenRouter sub-key ceiling low too (not required — Django's pre-turn `check_budget` already trips at the smaller figure).
 
-*Targeting decoupled from provisioning:* no `EVAL_*_TENANT_ID` convention exists yet (only `PLATFORM_OWNER_EMAIL`, `config/settings/base.py:591`). PR-B0 adds `EVAL_JOURNEY_TENANT_ID`/`EVAL_BEHAVIOR_TENANT_ID`/`EVAL_JOURNEY_PAT` via `env()` so probes resolve by env id, never a hardcoded UUID.
+*Targeting decoupled from provisioning:* no `EVAL_*_TENANT_ID` convention existed before (only `PLATFORM_OWNER_EMAIL`, `config/settings/base.py:591`). PR-B0 adds `EVAL_JOURNEY_TENANT_ID`/`EVAL_BEHAVIOR_TENANT_ID`/`EVAL_JOURNEY_PAT` via `env()` so probes resolve by env id, never a hardcoded UUID.
 
 ═══════════════════════════════════════════════════════════════════
-PART 2 — PR-by-PR, ops steps, Mailgun, reaper, risks
-═══════════════════════════════════════════════════════════════════
-
 # Wave B build plan (2/2: PR-by-PR, ops steps, Mailgun, reaper, risks)
+═══════════════════════════════════════════════════════════════════
 
 Every probe PR lands **inert** — a `TASK_MAP` entry is only operator-fireable; a schedule needs a separate `SYSTEM_CRONS` entry (`apps/cron/views.py:292-296` says so explicitly). So each probe is landed, **hand-fired in prod** (`POST /api/cron/trigger/<name>/`, watch it write real EvalRun/EvalResult rows + emit `eval <suite>: PASS n/m`), *before* the final PR turns on any schedule. No migrations in any PR.
 
 ## PR-by-PR (dependency order: A✓ → B0 → {B1,B2,B3,B4,B5 parallel} → B6)
 
-**PR-B0 — foundation (blocks B1–B4).**
+**PR-B0 — foundation (blocks B1–B4). [BUILT & GREEN on feat/evals-waveb-foundation @ 246eb5ae — PR #1153]**
 - `config/settings/base.py`: `EVAL_JOURNEY_TENANT_ID`, `EVAL_BEHAVIOR_TENANT_ID`, `EVAL_JOURNEY_PAT` via `env()` (mirror names in `production.py` per env-var-name-match hook).
 - `apps/evals/journey/targets.py::resolve_journey_tenant()` → Tenant or raises a clear config error (a misconfigured probe is broken, not a silent pass — INVARIANT #3).
-- `apps/evals/alerting.py::send_eval_failure_alert(run)` — content-free body from `run.suite/id/git_sha/image_tag/trigger`, passed/total, failed `case_id`s, timestamps (all already content-safe; `_assert_details_safe` scrubbed `details`). Modeled exactly on `apps/router/line_quota_handlers.py:41` `handle_pre_warn`: gate on `PLATFORM_OWNER_EMAIL`, render `email/evals/failure_{subject,body}.txt`, `send_mail(fail_silently=False)`, catch+log, return bool. **Never raises** into the caller.
-- Shared task finalizer: non-pass run → `send_eval_failure_alert` (best-effort) → `raise RuntimeError` (DLQ), matching the `eval_smoke_task` contract.
+- `apps/evals/alerting.py::send_eval_failure_alert(run)` — content-free body from `run.suite/id/git_sha/image_tag/trigger`, passed/total, failed `case_id`s, timestamps (all already content-safe; `_assert_details_safe` scrubbed `details`). Modeled on `apps/router/line_quota_handlers.py:41` `handle_pre_warn`: gate on `PLATFORM_OWNER_EMAIL`, render `email/evals/failure_{subject,body}.txt`, `send_mail(fail_silently=False)`, catch+log, return bool. **Never raises** into the caller.
+- Shared task finalizer `finalize_task_run(run)`: non-pass run → `send_eval_failure_alert` (best-effort) → `raise RuntimeError` (DLQ), matching the `eval_smoke_task` contract.
 - *Accept:* `manage.py test apps.evals` green; resolver raises when unset; alert body asserted content-free + skips-with-log when owner email unset; `ruff format --check` + `makemigrations --check --dry-run` clean.
 - *Rollback:* revert; nothing scheduled, no data, no schema.
 
@@ -90,12 +83,9 @@ Every probe PR lands **inert** — a `TASK_MAP` entry is only operator-fireable;
 **PR-B6 — schedule wiring (turn it on; only after B1–B5 each fire-verified in prod).** Add `SYSTEM_CRONS` 3-tuples `(name, cron_expr, path)` in `register_system_crons.py:19`: `eval-journey-chat` `*/30 * * * *`; journal/cron/wake daily at **staggered** minutes off the `:00/:30` boundary (e.g. `05 5`, `20 5`, `12 5`); `reap-stuck-eval-runs` daily; optionally flip `eval_smoke` to scheduled. Dedup-id hygiene is NOT a concern here — schedule registration is idempotent by destination URL via `sync_system_crons` (`apps/cron/system_cron_registry.py:38`); the no-`:`/whitespace rule (`apps/cron/publish.py:39`) only bites ad-hoc publishes, which none of these do. *Accept:* deploy-time register view + daily `reconcile_system_crons_task` create the schedules; each fires on cadence; a forced failure → DLQ + owner email. *Rollback:* remove tuples + add retired paths to `RETIRED_CRON_PATHS` (`register_system_crons.py:182`) + re-run register → tasks revert to inert.
 
 ## OPS STEPS the orchestrator runs (NOT code PRs)
-
-> **[team-lead amendment]** Step 1 runs for **`eval-journey` only** in Wave B (one container, not two). `eval-behavior` provisioning moves to Wave D.
-
-1. **Provision the two synthetic tenants** — create rows with the field values above, then `make provision TENANT_ID=<uuid>` each (real container/DEK/share/identity, `apps/orchestrator/services.py:215`). Billable containers — deliberately outside the code PRs.
+1. **Provision `eval-journey`** (eval-behavior deferred to Wave D) — create the row with the field values above, then `make provision TENANT_ID=<uuid>` (real container/DEK/share/identity, `apps/orchestrator/services.py:215`). Billable container — deliberately outside the code PRs.
 2. **Mint the chat PAT** for eval-journey's user → store as `EVAL_JOURNEY_PAT` secret.
-3. **Set container-app env vars** to match new settings: `EVAL_JOURNEY_TENANT_ID`, `EVAL_BEHAVIOR_TENANT_ID`, `EVAL_JOURNEY_PAT`; confirm `PLATFORM_OWNER_EMAIL` set.
+3. **Set container-app env vars** to match new settings: `EVAL_JOURNEY_TENANT_ID`, `EVAL_JOURNEY_PAT` (and the `EVAL_BEHAVIOR_TENANT_ID` stub, left empty until Wave D); confirm `PLATFORM_OWNER_EMAIL` set.
 4. **Verify Mailgun BEFORE relying on alerting** (directive §3; key was invalid during the comeback campaign). IMPORTANT: this platform sends over **SMTP** (`EMAIL_HOST_USER`/`EMAIL_HOST_PASSWORD` → `smtp.mailgun.org:587`, `config/settings/production.py:96-115`), **not** a `MAILGUN_API_KEY` REST key — so the Mailgun MCP tools can check domain/DNS health but CANNOT validate the SMTP credential. Verify end-to-end by firing the existing `preview_email` task in prod (`POST /api/cron/trigger/preview_email/` with `{"kwargs":{"kind":1,"to":"mj1@duck.com"}}`, `apps/tenants/tasks.py:47`) and confirming the mail physically arrives with no SMTP-auth traceback. Don't wire B6's alert dependency until this passes.
 5. **Fire-verify each probe in prod** after its PR deploys; force one FAIL to confirm the DLQ + owner-email path — before B6 schedules it.
 6. **Register schedules** — normal deploy runs the register view + daily reconcile self-heal once B6 merges.
@@ -113,3 +103,20 @@ Every probe PR lands **inert** — a `TASK_MAP` entry is only operator-fireable;
 - **Metric pollution** (two residues, handle in Wave E not here): (a) synthetic spend still lands in the global `MonthlyBudget.spent_dollars` — a *feature* (caps runaways) but Suite-4 infra-cost/global readouts include a few synthetic dollars; (b) chat/wake probes poll `ChatMessageDetailView`, which server-side `reveal()`s the synthetic tenant's own text → emits **decrypt-audit** events under the probe principal → Suite-4's "unexplained owner-read spike" metric must exclude the synthetic tenants. Neither is an INVARIANT #1 violation (the eval sink never receives content; probe reads only status/replied_at/error).
 - **Unbounded growth** → journal probe deletes its doc each run; chat/cron/proactive rows accumulate only on synthetic tenants (harmless, excluded from metrics).
 - **Future journal encryption** → `journey_journal`'s plaintext-FTS assumption revisited when `Document.markdown` encryption lands.
+
+## Appendix — Chassis usage contract (what B1–B4 build on)
+Every journey probe is a suite function over the Wave-A chassis (`apps/evals/runner.py`), one EvalRun per probe:
+```
+def run_<probe>_suite(*, trigger=EvalRun.Trigger.SCHEDULED) -> EvalRun:
+    tenant = resolve_journey_tenant()          # env-id lookup; raises loudly if unset (INVARIANT #3) — NEVER a hardcoded UUID
+    with record_run("journey_<probe>", trigger) as run:   # own suite string per probe → per-probe cadence/DLQ/trend
+        # ... drive the REAL path, observe by METADATA only ...
+        record(run, "<case_id>", EvalResult.Kind.JOURNEY,
+               passed=<bool>, score=<latency_ms>, threshold=<slo_ms>,
+               details={...})                    # counts / durations / ids / booleans ONLY
+    return run                                   # record_run closed it: pass/fail from cases, or error on exception
+```
+- **`details` is FAIL-CLOSED at the `record()` chokepoint** (`_assert_details_safe`): every str leaf ≤64 chars, ≤2 levels deep, leaves are int/float/bool/str/None only. Put latencies, counts, ids, thresholds, booleans — never content, never a transcript, never a name. A too-long/too-deep/non-scalar value raises `ValueError` (reporting length/type only, never the value).
+- **The zero-arg task wrapper** does `run = run_<probe>_suite(); finalize_task_run(run)` — `finalize_task_run` sends the content-free alert on non-pass then raises so QStash DLQs it (the `eval_smoke_task` contract).
+- **`record_run` guarantees closure:** clean exit → `close_run` derives pass/fail/error from recorded cases (zero cases = ERROR, never a vacuous pass); exception → closes ERROR + re-raises (no stranded `running`, except a hard SIGKILL — that's the B5 reaper's job).
+- **Never a UUID literal:** always target via `resolve_journey_tenant()`.
