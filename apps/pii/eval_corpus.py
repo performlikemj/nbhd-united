@@ -703,13 +703,20 @@ CASES: list[EvalCase] = [
         known_gap="KNOWN-GAP: DATE_OF_BIRTH has no detector — apps/pii/config.py "
         "DEBERTA_LABEL_MAP deliberately has no entry for the raw 'DATE' label "
         "(dropped fleet-wide to avoid firing on every journal date heading), so an "
-        "explicit birth-date disclosure is not redacted today. FLIPS WHEN: a "
-        "context-aware rule maps a DATE-shaped span to DATE_OF_BIRTH under "
-        "birth-context phrasing (e.g. 'date of birth is', 'born on') in "
-        "apps/pii/config.py or apps/pii/redactor.py, AND 'DATE_OF_BIRTH' is added "
-        "to TIER_POLICIES['starter']['entities'] in config.py — this case already "
-        "feeds the raw DATE hit real detection would produce, so that fix is "
-        "observed directly, not silently missed.",
+        "explicit birth-date disclosure is not redacted today. FLIPS WHEN ALL "
+        "THREE of: (1) a context-aware rule maps a DATE-shaped span to "
+        "DATE_OF_BIRTH under birth-context phrasing (e.g. 'date of birth is', "
+        "'born on') in apps/pii/config.py or apps/pii/redactor.py; (2) "
+        "'DATE_OF_BIRTH' is added to TIER_POLICIES['starter']['entities'] in "
+        "config.py; AND (3) apps/pii/hygiene.py's validate_structured is taught "
+        "about DATE_OF_BIRTH — today it fails closed on any type it doesn't "
+        "explicitly branch on (the final `return False` at hygiene.py:386-387), "
+        "so even with (1) and (2) alone the span would still be silently dropped "
+        "as 'structured_invalid' by _filter_results (redactor.py's "
+        "validate_structured gate applies to every type except PERSON/LOCATION). "
+        "This case already feeds the raw DATE hit real detection would produce, "
+        "so all three changes together are observed directly, not silently "
+        "missed.",
         hits=(("DATE", "March 3, 1990", 0.9),),
         redacted=("March 3, 1990",),
     ),
@@ -719,10 +726,12 @@ CASES: list[EvalCase] = [
         tags=("standard", "dates", "jp"),
         known_gap="KNOWN-GAP: same DATE_OF_BIRTH gap as "
         "date_of_birth_statement_not_redacted, for a Japanese-format birth date "
-        "statement. FLIPS WHEN: the same DATE_OF_BIRTH context-aware rule and "
-        "TIER_POLICIES entry described there lands — this case feeds the "
-        "equivalent raw DATE hit for the JP-format span so the fix is observed "
-        "directly here too, not just in the English case.",
+        "statement. FLIPS WHEN: the same three changes described there land "
+        "(context-aware label mapping, the TIER_POLICIES entry, AND teaching "
+        "hygiene.validate_structured about DATE_OF_BIRTH so it doesn't fail "
+        "closed) — this case feeds the equivalent raw DATE hit for the "
+        "JP-format span so the fix is observed directly here too, not just in "
+        "the English case.",
         hits=(("DATE", "1990年3月3日", 0.9),),
         redacted=("1990年3月3日",),
     ),
@@ -784,8 +793,17 @@ CASES: list[EvalCase] = [
     ),
     _c(
         "jp_unspaced_text_over_redacted_by_word_snap",
-        "田中さんによろしくお伝えください",
+        "田中太郎さんによろしくお伝えください",
         tags=("standard", "jp"),
+        # DEAD-SENTINEL GUARD: uses a 4-char name ("田中太郎"), not the 2-char
+        # "田中" this case originally used. _is_degenerate_span (redactor.py:
+        # 484-498, len<3 floor) independently drops any span under 3 chars
+        # regardless of cause — with a 2-char hit, an exclude-CJK fix to
+        # snap_to_word_boundaries would stop the over-expansion but leave the
+        # narrowed 2-char span to be filtered as "degenerate" instead, so the
+        # sentinel would stay green (still not redacted, just for a different
+        # reason) and never flip. A 4-char name clears that floor once the span
+        # stops being over-expanded, so the fix is actually observed.
         known_gap="KNOWN-GAP: snap_to_word_boundaries (apps/pii/hygiene.py) expands "
         "each edge of a PERSON/LOCATION span over any contiguous run of "
         "Unicode-alnum characters (str.isalnum(), unicode-aware) until it hits real "
@@ -800,10 +818,38 @@ CASES: list[EvalCase] = [
         "snap_to_word_boundaries is made script-aware (e.g. stops at a script "
         "transition, caps total expansion length, or excludes CJK code points from "
         "the alnum walk) — this case already feeds a real narrow FULLNAME hit on "
-        "just '田中', so any such fix is observed directly: 'さんによろしくお伝えください' "
-        "would start surviving instead of being swallowed.",
-        redacted=("田中",),
+        "just '田中太郎' (4 chars, clears the degenerate-span floor below), so any "
+        "such fix is observed directly: 'さんによろしくお伝えください' would start "
+        "surviving instead of being swallowed.",
+        redacted=("田中太郎",),
         preserved=("さんによろしくお伝えください",),
+        hits=(("FULLNAME", "田中太郎", 0.85),),
+    ),
+    _c(
+        "jp_two_char_name_silently_dropped_by_degenerate_floor",
+        "田中、会議に来てください",
+        tags=("standard", "jp"),
+        # Isolated from the snap-expansion bug above on purpose: the full-width
+        # comma (、) immediately after "田中" gives snap_to_word_boundaries a
+        # real stop, so this case's span is exactly "田中" (2 chars) even
+        # TODAY, unaffected by the over-expansion bug. This documents a
+        # SEPARATE, independent gap the reviewer asked to have pinned:
+        # _is_degenerate_span's len<3 floor treats a complete 2-character
+        # Japanese name the same as a stray English letter/fragment.
+        known_gap="KNOWN-GAP: _is_degenerate_span (apps/pii/redactor.py:484-498) "
+        "treats any span under 3 characters as junk — a floor calibrated for "
+        "Latin-script fragments (a lone letter, '_', '['), where under-3-char "
+        "spans are almost never real PII. But a complete Japanese personal name "
+        "is very commonly exactly 2 characters (a bare surname, as here), so a "
+        "genuine 2-character JP name is silently dropped and never redacted — "
+        "independent of, and NOT fixed by, any change to snap_to_word_boundaries "
+        "(this case's span is already correctly isolated by the comma boundary). "
+        "FLIPS WHEN: _is_degenerate_span's length floor is made script-aware "
+        "(e.g. a lower floor, or an alpha-only floor, for CJK-only spans, since "
+        "2 CJK characters carry far more information density than 2 Latin "
+        "letters) — this case already feeds a real, punctuation-isolated "
+        "2-char FULLNAME hit, so any such fix is observed directly.",
+        redacted=("田中",),
         hits=(("FULLNAME", "田中", 0.85),),
     ),
     _c(
@@ -1053,12 +1099,16 @@ SEQUENCE_CASES: list[SequenceEvalCase] = [
         "documented 2026-07-06; structural fixes (collision-visibility signal, "
         "thread-scoped sessions, entity-linking arbiter pass, or a stable people "
         "registry) are ranked but NOT implemented pending an owner decision. "
-        "FLIPS WHEN: any of those fixes lands (e.g. canonical_key gains "
-        "context-aware disambiguation, or redactor._redact_user_message's "
-        "row-locked mint-reuse branch consults something beyond an exact "
-        "casefolded string match) — this case already feeds two real FULLNAME "
-        "hits for the identical surface string across two turns against the SAME "
-        "tenant, so any such fix is observed directly as distinct placeholders.",
+        "FLIPS WHEN: any behavior-level disambiguation lands anywhere in the "
+        "redaction path (canonical_key gains context-awareness, Step 1's "
+        "known-entity regex pass or the row-locked mint-reuse branch in "
+        "redactor._redact_user_message consults something beyond an exact "
+        "casefolded string match, etc. — turn 2 here is actually caught by "
+        "Step 1's literal substitution of the already-known name, not the "
+        "mint-reuse branch, since 'John Carter' is already in the tenant map "
+        "by then) — this case already feeds two real FULLNAME hits for the "
+        "identical surface string across two turns against the SAME tenant, "
+        "so any such fix is observed directly as distinct placeholders.",
     ),
     _seq(
         "same_person_repeat_mention_intentionally_collapses",
