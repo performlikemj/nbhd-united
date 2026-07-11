@@ -7,9 +7,10 @@ enforced by ``validate_outbound_message`` and by the agent turn's
 ``toolsAllow`` being a single-tool allowlist.
 
 There is no native "no-LLM cron" mode in OC 2026.5.7 (confirmed in dist
-inspection). To minimise cost we use ``haiku-4.5`` + ``lightContext: true``
-+ a tightly-bounded ``toolsAllow`` — that's the lowest-cost agent turn
-the runtime supports.
+inspection). To minimise cost we pin the cheap NON-BYO worker model
+(DeepSeek V4 Flash — see ``_CRON_MODEL``) + ``lightContext: true`` + a
+tightly-bounded ``toolsAllow`` — that's the lowest-cost agent turn the
+runtime supports.
 """
 
 from __future__ import annotations
@@ -18,8 +19,22 @@ from typing import Any
 
 from pydantic import Field
 
+from apps.billing.constants import DEEPSEEK_FLASH_MODEL
+
 from . import register_handler
 from .base import PatternHandler, PatternPayload
+
+# Typed-cron patterns fire a platform-initiated agent turn — pin the cheap
+# NON-BYO worker model (DeepSeek V4 Flash), the same model the heartbeat and the
+# TIER_TASK_DEFAULTS routine crons use. Flash is a member of every tier's
+# agents.defaults.models allowlist (config_generator: HEARTBEAT_MODEL /
+# TIER_MODEL_CONFIGS), so OpenClaw's cron preflight accepts it for starter,
+# higher tiers, and BYO alike. Pin the full "openrouter/…" id (not a bare alias):
+# it's the value the working platform crons already pin and the one that
+# round-trips through preflight, which openrouter-prefixes bare payload models.
+# The old hardcoded "haiku-4.5" sat in no non-BYO allowlist, so preflight
+# rejected the fire-turn before nbhd_send_to_user and no delivery happened.
+_CRON_MODEL = DEEPSEEK_FLASH_MODEL
 
 
 class PureReminderPayload(PatternPayload):
@@ -33,7 +48,6 @@ class PureReminderPayload(PatternPayload):
     )
 
 
-_REMINDER_MODEL = "haiku-4.5"
 _TURN_TIMEOUT_SECONDS = 30
 
 
@@ -71,7 +85,7 @@ class PureReminderHandler(PatternHandler):
             "payload": {
                 "kind": "agentTurn",
                 "message": message,
-                "model": _REMINDER_MODEL,
+                "model": _CRON_MODEL,
                 "lightContext": True,
                 "toolsAllow": self.get_tools_allow(payload),
                 "timeoutSeconds": _TURN_TIMEOUT_SECONDS,

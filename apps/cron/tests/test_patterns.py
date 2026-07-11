@@ -9,7 +9,7 @@ Per pattern, exercises:
 
 from __future__ import annotations
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.cron.patterns import get_handler
 
@@ -472,3 +472,93 @@ class OutboundContractParityTests(SimpleTestCase):
                 payload = handler.validate_payload(payload_dict)
                 ok, _reason = handler.validate_outbound_message(content, payload)
                 self.assertEqual(ok, expected_ok)
+
+
+# Minimal schema-valid payload per pattern that pins a fire-time model — the four
+# patterns that hardcoded "haiku-4.5" (daily_briefing pins its own model and is
+# out of scope here). Used to assert each pattern's resolved model lands inside
+# the firing tenant's allowlist.
+_MODEL_PINNING_PATTERN_PAYLOADS: dict[str, dict] = {
+    "pure_reminder": {"text": "Take out trash"},
+    "quote_user_intent": {"text": "appointment Tuesday 3pm"},
+    "domain_summary": {"query_tool": "nbhd_task_list", "render_block": "task_summary"},
+    "workout_congrats": {"activity": "Push Day"},
+}
+
+
+class TypedCronPayloadModelTests(TestCase):
+    """Regression: a typed-cron payload model outside the tenant's
+    ``agents.defaults.models`` allowlist makes OpenClaw's cron preflight reject
+    the fire-turn (``payload.model '...' rejected by agents.defaults.models
+    allowlist``) — the turn dies before ``nbhd_send_to_user`` and no delivery
+    happens. Every pattern's fire-time model MUST be a member of the firing
+    tenant's resolved allowlist.
+
+    Both the model and the allowlist are derived from the real config_generator
+    path (``build_oc_data`` / ``resolve_tenant_models``), never a fixture that
+    could re-state the bug. ``resolve_tenant_models``'s ``model_entries`` is
+    exactly what ``generate_openclaw_config`` writes as ``agents.defaults.models``.
+    """
+
+    def _payload_model(self, pattern: str, tenant) -> str:
+        handler = get_handler(pattern)
+        payload = handler.validate_payload(_MODEL_PINNING_PATTERN_PAYLOADS[pattern])
+        data = handler.build_oc_data(payload, tenant=tenant, name="probe", schedule=_RECURRING_SCHEDULE)
+        return data["payload"]["model"]
+
+    def test_starter_non_byo_model_in_allowlist(self):
+        from apps.orchestrator.config_generator import resolve_tenant_models
+        from apps.tenants.models import Tenant, User
+
+        user = User.objects.create_user(username="cron-starter", password="x" * 32)
+        tenant = Tenant.objects.create(user=user, model_tier="starter")
+
+        # The allowlist exactly as generate_openclaw_config writes it into
+        # agents.defaults.models — what OC preflight checks payload.model against.
+        _config, allowlist, _fallbacks = resolve_tenant_models(tenant)
+
+        for pattern in _MODEL_PINNING_PATTERN_PAYLOADS:
+            with self.subTest(pattern=pattern):
+                model = self._payload_model(pattern, tenant)
+                self.assertIn(
+                    model,
+                    allowlist,
+                    f"{pattern} pinned {model!r}, outside the tenant allowlist "
+                    f"{sorted(allowlist)} — OC preflight would reject the fire-turn.",
+                )
+                # The exact bug this guards: a hardcoded model no non-BYO
+                # allowlist contains.
+                self.assertNotEqual(model, "haiku-4.5")
+
+    def test_byo_model_in_allowlist_and_stays_off_metered_subscription(self):
+        from apps.billing.constants import ANTHROPIC_SONNET_MODEL
+        from apps.byo_models.models import BYOCredential
+        from apps.orchestrator.config_generator import _byo_model_extras, resolve_tenant_models
+        from apps.tenants.models import Tenant, User
+
+        user = User.objects.create_user(username="cron-byo", password="x" * 32)
+        tenant = Tenant.objects.create(user=user, model_tier="starter")
+        tenant.byo_models_enabled = True
+        tenant.save(update_fields=["byo_models_enabled"])
+        BYOCredential.objects.create(
+            tenant=tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+            key_vault_secret_name="x",
+            status=BYOCredential.Status.VERIFIED,
+        )
+
+        _config, allowlist, _fallbacks = resolve_tenant_models(tenant)
+        byo_extras = _byo_model_extras(tenant)
+        # Sanity: BYO extras really are live (Claude is in the allowlist), so the
+        # assertions below aren't vacuously true against a non-BYO shape.
+        self.assertIn(ANTHROPIC_SONNET_MODEL, allowlist)
+        self.assertTrue(byo_extras)
+
+        for pattern in _MODEL_PINNING_PATTERN_PAYLOADS:
+            with self.subTest(pattern=pattern):
+                model = self._payload_model(pattern, tenant)
+                self.assertIn(model, allowlist)
+                # Platform-fired crons never burn the tenant's metered Claude
+                # subscription (matches TIER_TASK_DEFAULTS' NON-BYO invariant).
+                self.assertNotIn(model, byo_extras)
