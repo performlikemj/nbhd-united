@@ -58,7 +58,7 @@ class ScrubFailClosedTest(TestCase):
     def setUp(self):
         self.owner = _tenant("scrub_owner")
         self.lesson = _lesson(self.owner, context="from a chat with a friend")
-        self.sl = access.ensure_shared_lesson(self.lesson, self.owner)
+        self.sl, _ = access.ensure_shared_lesson(self.lesson, self.owner)
 
     def test_neutralizes_placeholders_no_map(self):
         with (
@@ -252,7 +252,7 @@ class Belt2PrecisionTest(TestCase):
             "Even with family pickup and errands, project work (Braveno, NBHD) keeps momentum alive.",
             context="Mika worked on Braveno and NBHD between pickups with [PERSON_61] at work",
         )
-        sl = access.ensure_shared_lesson(lesson, self.owner)
+        sl, _ = access.ensure_shared_lesson(lesson, self.owner)
 
         def fragment_pipe(text):
             hits = []
@@ -331,6 +331,57 @@ class ShareIntentTest(TestCase):
             self.lesson.save(update_fields=["text"])
             services.share_lesson(self.a, self.a.user, self.lesson, str(self.edge.id))
         enqueue.assert_called_once()
+
+    def test_double_submit_share_returns_existing_not_500(self):
+        """A rapid double-POST of the same lesson share (prod 2026-07-11: the
+        user's first real spark) must not 500. The winner inserts the
+        ``shared_lessons`` OneToOne snapshot; the loser's get-or-create of that
+        snapshot hits the ``source_lesson`` unique violation. It must return a
+        share (never re-raise) and must NOT re-enqueue the winner's scrub.
+
+        FAILS on main's logic: there ``ensure_shared_lesson`` calls
+        ``get_or_create``, whose losing INSERT surfaces the ``IntegrityError``
+        here (its own re-get rode a request connection that fail-closed in
+        prod), so the second POST 500s instead of returning the winner's row."""
+        client = _client(self.a.user)
+        with mock.patch("apps.friends.services._enqueue_scrub") as enqueue:
+            first = client.post(
+                f"/api/v1/lessons/{self.lesson.id}/share/",
+                {"friendship_id": str(self.edge.id)},
+                format="json",
+            )
+            self.assertEqual(first.status_code, 201, first.content)
+            # The loser: its get-or-create of the OneToOne snapshot collides on
+            # the source_lesson unique constraint (the winner just inserted it).
+            with mock.patch.object(
+                SharedLesson.objects, "get_or_create", side_effect=IntegrityError("dup source_lesson")
+            ):
+                loser = client.post(
+                    f"/api/v1/lessons/{self.lesson.id}/share/",
+                    {"friendship_id": str(self.edge.id)},
+                    format="json",
+                )
+        self.assertEqual(loser.status_code, 201, loser.content)
+        self.assertTrue(loser.json().get("pending_share_id"))
+        # One snapshot, one PendingShare per POST, one scrub — no double-enqueue.
+        self.assertEqual(access.get_shared_lesson_for_lesson(self.lesson).scrub_status, "pending")
+        self.assertEqual(PendingShare.objects.filter(source_lesson=self.lesson).count(), 2)
+        enqueue.assert_called_once()
+
+    def test_ensure_shared_lesson_returns_winner_on_insert_collision(self):
+        """Unit cover for the recovery seam: when the existence check misses (the
+        winner isn't visible on this connection yet) AND the INSERT collides, the
+        loser catches the violation and re-fetches the winner under the service
+        context — returning ``(winner, created=False)``, never re-raising."""
+        winner, created = access.ensure_shared_lesson(self.lesson, self.a)
+        self.assertTrue(created)
+        with (
+            mock.patch.object(SharedLesson.objects, "get", side_effect=SharedLesson.DoesNotExist),
+            mock.patch.object(SharedLesson.objects, "create", side_effect=IntegrityError("dup source_lesson")),
+        ):
+            row, created_again = access.ensure_shared_lesson(self.lesson, self.a)
+        self.assertFalse(created_again)
+        self.assertEqual(row.id, winner.id)
 
 
 # ── Preview → approve → publish → shared_star_qs; revoke ─────────────────────
@@ -430,7 +481,7 @@ class GrantInvariantsTest(TestCase):
         self.b = _tenant("grant_b")
         self.edge = _accepted_edge(self.a, self.b)
         self.lesson = _lesson(self.a)
-        self.sl = access.ensure_shared_lesson(self.lesson, self.a)
+        self.sl, _ = access.ensure_shared_lesson(self.lesson, self.a)
         access.save_scrub_ready(self.sl, redacted_text="someone did a thing", content_hash="h")
 
     def test_create_grant_is_idempotent(self):

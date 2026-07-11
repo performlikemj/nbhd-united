@@ -342,10 +342,33 @@ def get_shared_lesson_by_lesson_id(lesson_id, owner_tenant) -> SharedLesson | No
         return None
 
 
-def ensure_shared_lesson(lesson, owner_tenant) -> SharedLesson:
-    """Get-or-create the frozen snapshot for a lesson (OneToOne, pending scrub)."""
-    shared_lesson, _ = SharedLesson.objects.get_or_create(source_lesson=lesson, defaults={"owner_tenant": owner_tenant})
-    return shared_lesson
+def ensure_shared_lesson(lesson, owner_tenant) -> tuple[SharedLesson, bool]:
+    """Get-or-create the frozen snapshot for a lesson (OneToOne, pending scrub).
+    Returns ``(shared_lesson, created)``.
+
+    Race-safe: a rapid double-share of the same lesson (an iOS double-submit)
+    has exactly one request win the ``source_lesson`` OneToOne insert; every
+    loser catches the unique violation and returns the winner's row with
+    ``created=False`` — never a 500 (prod 2026-07-11, the user's first real
+    spark). The loser re-fetches under the service context so an RLS GUC flicker
+    on a pooled / reconnected connection can't fail-close the read to a spurious
+    miss and re-raise the violation (mirrors :func:`get_shared_lesson_by_lesson_id`;
+    this is why the stdlib ``get_or_create`` — whose re-get rides the request
+    connection — 500'd instead of self-healing)."""
+    from django.db import IntegrityError, transaction
+
+    try:
+        return SharedLesson.objects.get(source_lesson=lesson), False
+    except SharedLesson.DoesNotExist:
+        pass
+    try:
+        with transaction.atomic():
+            return SharedLesson.objects.create(source_lesson=lesson, owner_tenant=owner_tenant), True
+    except IntegrityError:
+        winner = get_shared_lesson_by_lesson_id(lesson.id, owner_tenant)
+        if winner is None:
+            raise
+        return winner, False
 
 
 def mark_scrub_pending(shared_lesson) -> None:

@@ -53,7 +53,7 @@ def _lesson(tenant, text="Batch-cook Sundays.") -> Lesson:
 
 def _ready_shared_lesson(owner, lesson=None) -> SharedLesson:
     lesson = lesson or _lesson(owner)
-    sl = access.ensure_shared_lesson(lesson, owner)
+    sl, _ = access.ensure_shared_lesson(lesson, owner)
     access.save_scrub_ready(sl, redacted_text="someone batch-cooks", content_hash="h")
     return sl
 

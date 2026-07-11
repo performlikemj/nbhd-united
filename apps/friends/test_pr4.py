@@ -52,7 +52,7 @@ def _lesson(tenant, text="Batch-cook Sundays.", *, tags=None):
 
 def _shared_ready(owner, lesson, friendship, *, redacted="someone batch-cooks on Sundays"):
     """Owner shares `lesson` to `friendship`, marked ready + granted (no scrub)."""
-    sl = access.ensure_shared_lesson(lesson, owner)
+    sl, _ = access.ensure_shared_lesson(lesson, owner)
     access.save_scrub_ready(sl, redacted_text=redacted, content_hash="h")
     access.create_grant(sl, friendship, granted_by=owner.user)
     return sl
@@ -219,7 +219,7 @@ class EnvelopeRenderTest(TestCase):
         viewer = _tenant("rcv_viewer")
         edge = _edge(owner, viewer)
         lesson = _lesson(owner)
-        sl = access.ensure_shared_lesson(lesson, owner)
+        sl, _ = access.ensure_shared_lesson(lesson, owner)
         access.save_scrub_ready(sl, redacted_text="x", content_hash="h")
         captured = {}
         with mock.patch(

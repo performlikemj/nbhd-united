@@ -61,7 +61,7 @@ def _ready_shared_lesson(owner):
     from apps.lessons.models import Lesson
 
     lesson = Lesson.objects.create(tenant=owner, text="x", source_type="experience", status="approved", tags=[])
-    sl = access.ensure_shared_lesson(lesson, owner)
+    sl, _ = access.ensure_shared_lesson(lesson, owner)
     access.save_scrub_ready(sl, redacted_text="someone did a thing", content_hash="h")
     return sl
 

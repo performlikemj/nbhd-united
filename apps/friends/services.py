@@ -697,6 +697,16 @@ def _enqueue_scrub(shared_lesson, pending_share_id=None) -> None:
     publish_task("scrub_shared_lesson", str(shared_lesson.id), **kwargs)
 
 
+def _scrub_needed(shared_lesson, current_hash) -> bool:
+    """True iff an EXISTING snapshot needs a (re)scrub: a prior failure to retry,
+    or content drifted from a ready scrub. False while a scrub is already in flight
+    (status pending) — so a double-submit's losing request never re-enqueues the
+    winner's scrub (the winner enqueues it once via its ``created`` branch)."""
+    if shared_lesson.scrub_status == SharedLesson.ScrubStatus.PENDING:
+        return False
+    return shared_lesson.scrub_status != SharedLesson.ScrubStatus.READY or shared_lesson.content_hash != current_hash
+
+
 def share_lesson(owner_tenant, owner_user, lesson, friendship_id=None, circle_id=None) -> PendingShare:
     """Human-initiated share intent → a ``PendingShare(proposed_by="user")`` +
     an ensured ``SharedLesson`` + an enqueued fail-closed scrub. **No grant is
@@ -707,11 +717,11 @@ def share_lesson(owner_tenant, owner_user, lesson, friendship_id=None, circle_id
     assert_shareable_pillar(lesson)  # mechanical gravity/core block → 403
     edge, circle = _resolve_share_audience(owner_tenant, friendship_id, circle_id)
 
-    shared_lesson = access.ensure_shared_lesson(lesson, owner_tenant)
+    shared_lesson, created = access.ensure_shared_lesson(lesson, owner_tenant)
     current_hash = _content_hash(lesson.text or "", lesson.context or "")
-    if shared_lesson.scrub_status != SharedLesson.ScrubStatus.READY or shared_lesson.content_hash != current_hash:
+    if created or _scrub_needed(shared_lesson, current_hash):
         access.mark_scrub_pending(shared_lesson)
-        _enqueue_scrub(shared_lesson)  # content_hash drift or first scrub → (re)scrub
+        _enqueue_scrub(shared_lesson)  # first scrub or content_hash drift → (re)scrub
 
     return PendingShare.objects.create(
         tenant=owner_tenant,
@@ -1158,9 +1168,9 @@ def propose_share(
     if existing is not None:
         return existing, False
 
-    shared_lesson = access.ensure_shared_lesson(lesson, tenant)
+    shared_lesson, created = access.ensure_shared_lesson(lesson, tenant)
     current_hash = _content_hash(lesson.text or "", lesson.context or "")
-    if shared_lesson.scrub_status != SharedLesson.ScrubStatus.READY or shared_lesson.content_hash != current_hash:
+    if created or _scrub_needed(shared_lesson, current_hash):
         access.mark_scrub_pending(shared_lesson)
         _enqueue_scrub(shared_lesson)
 
