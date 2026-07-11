@@ -86,6 +86,18 @@ def eval_journey_chat_task() -> dict:
     # Operator-fired today (no schedule until PR-B6); flips to SCHEDULED when a
     # real QStash cron drives it.
     run = run_chat_roundtrip_suite(trigger=EvalRun.Trigger.MANUAL)
+
+    # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
+    finalize_task_run(run)
+
+    return {
+        "run_id": run.id,
+        "suite": run.suite,
+        "status": run.status,
+        "cases": run.results.count(),
+    }
+
+
 def eval_journey_journal_task(transport=None) -> dict:
     """Fire the ``journey_journal`` probe — journal write→search (Wave B, Probe 2).
 
@@ -109,6 +121,18 @@ def eval_journey_journal_task(transport=None) -> dict:
 
     # Operator-fired today (no schedule yet); PR-B6 flips this to SCHEDULED.
     run = run_journal_search_suite(transport=transport, trigger=EvalRun.Trigger.MANUAL)
+
+    # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
+    finalize_task_run(run)
+
+    return {
+        "run_id": run.id,
+        "suite": run.suite,
+        "status": run.status,
+        "cases": run.results.count(),
+    }
+
+
 def eval_journey_cron_task() -> dict:
     """Fire the ``journey_cron`` suite — the cron-fire delivery canary (Probe 3).
 
@@ -129,6 +153,18 @@ def eval_journey_cron_task() -> dict:
     # Operator-fired today (no schedule exists yet); Wave B6 flips this to
     # SCHEDULED when a real QStash cron drives it.
     run = run_cron_fire_suite(trigger=EvalRun.Trigger.MANUAL)
+
+    # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
+    finalize_task_run(run)
+
+    return {
+        "run_id": run.id,
+        "suite": run.suite,
+        "status": run.status,
+        "cases": run.results.count(),
+    }
+
+
 def eval_journey_wake_task() -> dict:
     """Fire the ``journey_wake`` suite — Probe 4, the hibernation-wake canary.
 
@@ -162,6 +198,8 @@ def eval_journey_wake_task() -> dict:
         "status": run.status,
         "cases": run.results.count(),
     }
+
+
 def reap_stuck_eval_runs_task() -> dict:
     """Flip orphaned ``running`` eval runs to ``error`` — the crash-recovery sweep.
 
