@@ -38,7 +38,17 @@ logger = logging.getLogger(__name__)
 _MESSAGES_PATH = "/api/v1/chat/messages/"
 _TERMINAL_STATUSES = frozenset({"ready", "error"})
 _HTTP_TIMEOUT_SECONDS = 15.0
-DEFAULT_DEADLINE_SECONDS = 90.0
+# Warm-turn poll deadline. The chat probe's warm SLO is ~45s; 60s gives slack while
+# keeping the SUITE's worst-case arithmetic inside the 300s gunicorn ceiling (see
+# SUITE_BUDGET_SECONDS in apps/evals/suites/behavior.py — a 2-turn scenario must
+# fit 180 + 60 + judge within the budget). A warm turn slower than 60s is exactly
+# the sickness the suite should surface as a failed turn, not wait out.
+DEFAULT_DEADLINE_SECONDS = 60.0
+# The FIRST turn of a run may find the behavior tenant HIBERNATED — a cold start
+# "regularly past 2 min" (apps/orchestrator/hibernation.py) — so it gets a
+# wake-aware deadline aligned with the wake probe's SLO (~180s,
+# docs/evals-wave-b-plan.md Probe 4). Every later turn is warm.
+FIRST_TURN_DEADLINE_SECONDS = 180.0
 DEFAULT_POLL_INTERVAL_SECONDS = 2.0
 
 
@@ -75,9 +85,14 @@ class ScenarioRun:
 
 
 class BehaviorTransport(Protocol):
-    """Drives one scenario turn against the behavior tenant and returns the reply."""
+    """Drives one scenario turn against the behavior tenant and returns the reply.
 
-    def send_turn(self, *, text: str) -> TurnResult: ...
+    ``deadline_seconds`` overrides the transport's default poll deadline for THIS
+    turn — the suite passes the wake-aware ``FIRST_TURN_DEADLINE_SECONDS`` for the
+    run's first turn and the default for the rest.
+    """
+
+    def send_turn(self, *, text: str, deadline_seconds: float | None = None) -> TurnResult: ...
 
 
 class HttpxBehaviorTransport:
@@ -109,7 +124,7 @@ class HttpxBehaviorTransport:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._pat}", "Content-Type": "application/json"}
 
-    def send_turn(self, *, text: str) -> TurnResult:
+    def send_turn(self, *, text: str, deadline_seconds: float | None = None) -> TurnResult:
         client_msg_id = uuid.uuid4().hex
         result = TurnResult(user_text=text)
         owns_client = self._client is None
@@ -117,6 +132,7 @@ class HttpxBehaviorTransport:
         post_url = f"{self._base_url}{_MESSAGES_PATH}"
         detail_url = f"{self._base_url}{_MESSAGES_PATH}{client_msg_id}/"
         started = time.monotonic()
+        turn_deadline = deadline_seconds if deadline_seconds is not None else self._deadline
         try:
             try:
                 resp = client.post(
@@ -134,7 +150,7 @@ class HttpxBehaviorTransport:
             if str(body.get("status") or "") in _TERMINAL_STATUSES:
                 return self._finalize(result, body)
 
-            deadline = started + self._deadline
+            deadline = started + turn_deadline
             while time.monotonic() < deadline:
                 time.sleep(self._poll_interval)
                 try:
@@ -165,8 +181,47 @@ class HttpxBehaviorTransport:
         return result
 
 
+def resolve_behavior_pat(tenant) -> str:
+    """Return the raw behavior PAT, or RAISE ``BehaviorConfigError``.
+
+    Mirrors the journey precedent (``apps/evals/journey/chat_drive.py::
+    resolve_journey_pat``): beyond "is it set", the PAT is the credential that
+    actually drives scenario traffic, so we verify it is VALID and belongs to the
+    SAME synthetic behavior tenant — refusing to drive behavior scripts through a
+    real subscriber's assistant if the secret was mis-minted. A mismatch is a loud
+    config failure, not a silent skip.
+    """
+    raw = getattr(settings, "EVAL_BEHAVIOR_PAT", "") or ""
+    if not raw:
+        raise BehaviorConfigError(
+            "EVAL_BEHAVIOR_PAT is not set — cannot authenticate the behavior suite "
+            "as the synthetic behavior tenant's user. This PR lands INERT; the ops "
+            "provisioning step mints the PAT and sets the secret."
+        )
+
+    from apps.tenants.pat_models import PersonalAccessToken, hash_token
+
+    try:
+        pat = PersonalAccessToken.objects.select_related("user", "user__tenant").get(token_hash=hash_token(raw))
+    except PersonalAccessToken.DoesNotExist as exc:
+        raise BehaviorConfigError("EVAL_BEHAVIOR_PAT does not match any personal access token.") from exc
+    if not pat.is_valid:
+        raise BehaviorConfigError("EVAL_BEHAVIOR_PAT is revoked or expired.")
+    pat_tenant = getattr(pat.user, "tenant", None)
+    if pat_tenant is None or pat_tenant.id != tenant.id:
+        raise BehaviorConfigError(
+            "EVAL_BEHAVIOR_PAT belongs to a different tenant than EVAL_BEHAVIOR_TENANT_ID — "
+            "refusing to drive behavior scenarios through the wrong account."
+        )
+    return raw
+
+
 def build_behavior_transport(tenant) -> BehaviorTransport:
     """Build the REAL container transport for the behavior tenant.
+
+    The PAT is resolved through ``resolve_behavior_pat`` (journey precedent):
+    validity-checked and tenant-match ENFORCED, so a wrong-PAT config slip can
+    never drive behavior scripts into a real subscriber's assistant.
 
     NAMED DEFERRAL (this PR lands INERT; docs/evals-directive.md §Suite 2). The
     behavior tenant is not provisioned yet, and no behavior PAT secret is wired, so
@@ -179,13 +234,13 @@ def build_behavior_transport(tenant) -> BehaviorTransport:
     provisioning step adds the setting + secret when it lands.
     """
     base_url = (getattr(settings, "DJANGO_BASE_URL", "") or "").rstrip("/")
-    pat = getattr(settings, "EVAL_BEHAVIOR_PAT", "") or ""
-    if not base_url or not pat:
+    if not base_url:
         raise BehaviorConfigError(
-            "Behavior transport is not wired yet — provisioning must create the "
-            "behavior container and set EVAL_BEHAVIOR_PAT (+ DJANGO_BASE_URL). "
-            "This PR lands INERT; fire-verification follows provisioning."
+            "DJANGO_BASE_URL is not set — the behavior suite cannot reach the "
+            "control plane's own API. This PR lands INERT; fire-verification "
+            "follows provisioning."
         )
+    pat = resolve_behavior_pat(tenant)
     return HttpxBehaviorTransport(base_url=base_url, pat=pat)
 
 

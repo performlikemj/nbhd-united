@@ -39,9 +39,13 @@ JUDGE_MODEL = "anthropic/claude-sonnet-5"
 RUBRIC_VERSION = rubric_v1.RUBRIC_VERSION
 
 # Spend caps. ``JUDGE_MAX_TOKENS`` bounds each call's output; the suite bounds how
-# many scenarios per run reach the judge.
+# many scenarios per run reach the judge. The timeout also feeds the suite's
+# worst-case wall-clock budget (SUITE_BUDGET_SECONDS): 30s is generous for one
+# ~700-output-token JSON scoring call, and a slower judge is simply recorded
+# skipped-with-reason ``judge_error`` (advisory) — never worth risking the 300s
+# worker ceiling for.
 JUDGE_MAX_TOKENS = 700
-JUDGE_TIMEOUT_SECONDS = 45
+JUDGE_TIMEOUT_SECONDS = 30
 
 
 @dataclass(frozen=True)

@@ -56,4 +56,16 @@ def resolve_behavior_tenant() -> Tenant:
             f"EVAL_BEHAVIOR_TENANT_ID={tenant_id!r} points at a NON-synthetic tenant — "
             "refusing to run behavior scenarios against a real subscriber."
         )
+
+    # The behavior tenant must be DISTINCT from the journey canary. Directive
+    # §Suite 1 reserves eval-behavior precisely so behavior scripts never pollute
+    # the uptime tenant's memory/crons — pointing both env vars at one tenant
+    # would silently corrupt the journey canary's baseline. Loud, not silent.
+    journey_id = getattr(settings, "EVAL_JOURNEY_TENANT_ID", "") or ""
+    if journey_id and journey_id == tenant_id:
+        raise BehaviorConfigError(
+            "EVAL_BEHAVIOR_TENANT_ID equals EVAL_JOURNEY_TENANT_ID — the behavior "
+            "suite must run on its OWN synthetic tenant so scenario scripts never "
+            "pollute the journey uptime canary (docs/evals-directive.md §Suite 1)."
+        )
     return tenant

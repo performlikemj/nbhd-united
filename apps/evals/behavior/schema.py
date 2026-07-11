@@ -189,9 +189,11 @@ def load_scenario(path: Path) -> Scenario:
 
 
 def load_all_scenarios(directory: Path | None = None) -> list[Scenario]:
-    """Load every ``*.yaml`` scenario, sorted by filename, with unique ids enforced."""
+    """Load every ``*.yaml``/``*.yml`` scenario, sorted by filename, with unique ids
+    enforced. Both extensions are globbed so a fixture saved as ``.yml`` cannot be
+    silently ignored (a dropped scenario is a quiet coverage loss)."""
     directory = directory or SCENARIOS_DIR
-    paths = sorted(directory.glob("*.yaml"))
+    paths = sorted([*directory.glob("*.yaml"), *directory.glob("*.yml")])
     scenarios: list[Scenario] = []
     seen: dict[str, str] = {}
     for path in paths:

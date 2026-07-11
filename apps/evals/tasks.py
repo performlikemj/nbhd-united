@@ -210,18 +210,25 @@ def eval_behavior_task(transport=None, judge=None) -> dict:
     (which GATE the run), and scores soft dimensions with the pinned judge (which are
     ADVISORY / non-gating).
 
-    RAISES when the run does not close ``pass`` (owner alerted first, then DLQ) — the
-    same contract as ``eval_smoke_task``. Because this lands INERT (the behavior
-    tenant is not provisioned yet), a fire in prod today resolves an unwired
-    transport and closes the run ``error`` → DLQ + owner alert; that is the correct
-    loud signal, not a silent green. Fire-verification follows provisioning.
+    RAISES when the run does not close ``pass`` — the same contract as
+    ``eval_smoke_task``, on BOTH failure shapes:
+      * a driven run that closes FAIL → ``finalize_task_run`` alerts the owner then
+        raises into the DLQ;
+      * a config/setup exception (e.g. tenant unset while this lands INERT) →
+        ``record_run`` already closed the row ``error``; this wrapper best-effort
+        alerts the owner on that errored run BEFORE re-raising, so "DLQ + owner
+        email" is true on the config path too (the exception would otherwise skip
+        ``finalize_task_run`` and no email would go out).
+    A fire in prod today (tenant unprovisioned) takes the second path: run closes
+    ``error`` → owner email + DLQ — the correct loud signal, not a silent green.
+    Fire-verification follows provisioning.
 
     ``transport``/``judge`` stay ``None`` in production (real container transport +
     the default OpenRouter judge). Tests inject in-process fakes; the defaults keep
     the QStash zero-arg contract intact.
     """
     from apps.evals.models import EvalRun
-    from apps.evals.suites.behavior import run_behavior_suite
+    from apps.evals.suites.behavior import SUITE, run_behavior_suite
 
     kwargs: dict = {"transport": transport, "trigger": EvalRun.Trigger.MANUAL}
     # judge is tri-state in the suite (unset → default judge). The task can't carry a
@@ -229,7 +236,19 @@ def eval_behavior_task(transport=None, judge=None) -> dict:
     # let the suite build the default (or record skipped-with-reason if unconfigured).
     if judge is not None:
         kwargs["judge"] = judge
-    run = run_behavior_suite(**kwargs)
+    try:
+        run = run_behavior_suite(**kwargs)
+    except Exception:
+        # record_run closed the run 'error' before re-raising — alert the owner on
+        # it (best-effort; the helper never raises) so a misconfiguration emails AND
+        # DLQs instead of DLQ-only. Newest errored run for this suite is the one the
+        # context manager just closed.
+        from apps.evals.alerting import send_eval_failure_alert
+
+        errored = EvalRun.objects.filter(suite=SUITE, status=EvalRun.Status.ERROR).order_by("-started_at").first()
+        if errored is not None:
+            send_eval_failure_alert(errored)
+        raise
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
