@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 from apps.billing.services import record_usage
 from apps.common.tenant_tz import safe_zoneinfo, tenant_tz_name
 from apps.common.windows import Window, resolve_window
+from apps.integrations.content_sanitize import neutralize_remote_image_markdown
 from apps.journal.document_views import _default_markdown, _default_title
 from apps.journal.models import DailyNote, Document, JournalEntry
 from apps.journal.serializers import (
@@ -1235,6 +1236,9 @@ class RuntimeDailyNoteAppendView(APIView):
                 {"error": "invalid_request", "detail": "content is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # P0-3: strip agent-written markdown-image beacons before they reach
+        # any durable store — see apps/integrations/content_sanitize.py.
+        content = neutralize_remote_image_markdown(content)
 
         try:
             d = _parse_iso_date(request.data.get("date"), field_name="date") or _tenant_today(tenant)
@@ -1353,7 +1357,9 @@ class RuntimeUserMemoryView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
-        markdown = request.data.get("markdown", "")
+        # P0-3: strip agent-written markdown-image beacons before they reach
+        # any durable store — see apps/integrations/content_sanitize.py.
+        markdown = neutralize_remote_image_markdown(str(request.data.get("markdown", "")))
         doc, created = Document.objects.get_or_create(
             tenant=tenant,
             kind="memory",
@@ -1978,7 +1984,9 @@ class RuntimeDocumentView(APIView):
 
         kind = str(request.data.get("kind", "")).strip()
         slug = str(request.data.get("slug", "")).strip()
-        markdown = str(request.data.get("markdown", ""))
+        # P0-3: strip agent-written markdown-image beacons before they reach
+        # any durable store — see apps/integrations/content_sanitize.py.
+        markdown = neutralize_remote_image_markdown(str(request.data.get("markdown", "")))
         title = str(request.data.get("title", "")).strip()
 
         if not kind:
@@ -2380,6 +2388,9 @@ class RuntimeDocumentAppendView(APIView):
                 {"error": "invalid_request", "detail": "content is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # P0-3: strip agent-written markdown-image beacons before they reach
+        # any durable store — see apps/integrations/content_sanitize.py.
+        content = neutralize_remote_image_markdown(content)
         if not slug:
             if kind == "daily":
                 slug = str(_tenant_today(tenant))

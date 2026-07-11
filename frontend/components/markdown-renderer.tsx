@@ -70,6 +70,27 @@ export const MarkdownRenderer = memo(function MarkdownRenderer({
         });
         return <li {...props}>{kids}</li>;
       },
+      // Security: content here can be agent- or attacker-authored (a journal
+      // note poisoned by prompt injection). A real <img src> would auto-fire
+      // a GET the instant this renders — a zero-click beacon that can carry
+      // PII in the query string. Nothing in this app inserts legitimate
+      // `![]()` images today, so every image markdown becomes a click-through
+      // link instead: no request fires until the user taps it.
+      img: ({ src, alt }) => {
+        if (!src || typeof src !== "string") {
+          return null;
+        }
+        return (
+          <a
+            href={src}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 text-xs text-accent no-underline hover:underline"
+          >
+            🔗 {alt ? `${alt} ` : ""}image (tap to view)
+          </a>
+        );
+      },
     }),
     [onCheckboxToggle],
   );
