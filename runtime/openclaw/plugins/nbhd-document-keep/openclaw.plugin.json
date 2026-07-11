@@ -1,0 +1,32 @@
+{
+  "id": "nbhd-document-keep",
+  "name": "NBHD Document Information-Keeping",
+  "description": "Record provenance for information saved from an uploaded document, list past ingestions, and forget everything from one document via a single server-side fan-out.",
+  "contracts": {
+    "tools": [
+      "nbhd_document_keep",
+      "nbhd_document_list_ingestions",
+      "nbhd_document_forget"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 60000,
+        "description": "HTTP timeout for NBHD runtime endpoint requests."
+      },
+      "documentIngestionEnabled": {
+        "type": "boolean",
+        "description": "Register the record/list/forget tools. config_generator injects this true whenever it loads the plugin (tenant.document_ingestion_enabled). Fail-closed: anything but true → no tools registered."
+      }
+    }
+  }
+}

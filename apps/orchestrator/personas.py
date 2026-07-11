@@ -733,6 +733,36 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         gate_parts.append(circle_para)
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + "".join(gate_parts)
 
+    # Document information-keeping tool language — flag-gated, per-tenant. Only a
+    # tenant with document_ingestion_enabled loads the nbhd_document_* tools, so
+    # the block that NAMES them (record/list/forget) is gated the same way — a
+    # tenant without the flag never sees a tool it doesn't have (critic finding 5).
+    # The base body's generic gate + the fleet-wide rules file carry the behavior;
+    # this adds the tool workflow. Placed BEFORE the larger Gravity block so it is
+    # never the silently-truncated tail if AGENTS.md exceeds the bootstrap budget.
+    if tenant is not None and getattr(tenant, "document_ingestion_enabled", False):
+        document_keep_removal_gate = (
+            "## Save with its source attached\n"
+            "- After the user agrees and you've written each item with the normal typed tools, "
+            "file one `nbhd_document_keep` call: pass the document's filename/path and each saved "
+            "item with its destination and the object id the write tool returned. This records that "
+            "these items came from this document, in one call, so they can be removed later. Do this "
+            "in the SAME turn you saved them, before you tell the user it's done. (Find the tool via "
+            "tool search — it is not pre-loaded.) If the tool reports it couldn't confirm an item, "
+            "tell the user that item may not have saved cleanly and re-check it — don't claim it's "
+            "kept.\n\n"
+            '## Removal — "forget everything from that PDF"\n'
+            "- Call `nbhd_document_list_ingestions` to find the document the user means; confirm with "
+            "them by showing what was saved from it. Then call `nbhd_document_forget` with that "
+            "ingestion's id. It removes every item that came from that document and nothing else. "
+            "Report exactly what was removed and what couldn't be: a reminder that already fired stays "
+            "in history (you can't unsend it), and to be honest — you already read the document to "
+            "help, so its contents reached the AI model and can't be un-read; forget removes the saved "
+            "information, not the model's earlier reading. If you can't tell which document they mean, "
+            "ask — never guess and never delete by hand."
+        )
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + document_keep_removal_gate
+
     # Gravity observation-mode rules — behavioral, belongs in AGENTS.md
     # (not USER.md). The rules block is ~6 KB of static text; until
     # 2026-05-22 it lived in USER.md via apps/insights/envelope.py, which

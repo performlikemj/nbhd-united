@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.router.document_write_guard import assert_write_allowed_for_document_turn
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
@@ -111,6 +112,10 @@ class RuntimeFinanceAccountsView(APIView):
         if isinstance(tenant, Response):
             return tenant
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         body = request.data
         nickname = (body.get("nickname") or "").strip()
         if not nickname:
@@ -172,6 +177,10 @@ class RuntimeFinanceTransactionsView(APIView):
         if isinstance(tenant, Response):
             return tenant
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         body = request.data
         try:
             account = resolve_account(tenant, account_nickname=body.get("account_nickname"))
@@ -218,6 +227,10 @@ class RuntimeFinanceBalanceUpdateView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         body = request.data
         nickname = (body.get("account_nickname") or body.get("nickname") or "").strip()
@@ -267,6 +280,10 @@ class RuntimeFinanceArchiveAccountView(APIView):
         if isinstance(tenant, Response):
             return tenant
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         body = request.data
         nickname = (body.get("account_nickname") or body.get("nickname") or "").strip()
         if not nickname:
@@ -310,6 +327,10 @@ class RuntimeFinanceUnarchiveAccountView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         body = request.data
         nickname = (body.get("account_nickname") or body.get("nickname") or "").strip()
@@ -373,6 +394,10 @@ class RuntimeFinancePayoffView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         body = request.data
         try:

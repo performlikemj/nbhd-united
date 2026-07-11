@@ -38,6 +38,7 @@ from apps.lessons.models import Lesson
 from apps.lessons.serializers import LessonSerializer
 from apps.lessons.services import search_lessons
 from apps.orchestrator.personas import get_persona
+from apps.router.document_write_guard import assert_write_allowed_for_document_turn
 from apps.tenants.models import Tenant
 
 from .google_api import (
@@ -401,6 +402,10 @@ class RuntimeJournalEntriesView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         serializer = JournalEntryRuntimeSerializer(
             data=request.data,
             context={"tenant": tenant},
@@ -506,6 +511,10 @@ class RuntimeGoalListCreateView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         serializer = GoalSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
@@ -736,6 +745,10 @@ class RuntimeTaskListCreateView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         serializer = TaskSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
@@ -1229,6 +1242,10 @@ class RuntimeDailyNoteAppendView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         content_raw = request.data.get("content")
         content = str(content_raw or "").strip()
         if not content:
@@ -1671,6 +1688,10 @@ class RuntimeLessonCreateView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         text = str(request.data.get("text", "")).strip()
         if not text:
             return Response(
@@ -1981,6 +2002,10 @@ class RuntimeDocumentView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         kind = str(request.data.get("kind", "")).strip()
         slug = str(request.data.get("slug", "")).strip()
@@ -2378,6 +2403,10 @@ class RuntimeDocumentAppendView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         kind = str(request.data.get("kind", "daily")).strip()
         slug = str(request.data.get("slug", "")).strip()
@@ -3773,6 +3802,10 @@ class _RuntimeCronCreateBase(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         name = (request.data.get("name") or "").strip()
         schedule = request.data.get("schedule") or {}
         try:
@@ -4044,3 +4077,92 @@ class RuntimeProposeMissionTaskView(APIView):
             },
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
+
+
+# ── Document information-keeping (provenance ledger + keep manifest + forget) ─
+#
+# Backs the nbhd-document-keep plugin's three tools. The keep endpoint VALIDATES
+# every artifact against a tenant-owned row of a registered type before recording
+# (D2/D4); forget is a server-side ORM/gateway fan-out via the shared service so
+# the agent path and the console path can't drift (D3). Business logic lives in
+# apps.journal.document_ingestion; these views are thin HMAC-authed wrappers.
+
+
+class RuntimeDocumentKeepView(APIView):
+    """POST — record a validated document-ingestion manifest (nbhd_document_keep)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        from apps.journal.document_ingestion import record_keep
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        data = request.data if isinstance(request.data, dict) else {}
+        source = data.get("source") if isinstance(data.get("source"), dict) else {}
+        artifacts = data.get("artifacts") if isinstance(data.get("artifacts"), list) else []
+
+        result = record_keep(tenant, source=source, artifacts=artifacts)
+        return Response(
+            {"tenant_id": str(tenant.id), **result},
+            status=status.HTTP_201_CREATED if result.get("recorded") else status.HTTP_200_OK,
+        )
+
+
+class RuntimeDocumentIngestionsView(APIView):
+    """GET — recent ingestions + artifacts (nbhd_document_list_ingestions)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        from apps.journal.document_ingestion import list_ingestions
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        try:
+            limit = int(request.query_params.get("limit", 20))
+        except (TypeError, ValueError):
+            limit = 20
+
+        result = list_ingestions(tenant, limit=limit)
+        return Response({"tenant_id": str(tenant.id), **result}, status=status.HTTP_200_OK)
+
+
+class RuntimeDocumentForgetView(APIView):
+    """POST — remove every item recorded from one ingestion (nbhd_document_forget)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id, ingestion_id):
+        from apps.journal.document_ingestion import forget_ingestion
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        result = forget_ingestion(tenant, ingestion_id)
+        if result.get("error") == "not_found":
+            return Response(
+                {"error": "not_found", "detail": "No such document ingestion for this tenant."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response({"tenant_id": str(tenant.id), **result}, status=status.HTTP_200_OK)

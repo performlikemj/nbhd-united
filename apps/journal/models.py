@@ -622,6 +622,117 @@ class DocumentChunk(models.Model):
         return f"{self.tenant_id}:{self.document_id}:chunk{self.chunk_index}"
 
 
+class DocumentIngestion(models.Model):
+    """The agreed manifest for one uploaded document — the unit of removal.
+
+    An uploaded file is ephemeral (GC'd ~24h after arrival). What persists is
+    the *information* the user agreed to keep, routed to its real destination.
+    This row groups every saved item back to the document it came from, so the
+    user can later say "forget everything from that PDF" and the server can
+    delete exactly those items and nothing else (child ``DocumentIngestionArtifact``
+    rows). Mirrors the ``PendingTaskAction`` shape (per-item child state) — a
+    JSON blob would force read-modify-write of the whole list under contention.
+
+    ``agreed_at`` carries a CHECK constraint copying ``CronJob.user_confirmed_at``'s
+    shape. It is **audit hygiene only, not consent enforcement**: the keep endpoint
+    always sets ``agreed_at=now()``, so the constraint can never actually fail — it
+    guards a NULL the code never produces. Real consent enforcement is the
+    behavioral AGENTS.md gate plus the deterministic same-turn write backstop (D8).
+    """
+
+    class Status(models.TextChoices):
+        PROPOSED = "proposed", "Proposed"
+        KEPT = "kept", "Kept"
+        PARTIALLY_REMOVED = "partially_removed", "Partially removed"
+        REMOVED = "removed", "Removed"
+        EXPIRED = "expired", "Expired"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="doc_ingestions")
+    thread = models.ForeignKey(
+        "router.ChatThread",
+        on_delete=models.SET_NULL,
+        related_name="doc_ingestions",
+        null=True,
+        blank=True,
+    )
+    # Back-ref to the [Document attached:] upload turn; drives the completeness
+    # gap signal (rows created in the marker window vs rows recorded).
+    client_msg_id = models.CharField(max_length=64, blank=True, default="")
+    original_filename = models.CharField(max_length=255)
+    content_hash = models.CharField(max_length=64, blank=True, default="")
+    # Copy of the attachment path — dead after the 24h GC, kept for provenance.
+    workspace_path = models.CharField(max_length=255, blank=True, default="")
+    uploaded_at = models.DateTimeField()
+    # uploaded_at + ~24h — drives the honest-expiry copy ("gone in about a day").
+    file_expires_at = models.DateTimeField()
+    status = models.CharField(max_length=24, choices=Status.choices, default=Status.KEPT)
+    agreed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "journal_document_ingestions"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "status"]),
+            models.Index(fields=["tenant", "created_at"]),
+        ]
+        constraints = [
+            # Audit-only (D6): a kept ingestion must record WHEN agreement was
+            # captured. Copies CronJob.user_confirmed_at's CHECK shape.
+            models.CheckConstraint(
+                condition=(~models.Q(status="kept") | models.Q(agreed_at__isnull=False)),
+                name="doc_ingestion_kept_requires_agreed_at",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.original_filename}:{str(self.id)[:8]}"
+
+
+class DocumentIngestionArtifact(models.Model):
+    """One saved item from a document ingestion, with independent removal state.
+
+    Each row points at a real destination object by ``(object_type, object_id)`` —
+    both VALIDATED at keep time against a tenant-owned row of a registered type, so
+    the ledger can never hold a reference the forget path can't act on. ``removed_at``
+    / ``last_error`` flip per row (idempotent, re-entrant partial-failure retry).
+    ``removal_strategy`` is SERVER-derived from ``object_type`` at keep time — the
+    agent never sets it. ``content_excerpt`` survives deletion of the destination row
+    (audit + console + honest forget receipt).
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    ingestion = models.ForeignKey(
+        DocumentIngestion,
+        on_delete=models.CASCADE,
+        related_name="artifacts",
+    )
+    # Denormalized for RLS + direct (tenant, object_type) queries.
+    tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="doc_ingestion_artifacts")
+    kind = models.CharField(max_length=32)
+    object_type = models.CharField(max_length=64)
+    object_id = models.CharField(max_length=128)
+    destination = models.CharField(max_length=255, blank=True, default="")
+    content_excerpt = models.TextField(blank=True, default="")
+    removal_strategy = models.CharField(max_length=32, blank=True, default="")
+    removed_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=255, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "journal_document_ingestion_artifacts"
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(fields=["tenant", "ingestion"]),
+            models.Index(fields=["tenant", "object_type"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.object_type}:{self.object_id[:16]}"
+
+
 class Workspace(models.Model):
     """A focused conversation context for a tenant.
 

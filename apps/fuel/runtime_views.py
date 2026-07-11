@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 
 from apps.common.llm_contracts import resolve_relative_date, today_in_tenant_tz
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.router.document_write_guard import assert_write_allowed_for_document_turn
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
@@ -118,6 +119,10 @@ class RuntimeLogWorkoutView(APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         data = request.data
         category = data.get("category", "other")
@@ -666,6 +671,10 @@ class RuntimeFuelProfileView(APIView):
             return tenant_or_resp
         tenant = tenant_or_resp
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         profile, _created = FuelProfile.objects.get_or_create(tenant=tenant)
         data = request.data
         updated_fields = []
@@ -751,6 +760,10 @@ class RuntimeBodyWeightView(APIView):
             return tenant_or_resp
         tenant = tenant_or_resp
 
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
         data = request.data
         # Resolve date in the tenant's timezone so a morning entry doesn't
         # land on yesterday when the server's UTC clock has already rolled
@@ -822,6 +835,10 @@ class RuntimeSleepView(APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         from .models import SleepLog
 
@@ -1275,6 +1292,10 @@ class RuntimeWorkoutPlanListCreateView(APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         data = request.data
         name = str(data.get("name", "")).strip()

@@ -435,6 +435,25 @@ def store_inbound_image(tenant_id: str, data: bytes, ext: str) -> tuple[str, str
     return _store_inbound_media(tenant_id, data, ext, prefix="photo", allowed_exts=_ALLOWED_EXTS, default_ext="jpg")
 
 
+# Basename prefix ``store_inbound_document`` stamps (``prefix="doc"`` below).
+_DOC_FILENAME_PREFIX = "doc_"
+
+
+def is_inbound_document_path(path: str | None) -> bool:
+    """True when ``path`` is a stored inbound DOCUMENT (``doc_<hash>.<ext>``).
+
+    ``AppChatMessage.attachment_path`` holds the share-relative workspace path this
+    module produced — ``workspace/media/inbound/doc_<hash>.<ext>`` for a PDF vs
+    ``photo_<hash>.<ext>`` for an image. The basename prefix is the durable
+    document/photo discriminator: the ``[Document attached:]`` marker lives ONLY in
+    the queued ``message_text`` payload, never on the persisted row, so consumers
+    (the D8 write backstop, the keep-path marker resolution) key off this instead.
+    """
+    if not path:
+        return False
+    return path.rsplit("/", 1)[-1].startswith(_DOC_FILENAME_PREFIX)
+
+
 def store_inbound_document(tenant_id: str, data: bytes, ext: str) -> tuple[str, str]:
     """Write document bytes to the tenant's share as ``doc_<hash>.<ext>``.
 
