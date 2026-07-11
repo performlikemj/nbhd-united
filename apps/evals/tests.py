@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from importlib import import_module
 
 from django.test import TestCase
+from django.utils import timezone
 
 from apps.evals.models import EvalResult, EvalRun
 from apps.evals.runner import close_run, open_run, record, record_run
@@ -174,3 +176,114 @@ class RecordRunContextTest(TestCase):
         # Fail closed: the crash left an 'error' run, never a phantom 'running'.
         self.assertEqual(stranded.status, EvalRun.Status.ERROR)
         self.assertIsNotNone(stranded.finished_at)
+
+
+class ReapStuckRunsTest(TestCase):
+    """Wave B5 reaper: flip orphaned 'running' runs to 'error', never a live one.
+
+    ``started_at`` is ``auto_now_add`` so it can't be set on create — every test
+    backdates it via a subsequent ``.update()`` (which does NOT re-stamp it) to
+    simulate a run that opened N minutes ago.
+    """
+
+    def _running_run(self, *, minutes_ago: int) -> EvalRun:
+        run = open_run("journey", EvalRun.Trigger.SCHEDULED, image_tag=None)
+        # open_run leaves it 'running' with finished_at NULL; backdate started_at.
+        EvalRun.objects.filter(pk=run.pk).update(started_at=timezone.now() - timedelta(minutes=minutes_ago))
+        run.refresh_from_db()
+        return run
+
+    def test_backdated_running_run_is_reaped(self):
+        from apps.evals.tasks import reap_stuck_eval_runs_task
+
+        run = self._running_run(minutes_ago=31)  # past the 30-min floor
+
+        result = reap_stuck_eval_runs_task()
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, EvalRun.Status.ERROR)
+        self.assertIsNotNone(run.finished_at)  # finished_at stamped on reap
+        self.assertEqual(result["reaped"], 1)
+        self.assertEqual(result["run_ids"], [run.id])
+
+    def test_fresh_running_run_is_untouched(self):
+        # THE safety property: a run legitimately in flight (younger than the
+        # 30-min floor) must NEVER be reaped — killing a live run is worse than
+        # leaving a dead one stranded a little longer.
+        from apps.evals.tasks import reap_stuck_eval_runs_task
+
+        run = self._running_run(minutes_ago=1)  # well inside any live deadline
+
+        result = reap_stuck_eval_runs_task()
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, EvalRun.Status.RUNNING)  # left running
+        self.assertIsNone(run.finished_at)  # never stamped
+        self.assertEqual(result["reaped"], 0)
+        self.assertEqual(result["run_ids"], [])
+
+    def test_boundary_run_just_under_floor_is_untouched(self):
+        # A run 29 minutes old is still inside the floor — not reaped. Pins the
+        # comparison to the cutoff so the floor can't silently drift to "reap
+        # anything not brand-new."
+        from apps.evals.tasks import reap_stuck_eval_runs_task
+
+        run = self._running_run(minutes_ago=29)
+
+        reap_stuck_eval_runs_task()
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, EvalRun.Status.RUNNING)
+
+    def test_completed_runs_are_untouched(self):
+        # Already-terminal runs (pass / error) are never re-touched, even when
+        # older than the floor — the reaper only acts on 'running'.
+        from apps.evals.tasks import reap_stuck_eval_runs_task
+
+        passed = self._running_run(minutes_ago=90)
+        errored = self._running_run(minutes_ago=90)
+        passed_finished = timezone.now() - timedelta(minutes=89)
+        errored_finished = timezone.now() - timedelta(minutes=88)
+        EvalRun.objects.filter(pk=passed.pk).update(status=EvalRun.Status.PASS, finished_at=passed_finished)
+        EvalRun.objects.filter(pk=errored.pk).update(status=EvalRun.Status.ERROR, finished_at=errored_finished)
+
+        result = reap_stuck_eval_runs_task()
+
+        passed.refresh_from_db()
+        errored.refresh_from_db()
+        self.assertEqual(passed.status, EvalRun.Status.PASS)
+        self.assertEqual(passed.finished_at, passed_finished)  # not re-stamped
+        self.assertEqual(errored.status, EvalRun.Status.ERROR)
+        self.assertEqual(errored.finished_at, errored_finished)
+        self.assertEqual(result["reaped"], 0)
+
+    def test_mixed_fleet_reaps_only_the_dead(self):
+        # The realistic case: one stranded run beside a live one. Only the dead is
+        # reaped; the live one keeps running; the count/ids reflect exactly that.
+        from apps.evals.tasks import reap_stuck_eval_runs_task
+
+        dead = self._running_run(minutes_ago=45)
+        live = self._running_run(minutes_ago=2)
+
+        with self.assertLogs("apps.evals.tasks", level="ERROR") as log:
+            result = reap_stuck_eval_runs_task()
+
+        dead.refresh_from_db()
+        live.refresh_from_db()
+        self.assertEqual(dead.status, EvalRun.Status.ERROR)
+        self.assertEqual(live.status, EvalRun.Status.RUNNING)
+        self.assertEqual(result["reaped"], 1)
+        self.assertEqual(result["run_ids"], [dead.id])
+        # The reaped count is logged for greppability in Log Analytics.
+        self.assertTrue(any("flipped 1 orphaned eval run" in m for m in log.output))
+
+    def test_reaper_registered_zero_arg_in_task_map(self):
+        import inspect
+
+        from apps.cron.views import TASK_MAP
+
+        self.assertIn("reap_stuck_eval_runs", TASK_MAP)
+        module_path, func_name = TASK_MAP["reap_stuck_eval_runs"].rsplit(".", 1)
+        func = getattr(import_module(module_path), func_name)
+        self.assertTrue(callable(func))
+        inspect.signature(func).bind()  # zero-arg, no-body-publish contract
