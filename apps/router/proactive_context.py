@@ -39,7 +39,6 @@ from collections.abc import Iterable
 from datetime import timedelta
 
 from django.db import transaction
-from django.db.models import Q
 from django.utils import timezone
 
 from apps.router.models import ProactiveOutbound
@@ -241,9 +240,15 @@ def surface_proactive_context(
       "thanks", then a minute later sends the actual answer — without
       re-surfacing an old, already-threaded message on every subsequent turn.
 
-    The two sets are unioned in ONE query so ``limit`` applies across both,
-    newest first. Marks the first-time-surfaced rows (both the 24h and the
-    7-day unconsumed ones) ``consumed_at = now`` in the same DB transaction.
+    Selection is prioritized by consumption state, NOT pure recency:
+    unconsumed rows fill the ``limit`` first (newest-first), and only the
+    remaining slots go to consumed follow-up rows (newest-first). Pure
+    recency would let a burst of fresh sends crowd a days-old unanswered
+    question out of the cap — the exact row this window split protects.
+    Never-threaded questions are the point of the module; consumed
+    follow-ups are nice-to-have continuity. Marks the first-time-surfaced
+    rows (both the 24h and the 7-day unconsumed ones) ``consumed_at = now``
+    in the same DB transaction.
 
     Returns the empty string when there's nothing to surface.
     """
@@ -257,31 +262,40 @@ def surface_proactive_context(
     # surfacing a stale message forever.
     follow_up_cutoff = now - timedelta(minutes=5)
 
-    # Split the window by consumption state, unioned in one query so the
-    # ``limit`` (newest-first) is shared across both sets:
-    #   * UNCONSUMED (never threaded): created within the 7-day window.
-    #   * CONSUMED: created within 24h AND consumed within the 5-min
-    #     follow-up window.
     # Tenant-scoped only — the (tenant, created_at) index (proactive_tenant_
-    # created_idx) already backs this walk. channel/channel_user_id are NOT
+    # created_idx) backs both walks below. channel/channel_user_id are NOT
     # filtered: one tenant = one human, and the outbound transport a row was
     # recorded under must not gate whether the reply threads back to it.
-    qs = (
-        ProactiveOutbound.objects.filter(tenant=tenant)
-        .filter(
-            Q(consumed_at__isnull=True, created_at__gte=unconsumed_cutoff)
-            | Q(
+    base = ProactiveOutbound.objects.filter(tenant=tenant)
+
+    # UNCONSUMED (never threaded) rows claim the limit first, newest-first,
+    # within the long window.
+    fresh = list(
+        base.filter(
+            consumed_at__isnull=True,
+            created_at__gte=unconsumed_cutoff,
+        ).order_by("-created_at")[:limit]
+    )
+
+    # Fill any remaining slots with consumed follow-up rows, newest-first:
+    # created within 24h AND consumed within the 5-min follow-up window.
+    fill = limit - len(fresh)
+    if fill > 0:
+        fresh += list(
+            base.filter(
                 consumed_at__isnull=False,
                 created_at__gte=consumed_cutoff,
                 consumed_at__gte=follow_up_cutoff,
-            )
+            ).order_by("-created_at")[:fill]
         )
-        .order_by("-created_at")[:limit]
-    )
 
-    fresh = list(qs)
     if not fresh:
         return ""
+
+    # A consumed fill row can be newer than a selected unconsumed one —
+    # re-sort newest-first so the rendered block stays in strict
+    # conversation order.
+    fresh.sort(key=lambda r: r.created_at, reverse=True)
 
     # Mark first-time-surfaced rows consumed — a never-threaded question
     # (including the 7-day-old ones) is threaded exactly once.
