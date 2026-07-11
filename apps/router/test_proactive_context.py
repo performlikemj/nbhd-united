@@ -5,8 +5,9 @@ Covers:
 * ``record_proactive_outbound`` — row write, parsed_items population.
 * ``surface_proactive_context`` — empty case, ordering, consumption,
   follow-up-window semantics, the split window (unconsumed rows surface
-  for 7 days; consumed rows keep the tight 24h window), and
-  unconsumed-first prioritization under the limit.
+  for 7 days; consumed rows keep the tight 24h window),
+  unconsumed-first prioritization under the limit, and the always-on
+  ``[answer-binding]`` guidance appended to every surfaced block.
 * ``CronDeliveryView`` — happy-path Telegram + LINE send now produces
   a ``ProactiveOutbound`` row with job_name from the header.
 """
@@ -169,6 +170,48 @@ class SurfaceProactiveContextTest(_TenantFixture):
         self.assertIn("[1] alpha", block)
         self.assertIn("[2] beta", block)
         self.assertIn("[3] gamma", block)
+
+    def test_answer_binding_guidance_present_when_any_row_surfaces(self):
+        # Always-on binding rule (2026-07-11 canary incident: "energy 1-10?"
+        # answered "6.5 today" got logged as SLEEP HOURS even though the
+        # [earlier-from-you] block was surfaced). Any surfaced turn must
+        # carry the [answer-binding] guidance — including plain, unstructured
+        # messages that don't trigger the thread-rule.
+        record_proactive_outbound(
+            tenant=self.tenant,
+            channel="app",
+            channel_user_id="u-app",
+            message_text="where did energy land today, 1-10?",
+        )
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertIn("[answer-binding:", block)
+        self.assertIn("scale and units", block)
+        # Plain message: no structured thread-rule, but binding rule anyway.
+        self.assertNotIn("thread-rule", block)
+
+    def test_answer_binding_guidance_absent_when_nothing_surfaces(self):
+        # The guidance ships inside the block, so a turn with nothing to
+        # surface carries no guidance text at all.
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertEqual(block, "")
+        self.assertNotIn("answer-binding", block)
+
+    def test_answer_binding_coexists_with_thread_rule_pinned_order(self):
+        # Structured message → BOTH guidances render. Pinned order:
+        # thread-rule prefix first, then the [earlier-from-you] message
+        # parts, then [answer-binding] LAST — adjacent to the user's reply,
+        # so its "the messages above" phrasing reads literally.
+        record_proactive_outbound(
+            tenant=self.tenant,
+            channel="line",
+            channel_user_id="Utest",
+            message_text="check-in:\n- energy 1-10?\n- sleep hours?",
+        )
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertIn("thread-rule", block)
+        self.assertIn("[answer-binding:", block)
+        self.assertLess(block.index("thread-rule"), block.index("earlier-from-you"))
+        self.assertLess(block.index("earlier-from-you"), block.index("[answer-binding:"))
 
     def test_surfaced_tenant_wide_across_channels(self):
         # Surfacing is now TENANT-scoped, transport-agnostic (one tenant = one
