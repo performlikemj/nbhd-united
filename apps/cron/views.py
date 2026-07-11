@@ -127,6 +127,14 @@ TASK_MAP = {
     # no DB writes, no user data. Raises on failure so QStash DLQs it; safe to
     # re-fire anytime.
     "crypto_roundtrip_smoke": "apps.orchestrator.tasks.crypto_roundtrip_smoke_task",
+    # Encryption-at-rest Phase 2 PR-3 — one-off operator fire that seals legacy
+    # chat plaintext (user_text / title) into the *_enc sidecars for every
+    # write-flag-ON tenant's not-yet-encrypted rows. Fired via a no-body QStash
+    # publish to /api/cron/trigger/<name>/ — hence the zero-arg pair (the publish
+    # path we use can't carry a body). Idempotent (only _enc IS NULL rows), so a
+    # re-fire after a completed backfill is a no-op; safe to leave registered.
+    "encrypt_chat_history": "apps.orchestrator.tasks.encrypt_chat_history_task",
+    "encrypt_chat_history_dry_run": "apps.orchestrator.tasks.encrypt_chat_history_dry_run_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.
