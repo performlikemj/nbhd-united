@@ -41,10 +41,23 @@ logger = logging.getLogger(__name__)
 # stays tight: at most ``_MAX_HIBERNATE_ATTEMPTS`` force-hibernate attempts, each
 # confirmed by a short Azure poll (``_CONFIRM_POLLS`` reads, ``_CONFIRM_INTERVAL``
 # apart) to absorb the lag between ``deactivate_revision`` and the revision list
-# reflecting it. Worst case ≈ 2 × (3 × 3s) ≈ 18s, leaving the drive its budget.
+# reflecting it.
 _MAX_HIBERNATE_ATTEMPTS = 2
 _CONFIRM_POLLS = 4
 _CONFIRM_INTERVAL_SECONDS = 3.0
+
+# Hard WALL-CLOCK cutoff on the whole precondition. The confirm-poll sleeps are
+# NOT the dominant cost: ``hibernate_idle_tenant`` makes two per-tenant gateway
+# calls (cron.list + suspend_tenant_crons), and against a WEDGED-but-connected
+# container each can hang ~45s (gateway_client timeout) — a down container 404s
+# fast, so this only bites the wedged case. Left unbounded, one wedged hibernate
+# eats 90s+ and, stacked with the ~240s drive, SIGKILLs the worker at 300s →
+# stranded 'running' run + QStash re-run of the whole cycle. So once elapsed
+# exceeds this, we stop and return a clean Gate-1 FAIL (the container being that
+# slow to hibernate is itself a real finding). 45s (not 60) keeps 45 + the 240s
+# drive = 285s under the 300s ceiling with margin; we only ever start the drive
+# when the precondition came in UNDER this.
+_WALL_CLOCK_BUDGET_SECONDS = 45.0
 
 
 @dataclass
@@ -64,7 +77,8 @@ class HibernateResult:
     # with ``hibernated`` in either direction — that disagreement is the finding.)
     flag_set: bool = False
     # Where it gave up, for triage: "" (confirmed) | "hibernate_call" (the real
-    # path raised) | "azure_active" (a revision stayed active past the retry).
+    # path raised) | "azure_active" (a revision stayed active past the retry) |
+    # "budget_exceeded" (the wall-clock cutoff tripped before confirmation).
     failure_stage: str = ""
 
 
@@ -81,9 +95,22 @@ def _azure_confirmed_hibernated(
     (ground-truth hibernated). The first read is immediate; a short sleep between
     reads absorbs the lag between ``deactivate_revision`` returning and the
     revision list reflecting it. ``sleep`` is injectable so tests don't wait.
+
+    A raised read (a transient ARM/network blip) is treated as a FAILED poll —
+    "still active", keep polling — NOT propagated: an uncaught raise here would
+    close the whole run ``error`` (a crash + page + QStash retry) on a blip. If
+    every poll raises, this returns False and the caller's retry / clean Gate-1
+    FAIL handles it; a single blip is absorbed by the next read.
     """
     for i in range(polls):
-        if not container_app_has_active_revision(container_id):
+        try:
+            active = container_app_has_active_revision(container_id)
+        except Exception:
+            logger.warning(
+                "journey_wake: Azure revision read raised (poll %d/%d) — treating as unconfirmed", i + 1, polls
+            )
+            active = True  # a failed read is NOT a confirmation of hibernation
+        if not active:
             return True
         if i < polls - 1:
             sleep(interval_seconds)
@@ -96,7 +123,9 @@ def force_hibernate_and_confirm(
     max_attempts: int = _MAX_HIBERNATE_ATTEMPTS,
     confirm_polls: int = _CONFIRM_POLLS,
     confirm_interval_seconds: float = _CONFIRM_INTERVAL_SECONDS,
+    budget_seconds: float = _WALL_CLOCK_BUDGET_SECONDS,
     sleep=time.sleep,
+    monotonic=time.monotonic,
 ) -> HibernateResult:
     """Force ``tenant`` hibernated and confirm it via Azure ground truth.
 
@@ -106,14 +135,27 @@ def force_hibernate_and_confirm(
     concurrent probe or a stale read keeps it awake). The DB flag is NOT trusted
     as the signal; it is only recorded as a drift datapoint.
 
+    Bounded by a hard ``budget_seconds`` wall clock: ``hibernate_idle_tenant``'s
+    gateway calls can hang on a wedged container, so once the elapsed time exceeds
+    the budget we stop and return a clean Gate-1 FAIL rather than start the ~240s
+    drive and SIGKILL the worker at the 300s ceiling. ``monotonic``/``sleep`` are
+    injectable so tests neither wait nor depend on the real clock.
+
     Returns a ``HibernateResult`` with ``hibernated=True`` ONLY on Azure
-    confirmation. A False result is a real precondition FAILURE for the caller to
-    record (INVARIANT #3) — never a silent skip.
+    confirmation within budget. A False result is a real precondition FAILURE for
+    the caller to record (INVARIANT #3) — never a silent skip.
     """
     tid = str(getattr(tenant, "id", ""))[:8]
     result = HibernateResult()
+    start = monotonic()
 
     for attempt in range(1, max_attempts + 1):
+        # Don't start another attempt if a prior one already spent the budget —
+        # there would be no wall-clock left for the drive.
+        if monotonic() - start > budget_seconds:
+            result.failure_stage = "budget_exceeded"
+            logger.warning("journey_wake: tenant %s hibernate budget exhausted before attempt %d", tid, attempt)
+            break
         result.attempts = attempt
         try:
             # The real single-tenant hibernation path: capture crons, suspend
@@ -124,6 +166,15 @@ def force_hibernate_and_confirm(
             logger.exception("journey_wake: hibernate_idle_tenant raised for tenant %s (attempt %d)", tid, attempt)
             result.failure_stage = "hibernate_call"
             continue
+
+        # A wedged container's gateway calls inside hibernate_idle_tenant can burn
+        # ~45s×2; if that consumed the budget, fail cleanly NOW rather than begin
+        # the ~240s drive and blow the 300s ceiling (leaves the container safely
+        # hibernated — the next run finds it down and confirms fast).
+        if monotonic() - start > budget_seconds:
+            result.failure_stage = "budget_exceeded"
+            logger.warning("journey_wake: tenant %s hibernate exceeded budget after attempt %d", tid, attempt)
+            break
 
         if _azure_confirmed_hibernated(
             tenant.container_id,

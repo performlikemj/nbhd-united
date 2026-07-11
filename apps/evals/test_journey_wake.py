@@ -199,6 +199,53 @@ class ForceHibernateAndConfirmTest(TestCase):
         self.assertFalse(result.hibernated)
         self.assertTrue(result.flag_set)
 
+    def test_wall_clock_budget_exceeded_is_clean_fail(self):
+        # A wedged container: hibernate_idle_tenant's gateway calls burn the wall
+        # clock. Once elapsed exceeds the budget, the wrapper stops BEFORE the
+        # Azure confirm (and before the caller would start the ~240s drive) —
+        # returning a clean Gate-1 FAIL rather than SIGKILLing the worker at 300s.
+        clock = MagicMock(side_effect=[0.0, 0.0, 100.0, 100.0, 100.0])  # post-hibernate read jumps past budget
+        with (
+            patch("apps.evals.journey.wake_control.hibernate_idle_tenant", return_value=True) as mock_hib,
+            patch("apps.evals.journey.wake_control.container_app_has_active_revision") as mock_active,
+        ):
+            result = force_hibernate_and_confirm(
+                _mock_tenant(hibernated_at=timezone.now()), budget_seconds=45.0, sleep=MagicMock(), monotonic=clock
+            )
+        self.assertFalse(result.hibernated)
+        self.assertEqual(result.failure_stage, "budget_exceeded")
+        self.assertEqual(result.attempts, 1)
+        mock_hib.assert_called_once()
+        mock_active.assert_not_called()  # never reached the confirm — no drive would follow
+
+    def test_transient_arm_blip_during_poll_is_absorbed(self):
+        # A single ARM read raising is treated as a FAILED poll (still active), not
+        # propagated — the next read confirms. No crash, no page.
+        with (
+            patch("apps.evals.journey.wake_control.hibernate_idle_tenant", return_value=True),
+            patch(
+                "apps.evals.journey.wake_control.container_app_has_active_revision",
+                side_effect=[RuntimeError("arm blip"), False],
+            ),
+        ):
+            result = force_hibernate_and_confirm(_mock_tenant(hibernated_at=timezone.now()), sleep=MagicMock())
+        self.assertTrue(result.hibernated)
+        self.assertEqual(result.attempts, 1)
+
+    def test_sustained_arm_outage_is_not_confirmed(self):
+        # Every ARM read raises → never confirmed → azure_active FAIL (not an
+        # uncaught ERROR/crash). The confirm poll swallows the raises internally.
+        with (
+            patch("apps.evals.journey.wake_control.hibernate_idle_tenant", return_value=True),
+            patch(
+                "apps.evals.journey.wake_control.container_app_has_active_revision",
+                side_effect=RuntimeError("arm down"),
+            ),
+        ):
+            result = force_hibernate_and_confirm(_mock_tenant(), max_attempts=1, confirm_polls=2, sleep=MagicMock())
+        self.assertFalse(result.hibernated)
+        self.assertEqual(result.failure_stage, "azure_active")
+
 
 # --------------------------------------------------------------------------- #
 # run_wake_suite — recording + run-status wiring (hibernate + drive mocked).
@@ -214,6 +261,10 @@ def _synthetic_tenant_with_pat() -> tuple[Tenant, str]:
 
 _HIB_OK = HibernateResult(hibernated=True, attempts=1, flag_set=True, failure_stage="")
 _HIB_FAIL = HibernateResult(hibernated=False, attempts=2, flag_set=False, failure_stage="azure_active")
+# Azure confirmed 0 active revisions, but the DB flag was NOT stamped (a
+# client-side hibernate timeout): container down + hibernated_at null = the brick
+# state. Gate 1 must FAIL this, not pass on Azure alone.
+_HIB_AZURE_ONLY = HibernateResult(hibernated=True, attempts=1, flag_set=False, failure_stage="")
 
 
 class RunWakeSuiteTest(TestCase):
@@ -284,6 +335,23 @@ class RunWakeSuiteTest(TestCase):
         self.assertEqual(results[0].case_id, CASE_HIBERNATED)
         self.assertFalse(results[0].passed)
         self.assertFalse(results[0].details["hibernated_confirmed"])
+
+    def test_hibernated_but_flag_null_fails_not_skip(self):
+        # Azure confirmed the container down, but hibernated_at is null (a
+        # client-side hibernate timeout). Gating on Azure alone would drive a
+        # message that 404s into a bricked container and misattribute it as a
+        # broken wake. Requiring flag_set makes it a clean Gate-1 FAIL, message
+        # never sent.
+        observed = _observed(status="ready", source="tenant", error="", waking_at_seen=True, round_trip_ms=1_000)
+        run, drive = self._run(_HIB_AZURE_ONLY, observed)
+        self.assertEqual(run.status, EvalRun.Status.FAIL)
+        drive.assert_not_called()
+        results = list(run.results.all())
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].case_id, CASE_HIBERNATED)
+        self.assertFalse(results[0].passed)
+        self.assertTrue(results[0].details["hibernated_confirmed"])  # Azure said yes
+        self.assertFalse(results[0].details["flag_set"])  # but the flag did not stamp — the brick state
 
     # ----- Gate 3 — waking seen but terminal error ------------------------- #
     def test_waking_seen_but_terminal_error_fails(self):

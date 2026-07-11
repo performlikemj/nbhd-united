@@ -33,6 +33,15 @@ Plus the round-trip SLO (~180s; deadline ~240s catches the worst-case cold start
 while staying under the 300s worker ceiling) and a cross-check that the wake
 cleared ``hibernated_at`` and stamped ``last_wake_at`` (hibernation.py:530).
 
+B6 SCHEDULING NOTE: staggering off the 30-min chat probe's :00/:30 boundary is
+NOT sufficient. ``hibernate_idle_tenant`` itself arms a QStash cron-wake at
+``nextRun − 240s`` for the synthetic tenant's OWN OpenClaw crons
+(hibernation.py:116 → ``_schedule_next_cron_wake``). If the daily wake schedule
+lands near one of those OC cron-wake fire times, that armed wake can wake the
+tenant mid-test — a residual Probe-1↔Probe-4-class race. So B6 must also stagger
+the wake schedule away from the synthetic tenant's own cron-wake times (the
+ground-truth precondition catches whatever races through, as a clean FAIL).
+
 INVARIANT #1: this suite records status codes, machine error codes, booleans,
 counts and durations — never the reply text, user text, or any user data.
 """
@@ -97,19 +106,6 @@ class WakeOutcome:
     BUDGET_EXHAUSTED = "budget_exhausted"  # SOFT — designed cap tripped pre-turn, no wake exercised
     PIPELINE_ERROR = "pipeline_error"  # terminal error (non-budget), HTTP failure, or malformed row
     TIMEOUT = "timeout"  # never reached terminal within the deadline (silent after wake) (Gate 3)
-
-
-# Hard failures → ``passed=False`` under CASE_WAKE → run FAIL → owner alerted + DLQ.
-# WARM_PATH is here (Gate 2 is load-bearing). BUDGET_EXHAUSTED and PASS are NOT.
-_HARD_FAILURES = frozenset(
-    {
-        WakeOutcome.WARM_PATH,
-        WakeOutcome.SLO_BREACH,
-        WakeOutcome.WRONG_SOURCE,
-        WakeOutcome.PIPELINE_ERROR,
-        WakeOutcome.TIMEOUT,
-    }
-)
 
 
 def classify_wake(observed: ObservedTurn, *, slo_ms: int = SLO_MS) -> str:
@@ -196,16 +192,30 @@ def run_wake_suite(*, trigger: str = EvalRun.Trigger.MANUAL) -> EvalRun:
         base_url = resolve_base_url()
         pat = resolve_journey_pat(tenant)
 
-        # GATE 1 — ground-truth hibernate BEFORE sending. Confirmed via Azure
-        # (0 active revisions), not the DB flag.
+        # GATE 1 — ground-truth hibernate BEFORE sending. Requires BOTH Azure
+        # confirmation (0 active revisions) AND the DB flag stamped. The flag is
+        # load-bearing, not just a datapoint: if hibernate_idle_tenant's Azure
+        # deactivate succeeds server-side but the SDK call raises client-side
+        # (timeout), it returns without stamping ``hibernated_at`` — the container
+        # is DOWN but the flag is null. Gating on Azure alone would "pass" here,
+        # then the driven message 404s and the drain's wake branch (which fires
+        # only when hibernated_at is non-null) NEVER runs → misattributed as
+        # "wake broken" AND the tenant is left BRICKED (down + flag null) so every
+        # subsequent chat probe also drops until the next force-hibernate restamps.
+        # Requiring flag_set turns that into a clean, paged Gate-1 FAIL instead.
         hib = force_hibernate_and_confirm(tenant)
-        if not hib.hibernated:
-            # Precondition failed — the tenant would not stay asleep. A real FAIL,
-            # never a skip: driving a message now would exercise the WARM path and
-            # prove nothing (INVARIANT #3, docs/evals-wave-b-plan.md Gate 1).
+        if not (hib.hibernated and hib.flag_set):
+            # Precondition failed — the tenant would not stay asleep, or hibernated
+            # inconsistently (Azure down but flag null). A real FAIL, never a skip:
+            # driving a message now would exercise the WARM path (or a bricked
+            # container) and prove nothing (INVARIANT #3, docs/evals-wave-b-plan.md
+            # Gate 1).
             logger.error(
-                "journey_wake: could not ground-truth hibernate (attempts=%d, stage=%s) — precondition FAIL",
+                "journey_wake: could not ground-truth hibernate (attempts=%d, confirmed=%s, flag=%s, stage=%s) — "
+                "precondition FAIL",
                 hib.attempts,
+                hib.hibernated,
+                hib.flag_set,
                 hib.failure_stage,
             )
             record(
@@ -214,7 +224,7 @@ def run_wake_suite(*, trigger: str = EvalRun.Trigger.MANUAL) -> EvalRun:
                 EvalResult.Kind.JOURNEY,
                 passed=False,
                 details={
-                    "hibernated_confirmed": False,
+                    "hibernated_confirmed": hib.hibernated,
                     "hibernate_attempts": hib.attempts,
                     "flag_set": hib.flag_set,
                     "failure_stage": hib.failure_stage,
@@ -227,7 +237,7 @@ def run_wake_suite(*, trigger: str = EvalRun.Trigger.MANUAL) -> EvalRun:
             CASE_HIBERNATED,
             EvalResult.Kind.JOURNEY,
             passed=True,
-            details={"hibernated_confirmed": True, "hibernate_attempts": hib.attempts},
+            details={"hibernated_confirmed": True, "flag_set": True, "hibernate_attempts": hib.attempts},
         )
 
         # Drive the wake on the REAL path (Probe 1's driver), timing the whole
