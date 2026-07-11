@@ -1628,3 +1628,63 @@ def crypto_roundtrip_smoke_task() -> dict:
 
     logger.info("crypto_roundtrip_smoke: PASS tenant=%s epoch=%s", tenant_id, epoch)
     return {"result": "pass", "tenant": str(tenant_id), "epoch": epoch}
+
+
+def encrypt_chat_history_dry_run_task() -> dict:
+    """Encryption-at-rest Phase 2 PR-3 — dry-run chat backfill.
+
+    One-off operator fire. Zero-arg by contract (the QStash publish path we
+    use can't carry a body), registered in apps/cron/views.py TASK_MAP, and
+    triggered by a no-body QStash publish to
+    ``/api/cron/trigger/encrypt_chat_history_dry_run/``. Wraps the
+    ``encrypt_chat_history`` management command with ``--dry-run`` so it reports
+    the COUNT of rows that would be sealed (never content), making no writes.
+    Read-only, so QStash retries are harmless.
+
+    Output is counts + tenant-id prefixes only (no user content) — safe to log,
+    which we do so the result is visible in Log Analytics even when the QStash
+    response body is hard to retrieve.
+    """
+    import logging
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    logger = logging.getLogger(__name__)
+
+    buf = StringIO()
+    call_command("encrypt_chat_history", dry_run=True, stdout=buf)
+    tail = buf.getvalue()[-4000:]
+    logger.info("encrypt_chat_history (dry-run): %s", tail)
+    return {"output": tail}
+
+
+def encrypt_chat_history_task() -> dict:
+    """Encryption-at-rest Phase 2 PR-3 — real chat backfill.
+
+    One-off operator fire. Zero-arg by contract (the QStash publish path we
+    use can't carry a body), registered in apps/cron/views.py TASK_MAP, and
+    triggered by a no-body QStash publish to
+    ``/api/cron/trigger/encrypt_chat_history/``. Wraps the
+    ``encrypt_chat_history`` management command (real run) to seal the legacy
+    ``user_text`` / ``title`` plaintext into the ``*_enc`` sidecars for every
+    write-flag-ON tenant's not-yet-encrypted rows. Idempotent (only ``_enc IS
+    NULL`` rows) and per-tenant isolated, so QStash retries are harmless.
+
+    Captures ``stderr`` as well as ``stdout`` — the command writes per-row
+    failures to stderr. Output is counts + tenant-id prefixes only (no user
+    content) — safe to log, which we do so the result is visible in Log
+    Analytics even when the QStash response body is hard to retrieve.
+    """
+    import logging
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    logger = logging.getLogger(__name__)
+
+    buf = StringIO()
+    call_command("encrypt_chat_history", stdout=buf, stderr=buf)
+    tail = buf.getvalue()[-4000:]
+    logger.info("encrypt_chat_history: %s", tail)
+    return {"output": tail}
