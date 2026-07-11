@@ -36,7 +36,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.test.utils import override_settings
 
-from apps.orchestrator.config_generator import generate_openclaw_config
+from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS, generate_openclaw_config
 from apps.orchestrator.config_validator import assert_config_writable
 from apps.orchestrator.personas import render_workspace_files
 from apps.tenants.services import create_tenant
@@ -51,8 +51,29 @@ _GATE_PATH = os.path.join(
     "person-context-capture-phase2.agents-extras.md",
 )
 
-# OpenClaw truncates each bootstrap file's TAIL beyond this many chars.
-_BOOTSTRAP_MAX_CHARS = 18000
+# OpenClaw truncates each bootstrap file's TAIL beyond bootstrapMaxChars at
+# injection time. IMPORTED from config_generator, never re-hardcoded: this
+# suite originally pinned a local 18000 and measured only the base TEMPLATE,
+# while the canary's RENDERED AGENTS.md (downloaded from the share 2026-07-11)
+# was 21,689 chars — the reflex started at char 18,265 and was fully invisible
+# in production with these tests green. Assert against the emitted cap AND
+# against a render that mirrors the real canary composition (below).
+_BOOTSTRAP_MAX_CHARS = BOOTSTRAP_MAX_CHARS
+
+# The OTHER agents_md-sharing extras block live on the real canary tenant (an
+# ops-only task-discipline block, never committed to the repo). Prod-measured
+# size 2026-07-11. Used to build a faithful length stand-in below.
+_TASK_DISCIPLINE_BLOCK_CHARS = 1582
+
+
+def _task_discipline_stand_in() -> str:
+    """Deterministic stand-in for the ops-only task-discipline extras block,
+    padded to its prod-measured size so the mirrored-canary render is a
+    faithful length model of the real share file."""
+    header = "## Task discipline (canary stand-in for the ops-only block)\n\n"
+    filler = "Keep tasks honest; close what is done and say so plainly. "
+    block = header + filler * ((_TASK_DISCIPLINE_BLOCK_CHARS - len(header)) // len(filler) + 1)
+    return block[:_TASK_DISCIPLINE_BLOCK_CHARS]
 
 
 def _read_gate_text() -> str:
@@ -179,9 +200,10 @@ class ContinuityCaptureBudgetTest(TestCase):
 
     @override_settings(GRAVITY_ENABLED=True)
     def test_reflex_survives_finance_truncation(self):
-        """A finance tenant's AGENTS.md legitimately exceeds the cap (the ~6KB
-        Gravity block is the intended truncation tail). The reflex, appended as
-        `agents_md` extras BEFORE the Gravity block, must land above the cut."""
+        """A finance tenant's AGENTS.md may exceed the cap (the ~6KB Gravity
+        block is the accepted truncation tail when it does). The reflex,
+        appended as `agents_md` extras BEFORE the Gravity block, must land
+        above the cut."""
         tenant = create_tenant(display_name="Finance Continuity", telegram_chat_id=912007)
         tenant.finance_enabled = True
         tenant.save(update_fields=["finance_enabled"])
@@ -202,3 +224,69 @@ class ContinuityCaptureBudgetTest(TestCase):
         # Reflex is above the truncation cut, and above the Gravity tail.
         self.assertLess(reflex_at, _BOOTSTRAP_MAX_CHARS, "the reflex falls in the truncated tail")
         self.assertLess(reflex_at, gravity_at)
+
+    def test_mirrored_canary_render_with_both_extras_blocks_fits_the_cap(self):
+        """The missing case that caught us in production (2026-07-11): the base
+        TEMPLATE was measured (16,425 chars, comfortably under the then-18,000
+        cap) but the canary's RENDERED file was 21,689 — persona substitutions
+        plus the friends/doc conditional blocks plus TWO appended agents_md
+        extras blocks (ops-only task-discipline ~1,582 + person-capture reflex
+        ~1,310). Everything past the cap was silently invisible at injection,
+        including the entire reflex.
+
+        This test renders that composition: a tenant with the friends + doc
+        flags on and BOTH extras blocks applied via the documented concat
+        `--stdin` recipe. It asserts the extras' END index — not just the base
+        template length — sits under the (imported) cap, and that the full
+        rendered file fits. If a third agents_md extras block (or base/gate
+        growth) pushes the render past the cap, THIS fails — the regression
+        this file exists to catch.
+        """
+        tenant = create_tenant(display_name="Mirrored Canary", telegram_chat_id=912008)
+        tenant.friends_enabled = True
+        tenant.friends_agent_propose_enabled = True
+        tenant.document_ingestion_enabled = True
+        tenant.save(
+            update_fields=[
+                "friends_enabled",
+                "friends_agent_propose_enabled",
+                "document_ingestion_enabled",
+            ]
+        )
+        combined = _task_discipline_stand_in() + "\n\n" + _read_gate_text()
+        with patch("sys.stdin", io.StringIO(combined)):
+            call_command(
+                "set_prompt_extras",
+                tenant_id=str(tenant.id),
+                section="agents_md",
+                stdin=True,
+            )
+        tenant.user.refresh_from_db()
+
+        agents_md = _agents_md(tenant)
+        # The composition is faithful: both extras blocks and the flag gates
+        # actually rendered (otherwise the length assertions test nothing).
+        self.assertIn("## Task discipline", agents_md)
+        self.assertIn("keep what you hear", agents_md)
+        self.assertIn("BACKSTAGE", agents_md)  # friends gate present
+        self.assertIn("nbhd_document_keep", agents_md)  # doc-keep tool gate present
+
+        # The reflex is the tail of the extras — its END must sit above the cut.
+        reflex_tail = "not a transcript."
+        extras_end = agents_md.find(reflex_tail)
+        self.assertNotEqual(extras_end, -1)
+        extras_end += len(reflex_tail)
+        self.assertLess(
+            extras_end,
+            _BOOTSTRAP_MAX_CHARS,
+            f"extras end at {extras_end} — past the {_BOOTSTRAP_MAX_CHARS} injection cap; "
+            "everything beyond is silently invisible in production",
+        )
+        # And the WHOLE rendered file fits — a third extras block or base
+        # growth that pushes past the cap must fail here, not in production.
+        self.assertLess(
+            len(agents_md),
+            _BOOTSTRAP_MAX_CHARS,
+            f"rendered canary AGENTS.md is {len(agents_md)} chars — past the "
+            f"{_BOOTSTRAP_MAX_CHARS} injection cap; the tail is silently dropped",
+        )

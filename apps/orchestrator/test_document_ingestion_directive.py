@@ -27,7 +27,7 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.test.utils import override_settings
 
-from apps.orchestrator.config_generator import generate_openclaw_config
+from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS, generate_openclaw_config
 from apps.orchestrator.config_validator import assert_config_writable
 from apps.orchestrator.personas import render_workspace_files, render_workspace_rules
 from apps.tenants.services import create_tenant
@@ -85,12 +85,14 @@ class FlagGatedToolBlockTest(TestCase):
             self.assertNotIn(name, plain_md)
 
 
-# OpenClaw truncates each bootstrap file's TAIL beyond bootstrapMaxChars=18000. A
-# finance tenant's AGENTS.md legitimately exceeds that (the ~6KB Gravity block is
-# the intended truncation tail). Finding 11 is therefore about POSITION: the base
-# gate + the flag-gated tool block must land ABOVE the cut, not that the total is
-# under 18000 (it isn't, and wasn't before this change).
-_BOOTSTRAP_MAX_CHARS = 18000
+# OpenClaw truncates each bootstrap file's TAIL beyond bootstrapMaxChars at
+# injection time. A finance tenant's AGENTS.md may exceed the cap (the ~6KB
+# Gravity block is the accepted truncation tail when it does). Finding 11 is
+# therefore about POSITION: the base gate + the flag-gated tool block must land
+# ABOVE the cut. IMPORTED, not re-hardcoded — a local pin of the old 18000 cap
+# is exactly how the 2026-07-11 canary truncation went unnoticed with tests
+# green (see test_continuity_capture_directive.py).
+_BOOTSTRAP_MAX_CHARS = BOOTSTRAP_MAX_CHARS
 
 
 @override_settings(GRAVITY_ENABLED=True)
