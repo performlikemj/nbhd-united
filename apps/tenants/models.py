@@ -754,6 +754,25 @@ class Tenant(models.Model):
         ),
     )
 
+    # Email/calendar/Reddit ingestion provenance (continuity-directive P3, Phase 5).
+    # When on: the AGENTS.md email-provenance gate lands — teaching the agent to
+    # PROPOSE before saving anything learned from a Gmail/calendar/Reddit read
+    # (that text is attacker-controllable, D8) and to stamp such saves onto the
+    # SAME document-keeping ledger with source_kind + a "gmail:<id>" source_ref, so
+    # "forget everything from that email" works like forgetting a PDF. Reuses the
+    # nbhd_document_keep tools, so enable this only alongside document_ingestion_enabled.
+    # Held OFF (incl. canary) until the AGENTS.md budget headroom is resolved and the
+    # OpenClaw image ships the plugin's source_kind/source_ref params (next image roll).
+    email_provenance_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            "Enable email/calendar/Reddit ingestion provenance: the AGENTS.md gate "
+            "teaching propose-then-stamp for information saved from a read, recorded on "
+            "the document-keeping ledger with a source_kind + source_ref. Requires "
+            "document_ingestion_enabled (the record/list/forget tools) and the plugin image roll."
+        ),
+    )
+
     # Welcome-cron delivery telemetry. Keys are feature names ("fuel",
     # "finance"), values are ISO-8601 timestamps of successful welcome
     # delivery. The welcome prompt instructs the agent to call

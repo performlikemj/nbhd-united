@@ -37,6 +37,42 @@ logger = logging.getLogger(__name__)
 FILE_TTL = timedelta(hours=24)
 _MAX_EXCERPT = 2000
 
+# Non-upload provenance sources (continuity-directive P3). Each requires a
+# namespaced ``source_ref`` so "forget everything from that email" can group the
+# saved items by a stable identity in place of a filename. The prefix is the
+# discriminator's machine form; the tail is the provider id the agent threads
+# back from the read (Gmail message id, calendar event id, Reddit fullname).
+_SOURCE_REF_PREFIX = {
+    "email": "gmail:",
+    "calendar": "gcal:",
+    "reddit": "reddit:",
+}
+
+
+def _validate_source(source_kind: str, source_ref: str) -> tuple[str, str, dict | None]:
+    """Normalize + validate the (source_kind, source_ref) pair.
+
+    Returns ``(source_kind, source_ref, error_or_None)``. ``upload`` needs no ref
+    (an upload is identified by its file). A non-upload source MUST carry a
+    well-formed namespaced ref, because that ref is the ONLY handle "forget
+    everything from that email" has — a malformed one would silently strand the
+    saved items, so we refuse to stamp rather than record an ungroupable ledger row.
+    """
+    raw_kind = str(source_kind or "").strip().lower()
+    kind = raw_kind or "upload"
+    if kind == "upload":
+        return "upload", "", None
+    prefix = _SOURCE_REF_PREFIX.get(kind)
+    if prefix is None:
+        return kind, "", {"reason": "invalid_source_kind", "source_kind": kind}
+    ref = str(source_ref or "").strip()
+    tail = ref[len(prefix) :].strip() if ref.startswith(prefix) else ""
+    if not ref.startswith(prefix) or not tail:
+        return kind, "", {"reason": "invalid_source", "source_kind": kind}
+    if kind == "reddit" and not (tail.startswith("t3_") or tail.startswith("t1_")):
+        return kind, "", {"reason": "invalid_source", "source_kind": kind}
+    return kind, ref[:255], None
+
 
 # ── Removal handler registry ────────────────────────────────────────────────
 
@@ -301,6 +337,15 @@ def record_keep(tenant, *, source: dict, artifacts: list[dict]) -> dict:
     artifacts = artifacts or []
     client_msg_id = str(source.get("client_msg_id") or "").strip()[:64]
 
+    # Provenance source (D7). ``upload`` is the original document path (backward
+    # compatible — no source_kind → upload → identical behavior). A non-upload
+    # source must carry a well-formed namespaced ref or we refuse to stamp: an
+    # ungroupable ledger row can't honor "forget everything from that email".
+    source_kind, source_ref, source_error = _validate_source(source.get("source_kind"), source.get("source_ref"))
+    if source_error is not None:
+        _emit_write_blocked(tenant, source_kind, source_error.get("reason", "invalid_source"))
+        return {"ingestion_id": None, "recorded": 0, "errors": [source_error]}
+
     validated: list[tuple[dict, RemovalHandler]] = []
     errors: list[dict] = []
     for art in artifacts:
@@ -318,9 +363,13 @@ def record_keep(tenant, *, source: dict, artifacts: list[dict]) -> dict:
             continue
         validated.append((art, handler))
 
-    marker_msg = _marker_message(tenant, client_msg_id)
+    # The completeness gap + honest-expiry machinery is upload-only: a non-upload
+    # source has no ``[Document attached:]`` marker turn and no ephemeral file.
+    marker_msg = _marker_message(tenant, client_msg_id) if source_kind == "upload" else None
     uploaded_at = marker_msg.created_at if marker_msg is not None else timezone.now()
     thread = getattr(marker_msg, "thread", None)
+    # Only an upload has a file that clears out in ~24h; email/event/post do not.
+    file_expires_at = uploaded_at + FILE_TTL if source_kind == "upload" else None
 
     ingestion_id = None
     if validated:
@@ -331,11 +380,13 @@ def record_keep(tenant, *, source: dict, artifacts: list[dict]) -> dict:
                 tenant=tenant,
                 thread=thread,
                 client_msg_id=client_msg_id,
+                source_kind=source_kind,
+                source_ref=source_ref,
                 original_filename=str(source.get("original_filename") or "")[:255],
                 content_hash=str(source.get("content_hash") or "")[:64],
                 workspace_path=str(source.get("workspace_path") or "")[:255],
                 uploaded_at=uploaded_at,
-                file_expires_at=uploaded_at + FILE_TTL,
+                file_expires_at=file_expires_at,
                 status=DocumentIngestion.Status.KEPT,
                 agreed_at=timezone.now(),
             )
@@ -363,6 +414,8 @@ def record_keep(tenant, *, source: dict, artifacts: list[dict]) -> dict:
         if window_count > recorded:
             _emit_gap(tenant, window_count, recorded)
     _emit_save(tenant, len(artifacts), recorded, len(errors), user_turns)
+    if ingestion_id is not None and source_kind != "upload":
+        _emit_provenance_stamped(tenant, source_kind)
 
     return {"ingestion_id": ingestion_id, "recorded": recorded, "errors": errors}
 
@@ -441,7 +494,7 @@ def forget_ingestion(tenant, ingestion_id) -> dict:
         "removed": removed,
         "failed": failed,
         "results": results,
-        "caveats": _forget_caveats(had_reminder, tenant),
+        "caveats": _forget_caveats(had_reminder, tenant, source_kind=ingestion.source_kind),
     }
 
 
@@ -460,8 +513,15 @@ def list_ingestions(tenant, *, limit: int = 20) -> dict:
         ingestions.append(
             {
                 "id": str(row.id),
+                "source_kind": row.source_kind,
+                # The grouping identity ("gmail:<id>" …); "" for an upload. Lets the
+                # agent render "from the email '<subject>'" honestly, not "the PDF".
+                "source_ref": row.source_ref,
                 "original_filename": row.original_filename,
                 "uploaded_at": row.uploaded_at.isoformat() if row.uploaded_at else None,
+                # An upload's file clears in ~24h; a non-upload source has no file,
+                # so file_expires_at is NULL and this is always False (never claim
+                # an email "expired").
                 "file_expired": bool(row.file_expires_at and now > row.file_expires_at),
                 "status": row.status,
                 "artifacts": [
@@ -502,12 +562,36 @@ def _artifact_result(art, *, removed: bool, error: str = "") -> dict:
     }
 
 
-def _forget_caveats(had_reminder: bool, tenant) -> list[str]:
-    """The honesty boundaries the forget reply must state (§5.5)."""
+_SOURCE_NOUN = {
+    "email": "email",
+    "calendar": "calendar event",
+    "reddit": "Reddit post",
+}
+
+
+def _forget_caveats(had_reminder: bool, tenant, *, source_kind: str = "upload") -> list[str]:
+    """The honesty boundaries the forget reply must state (§5.5).
+
+    The "already reached the AI model" boundary holds for every source, but the
+    redaction posture differs: uploaded document reads are NOT redacted, whereas
+    Gmail/Calendar/Reddit reads DO pass ``redact_tool_response`` (third-party
+    names → placeholders), so the wording must not overclaim either way.
+    """
+    if source_kind in _SOURCE_NOUN:
+        noun = _SOURCE_NOUN[source_kind]
+        first = (
+            f"The {noun}'s contents already reached the AI model when we talked "
+            "(the read is redacted for third-party names, but the model still saw it) "
+            "— forget removes the saved information here, not the model's earlier reading."
+        )
+    else:
+        first = (
+            "The document's contents already reached the AI model when we first talked "
+            "(reads aren't redacted) — forget removes the saved information here, not the "
+            "model's earlier reading, and can't un-read it."
+        )
     caveats = [
-        "The document's contents already reached the AI model when we first talked "
-        "(reads aren't redacted) — forget removes the saved information here, not the "
-        "model's earlier reading, and can't un-read it.",
+        first,
         "To also make me forget a person's name, use People settings — this removes the saved information only.",
     ]
     if had_reminder:
@@ -538,6 +622,25 @@ def _emit_save(tenant, artifacts, recorded, errors, user_turns_since_marker):
 
 def _emit_bad_ref(tenant, object_type, reason):
     logger.info("doc_ingest_bad_ref tenant=%s object_type=%s reason=%s", _tid(tenant), object_type, reason)
+
+
+def _emit_provenance_stamped(tenant, source_kind):
+    # Continuity-directive P3: a durable write derived from a non-upload source
+    # (email/calendar/reddit) was stamped onto the ledger and is now forgettable.
+    logger.info("ingest_provenance_stamped tenant=%s source_kind=%s", _tid(tenant), source_kind)
+
+
+def _emit_write_blocked(tenant, source_kind, reason):
+    # Continuity-directive P3: the provenance stamp was REFUSED because the
+    # non-upload source was malformed (no groupable identity for forget). The
+    # deterministic same-turn write backstop for reads is deferred (D8), so this
+    # source-validation refusal is the only server-side block on this path today.
+    logger.info(
+        "ingest_write_blocked tenant=%s source_kind=%s reason=%s",
+        _tid(tenant),
+        source_kind,
+        reason,
+    )
 
 
 def _emit_gap(tenant, created_in_window, recorded):
