@@ -64,6 +64,11 @@ INSTALLED_APPS = [
     # only; ready() intentionally stays empty (pre-warm is Phase 1 PR4, and
     # must never run during migrate — see apps/crypto/apps.py).
     "apps.crypto",
+    # apps.evals — the production eval system (see docs/evals-directive.md).
+    # Platform-level tables (eval_runs / eval_results), not tenant-scoped;
+    # ready() intentionally stays empty (it runs during migrate, before this
+    # app's own tables exist — see apps/evals/apps.py).
+    "apps.evals",
 ]
 
 MIDDLEWARE = [

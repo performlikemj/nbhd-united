@@ -135,6 +135,13 @@ TASK_MAP = {
     # re-fire after a completed backfill is a no-op; safe to leave registered.
     "encrypt_chat_history": "apps.orchestrator.tasks.encrypt_chat_history_task",
     "encrypt_chat_history_dry_run": "apps.orchestrator.tasks.encrypt_chat_history_dry_run_task",
+    # Eval system (see docs/evals-directive.md) — chassis proof. Operator-fired via
+    # a no-body QStash publish to /api/cron/trigger/eval_smoke/ (zero-arg, because
+    # the publish path we use can't carry a body). Writes real EvalRun/EvalResult
+    # rows and emits the one-line run summary; RAISES when the run doesn't close
+    # 'pass' so a failing eval lands in the DLQ instead of a silent green. Safe to
+    # re-fire anytime — each fire is its own run.
+    "eval_smoke": "apps.evals.tasks.eval_smoke_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.
