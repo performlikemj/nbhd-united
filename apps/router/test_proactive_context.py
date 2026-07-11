@@ -4,7 +4,8 @@ Covers:
 * ``parse_markdown_items`` — bullet / numbered / single / mixed input.
 * ``record_proactive_outbound`` — row write, parsed_items population.
 * ``surface_proactive_context`` — empty case, ordering, consumption,
-  follow-up-window semantics.
+  follow-up-window semantics, and the split window (unconsumed rows
+  surface for 7 days; consumed rows keep the tight 24h window).
 * ``CronDeliveryView`` — happy-path Telegram + LINE send now produces
   a ``ProactiveOutbound`` row with job_name from the header.
 """
@@ -204,7 +205,28 @@ class SurfaceProactiveContextTest(_TenantFixture):
         block = surface_proactive_context(tenant=self.tenant)
         self.assertEqual(block, "")
 
-    def test_stale_row_outside_window_dropped(self):
+    def test_unconsumed_row_aged_three_days_surfaces_and_consumes(self):
+        # The fix: an unconsumed proactive question that sat unanswered past
+        # the old 24h window still surfaces when the user finally replies —
+        # otherwise the agent has no idea what it asked (the exact amnesia
+        # this module exists to prevent). It is threaded (consumed) exactly
+        # once, just like a fresh row.
+        row = record_proactive_outbound(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            message_text="what did you decide about the trip?",
+        )
+        assert row is not None
+        ProactiveOutbound.objects.filter(id=row.id).update(created_at=timezone.now() - timedelta(days=3))
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertIn("what did you decide about the trip?", block)
+        row.refresh_from_db()
+        self.assertIsNotNone(row.consumed_at)
+
+    def test_unconsumed_row_aged_eight_days_dropped(self):
+        # Even the long unconsumed window has an outer bound (7 days): a
+        # question that old is genuinely stale and must not resurface.
         row = record_proactive_outbound(
             tenant=self.tenant,
             channel="telegram",
@@ -212,9 +234,57 @@ class SurfaceProactiveContextTest(_TenantFixture):
             message_text="ancient",
         )
         assert row is not None
-        ProactiveOutbound.objects.filter(id=row.id).update(created_at=timezone.now() - timedelta(hours=48))
+        ProactiveOutbound.objects.filter(id=row.id).update(created_at=timezone.now() - timedelta(days=8))
         block = surface_proactive_context(tenant=self.tenant)
         self.assertEqual(block, "")
+
+    def test_consumed_row_aged_two_days_not_resurfaced(self):
+        # Consumed semantics are unchanged: an already-threaded message
+        # aged past the tight 24h window must NOT resurface, even though an
+        # UNCONSUMED row of the same age would. Re-surfacing old threaded
+        # messages every turn would spam the conversation.
+        row = record_proactive_outbound(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            message_text="already answered days ago",
+        )
+        assert row is not None
+        two_days_ago = timezone.now() - timedelta(days=2)
+        ProactiveOutbound.objects.filter(id=row.id).update(created_at=two_days_ago, consumed_at=two_days_ago)
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertEqual(block, "")
+
+    def test_limit_respected_across_mixed_old_unconsumed_and_fresh(self):
+        # The limit is shared across the union (old-unconsumed + fresh),
+        # newest first: only the 3 newest surfaceable rows appear, oldest
+        # of those first.
+        specs = [
+            ("D6", timezone.now() - timedelta(days=6)),
+            ("D5", timezone.now() - timedelta(days=5)),
+            ("D4", timezone.now() - timedelta(days=4)),
+            ("H2", timezone.now() - timedelta(hours=2)),
+            ("NOW", timezone.now() - timedelta(minutes=1)),
+        ]
+        for text, created in specs:
+            row = record_proactive_outbound(
+                tenant=self.tenant,
+                channel="telegram",
+                channel_user_id="123",
+                message_text=text,
+            )
+            assert row is not None
+            ProactiveOutbound.objects.filter(id=row.id).update(created_at=created)
+        block = surface_proactive_context(tenant=self.tenant)
+        # Only the newest 3 (D4, H2, NOW) surface; older ones are capped out.
+        self.assertNotIn("D6", block)
+        self.assertNotIn("D5", block)
+        self.assertIn("D4", block)
+        self.assertIn("H2", block)
+        self.assertIn("NOW", block)
+        # Rendered oldest-first.
+        self.assertLess(block.index("D4"), block.index("H2"))
+        self.assertLess(block.index("H2"), block.index("NOW"))
 
     def test_consumed_row_resurfaces_within_followup_window(self):
         row = record_proactive_outbound(
