@@ -3172,6 +3172,12 @@ class RuntimeReconcileScanView(APIView):
 class RuntimeCronPhase2SummaryView(APIView):
     """POST /api/v1/integrations/runtime/<tenant_id>/cron-phase2-summary/
 
+    DEPRECATED 2026-07-11: seed-prompt emission of the phase2 sync block was
+    removed (config_generator._build_cron_message) — superseded by the
+    deterministic ProactiveOutbound bridge. Kept live because hibernated
+    tenants wake on stale configs whose prompts still call this tool; remove
+    the endpoint only after fleet config convergence.
+
     Receives a 2-3 sentence summary from a foreground cron run that messaged
     the user, and creates the corresponding ``_sync:<job_name>`` one-shot
     cron with ``sessionTarget=main`` so the user's main chat session learns

@@ -275,20 +275,23 @@ class ConfigGeneratorTest(TestCase):
                 f"{job['name']} payload must use 'message' field, not 'text'",
             )
 
-    def test_foreground_jobs_carry_phase2_sync_block(self):
-        """Foreground seed jobs have the Phase 2 sync wrapper appended.
+    def test_seed_jobs_no_longer_carry_phase2_sync_block(self):
+        """Retirement guard (2026-07-11): NO seed cron prompt appends the Phase 2
+        sync block or instructs the agent to call ``nbhd_cron_phase2_summary``.
 
-        Under the tool-delegation model, the block instructs the agent to
-        invoke ``nbhd_cron_phase2_summary`` (Django creates the
-        ``_sync:<job_name>`` cron server-side). The agent passes ``job_name``
-        as a parameter; the literal name appears in the prompt as the value
-        to use.
+        The LLM-mediated ``_phase2_sync_block`` cross-session bridge was
+        superseded by the deterministic ProactiveOutbound bridge
+        (``apps/router/proactive_context.py``). Seed prompts stopped emitting it
+        in ``config_generator._build_cron_message``. This asserts the emission
+        stays gone — including the formerly-foreground jobs that used to carry
+        it — so a re-introduction can't slip back in unnoticed.
         """
         from .config_generator import build_cron_seed_jobs
 
         self.tenant.heartbeat_enabled = True
         jobs = build_cron_seed_jobs(self.tenant)
-        foreground_names = {
+        # Includes the jobs that were foreground under the old two-phase model.
+        formerly_foreground = {
             "Morning Briefing",
             "Evening Check-in",
             "Personal Question",
@@ -296,29 +299,26 @@ class ConfigGeneratorTest(TestCase):
             "Week Ahead Review",
             "Heartbeat Check-in",
         }
+        seen_formerly_foreground = set()
         for job in jobs:
-            if job["name"] in foreground_names:
-                msg = job["payload"]["message"]
-                self.assertIn(
-                    "FINAL STEP — conditional sync",
-                    msg,
-                    f"{job['name']} should carry the Phase 2 sync block",
-                )
-                self.assertIn(
-                    "nbhd_cron_phase2_summary",
-                    msg,
-                    f"{job['name']} should reference the phase 2 summary tool",
-                )
-                self.assertIn(
-                    f'"{job["name"]}"',
-                    msg,
-                    f"{job['name']} should appear as the literal job_name parameter",
-                )
-                self.assertIn(
-                    "Did you send the user a message",
-                    msg,
-                    f"{job['name']} should carry the conditional guard",
-                )
+            msg = job["payload"]["message"]
+            self.assertNotIn(
+                "FINAL STEP — conditional sync",
+                msg,
+                f"{job['name']} must NOT carry the retired Phase 2 sync block",
+            )
+            self.assertNotIn(
+                "nbhd_cron_phase2_summary",
+                msg,
+                f"{job['name']} must NOT reference the retired phase 2 summary tool",
+            )
+            if job["name"] in formerly_foreground:
+                seen_formerly_foreground.add(job["name"])
+        # Sanity: we actually exercised the jobs that used to emit the block.
+        self.assertTrue(
+            seen_formerly_foreground,
+            "expected at least one formerly-foreground seed job to be present",
+        )
 
     def test_phase2_sync_block_disambiguates_tool_from_message(self):
         """The Phase 2 sync block must explicitly tell the agent that this is a
@@ -350,17 +350,18 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("_sync:Background Tasks", msg)
         self.assertNotIn("FINAL STEP — conditional sync", msg)
 
-    def test_heartbeat_is_foreground_with_conditional_sync(self):
-        """Heartbeat is foreground=true so it can sync on hours that nudged the user."""
+    def test_heartbeat_prompt_intact_without_phase2_sync(self):
+        """Heartbeat keeps its own prompt (HEARTBEAT_OK path) but no longer
+        appends the retired Phase 2 sync block."""
         from .config_generator import build_cron_seed_jobs
 
         self.tenant.heartbeat_enabled = True
         jobs = build_cron_seed_jobs(self.tenant)
         hb = next((j for j in jobs if j["name"] == "Heartbeat Check-in"), None)
         self.assertIsNotNone(hb)
-        self.assertIn("nbhd_cron_phase2_summary", hb["payload"]["message"])
-        self.assertIn('"Heartbeat Check-in"', hb["payload"]["message"])
         self.assertIn("HEARTBEAT_OK", hb["payload"]["message"])
+        self.assertNotIn("nbhd_cron_phase2_summary", hb["payload"]["message"])
+        self.assertNotIn("FINAL STEP — conditional sync", hb["payload"]["message"])
 
     # ── Config validator integration ────────────────────────────────
 

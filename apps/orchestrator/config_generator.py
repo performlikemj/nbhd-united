@@ -161,8 +161,22 @@ def _build_cron_message(
     full saga and the audit step to run on the next OpenClaw bump.
     """
     base = _prepare_cron_prompt(prompt, tenant)
-    full = base + _phase2_sync_block(job_name) if foreground else base
-    return full.strip()
+    # Phase 2 sync prompt retired 2026-07-11 (refactor/retire-phase2-sync-prompt).
+    # Seed cron prompts no longer append ``_phase2_sync_block`` / instruct the
+    # agent to call ``nbhd_cron_phase2_summary``. That LLM-mediated cross-session
+    # bridge (fired only if the model remembered the tool, injecting a summary
+    # into session "main") is superseded by the deterministic ProactiveOutbound
+    # bridge in ``apps/router/proactive_context.py``, which surfaces cron-fired
+    # outbounds on the user's next inbound reply across every channel. No live
+    # inbound conversation runs in session "main" anyway (iOS=thread:<id>,
+    # Telegram poller=chat_id, LINE=line_user_id, heartbeat=isolatedSession).
+    #
+    # ``foreground`` stays on the signature (callers still pass it, and the
+    # user-console foreground toggle in ``apps/cron/tenant_views`` still appends
+    # the block via ``_phase2_sync_block``) so this is a one-line revert.
+    # ``RuntimeCronPhase2SummaryView`` stays live for hibernated tenants that
+    # wake on stale configs whose prompts still call the tool.
+    return base.strip()
 
 
 # When ``experimental_typed_journal_lifecycle`` is True on the tenant, these
