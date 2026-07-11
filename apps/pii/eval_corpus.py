@@ -846,6 +846,30 @@ CASES: list[EvalCase] = [
         hits=(("FULLNAME", "田中", 0.85),),
     ),
     _c(
+        "jp_lone_single_kanji_surname_dropped_leaks",
+        "森さんが来ました",
+        tags=("standard", "jp"),
+        known_gap="KNOWN-GAP (pre-existing, unchanged from base — NOT introduced by "
+        "the #1150/#1152 JP work): a LONE complete 1-kanji surname hit leaks "
+        "entirely. hygiene.is_junk_span drops any span shorter than 2 chars as "
+        "'too_short', so a standalone '森' (a common surname; cf. 林/東/辻/関) is "
+        "filtered before it can mint and passes through in cleartext. The "
+        "no-fragment-left-behind guard added for particle-split fusion only helps "
+        "when a merge PARTNER exists, so it does not cover a solitary 1-kanji hit. "
+        "Arguably more frequent than jp_truncated_katakana_name_remainder_leaks. "
+        "Deliberately NOT fixed: lowering the 1-char junk floor for CJK would let "
+        "stray single-kanji hits through and worsen the junk-laundering "
+        "over-redaction pinned in jp_complete_hit_over_swallows_adjacent_kanji "
+        "(a stray '木' hit already inflates to 木曜日). FLIPS WHEN: the too_short "
+        "floor gains a CJK-surname exemption — mirroring redactor._is_degenerate_"
+        "span's CJK carve-out, but paired with a guard against laundering stray "
+        "1-kanji hits — this case feeds a real lone FULLNAME '森' hit, so the fix "
+        "is observed directly (verified: a simulated lone-CJK is_junk_span "
+        "exemption makes '森' redact, flipping this pin red).",
+        redacted=("森",),
+        hits=(("FULLNAME", "森", 0.9),),
+    ),
+    _c(
         "jp_truncated_kanji_hit_recovers_full_name_no_surname_leak",
         "田中太郎さんによろしくお伝えください",
         tags=("standard", "jp"),
