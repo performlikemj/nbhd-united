@@ -165,6 +165,17 @@ TASK_MAP = {
     # (never CronJob registration fields — those don't prove a fire). RAISES on a
     # non-delivery so it DLQ's + alerts the owner instead of a silent green.
     "eval_journey_cron": "apps.evals.tasks.eval_journey_cron_task",
+    # Eval Wave B Probe 4 — hibernation-wake journey canary (the historically
+    # fragile path). Force-hibernates the synthetic journey tenant (confirmed via
+    # Azure ground truth — 0 active revisions, not the drifting DB flag), then
+    # drives one real message and asserts the FULL wake chain: waking_at was set
+    # (NOT the warm path) AND the turn reached 'ready' within SLO — not merely that
+    # a timestamp got stamped. Operator-fired via a no-body QStash publish to
+    # /api/cron/trigger/eval_journey_wake/ (zero-arg); RAISES on a non-pass run so a
+    # broken wake DLQs + emails the owner. budget_exhausted is a soft pass; a
+    # could-not-hibernate precondition is a hard FAIL. Inert until PR-B6 schedules
+    # it (staggered off the chat probe). See apps/evals/suites/journey_wake.py.
+    "eval_journey_wake": "apps.evals.tasks.eval_journey_wake_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.

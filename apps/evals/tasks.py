@@ -118,6 +118,29 @@ def eval_journey_cron_task() -> dict:
     # Operator-fired today (no schedule exists yet); Wave B6 flips this to
     # SCHEDULED when a real QStash cron drives it.
     run = run_cron_fire_suite(trigger=EvalRun.Trigger.MANUAL)
+def eval_journey_wake_task() -> dict:
+    """Fire the ``journey_wake`` suite — Probe 4, the hibernation-wake canary.
+
+    Zero-arg by contract (the QStash publish path can't carry a body), registered
+    in apps/cron/views.py TASK_MAP, fired by a no-body publish to
+    ``/api/cron/trigger/eval_journey_wake/``. Force-hibernates the synthetic
+    journey tenant (confirmed via Azure ground truth), then drives one real
+    message and asserts the FULL wake chain: waking_at was set (not the warm path)
+    AND the turn reached ``ready`` within SLO — see apps/evals/suites/journey_wake.py
+    for why each gate is load-bearing.
+
+    RAISES when the run does not close ``pass`` (owner alerted first, then DLQ) —
+    the same contract as ``eval_smoke_task``. A ``budget_exhausted`` observation is
+    a SOFT pass (the designed cap), so it does NOT raise; a failure to
+    ground-truth-hibernate IS a hard FAIL (INVARIANT #3 — never a silent skip).
+    Safe to re-fire anytime; each fire is its own run.
+    """
+    from apps.evals.models import EvalRun
+    from apps.evals.suites.journey_wake import run_wake_suite
+
+    # Operator-fired today (no schedule until PR-B6); flips to SCHEDULED when a
+    # real QStash cron drives it (staggered off the :00/:30 chat-probe boundary).
+    run = run_wake_suite(trigger=EvalRun.Trigger.MANUAL)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
