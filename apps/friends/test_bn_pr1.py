@@ -325,26 +325,39 @@ class SkyAddGateTest(TestCase):
         self.assertEqual(resp.status_code, 403)
 
 
-# ── RLS: the relock lands the new table enabled, with no policy (BN-PR1) ──────
+# ── RLS: the sky table lands enabled + FORCED with the backstop policies ──────
 
 
 class SkyRlsRelockTest(TestCase):
-    """BN-PR1's relock (tenants.0106_relock_after_sky) must land
+    """BN-PR1's relock (tenants.0106_relock_after_sky) lands
     ``friend_sky_memberships`` RLS-ENABLED (the anon Supabase Data API sees
-    nothing) with NO policy — the FORCE-RLS + GUC SELECT policy is the BN-PR6
-    defense-in-depth follow-up, not this PR."""
+    nothing); BN-PR6 (friends.0011_sky_rls_backstop) then FORCES it and attaches
+    the four named app_user policies. Post-BN-PR6 state asserted here; the
+    binding behavior is proven in test_pr8.SkyRlsBackstopBindsTest."""
 
-    def test_sky_table_rls_enabled_with_no_policy(self):
+    def test_sky_table_rls_forced_with_backstop_policies(self):
         with connection.cursor() as cur:
             cur.execute(
-                "SELECT rowsecurity FROM pg_tables WHERE schemaname='public' AND tablename=%s",
+                """
+                SELECT c.relrowsecurity, c.relforcerowsecurity
+                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public' AND c.relname = %s
+                """,
                 ["friend_sky_memberships"],
             )
             row = cur.fetchone()
             self.assertIsNotNone(row, "friend_sky_memberships table is missing")
-            self.assertTrue(row[0], "friend_sky_memberships must have RLS enabled after the relock migration")
+            self.assertTrue(row[0], "friend_sky_memberships must have RLS enabled")
+            self.assertTrue(row[1], "friend_sky_memberships must have RLS FORCED (BN-PR6 backstop)")
             cur.execute(
-                "SELECT policyname FROM pg_policies WHERE schemaname='public' AND tablename=%s",
+                "SELECT policyname, roles FROM pg_policies WHERE schemaname='public' AND tablename=%s",
                 ["friend_sky_memberships"],
             )
-            self.assertEqual(cur.fetchall(), [], "BN-PR1 adds NO policy on the sky table (FORCE-RLS is BN-PR6)")
+            rows = cur.fetchall()
+            self.assertEqual(
+                {name for name, _ in rows},
+                {f"friends_friend_sky_memberships_{cmd}" for cmd in ("sel", "ins", "upd", "del")},
+                "BN-PR6 attaches exactly the four named backstop policies",
+            )
+            for name, roles in rows:
+                self.assertNotIn("public", roles or [], f"{name} must never target the `public` pseudo-role")

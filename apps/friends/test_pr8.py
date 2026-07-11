@@ -9,9 +9,13 @@ Locally (and in CI) Django connects as a superuser, which BYPASSES RLS, so the
 policies are inert on the normal connection. To exercise the bound regime we
 ``SET ROLE app_user`` (the NOLOGIN role the migration ensures exists), mirror the
 prod runtime posture (``disable_rls`` leaves every friends table RLS-off EXCEPT
-the three exempt ones), grant the role read access, and query raw SQL — the most
-bypassing query possible. Everything runs inside the TestCase transaction, so the
-GRANT / SET ROLE / RLS toggles roll back automatically.
+the exempt backstop tables), grant the role read access, and query raw SQL — the
+most bypassing query possible. Everything runs inside the TestCase transaction,
+so the GRANT / SET ROLE / RLS toggles roll back automatically.
+
+BN-PR6 extends the same proof to the "My sky" table (``friend_sky_memberships``,
+friends.0011): strictly self-scoped, so even the OTHER PARTY of the same
+friendship edge sees zero rows.
 """
 
 from __future__ import annotations
@@ -43,6 +47,7 @@ _READABLE_BY_APP_USER = (
     "shared_lessons",
     "lesson_share_grants",
     "friend_messages",
+    "friend_sky_memberships",
     *_RLS_OFF_IN_PROD,
 )
 
@@ -61,7 +66,32 @@ def _ready_shared_lesson(owner):
     return sl
 
 
-class RlsBackstopBindsTest(TestCase):
+class _AppUserRoleMixin:
+    """Run queries as the bound ``app_user`` role, mirroring prod's RLS posture
+    and GUC. Shared by the PR8 and BN-PR6 (sky) binding tests."""
+
+    @contextlib.contextmanager
+    def _app_user(self, *, tenant_id=None, service_role=False):
+        """Restores role + GUC on exit."""
+        cur = connection.cursor()
+        try:
+            # Flush the setUp inserts' deferred FK trigger events so ALTER TABLE
+            # (RLS toggle) isn't rejected with "pending trigger events".
+            cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
+            for table in _RLS_OFF_IN_PROD:
+                cur.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
+            cur.execute("GRANT USAGE ON SCHEMA public TO app_user")
+            cur.execute(f"GRANT SELECT ON {', '.join(_READABLE_BY_APP_USER)} TO app_user")
+            cur.execute("SELECT set_config('app.tenant_id', %s, false)", [str(tenant_id) if tenant_id else ""])
+            cur.execute("SELECT set_config('app.service_role', %s, false)", ["true" if service_role else ""])
+            cur.execute("SET ROLE app_user")
+            yield cur
+        finally:
+            cur.execute("RESET ROLE")
+            cur.execute("SELECT set_config('app.tenant_id', '', false), set_config('app.service_role', '', false)")
+
+
+class RlsBackstopBindsTest(_AppUserRoleMixin, TestCase):
     """Prove the FORCE-RLS policies bind for a non-BYPASSRLS role."""
 
     def setUp(self):
@@ -80,27 +110,6 @@ class RlsBackstopBindsTest(TestCase):
         FriendThreadMembership.objects.create(thread=self.thread, tenant=self.owner, user=self.owner.user)
         FriendThreadMembership.objects.create(thread=self.thread, tenant=self.friend, user=self.friend.user)
         self.msg, _ = access.create_friend_message(self.thread, self.owner, self.owner.user, "m1", "hi")
-
-    @contextlib.contextmanager
-    def _app_user(self, *, tenant_id=None, service_role=False):
-        """Run queries as the bound ``app_user`` role, mirroring prod's RLS
-        posture and GUC. Restores role + GUC on exit."""
-        cur = connection.cursor()
-        try:
-            # Flush the setUp inserts' deferred FK trigger events so ALTER TABLE
-            # (RLS toggle) isn't rejected with "pending trigger events".
-            cur.execute("SET CONSTRAINTS ALL IMMEDIATE")
-            for table in _RLS_OFF_IN_PROD:
-                cur.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
-            cur.execute("GRANT USAGE ON SCHEMA public TO app_user")
-            cur.execute(f"GRANT SELECT ON {', '.join(_READABLE_BY_APP_USER)} TO app_user")
-            cur.execute("SELECT set_config('app.tenant_id', %s, false)", [str(tenant_id) if tenant_id else ""])
-            cur.execute("SELECT set_config('app.service_role', %s, false)", ["true" if service_role else ""])
-            cur.execute("SET ROLE app_user")
-            yield cur
-        finally:
-            cur.execute("RESET ROLE")
-            cur.execute("SELECT set_config('app.tenant_id', '', false), set_config('app.service_role', '', false)")
 
     def _visible_lessons(self, cur):
         cur.execute("SELECT id FROM shared_lessons")
@@ -146,6 +155,49 @@ class RlsBackstopBindsTest(TestCase):
         access.revoke_grant(self.grant)
         with self._app_user(tenant_id=self.friend.id) as cur:
             self.assertEqual(self._visible_lessons(cur), set())
+
+
+class SkyRlsBackstopBindsTest(_AppUserRoleMixin, TestCase):
+    """BN-PR6 payoff: the sky backstop (friends.0011) is STRICTLY self-scoped.
+
+    Both parties keep the very same friendship edge in their private skies; the
+    binding assertion is that each viewer's GUC sees ONLY their own row — the
+    other party of the edge is as blind as a stranger ("whom you keep close is
+    yours alone", and now the DB enforces it even past the accessor)."""
+
+    def setUp(self):
+        self.owner = _tenant("sky_owner")
+        self.friend = _tenant("sky_friend")
+        self.stranger = _tenant("sky_stranger")
+        self.edge = Friendship.objects.create(
+            requester=self.owner, addressee=self.friend, status=Friendship.Status.ACCEPTED
+        )
+        created, _ = access.add_to_sky(self.owner, self.edge)
+        assert created
+        created, _ = access.add_to_sky(self.friend, self.edge)
+        assert created
+
+    def _visible_sky_viewers(self, cur):
+        cur.execute("SELECT viewer_tenant_id FROM friend_sky_memberships")
+        return {str(r[0]) for r in cur.fetchall()}
+
+    def test_no_guc_yields_zero_rows_even_raw(self):
+        with self._app_user() as cur:
+            self.assertEqual(self._visible_sky_viewers(cur), set())
+
+    def test_stranger_guc_yields_zero_rows(self):
+        with self._app_user(tenant_id=self.stranger.id) as cur:
+            self.assertEqual(self._visible_sky_viewers(cur), set())
+
+    def test_each_viewer_sees_only_their_own_rows_not_the_other_partys(self):
+        with self._app_user(tenant_id=self.owner.id) as cur:
+            self.assertEqual(self._visible_sky_viewers(cur), {str(self.owner.id)})
+        with self._app_user(tenant_id=self.friend.id) as cur:
+            self.assertEqual(self._visible_sky_viewers(cur), {str(self.friend.id)})
+
+    def test_service_role_sees_all_rows_without_tenant_guc(self):
+        with self._app_user(service_role=True) as cur:
+            self.assertEqual(self._visible_sky_viewers(cur), {str(self.owner.id), str(self.friend.id)})
 
 
 class BackstopServiceContextTest(TestCase):
@@ -207,10 +259,13 @@ class DisableRlsExemptionTest(TestCase):
                   AND rowsecurity = true
                 ORDER BY tablename
                 """,
-                [["shared_lessons", "lesson_share_grants", "friend_messages"]],
+                [["shared_lessons", "lesson_share_grants", "friend_messages", "friend_sky_memberships"]],
             )
             still_enabled = {r[0] for r in cur.fetchall()}
-        self.assertEqual(still_enabled, {"shared_lessons", "lesson_share_grants", "friend_messages"})
+        self.assertEqual(
+            still_enabled,
+            {"shared_lessons", "lesson_share_grants", "friend_messages", "friend_sky_memberships"},
+        )
 
 
 class RateLimitWiringTest(TestCase):
