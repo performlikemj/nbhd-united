@@ -196,6 +196,23 @@ TASK_MAP = {
     # closes 'error' → owner email + DLQ — the correct loud signal.
     # Fire-verification follows provisioning.
     "eval_behavior": "apps.evals.tasks.eval_behavior_task",
+    # Eval Suite 4 — nightly production-SLO snapshot (metadata only). Computes
+    # reply/wake latency percentiles, error-status rate, proactive-delivery volume
+    # (ALL ProactiveOutbound producers, not cron health — see the suite's named
+    # deferrals), stranded/error EvalRun count, and journey-canary budget-cap
+    # saturation over the last 24h (synthetic excluded; no content read) and records
+    # one EvalResult per metric. A threshold BREACH closes the run 'fail' → owner
+    # alert + DLQ (that IS the breach-flag mechanism). Operator-fired via a no-body
+    # QStash publish to /api/cron/trigger/slo_snapshot/ (zero-arg). Lands INERT — no
+    # schedule yet. See apps/evals/suites/slo_snapshot.py.
+    "slo_snapshot": "apps.evals.tasks.slo_snapshot_task",
+    # Eval Suite 4 — Monday weekly SLO digest. Reads the trailing 7 days of
+    # slo_snapshot runs/results and emails the platform owner a one-page plain-text
+    # trend (per-metric min/max/latest vs threshold + breach days) via the gated
+    # send_slo_digest (PLATFORM_OWNER_EMAIL; fail-silently-logged). A READOUT, not an
+    # alarm: it sends even when all-green and NEVER raises/DLQs. Operator-fired via a
+    # no-body publish to /api/cron/trigger/weekly_slo_digest/ (zero-arg). Lands INERT.
+    "weekly_slo_digest": "apps.evals.tasks.weekly_slo_digest_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.

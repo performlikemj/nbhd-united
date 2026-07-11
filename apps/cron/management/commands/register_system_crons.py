@@ -170,6 +170,46 @@ SYSTEM_CRONS = [
     # delete — run `manage.py reap_orphaned_containers --apply` after lifting
     # the lock. Offset from the other crons. See apps/orchestrator/orphan_reaper.py.
     ("reap-orphaned-containers", "20 8 * * *", "/api/cron/trigger/reap_orphaned_containers/"),
+    # --- Eval Wave B journey probes (see docs/evals-wave-b-plan.md §PR-B6). ---
+    # Each probe drives a REAL path against the synthetic eval-journey tenant and
+    # RAISES on a non-pass run so a broken pipeline DLQs + emails the owner
+    # (finalize_task_run / eval_smoke contract). Registration is idempotent by
+    # destination URL via sync_system_crons, so a re-run never double-schedules.
+    #
+    # The optional 4th tuple element is Upstash-Retries, set to 0 on EVERY eval
+    # entry. finalize_task_run already alerts the owner + DLQs on the FIRST failing
+    # run, so QStash's default of 3 retries buys no extra signal — it only re-runs
+    # the whole probe (re-force-hibernating the tenant into a sibling probe's
+    # window; up to 4x the owner emails on a persistent chat outage). 0 = fail once,
+    # alert once. (A 3-tuple entry omits the header and keeps QStash's default 3.)
+    #
+    # Cadence + stagger rationale:
+    #   - chat runs every 30 min (fires at :00 and :30 each hour).
+    #   - journal/wake/cron run once daily at 05:xx UTC on minutes deliberately
+    #     OFF the :00/:30 boundary so no daily probe ever lands on a chat fire.
+    #     The wake probe FORCE-HIBERNATES the tenant, so its 05:12 window is kept
+    #     clear of both chat fires (:00/:30) to avoid the Probe-1↔Probe-4 race
+    #     (a chat fire waking the tenant mid-hibernation-test). The wall-clock
+    #     windows are asserted pairwise-disjoint in test_system_cron_registry.py.
+    #   - the reaper runs HOURLY at :50 — off the :00/:30 chat fires AND clear of
+    #     the 05:05–05:24 daily-probe block. Hourly, not daily: a run stranded by a
+    #     SIGKILL is surfaced to the owner ONLY by the reaper, and
+    #     STUCK_RUN_TIMEOUT_MINUTES=30 keeps the morning wake/cron strandings
+    #     younger than the cutoff at any single 05:xx sweep — so a daily 05:35
+    #     reaper would leave them invisible for ~24h. At :50, a stranded row is
+    #     reaped within ~2h worst-case. It only flips runs stuck >30min, so it never
+    #     touches a live probe run.
+    # Every 30 min — chat round-trip journey canary.
+    ("eval-journey-chat", "*/30 * * * *", "/api/cron/trigger/eval_journey_chat/", 0),
+    # Daily at 05:05 UTC — journal write→FTS-search journey canary.
+    ("eval-journey-journal", "5 5 * * *", "/api/cron/trigger/eval_journey_journal/", 0),
+    # Daily at 05:12 UTC — hibernation-wake journey canary (force-hibernates the
+    # tenant; kept off the :00/:30 chat fires — see stagger note above).
+    ("eval-journey-wake", "12 5 * * *", "/api/cron/trigger/eval_journey_wake/", 0),
+    # Daily at 05:20 UTC — cron-fire delivery journey canary.
+    ("eval-journey-cron", "20 5 * * *", "/api/cron/trigger/eval_journey_cron/", 0),
+    # Hourly at :50 UTC — crash-recovery reaper for orphaned EvalRun rows (see above).
+    ("reap-stuck-eval-runs", "50 * * * *", "/api/cron/trigger/reap_stuck_eval_runs/", 0),
 ]
 
 # Destinations for crons that have been RETIRED. The register loop above only
@@ -182,6 +222,39 @@ SYSTEM_CRONS = [
 RETIRED_CRON_PATHS = [
     "/api/cron/trigger/pii_arbiter/",
 ]
+
+
+def iter_system_crons():
+    """Yield ``(name, cron_expr, path, retries)`` for every ``SYSTEM_CRONS`` entry.
+
+    Entries are ``(name, cron_expr, path)`` or, optionally,
+    ``(name, cron_expr, path, retries)`` — a 4th ``retries`` int drives an
+    ``Upstash-Retries`` header on the QStash schedule. ``retries is None`` (the
+    3-tuple form) means "omit the header", so QStash keeps its default of 3. This
+    normalizer lets every consumer unpack a uniform 4-tuple regardless of form,
+    so a 4-tuple entry never raises "too many values to unpack".
+    """
+    for entry in SYSTEM_CRONS:
+        name, cron_expr, path = entry[0], entry[1], entry[2]
+        retries = entry[3] if len(entry) > 3 else None
+        yield name, cron_expr, path, retries
+
+
+def schedule_retries(existing_sched: dict):
+    """The retries an existing QStash schedule reports, as an ``int`` (or ``None``).
+
+    QStash's schedule-list payload carries ``retries`` as a number; coerce it and
+    treat a missing/garbage value as ``None`` so the changed-schedule comparison
+    stays defensive. ``None`` never equals a concrete desired ``retries`` (0), so a
+    schedule created before retries were pinned is recreated once to apply the cap.
+    """
+    raw = existing_sched.get("retries")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 class Command(BaseCommand):
@@ -230,13 +303,20 @@ class Command(BaseCommand):
         updated = 0
         skipped = 0
 
-        for name, cron_expr, path in SYSTEM_CRONS:
+        for name, cron_expr, path, retries in iter_system_crons():
             destination = f"{base_url}{path}"
+            create_headers = {**headers, "Upstash-Cron": cron_expr}
+            if retries is not None:
+                create_headers["Upstash-Retries"] = str(retries)
 
             if destination in existing:
                 existing_sched = existing[destination]
                 existing_cron = existing_sched.get("cron", "")
-                if existing_cron == cron_expr:
+                # Same cron AND (retries unpinned OR already at the pinned value) →
+                # nothing to do. A pinned retries that differs from the live
+                # schedule counts as a change (delete+recreate), same as a cron edit.
+                retries_ok = retries is None or schedule_retries(existing_sched) == retries
+                if existing_cron == cron_expr and retries_ok:
                     self.stdout.write(f"  skip (unchanged): {name} → {cron_expr}")
                     skipped += 1
                     continue
@@ -264,7 +344,7 @@ class Command(BaseCommand):
 
                 create_resp = httpx.post(
                     f"https://qstash.upstash.io/v2/schedules/{destination}",
-                    headers={**headers, "Upstash-Cron": cron_expr},
+                    headers=create_headers,
                 )
                 if create_resp.status_code in (200, 201):
                     self.stdout.write(self.style.SUCCESS(f"  updated: {name} — {existing_cron} → {cron_expr}"))
@@ -280,7 +360,7 @@ class Command(BaseCommand):
 
             create_resp = httpx.post(
                 f"https://qstash.upstash.io/v2/schedules/{destination}",
-                headers={**headers, "Upstash-Cron": cron_expr},
+                headers=create_headers,
             )
             if create_resp.status_code in (200, 201):
                 self.stdout.write(self.style.SUCCESS(f"  registered: {name} → {cron_expr}"))

@@ -83,9 +83,8 @@ def eval_journey_chat_task() -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.journey_chat import run_chat_roundtrip_suite
 
-    # Operator-fired today (no schedule until PR-B6); flips to SCHEDULED when a
-    # real QStash cron drives it.
-    run = run_chat_roundtrip_suite(trigger=EvalRun.Trigger.MANUAL)
+    # Fired by the eval-journey-chat QStash cron (PR-B6, */30) — a scheduled run.
+    run = run_chat_roundtrip_suite(trigger=EvalRun.Trigger.SCHEDULED)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
@@ -119,8 +118,8 @@ def eval_journey_journal_task(transport=None) -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.journey_journal import run_journal_search_suite
 
-    # Operator-fired today (no schedule yet); PR-B6 flips this to SCHEDULED.
-    run = run_journal_search_suite(transport=transport, trigger=EvalRun.Trigger.MANUAL)
+    # Fired by the eval-journey-journal QStash cron (PR-B6, daily 05:05) — scheduled.
+    run = run_journal_search_suite(transport=transport, trigger=EvalRun.Trigger.SCHEDULED)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
@@ -150,9 +149,8 @@ def eval_journey_cron_task() -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.journey_cron import run_cron_fire_suite
 
-    # Operator-fired today (no schedule exists yet); Wave B6 flips this to
-    # SCHEDULED when a real QStash cron drives it.
-    run = run_cron_fire_suite(trigger=EvalRun.Trigger.MANUAL)
+    # Fired by the eval-journey-cron QStash cron (PR-B6, daily 05:20) — a scheduled run.
+    run = run_cron_fire_suite(trigger=EvalRun.Trigger.SCHEDULED)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
@@ -185,9 +183,9 @@ def eval_journey_wake_task() -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.journey_wake import run_wake_suite
 
-    # Operator-fired today (no schedule until PR-B6); flips to SCHEDULED when a
-    # real QStash cron drives it (staggered off the :00/:30 chat-probe boundary).
-    run = run_wake_suite(trigger=EvalRun.Trigger.MANUAL)
+    # Fired by the eval-journey-wake QStash cron (PR-B6, daily 05:12, staggered off
+    # the :00/:30 chat-probe boundary) — a scheduled run.
+    run = run_wake_suite(trigger=EvalRun.Trigger.SCHEDULED)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
@@ -329,3 +327,67 @@ def reap_stuck_eval_runs_task() -> dict:
             logger.exception("eval reaper: failure alert errored for reaped run %s", run.id)
 
     return {"reaped": len(reaped_ids), "run_ids": reaped_ids}
+
+
+def slo_snapshot_task() -> dict:
+    """Fire the ``slo_snapshot`` suite — the nightly production-SLO readout (Suite 4).
+
+    Zero-arg by contract (the QStash publish path can't carry a body), registered
+    in apps/cron/views.py TASK_MAP, operator-fired via a no-body publish to
+    ``/api/cron/trigger/slo_snapshot/``. Computes metadata-only SLO metrics over
+    the last 24h (reply/wake latency percentiles, error-status rate,
+    proactive-delivery volume — ALL ProactiveOutbound producers, not cron health;
+    see the suite's named deferrals — stranded/error EvalRun count, and
+    journey-canary budget-cap saturation; synthetic tenants excluded, no message
+    content read) and records one EvalResult per metric through the chassis.
+
+    A threshold breach → the run closes ``fail`` → ``finalize_task_run`` alerts the
+    owner + RAISES into the DLQ — that IS the "breach flagged" mechanism (there is
+    no separate alarm path). A compute crash closes the run ``error`` inside
+    ``record_run`` and re-raises, so a snapshot that could not run FAILS loudly.
+    Inert until a schedule is added (like the Wave B probes pre-B6); safe to
+    re-fire anytime — each fire is its own run. See apps/evals/suites/slo_snapshot.py.
+    """
+    from apps.evals.models import EvalRun
+    from apps.evals.suites.slo_snapshot import run_slo_snapshot_suite
+
+    # Operator-fired today (no schedule exists yet — lands INERT); a later PR flips
+    # this to SCHEDULED when a real nightly QStash cron drives it.
+    run = run_slo_snapshot_suite(trigger=EvalRun.Trigger.MANUAL)
+
+    # Shared contract: a breached (non-pass) run → alert owner + raise into the DLQ.
+    finalize_task_run(run)
+
+    return {
+        "run_id": run.id,
+        "suite": run.suite,
+        "status": run.status,
+        "cases": run.results.count(),
+    }
+
+
+def weekly_slo_digest_task() -> dict:
+    """Email the platform owner the trailing-7-day SLO digest (Suite 4, Monday).
+
+    Zero-arg by contract, registered in apps/cron/views.py TASK_MAP, operator-fired
+    via a no-body publish to ``/api/cron/trigger/weekly_slo_digest/``. Reads the
+    week's ``slo_snapshot`` EvalRun/EvalResult rows, renders a one-page plain-text
+    trend (per-metric min/max/latest vs threshold + breach days), and sends it via
+    the gated ``send_slo_digest`` (PLATFORM_OWNER_EMAIL; fail-silently-logged).
+
+    Unlike the probe tasks this NEVER raises and does NOT call ``finalize_task_run``:
+    the digest is a weekly readout, not an alarm — breaches were already alerted at
+    snapshot time — so it sends even when every day was green, and a missing owner
+    email is a logged skip, not a DLQ. Inert until scheduled. See
+    apps/evals/suites/slo_snapshot.py::build_weekly_digest.
+    """
+    from apps.evals.alerting import send_slo_digest
+    from apps.evals.suites.slo_snapshot import build_weekly_digest
+
+    subject, body = build_weekly_digest()
+    sent = send_slo_digest(subject, body)
+    logger.info(
+        "slo digest: weekly readout %s",
+        "sent" if sent else "skipped (owner email unset or send failed)",
+    )
+    return {"sent": bool(sent)}
