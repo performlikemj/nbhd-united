@@ -55,7 +55,7 @@ def _share(owner, edge, *, redacted="someone batch-cooks on sundays"):
     """Publish one scrubbed, ready, active-granted snapshot from ``owner`` on
     ``edge`` (so the neighbor's gate has spark_count > 0)."""
     lesson = Lesson.objects.create(tenant=owner, text="raw " + redacted, source_type="experience", status="approved")
-    sl = access.ensure_shared_lesson(lesson, owner)
+    sl, _ = access.ensure_shared_lesson(lesson, owner)
     access.save_scrub_ready(sl, redacted_text=redacted, content_hash="h")
     access.create_grant(sl, edge, granted_by=owner.user)
     return sl

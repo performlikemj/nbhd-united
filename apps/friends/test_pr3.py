@@ -65,7 +65,7 @@ def _share(
         cluster_label=cluster_label,
         tags=tags,
     )
-    sl = access.ensure_shared_lesson(lesson, owner)
+    sl, _ = access.ensure_shared_lesson(lesson, owner)
     access.save_scrub_ready(
         sl,
         redacted_text=redacted,
@@ -134,7 +134,7 @@ class FriendGalaxyTest(TestCase):
 
     def test_failed_scrub_never_visible(self):
         _lesson2 = Lesson.objects.create(tenant=self.owner, text="raw", source_type="experience", status="approved")
-        sl2 = access.ensure_shared_lesson(_lesson2, self.owner)
+        sl2, _ = access.ensure_shared_lesson(_lesson2, self.owner)
         access.save_scrub_failed(sl2, "ner unavailable")
         access.create_grant(sl2, self.edge, granted_by=self.owner.user)
         payload = services.friend_galaxy(self.viewer, self.edge.id)
@@ -355,7 +355,7 @@ class RefreshSharedPositionsTest(TestCase):
         _l2 = Lesson.objects.create(
             tenant=self.owner, text="raw", source_type="experience", status="approved", position_x=0.0, position_y=0.0
         )
-        sl2 = access.ensure_shared_lesson(_l2, self.owner)
+        sl2, _ = access.ensure_shared_lesson(_l2, self.owner)
         access.save_scrub_failed(sl2, "blocked")
         _l2.position_x = 0.5
         _l2.save()
