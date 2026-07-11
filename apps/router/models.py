@@ -576,7 +576,9 @@ class ChatThread(models.Model):
         ]
 
     def __str__(self) -> str:
-        label = "main" if self.is_main else (self.title or str(self.id))
+        # Non-content label only — never render self.title, which becomes
+        # ciphertext / a RedactedStr once encryption-at-rest is on (Phase 2).
+        label = "main" if self.is_main else str(self.id)
         return f"ChatThread({label}, tenant={self.tenant_id})"
 
 

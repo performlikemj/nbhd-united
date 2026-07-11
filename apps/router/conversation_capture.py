@@ -234,6 +234,7 @@ def _collect_turns(tenant, *, since):
     Each item: ``{"dt": datetime, "date": local date, "user": str, "reply": str}``.
     """
     from apps.common.tenant_tz import tenant_tz
+    from apps.router import enc_columns, enc_read
     from apps.router.models import AppChatMessage, ConversationTurn
 
     tz = tenant_tz(tenant)
@@ -244,14 +245,30 @@ def _collect_turns(tenant, *, since):
     ):
         turns.append({"dt": t.created_at, "date": t.local_date, "user": t.user_text, "reply": t.reply_text})
 
-    for m in AppChatMessage.objects.filter(tenant=tenant, created_at__gte=since).only(
-        "created_at", "user_text", "reply_text"
-    ):
+    # user_text_enc MUST be in .only() (plan risk #7): decrypting a deferred
+    # field would trigger a per-row reload. build_since_page needs no such change
+    # (it deliberately avoids .only()).
+    app_msgs = list(
+        AppChatMessage.objects.filter(tenant=tenant, created_at__gte=since).only(
+            "created_at", "user_text", "user_text_enc", "reply_text"
+        )
+    )
+    # System-facing builder (feeds the USER.md digest AND the on-device
+    # ChatContextView): decrypt user_text as SYSTEM — SILENT — even when an
+    # owner_request is ambient, because this is a shared builder, not the owner
+    # reading their own transcript (plan §2). One bulk read = one silent audit.
+    app_user_texts = enc_read.read_values_bulk(
+        tenant,
+        enc_columns.APP_CHAT_MESSAGE_USER_TEXT,
+        [(m.user_text_enc, m.user_text) for m in app_msgs],
+        principal="system",
+    )
+    for m, ut in zip(app_msgs, app_user_texts):
         turns.append(
             {
                 "dt": m.created_at,
                 "date": m.created_at.astimezone(tz).date(),
-                "user": m.user_text,
+                "user": ut.reveal(),
                 "reply": m.reply_text,
             }
         )
