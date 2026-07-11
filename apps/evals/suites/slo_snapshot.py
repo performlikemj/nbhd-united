@@ -47,6 +47,15 @@ missed) — each needs infra Django cannot reach from a task:
   * **CryptoError count** — a ``box.py`` decrypt/tamper exception surfaces as a
     Sentry event / stdout log line, not a counted DB row; it belongs to the same
     Log-Analytics follow-up.
+  * **cron success RATE** — ``ProactiveOutbound`` only records deliveries that
+    HAPPENED, and it records every proactive producer (cron fires, meditation-ready,
+    nightly_extraction), so the DB holds neither a cron-only numerator nor an
+    attempted-fires denominator. Filtering by ``job_name`` doesn't help — the
+    non-cron writers set one too. A true success rate needs the fire-attempt log
+    (Log Analytics), so it rides the same follow-up batch. Until then the
+    journey-cron canary (Probe 3) is the real cron-health signal; the
+    ``proactive_delivery_count_24h`` metric below is honest about being a raw
+    proactive-delivery volume, not cron health.
 These land in the admin-console trends page follow-up, not here.
 """
 
@@ -87,7 +96,15 @@ M_REPLY_P50 = "reply_latency_p50_ms"
 M_REPLY_P95 = "reply_latency_p95_ms"
 M_WAKE_P95 = "wake_latency_p95_ms"
 M_ERROR_RATE = "error_message_rate"
-M_CRON_DELIVERIES = "cron_delivery_count_24h"
+# Named for what the table actually holds: EVERY record_proactive_outbound
+# producer writes ProactiveOutbound rows — real cron fires
+# (apps/router/cron_delivery.py), the meditation-ready push
+# (apps/core/services.py), AND nightly_extraction (apps/journal/extraction.py,
+# ~one row per active tenant per night) — so this is proactive-delivery VOLUME,
+# not a cron-health signal: a dead cron pipeline would hide behind extraction
+# rows forever. The true cron success rate is a NAMED deferral (module
+# docstring); do not "fix" this by filtering job_name — non-cron writers set it.
+M_PROACTIVE_DELIVERIES = "proactive_delivery_count_24h"
 M_EVAL_RUN_ERRORS = "eval_run_error_count"
 M_JOURNEY_BUDGET_CAPPED = "journey_budget_capped_ratio"
 
@@ -97,7 +114,7 @@ METRIC_IDS = (
     M_REPLY_P95,
     M_WAKE_P95,
     M_ERROR_RATE,
-    M_CRON_DELIVERIES,
+    M_PROACTIVE_DELIVERIES,
     M_EVAL_RUN_ERRORS,
     M_JOURNEY_BUDGET_CAPPED,
 )
@@ -114,9 +131,11 @@ DEFAULT_SLO_THRESHOLDS: dict[str, float] = {
     # At most 5% of finished real turns may terminate ``error``.
     M_ERROR_RATE: 0.05,
     # A FLOOR (deliveries must be >= this). Default 0 = informational: it trends
-    # in the digest without alarming on a legitimately quiet cron day. Raise it to
-    # turn a silent-cron-writer day into a breach.
-    M_CRON_DELIVERIES: 0,
+    # in the digest without alarming on a legitimately quiet day. NOTE: because
+    # nightly_extraction writes a row per active tenant, raising this floor
+    # catches "every proactive writer is dead", not a dead cron pipeline
+    # specifically — see the cron-success-rate deferral in the module docstring.
+    M_PROACTIVE_DELIVERIES: 0,
     # Any stranded/error EvalRun in the window is a finding.
     M_EVAL_RUN_ERRORS: 0,
     # Fraction of a flagship canary's runs that were budget-capped soft passes.
@@ -130,20 +149,25 @@ _CEILING_METRICS = frozenset(
     {M_REPLY_P50, M_REPLY_P95, M_WAKE_P95, M_ERROR_RATE, M_EVAL_RUN_ERRORS, M_JOURNEY_BUDGET_CAPPED}
 )
 # Metrics whose threshold is a FLOOR: breach when measured value < threshold.
-_FLOOR_METRICS = frozenset({M_CRON_DELIVERIES})
+_FLOOR_METRICS = frozenset({M_PROACTIVE_DELIVERIES})
 
 
 def thresholds() -> dict[str, float]:
     """Effective thresholds: code defaults overlaid by ``settings.EVAL_SLO_THRESHOLDS``.
 
     Only keys already in the defaults are honored from settings, so a typo'd env
-    key can never introduce a phantom metric — it is ignored, not recorded.
+    key can never introduce a phantom metric — it is dropped (with a warning log
+    line naming the key, so the misconfiguration is visible), not recorded.
     """
     override = getattr(settings, "EVAL_SLO_THRESHOLDS", None) or {}
     merged = dict(DEFAULT_SLO_THRESHOLDS)
     for key, value in override.items():
         if key in DEFAULT_SLO_THRESHOLDS:
             merged[key] = value
+        else:
+            # A typo'd override silently reverting to the default is exactly the
+            # kind of quiet misconfiguration this suite exists to surface.
+            logger.warning("slo thresholds: unknown key %r in EVAL_SLO_THRESHOLDS ignored", key)
     return merged
 
 
@@ -252,13 +276,19 @@ def compute_error_rate(now) -> dict | None:
     return {"rate": errors / total, "errors": errors, "total": total}
 
 
-def compute_cron_deliveries(now) -> int:
+def compute_proactive_deliveries(now) -> int:
     """Count of real-tenant ``ProactiveOutbound`` rows written in the window.
 
-    A cron that actually fired writes exactly one row per delivery (CronDeliveryView),
-    so this counts deliveries, not registrations. Always a real number (0 is a
-    genuine measured count, floor-checked — not an empty-window skip). Synthetic
-    excluded so the journey-cron probe's own deliveries never inflate it.
+    This is TOTAL proactive-delivery volume, NOT cron health: every
+    ``record_proactive_outbound`` producer writes here — real cron fires
+    (apps/router/cron_delivery.py), the meditation-ready push
+    (apps/core/services.py), and nightly_extraction (apps/journal/extraction.py,
+    ~one row per active tenant per night) — so a dead cron pipeline stays hidden
+    behind extraction rows. The honest cron-health signals are the journey-cron
+    canary (Probe 3) and the deferred Log-Analytics cron success rate (module
+    docstring). Always a real number (0 is a genuine measured count,
+    floor-checked — not an empty-window skip). Synthetic excluded so the
+    journey-cron probe's own deliveries never inflate it.
     """
     since, until = _window(now)
     return ProactiveOutbound.objects.filter(
@@ -448,9 +478,9 @@ def run_slo_snapshot_suite(*, trigger: str = EvalRun.Trigger.MANUAL, now=None) -
                 {"errors": err["errors"], "total": err["total"]},
             )
 
-        # --- cron delivery count (always a real count; floor-checked) ---
-        deliveries = compute_cron_deliveries(now)
-        _record_measured(run, M_CRON_DELIVERIES, deliveries, thr[M_CRON_DELIVERIES], {"count": deliveries})
+        # --- proactive delivery volume (always a real count; floor-checked) ---
+        deliveries = compute_proactive_deliveries(now)
+        _record_measured(run, M_PROACTIVE_DELIVERIES, deliveries, thr[M_PROACTIVE_DELIVERIES], {"count": deliveries})
 
         # --- stranded/error EvalRun count (always a real count; 0 is healthy) ---
         run_errors = compute_eval_run_errors(now)
@@ -494,9 +524,12 @@ def _metric_series(now):
 
     Returns ``(snapshot_count, run_status_counts, {case_id: {...}})``. For each
     metric: the latest value (or ``None`` if the latest snapshot skipped it),
-    min/max over the week's measured (non-skipped) values, and ``breach_days`` =
-    how many snapshots recorded it ``passed=False``. Runs are ordered by
-    ``started_at`` ASC (auto_now_add, never NULL — no NULLS-FIRST-on-DESC hazard).
+    min/max over the week's measured (non-skipped) values, ``measured_days`` =
+    how many snapshots actually MEASURED it (vs skipping on an empty window — an
+    all-week skip must read 0/7, not hide behind one 'skip' in the latest
+    column), and ``breach_days`` = how many snapshots recorded it
+    ``passed=False``. Runs are ordered by ``started_at`` ASC (auto_now_add,
+    never NULL — no NULLS-FIRST-on-DESC hazard).
     """
     since = now - timedelta(days=DIGEST_WINDOW_DAYS)
     runs = list(
@@ -511,7 +544,8 @@ def _metric_series(now):
         status_counts[r.status] = status_counts.get(r.status, 0) + 1
 
     series = {
-        cid: {"latest": None, "latest_skipped": None, "min": None, "max": None, "breach_days": 0} for cid in METRIC_IDS
+        cid: {"latest": None, "latest_skipped": None, "min": None, "max": None, "measured_days": 0, "breach_days": 0}
+        for cid in METRIC_IDS
     }
     if runs:
         results = EvalResult.objects.filter(run__in=runs).values("case_id", "passed", "score", "run_id", "details")
@@ -524,6 +558,7 @@ def _metric_series(now):
         for cid, rows in by_metric.items():
             rows.sort(key=lambda x: order.get(x["run_id"], 0))
             measured = [r for r in rows if r["score"] is not None and not r["details"].get("skipped")]
+            series[cid]["measured_days"] = len(measured)
             values = [float(r["score"]) for r in measured]
             if values:
                 series[cid]["min"] = min(values)
@@ -576,7 +611,7 @@ def build_weekly_digest(now=None) -> tuple[str, str]:
         ]
         return "[SLO digest] no snapshots in 7 days — nightly job not firing?", "\n".join(lines)
 
-    header = f"{'metric':<26}{'thresh':>10}{'latest':>10}{'min':>10}{'max':>10}{'breach':>8}"
+    header = f"{'metric':<28}{'thresh':>10}{'latest':>10}{'min':>10}{'max':>10}{'meas':>8}{'breach':>8}"
     lines.append(header)
     lines.append("-" * len(header))
     total_breach_days = 0
@@ -589,8 +624,13 @@ def build_weekly_digest(now=None) -> tuple[str, str]:
             latest_col = "skip"
         else:
             latest_col = _fmt(s["latest"])
+        # measured-days out of snapshots: an all-week empty window reads 0/N here,
+        # not just one 'skip' in the latest column (digest honesty — a metric that
+        # was never measurable all week is its own finding).
+        meas_col = f"{s['measured_days']}/{snapshot_count}"
         lines.append(
-            f"{cid:<26}{thresh_col:>10}{latest_col:>10}{_fmt(s['min']):>10}{_fmt(s['max']):>10}{s['breach_days']:>8}"
+            f"{cid:<28}{thresh_col:>10}{latest_col:>10}{_fmt(s['min']):>10}{_fmt(s['max']):>10}"
+            f"{meas_col:>8}{s['breach_days']:>8}"
         )
 
     lines += [
@@ -598,6 +638,7 @@ def build_weekly_digest(now=None) -> tuple[str, str]:
         "",
         f"Total breach-metric-days in the last 7: {total_breach_days}.",
         "'skip' = no qualifying data in that day's window (surfaced, not a pass-as-zero).",
+        "'meas' = snapshots that actually measured the metric; 0/N means it was never measurable all week.",
         "Thresholds are settings.EVAL_SLO_THRESHOLDS (code defaults otherwise); latencies in ms.",
         "Detail: EvalRun/EvalResult rows for suite 'slo_snapshot'. Metadata only — no message content.",
     ]

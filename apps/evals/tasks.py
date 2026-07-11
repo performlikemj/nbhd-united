@@ -276,8 +276,10 @@ def slo_snapshot_task() -> dict:
     Zero-arg by contract (the QStash publish path can't carry a body), registered
     in apps/cron/views.py TASK_MAP, operator-fired via a no-body publish to
     ``/api/cron/trigger/slo_snapshot/``. Computes metadata-only SLO metrics over
-    the last 24h (reply/wake latency percentiles, error-status rate, cron delivery
-    count, stranded/error EvalRun count — synthetic tenants excluded, no message
+    the last 24h (reply/wake latency percentiles, error-status rate,
+    proactive-delivery volume — ALL ProactiveOutbound producers, not cron health;
+    see the suite's named deferrals — stranded/error EvalRun count, and
+    journey-canary budget-cap saturation; synthetic tenants excluded, no message
     content read) and records one EvalResult per metric through the chassis.
 
     A threshold breach → the run closes ``fail`` → ``finalize_task_run`` alerts the

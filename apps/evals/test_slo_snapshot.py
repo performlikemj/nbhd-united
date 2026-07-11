@@ -2,12 +2,18 @@
 
 Covers the load-bearing properties (docs/evals-directive.md §Suite 4):
   * percentile math (type-7 interpolation);
-  * synthetic-tenant exclusion — a synthetic tenant's slow turn must NOT move p95;
-  * a threshold breach closes the run FAIL (the breach-flag mechanism);
+  * synthetic-tenant exclusion — a synthetic tenant's slow turn must NOT move p95
+    (and the SAME exclusion independently on the error-rate query);
+  * a threshold breach closes the run FAIL (the breach-flag mechanism), in BOTH
+    directions (ceiling and floor);
   * an empty window is skipped-with-reason, never a passing zero;
   * the journey-canary budget-cap saturation tripwire (a fully-capped canary that
-    still soft-passes must NOT read healthy);
-  * the weekly digest renders and gates on the owner email being set.
+    still soft-passes must NOT read healthy; per-probe denominators — one probe's
+    healthy runs must not dilute another's saturation) plus the rename-blindness
+    guard pinning the tripwire's markers to the journey suites' own constants;
+  * threshold overrides via settings (honored for known keys, warned for unknown);
+  * the weekly digest renders (incl. the measured-days honesty column) and gates
+    on the owner email being set.
 
 All fixtures are metadata: timestamps, statuses, counts. No message body is ever
 read by the code under test.
@@ -24,14 +30,18 @@ from django.utils import timezone
 
 from apps.evals.models import EvalResult, EvalRun
 from apps.evals.suites.slo_snapshot import (
-    M_CRON_DELIVERIES,
+    _BUDGET_EXHAUSTED_MARKER,
+    DEFAULT_SLO_THRESHOLDS,
+    JOURNEY_PROBE_SUITES,
     M_ERROR_RATE,
     M_EVAL_RUN_ERRORS,
     M_JOURNEY_BUDGET_CAPPED,
+    M_PROACTIVE_DELIVERIES,
     M_REPLY_P50,
     M_REPLY_P95,
     M_WAKE_P95,
     build_weekly_digest,
+    compute_error_rate,
     compute_reply_latency,
     percentile,
     run_slo_snapshot_suite,
@@ -52,6 +62,17 @@ def _make_tenant(*, synthetic: bool = False) -> Tenant:
         container_fqdn="oc-slo.example.com",
         is_synthetic=synthetic,
     )
+
+
+def _proactive_row(tenant, *, created_at) -> ProactiveOutbound:
+    row = ProactiveOutbound.objects.create(
+        tenant=tenant,
+        channel=ProactiveOutbound.Channel.APP,
+        channel_user_id="u1",
+        message_text="[PERSON_1] ping",
+    )
+    ProactiveOutbound.objects.filter(pk=row.pk).update(created_at=created_at)
+    return row
 
 
 class _ChatFixtureMixin:
@@ -92,6 +113,29 @@ class _ChatFixtureMixin:
         )
         AppChatMessage.objects.filter(pk=m.pk).update(created_at=created)
         return m
+
+
+class RenameBlindnessGuardTest(TestCase):
+    """Pin the budget-cap tripwire's markers to the journey suites' OWN constants.
+
+    ``compute_journey_budget_capped`` matches ``EvalRun.suite`` strings and the
+    ``details.outcome`` marker by value. If a journey suite renamed its SUITE or
+    its BUDGET_EXHAUSTED code, the tripwire would silently match nothing — every
+    ratio 0.0, every test still green. These equality assertions make that rename
+    break THIS test instead.
+    """
+
+    def test_budget_marker_matches_both_journey_suites(self):
+        from apps.evals.suites.journey_chat import ChatOutcome
+        from apps.evals.suites.journey_wake import WakeOutcome
+
+        self.assertEqual(_BUDGET_EXHAUSTED_MARKER, ChatOutcome.BUDGET_EXHAUSTED)
+        self.assertEqual(_BUDGET_EXHAUSTED_MARKER, WakeOutcome.BUDGET_EXHAUSTED)
+
+    def test_probe_suite_names_match_journey_suite_constants(self):
+        from apps.evals.suites import journey_chat, journey_wake
+
+        self.assertEqual(JOURNEY_PROBE_SUITES, (journey_chat.SUITE, journey_wake.SUITE))
 
 
 class PercentileMathTest(TestCase):
@@ -162,6 +206,66 @@ class WakeLatencyTest(_ChatFixtureMixin, TestCase):
         self.assertAlmostEqual(result["p95"], 5000.0, delta=1.0)
 
 
+class ErrorRateTest(_ChatFixtureMixin, TestCase):
+    def test_rate_math_pending_excluded_synthetic_excluded(self):
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        synth = _make_tenant(synthetic=True)
+        created = now - timedelta(hours=1)
+
+        # 3 ready + 1 error REAL finished turns → rate 1/4 = 0.25.
+        for _ in range(3):
+            self._msg(real, created=created, replied=created + timedelta(seconds=1))
+        self._msg(
+            real,
+            created=created,
+            replied=created + timedelta(seconds=1),
+            status=AppChatMessage.Status.ERROR,
+            error="empty_response",
+        )
+        # A still-pending real turn must NOT enter the denominator (it is not a
+        # failure yet — counting it would dilute the rate).
+        self._msg(real, created=created, status=AppChatMessage.Status.PENDING)
+        # 5 SYNTHETIC error turns that would swing the rate to 6/9 if THIS query
+        # lost its own tenant__is_synthetic=False filter — pinned independently of
+        # the latency queries' exclusion.
+        for _ in range(5):
+            self._msg(
+                synth,
+                created=created,
+                replied=created + timedelta(seconds=1),
+                status=AppChatMessage.Status.ERROR,
+                error="empty_response",
+            )
+
+        result = compute_error_rate(now)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["total"], 4)  # 3 ready + 1 error; pending + synthetic out
+        self.assertEqual(result["errors"], 1)
+        self.assertAlmostEqual(result["rate"], 0.25)
+
+    def test_error_rate_breach_flags_metric_through_suite(self):
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        created = now - timedelta(hours=1)
+        # 1 error of 2 finished turns → 0.5, far over the 0.05 default ceiling.
+        self._msg(real, created=created, replied=created + timedelta(seconds=1))
+        self._msg(
+            real,
+            created=created,
+            replied=created + timedelta(seconds=1),
+            status=AppChatMessage.Status.ERROR,
+            error="empty_response",
+        )
+
+        run = run_slo_snapshot_suite(now=now)
+        metric = run.results.get(case_id=M_ERROR_RATE)
+        self.assertAlmostEqual(float(metric.score), 0.5)
+        self.assertFalse(metric.passed)
+        run.refresh_from_db()
+        self.assertEqual(run.status, EvalRun.Status.FAIL)
+
+
 class BreachClosesRunFailTest(_ChatFixtureMixin, TestCase):
     def test_p95_breach_closes_run_fail_and_flags_metric(self):
         now = timezone.now()
@@ -204,35 +308,67 @@ class EmptyWindowSkippedNotGreenTest(TestCase):
             self.assertTrue(r.passed, f"{cid} skip is not, by itself, a breach")
 
         # Count metrics still produce a real 0 (a genuine measurement, floor-checked).
-        cron = run.results.get(case_id=M_CRON_DELIVERIES)
-        self.assertEqual(float(cron.score), 0.0)
-        self.assertFalse(cron.details.get("skipped"))
-        self.assertTrue(cron.passed)
+        deliveries = run.results.get(case_id=M_PROACTIVE_DELIVERIES)
+        self.assertEqual(float(deliveries.score), 0.0)
+        self.assertFalse(deliveries.details.get("skipped"))
+        self.assertTrue(deliveries.passed)
 
         # With only count-metrics measured (all healthy) and the rest skipped, the
         # run is a pass — an empty window is not, on its own, a failure.
         self.assertEqual(run.status, EvalRun.Status.PASS)
 
 
-class CronDeliverySyntheticExclusionTest(TestCase):
+class ProactiveDeliverySyntheticExclusionTest(TestCase):
     def test_only_real_tenant_deliveries_counted(self):
         now = timezone.now()
         real = _make_tenant(synthetic=False)
         synth = _make_tenant(synthetic=True)
         for t, n in ((real, 3), (synth, 5)):
             for _ in range(n):
-                row = ProactiveOutbound.objects.create(
-                    tenant=t,
-                    channel=ProactiveOutbound.Channel.APP,
-                    channel_user_id="u1",
-                    message_text="[PERSON_1] ping",
-                )
-                ProactiveOutbound.objects.filter(pk=row.pk).update(created_at=now - timedelta(hours=1))
+                _proactive_row(t, created_at=now - timedelta(hours=1))
 
         run = run_slo_snapshot_suite(now=now)
-        cron = run.results.get(case_id=M_CRON_DELIVERIES)
+        deliveries = run.results.get(case_id=M_PROACTIVE_DELIVERIES)
         # 3 real deliveries; the 5 synthetic ones excluded.
-        self.assertEqual(float(cron.score), 3.0)
+        self.assertEqual(float(deliveries.score), 3.0)
+
+
+class ThresholdOverrideTest(TestCase):
+    @override_settings(EVAL_SLO_THRESHOLDS={M_REPLY_P95: 30000})
+    def test_known_key_override_honored_others_default(self):
+        thr = thresholds()
+        self.assertEqual(thr[M_REPLY_P95], 30000)
+        # Untouched keys keep their code defaults.
+        self.assertEqual(thr[M_REPLY_P50], DEFAULT_SLO_THRESHOLDS[M_REPLY_P50])
+
+    @override_settings(EVAL_SLO_THRESHOLDS={"reply_latency_p95_msec": 1})
+    def test_unknown_key_is_warned_and_dropped(self):
+        with self.assertLogs("apps.evals.suites.slo_snapshot", level="WARNING") as log:
+            thr = thresholds()
+        # The typo'd key never becomes a phantom metric, and the default survives.
+        self.assertNotIn("reply_latency_p95_msec", thr)
+        self.assertEqual(thr[M_REPLY_P95], DEFAULT_SLO_THRESHOLDS[M_REPLY_P95])
+        self.assertTrue(any("reply_latency_p95_msec" in m for m in log.output))
+
+    @override_settings(EVAL_SLO_THRESHOLDS={M_PROACTIVE_DELIVERIES: 5})
+    def test_floor_direction_breaches_below_floor(self):
+        """3 deliveries under a floor of 5 MUST breach — pins the floor branch.
+
+        With the shipped floor of 0 and a 0 count, an inverted floor comparison
+        (``>`` instead of ``<``) would still pass every other test; this is the
+        only case that distinguishes the directions.
+        """
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        for _ in range(3):
+            _proactive_row(real, created_at=now - timedelta(hours=1))
+
+        run = run_slo_snapshot_suite(now=now)
+        metric = run.results.get(case_id=M_PROACTIVE_DELIVERIES)
+        self.assertEqual(float(metric.score), 3.0)
+        self.assertFalse(metric.passed)  # 3 < floor 5 → breach
+        run.refresh_from_db()
+        self.assertEqual(run.status, EvalRun.Status.FAIL)
 
 
 class EvalRunErrorMetricTest(TestCase):
@@ -271,7 +407,7 @@ class JourneyBudgetCappedMetricTest(TestCase):
                 case_id=f"{suite}_budget_capped",
                 kind=EvalResult.Kind.JOURNEY,
                 passed=True,
-                details={"outcome": "budget_exhausted"},
+                details={"outcome": _BUDGET_EXHAUSTED_MARKER},
             )
         else:
             EvalResult.objects.create(
@@ -309,6 +445,31 @@ class JourneyBudgetCappedMetricTest(TestCase):
         self.assertFalse(metric.passed)
         self.assertEqual(metric.details.get("worst_probe"), "journey_wake")
 
+    def test_one_capped_probe_not_diluted_by_other_probes_health(self):
+        """Anti-dilution: per-probe denominators, never a pooled one.
+
+        3 healthy journey_chat runs + 1 budget-capped journey_wake run. A pooled
+        denominator would read 1/4 = 0.25 and pass; the correct per-probe view is
+        wake at 1/1 = 1.0 — a fully-capped wake canary — which MUST breach.
+        """
+        now = timezone.now()
+        self._journey_run("journey_chat", capped=False, now=now)
+        self._journey_run("journey_chat", capped=False, now=now)
+        self._journey_run("journey_chat", capped=False, now=now)
+        self._journey_run("journey_wake", capped=True, now=now)
+
+        run = run_slo_snapshot_suite(now=now)
+        metric = run.results.get(case_id=M_JOURNEY_BUDGET_CAPPED)
+        self.assertEqual(float(metric.score), 1.0)
+        self.assertFalse(metric.passed)
+        self.assertEqual(metric.details.get("worst_probe"), "journey_wake")
+        self.assertEqual(metric.details.get("wake_soft"), 1)
+        self.assertEqual(metric.details.get("wake_total"), 1)
+        self.assertEqual(metric.details.get("chat_soft"), 0)
+        self.assertEqual(metric.details.get("chat_total"), 3)
+        run.refresh_from_db()
+        self.assertEqual(run.status, EvalRun.Status.FAIL)
+
     def test_minority_capped_passes(self):
         now = timezone.now()
         # 1 of 3 capped → 0.333, below the 0.5 majority threshold → healthy.
@@ -326,8 +487,9 @@ class WeeklyDigestTest(TestCase):
     def _snapshot(self, now):
         return run_slo_snapshot_suite(now=now)
 
-    def test_digest_renders_metric_table(self):
+    def test_digest_renders_metric_table_with_measured_days(self):
         # Two snapshots this week (their started_at is auto_now_add ≈ real now).
+        # Neither has chat traffic, so latency metrics skip in BOTH.
         self._snapshot(timezone.now() - timedelta(days=2))
         self._snapshot(timezone.now())
         # Capture the digest window's `now` AFTER creating them so their started_at
@@ -338,8 +500,24 @@ class WeeklyDigestTest(TestCase):
         self.assertIn("SLO", subject)
         self.assertIn("weekly digest", body)
         # Every metric row is present.
-        for cid in (M_REPLY_P50, M_REPLY_P95, M_WAKE_P95, M_ERROR_RATE, M_CRON_DELIVERIES, M_EVAL_RUN_ERRORS):
+        for cid in (
+            M_REPLY_P50,
+            M_REPLY_P95,
+            M_WAKE_P95,
+            M_ERROR_RATE,
+            M_PROACTIVE_DELIVERIES,
+            M_EVAL_RUN_ERRORS,
+        ):
             self.assertIn(cid, body)
+        # Measured-days honesty column: a metric skipped ALL week reads 0/2 on its
+        # row — not hidden behind a single 'skip' in the latest column — while an
+        # always-measured count metric reads 2/2.
+        self.assertIn("meas", body)
+        lines = body.splitlines()
+        wake_line = next(ln for ln in lines if ln.startswith(M_WAKE_P95))
+        self.assertIn("0/2", wake_line)
+        deliveries_line = next(ln for ln in lines if ln.startswith(M_PROACTIVE_DELIVERIES))
+        self.assertIn("2/2", deliveries_line)
 
     def test_digest_with_no_snapshots_is_itself_a_finding(self):
         now = timezone.now()

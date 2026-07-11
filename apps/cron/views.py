@@ -185,9 +185,10 @@ TASK_MAP = {
     # touches still-stuck rows).
     "reap_stuck_eval_runs": "apps.evals.tasks.reap_stuck_eval_runs_task",
     # Eval Suite 4 — nightly production-SLO snapshot (metadata only). Computes
-    # reply/wake latency percentiles, error-status rate, cron delivery count,
-    # stranded/error EvalRun count, and journey-canary budget-cap saturation over
-    # the last 24h (synthetic tenants excluded; no message content read) and records
+    # reply/wake latency percentiles, error-status rate, proactive-delivery volume
+    # (ALL ProactiveOutbound producers, not cron health — see the suite's named
+    # deferrals), stranded/error EvalRun count, and journey-canary budget-cap
+    # saturation over the last 24h (synthetic excluded; no content read) and records
     # one EvalResult per metric. A threshold BREACH closes the run 'fail' → owner
     # alert + DLQ (that IS the breach-flag mechanism). Operator-fired via a no-body
     # QStash publish to /api/cron/trigger/slo_snapshot/ (zero-arg). Lands INERT — no
