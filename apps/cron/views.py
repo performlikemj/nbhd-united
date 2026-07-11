@@ -142,6 +142,15 @@ TASK_MAP = {
     # 'pass' so a failing eval lands in the DLQ instead of a silent green. Safe to
     # re-fire anytime — each fire is its own run.
     "eval_smoke": "apps.evals.tasks.eval_smoke_task",
+    # Eval Wave B Probe 1 — chat round-trip journey canary. Drives one real turn
+    # (message → drain → the synthetic journey tenant's container → reply) and
+    # asserts the round trip actually completed (status==ready AND error=="" AND
+    # source==tenant within SLO) — NOT merely that replied_at got stamped, which
+    # happens on failures too. Operator-fired via a no-body QStash publish to
+    # /api/cron/trigger/eval_journey_chat/ (zero-arg); RAISES on a non-pass run so
+    # a broken pipeline DLQs + emails the owner. budget_exhausted is a soft pass.
+    # Inert until PR-B6 schedules it. See apps/evals/suites/journey_chat.py.
+    "eval_journey_chat": "apps.evals.tasks.eval_journey_chat_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.

@@ -52,3 +52,36 @@ def eval_smoke_task() -> dict:
         "status": run.status,
         "cases": run.results.count(),
     }
+
+
+def eval_journey_chat_task() -> dict:
+    """Fire the ``journey_chat`` suite — Probe 1, the chat round-trip canary.
+
+    Zero-arg by contract (the QStash publish path can't carry a body), registered
+    in apps/cron/views.py TASK_MAP, fired by a no-body publish to
+    ``/api/cron/trigger/eval_journey_chat/``. Drives one real turn against the
+    synthetic journey tenant (message → drain → container → reply) and records
+    whether the round trip actually completed within SLO — see
+    apps/evals/suites/journey_chat.py for why ``replied_at`` alone is insufficient.
+
+    RAISES when the run does not close ``pass`` (owner alerted first, then DLQ) —
+    the same contract as ``eval_smoke_task``. A ``budget_exhausted`` observation
+    is a SOFT pass (the designed cap), so it does NOT raise. Safe to re-fire
+    anytime; each fire is its own run with a fresh ``client_msg_id``.
+    """
+    from apps.evals.models import EvalRun
+    from apps.evals.suites.journey_chat import run_chat_roundtrip_suite
+
+    # Operator-fired today (no schedule until PR-B6); flips to SCHEDULED when a
+    # real QStash cron drives it.
+    run = run_chat_roundtrip_suite(trigger=EvalRun.Trigger.MANUAL)
+
+    # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
+    finalize_task_run(run)
+
+    return {
+        "run_id": run.id,
+        "suite": run.suite,
+        "status": run.status,
+        "cases": run.results.count(),
+    }
