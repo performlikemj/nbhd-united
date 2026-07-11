@@ -20,6 +20,7 @@ from apps.evals.models import EvalRun
 from apps.evals.runner import _assert_details_safe
 from apps.evals.suites.journey_chat import (
     CASE_BUDGET_CAPPED,
+    CASE_GLOBAL_CAP,
     CASE_ROUNDTRIP,
     SLO_MS,
     ChatOutcome,
@@ -306,7 +307,9 @@ class RunChatRoundtripSuiteTest(TestCase):
         self.assertEqual(run.status, EvalRun.Status.FAIL)
         self.assertFalse(run.results.get().passed)
 
-    def test_budget_exhausted_is_soft_pass_under_own_case_id(self):
+    def test_personal_budget_cap_is_soft_pass_under_own_case_id(self):
+        # No MonthlyBudget row exists → the global breaker is NOT engaged, so a
+        # budget_exhausted turn is the synthetic tenant's own PERSONAL cap.
         run = self._run_with(_observed(status="error", error="budget_exhausted", source="tenant"))
         # SOFT: run does not FAIL (no owner page), but it is recorded under the
         # budget case id — never as a proven round trip — with no score.
@@ -315,6 +318,35 @@ class RunChatRoundtripSuiteTest(TestCase):
         self.assertEqual(r.case_id, CASE_BUDGET_CAPPED)
         self.assertNotEqual(r.case_id, CASE_ROUNDTRIP)
         self.assertIsNone(r.score)
+
+    def test_global_cap_kill_switch_hard_fails(self):
+        # The operator kill-switch (is_capped) is engaged: budget_exhausted is now
+        # a fleet-wide outage, not a personal cap. Must HARD FAIL + own case id.
+        from datetime import date
+
+        from apps.billing.models import MonthlyBudget
+
+        MonthlyBudget.objects.create(month=date.today().replace(day=1), is_capped=True)
+        run = self._run_with(_observed(status="error", error="budget_exhausted", source="tenant"))
+        self.assertEqual(run.status, EvalRun.Status.FAIL)
+        r = run.results.get()
+        self.assertEqual(r.case_id, CASE_GLOBAL_CAP)
+        self.assertFalse(r.passed)
+        self.assertEqual(r.details["outcome"], ChatOutcome.GLOBAL_CAP)
+
+    def test_global_pool_exhausted_hard_fails(self):
+        # The shared monthly pool is spent out (remaining <= 0) — same fleet-wide
+        # outage, reached via the spend counter rather than the kill-switch.
+        from datetime import date
+
+        from apps.billing.models import MonthlyBudget
+
+        MonthlyBudget.objects.create(
+            month=date.today().replace(day=1), budget_dollars=100, spent_dollars=100, is_capped=False
+        )
+        run = self._run_with(_observed(status="error", error="budget_exhausted", source="tenant"))
+        self.assertEqual(run.status, EvalRun.Status.FAIL)
+        self.assertEqual(run.results.get().case_id, CASE_GLOBAL_CAP)
 
     def test_slo_breach_fails_with_score(self):
         run = self._run_with(_observed(status="ready", source="tenant", error="", round_trip_ms=SLO_MS + 5000))

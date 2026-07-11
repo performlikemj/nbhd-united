@@ -18,10 +18,15 @@ Two green-theater traps this closes (docs/evals-wave-b-plan.md):
     its OWN reply as ``source == on_device``. A fabricated reply is ``ready`` with
     ``error == ""`` and instant — it would sail past every check EXCEPT
     ``source == tenant``. So the source assertion is load-bearing, not cosmetic.
-  * ``budget_exhausted``: a distinct SOFT outcome — the synthetic tenant self-cap
-    (or the global cap) tripping is the DESIGNED safety behavior (fact #3), not a
-    broken pipeline. It is recorded under its own case id so it can never be
-    mistaken for a proven round-trip, and it does NOT page the owner every 30 min.
+  * ``budget_exhausted``: a SOFT outcome ONLY when it is the synthetic tenant's
+    own PERSONAL cap (its $10 self-cap, fact #3 — the designed safety behavior).
+    But ``chat_views.py`` collapses ``check_budget``'s 'personal'/'global' reasons
+    into the SAME "budget_exhausted" string, so a GLOBAL cap (the shared $100
+    MonthlyBudget or the operator ``is_capped`` kill-switch) — under which EVERY
+    tenant is silent, a fleet-wide outage — would otherwise soft-pass green. So on
+    a budget_exhausted turn we RE-DERIVE the global breaker directly and HARD FAIL
+    if it is engaged. A personal cap stays soft (own case id, no page); a global
+    cap is the exact outage a canary must catch.
 
 INVARIANT #1: this suite records status codes, an error CODE (``budget_exhausted``
 is a 64-char machine reason, never content), round-trip ms, and poll counts —
@@ -52,9 +57,12 @@ SUITE = "journey_chat"
 # wrong source, SLO breach, timeout) is recorded under this id, so a dashboard
 # reads "chat round-trip proven / broken" off it directly.
 CASE_ROUNDTRIP = "chat_roundtrip"
-# Soft budget-cap outcome rides a SEPARATE id so it can never be counted as a
-# proven round-trip (it did not run one) — see BUDGET_EXHAUSTED below.
+# Soft PERSONAL budget-cap outcome rides a SEPARATE id so it can never be counted
+# as a proven round-trip (it did not run one) — see BUDGET_EXHAUSTED below.
 CASE_BUDGET_CAPPED = "chat_roundtrip_budget_capped"
+# GLOBAL cap / operator kill-switch: a fleet-wide outage. Its own always-alerting
+# case id so the owner email names the outage, distinct from a broken container.
+CASE_GLOBAL_CAP = "chat_roundtrip_global_cap"
 
 SLO_SECONDS = DEFAULT_SLO_SECONDS
 SLO_MS = int(SLO_SECONDS * 1000)
@@ -70,22 +78,32 @@ class ChatOutcome:
     PASS = "pass"  # ready + tenant + within SLO — the only clean green
     SLO_BREACH = "slo_breach"  # replied correctly but too slow
     WRONG_SOURCE = "wrong_source"  # ready but source != tenant (fabricated/on-device)
-    BUDGET_EXHAUSTED = "budget_exhausted"  # SOFT — designed cap tripped, not a break
+    BUDGET_EXHAUSTED = "budget_exhausted"  # SOFT — the tenant's own PERSONAL cap tripped
+    GLOBAL_CAP = "global_cap"  # HARD — shared/global cap or kill-switch: fleet-wide outage
     PIPELINE_ERROR = "pipeline_error"  # error status (non-budget) or an HTTP failure
     TIMEOUT = "timeout"  # never reached terminal within the deadline (silent)
 
 
-# Hard failures: recorded ``passed=False`` under CASE_ROUNDTRIP → run FAIL → the
-# task-boundary finalizer alerts the owner + DLQs. BUDGET_EXHAUSTED and PASS are
-# NOT here (both close the run 'pass' — see run_chat_roundtrip_suite).
-_HARD_FAILURES = frozenset(
-    {
-        ChatOutcome.SLO_BREACH,
-        ChatOutcome.WRONG_SOURCE,
-        ChatOutcome.PIPELINE_ERROR,
-        ChatOutcome.TIMEOUT,
-    }
-)
+def _global_budget_capped() -> bool:
+    """True iff the SHARED global budget breaker is engaged right now.
+
+    Read DIRECTLY (not via ``check_budget``, which returns 'personal' first and
+    would MASK a concurrent global cap): the operator kill-switch
+    (``MonthlyBudget.is_capped`` — the cap_budget command) OR the shared monthly
+    pool being exhausted (``remaining <= 0``). Either means EVERY tenant is
+    silent, so a budget_exhausted turn is a real fleet-wide outage, not the
+    synthetic tenant's own self-cap. Mirrors the global arm of
+    ``apps/billing/services.check_budget``.
+    """
+    from datetime import date
+
+    from apps.billing.models import MonthlyBudget
+
+    try:
+        gb = MonthlyBudget.objects.get(month=date.today().replace(day=1))
+    except MonthlyBudget.DoesNotExist:
+        return False
+    return bool(gb.is_capped or (gb.remaining is not None and gb.remaining <= 0))
 
 
 def classify_roundtrip(observed: ObservedTurn, *, slo_ms: int = SLO_MS) -> str:
@@ -166,14 +184,20 @@ def run_chat_roundtrip_suite(*, trigger: str = EvalRun.Trigger.MANUAL) -> EvalRu
             poll_interval_seconds=DEFAULT_POLL_INTERVAL_SECONDS,
         )
         outcome = classify_roundtrip(observed, slo_ms=SLO_MS)
+        # RE-DERIVE the collapsed budget reason: a budget_exhausted turn under an
+        # engaged GLOBAL cap is a fleet-wide outage (every tenant silent), not the
+        # synthetic tenant's own self-cap — upgrade it to a hard failure.
+        if outcome == ChatOutcome.BUDGET_EXHAUSTED and _global_budget_capped():
+            outcome = ChatOutcome.GLOBAL_CAP
         details = _details(outcome, observed)
 
         if outcome == ChatOutcome.BUDGET_EXHAUSTED:
-            # SOFT: the designed cap tripped — not a proven round trip, but not a
-            # pipeline break either. Recorded passed=True under its OWN case id
-            # (never CASE_ROUNDTRIP) with NO round-trip score, so it can't be
-            # counted as a real pass and it does not page the owner every 30 min.
-            logger.warning("journey_chat: budget_exhausted — synthetic tenant capped, round trip not exercised")
+            # SOFT: the synthetic tenant's own PERSONAL cap tripped — not a proven
+            # round trip, but not a pipeline break either. Recorded passed=True
+            # under its OWN case id (never CASE_ROUNDTRIP) with NO round-trip
+            # score, so it can't be counted as a real pass and it does not page
+            # the owner every 30 min.
+            logger.warning("journey_chat: budget_exhausted — synthetic tenant personally capped (soft)")
             record(run, CASE_BUDGET_CAPPED, EvalResult.Kind.JOURNEY, passed=True, details=details)
         elif outcome == ChatOutcome.PASS:
             record(
@@ -186,13 +210,17 @@ def run_chat_roundtrip_suite(*, trigger: str = EvalRun.Trigger.MANUAL) -> EvalRu
                 details=details,
             )
         else:
-            # Every hard failure (slo_breach / wrong_source / pipeline_error /
-            # timeout) → passed=False under CASE_ROUNDTRIP → run FAIL → owner
-            # alerted + DLQ. SLO_BREACH keeps its score/threshold for triage.
+            # Every hard failure → passed=False → run FAIL → owner alerted + DLQ.
+            # GLOBAL_CAP gets its own always-alerting case id (a fleet-wide outage,
+            # named in the email); slo_breach / wrong_source / pipeline_error /
+            # timeout ride CASE_ROUNDTRIP. SLO_BREACH keeps its score/threshold.
             is_slo = outcome == ChatOutcome.SLO_BREACH
+            case_id = CASE_GLOBAL_CAP if outcome == ChatOutcome.GLOBAL_CAP else CASE_ROUNDTRIP
+            if outcome == ChatOutcome.GLOBAL_CAP:
+                logger.error("journey_chat: budget_exhausted under a GLOBAL cap — fleet-wide outage, hard-failing")
             record(
                 run,
-                CASE_ROUNDTRIP,
+                case_id,
                 EvalResult.Kind.JOURNEY,
                 passed=False,
                 score=observed.round_trip_ms if is_slo else None,
