@@ -191,6 +191,61 @@ class TelegramPollerDispatchTest(TestCase):
         send_calls = [c for c in http_calls if "sendMessage" in str(c)]
         self.assertTrue(len(send_calls) > 0)
 
+    @patch("apps.router.poller.TelegramPoller._forward_to_container")
+    @patch("apps.router.poller.TelegramPoller._upload_photo_to_workspace")
+    @patch("apps.router.poller.check_budget", return_value="")
+    @patch("apps.router.poller.resolve_tenant_by_chat_id")
+    @patch("apps.router.poller.is_rate_limited", return_value=False)
+    @patch("apps.router.poller.handle_start_command", return_value=None)
+    def test_photo_marker_matches_shared_helper_channel_parity(
+        self, mock_start, mock_rate, mock_resolve, mock_budget, mock_upload, mock_forward
+    ):
+        """Cross-channel parity regression (docs/agents/invariants.md #4): the
+        Telegram poller must build its photo marker via the SAME
+        ``inbound_media.attachment_marker`` helper the iOS ingress uses, not a
+        hand-rolled f-string — otherwise the untrusted-content framing can
+        silently drift between channels."""
+        import secrets
+
+        from django.utils import timezone
+
+        from apps.router.inbound_media import attachment_marker
+        from apps.tenants.models import Tenant, User
+
+        user = User.objects.create_user(
+            username=f"poller_photo_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=444,
+            preferred_channel="telegram",
+            display_name="Test Person",
+            timezone="America/Los_Angeles",
+            language="en",
+            preferences={"onboarding_interests": "anything"},
+        )
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            container_fqdn="oc-test.internal",
+        )
+        tenant.onboarding_complete = True
+        tenant.onboarding_step = 999
+        # Not a new session, so ``_build_session_context`` doesn't prepend
+        # extra markers in front of the photo marker under test.
+        tenant.last_message_at = timezone.now()
+        tenant.save(update_fields=["onboarding_complete", "onboarding_step", "last_message_at"])
+        mock_resolve.return_value = tenant
+
+        container_path = "/home/node/.openclaw/workspace/media/inbound/photo_parity.jpg"
+        mock_upload.return_value = container_path
+
+        update = {"message": {"photo": [{}], "caption": "what is this", "chat": {"id": 444}}}
+        self.poller._handle_update(update)
+
+        mock_forward.assert_called_once()
+        forwarded_text = mock_forward.call_args.args[2]
+        self.assertTrue(forwarded_text.startswith(attachment_marker("photo", container_path)))
+        self.assertIn("UNTRUSTED DATA", forwarded_text)
+
     @patch("apps.router.poller.handle_start_command", return_value=None)
     def test_dispatch_no_chat_id_returns_early(self, mock_start):
         update = {}  # No message, no callback_query

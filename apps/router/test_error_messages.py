@@ -48,6 +48,21 @@ class StripInternalFramingTest(TestCase):
         framed = "[Photo attached: /workspaces/abc/photo.jpg]\nwhat is this?"
         self.assertEqual(strip_internal_framing(framed), "what is this?")
 
+    def test_strips_document_attached_marker(self):
+        framed = "[Document attached: /workspaces/abc/doc.pdf]\nwhat is this?"
+        self.assertEqual(strip_internal_framing(framed), "what is this?")
+
+    def test_strips_hardened_attachment_marker_in_one_match(self):
+        # The untrusted-content marker (apps.router.inbound_media.attachment_marker)
+        # is deliberately a single bracket pair with no nested ``]``, so the
+        # whole thing — including its untrusted-data preamble — must still
+        # peel off in one regex match, not just the bare "[Document attached:
+        # <path>]" prefix.
+        from apps.router.inbound_media import attachment_marker
+
+        framed = f"{attachment_marker('document', '/workspaces/abc/doc.pdf')}what is this?"
+        self.assertEqual(strip_internal_framing(framed), "what is this?")
+
     def test_strips_stacked_markers(self):
         framed = "[Now: 2026-05-27 22:46 JST]\n[chat: user is mid-conversation]\nactual question"
         self.assertEqual(strip_internal_framing(framed), "actual question")

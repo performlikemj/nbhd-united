@@ -37,6 +37,7 @@ from apps.billing.services import check_budget
 from apps.router.inbound_media import (
     MAX_APP_DOCUMENT_BYTES,
     MAX_APP_IMAGE_BYTES,
+    attachment_marker,
     decode_and_validate_document,
     decode_and_validate_image,
     store_inbound_document,
@@ -301,12 +302,14 @@ def enqueue_tenant_turn(
 
     ``image`` / ``document`` (optional, already-decoded+validated bytes; at most
     one per turn) are stored on the tenant share and referenced from the
-    LLM-bound text via a marker — ``[Photo attached: <path>]`` for an image (the
-    same marker the Telegram poller uses; read by the built-in ``image`` tool)
-    or ``[Document attached: <path>]`` for a PDF (read by the built-in ``pdf``
-    tool). The bytes never ride the queue payload. Storing happens AFTER the
-    idempotency + budget gates so a replay or an over-budget turn does no share
-    I/O.
+    LLM-bound text via ``inbound_media.attachment_marker`` — ``[Photo attached:
+    <path> — ...]`` for an image (the same marker the Telegram poller uses;
+    read by the built-in ``image`` tool) or ``[Document attached: <path> —
+    ...]`` for a PDF (read by the built-in ``pdf`` tool). Both markers carry an
+    untrusted-content framing (the attachment is third-party data, never
+    instructions — see ``docs/upload-security-threat-model.md`` AC-1). The
+    bytes never ride the queue payload. Storing happens AFTER the idempotency +
+    budget gates so a replay or an over-budget turn does no share I/O.
 
     Returns ``(turn, created)`` — ``created`` is True only when a fresh PENDING
     turn was enqueued (so the caller can pick 201 vs 200). A budget-exhausted
@@ -374,7 +377,7 @@ def enqueue_tenant_turn(
             container_path, workspace_path = store_inbound_image(str(tenant.id), image, image_ext)
             AppChatMessage.objects.filter(pk=turn.pk).update(attachment_path=workspace_path)
             turn.attachment_path = workspace_path
-            image_marker = f"[Photo attached: {container_path}]\n"
+            image_marker = attachment_marker("photo", container_path)
         except Exception:
             logger.exception(
                 "enqueue_tenant_turn: image store failed for tenant %s — degrading to a text turn",
@@ -382,17 +385,17 @@ def enqueue_tenant_turn(
             )
             image_marker = "[The user attached a photo but it couldn't be processed — ask them to resend it.]\n"
 
-    # Inbound PDF: same pattern as the photo above, but the marker is
-    # [Document attached: <path>] so the agent's built-in ``pdf`` tool reads the
-    # local file. The view enforces at most one attachment per turn, so image
-    # and document never both write attachment_path in the same call.
+    # Inbound PDF: same pattern as the photo above, but the marker is built by
+    # attachment_marker("document", ...) so the agent's built-in ``pdf`` tool
+    # reads the local file. The view enforces at most one attachment per turn,
+    # so image and document never both write attachment_path in the same call.
     document_marker = ""
     if document:
         try:
             container_path, workspace_path = store_inbound_document(str(tenant.id), document, document_ext)
             AppChatMessage.objects.filter(pk=turn.pk).update(attachment_path=workspace_path)
             turn.attachment_path = workspace_path
-            document_marker = f"[Document attached: {container_path}]\n"
+            document_marker = attachment_marker("document", container_path)
         except Exception:
             logger.exception(
                 "enqueue_tenant_turn: document store failed for tenant %s — degrading to a text turn",

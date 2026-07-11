@@ -1018,8 +1018,13 @@ class TelegramPoller:
 
         # Forward to container via /v1/chat/completions
         if image_path:
-            # Tell agent where the image is so it can use the image tool
-            message_text = f"[Photo attached: {image_path}]\n{message_text}"
+            # Tell agent where the image is so it can use the image tool.
+            # Shared helper (not a hand-rolled f-string) keeps the marker text
+            # — including its untrusted-content framing — byte-identical to
+            # the iOS ingress; see apps/router/inbound_media.py.
+            from apps.router.inbound_media import attachment_marker
+
+            message_text = f"{attachment_marker('photo', image_path)}{message_text}"
         elif had_photo:
             # The photo couldn't be downloaded/uploaded (e.g. >5MB cap in
             # ``_download_photo``). Tell the agent so it can tell the user
