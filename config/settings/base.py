@@ -590,6 +590,16 @@ WELCOME_VIDEO_URL = env("WELCOME_VIDEO_URL", default="")
 # also exposed here so app code can read it via settings rather than os.environ.
 PLATFORM_OWNER_EMAIL = env("PLATFORM_OWNER_EMAIL", default="")
 
+# Eval system journey canaries (Wave B, docs/evals-wave-b-plan.md). The probes
+# target SYNTHETIC tenants by id (never a hardcoded UUID) — provisioning them is
+# a separate ops step. Both names are plumbed now; only eval-journey is
+# provisioned in Wave B (eval-behavior is deferred to Wave D). Empty default so
+# resolve_journey_tenant() can raise a loud config error when a probe runs
+# unconfigured (INVARIANT #3 — no silent skip).
+EVAL_JOURNEY_TENANT_ID = env("EVAL_JOURNEY_TENANT_ID", default="")
+EVAL_BEHAVIOR_TENANT_ID = env("EVAL_BEHAVIOR_TENANT_ID", default="")
+EVAL_JOURNEY_PAT = env("EVAL_JOURNEY_PAT", default="")
+
 # Password reset link TTL — 7 days (Django default is 3). Picked so a
 # user who receives a campaign-driven reset email and opens it on a
 # Wednesday isn't locked out by the weekend. Applies to every reset

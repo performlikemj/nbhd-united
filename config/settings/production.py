@@ -115,6 +115,15 @@ DEFAULT_FROM_EMAIL = env(
     default="NBHD United <noreply@neighborhoodunited.org>",
 )
 
+# Eval journey canaries (Wave B) — mirror of the base.py names so the deploy's
+# Azure Container App env vars are documented here. EVAL_JOURNEY_TENANT_ID +
+# EVAL_JOURNEY_PAT must be set for the journey probes; EVAL_BEHAVIOR_TENANT_ID is
+# plumbed now but only used from Wave D. The probes target the synthetic tenant
+# by id — never a hardcoded UUID.
+EVAL_JOURNEY_TENANT_ID = env("EVAL_JOURNEY_TENANT_ID", default="")
+EVAL_BEHAVIOR_TENANT_ID = env("EVAL_BEHAVIOR_TENANT_ID", default="")
+EVAL_JOURNEY_PAT = env("EVAL_JOURNEY_PAT", default="")
+
 # CORS — production uses the explicit allowlist from CORS_ALLOWED_ORIGINS in base.py.
 # Do NOT set CORS_ALLOW_ALL_ORIGINS here (that is dev-only).
 
