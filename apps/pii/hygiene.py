@@ -61,6 +61,51 @@ def mask_placeholders(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# CJK awareness. Japanese/Chinese scripts have no ASCII word breaks, so the
+# alnum-walk word snapping below (built for space-delimited languages) would run
+# a short name span across the entire surrounding sentence. Detecting CJK code
+# points lets the snap stop at a script boundary, and lets the redactor's
+# degenerate-span floor treat a 2-character CJK name as the complete name it is.
+# ---------------------------------------------------------------------------
+
+
+def _is_cjk_char(ch: str) -> bool:
+    """True for a Han ideograph or Japanese kana code point.
+
+    Covers the scripts with no ASCII word separators that break the alnum-walk
+    snapping: Hiragana, Katakana (incl. halfwidth), CJK Unified Ideographs and
+    the common extension/compatibility blocks. Deliberately narrow — it gates a
+    redaction heuristic, so it errs toward the scripts we can verify.
+    """
+    o = ord(ch)
+    return (
+        0x3040 <= o <= 0x30FF  # Hiragana + Katakana
+        or 0x31F0 <= o <= 0x31FF  # Katakana phonetic extensions
+        or 0x3400 <= o <= 0x4DBF  # CJK Unified Ideographs Extension A
+        or 0x4E00 <= o <= 0x9FFF  # CJK Unified Ideographs
+        or 0xF900 <= o <= 0xFAFF  # CJK Compatibility Ideographs
+        or 0xFF66 <= o <= 0xFF9D  # Halfwidth Katakana
+    )
+
+
+def contains_cjk(text: str) -> bool:
+    """True when ``text`` carries any Han/kana character (see :func:`_is_cjk_char`)."""
+    return any(_is_cjk_char(ch) for ch in text)
+
+
+def _is_snap_expandable(ch: str) -> bool:
+    """True when word-snapping may absorb ``ch`` into a span: a unicode-alnum
+    word char that is NOT CJK.
+
+    Excluding CJK is the whole fix for the over-expansion bug: in a space-less
+    Japanese sentence every character is alnum, so the unrestricted walk swallowed
+    the entire sentence into one name span. Latin/digit recovery ('amaica' ->
+    'Jamaica') is unaffected — those code points are alnum and non-CJK.
+    """
+    return ch.isalnum() and not _is_cjk_char(ch)
+
+
+# ---------------------------------------------------------------------------
 # Word-boundary snapping (fixes truncated neural spans: 'amaica' -> 'Jamaica').
 # ---------------------------------------------------------------------------
 
@@ -75,6 +120,11 @@ def snap_to_word_boundaries(text: str, start: int, end: int) -> tuple[int, int]:
     characters (unicode-aware) until it hits a non-word char (space, punctuation,
     the bullet filler from :func:`mask_placeholders`), recovering the whole word.
 
+    The walk stops at CJK code points (:func:`_is_snap_expandable`): Japanese/
+    Chinese has no ASCII spaces, so without that stop a 2-char name detection
+    (田中) expanded to swallow the whole unpunctuated sentence and stored the
+    sentence as a fake name. For CJK we trust the detector's span instead.
+
     Expansion-only on purpose: growing a span to the full word it touches can
     only make redaction MORE complete, never leak. It never crosses whitespace or
     punctuation, so it cannot merge a name with an unrelated neighbouring word.
@@ -86,9 +136,9 @@ def snap_to_word_boundaries(text: str, start: int, end: int) -> tuple[int, int]:
     end = max(0, min(end, n))
     if start >= end:
         return start, end
-    while start > 0 and text[start - 1].isalnum():
+    while start > 0 and _is_snap_expandable(text[start - 1]):
         start -= 1
-    while end < n and text[end].isalnum():
+    while end < n and _is_snap_expandable(text[end]):
         end += 1
     return start, end
 
@@ -169,6 +219,14 @@ _BARE_NUM_RANGE_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Hyphenated postal code (Japan's NNN-NNNN). Shares the exact surface shape of a
+# bare numeric range ("18-29"), so a CORRECTLY-labeled ZIPCODE hit (which
+# collapses to LOCATION) would otherwise be swallowed by the range guard above
+# and never redact — a real leak for a Japan-centric user base. A US ZIP+4
+# ("94103-1234") has a 5-digit side that already exceeds the range regex's
+# 4-digit cap, so this carve-out is only needed for the short JP shape.
+_POSTAL_CODE_RE = re.compile(r"\d{3}-\d{4}")
+
 # Single-token code identifiers. Applied ONLY to PERSON/LOCATION — those are the
 # labels the audit found firing on code tokens (filenames, dotted modules, commit
 # shas) from agent notes and tool output. Structured/secret types are NEVER run
@@ -242,8 +300,12 @@ def is_junk_span(text: str, entity_type: str) -> tuple[bool, str]:
     if "[" in text or "]" in text or _PARTIAL_PLACEHOLDER_RE.search(text):
         return True, "placeholder_fragment"
 
-    # numeric_datelike (dates/clocks): junk under every type.
-    if _DATE_CLOCK_RE.fullmatch(stripped):
+    # numeric_datelike (dates/clocks): junk under every type EXCEPT
+    # DATE_OF_BIRTH — the one label that deliberately emits a date-shaped span as
+    # PII (the birth-context gate in redactor._detect_pii). Without this carve-out
+    # an ISO-format birth date ("1990-03-15") would be culled here before it could
+    # redact.
+    if entity_type != "DATE_OF_BIRTH" and _DATE_CLOCK_RE.fullmatch(stripped):
         return True, "numeric_datelike"
 
     # Pure punctuation (no letter/digit) that survived the structure check —
@@ -254,7 +316,9 @@ def is_junk_span(text: str, entity_type: str) -> tuple[bool, str]:
     # Remaining rules are name/place-only — a digit run or code token is a valid
     # shape for the structured types and validate_structured gates those.
     if entity_type in _UNSTRUCTURED_TYPES:
-        if _BARE_NUM_RANGE_RE.fullmatch(stripped):
+        # A JP postal code (150-0041) shares the bare-range shape but is a real,
+        # correctly-labeled ZIPCODE — exempt it so the range guard doesn't drop it.
+        if _BARE_NUM_RANGE_RE.fullmatch(stripped) and not _POSTAL_CODE_RE.fullmatch(stripped):
             return True, "numeric_datelike"
         if _is_code_identifier(stripped):
             return True, "identifier"
@@ -382,12 +446,39 @@ def validate_structured(entity_type: str, text: str) -> bool:
     if entity_type in ("ACCOUNT", "CRYPTO_ADDRESS", "ID_DOCUMENT"):
         return _is_secret_run(s)
 
+    if entity_type == "DATE_OF_BIRTH":
+        # A birth date only reaches this type when a birth-context cue sits beside
+        # it (redactor._detect_pii), so here we only confirm the span is date-
+        # SHAPED — numeric ISO/slash, an English month-name date, or a Japanese
+        # 年月日 date — and reject prose the model mislabeled DATE.
+        return bool(_DOB_DATE_RE.fullmatch(s))
+
     # Unknown structured type — nothing to validate against; stay conservative so
     # the mint gate fails closed rather than minting an unvalidatable span.
     return False
 
 
 _EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+
+# Date shapes accepted for a DATE_OF_BIRTH span (see validate_structured). Covers
+# numeric ISO/slash dates, English month-name dates ("March 3, 1990"), and
+# Japanese 年月日 dates ("1990年3月3日"). Detection has already required birth
+# context, so this is a shape sanity gate, not a calendar validation.
+_DOB_MONTHS = (
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?"
+    r"|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+)
+_DOB_DATE_RE = re.compile(
+    rf"""
+    (?:
+        \d{{3,4}}\s*[-/年]\s*\d{{1,2}}\s*[-/月]\s*\d{{1,2}}\s*日?      # 1990-03-15 · 1990/3/15 · 1990年3月3日
+      | \d{{1,2}}\s*[-/]\s*\d{{1,2}}\s*[-/]\s*\d{{2,4}}               # 3/15/1990 · 03-15-90
+      | (?:{_DOB_MONTHS})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}   # March 3, 1990
+      | \d{{1,2}}(?:st|nd|rd|th)?\s+(?:{_DOB_MONTHS})\.?,?\s+\d{{4}}   # 3 March 1990
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
 
 
 def _luhn_ok(digits: str) -> bool:

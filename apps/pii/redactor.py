@@ -433,6 +433,38 @@ _DATE_LIKE_RE = re.compile(
 )
 
 
+# Birth-context cues that promote a bare DATE span to DATE_OF_BIRTH. The model's
+# raw DATE label is dropped fleet-wide (it fires on every yyyy-mm-dd journal
+# heading — see config.py), so a date only redacts when one of these sits beside
+# it: a disclosed birth date is identifying PII, an ordinary calendar date is not.
+_BIRTH_CONTEXT_RE = re.compile(
+    r"""
+        date\s+of\s+birth        # date of birth
+      | birth\s?date             # birthdate / birth date
+      | \bd\.?o\.?b\b            # DOB / D.O.B.
+      | \bborn\b                 # born (on) …
+      | birthday                 # birthday
+      | 生年月日                  # JP: date of birth
+      | 誕生日                    # JP: birthday
+      | 生まれ                    # JP: born
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# How far on each side of a DATE span to scan for a birth-context cue. Birth
+# phrasing overwhelmingly PRECEDES the date ("date of birth is …", "生年月日は…"),
+# so the lookbehind window is generous and the lookahead deliberately small.
+_BIRTH_CONTEXT_BEFORE = 48
+_BIRTH_CONTEXT_AFTER = 16
+
+
+def _has_birth_context(text: str, start: int, end: int) -> bool:
+    """True when a birth-context cue sits within the window around a DATE span."""
+    lo = max(0, start - _BIRTH_CONTEXT_BEFORE)
+    hi = min(len(text), end + _BIRTH_CONTEXT_AFTER)
+    return bool(_BIRTH_CONTEXT_RE.search(text[lo:hi]))
+
+
 def _span_tokens(matched_lower: str) -> list[str]:
     """Alphabetic tokens of a lowercased span (digits/punct are separators)."""
     return [t for t in _ALPHA_TOKEN_RE.split(matched_lower) if t]
@@ -491,8 +523,23 @@ def _is_degenerate_span(text: str) -> bool:
     hit never trips this. This is also why the degenerate prod entity-map rows
     are skipped rather than deleted — the row stays for historical rehydration,
     it just stops driving redaction.
+
+    The 3-char floor is Latin-calibrated. CJK names pack far more identifying
+    signal per character: a bare 2-character span is a complete, common Japanese/
+    Chinese family name (田中, 佐藤), so any span carrying a Han/kana character is
+    exempt from the length floor. Without this, once ``snap_to_word_boundaries``
+    stops over-expanding a 2-kanji name, that name would flip from over-redacted
+    straight to LEAKED in cleartext (dropped here as "degenerate").
     """
     stripped = (text or "").strip()
+    if not stripped:
+        return True
+    try:
+        from apps.pii.hygiene import contains_cjk
+    except Exception:
+        contains_cjk = None
+    if contains_cjk is not None and contains_cjk(stripped):
+        return False
     if len(stripped) < 3:
         return True
     return not any(ch.isalpha() or ch.isdigit() for ch in stripped)
@@ -1448,6 +1495,13 @@ def _detect_pii(
             if _BARE_MEASUREMENT_RE.match(span_text) and not _has_adjacent_address_label(ent, model_results):
                 continue
         entity_type = DEBERTA_LABEL_MAP.get(raw_label)
+        # DATE has no static label-map entry (it fires on every journal date
+        # heading, so it is dropped fleet-wide). Promote it to DATE_OF_BIRTH ONLY
+        # when a birth-context cue sits beside the span — a disclosed birth date
+        # redacts, while an ordinary calendar date still passes through untouched.
+        if entity_type is None and raw_label == "DATE" and "DATE_OF_BIRTH" in entities:
+            if _has_birth_context(text, ent["start"], ent["end"]):
+                entity_type = "DATE_OF_BIRTH"
         if entity_type and entity_type in entities:
             # Trim leading/trailing whitespace from span boundaries —
             # aggregation_strategy="simple" can include boundary spaces. Extract
