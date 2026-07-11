@@ -33,6 +33,17 @@ Three tables, one per entry point under test:
   surface string collapse onto one placeholder — see
   ``pii_same_name_fusion`` in the PII docs; not a bug, a pinned trade-off).
 
+KNOWN GAP — NOT COVERED HERE: ``redact_user_message``, the MAIN production
+chat-ingress path, is deliberately absent from this file. It re-implements
+the known-entity + fresh-mint logic against a real ``Tenant`` row under a
+DB lock (``select_for_update``) rather than the in-memory dicts the three
+entry points above use, so a faithful test needs a real tenant + DB and is
+out of scope for this ``SimpleTestCase``-only, DB-free module. That path is
+exercised today by ``test_mint_gating.py`` / ``test_hygiene.py``'s
+integration tests case-by-case, not as a corpus; a data-driven corpus over
+it belongs in the behavior/integration suite (Wave B/D), not silently
+assumed covered by this file.
+
 A row that fails against current code is a FINDING, not something to
 loosen — see the module-level ``# FINDING:`` comments for any such case.
 """
@@ -61,6 +72,10 @@ def _fake_pipeline(hits):
     def _run(text):
         out = []
         for raw_label, word, score in hits:
+            # First occurrence only — fine for every row in this corpus, but a
+            # row whose span text also appears earlier in the string (e.g. as
+            # a substring of another hit) would silently resolve to the wrong
+            # offset. Keep each row's hit words distinct enough not to collide.
             idx = text.find(word)
             if idx < 0:
                 continue
@@ -132,14 +147,19 @@ DETECT_CASES = [
     ),
     # Adjacency control: the SAME bare number redacts once a real street
     # span sits next to it — proves the guard is adjacency-gated, not a
-    # blanket "never redact BUILDINGNUMBER" rule.
+    # blanket "never redact BUILDINGNUMBER" rule. "82" must be its own
+    # must_redact entry (not just the "82 Baker Street" phrase) — if the
+    # BUILDINGNUMBER guard ever regressed to blanket-never-redact (the exact
+    # #1104 bug), only "Baker Street" would become [LOCATION_1] and "82"
+    # would leak as "82 [LOCATION_1]"; a phrase-only assertion would still
+    # pass since the literal substring "82 Baker Street" is gone either way.
     (
         "buildingnumber_redacts_with_adjacent_street",
         "weight_measurement",
         "I live at 82 Baker Street, please ship it there",
         [("BUILDINGNUMBER", "82", 0.8), ("STREET", "Baker Street", 0.9)],
-        ["82 Baker Street"],
-        ["please ship it there"],
+        ["82 Baker Street", "82"],
+        ["please ship it there", "[LOCATION_1]"],
     ),
     # Control: a correctly-labeled ZIPCODE never enters the BUILDINGNUMBER
     # guard at all (only the raw BUILDINGNUMBER label is distrusted) — a
@@ -162,12 +182,15 @@ DETECT_CASES = [
         ["ship to", "[LOCATION_1]", "[LOCATION_2]"],
     ),
     (
+        # Same green-theater risk as the row above: "82" must be checked on
+        # its own, not folded into a longer phrase, or a regressed
+        # BUILDINGNUMBER guard that leaks "82" would still read as passing.
         "european_word_order_street_then_number",
         "house_number",
         "Hauptstrasse 82 is home",
         [("STREET", "Hauptstrasse", 0.9), ("BUILDINGNUMBER", "82", 0.8)],
-        ["Hauptstrasse"],
-        ["is home"],
+        ["Hauptstrasse", "82"],
+        ["is home", "[LOCATION_1]"],
     ),
     (
         "zip_plus_four_redacts",
@@ -302,7 +325,7 @@ KNOWN_ENTITY_CASES = [
         "real_name",
         {"[PERSON_1]": {"name": "Devon Okafor"}},
         {},
-        "devon okafor stopped by, so did DEVON OKAFOR again",
+        "Devon Okafor stopped by, so did devon okafor, and DEVON OKAFOR again",
         ["Devon Okafor", "devon okafor", "DEVON OKAFOR"],
         ["stopped by", "again"],
     ),
