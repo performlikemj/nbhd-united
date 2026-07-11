@@ -406,6 +406,17 @@ OPENCLAW_DOC_TAINT_GUARD_PLUGIN_PATH = env(
     "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-doc-taint-guard",
 )
+# Cron enforcement plugin — fire-time typed-cron enforcement, rebuilt in
+# #1117. Ships dark (empty defaults): production enables by setting both env
+# vars on the container app; tests/smoke disable via ID="".
+OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID = env(
+    "OPENCLAW_CRON_ENFORCEMENT_PLUGIN_ID",
+    default="",
+)
+OPENCLAW_CRON_ENFORCEMENT_PLUGIN_PATH = env(
+    "OPENCLAW_CRON_ENFORCEMENT_PLUGIN_PATH",
+    default="",
+)
 # "log_only" (default) logs what the egress gate would have blocked without
 # blocking it; "enforce" hard-blocks. Fleet-wide flip = one env var change +
 # apply-pending-configs, no per-tenant migration. See the rollout plan in
