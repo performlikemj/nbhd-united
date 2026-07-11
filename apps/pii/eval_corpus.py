@@ -846,6 +846,67 @@ CASES: list[EvalCase] = [
         hits=(("FULLNAME", "田中", 0.85),),
     ),
     _c(
+        "jp_truncated_kanji_hit_recovers_full_name_no_surname_leak",
+        "田中太郎さんによろしくお伝えください",
+        tags=("standard", "jp"),
+        notes="Residual-leak guard (#1150 follow-up). DeBERTa truncates spans and "
+        "Japanese is out-of-distribution, so a hit can arrive as just the given "
+        "name '太郎' out of '田中太郎'. Because CJK is unspaced, that used to output "
+        "'田中[PERSON_1]さん…' — LEAKING the surname 田中. snap_to_word_boundaries now "
+        "recovers a truncated hit across the contiguous kanji run (stopping at the "
+        "kana 'さん'), so the whole name redacts and the surname does not leak. The "
+        "hit here is the truncated '太郎', so the recovery is observed directly.",
+        redacted=("田中",),
+        preserved=("さんによろしくお伝えください",),
+        hits=(("FULLNAME", "太郎", 0.85),),
+    ),
+    _c(
+        "jp_iteration_mark_surname_recovers_no_leak",
+        "佐々木さんに連絡してください",
+        tags=("standard", "jp"),
+        notes="Residual-leak guard (#1150 follow-up): 佐々木 (a top-10 JP surname) "
+        "contains the ideographic iteration mark 々 (U+3005), which is "
+        "str.isalnum() but was missing from the CJK ranges — so a truncated hit "
+        "'木' expanded left over 々 but stopped at 佐, leaking it. 々/〆/〇 are now "
+        "classified as Han, so the snap recovers the full 佐々木 and 佐 does not leak.",
+        redacted=("佐",),
+        preserved=("さんに連絡してください",),
+        hits=(("FULLNAME", "木", 0.85),),
+    ),
+    _c(
+        "jp_particle_separated_names_do_not_fuse",
+        "田中と佐藤が来ます",
+        tags=("standard", "jp"),
+        notes="FIXED residual (#1150 follow-up): _merge_adjacent_spans bridges a "
+        "1-char gap to join 'Sarah' + 'Chen', but in unspaced Japanese that 1 char "
+        "is a real particle ('と' = and), so it fused two DIFFERENT people (田中, "
+        "佐藤) onto one placeholder storing '田中と佐藤'. The merge now refuses to "
+        "bridge a CJK gap char, so each name gets its own placeholder — proven by "
+        "the particle 'と' surviving BETWEEN the two redactions.",
+        redacted=("田中", "佐藤"),
+        preserved=("と", "が来ます"),
+        hits=(("FULLNAME", "田中", 0.9), ("FULLNAME", "佐藤", 0.9)),
+    ),
+    _c(
+        "jp_yearless_birthday_date_not_redacted",
+        "誕生日は3月3日です",
+        tags=("standard", "jp", "dates"),
+        known_gap="KNOWN-GAP (#1150 follow-up): a year-LESS Japanese birthday "
+        "('3月3日', month+day only) is NOT redacted even with the explicit cue "
+        "'誕生日'. redactor._detect_pii promotes the DATE span to DATE_OF_BIRTH "
+        "correctly (the cue is present), but hygiene.validate_structured's "
+        "_DOB_DATE_RE requires a 4-digit year, so the month/day span fails shape "
+        "validation and is dropped as 'structured_invalid'. Deliberately left "
+        "unfixed here: accepting a bare 月日 date risks over-redacting ordinary "
+        "calendar dates (a scheduling '3月3日' with no birth cue would be one edit "
+        "away from redacting), so the fix needs its own pass. FLIPS WHEN: "
+        "_DOB_DATE_RE (or a DOB-specific branch) accepts a year-less 月日 date "
+        "under a birth-context cue — this case already feeds the raw DATE hit and "
+        "the 誕生日 cue, so the fix is observed directly.",
+        redacted=("3月3日",),
+        hits=(("DATE", "3月3日", 0.9),),
+    ),
+    _c(
         "mixed_jp_english_sentence_name_redacts",
         "Please contact 佐藤花子 for the Tokyo office details.",
         tags=("standard", "jp"),
@@ -1138,6 +1199,26 @@ SEQUENCE_CASES: list[SequenceEvalCase] = [
         "separate placeholders purely because the surface strings differ. This is "
         "not a designed safeguard — a second full mention of 'Ken Tanaka' for a "
         "DIFFERENT Ken Tanaka would still fuse (see the known-gap case above).",
+    ),
+    _seq(
+        "jp_stored_name_remasks_next_turn_without_fresh_hit",
+        (
+            "田中さんが来ました",
+            "田中です",
+        ),
+        (
+            (("FULLNAME", "田中", 0.9),),
+            (),  # turn 2: NO fresh model detection
+        ),
+        tags=("standard", "jp"),
+        assertion="same_placeholder",
+        notes="FIXED residual (#1150 follow-up): Step-1 known-entity reuse anchored "
+        "stored names with \\b, but in unspaced Japanese ('田中です') both edges are "
+        "word chars so \\b never matches — a stored JP name only stayed masked if "
+        "the model happened to re-detect it every message. Turn 2 here feeds NO "
+        "fresh hit, so it is redacted ONLY if Step-1 re-masks it from the stored "
+        "map; the anchor is now CJK-aware (dropped for CJK edges), so it does. Both "
+        "turns must land on the same placeholder (same person).",
     ),
 ]
 

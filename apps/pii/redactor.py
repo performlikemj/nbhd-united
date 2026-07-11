@@ -786,6 +786,25 @@ def _should_mint_new(mint: str, entity_type: str, text: str) -> bool:
         return False
 
 
+def _known_name_edge_anchor(edge_char: str) -> str:
+    r"""Return a ``\b`` word-boundary anchor for a stored name's edge — EXCEPT for
+    CJK edges, where it must be omitted.
+
+    ``\b`` only asserts a boundary between a word char and a non-word char. In
+    unspaced Japanese ("田中です") both "中" and "で" are word chars, so a trailing
+    ``\b`` never matches and a stored CJK name silently fails to re-mask across
+    turns (its cross-turn protection would depend on the model re-detecting it
+    every message). For a CJK edge we drop the anchor — as we already do for
+    punctuation edges — mirroring the CJK-aware word snap. Non-CJK alnum/``_``
+    edges keep ``\b`` so a stored Latin fragment can't rewrite a longer word.
+    """
+    if not edge_char or not (edge_char.isalnum() or edge_char == "_"):
+        return ""
+    from apps.pii.hygiene import contains_cjk
+
+    return "" if contains_cjk(edge_char) else r"\b"
+
+
 def _replace_known_only(
     text: str,
     inverted_ci: dict[str, tuple[str, str]],
@@ -819,8 +838,8 @@ def _replace_known_only(
         if _is_degenerate_span(original):
             continue
         esc = re.escape(original)
-        left = r"\b" if (original[:1].isalnum() or original[:1] == "_") else ""
-        right = r"\b" if (original[-1:].isalnum() or original[-1:] == "_") else ""
+        left = _known_name_edge_anchor(original[:1])
+        right = _known_name_edge_anchor(original[-1:])
         pattern = re.compile(left + esc + right, re.IGNORECASE)
         out = _sub_outside_placeholders(out, pattern, placeholder)
     return out
@@ -1103,10 +1122,12 @@ def _redact_user_message(
         # to a word char, so anchor each edge only when the name's edge
         # character is itself alphanumeric/underscore — names with punctuation
         # edges (emails, trailing ".") keep matching against neighbouring
-        # punctuation as before.
+        # punctuation as before. CJK edges also drop the anchor (unspaced
+        # Japanese has no ``\b`` between "田中" and "です"), so a stored Japanese
+        # name re-masks across turns without needing a fresh model detection.
         esc = re.escape(original)
-        left = r"\b" if (original[:1].isalnum() or original[:1] == "_") else ""
-        right = r"\b" if (original[-1:].isalnum() or original[-1:] == "_") else ""
+        left = _known_name_edge_anchor(original[:1])
+        right = _known_name_edge_anchor(original[-1:])
         pattern = re.compile(left + esc + right, re.IGNORECASE)
         # Substitute only outside existing placeholders so a stored name that
         # contains a capital letter or ``_`` can never rewrite a placeholder's
@@ -1529,7 +1550,7 @@ def _detect_pii(
 
     # Merge adjacent same-type spans (e.g., "Sarah" GIVENNAME + "Chen" SURNAME
     # both map to PERSON — merge into a single span covering "Sarah Chen")
-    results = _merge_adjacent_spans(results)
+    results = _merge_adjacent_spans(results, text)
 
     # 2. Presidio regex — credit cards (Luhn), IBANs (checksum), emails (regex
     # fallback). Runs over the placeholder-masked copy too, so a numeric
@@ -1551,17 +1572,24 @@ def _detect_pii(
     return results
 
 
-def _merge_adjacent_spans(results: list[DetectedEntity]) -> list[DetectedEntity]:
+def _merge_adjacent_spans(results: list[DetectedEntity], text: str = "") -> list[DetectedEntity]:
     """Merge consecutive spans of the same entity type.
 
     After label mapping, GIVENNAME and SURNAME both become PERSON.
     "Sarah" (PERSON, 0-5) and "Chen" (PERSON, 6-10) should merge into
     "Sarah Chen" (PERSON, 0-10).
 
-    Spans are considered adjacent if separated by 0-1 characters (a space).
+    Spans are considered adjacent if separated by 0-1 characters — the 1-char gap
+    is meant to bridge a single SPACE ("Sarah Chen"). It must NOT bridge a CJK
+    character: in unspaced Japanese the one char between two name spans is a real
+    particle ("田中と佐藤" — と = "and"), so merging there fuses two DIFFERENT
+    people onto one placeholder. When the bridging char is CJK we leave the spans
+    separate so each person gets their own placeholder.
     """
     if len(results) <= 1:
         return results
+
+    from apps.pii.hygiene import contains_cjk
 
     sorted_results = sorted(results, key=lambda r: r.start)
     merged = [sorted_results[0]]
@@ -1569,7 +1597,8 @@ def _merge_adjacent_spans(results: list[DetectedEntity]) -> list[DetectedEntity]
     for current in sorted_results[1:]:
         prev = merged[-1]
         gap = current.start - prev.end
-        if prev.entity_type == current.entity_type and 0 <= gap <= 1:
+        bridge = text[prev.end : current.start] if gap == 1 else ""
+        if prev.entity_type == current.entity_type and 0 <= gap <= 1 and not contains_cjk(bridge):
             # Merge: extend previous span, use minimum score
             merged[-1] = DetectedEntity(
                 entity_type=prev.entity_type,
