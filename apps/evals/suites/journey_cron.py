@@ -25,12 +25,17 @@ Double-scoped so a stale historical row can never read green forever: the
 opened just before this run armed its cron.
 
 Single-phase (arm + observe in ONE run): the cron is scheduled ``lead_seconds``
-out and the run polls up to ``deadline_seconds``, both well under the 300s
-gunicorn worker ceiling (``config/settings/base.py`` / ``startup.sh``). If prod
-fire-verification ever shows a single request brushing that ceiling (e.g. cold
-starts add latency), the documented fallback is two-phase — arm on run N, observe
-run N+1 — but the primary design here is single-phase because it gives a true
-same-run end-to-end assertion.
+out and the run polls until a wall-clock BUDGET measured from SUITE START (t0)
+elapses. Anchoring the deadline at t0 (not at the start of polling) is
+load-bearing: ``invoke_gateway_tool`` can burn ~90s (45s x2 retries), so a poll
+window measured post-arm could push total wall-clock past the 300s gunicorn
+worker ceiling (``config/settings/base.py`` / ``startup.sh``) → the worker is
+SIGKILL'd mid-poll → a stranded ``running`` row (messier than a clean FAIL +
+owner email). Bounding arm + poll from t0 keeps the whole suite under the ceiling
+regardless of how long arming took. If prod fire-verification ever shows even
+that brushing the ceiling, the documented fallback is two-phase — arm run N,
+observe run N+1 — but the primary design here is single-phase because it gives a
+true same-run end-to-end assertion.
 
 INVARIANT #1: nothing recorded here is user content. The reminder text is a fixed
 synthetic string sent to the synthetic tenant's own user; the eval sink only ever
@@ -56,11 +61,12 @@ logger = logging.getLogger(__name__)
 SUITE = "journey_cron"
 CASE_ID = "cron_fire_delivery"
 
-# Timing budget (all well under the 300s worker ceiling — see module docstring).
-# ``lead_seconds`` mirrors the plan's "60-90s out"; ``deadline_seconds`` caps the
-# poll at ~240s leaving ~60s headroom for arming + close.
+# Timing budget (all bounded under the 300s worker ceiling — see module docstring).
+# ``lead_seconds`` mirrors the plan's "60-90s out". ``POLL_BUDGET_SECONDS`` is the
+# TOTAL wall-clock budget measured from suite start (t0): arm + poll must finish
+# within it, so a slow ~90s arm can never combine with a full poll to exceed 300s.
 SCHEDULE_LEAD_SECONDS = 75
-POLL_DEADLINE_SECONDS = 240
+POLL_BUDGET_SECONDS = 240
 POLL_INTERVAL_SECONDS = 5
 
 # Fixed synthetic reminder text (no PII). Delivered to the synthetic tenant's own
@@ -107,21 +113,22 @@ def _observe_delivery(
     *,
     job_name: str,
     window_start,
-    deadline_seconds: float,
+    deadline: float,
     interval_seconds: float,
     sleep_fn=time.sleep,
 ) -> DeliveryObservation:
     """Poll for the ONE piece of evidence a cron fired: a fresh ProactiveOutbound.
 
-    Returns metadata only (delivered flag + poll count + elapsed ms) — never any
-    row content. The filter is the whole point of the probe: unique ``job_name``
-    AND ``created_at__gte=window_start`` so neither a stale historical row nor an
-    unrelated concurrent cron's row can satisfy it.
+    ``deadline`` is an ABSOLUTE ``time.monotonic()`` value — the caller anchors it
+    at suite start so total arm+poll wall-clock stays bounded (see module
+    docstring). Returns metadata only (delivered flag + poll count + elapsed ms) —
+    never any row content. The filter is the whole point of the probe: unique
+    ``job_name`` AND ``created_at__gte=window_start`` so neither a stale historical
+    row nor an unrelated concurrent cron's row can satisfy it.
     """
     from apps.router.models import ProactiveOutbound
 
     start = time.monotonic()
-    deadline = start + deadline_seconds
     poll_count = 0
     delivered = False
     while True:
@@ -146,7 +153,7 @@ def run_cron_fire_suite(
     *,
     trigger: str = EvalRun.Trigger.MANUAL,
     lead_seconds: int = SCHEDULE_LEAD_SECONDS,
-    deadline_seconds: float = POLL_DEADLINE_SECONDS,
+    budget_seconds: float = POLL_BUDGET_SECONDS,
     interval_seconds: float = POLL_INTERVAL_SECONDS,
     sleep_fn=time.sleep,
 ) -> EvalRun:
@@ -159,6 +166,13 @@ def run_cron_fire_suite(
     """
     from apps.cron.gateway_client import GatewayError
     from apps.cron.services import TypedCronError
+
+    # Anchor the poll deadline to SUITE START (t0), BEFORE arming: invoke_gateway_tool
+    # can burn ~90s (45s x2 retries). Measuring the deadline from t0 (not from the
+    # start of polling) bounds arm + poll together, so a slow arm can never combine
+    # with a full poll to exceed the 300s worker ceiling and strand a 'running' row.
+    t0 = time.monotonic()
+    deadline = t0 + budget_seconds
 
     with record_run(SUITE, trigger) as run:
         tenant = resolve_journey_tenant()
@@ -188,7 +202,7 @@ def run_cron_fire_suite(
                 tenant,
                 job_name=job_name,
                 window_start=window_start,
-                deadline_seconds=deadline_seconds,
+                deadline=deadline,
                 interval_seconds=interval_seconds,
                 sleep_fn=sleep_fn,
             )
@@ -203,7 +217,7 @@ def run_cron_fire_suite(
                     "poll_count": obs.poll_count,
                     "observe_ms": obs.elapsed_ms,
                     "lead_s": int(lead_seconds),
-                    "deadline_s": int(deadline_seconds),
+                    "budget_s": int(budget_seconds),
                 },
             )
 

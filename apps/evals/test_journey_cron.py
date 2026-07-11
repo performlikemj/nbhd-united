@@ -11,6 +11,7 @@ does NOT pass, and a REGISTERED-but-never-fired ``CronJob`` does NOT pass.
 from __future__ import annotations
 
 import secrets
+import time
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -64,12 +65,12 @@ class ObserveDeliveryTest(TestCase):
         self.window_start = timezone.now()
 
     def _observe(self):
-        # deadline 0 + no-op sleep → exactly one poll, fully deterministic.
+        # An already-elapsed deadline + no-op sleep → exactly one poll, deterministic.
         return _observe_delivery(
             self.tenant,
             job_name=self.job_name,
             window_start=self.window_start,
-            deadline_seconds=0,
+            deadline=time.monotonic(),
             interval_seconds=0,
             sleep_fn=lambda _s: None,
         )
@@ -123,7 +124,7 @@ class RunCronFireSuiteTest(TestCase):
         run = run_cron_fire_suite(
             trigger=EvalRun.Trigger.MANUAL,
             lead_seconds=1,
-            deadline_seconds=10,
+            budget_seconds=10,
             interval_seconds=1,
             sleep_fn=fake_sleep,
         )
@@ -138,7 +139,7 @@ class RunCronFireSuiteTest(TestCase):
         run = run_cron_fire_suite(
             trigger=EvalRun.Trigger.MANUAL,
             lead_seconds=1,
-            deadline_seconds=0,
+            budget_seconds=0,
             interval_seconds=0,
             sleep_fn=lambda _s: None,
         )
@@ -156,7 +157,7 @@ class RunCronFireSuiteTest(TestCase):
         run = run_cron_fire_suite(
             trigger=EvalRun.Trigger.MANUAL,
             lead_seconds=1,
-            deadline_seconds=0,
+            budget_seconds=0,
             interval_seconds=0,
             sleep_fn=lambda _s: None,
         )
@@ -177,7 +178,7 @@ class RunCronFireSuiteTest(TestCase):
         kwargs = dict(
             trigger=EvalRun.Trigger.MANUAL,
             lead_seconds=1,
-            deadline_seconds=0,
+            budget_seconds=0,
             interval_seconds=0,
             sleep_fn=lambda _s: None,
         )
@@ -198,7 +199,7 @@ class RunCronFireSuiteTest(TestCase):
         run = run_cron_fire_suite(
             trigger=EvalRun.Trigger.MANUAL,
             lead_seconds=1,
-            deadline_seconds=0,
+            budget_seconds=0,
             interval_seconds=0,
             sleep_fn=lambda _s: None,
         )
@@ -209,13 +210,52 @@ class RunCronFireSuiteTest(TestCase):
         self.assertIn("delivered", details)
         self.assertIn("armed", details)
 
+    @patch(_GATEWAY)
+    def test_poll_deadline_is_anchored_to_suite_start(self, mock_gw):
+        """The hardening fix: the poll deadline is t0 (SUITE START) + budget, NOT
+        observation-start + budget. A ~90s gateway arm must not extend the poll
+        window and push total wall-clock past the 300s worker ceiling → strand.
+        """
+        mock_gw.return_value = {"details": {"id": "job-1"}}
+
+        captured = {}
+
+        def spy(*args, **kwargs):
+            captured["deadline"] = kwargs["deadline"]
+            return _observe_delivery(*args, **kwargs)
+
+        # t0 = 100.0 at suite start; the next monotonic read (observation start)
+        # jumps to 500.0 — i.e. "arming burned 400s". The deadline must stay pinned
+        # to t0 + budget (340.0), proving it isn't recomputed from observation start
+        # (which would be 500 + 240 = 740 and keep polling long past the ceiling).
+        monotonic_vals = iter([100.0])
+
+        def fake_monotonic():
+            try:
+                return next(monotonic_vals)
+            except StopIteration:
+                return 500.0
+
+        with (
+            patch("apps.evals.suites.journey_cron.time.monotonic", side_effect=fake_monotonic),
+            patch("apps.evals.suites.journey_cron._observe_delivery", side_effect=spy),
+        ):
+            run_cron_fire_suite(
+                trigger=EvalRun.Trigger.MANUAL,
+                lead_seconds=1,
+                budget_seconds=240,
+                interval_seconds=1,
+                sleep_fn=lambda _s: None,
+            )
+        self.assertEqual(captured["deadline"], 340.0)
+
     def test_misconfigured_target_closes_error(self):
         # Unset target → resolve_journey_tenant raises → run closes ERROR (loud),
         # never a silent pass (directive INVARIANT #3).
         with override_settings(EVAL_JOURNEY_TENANT_ID=""), self.assertRaises(Exception):
             run_cron_fire_suite(
                 trigger=EvalRun.Trigger.MANUAL,
-                deadline_seconds=0,
+                budget_seconds=0,
                 interval_seconds=0,
                 sleep_fn=lambda _s: None,
             )
