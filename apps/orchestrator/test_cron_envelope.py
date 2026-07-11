@@ -1043,9 +1043,12 @@ class BuildCronMessageTest(TestCase):
             markdown="- Goal A",
         )
 
-    def test_foreground_appends_phase2_block(self):
+    def test_foreground_no_longer_appends_phase2_block(self):
+        # Retired 2026-07-11: even foreground jobs no longer get the Phase 2
+        # sync block appended (superseded by the deterministic ProactiveOutbound
+        # bridge). Guards against re-introducing the emission.
         out = _build_cron_message("BODY", "TestJob", foreground=True, tenant=self.tenant)
-        self.assertIn("FINAL STEP — conditional sync to the main session", out)
+        self.assertNotIn("FINAL STEP — conditional sync to the main session", out)
 
     def test_background_omits_phase2_block(self):
         out = _build_cron_message("BODY", "TestJob", foreground=False, tenant=self.tenant)
