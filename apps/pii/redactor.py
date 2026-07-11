@@ -1572,6 +1572,36 @@ def _detect_pii(
     return results
 
 
+def _particle_separates(text: str, prev: DetectedEntity, current: DetectedEntity) -> bool:
+    """True when the 1-char gap between two same-type spans is a real particle
+    that means they are DIFFERENT people — and splitting them is safe.
+
+    The merge bridges a 1-char gap to join "Sarah" + "Chen". In unspaced Japanese
+    that 1 char can be a grammatical particle ("田中と佐藤" — と = "and"), where
+    merging would fuse two different people onto one placeholder. Two guards,
+    BOTH required, decide when to keep the spans separate instead:
+
+    - the bridge char is HIRAGANA (particles are hiragana: と/を/に/は/が/の). A
+      KATAKANA connector (ノ ヶ ツ ・) is name-INTERNAL (一ノ瀬, 保土ヶ谷,
+      マイケル・ジョーンズ) and must NOT split the name.
+    - neither resulting fragment would be dropped by the junk filter. A single
+      kanji surname split off on its own ("林" out of "林と森") is ``too_short``
+      and would be dropped — which leaks the name in cleartext. If splitting
+      would strand a droppable fragment we merge instead (fusion is safe;
+      cleartext is not).
+    """
+    from apps.pii.hygiene import contains_hiragana, is_junk_span
+
+    bridge = text[prev.end : current.start]
+    if not contains_hiragana(bridge):
+        return False
+    prev_text = text[prev.start : prev.end]
+    cur_text = text[current.start : current.end]
+    if is_junk_span(prev_text, prev.entity_type)[0] or is_junk_span(cur_text, current.entity_type)[0]:
+        return False
+    return True
+
+
 def _merge_adjacent_spans(results: list[DetectedEntity], text: str = "") -> list[DetectedEntity]:
     """Merge consecutive spans of the same entity type.
 
@@ -1579,17 +1609,13 @@ def _merge_adjacent_spans(results: list[DetectedEntity], text: str = "") -> list
     "Sarah" (PERSON, 0-5) and "Chen" (PERSON, 6-10) should merge into
     "Sarah Chen" (PERSON, 0-10).
 
-    Spans are considered adjacent if separated by 0-1 characters — the 1-char gap
-    is meant to bridge a single SPACE ("Sarah Chen"). It must NOT bridge a CJK
-    character: in unspaced Japanese the one char between two name spans is a real
-    particle ("田中と佐藤" — と = "and"), so merging there fuses two DIFFERENT
-    people onto one placeholder. When the bridging char is CJK we leave the spans
-    separate so each person gets their own placeholder.
+    Spans are considered adjacent if separated by 0-1 characters (a space). The
+    one exception is a hiragana particle between two independently-redactable
+    names, which keeps them separate so two different people get distinct
+    placeholders — see :func:`_particle_separates`.
     """
     if len(results) <= 1:
         return results
-
-    from apps.pii.hygiene import contains_cjk
 
     sorted_results = sorted(results, key=lambda r: r.start)
     merged = [sorted_results[0]]
@@ -1597,8 +1623,7 @@ def _merge_adjacent_spans(results: list[DetectedEntity], text: str = "") -> list
     for current in sorted_results[1:]:
         prev = merged[-1]
         gap = current.start - prev.end
-        bridge = text[prev.end : current.start] if gap == 1 else ""
-        if prev.entity_type == current.entity_type and 0 <= gap <= 1 and not contains_cjk(bridge):
+        if prev.entity_type == current.entity_type and 0 <= gap <= 1 and not _particle_separates(text, prev, current):
             # Merge: extend previous span, use minimum score
             merged[-1] = DetectedEntity(
                 entity_type=prev.entity_type,

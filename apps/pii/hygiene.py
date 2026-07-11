@@ -122,6 +122,23 @@ def contains_cjk(text: str) -> bool:
     return any(_is_cjk_char(ch) for ch in text)
 
 
+def _is_hiragana_char(ch: str) -> bool:
+    """True for a Hiragana code point.
+
+    Japanese grammatical particles (と を に は が の へ も …) are hiragana, so a
+    single hiragana char BETWEEN two same-type name spans signals two different
+    people ("田中と佐藤" — と = 'and'). Katakana connectors (ノ ヶ ツ ・) are NOT
+    hiragana — they are name-INTERNAL orthography (一ノ瀬, 保土ヶ谷,
+    マイケル・ジョーンズ), so they must not be read as a separator.
+    """
+    return 0x3040 <= ord(ch) <= 0x309F
+
+
+def contains_hiragana(text: str) -> bool:
+    """True when ``text`` carries any Hiragana character (see :func:`_is_hiragana_char`)."""
+    return any(_is_hiragana_char(ch) for ch in text)
+
+
 def _is_latin_word_char(ch: str) -> bool:
     """True for a unicode-alnum word char that is NOT CJK — freely snap-expandable.
 

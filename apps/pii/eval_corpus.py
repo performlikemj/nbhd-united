@@ -879,13 +879,98 @@ CASES: list[EvalCase] = [
         tags=("standard", "jp"),
         notes="FIXED residual (#1150 follow-up): _merge_adjacent_spans bridges a "
         "1-char gap to join 'Sarah' + 'Chen', but in unspaced Japanese that 1 char "
-        "is a real particle ('と' = and), so it fused two DIFFERENT people (田中, "
+        "can be a real particle ('と' = and), so it fused two DIFFERENT people (田中, "
         "佐藤) onto one placeholder storing '田中と佐藤'. The merge now refuses to "
-        "bridge a CJK gap char, so each name gets its own placeholder — proven by "
-        "the particle 'と' surviving BETWEEN the two redactions.",
+        "bridge a HIRAGANA particle gap (only when both names survive on their own), "
+        "so each name gets its own placeholder — proven by 'と' surviving BETWEEN "
+        "the two redactions. Katakana connectors (ノ/ヶ/・) are name-internal, NOT "
+        "particles, so they still merge — see jp_katakana_medial_name_not_split.",
         redacted=("田中", "佐藤"),
         preserved=("と", "が来ます"),
         hits=(("FULLNAME", "田中", 0.9), ("FULLNAME", "佐藤", 0.9)),
+    ),
+    _c(
+        "jp_katakana_medial_name_not_split",
+        "一ノ瀬さんが来ました",
+        tags=("standard", "jp"),
+        notes="Merge-blocker fix (#1152 review): the katakana middle char ノ "
+        "(U+30CE) in 一ノ瀬 (Ichinose) is name-INTERNAL orthography, NOT a particle. "
+        "A blanket 'refuse any CJK bridge' split 一+瀬 around it, and both 1-char "
+        "fragments were then junk-dropped as too_short — LEAKING the whole surname "
+        "in cleartext with an empty map. The merge refusal is now HIRAGANA-only "
+        "(and only when both fragments survive), so ノ/ヶ/・ names re-merge and "
+        "redact fully. Fed as the split 一+瀬 hits the model would emit.",
+        redacted=("一ノ瀬",),
+        preserved=("さんが来ました",),
+        hits=(("FULLNAME", "一", 0.9), ("FULLNAME", "瀬", 0.9)),
+    ),
+    _c(
+        "jp_katakana_medial_place_not_split",
+        "保土ヶ谷に住んでいます",
+        tags=("standard", "jp", "house_number_address"),
+        notes="Merge-blocker fix (#1152 review): same class as "
+        "jp_katakana_medial_name_not_split for a place name — ヶ (U+30F6) in 保土ヶ谷 "
+        "(Hodogaya) is name-internal, so the split 保土+谷 re-merges instead of "
+        "leaking the trailing 谷 in cleartext.",
+        redacted=("保土ヶ谷", "谷"),
+        preserved=("に住んでいます",),
+        hits=(("CITY", "保土", 0.9), ("CITY", "谷", 0.9)),
+    ),
+    _c(
+        "jp_truncated_katakana_name_remainder_leaks",
+        "ジョーンズさんに会いました",
+        tags=("standard", "jp"),
+        known_gap="KNOWN-GAP (#1152 review, reviewer-required pin): the CJK snap "
+        "recovery is HAN(kanji)-only and STOPS at kana, so a truncated KATAKANA "
+        "name hit is not recovered. Here the model emits the tail 'ンズ' of "
+        "'ジョーンズ'; the snap does not grow left across the katakana ジョー, so "
+        "'ジョー' LEAKS in cleartext (output 'ジョー[PERSON_1]…'). Unlike the kanji "
+        "case (jp_truncated_kanji_hit_recovers_full_name_no_surname_leak) this is a "
+        "genuine residual leak, deliberately pinned rather than fixed: katakana "
+        "foreign names usually carry ・/、 delimiters, and a kana recovery pass has "
+        "its own over-redaction risk (kana particles). FLIPS WHEN: "
+        "snap_to_word_boundaries gains a bounded katakana-run recovery — this case "
+        "feeds the truncated 'ンズ' hit so the fix is observed directly.",
+        redacted=("ジョー",),
+        hits=(("FULLNAME", "ンズ", 0.85),),
+    ),
+    _c(
+        "jp_complete_hit_over_swallows_adjacent_kanji",
+        "東京大学に通っています",
+        tags=("standard", "jp", "house_number_address"),
+        known_gap="KNOWN-GAP (#1152 review, reviewer-required pin): the CJK snap "
+        "runs on EVERY complete CJK hit, not just truncated ones, and expands "
+        "across a contiguous kanji run. So a complete CITY hit '東京' swallows the "
+        "adjacent kanji compound '大学' and stores '東京大学' — the institution "
+        "suffix is over-redacted. Same class: a PERSON hit '田中' + title swallows "
+        "'田中部長' / '株式会社田中' / '時々田中', and a stray 1-kanji hit can be "
+        "laundered into a common word (a '木' hit on '木曜日'/Thursday mints "
+        "Thursday as a person, polluting the map). This FAILS SAFE for the user "
+        "(rehydration restores the text) but is over-redaction, pinned so the "
+        "tradeoff is visible. FLIPS WHEN: the kanji-run expansion is bounded by "
+        "real segmentation / a corroborating-signal check instead of a blanket "
+        "contiguous-run walk — this case feeds a complete '東京' hit so the "
+        "over-swallow is observed directly.",
+        preserved=("大学",),
+        hits=(("CITY", "東京", 0.9),),
+    ),
+    _c(
+        "jp_stored_name_rewrites_inside_longer_word",
+        "山田中学校の先生と話しました",
+        tags=("standard", "jp"),
+        seed_map={"[PERSON_1]": "田中"},
+        known_gap="KNOWN-GAP (#1152 review, reviewer-required pin): Fix 3 drops the "
+        "\\b anchor for CJK-edged stored names so they re-mask across turns, but "
+        "that also lets a stored name rewrite INSIDE a longer word — stored '田中' "
+        "rewrites the middle of '山田中学校' (Yamada Junior High) into "
+        "'山[PERSON_1]学校', and stored kana 'さくら' would rewrite inside 'さくらんぼ' "
+        "(cherry). This FAILS SAFE (rehydration restores the owner's text) but is a "
+        "spurious mid-word substitution, pinned so it is visible. FLIPS WHEN: the "
+        "CJK known-entity match gains a boundary check (e.g. no rewrite when the "
+        "match sits inside a longer contiguous CJK run) — this case seeds '田中' in "
+        "the map and feeds no fresh hit, so the mid-word rewrite is observed "
+        "directly via Step-1 reuse.",
+        preserved=("山田中学校",),
     ),
     _c(
         "jp_yearless_birthday_date_not_redacted",
