@@ -142,6 +142,14 @@ TASK_MAP = {
     # 'pass' so a failing eval lands in the DLQ instead of a silent green. Safe to
     # re-fire anytime — each fire is its own run.
     "eval_smoke": "apps.evals.tasks.eval_smoke_task",
+    # Eval reaper (Wave B5) — crash-recovery sweep for orphaned runs. A worker
+    # SIGKILL'd at the 300s gunicorn ceiling leaves record_run's except/finally
+    # un-run, stranding an EvalRun at status='running' forever; this daily zero-arg
+    # sweep flips any run 'running' longer than 30min to 'error'. The 30min floor
+    # sits far above every probe's sub-300s deadline, so it only ever reaps a
+    # truly-dead run, never a live one. Safe to re-fire anytime (idempotent — only
+    # touches still-stuck rows).
+    "reap_stuck_eval_runs": "apps.evals.tasks.reap_stuck_eval_runs_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.
