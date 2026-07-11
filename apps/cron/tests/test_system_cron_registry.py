@@ -12,6 +12,7 @@ lists so each branch is exercised in isolation.
 
 from __future__ import annotations
 
+import re
 from unittest import mock
 
 from django.test import TestCase, override_settings
@@ -130,6 +131,79 @@ class ReconcileTaskTests(TestCase):
         self.assertIn("reconcile-system-crons", names)
         entry = next(e for e in reg_cmd.SYSTEM_CRONS if e[0] == "reconcile-system-crons")
         self.assertEqual(entry[2], "/api/cron/trigger/reconcile_system_crons/")
+
+
+class SystemCronsWellFormednessTests(TestCase):
+    """SYSTEM_CRONS structural invariants — no QStash involved.
+
+    Guards the failure mode where a schedule points at a task name that does
+    not exist: sync_system_crons would happily register a QStash schedule whose
+    fires all 404 at ``trigger_task``. Every ``/api/cron/trigger/<name>/`` entry
+    must resolve to a TASK_MAP-registered task. Dedicated-view paths
+    (apply-pending-configs, expire-trials) are not trigger tasks and are skipped
+    by the same regex the router uses.
+    """
+
+    TRIGGER_RE = re.compile(r"^/api/cron/trigger/(?P<name>[a-z0-9_]+)/$")
+
+    def test_every_trigger_path_resolves_to_a_task_map_entry(self):
+        from apps.cron.views import TASK_MAP
+
+        for name, cron_expr, path in reg_cmd.SYSTEM_CRONS:
+            m = self.TRIGGER_RE.match(path)
+            if not m:
+                continue  # dedicated-view endpoint, not a trigger task
+            self.assertIn(
+                m.group("name"),
+                TASK_MAP,
+                msg=f"SYSTEM_CRONS entry {name!r} → {path!r} has no TASK_MAP task",
+            )
+
+    def test_names_and_paths_are_unique(self):
+        names = [name for name, _e, _p in reg_cmd.SYSTEM_CRONS]
+        paths = [path for _n, _e, path in reg_cmd.SYSTEM_CRONS]
+        self.assertEqual(len(names), len(set(names)), "duplicate SYSTEM_CRONS name")
+        self.assertEqual(len(paths), len(set(paths)), "duplicate SYSTEM_CRONS path")
+
+    def test_cron_exprs_have_five_fields(self):
+        for name, cron_expr, _path in reg_cmd.SYSTEM_CRONS:
+            self.assertEqual(
+                len(cron_expr.split()),
+                5,
+                msg=f"SYSTEM_CRONS entry {name!r} has a malformed cron expr {cron_expr!r}",
+            )
+
+    def test_wave_b_eval_probes_are_scheduled(self):
+        """The five Wave B eval probes (PR-B6) are wired with the planned exprs."""
+        by_name = {name: (cron_expr, path) for name, cron_expr, path in reg_cmd.SYSTEM_CRONS}
+        expected = {
+            "eval-journey-chat": ("*/30 * * * *", "/api/cron/trigger/eval_journey_chat/"),
+            "eval-journey-journal": ("5 5 * * *", "/api/cron/trigger/eval_journey_journal/"),
+            "eval-journey-wake": ("12 5 * * *", "/api/cron/trigger/eval_journey_wake/"),
+            "eval-journey-cron": ("20 5 * * *", "/api/cron/trigger/eval_journey_cron/"),
+            "reap-stuck-eval-runs": ("35 5 * * *", "/api/cron/trigger/reap_stuck_eval_runs/"),
+        }
+        for name, (cron_expr, path) in expected.items():
+            self.assertIn(name, by_name, msg=f"{name} not scheduled in SYSTEM_CRONS")
+            self.assertEqual(by_name[name], (cron_expr, path))
+
+    def test_daily_eval_probes_avoid_the_chat_probe_fire_boundary(self):
+        """The chat probe fires at :00 and :30 every hour. No daily eval probe
+        may share those minutes, else it races the chat probe (the wake probe
+        force-hibernates the tenant — a concurrent chat fire would wake it
+        mid-test). Probe-1↔Probe-4 race, plan §Green-theater."""
+        chat_minutes = {0, 30}
+        for name, cron_expr, _path in reg_cmd.SYSTEM_CRONS:
+            if not name.startswith(("eval-journey-", "reap-stuck-eval")):
+                continue
+            minute_field = cron_expr.split()[0]
+            if minute_field.startswith("*"):
+                continue  # the chat probe itself (*/30)
+            self.assertNotIn(
+                int(minute_field),
+                chat_minutes,
+                msg=f"{name} fires on a chat-probe minute ({minute_field})",
+            )
 
 
 class ViewDelegationTests(TestCase):

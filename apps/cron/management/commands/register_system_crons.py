@@ -170,6 +170,33 @@ SYSTEM_CRONS = [
     # delete — run `manage.py reap_orphaned_containers --apply` after lifting
     # the lock. Offset from the other crons. See apps/orchestrator/orphan_reaper.py.
     ("reap-orphaned-containers", "20 8 * * *", "/api/cron/trigger/reap_orphaned_containers/"),
+    # --- Eval Wave B journey probes (see docs/evals-wave-b-plan.md §PR-B6). ---
+    # Each probe drives a REAL path against the synthetic eval-journey tenant and
+    # RAISES on a non-pass run so a broken pipeline DLQs + emails the owner
+    # (finalize_task_run / eval_smoke contract). Registration is idempotent by
+    # destination URL via sync_system_crons, so a re-run never double-schedules.
+    #
+    # Cadence + stagger rationale:
+    #   - chat runs every 30 min (fires at :00 and :30 each hour).
+    #   - journal/wake/cron run once daily at 05:xx UTC on minutes deliberately
+    #     OFF the :00/:30 boundary so no daily probe ever lands on a chat fire.
+    #     The wake probe FORCE-HIBERNATES the tenant, so its 05:12 window is kept
+    #     clear of both chat fires (:00/:30) to avoid the Probe-1↔Probe-4 race
+    #     (a chat fire waking the tenant mid-hibernation-test).
+    #   - the reaper runs daily at 05:35 (off-boundary, clear of the chat fires),
+    #     far above every probe's sub-300s deadline (it only flips runs stuck
+    #     >30min), so it never touches a live probe run.
+    # Every 30 min — chat round-trip journey canary.
+    ("eval-journey-chat", "*/30 * * * *", "/api/cron/trigger/eval_journey_chat/"),
+    # Daily at 05:05 UTC — journal write→FTS-search journey canary.
+    ("eval-journey-journal", "5 5 * * *", "/api/cron/trigger/eval_journey_journal/"),
+    # Daily at 05:12 UTC — hibernation-wake journey canary (force-hibernates the
+    # tenant; kept off the :00/:30 chat fires — see stagger note above).
+    ("eval-journey-wake", "12 5 * * *", "/api/cron/trigger/eval_journey_wake/"),
+    # Daily at 05:20 UTC — cron-fire delivery journey canary.
+    ("eval-journey-cron", "20 5 * * *", "/api/cron/trigger/eval_journey_cron/"),
+    # Daily at 05:35 UTC — crash-recovery reaper for orphaned EvalRun rows.
+    ("reap-stuck-eval-runs", "35 5 * * *", "/api/cron/trigger/reap_stuck_eval_runs/"),
 ]
 
 # Destinations for crons that have been RETIRED. The register loop above only
