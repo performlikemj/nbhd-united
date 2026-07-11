@@ -1,0 +1,19 @@
+An eval run did not pass. This message carries METADATA ONLY — no message content.
+
+Suite:     {{ suite }}
+Run id:    {{ run_id }}
+Status:    {{ status }}
+Trigger:   {{ trigger }}
+Build sha: {{ git_sha }}
+Image tag: {{ image_tag }}
+Result:    {{ passed }}/{{ total }} cases passed
+Started:   {{ started_at|date:"Y-m-d H:i:s e" }}
+Finished:  {{ finished_at|date:"Y-m-d H:i:s e" }}
+
+Failed cases:
+{% for cid in failed_case_ids %}  - {{ cid }}
+{% empty %}  (none recorded — a zero-case run closes 'error')
+{% endfor %}
+Investigate via the "eval {{ suite }}: ..." summary line in ContainerAppConsoleLogs_CL
+and the EvalRun / EvalResult rows for the run id above. There is never any message
+content, decrypted value, or PII in an eval record — assert on the metadata.

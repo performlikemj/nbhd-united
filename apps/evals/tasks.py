@@ -1,6 +1,27 @@
-"""QStash-dispatched eval tasks (Wave A)."""
+"""QStash-dispatched eval tasks (Wave A+)."""
 
 from __future__ import annotations
+
+
+def finalize_task_run(run) -> None:
+    """Shared task-boundary finalizer for every eval task wrapper.
+
+    On a run that did NOT close ``pass``: best-effort alert the platform owner
+    (``send_eval_failure_alert`` — never raises), then RAISE ``RuntimeError`` so
+    QStash marks the delivery failed and it lands in the DLQ. On a passing run:
+    no-op. This is the extraction of the ``eval_smoke_task`` / crypto-smoke
+    contract, so Wave B's journey-probe tasks inherit identical fail semantics
+    (alert + DLQ, never a silent green).
+    """
+    from apps.evals.models import EvalRun
+
+    if run.status == EvalRun.Status.PASS:
+        return
+
+    from apps.evals.alerting import send_eval_failure_alert
+
+    send_eval_failure_alert(run)  # best-effort; swallows its own errors
+    raise RuntimeError(f"eval {run.suite}: run {run.id} closed '{run.status}' — owner alerted, delivery DLQ'd")
 
 
 def eval_smoke_task() -> dict:
@@ -22,8 +43,8 @@ def eval_smoke_task() -> dict:
     # SCHEDULED when a real QStash cron drives it.
     run = run_smoke_suite(trigger=EvalRun.Trigger.MANUAL)
 
-    if run.status != EvalRun.Status.PASS:
-        raise RuntimeError(f"eval_smoke: run {run.id} closed '{run.status}' — see the eval summary log line")
+    # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
+    finalize_task_run(run)
 
     return {
         "run_id": run.id,
