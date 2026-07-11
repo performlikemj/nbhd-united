@@ -76,10 +76,12 @@ DEBERTA_LABEL_MAP = {
     "IPV6": "IP_ADDRESS",
     "MAC": "IP_ADDRESS",
     "USERAGENT": "IP_ADDRESS",
-    # DATE omitted on purpose: the model fires on every yyyy-mm-dd
-    # journal-entry heading. Birth-date redaction was nice-to-have, not
-    # load-bearing — Presidio doesn't catch it either and starter-tier
-    # tenants haven't been complaining.
+    # DATE stays OUT of the static map on purpose: the model fires it on every
+    # yyyy-mm-dd journal-entry heading, so a blanket DATE->something mapping would
+    # redact every date. Birth dates ARE identifying PII, though, so
+    # redactor._detect_pii promotes a raw DATE span to DATE_OF_BIRTH only when a
+    # birth-context cue ("date of birth", "born", "生年月日", "誕生日") sits beside
+    # it — an ordinary calendar date still falls through here untouched.
     # Note: model also emits AMOUNT, CURRENCY, DATE, TIME, JOBAREA,
     # JOBDESCRIPTOR, JOBTITLE, JOBTYPE, COMPANY_NAME, NUMBER, URL, GENDER,
     # SEX, SEXTYPE. We intentionally drop those — they're context, not
@@ -116,10 +118,12 @@ TIER_POLICIES = {
             "CREDIT_CARD",
             "IBAN_CODE",
             "LOCATION",
-            # DATE_OF_BIRTH intentionally omitted: no detector can emit it (the
-            # model's DATE label is deliberately dropped above to avoid firing on
-            # every yyyy-mm-dd journal heading), so listing it only advertised
-            # coverage that never happened. See DEBERTA_LABEL_MAP notes.
+            # DATE_OF_BIRTH is context-gated, not statically mapped: the model's
+            # raw DATE label stays dropped in DEBERTA_LABEL_MAP (it fires on every
+            # journal date heading), and redactor._detect_pii promotes a DATE span
+            # to DATE_OF_BIRTH only under a birth-context cue. Listing it here is
+            # what lets that promoted span clear the tier's entities gate.
+            "DATE_OF_BIRTH",
             "PASSWORD",
             "IP_ADDRESS",
             "ID_DOCUMENT",

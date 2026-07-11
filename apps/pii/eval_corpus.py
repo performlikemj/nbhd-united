@@ -692,48 +692,48 @@ CASES: list[EvalCase] = [
         exact="# 2026-03-26\n\nGood focus session today.",
     ),
     _c(
-        "date_of_birth_statement_not_redacted",
+        "date_of_birth_statement_redacts_under_birth_context",
         "My date of birth is March 3, 1990.",
         tags=("standard", "dates"),
-        # DEAD-SENTINEL GUARD: feeds a real raw "DATE" hit (the raw label the
-        # model actually emits per config.py's own comment list — "model also
-        # emits ... DATE ...") rather than an empty hits=() — a case with no
-        # hit at all could never flip even after a real fix, since nothing
-        # would reach the label-map/entities-list check either way.
-        known_gap="KNOWN-GAP: DATE_OF_BIRTH has no detector — apps/pii/config.py "
-        "DEBERTA_LABEL_MAP deliberately has no entry for the raw 'DATE' label "
-        "(dropped fleet-wide to avoid firing on every journal date heading), so an "
-        "explicit birth-date disclosure is not redacted today. FLIPS WHEN ALL "
-        "THREE of: (1) a context-aware rule maps a DATE-shaped span to "
-        "DATE_OF_BIRTH under birth-context phrasing (e.g. 'date of birth is', "
-        "'born on') in apps/pii/config.py or apps/pii/redactor.py; (2) "
-        "'DATE_OF_BIRTH' is added to TIER_POLICIES['starter']['entities'] in "
-        "config.py; AND (3) apps/pii/hygiene.py's validate_structured is taught "
-        "about DATE_OF_BIRTH — today it fails closed on any type it doesn't "
-        "explicitly branch on (the final `return False` at hygiene.py:386-387), "
-        "so even with (1) and (2) alone the span would still be silently dropped "
-        "as 'structured_invalid' by _filter_results (redactor.py's "
-        "validate_structured gate applies to every type except PERSON/LOCATION). "
-        "This case already feeds the raw DATE hit real detection would produce, "
-        "so all three changes together are observed directly, not silently "
-        "missed.",
+        # FIXED (was a KNOWN-GAP sentinel). A raw DATE span now redacts as
+        # DATE_OF_BIRTH when a birth-context cue sits beside it, via THREE
+        # coordinated changes: (1) redactor._detect_pii promotes a raw DATE hit to
+        # DATE_OF_BIRTH under a birth-context cue ("date of birth", "born",
+        # "生年月日", …) — a plain calendar date with no cue is still dropped
+        # (see plain_calendar_date_non_birth_context_preserved below); (2)
+        # DATE_OF_BIRTH is a starter-tier entity in config.py so the promoted span
+        # clears the entities gate; and (3) hygiene.validate_structured accepts a
+        # date-SHAPED span for DATE_OF_BIRTH (and hygiene.is_junk_span no longer
+        # culls an ISO birth date as numeric_datelike), instead of failing closed
+        # on an unknown type. This case feeds the raw DATE hit real detection
+        # produces, so all three are observed directly.
         hits=(("DATE", "March 3, 1990", 0.9),),
         redacted=("March 3, 1990",),
+        preserved=("My date of birth is",),
     ),
     _c(
-        "jp_date_of_birth_not_redacted",
+        "jp_date_of_birth_redacts_under_birth_context",
         "生年月日は1990年3月3日です。",
         tags=("standard", "dates", "jp"),
-        known_gap="KNOWN-GAP: same DATE_OF_BIRTH gap as "
-        "date_of_birth_statement_not_redacted, for a Japanese-format birth date "
-        "statement. FLIPS WHEN: the same three changes described there land "
-        "(context-aware label mapping, the TIER_POLICIES entry, AND teaching "
-        "hygiene.validate_structured about DATE_OF_BIRTH so it doesn't fail "
-        "closed) — this case feeds the equivalent raw DATE hit for the "
-        "JP-format span so the fix is observed directly here too, not just in "
-        "the English case.",
+        notes="FIXED (was a KNOWN-GAP sentinel): the Japanese-format counterpart of "
+        "date_of_birth_statement_redacts_under_birth_context. The JP cue '生年月日' "
+        "promotes the raw DATE hit to DATE_OF_BIRTH, hygiene.validate_structured "
+        "accepts the 年月日 date shape, and the surrounding sentence is preserved.",
         hits=(("DATE", "1990年3月3日", 0.9),),
         redacted=("1990年3月3日",),
+        preserved=("生年月日は", "です。"),
+    ),
+    _c(
+        "plain_calendar_date_non_birth_context_preserved",
+        "The meeting is on March 3, 1990.",
+        tags=("standard", "dates"),
+        notes="Regression guard for the DOB fix's context gate: the SAME raw DATE "
+        "hit as date_of_birth_statement_redacts_under_birth_context, but with no "
+        "birth-context cue nearby, is NOT promoted to DATE_OF_BIRTH — it stays "
+        "dropped, exactly as every ordinary calendar date does, so the fix does "
+        "not over-redact dates.",
+        hits=(("DATE", "March 3, 1990", 0.9),),
+        exact="The meeting is on March 3, 1990.",
     ),
     # -------------------------------------------------------------------
     # STANDARD: mixed-language (Japanese names / addresses)
@@ -771,85 +771,78 @@ CASES: list[EvalCase] = [
         hits=(("CITY", "東京都渋谷区代々木2-3-15", 0.9),),
     ),
     _c(
-        "jp_postal_code_not_redacted_collides_with_range_guard",
+        "jp_postal_code_redacts",
         "郵便番号：150-0041",
         tags=("standard", "jp", "house_number_address"),
-        known_gap="KNOWN-GAP: a Japanese postal code (NNN-NNNN, 3-4 digits each "
-        "side of a hyphen) has the exact same shape as a bare numeric range "
-        "('18-29°C') and fullmatches hygiene._BARE_NUM_RANGE_RE's range "
-        "alternative, so is_junk_span treats it as 'numeric_datelike' junk and "
-        "the redactor never mints a placeholder for it — the postal code passes "
-        "through untouched. A US 5-digit/ZIP+4 code doesn't collide (5 digits "
-        "exceeds the regex's 4-digit cap on one side), so this is specific to "
-        "short hyphenated postal formats like Japan's. FLIPS WHEN: "
-        "hygiene._BARE_NUM_RANGE_RE's range alternative is scoped away from a "
-        "correctly-labeled ZIPCODE raw hit (e.g. only applied when the ORIGINAL "
-        "raw label is loosely-typed PERSON/LOCATION context, mirroring how the "
-        "BUILDINGNUMBER adjacency guard already distinguishes by raw label in "
-        "redactor._detect_pii) — this case already feeds the real ZIPCODE hit, so "
-        "any such fix is observed directly.",
+        notes="FIXED (was a KNOWN-GAP sentinel). A Japanese postal code (NNN-NNNN) "
+        "shares the exact surface shape of a bare numeric range ('18-29') and used "
+        "to fullmatch hygiene._BARE_NUM_RANGE_RE's range alternative, so a "
+        "correctly-labeled ZIPCODE hit (which collapses to LOCATION) was dropped as "
+        "'numeric_datelike' junk and never redacted. hygiene._POSTAL_CODE_RE now "
+        "exempts the postal shape from that range guard, so the ZIPCODE redacts. A "
+        "US ZIP+4 ('94103-1234') already redacted (its 5-digit side exceeds the "
+        "range regex's 4-digit cap). See bare_number_range_still_suppressed_not_"
+        "postal for the other direction.",
         redacted=("150-0041",),
+        preserved=("郵便番号",),
         hits=(("ZIPCODE", "150-0041", 0.8),),
     ),
     _c(
-        "jp_unspaced_text_over_redacted_by_word_snap",
+        "bare_number_range_still_suppressed_not_postal",
+        "the trip forecast was 18-29 that week",
+        tags=("standard", "jp", "house_number_address"),
+        notes="Regression guard paired with jp_postal_code_redacts: a genuine bare "
+        "numeric range ('18-29') mislabeled LOCATION must STILL be suppressed by "
+        "hygiene._BARE_NUM_RANGE_RE (it is not postal-shaped), so exempting the "
+        "postal shape did not re-open the temperature/measurement-range false "
+        "positive the range guard was built to prevent.",
+        hits=(("CITY", "18-29", 0.8),),
+        exact="the trip forecast was 18-29 that week",
+    ),
+    _c(
+        "jp_unspaced_name_redacts_only_the_name",
         "田中太郎さんによろしくお伝えください",
         tags=("standard", "jp"),
-        # DEAD-SENTINEL GUARD: uses a 4-char name ("田中太郎"), not the 2-char
-        # "田中" this case originally used. _is_degenerate_span (redactor.py:
-        # 484-498, len<3 floor) independently drops any span under 3 chars
-        # regardless of cause — with a 2-char hit, an exclude-CJK fix to
-        # snap_to_word_boundaries would stop the over-expansion but leave the
-        # narrowed 2-char span to be filtered as "degenerate" instead, so the
-        # sentinel would stay green (still not redacted, just for a different
-        # reason) and never flip. A 4-char name clears that floor once the span
-        # stops being over-expanded, so the fix is actually observed.
-        known_gap="KNOWN-GAP: snap_to_word_boundaries (apps/pii/hygiene.py) expands "
-        "each edge of a PERSON/LOCATION span over any contiguous run of "
-        "Unicode-alnum characters (str.isalnum(), unicode-aware) until it hits real "
-        "punctuation or whitespace. Japanese sentences have no ASCII spaces between "
-        "words, so a short detected name/location span with no adjacent punctuation "
-        "gets expanded to swallow the ENTIRE surrounding unpunctuated run — here "
-        "the whole sentence collapses to a single [PERSON_1], including the "
-        "honorific and the request that follow the name. The guard was designed for "
-        "truncated-token recovery in space-delimited languages ('amaica' -> "
-        "'Jamaica') and has never been validated against scripts without ASCII "
-        "word breaks (Japanese/Chinese/Thai). FLIPS WHEN: "
-        "snap_to_word_boundaries is made script-aware (e.g. stops at a script "
-        "transition, caps total expansion length, or excludes CJK code points from "
-        "the alnum walk) — this case already feeds a real narrow FULLNAME hit on "
-        "just '田中太郎' (4 chars, clears the degenerate-span floor below), so any "
-        "such fix is observed directly: 'さんによろしくお伝えください' would start "
-        "surviving instead of being swallowed.",
+        notes="FIXED (was a KNOWN-GAP sentinel). snap_to_word_boundaries used to "
+        "expand each edge of a PERSON/LOCATION span over any run of Unicode-alnum "
+        "characters; Japanese has no ASCII word breaks, so a short name span with "
+        "no adjacent punctuation swallowed the ENTIRE unpunctuated sentence into "
+        "one [PERSON_1] (and stored the sentence as a fake name). The snap now "
+        "stops at CJK code points (hygiene._is_snap_expandable), so only '田中太郎' "
+        "redacts and the honorific + request survive. See "
+        "jp_three_char_name_redacts_only_the_name and "
+        "jp_two_char_name_redacts_not_dropped_as_degenerate for the shorter "
+        "lengths — none may leak.",
         redacted=("田中太郎",),
         preserved=("さんによろしくお伝えください",),
         hits=(("FULLNAME", "田中太郎", 0.85),),
     ),
     _c(
-        "jp_two_char_name_silently_dropped_by_degenerate_floor",
+        "jp_three_char_name_redacts_only_the_name",
+        "田中太さんによろしくお伝えください",
+        tags=("standard", "jp"),
+        notes="Length-coverage guard for the snap fix: a 3-character JP name in the "
+        "same unspaced sentence redacts ONLY the name, preserving the honorific and "
+        "request — the CJK-aware snap holds across 2/3/4-char names, not just the "
+        "4-char case.",
+        redacted=("田中太",),
+        preserved=("さんによろしくお伝えください",),
+        hits=(("FULLNAME", "田中太", 0.85),),
+    ),
+    _c(
+        "jp_two_char_name_redacts_not_dropped_as_degenerate",
         "田中、会議に来てください",
         tags=("standard", "jp"),
-        # Isolated from the snap-expansion bug above on purpose: the full-width
-        # comma (、) immediately after "田中" gives snap_to_word_boundaries a
-        # real stop, so this case's span is exactly "田中" (2 chars) even
-        # TODAY, unaffected by the over-expansion bug. This documents a
-        # SEPARATE, independent gap the reviewer asked to have pinned:
-        # _is_degenerate_span's len<3 floor treats a complete 2-character
-        # Japanese name the same as a stray English letter/fragment.
-        known_gap="KNOWN-GAP: _is_degenerate_span (apps/pii/redactor.py:484-498) "
-        "treats any span under 3 characters as junk — a floor calibrated for "
-        "Latin-script fragments (a lone letter, '_', '['), where under-3-char "
-        "spans are almost never real PII. But a complete Japanese personal name "
-        "is very commonly exactly 2 characters (a bare surname, as here), so a "
-        "genuine 2-character JP name is silently dropped and never redacted — "
-        "independent of, and NOT fixed by, any change to snap_to_word_boundaries "
-        "(this case's span is already correctly isolated by the comma boundary). "
-        "FLIPS WHEN: _is_degenerate_span's length floor is made script-aware "
-        "(e.g. a lower floor, or an alpha-only floor, for CJK-only spans, since "
-        "2 CJK characters carry far more information density than 2 Latin "
-        "letters) — this case already feeds a real, punctuation-isolated "
-        "2-char FULLNAME hit, so any such fix is observed directly.",
+        notes="FIXED (was a KNOWN-GAP sentinel), and the load-bearing pair to the "
+        "snap fix: _is_degenerate_span's 3-char floor is Latin-calibrated and used "
+        "to drop a complete 2-character Japanese surname (田中) as 'degenerate'. It "
+        "is now CJK-aware (a span carrying a Han/kana char is exempt from the "
+        "floor), so a 2-kanji name redacts instead of leaking. Without this, the "
+        "snap fix above would flip a 2-char name from over-redacted straight to "
+        "LEAKED in cleartext. The full-width comma already isolates the span to "
+        "exactly '田中', so this is observed independently of the snap change.",
         redacted=("田中",),
+        preserved=("会議に来てください",),
         hits=(("FULLNAME", "田中", 0.85),),
     ),
     _c(
