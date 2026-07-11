@@ -50,6 +50,7 @@ from django.test import SimpleTestCase
 
 from apps.integrations.content_sanitize import neutralize_remote_image_markdown
 from apps.orchestrator.tool_policy import (
+    OPENCLAW_CURRENT_VERSION,
     generate_tool_config,
     get_allowed_tools,
     get_denied_tools,
@@ -195,12 +196,17 @@ class PdfStructureHardeningCorpus(SimpleTestCase):
 
     def test_known_residual_hex_escaped_name_currently_evades(self):
         # DOCUMENTED RESIDUAL (inbound_media TODO(P1-1-followup) item 3): a
-        # hex-escaped name /J#4A#53 decodes to /JS for a real reader but evades
-        # the plain-text token scan. This pins the CURRENT (accepted) behavior —
-        # NOT an assertion that the evasion is desirable. If a future pikepdf-based
-        # validator normalizes hex escapes, this test flips and should be updated
-        # to expect "unsafe_document". It is a boundary sentinel, not a fake pass.
-        _, _, err = decode_and_validate_document(_b64(_pdf(b" /Names << /J#4A#53 9 0 R >>")))
+        # hex-escaped name /#4A#53 PDF-hex-decodes to /JS for a real reader
+        # (#4A→'J', #53→'S') but evades the plain-text token scan. This pins the
+        # CURRENT (accepted) behavior — NOT an assertion that the evasion is
+        # desirable. The payload is chosen so it FLIPS correctly: once a future
+        # pikepdf-based validator normalizes the hex escapes, the decoded /JS is
+        # a real _ACTIVE_CONTENT_RE token, so this test starts returning
+        # "unsafe_document" and forces an update. (A payload like /J#4A#53 would
+        # decode to /JJS — no token match — so its sentinel could never fire and
+        # would give a false "still-unaffected" reading to a future engineer.)
+        # It is a boundary sentinel, not a fake pass.
+        _, _, err = decode_and_validate_document(_b64(_pdf(b" /Names << /#4A#53 9 0 R >>")))
         self.assertIsNone(err, "hex-escape residual behavior changed — update D1 and the threat-model TODO")
 
 
@@ -382,7 +388,11 @@ class ToolEgressPolicyCorpus(SimpleTestCase):
     deny list.
     """
 
-    _CURRENT = "2026.5.28"
+    # Track the live fleet version so a future bump that accidentally dropped
+    # `pdf` from the allow-list (or un-denied an egress built-in) is caught by
+    # the "NOW" assertions below. The web_fetch regression sentinel keeps its
+    # literal version pins — it is a HISTORICAL assertion, not a current-state one.
+    _CURRENT = OPENCLAW_CURRENT_VERSION
 
     # Built-ins that would give an injection an arbitrary egress / execution
     # channel — must be denied at the current fleet version.
