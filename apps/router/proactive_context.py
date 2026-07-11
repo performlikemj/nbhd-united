@@ -183,6 +183,25 @@ _STRUCTURED_GUIDANCE = (
     "structure first, content second.]\n"
 )
 
+# Always-on whenever ANY rows surface (unlike the structured thread-rule
+# above, which needs parsed_items). Added after a 2026-07-11 canary
+# incident: the Evening Check-in asked "where did energy land today,
+# 1-10?", the user replied "6.5 today", the [earlier-from-you] block WAS
+# surfaced — and the model still logged 6.5 as SLEEP HOURS via the fuel
+# tools (a bare decimal at bedtime pattern-matched sleep instead of
+# binding to the question shown). Rendered AFTER the message parts, right
+# next to the user's reply, so "the messages above" reads literally.
+# Kept to three sentences on purpose — this ships on every surfaced turn.
+_ANSWER_BINDING_GUIDANCE = (
+    "[answer-binding: the user's reply likely answers one of the messages "
+    "above — bind it to the MOST RECENT question whose format fits before "
+    "interpreting it as anything else. Match the answer to that question's "
+    "scale and units: a reply to a 1-10 rating question is a RATING, not "
+    "hours/quantity/money. If a bare number could answer more than one open "
+    "question — or could be either an answer or a new log entry — ask one "
+    "short clarifying question BEFORE writing to any log or tool.]\n"
+)
+
 
 def _format_block(rows: Iterable[ProactiveOutbound]) -> str:
     """Render the surfaced rows as a single marker block.
@@ -192,7 +211,10 @@ def _format_block(rows: Iterable[ProactiveOutbound]) -> str:
     treat the user's text as a reply to it. If any row has a non-empty
     ``parsed_items``, we render numbered anchors AND prepend a one-line
     ``[thread-rule: ...]`` guidance so the agent knows to map reply
-    paragraphs by index when counts align.
+    paragraphs by index when counts align. Every non-empty block also
+    APPENDS the ``[answer-binding: ...]`` guidance after the message
+    parts — adjacent to the user's reply — so a bare "6.5" binds to the
+    1-10 question shown instead of pattern-matching a log entry.
     """
     parts: list[str] = []
     any_structured = False
@@ -210,7 +232,7 @@ def _format_block(rows: Iterable[ProactiveOutbound]) -> str:
     if not parts:
         return ""
     prefix = _STRUCTURED_GUIDANCE if any_structured else ""
-    return prefix + "\n".join(parts) + "\n"
+    return prefix + "\n".join(parts) + "\n" + _ANSWER_BINDING_GUIDANCE
 
 
 def surface_proactive_context(
