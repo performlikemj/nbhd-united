@@ -142,6 +142,13 @@ TASK_MAP = {
     # 'pass' so a failing eval lands in the DLQ instead of a silent green. Safe to
     # re-fire anytime — each fire is its own run.
     "eval_smoke": "apps.evals.tasks.eval_smoke_task",
+    # Journey canary — journal write→search (Wave B, Probe 2). Drives the real
+    # RuntimeDocumentView write + Postgres-FTS RuntimeJournalSearchView read
+    # against the synthetic EVAL_JOURNEY_TENANT_ID tenant. Operator-fired via a
+    # no-body publish to /api/cron/trigger/eval_journey_journal/ (zero-arg);
+    # PR-B6 adds the daily schedule. RAISES on a non-'pass' run so a broken
+    # journal path lands in the DLQ + owner alert, never a silent green.
+    "eval_journey_journal": "apps.evals.tasks.eval_journey_journal_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.

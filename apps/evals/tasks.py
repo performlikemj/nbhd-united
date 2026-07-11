@@ -52,3 +52,38 @@ def eval_smoke_task() -> dict:
         "status": run.status,
         "cases": run.results.count(),
     }
+
+
+def eval_journey_journal_task(transport=None) -> dict:
+    """Fire the ``journey_journal`` probe — journal write→search (Wave B, Probe 2).
+
+    Drives the real ``RuntimeDocumentView`` write + real Postgres-FTS
+    ``RuntimeJournalSearchView`` read against the synthetic journey tenant
+    (resolved by ``EVAL_JOURNEY_TENANT_ID``). Registered in
+    apps/cron/views.py TASK_MAP; operator-fired today via a no-body publish to
+    ``/api/cron/trigger/eval_journey_journal/`` (a schedule is added later in
+    PR-B6). Writes real EvalRun/EvalResult rows and emits the one-line summary.
+
+    RAISES when the run does not close ``pass`` (broken write/search path, or a
+    misconfigured/missing synthetic tenant) — alerting the owner and landing the
+    delivery in the QStash DLQ instead of a silent green.
+
+    ``transport`` stays ``None`` in production (real HTTP via
+    ``HttpxRuntimeTransport``); tests inject an in-process transport that drives
+    the identical endpoints. The default keeps the QStash zero-arg contract.
+    """
+    from apps.evals.models import EvalRun
+    from apps.evals.suites.journey_journal import run_journal_search_suite
+
+    # Operator-fired today (no schedule yet); PR-B6 flips this to SCHEDULED.
+    run = run_journal_search_suite(transport=transport, trigger=EvalRun.Trigger.MANUAL)
+
+    # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
+    finalize_task_run(run)
+
+    return {
+        "run_id": run.id,
+        "suite": run.suite,
+        "status": run.status,
+        "cases": run.results.count(),
+    }
