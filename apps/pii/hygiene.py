@@ -69,23 +69,52 @@ def mask_placeholders(text: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _is_cjk_char(ch: str) -> bool:
-    """True for a Han ideograph or Japanese kana code point.
+# Largest kanji run the CJK snap will grow a truncated span into. Japanese
+# personal names are 2-4 kanji (rarely 5); the cap bounds how far a truncated
+# hit can absorb an adjacent kanji compound before it stops, so recovery stays a
+# name-sized over-redaction rather than swallowing a clause of ideographs.
+_MAX_CJK_SNAP_SPAN = 6
 
-    Covers the scripts with no ASCII word separators that break the alnum-walk
-    snapping: Hiragana, Katakana (incl. halfwidth), CJK Unified Ideographs and
-    the common extension/compatibility blocks. Deliberately narrow — it gates a
-    redaction heuristic, so it errs toward the scripts we can verify.
+
+def _is_han_char(ch: str) -> bool:
+    """True for a Han ideograph or ideographic iteration mark (々 〆 〇).
+
+    These make up unspaced kanji names; the snap recovers a truncated hit across
+    a contiguous run of them. 々 (U+3005) in particular is part of common
+    surnames like 佐々木 — it is ``str.isalnum()``, so without listing it here the
+    snap would treat it as a freely-expandable Latin word char and leak the
+    surname's first kanji.
     """
     o = ord(ch)
     return (
-        0x3040 <= o <= 0x30FF  # Hiragana + Katakana
-        or 0x31F0 <= o <= 0x31FF  # Katakana phonetic extensions
+        0x3005 <= o <= 0x3007  # 々 〆 〇 ideographic iteration / closing marks
         or 0x3400 <= o <= 0x4DBF  # CJK Unified Ideographs Extension A
         or 0x4E00 <= o <= 0x9FFF  # CJK Unified Ideographs
         or 0xF900 <= o <= 0xFAFF  # CJK Compatibility Ideographs
+    )
+
+
+def _is_kana_char(ch: str) -> bool:
+    """True for a Hiragana / Katakana code point (incl. iteration marks ヽヾゝゞ
+    and halfwidth katakana).
+
+    Kana is a hard STOP for the snap: particles and honorifics (は/を/に/さん) are
+    kana and follow a name with no space, so expanding across kana is exactly the
+    over-redaction that swallowed whole sentences.
+    """
+    o = ord(ch)
+    return (
+        0x3040 <= o <= 0x30FF  # Hiragana + Katakana (incl. ゝゞ 309D-E, ヽヾ 30FD-E)
+        or 0x31F0 <= o <= 0x31FF  # Katakana phonetic extensions
         or 0xFF66 <= o <= 0xFF9D  # Halfwidth Katakana
     )
+
+
+def _is_cjk_char(ch: str) -> bool:
+    """True for any Han ideograph or Japanese kana code point (see the two
+    helpers above). Used by :func:`contains_cjk` and the redactor's degenerate-
+    span floor to treat a 2-character CJK name as the complete name it is."""
+    return _is_han_char(ch) or _is_kana_char(ch)
 
 
 def contains_cjk(text: str) -> bool:
@@ -93,14 +122,29 @@ def contains_cjk(text: str) -> bool:
     return any(_is_cjk_char(ch) for ch in text)
 
 
-def _is_snap_expandable(ch: str) -> bool:
-    """True when word-snapping may absorb ``ch`` into a span: a unicode-alnum
-    word char that is NOT CJK.
+def _is_hiragana_char(ch: str) -> bool:
+    """True for a Hiragana code point.
 
-    Excluding CJK is the whole fix for the over-expansion bug: in a space-less
-    Japanese sentence every character is alnum, so the unrestricted walk swallowed
-    the entire sentence into one name span. Latin/digit recovery ('amaica' ->
-    'Jamaica') is unaffected — those code points are alnum and non-CJK.
+    Japanese grammatical particles (と を に は が の へ も …) are hiragana, so a
+    single hiragana char BETWEEN two same-type name spans signals two different
+    people ("田中と佐藤" — と = 'and'). Katakana connectors (ノ ヶ ツ ・) are NOT
+    hiragana — they are name-INTERNAL orthography (一ノ瀬, 保土ヶ谷,
+    マイケル・ジョーンズ), so they must not be read as a separator.
+    """
+    return 0x3040 <= ord(ch) <= 0x309F
+
+
+def contains_hiragana(text: str) -> bool:
+    """True when ``text`` carries any Hiragana character (see :func:`_is_hiragana_char`)."""
+    return any(_is_hiragana_char(ch) for ch in text)
+
+
+def _is_latin_word_char(ch: str) -> bool:
+    """True for a unicode-alnum word char that is NOT CJK — freely snap-expandable.
+
+    Excluding CJK is what keeps the space-less-Japanese over-expansion bug fixed:
+    Latin/digit recovery ('amaica' -> 'Jamaica') still walks unbounded, while
+    kanji/kana are handled by the bounded CJK pass in :func:`snap_to_word_boundaries`.
     """
     return ch.isalnum() and not _is_cjk_char(ch)
 
@@ -114,20 +158,20 @@ def snap_to_word_boundaries(text: str, start: int, end: int) -> tuple[int, int]:
     """Expand a span so both edges sit on a word boundary in ``text``.
 
     The DeBERTa tokenizer sometimes reports a span that starts or ends mid-word
-    ("amaica" for Jamaica, "tingham Forest" for Nottingham Forest). Extracting
-    that fragment mints a junk half-name AND leaves the rest of the real name in
-    cleartext. Snapping walks each edge outward over adjacent alphanumeric
-    characters (unicode-aware) until it hits a non-word char (space, punctuation,
-    the bullet filler from :func:`mask_placeholders`), recovering the whole word.
+    ("amaica" for Jamaica, "tingham Forest" for Nottingham Forest, "太郎" out of
+    田中太郎). Extracting that fragment mints a junk half-name AND leaves the rest
+    of the real name in cleartext.
 
-    The walk stops at CJK code points (:func:`_is_snap_expandable`): Japanese/
-    Chinese has no ASCII spaces, so without that stop a 2-char name detection
-    (田中) expanded to swallow the whole unpunctuated sentence and stored the
-    sentence as a fake name. For CJK we trust the detector's span instead.
+    Two recovery passes, both expansion-only:
 
-    Expansion-only on purpose: growing a span to the full word it touches can
-    only make redaction MORE complete, never leak. It never crosses whitespace or
-    punctuation, so it cannot merge a name with an unrelated neighbouring word.
+    - **Latin/digit**: walk each edge over adjacent non-CJK alnum chars, unbounded,
+      until a space/punctuation/filler — the original 'amaica' -> 'Jamaica' fix.
+    - **Han (kanji)**: walk each edge over a CONTIGUOUS run of ideographs, capped
+      at :data:`_MAX_CJK_SNAP_SPAN`, and STOP at kana. Kanji names are unspaced, so
+      a truncated hit ("太郎") would otherwise leave the surname (田中) in cleartext;
+      kana (さん / particles) stays a hard stop so we don't re-swallow the sentence
+      (the original over-redaction bug). The cap keeps a run of unrelated
+      ideographs from being absorbed wholesale.
     """
     if not text:
         return start, end
@@ -136,9 +180,15 @@ def snap_to_word_boundaries(text: str, start: int, end: int) -> tuple[int, int]:
     end = max(0, min(end, n))
     if start >= end:
         return start, end
-    while start > 0 and _is_snap_expandable(text[start - 1]):
+    # Latin/digit truncation recovery (unbounded).
+    while start > 0 and _is_latin_word_char(text[start - 1]):
         start -= 1
-    while end < n and _is_snap_expandable(text[end]):
+    while end < n and _is_latin_word_char(text[end]):
+        end += 1
+    # Han truncation recovery (contiguous kanji run, capped, stops at kana).
+    while start > 0 and _is_han_char(text[start - 1]) and (end - start) < _MAX_CJK_SNAP_SPAN:
+        start -= 1
+    while end < n and _is_han_char(text[end]) and (end - start) < _MAX_CJK_SNAP_SPAN:
         end += 1
     return start, end
 
