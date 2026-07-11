@@ -600,6 +600,15 @@ EVAL_JOURNEY_TENANT_ID = env("EVAL_JOURNEY_TENANT_ID", default="")
 EVAL_BEHAVIOR_TENANT_ID = env("EVAL_BEHAVIOR_TENANT_ID", default="")
 EVAL_JOURNEY_PAT = env("EVAL_JOURNEY_PAT", default="")
 
+# Eval Suite 4 — production SLO snapshot thresholds (docs/evals-directive.md §Suite
+# 4). The nightly, metadata-only snapshot (apps/evals/suites/slo_snapshot.py) owns
+# the sane defaults in code (DEFAULT_SLO_THRESHOLDS); this env JSON overrides any
+# SUBSET without a deploy — e.g. EVAL_SLO_THRESHOLDS='{"reply_latency_p95_ms": 30000}'.
+# Empty default = use the code defaults verbatim. Latencies are in milliseconds; a
+# breached metric closes its snapshot run FAIL → owner alert + DLQ. Unknown keys are
+# ignored by thresholds() so a typo can never introduce a phantom metric.
+EVAL_SLO_THRESHOLDS = env.json("EVAL_SLO_THRESHOLDS", default={})
+
 # Password reset link TTL — 7 days (Django default is 3). Picked so a
 # user who receives a campaign-driven reset email and opens it on a
 # Wednesday isn't locked out by the weekend. Applies to every reset

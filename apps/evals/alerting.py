@@ -71,3 +71,32 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
         logger.exception("eval alert: failure email send failed for run %s", run.id)
         return False
     return True
+
+
+def send_slo_digest(subject: str, body: str) -> bool:
+    """Email the platform owner the weekly SLO digest. Returns True iff sent.
+
+    Same gated, best-effort contract as ``send_eval_failure_alert`` (Suite 4,
+    docs/evals-directive.md): gate on ``PLATFORM_OWNER_EMAIL``, ``send_mail``
+    with ``fail_silently=False``, catch + log, and NEVER raise — the digest is a
+    weekly readout, not a delivery whose failure should DLQ the task. ``subject``
+    and ``body`` are pre-rendered by ``build_weekly_digest`` and carry only metric
+    ids, thresholds, and counts — content-free by construction (INVARIANT #1).
+    """
+    owner_email = getattr(settings, "PLATFORM_OWNER_EMAIL", "")
+    if not owner_email:
+        logger.warning("slo digest: PLATFORM_OWNER_EMAIL not set — weekly digest skipped")
+        return False
+
+    try:
+        send_mail(
+            subject=subject,
+            message=body,
+            from_email=None,
+            recipient_list=[owner_email],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception("slo digest: weekly digest email send failed")
+        return False
+    return True
