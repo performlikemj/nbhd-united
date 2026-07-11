@@ -27,7 +27,7 @@ from apps.tenants.models import Tenant
 # assert "this block survives bootstrap" import THIS constant rather than
 # re-hardcoding the number, so a future bump can't silently strand them on a
 # stale bound.
-BOOTSTRAP_MAX_CHARS = 24000
+BOOTSTRAP_MAX_CHARS = 26000
 
 _CRON_CONTEXT_PREAMBLE = (
     "**MANDATORY — do this BEFORE following the instructions below:**\n"
@@ -2116,10 +2116,15 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 # substitutions + conditional blocks put the base render at
                 # ~18.8 K, so the appended agents_md prompt-extras (person-capture
                 # reflex, task-discipline block) and ~800 chars of base tail were
-                # silently dropped at injection. 24 000 restores the full file
-                # with margin; total stays 80 000 (canary worst-case sum of all
-                # bootstrap files is comfortably under). Tests import
-                # BOOTSTRAP_MAX_CHARS (module top) instead of hardcoding this.
+                # silently dropped at injection. 24 000 covered that render, but
+                # AGENTS.md keeps growing (isolation rules #1108, person-capture
+                # #1149, added persona sections) and 24 000 left only ~2 KB of
+                # head-room over the ~21.9 KB canary render, so the per-file
+                # budget is now 26 000; total stays 80 000 (fleet bootstrap sum
+                # is ≈ 36 KB, ample margin). The durable fix is still to move the
+                # static rule text out of the bootstrap files rather than keep
+                # raising this cap. Tests import BOOTSTRAP_MAX_CHARS (module top)
+                # instead of hardcoding this.
                 "bootstrapMaxChars": BOOTSTRAP_MAX_CHARS,
                 "bootstrapTotalMaxChars": 80000,
                 "compaction": {
