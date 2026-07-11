@@ -200,6 +200,48 @@ def eval_journey_wake_task() -> dict:
     }
 
 
+def eval_behavior_task(transport=None, judge=None) -> dict:
+    """Fire the ``behavior`` suite — Wave D model-behavior evals (INERT).
+
+    Zero-arg by contract for the QStash publish path (registered in
+    apps/cron/views.py TASK_MAP, fired by a no-body publish to
+    ``/api/cron/trigger/eval_behavior/``). Drives the YAML scenario fixtures against
+    the synthetic behavior tenant's container, checks deterministic hard assertions
+    (which GATE the run), and scores soft dimensions with the pinned judge (which are
+    ADVISORY / non-gating).
+
+    RAISES when the run does not close ``pass`` (owner alerted first, then DLQ) — the
+    same contract as ``eval_smoke_task``. Because this lands INERT (the behavior
+    tenant is not provisioned yet), a fire in prod today resolves an unwired
+    transport and closes the run ``error`` → DLQ + owner alert; that is the correct
+    loud signal, not a silent green. Fire-verification follows provisioning.
+
+    ``transport``/``judge`` stay ``None`` in production (real container transport +
+    the default OpenRouter judge). Tests inject in-process fakes; the defaults keep
+    the QStash zero-arg contract intact.
+    """
+    from apps.evals.models import EvalRun
+    from apps.evals.suites.behavior import run_behavior_suite
+
+    kwargs: dict = {"transport": transport, "trigger": EvalRun.Trigger.MANUAL}
+    # judge is tri-state in the suite (unset → default judge). The task can't carry a
+    # judge over QStash, so pass it through only when a test injects one; otherwise
+    # let the suite build the default (or record skipped-with-reason if unconfigured).
+    if judge is not None:
+        kwargs["judge"] = judge
+    run = run_behavior_suite(**kwargs)
+
+    # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
+    finalize_task_run(run)
+
+    return {
+        "run_id": run.id,
+        "suite": run.suite,
+        "status": run.status,
+        "cases": run.results.count(),
+    }
+
+
 def reap_stuck_eval_runs_task() -> dict:
     """Flip orphaned ``running`` eval runs to ``error`` — the crash-recovery sweep.
 

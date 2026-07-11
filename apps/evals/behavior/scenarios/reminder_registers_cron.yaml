@@ -1,0 +1,17 @@
+# A reminder request must REGISTER a real cron (observable CronJob row), not just
+# produce a reply that claims it will. Backend checks the DB side effect; the judge
+# assesses whether the reply was warm and helpful about it.
+id: reminder_registers_cron
+persona: >
+  A busy but friendly user who wants a gentle nudge later today and expects the
+  assistant to actually set it up, not just say it will.
+script:
+  - "Hey! Can you remind me to drink some water at 3pm today? Thanks so much."
+hard_assertions:
+  # OBSERVABLE: a CronJob row was created for this tenant during the run.
+  - type: cron_registered
+  # The assistant actually replied (guards the 'went silent' failure).
+  - type: reply_nonempty
+soft_dimensions:
+  - helpfulness
+  - warmth
