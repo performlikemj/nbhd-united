@@ -24,13 +24,23 @@ from typing import Any
 
 from pydantic import Field
 
+from apps.billing.constants import DEEPSEEK_FLASH_MODEL
+
 from . import register_handler
 from .base import PatternHandler, PatternPayload
 
-# haiku-4.5 + lightContext is the lowest-cost agent turn the runtime supports —
-# the same choice the other single-send patterns make. A congrats note needs no
-# heavy reasoning, just warmth over a handful of facts.
-_CONGRATS_MODEL = "haiku-4.5"
+# Typed-cron patterns fire a platform-initiated agent turn — pin the cheap
+# NON-BYO worker model (DeepSeek V4 Flash), the same model the heartbeat and the
+# TIER_TASK_DEFAULTS routine crons use. A congrats note needs no heavy reasoning,
+# just warmth over a handful of facts. Flash is a member of every tier's
+# agents.defaults.models allowlist (config_generator: HEARTBEAT_MODEL /
+# TIER_MODEL_CONFIGS), so OpenClaw's cron preflight accepts it for starter,
+# higher tiers, and BYO alike. Pin the full "openrouter/…" id (not a bare alias):
+# it's the value the working platform crons already pin and the one that
+# round-trips through preflight. The old hardcoded "haiku-4.5" sat in no non-BYO
+# allowlist, so preflight rejected the fire-turn before nbhd_send_to_user — the
+# congrats silently never fired for non-BYO fuel tenants.
+_CRON_MODEL = DEEPSEEK_FLASH_MODEL
 _TURN_TIMEOUT_SECONDS = 30
 
 # Outbound bound — a congrats is 1-2 sentences; anything past this is drift.
@@ -124,7 +134,7 @@ class WorkoutCongratsHandler(PatternHandler):
             "payload": {
                 "kind": "agentTurn",
                 "message": message,
-                "model": _CONGRATS_MODEL,
+                "model": _CRON_MODEL,
                 "lightContext": True,
                 "toolsAllow": self.get_tools_allow(payload),
                 "timeoutSeconds": _TURN_TIMEOUT_SECONDS,

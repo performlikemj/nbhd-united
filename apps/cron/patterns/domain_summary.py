@@ -25,8 +25,21 @@ from typing import Any
 
 from pydantic import Field, field_validator, model_validator
 
+from apps.billing.constants import DEEPSEEK_FLASH_MODEL
+
 from . import register_handler
 from .base import PatternHandler, PatternPayload
+
+# Typed-cron patterns fire a platform-initiated agent turn — pin the cheap
+# NON-BYO worker model (DeepSeek V4 Flash), the same model the heartbeat and the
+# TIER_TASK_DEFAULTS routine crons use. Flash is a member of every tier's
+# agents.defaults.models allowlist (config_generator: HEARTBEAT_MODEL /
+# TIER_MODEL_CONFIGS), so OpenClaw's cron preflight accepts it for starter,
+# higher tiers, and BYO alike. Pin the full "openrouter/…" id (not a bare alias):
+# it's the value the working platform crons already pin and the one that
+# round-trips through preflight. The old hardcoded "haiku-4.5" sat in no non-BYO
+# allowlist, so preflight rejected the fire-turn before nbhd_send_to_user.
+_CRON_MODEL = DEEPSEEK_FLASH_MODEL
 
 # Whitelist of allowed query tools. Each entry pairs a tool name with
 # the render_block tag the agent's outbound message must include. Adding
@@ -54,7 +67,6 @@ DOMAIN_SUMMARY_QUERY_TOOLS: dict[str, dict[str, str]] = {
     },
 }
 
-_DEFAULT_MODEL = "haiku-4.5"
 _TURN_TIMEOUT_SECONDS = 60
 
 
@@ -134,7 +146,7 @@ class DomainSummaryHandler(PatternHandler):
             "payload": {
                 "kind": "agentTurn",
                 "message": message,
-                "model": _DEFAULT_MODEL,
+                "model": _CRON_MODEL,
                 "lightContext": False,
                 "toolsAllow": self.get_tools_allow(payload),
                 "timeoutSeconds": _TURN_TIMEOUT_SECONDS,
