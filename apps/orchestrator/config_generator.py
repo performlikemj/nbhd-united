@@ -313,27 +313,28 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "not 'Man United sacked their manager yesterday.' "
     "Stale news presented as current is worse than no news.\n\n"
     "Steps:\n"
-    "1. Get weather using web_fetch with the pre-built Open-Meteo URL below. "
-    "Do NOT use curl or exec — you don't have shell access. Use the web_fetch tool.\n"
-    "   Weather URL: {weather_url}\n"
-    "   WMO weather codes: 0=clear, 1-3=partly cloudy/overcast, 45-48=fog, "
-    "51-55=drizzle, 61-65=rain, 71-75=snow, 80-82=rain showers, 95=thunderstorm.\n"
-    "   Read `hourly.time`, `hourly.precipitation_probability`, `hourly.precipitation`, "
-    "`hourly.temperature_2m`, `hourly.weather_code`, and `hourly.wind_speed_10m`.\n"
+    '1. Get today\'s weather with `web_search` for "{location} weather forecast today" '
+    '(a follow-up search — e.g. "{location} weather tomorrow" — is fine if the first '
+    "result doesn't cover tomorrow). Do NOT use web_fetch, curl, or exec — none of those "
+    "are available; web_search is the only weather tool you have.\n"
+    "   Search results vary in structure: some include an hour-by-hour breakdown (time, "
+    "condition, temperature, precipitation chance, wind), others only a daily summary. "
+    "Use whatever level of detail the results actually contain — do not invent hourly "
+    "numbers that aren't there.\n"
     "   IMPORTANT — distinguish past from future using the current time (from the date/time "
-    "line above). Only flag thresholds for hours AHEAD of now. If precipitation or storms "
+    "line above). Only flag conditions for hours AHEAD of now. If precipitation or storms "
     "occurred in hours before now, describe them as past — 'rained earlier this morning', "
     "'cleared up overnight' — never say 'rainy day' for rain that already ended.\n"
-    "   Mention intraday timing ONLY when one of these thresholds fires for upcoming hours:\n"
-    "   - precipitation_probability ≥ 40% for 2+ consecutive future hours → flag the window, "
-    "peak %, and local hour (e.g. 'rain ~13:00-16:00, peak 70% at 14:00')\n"
-    "   - any future hour with weather_code ≥ 95 (thunderstorm) → always mention the hour\n"
-    "   - temperature_2m swing ≥ 10°F (≈ 5.5°C) across remaining hours today → flag it\n"
-    "   - wind_speed_10m crossing 20 mph (≈ 32 km/h) in a future hour when earlier hours "
-    "were calm → flag it\n"
-    "   If none fire, the day is stable — write a single summary line and omit the Intraday "
-    "block. Do NOT enumerate every hour. 'Sunny all day' does not become "
-    "'9am sun, 10am sun, 11am sun'.\n"
+    "   If the results include an hourly/intraday breakdown, mention timing ONLY when "
+    "something notable is coming later today: a rain or storm window, a temperature swing "
+    "of 10°F+ (≈ 5.5°C), or wind picking up sharply after being calm. Flag the approximate "
+    "window and peak (e.g. 'rain ~13:00-16:00, heaviest around 14:00').\n"
+    "   If the results are daily-only, or nothing notable stands out, write a single "
+    "summary line and omit the Intraday block. Do NOT enumerate every hour. 'Sunny all "
+    "day' does not become '9am sun, 10am sun, 11am sun'.\n"
+    '   If the search returns nothing weather-related, or fails, write "Weather '
+    'unavailable" for the weather section in step 10 and continue — do not let this '
+    "block the rest of the briefing.\n"
     "2. Check their calendar for today's events and upcoming 48hrs\n"
     "3. Check for important unread emails or messages\n"
     "4. Load recent journal context — what happened yesterday, any carry-over tasks?\n"
@@ -368,7 +369,7 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "- Anything carried over from yesterday, upcoming deadlines, things to remember\n\n"
     "**weather section:**\n"
     "**Today:** temp range, conditions, what to wear\n"
-    "**Intraday:** (include ONLY if a threshold from step 1 fires) one or two bullet lines "
+    "**Intraday:** (include ONLY if step 1 found a notable intraday window) one or two bullet lines "
     "flagging the window — e.g. `- Rain window ~13:00–16:00 (70% at 14:00, tapering after)`, "
     "`- Temp drops from 68°F at noon to 48°F by 18:00 — jacket if out late`. Omit this line "
     "entirely on stable days.\n"
@@ -385,7 +386,7 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "  Rain window (user message): `Rain in Osaka ~1pm, clearing by 4pm — grab an umbrella.`\n"
     "  Variable day (journal):\n"
     "    **Today:** 55–78°F, thunderstorm risk late afternoon.\n"
-    "    **Intraday:** - Warm through noon, front arrives ~16:00 with thunder (code 95). "
+    "    **Intraday:** - Warm through noon, front arrives ~16:00 with thunderstorms. "
     "Temp drops ~15°F by evening.\n"
     "    **Tomorrow:** Cooler, 52–61°F, showers easing.\n"
     "  Variable day (user message): `Storms around 4pm, then 15°F drop — jacket for anything after dinner.`\n\n"
@@ -411,8 +412,8 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "- Past lessons from the constellation that apply to today's plans\n"
     "- Skip this section if no lessons are relevant\n\n"
     "11. Send the user exactly ONE message via `nbhd_send_to_user`. Keep it concise:\n"
-    "- Weather + what to wear (1 line). If an intraday threshold fired, add one short clause "
-    "naming the window — e.g. 'Rain in Osaka ~1pm, clearing by 4pm — umbrella'. "
+    "- Weather + what to wear (1 line). If step 1 flagged a notable intraday window, add one "
+    "short clause naming it — e.g. 'Rain in Osaka ~1pm, clearing by 4pm — umbrella'. "
     "Otherwise keep it one line.\n"
     "- Top priority for the day (1 line)\n"
     "- Anything time-sensitive (1-2 lines)\n"
@@ -427,28 +428,29 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
 
 
 def _build_morning_briefing_prompt(tenant) -> str:
-    """Build the morning briefing prompt with a pre-resolved weather URL.
+    """Build the morning briefing prompt with a pre-resolved weather search location.
 
-    Uses stored user coordinates if available, falls back to timezone-based
-    approximate coordinates.
+    Historically this baked a pre-built Open-Meteo API URL into the prompt for
+    the agent to ``web_fetch``. ``web_fetch`` is now denied fleet-wide (see
+    ``tool_policy.py`` P0-0/P0-0b — reachable, no credential gate, and a
+    zero-click exfil vector on a document-injection turn), so step 1 now uses
+    ``web_search`` instead. That tool takes a place name, not coordinates, so
+    this resolves a location LABEL rather than a lat/lon pair.
+
+    Prefers the user's own ``location_city`` (free text set via
+    ``nbhd_update_profile``, e.g. "Osaka"); falls back to a label derived from
+    the IANA timezone. Never sends lat/lon anywhere — the previous ~11km-
+    quantized coordinates were only ever needed for the Open-Meteo query
+    string, which no longer exists.
     """
-    from apps.orchestrator.weather import build_weather_url, build_weather_url_from_coords
+    from apps.orchestrator.weather import resolve_weather_search_location
 
     user = tenant.user
     user_tz = str(getattr(user, "timezone", "") or "UTC")
+    location_city = str(getattr(user, "location_city", "") or "")
+    location = resolve_weather_search_location(location_city, user_tz)
 
-    # Prefer stored coordinates (set by user via nbhd_update_profile)
-    # Quantize to ~11km resolution (city-level) to avoid leaking precise location
-    lat = getattr(user, "location_lat", None)
-    lon = getattr(user, "location_lon", None)
-    if lat is not None and lon is not None:
-        lat = round(lat, 1)
-        lon = round(lon, 1)
-        weather_url = build_weather_url_from_coords(lat, lon, user_tz)
-    else:
-        weather_url = build_weather_url(user_tz)
-
-    return _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_url=weather_url)
+    return _MORNING_BRIEFING_PROMPT_TEMPLATE.format(location=location)
 
 
 _EVENING_CHECKIN_PROMPT = (

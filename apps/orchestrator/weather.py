@@ -112,3 +112,30 @@ def build_weather_url(tz: str) -> str:
     """
     lat, lon = get_coords_for_timezone(tz)
     return build_weather_url_from_coords(lat, lon, tz)
+
+
+def get_place_label_for_timezone(tz: str) -> str:
+    """Best-effort human-readable place name for a web_search query.
+
+    Derived from the IANA timezone identifier's last segment (e.g.
+    ``America/New_York`` -> ``New York``, ``Asia/Tokyo`` -> ``Tokyo``). This
+    is intentionally a plain search-query label, not a precise location —
+    unlike ``get_coords_for_timezone`` (exact lat/lon for the Open-Meteo API),
+    a search engine handles a city-ish name fine without exact coordinates.
+    """
+    segment = tz.rsplit("/", 1)[-1] if tz else ""
+    label = segment.replace("_", " ").strip()
+    return label or "your area"
+
+
+def resolve_weather_search_location(location_city: str | None, tz: str) -> str:
+    """Resolve the location string to use in a weather ``web_search`` query.
+
+    Prefers the user's own profile ``location_city`` (free text set via
+    ``nbhd_update_profile``, e.g. "Osaka", "Brooklyn") when present; falls
+    back to a label derived from the IANA timezone.
+    """
+    city = (location_city or "").strip()
+    if city:
+        return city
+    return get_place_label_for_timezone(tz)

@@ -67,9 +67,11 @@ class MemoryToolPolicyTest(TestCase):
     def test_current_version_is_5_28(self):
         # If the canary bumps to a newer OC version, the policy registry
         # entries above need re-verification — this test fails so we
-        # remember to look. 5.28 reuses the 2026.5.7 policy entry
-        # (_resolve_policy returns the newest entry <= version); verified on
-        # canary 148ccf1c — the 11-tool tools.deny fired correctly on 5.28.
+        # remember to look. 5.28's ALLOW list reused 5.7's verbatim (only
+        # `pdf` added by name); verified on canary 148ccf1c — the tools.deny
+        # fired correctly on 5.28. 5.28's DENY list now diverges from 5.7's:
+        # `web_fetch` was added at 5.28 (see tool_policy.py P0-0b comment and
+        # test_tool_policy.py::test_2026_5_28_denies_web_fetch).
         self.assertEqual(OPENCLAW_CURRENT_VERSION, "2026.5.28")
 
     def test_starter_allow_unchanged_across_4_15_to_5_7(self):

@@ -105,6 +105,24 @@ class VersionAwareToolPolicyTest(TestCase):
         self.assertNotIn("pdf", get_allowed_tools("starter", version="2026.5.7"))
         self.assertNotIn("pdf", get_allowed_tools("starter", version="2026.4.15"))
 
+    def test_2026_5_28_denies_web_fetch(self):
+        """web_fetch is a member of group:openclaw (in tools.allow) and
+        registers by default with no credential gate — reachable fleet-wide
+        unless explicitly denied. Confirmed reachable + zero-click-exfil-
+        capable in docs/upload-security-threat-model.md P0-0; denied here as
+        P0-0b. Earlier versions predate this finding and are NOT retroactively
+        changed — same pattern as the pdf/memory-tool version pins above."""
+        from apps.orchestrator.tool_policy import get_denied_tools
+
+        self.assertIn("web_fetch", get_denied_tools(version="2026.5.28"))
+        self.assertNotIn("web_fetch", get_denied_tools(version="2026.5.7"))
+        self.assertNotIn("web_fetch", get_denied_tools(version="2026.4.15"))
+        # Sanity: web_fetch is still in tools.allow via group:openclaw — the
+        # deny list is what actually blocks it (deny wins over allow in the
+        # runtime's policy matcher), matching how group:web/group:openclaw
+        # members like `message`/`browser` are allowed-by-group but denied.
+        self.assertIn("group:openclaw", get_allowed_tools("starter", version="2026.5.28"))
+
     def test_backward_compat_module_constants(self):
         self.assertIsInstance(DENIED_TOOLS, tuple)
         self.assertIsInstance(STARTER_ALLOW, tuple)
