@@ -82,6 +82,49 @@ class DocumentKeepViewTest(TestCase):
         self.assertIsNone(body["ingestion_id"])
         self.assertEqual(body["errors"][0]["reason"], "not_found")
 
+    def test_keep_records_a_gmail_sourced_manifest(self):
+        # Phase 5: the endpoint accepts the email source shape and validates
+        # artifacts exactly like a document's (same pass-through to record_keep).
+        task = Task.objects.create(tenant=self.tenant, title="Reply to Kenji")
+        resp = self.client.post(
+            self._keep_url(),
+            data={
+                "source": {
+                    "source_kind": "email",
+                    "source_ref": "gmail:196f3a2b1c",
+                    "original_filename": "Invoice #4471",
+                },
+                "artifacts": [{"object_type": "journal.Task", "object_id": str(task.id), "excerpt": "due Oct 31"}],
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        body = resp.json()
+        self.assertEqual(body["recorded"], 1)
+        ingestion = DocumentIngestion.objects.get(tenant=self.tenant, id=body["ingestion_id"])
+        self.assertEqual(ingestion.source_kind, "email")
+        self.assertEqual(ingestion.source_ref, "gmail:196f3a2b1c")
+        self.assertIsNone(ingestion.file_expires_at)
+
+    def test_keep_refuses_a_malformed_email_source(self):
+        task = Task.objects.create(tenant=self.tenant, title="valid artifact, bad source")
+        resp = self.client.post(
+            self._keep_url(),
+            data={
+                "source": {"source_kind": "email", "source_ref": "not-a-gmail-ref", "original_filename": "x"},
+                "artifacts": [{"object_type": "journal.Task", "object_id": str(task.id)}],
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 200, resp.content)
+        body = resp.json()
+        self.assertEqual(body["recorded"], 0)
+        self.assertIsNone(body["ingestion_id"])
+        self.assertEqual(body["errors"][0]["reason"], "invalid_source")
+        self.assertFalse(DocumentIngestion.objects.filter(tenant=self.tenant).exists())
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class DocumentListForgetViewTest(TestCase):

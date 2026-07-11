@@ -633,6 +633,13 @@ class DocumentIngestion(models.Model):
     rows). Mirrors the ``PendingTaskAction`` shape (per-item child state) — a
     JSON blob would force read-modify-write of the whole list under contention.
 
+    The same ledger also records information the assistant kept from a NON-upload
+    source it read — a Gmail message, a calendar event, a Reddit post (the
+    continuity-directive P3 extension). ``source_kind`` discriminates, and the
+    grouping identity for "forget everything from that email" lives in
+    ``source_ref`` (``gmail:<id>`` …) in place of a filename. Artifacts validate
+    and forget exactly like an upload's; only the source identity differs.
+
     ``agreed_at`` carries a CHECK constraint copying ``CronJob.user_confirmed_at``'s
     shape. It is **audit hygiene only, not consent enforcement**: the keep endpoint
     always sets ``agreed_at=now()``, so the constraint can never actually fail — it
@@ -647,6 +654,19 @@ class DocumentIngestion(models.Model):
         REMOVED = "removed", "Removed"
         EXPIRED = "expired", "Expired"
 
+    class SourceKind(models.TextChoices):
+        # The source the kept information was derived from. UPLOAD is the original
+        # document-keeping path (an ephemeral file). EMAIL/CALENDAR/REDDIT are the
+        # continuity-directive P3 extension: the assistant read the info from a
+        # Gmail message / calendar event / Reddit post (which never lands as a
+        # file), so the identity that groups the saved items lives in ``source_ref``
+        # (``gmail:<id>`` / ``gcal:<id>`` / ``reddit:<t3_/t1_-id>``) instead of a
+        # filename, and there is no ephemeral file to expire.
+        UPLOAD = "upload", "Upload"
+        EMAIL = "email", "Email"
+        CALENDAR = "calendar", "Calendar"
+        REDDIT = "reddit", "Reddit"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="doc_ingestions")
     thread = models.ForeignKey(
@@ -659,13 +679,22 @@ class DocumentIngestion(models.Model):
     # Back-ref to the [Document attached:] upload turn; drives the completeness
     # gap signal (rows created in the marker window vs rows recorded).
     client_msg_id = models.CharField(max_length=64, blank=True, default="")
+    source_kind = models.CharField(max_length=16, choices=SourceKind.choices, default=SourceKind.UPLOAD)
+    # The stable source identity that groups saved items for "forget everything
+    # from that email". Empty for UPLOAD (an upload is identified by its file);
+    # ``gmail:<id>`` / ``gcal:<id>`` / ``reddit:<t3_/t1_-id>`` for the P3 sources.
+    source_ref = models.CharField(max_length=255, blank=True, default="")
+    # Human display label: a filename for UPLOAD, the email subject / event title /
+    # post title for the P3 sources. Reused by the list + forget rendering.
     original_filename = models.CharField(max_length=255)
     content_hash = models.CharField(max_length=64, blank=True, default="")
     # Copy of the attachment path — dead after the 24h GC, kept for provenance.
     workspace_path = models.CharField(max_length=255, blank=True, default="")
     uploaded_at = models.DateTimeField()
     # uploaded_at + ~24h — drives the honest-expiry copy ("gone in about a day").
-    file_expires_at = models.DateTimeField()
+    # NULL for non-upload sources: an email/event/post is not an ephemeral file,
+    # so there is nothing to expire and the agent must not claim one clears out.
+    file_expires_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=24, choices=Status.choices, default=Status.KEPT)
     agreed_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

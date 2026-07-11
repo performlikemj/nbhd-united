@@ -157,18 +157,29 @@ export default function register(api) {
     wrap({
       name: "nbhd_document_keep",
       description:
-        "AFTER the user agrees and you've saved each item with the normal typed tools, file ONE call recording that those items came from this uploaded document, so they can be removed later as a unit. Pass the document's filename/path and each saved item with its destination and the object id the write tool returned. Do this in the SAME turn you saved them, before you tell the user it's done. The server validates every id against a real saved row — if it reports it couldn't confirm an item (in `errors`), tell the user that item may not have saved cleanly and re-check it; don't claim it's kept.",
+        "AFTER the user agrees and you've saved each item with the normal typed tools, file ONE call recording that those items came from this source, so they can be removed later as a unit. Works for an uploaded document AND for information you read from a Gmail message, a calendar event, or a Reddit post — for those, set `source_kind` and `source_ref` (the source id) in place of a filename. Pass each saved item with its destination and the object id the write tool returned. Do this in the SAME turn you saved them, before you tell the user it's done. The server validates every id against a real saved row — if it reports it couldn't confirm an item (in `errors`), tell the user that item may not have saved cleanly and re-check it; don't claim it's kept.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           original_filename: {
             type: "string",
-            description: "The document's filename as the user knows it (e.g. 'invoice-oct.pdf').",
+            description:
+              "Human label for this source: an uploaded document's filename (e.g. 'invoice-oct.pdf'), or the email subject / event title / post title for a non-upload source.",
+          },
+          source_kind: {
+            type: "string",
+            description:
+              "Where the kept info came from: 'upload' (default), 'email', 'calendar', or 'reddit'. Set this for anything you read rather than a file the user uploaded.",
+          },
+          source_ref: {
+            type: "string",
+            description:
+              "Required for a non-upload source_kind — the source's namespaced id so 'forget everything from that email' can group these items: 'gmail:<message-id>', 'gcal:<event-id>', or 'reddit:<t3_/t1_-fullname>'.",
           },
           workspace_path: {
             type: "string",
-            description: "The attachment path from the [Document attached: <path>] marker.",
+            description: "The attachment path from the [Document attached: <path>] marker (uploads only).",
           },
           content_hash: {
             type: "string",
@@ -220,6 +231,8 @@ export default function register(api) {
           body: {
             source: {
               original_filename: asTrimmedString(input.original_filename),
+              source_kind: asTrimmedString(input.source_kind),
+              source_ref: asTrimmedString(input.source_ref),
               workspace_path: asTrimmedString(input.workspace_path),
               content_hash: asTrimmedString(input.content_hash),
               client_msg_id: asTrimmedString(input.client_msg_id),
