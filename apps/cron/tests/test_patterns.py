@@ -99,6 +99,12 @@ class PureReminderTests(SimpleTestCase):
         self.assertFalse(ok)
         self.assertIn("verbatim", reason or "")
 
+    def test_get_outbound_contract_shape(self):
+        payload = self.handler.validate_payload({"text": "Take out trash"})
+        contract = self.handler.get_outbound_contract(payload, name="trash")
+        self.assertEqual(contract["check"], {"kind": "contains", "text": "Take out trash"})
+        self.assertEqual(contract["on_fail"], {"action": "rewrite", "content": "Take out trash"})
+
 
 class QuoteUserIntentTests(SimpleTestCase):
     def setUp(self):
@@ -165,6 +171,15 @@ class QuoteUserIntentTests(SimpleTestCase):
         )
         self.assertFalse(ok2)
 
+    def test_get_outbound_contract_shape(self):
+        payload = self.handler.validate_payload({"text": "appointment Tuesday 3pm"})
+        contract = self.handler.get_outbound_contract(payload, name="appt")
+        self.assertEqual(contract["check"], {"kind": "contains", "text": "appointment Tuesday 3pm"})
+        self.assertEqual(
+            contract["on_fail"],
+            {"action": "revise_then_rewrite", "content": "appointment Tuesday 3pm", "max_revisions": 1},
+        )
+
 
 class DomainSummaryTests(SimpleTestCase):
     def setUp(self):
@@ -227,6 +242,14 @@ class DomainSummaryTests(SimpleTestCase):
         )
         self.assertFalse(ok2)
 
+    def test_get_outbound_contract_shape(self):
+        payload = self.handler.validate_payload(
+            {"query_tool": "nbhd_task_list", "render_block": "task_summary"},
+        )
+        contract = self.handler.get_outbound_contract(payload, name="weekly-tasks")
+        self.assertEqual(contract["check"], {"kind": "marker", "marker": "[block: task_summary]"})
+        self.assertEqual(contract["on_fail"], {"action": "revise_then_allow", "max_revisions": 1})
+
 
 class DailyBriefingTests(SimpleTestCase):
     def setUp(self):
@@ -279,6 +302,12 @@ class DailyBriefingTests(SimpleTestCase):
             payload,
         )
         self.assertFalse(ok2)
+
+    def test_get_outbound_contract_shape(self):
+        payload = self.handler.validate_payload({})
+        contract = self.handler.get_outbound_contract(payload, name="Morning Briefing")
+        self.assertEqual(contract["check"], {"kind": "marker", "marker": "[block: daily_briefing]"})
+        self.assertEqual(contract["on_fail"], {"action": "revise_then_allow", "max_revisions": 1})
 
 
 _AT_SCHEDULE = {"kind": "at", "at": "2099-01-01T00:00:00+00:00"}
@@ -366,3 +395,80 @@ class WorkoutCongratsTests(SimpleTestCase):
         self.assertEqual(
             self.handler.get_fallback_message(payload, name="_congrats-abc"), "Nice work finishing Push Day."
         )
+
+    def test_get_outbound_contract_shape(self):
+        payload = self.handler.validate_payload({"activity": "Push Day"})
+        contract = self.handler.get_outbound_contract(payload, name="_congrats-abc")
+        self.assertEqual(contract["check"], {"kind": "bounded", "max": 800})
+        self.assertEqual(
+            contract["on_fail"],
+            {"action": "rewrite", "content": "Nice work finishing Push Day."},
+        )
+
+
+# ── Parity case-table ──────────────────────────────────────────────────────
+# The drift control between this Python spec and the nbhd-cron-enforcement
+# plugin's JS evaluator (runtime/openclaw/plugins/nbhd-cron-enforcement/test.js,
+# PARITY_CASES). Every case here has an IDENTICAL twin there, expressed against
+# the generic {kind, ...} check dict instead of a pattern + payload. If you
+# change either side's pass/fail semantics, update BOTH tables — that manual
+# duplication is the whole point: it's the only way to catch Python/JS drift
+# in a two-language plugin. See apps/cron/patterns/base.py:get_outbound_contract.
+#
+# Tuple shape: (pattern, payload_dict, content, expected_ok)
+PARITY_CASES: tuple[tuple[str, dict, str, bool], ...] = (
+    # ── pure_reminder: contains ─────────────────────────────────────────
+    ("pure_reminder", {"text": "Take out trash"}, "Take out trash", True),
+    ("pure_reminder", {"text": "Take out trash"}, 'Reminder: "Take out trash" today!', True),
+    ("pure_reminder", {"text": "Take out trash"}, "Don't forget your chores", False),
+    # ── quote_user_intent: contains ─────────────────────────────────────
+    (
+        "quote_user_intent",
+        {"text": "appointment Tuesday 3pm"},
+        'Heads up — "appointment Tuesday 3pm" is coming up!',
+        True,
+    ),
+    ("quote_user_intent", {"text": "appointment Tuesday 3pm"}, "Something is happening this week", False),
+    # ── domain_summary: marker ───────────────────────────────────────────
+    (
+        "domain_summary",
+        {"query_tool": "nbhd_task_list", "render_block": "task_summary"},
+        "[block: task_summary]\n- 3 open tasks",
+        True,
+    ),
+    (
+        "domain_summary",
+        {"query_tool": "nbhd_task_list", "render_block": "task_summary"},
+        "You have 3 open tasks",
+        False,
+    ),
+    # ── daily_briefing: marker ───────────────────────────────────────────
+    ("daily_briefing", {}, "[block: daily_briefing]\nGood morning!", True),
+    ("daily_briefing", {}, "Good morning! Your day looks busy.", False),
+    # ── workout_congrats: bounded ────────────────────────────────────────
+    ("workout_congrats", {"activity": "Push Day"}, "Great push session — third this week!", True),
+    ("workout_congrats", {"activity": "Push Day"}, "   ", False),
+    ("workout_congrats", {"activity": "Push Day"}, "x" * 900, False),
+    # Code-point vs UTF-16-code-unit drift regression (Fable review, round 2):
+    # 400 ASCII + 250 astral emoji (U+1F4AA, outside the BMP) = 650 Unicode
+    # code points (what Python's `len(str)` counts) but 900 UTF-16 code units
+    # (what a naive JS `.length` counts, since each astral char is a surrogate
+    # pair). Python passes this (650 <= 800); the JS evaluator must too — it
+    # counts code points via `[...trimmed].length`, not `.length`.
+    ("workout_congrats", {"activity": "Push Day"}, "x" * 400 + "\U0001f4aa" * 250, True),
+)
+
+
+class OutboundContractParityTests(SimpleTestCase):
+    """Python side of the parity case-table — asserted against
+    ``validate_outbound_message`` (the canonical spec). The JS twin
+    (nbhd-cron-enforcement/test.js) asserts the same verdicts via
+    ``evaluateCheck`` against the corresponding ``check`` dict."""
+
+    def test_all_cases_match_expected_verdict(self):
+        for pattern, payload_dict, content, expected_ok in PARITY_CASES:
+            with self.subTest(pattern=pattern, content=content):
+                handler = get_handler(pattern)
+                payload = handler.validate_payload(payload_dict)
+                ok, _reason = handler.validate_outbound_message(content, payload)
+                self.assertEqual(ok, expected_ok)

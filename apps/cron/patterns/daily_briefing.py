@@ -13,12 +13,11 @@ other mutation, so it cannot autonomously duplicate or close items.
 
 Backend-rendered fact injection (the second half of the original bug
 fix — preventing the briefing from claiming overdue items that the DB
-shows as done) lands in a follow-up PR. That work adds a
-``/runtime/<tenant>/briefing/facts/`` endpoint queried by the
-enforcement plugin's ``before_prompt_build`` hook, returning a fresh
-structured snapshot the agent must use as its source of truth. The
-hook surface for the injection (appendSystemContext) is wired in this
-PR's enforcement plugin; the facts endpoint is the follow-up.
+shows as done) remains a follow-up. The ``nbhd-cron-enforcement`` plugin
+no longer has a prompt-injection hook (it only enforces the OUTBOUND
+message at ``before_tool_call`` now — see ``get_outbound_contract``
+below); a future fact-grounding mechanism would need its own
+pre-generation surface, not this plugin.
 
 For v1 the cron's prompt instructs the agent to call ``nbhd_task_list``
 itself for current state, with explicit guardrails against
@@ -167,19 +166,16 @@ class DailyBriefingHandler(PatternHandler):
         # execute it because the tools aren't in the allowlist.
         return ["nbhd_send_to_user", *_BRIEFING_QUERY_TOOLS]
 
-    def get_prompt_injection(
+    def get_outbound_contract(
         self,
         payload: DailyBriefingPayload,
         *,
-        tenant: Any,
         name: str,
-    ) -> str:
-        return (
-            "## Cron pattern: daily_briefing\n"
-            "This turn renders today's morning briefing. Every factual "
-            "claim must come from a tool call made in this turn — do not "
-            "fabricate counts, dates, or item titles. Do not mutate state."
-        )
+    ) -> dict[str, Any]:
+        return {
+            "check": {"kind": "marker", "marker": "[block: daily_briefing]"},
+            "on_fail": {"action": "revise_then_allow", "max_revisions": 1},
+        }
 
     def validate_outbound_message(
         self,

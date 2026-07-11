@@ -146,20 +146,17 @@ class DomainSummaryHandler(PatternHandler):
     def get_tools_allow(self, payload: DomainSummaryPayload) -> list[str]:
         return ["nbhd_send_to_user", payload.query_tool]
 
-    def get_prompt_injection(
+    def get_outbound_contract(
         self,
         payload: DomainSummaryPayload,
         *,
-        tenant: Any,
         name: str,
-    ) -> str:
-        return (
-            "## Cron pattern: domain_summary\n"
-            f"This turn renders a `{payload.render_block}` summary. Call "
-            f"the query tool, then send a concise summary including the "
-            f"marker `[block: {payload.render_block}]` on the first line. "
-            "Do not mutate any state."
-        )
+    ) -> dict[str, Any]:
+        marker = f"[block: {payload.render_block}]"
+        return {
+            "check": {"kind": "marker", "marker": marker},
+            "on_fail": {"action": "revise_then_allow", "max_revisions": 1},
+        }
 
     def validate_outbound_message(
         self,

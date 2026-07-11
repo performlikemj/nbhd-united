@@ -1,8 +1,10 @@
-"""Runtime endpoint tests for typed cron creation + pattern context + outbound validation.
+"""Runtime endpoint tests for typed cron creation.
 
-Three endpoints per agent-creatable pattern (pure_reminder, quote_user_intent,
-domain_summary) plus two enforcement-plugin-facing endpoints
-(pattern_context, validate_outbound).
+Three endpoints, one per agent-creatable pattern (pure_reminder,
+quote_user_intent, domain_summary). Fire-time enforcement (pattern_context /
+validate_outbound / grounding) is no longer an RPC surface — see
+apps/cron/tests/test_typed_cron_services.py::TypedCronContractBakingTests
+and apps/cron/patterns/tests for the baked-contract + parity coverage.
 
 Auth pattern matches existing runtime endpoints: HTTP_X_NBHD_INTERNAL_KEY +
 HTTP_X_NBHD_TENANT_ID headers; tenant scope must match the URL tenant_id.
@@ -14,7 +16,6 @@ from django.test import TestCase
 from django.test.utils import override_settings
 
 from apps.cron.models import CronCreationPath, CronJob
-from apps.cron.services import create_typed_cron
 from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
@@ -177,58 +178,3 @@ class RuntimeCronCreateViewsTest(TestCase):
             **self._headers(),
         )
         self.assertEqual(resp.status_code, 400, resp.content)
-
-    # ── pattern_context + validate_outbound (enforcement plugin paths) ───
-
-    def test_pattern_context_returns_typed_payload(self):
-        create_typed_cron(
-            tenant=self.tenant,
-            pattern="pure_reminder",
-            typed_payload={"text": "Drink water"},
-            name="hydrate",
-            schedule={"kind": "cron", "expr": "0 10 * * *", "tz": "Asia/Tokyo"},
-        )
-        resp = self.client.get(
-            f"/api/v1/integrations/runtime/{self.tenant.id}/crons/hydrate/pattern_context/",
-            **self._headers(),
-        )
-        self.assertEqual(resp.status_code, 200, resp.content)
-        body = resp.json()
-        self.assertEqual(body["pattern"], "pure_reminder")
-        self.assertEqual(body["typed_payload"]["text"], "Drink water")
-        self.assertIn("pure_reminder", body["prompt_injection"])
-
-    def test_pattern_context_404_for_unknown_cron(self):
-        resp = self.client.get(
-            f"/api/v1/integrations/runtime/{self.tenant.id}/crons/no-such/pattern_context/",
-            **self._headers(),
-        )
-        self.assertEqual(resp.status_code, 404)
-
-    def test_validate_outbound_pass_and_fail(self):
-        create_typed_cron(
-            tenant=self.tenant,
-            pattern="pure_reminder",
-            typed_payload={"text": "Drink water"},
-            name="hydrate",
-            schedule={"kind": "cron", "expr": "0 10 * * *", "tz": "Asia/Tokyo"},
-        )
-        pass_resp = self.client.post(
-            f"/api/v1/integrations/runtime/{self.tenant.id}/crons/hydrate/validate_outbound/",
-            data={"content": "Drink water"},
-            content_type="application/json",
-            **self._headers(),
-        )
-        self.assertEqual(pass_resp.status_code, 200)
-        self.assertTrue(pass_resp.json()["ok"])
-
-        fail_resp = self.client.post(
-            f"/api/v1/integrations/runtime/{self.tenant.id}/crons/hydrate/validate_outbound/",
-            data={"content": "You should stay hydrated"},
-            content_type="application/json",
-            **self._headers(),
-        )
-        self.assertEqual(fail_resp.status_code, 200)
-        body = fail_resp.json()
-        self.assertFalse(body["ok"])
-        self.assertIn("fallback_content", body)

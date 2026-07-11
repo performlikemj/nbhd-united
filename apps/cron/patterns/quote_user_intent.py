@@ -136,20 +136,21 @@ class QuoteUserIntentHandler(PatternHandler):
             tools.append(payload.refresh_facts_via)
         return tools
 
-    def get_prompt_injection(
+    def get_outbound_contract(
         self,
         payload: QuoteUserIntentPayload,
         *,
-        tenant: Any,
         name: str,
-    ) -> str:
-        return (
-            "## Cron pattern: quote_user_intent\n"
-            "This turn fires a scheduled reminder. Quote the user's stored "
-            "intent verbatim in the outbound message. You may add a brief "
-            "warm wrapper, but the verbatim text must appear unchanged. "
-            "Do not create tasks, goals, or new crons during this turn."
-        )
+    ) -> dict[str, Any]:
+        text = payload.text.strip()
+        return {
+            "check": {"kind": "contains", "text": text},
+            "on_fail": {
+                "action": "revise_then_rewrite",
+                "content": text,
+                "max_revisions": 1,
+            },
+        }
 
     def validate_outbound_message(
         self,

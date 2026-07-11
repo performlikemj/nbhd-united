@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import patch
 
@@ -22,8 +23,6 @@ from apps.cron.services import (
     TypedCronError,
     create_freeform_cron,
     create_typed_cron,
-    fetch_cron_pattern_context,
-    validate_typed_cron_outbound,
 )
 from apps.tenants.models import Tenant, User
 
@@ -261,10 +260,31 @@ class FreeformCronTests(TestCase):
             )
 
 
-class PatternContextLookupTests(TestCase):
+class TypedCronContractBakingTests(TestCase):
+    """The pre_save signal bakes get_outbound_contract() into data["description"]
+    for every typed pattern; freeform/legacy rows carry no contract."""
+
     def setUp(self):
         self.tenant = _make_tenant()
-        self.cron = create_typed_cron(
+
+    def test_pure_reminder_bakes_contains_rewrite_contract(self):
+        cron = create_typed_cron(
+            tenant=self.tenant,
+            pattern=CronPattern.PURE_REMINDER,
+            typed_payload={"text": "Drink water"},
+            name="hydrate",
+            schedule=_RECURRING,
+        )
+        cron.refresh_from_db()
+        self.assertTrue(cron.data["description"].startswith("nbhd.v1 "))
+        contract = json.loads(cron.data["description"][len("nbhd.v1 ") :])
+        self.assertEqual(contract["v"], 1)
+        self.assertEqual(contract["pattern"], "pure_reminder")
+        self.assertEqual(contract["check"], {"kind": "contains", "text": "Drink water"})
+        self.assertEqual(contract["on_fail"], {"action": "rewrite", "content": "Drink water"})
+
+    def test_domain_summary_bakes_marker_revise_then_allow_contract(self):
+        cron = create_typed_cron(
             tenant=self.tenant,
             pattern=CronPattern.DOMAIN_SUMMARY,
             typed_payload={
@@ -275,51 +295,55 @@ class PatternContextLookupTests(TestCase):
             name="weekly-task-rollup",
             schedule=_RECURRING,
         )
+        cron.refresh_from_db()
+        contract = json.loads(cron.data["description"][len("nbhd.v1 ") :])
+        self.assertEqual(contract["check"], {"kind": "marker", "marker": "[block: task_summary]"})
+        self.assertEqual(contract["on_fail"], {"action": "revise_then_allow", "max_revisions": 1})
 
-    def test_returns_pattern_and_payload(self):
-        ctx = fetch_cron_pattern_context(self.tenant.id, "weekly-task-rollup")
-        self.assertIsNotNone(ctx)
-        self.assertEqual(ctx["pattern"], "domain_summary")
-        self.assertEqual(ctx["typed_payload"]["query_tool"], "nbhd_task_list")
-        self.assertIn("domain_summary", ctx["prompt_injection"])
+    def test_freeform_cron_has_no_baked_contract(self):
+        cron = create_freeform_cron(
+            tenant=self.tenant,
+            name="freeform-desc-test",
+            data={
+                "schedule": _RECURRING,
+                "payload": {"kind": "agentTurn", "message": "untouched"},
+            },
+            user_confirmed_at=datetime(2026, 5, 27, 12, 0, tzinfo=UTC),
+        )
+        cron.refresh_from_db()
+        self.assertNotIn("description", cron.data)
 
-    def test_returns_none_for_unknown_cron(self):
-        self.assertIsNone(fetch_cron_pattern_context(self.tenant.id, "no-such-cron"))
+    def test_editing_typed_payload_rebakes_contract(self):
+        cron = create_typed_cron(
+            tenant=self.tenant,
+            pattern=CronPattern.PURE_REMINDER,
+            typed_payload={"text": "old text"},
+            name="rebake",
+            schedule=_RECURRING,
+        )
+        cron.refresh_from_db()
+        cron.typed_payload = {"text": "new text"}
+        cron.save()
+        cron.refresh_from_db()
+        contract = json.loads(cron.data["description"][len("nbhd.v1 ") :])
+        self.assertEqual(contract["check"]["text"], "new text")
 
+    def test_row_to_cron_dict_passes_description_through(self):
+        """``_row_to_cron_dict`` (apps/orchestrator/cron_reconcile.py) strips only
+        gateway-internal bookkeeping fields — the baked contract in
+        ``data["description"]`` must survive into the gateway-shape dict
+        unchanged, or the plugin never sees it at fire time."""
+        from apps.orchestrator.cron_reconcile import _row_to_cron_dict
 
-class ValidateTypedCronOutboundTests(TestCase):
-    def setUp(self):
-        self.tenant = _make_tenant()
-        create_typed_cron(
+        cron = create_typed_cron(
             tenant=self.tenant,
             pattern=CronPattern.PURE_REMINDER,
             typed_payload={"text": "Drink water"},
-            name="hydrate",
+            name="hydrate-passthrough",
             schedule=_RECURRING,
         )
-
-    def test_passes_verbatim(self):
-        result = validate_typed_cron_outbound(
-            tenant_id=self.tenant.id,
-            cron_name="hydrate",
-            content="Drink water",
-        )
-        self.assertTrue(result["ok"])
-
-    def test_rejects_drift_and_returns_fallback(self):
-        result = validate_typed_cron_outbound(
-            tenant_id=self.tenant.id,
-            cron_name="hydrate",
-            content="You should consider hydration",
-        )
-        self.assertFalse(result["ok"])
-        self.assertIn("verbatim", (result.get("reason") or "").lower())
-        self.assertIn("hydrate", result.get("fallback_content", ""))
-
-    def test_unknown_cron_passes_through(self):
-        result = validate_typed_cron_outbound(
-            tenant_id=self.tenant.id,
-            cron_name="no-such",
-            content="x",
-        )
-        self.assertTrue(result["ok"])
+        cron.refresh_from_db()
+        job = _row_to_cron_dict(cron)
+        self.assertEqual(job["description"], cron.data["description"])
+        for stripped in ("id", "jobId", "createdAt", "state", "createdAtMs", "updatedAtMs"):
+            self.assertNotIn(stripped, job)

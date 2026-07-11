@@ -136,20 +136,19 @@ class WorkoutCongratsHandler(PatternHandler):
     def get_tools_allow(self, payload: WorkoutCongratsPayload) -> list[str]:
         return ["nbhd_send_to_user"]
 
-    def get_prompt_injection(
+    def get_outbound_contract(
         self,
         payload: WorkoutCongratsPayload,
         *,
-        tenant: Any,
         name: str,
-    ) -> str:
-        return (
-            "## Cron pattern: workout_congrats\n"
-            "This turn celebrates a completed workout. Call `nbhd_send_to_user` "
-            "exactly once with a short, warm, specific congratulations (1-2 "
-            "sentences). Do not ask questions. Do not create tasks, goals, or "
-            "new crons during this turn."
-        )
+    ) -> dict[str, Any]:
+        return {
+            "check": {"kind": "bounded", "max": _MAX_OUTBOUND_CHARS},
+            "on_fail": {
+                "action": "rewrite",
+                "content": self.get_fallback_message(payload, name=name),
+            },
+        }
 
     def validate_outbound_message(
         self,
