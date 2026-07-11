@@ -1930,3 +1930,312 @@ class ProactiveContextIOSEndToEndTest(TestCase):
         self.assertEqual(content.count("earlier-from-you"), 1)
         self.assertIn("did you finish the report?", content)
         self.assertIn("yes, all done", content)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
+class ThreadRecapOnWakeTest(TestCase):
+    """Deterministic conversation recap prepended to a cold iOS session.
+
+    Production incident (2026-07-10): each iOS thread is its own OpenClaw
+    session on an ephemeral EmptyDir; hibernation/restart wipes the session
+    transcript. A user returned two days later ("just wanted to jump back into
+    this fable 5 usage") in the SAME thread and the assistant answered "What's
+    fable 5? Not ringing a bell." — the full history sat in ``app_chat_messages``
+    the whole time. The recap re-anchors the agent when ``Tenant.last_wake_at``
+    is newer than the thread's last delivered turn.
+
+    ``_detect_pii`` is stubbed to [] so ``redact_user_message`` (which the recap
+    runs over the verbatim ``user_text``) is deterministic; the redaction path
+    itself is asserted in ``test_verbatim_user_text_is_redacted_not_leaked``.
+    """
+
+    def setUp(self):
+        from apps.router.models import ChatThread
+
+        self.user = User.objects.create_user(
+            username=f"recap_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=91777,
+            preferred_channel="telegram",
+        )
+        self.tenant = _make_tenant(self.user, container_fqdn="oc-recap.example.com")
+        self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True)
+
+    # --- helpers -------------------------------------------------------------
+
+    def _prior_turn(self, cid, *, user_text, reply_text, minutes_ago, thread=None):
+        """A delivered (READY) AppChatMessage with explicit created_at/replied_at
+        so ordering + the wake-vs-last-turn comparison are deterministic."""
+        from apps.router.models import AppChatMessage
+
+        thread = thread or self.thread
+        ts = timezone.now() - timedelta(minutes=minutes_ago)
+        m = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=thread,
+            client_msg_id=cid,
+            user_text=user_text,
+            reply_text=reply_text,
+            status=AppChatMessage.Status.READY,
+            replied_at=ts,
+        )
+        AppChatMessage.objects.filter(pk=m.pk).update(created_at=ts)
+        return m
+
+    def _queue_turn(self, cid, *, user_text, thread=None):
+        """A PENDING AppChatMessage + its iOS PendingMessage queue row (the turn
+        being delivered). Mirrors real iOS ingress: message_text carries NO
+        recap — the bridge is added only at the drain."""
+        from apps.router.models import AppChatMessage
+
+        thread = thread or self.thread
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=thread,
+            client_msg_id=cid,
+            user_text=user_text,
+            status=AppChatMessage.Status.PENDING,
+        )
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(thread.id),
+            payload={
+                "message_text": user_text,
+                "user_param": f"thread:{thread.id}",
+                "user_timezone": "UTC",
+                "client_msg_id": cid,
+                "thread_id": str(thread.id),
+            },
+            user_text=user_text,
+        )
+
+    def _set_wake(self, minutes_ago):
+        Tenant.objects.filter(id=self.tenant.id).update(last_wake_at=timezone.now() - timedelta(minutes=minutes_ago))
+
+    def _drain(self, thread=None):
+        thread = thread or self.thread
+        return drain_pending_messages_for_tenant_task(str(self.tenant.id), "ios", str(thread.id))
+
+    @staticmethod
+    def _posted_content(mock_post):
+        return mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+
+    # --- tests ---------------------------------------------------------------
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_recap_injected_when_wake_after_last_turn(self, mock_post, _mock_ner):
+        # The exact incident: prior thread turn about "fable 5", the container
+        # wakes, the user jumps back in — the recap must carry the prior exchange.
+        mock_post.return_value = _ok_chat_response("ok")
+        self._prior_turn(
+            "old-1",
+            user_text="we were digging into fable 5 usage last week",
+            reply_text="fable 5 is the model powering your assistant",
+            minutes_ago=2880,  # two days ago
+        )
+        self._set_wake(minutes_ago=30)  # woke AFTER the last turn
+        self._queue_turn("new-1", user_text="jump back into this fable 5 usage")
+
+        self._drain()
+
+        content = self._posted_content(mock_post)
+        # Present exactly once, at the very top of the turn.
+        self.assertEqual(content.count("conversation-recap"), 1)
+        self.assertTrue(content.startswith("[conversation-recap"))
+        # Carries the prior exchange (assistant reply verbatim; user text passes
+        # through redaction unchanged here — no PII).
+        self.assertIn("fable 5 is the model powering your assistant", content)
+        self.assertIn("we were digging into fable 5 usage last week", content)
+        # And precedes the user's new message.
+        self.assertLess(content.index("conversation-recap"), content.index("jump back into this fable 5 usage"))
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_no_recap_when_warm_container(self, mock_post, _mock_ner):
+        # Wake happened BEFORE the last delivered turn → transcript survived.
+        mock_post.return_value = _ok_chat_response("ok")
+        self._prior_turn("old-1", user_text="earlier stuff", reply_text="earlier reply", minutes_ago=10)
+        self._set_wake(minutes_ago=45)  # woke BEFORE the last turn
+        self._queue_turn("new-1", user_text="continuing normally")
+
+        self._drain()
+
+        self.assertNotIn("conversation-recap", self._posted_content(mock_post))
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_no_recap_when_never_woke(self, mock_post, _mock_ner):
+        # last_wake_at is null (default) → nothing to rehydrate.
+        mock_post.return_value = _ok_chat_response("ok")
+        self._prior_turn("old-1", user_text="earlier stuff", reply_text="earlier reply", minutes_ago=10)
+        self._queue_turn("new-1", user_text="continuing normally")
+
+        self._drain()
+
+        self.assertNotIn("conversation-recap", self._posted_content(mock_post))
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_first_ever_turn_no_history_no_crash(self, mock_post, _mock_ner):
+        # No prior delivered turns in the thread. Woken, but nothing to recap.
+        mock_post.return_value = _ok_chat_response("ok")
+        self._set_wake(minutes_ago=5)
+        self._queue_turn("new-1", user_text="hello for the first time")
+
+        result = self._drain()
+
+        self.assertEqual(result["delivered"], 1)
+        self.assertNotIn("conversation-recap", self._posted_content(mock_post))
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    def test_truncation_respects_total_cap_and_drops_oldest(self, _mock_ner):
+        # Long history: the total block is capped and the OLDEST exchanges are
+        # dropped first (recency wins). Asserted at the builder for precision.
+        from apps.router.thread_recap import RECAP_TOTAL_CHAR_CAP, build_thread_recap_block
+
+        for i in range(8):
+            self._prior_turn(
+                f"old-{i}",
+                user_text=f"umsg_{i} " + ("yak " * 120),
+                reply_text=f"TOKEN_{i} " + ("cat " * 120),
+                minutes_ago=2000 - i,  # i=0 oldest, i=7 newest
+            )
+        self.tenant.last_wake_at = timezone.now()
+
+        recap = build_thread_recap_block(self.tenant, str(self.thread.id))
+
+        self.assertTrue(recap.startswith("[conversation-recap"))
+        self.assertLessEqual(len(recap), RECAP_TOTAL_CHAR_CAP)
+        # Newest survives, oldest was dropped to fit.
+        self.assertIn("TOKEN_7", recap)
+        self.assertNotIn("TOKEN_0", recap)
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_empty_reply_sibling_rows_excluded(self, mock_post, _mock_ner):
+        # A coalesced turn stores the combined reply on ONE representative row;
+        # siblings are READY with empty reply_text. They must not appear.
+        mock_post.return_value = _ok_chat_response("ok")
+        self._prior_turn("rep", user_text="rep question", reply_text="the real combined answer", minutes_ago=60)
+        self._prior_turn("sibling", user_text="SIBLING_UTEXT here", reply_text="", minutes_ago=60)
+        self._set_wake(minutes_ago=20)
+        self._queue_turn("new-1", user_text="back again")
+
+        self._drain()
+
+        content = self._posted_content(mock_post)
+        self.assertIn("conversation-recap", content)
+        self.assertIn("the real combined answer", content)
+        self.assertNotIn("SIBLING_UTEXT", content)
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_recap_and_proactive_block_coexist(self, mock_post, _mock_ner):
+        # Both continuity blocks in one turn: order must be recap → proactive →
+        # user text (recap = oldest context, then the recent proactive send).
+        from apps.router.proactive_context import record_proactive_outbound
+
+        mock_post.return_value = _ok_chat_response("ok")
+        self._prior_turn("old-1", user_text="prior question", reply_text="prior assistant answer", minutes_ago=3000)
+        record_proactive_outbound(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="91777",
+            message_text="did the meeting happen?",
+        )
+        self._set_wake(minutes_ago=15)
+        self._queue_turn("new-1", user_text="my fresh reply now")
+
+        self._drain()
+
+        content = self._posted_content(mock_post)
+        self.assertEqual(content.count("conversation-recap"), 1)
+        self.assertEqual(content.count("earlier-from-you"), 1)
+        recap_idx = content.index("conversation-recap")
+        proactive_idx = content.index("earlier-from-you")
+        user_idx = content.index("my fresh reply now")
+        self.assertLess(recap_idx, proactive_idx)
+        self.assertLess(proactive_idx, user_idx)
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_recap_is_thread_isolated(self, mock_post, _mock_ner):
+        from apps.router.models import ChatThread
+
+        mock_post.return_value = _ok_chat_response("ok")
+        other = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=False)
+        self._prior_turn("main-old", user_text="main q", reply_text="MAINTHREAD_REPLY", minutes_ago=100)
+        self._prior_turn(
+            "other-old", user_text="OTHER_UTEXT", reply_text="OTHERTHREAD_REPLY", minutes_ago=100, thread=other
+        )
+        self._set_wake(minutes_ago=20)
+        self._queue_turn("new-1", user_text="back in the main thread")
+
+        self._drain()
+
+        content = self._posted_content(mock_post)
+        self.assertIn("MAINTHREAD_REPLY", content)
+        self.assertNotIn("OTHERTHREAD_REPLY", content)
+        self.assertNotIn("OTHER_UTEXT", content)
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_exactly_once_across_consecutive_turns(self, mock_post, _mock_ner):
+        # First post-wake turn gets the recap; once it is delivered its
+        # replied_at moves last_turn past last_wake_at, so the next turn does not.
+        mock_post.return_value = _ok_chat_response("ok")
+        self._prior_turn("old-1", user_text="original topic", reply_text="original answer", minutes_ago=3000)
+        self._set_wake(minutes_ago=30)
+
+        self._queue_turn("turn-1", user_text="first reply after wake")
+        self._drain()
+        self.assertIn("conversation-recap", self._posted_content(mock_post))
+
+        self._queue_turn("turn-2", user_text="second reply after wake")
+        self._drain()
+        self.assertNotIn("conversation-recap", self._posted_content(mock_post))
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    def test_builder_is_idempotent_pure_read(self, _mock_ner):
+        # Drain retries recompute the same condition. The builder is a pure read
+        # (no consumption / mutation), so repeated calls return identical content.
+        from apps.router.thread_recap import build_thread_recap_block
+
+        self._prior_turn("old-1", user_text="topic", reply_text="answer", minutes_ago=500)
+        self.tenant.last_wake_at = timezone.now()
+
+        first = build_thread_recap_block(self.tenant, str(self.thread.id))
+        second = build_thread_recap_block(self.tenant, str(self.thread.id))
+
+        self.assertTrue(first)
+        self.assertEqual(first, second)
+
+    @patch("apps.pii.redactor._detect_pii", return_value=[])
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_verbatim_user_text_is_redacted_not_leaked(self, mock_post, _mock_ner):
+        # AppChatMessage.user_text is stored VERBATIM (real values) for the
+        # owner-facing ?since= feed. The recap must NOT leak that to the model —
+        # it re-runs the same redaction seam the live turn used. Seed a known
+        # binding so the map pass (pre-NER) substitutes it deterministically.
+        mock_post.return_value = _ok_chat_response("ok")
+        self.tenant.pii_entity_map = {"[PERSON_5]": "Priya"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        self._prior_turn(
+            "old-1",
+            user_text="the call with Priya went great",
+            reply_text="glad the [PERSON_5] call went well",
+            minutes_ago=200,
+        )
+        self._set_wake(minutes_ago=20)
+        self._queue_turn("new-1", user_text="picking this back up")
+
+        self._drain()
+
+        content = self._posted_content(mock_post)
+        self.assertIn("conversation-recap", content)
+        self.assertNotIn("Priya", content)
+        self.assertIn("[PERSON_5]", content)

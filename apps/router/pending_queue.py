@@ -1562,6 +1562,27 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
     if proactive_block:
         content = proactive_block + content
 
+    # Rehydrate the thread's conversation into a cold OpenClaw session. The iOS
+    # session transcript lives on an ephemeral EmptyDir that is wiped on
+    # hibernation/restart, so a user returning after a wake references things the
+    # agent no longer remembers ("what's fable 5?"). When ``Tenant.last_wake_at``
+    # is newer than the thread's last delivered turn, the session was probably
+    # wiped — prepend a bounded recap of the thread's recent history so the agent
+    # continues instead of greeting the user cold. Prepended AFTER the proactive
+    # block so the final order is recap (oldest context) → [earlier-from-you] →
+    # datetime/chat markers + user text. Exactly-once per wake and idempotent
+    # across drain retries (see ``thread_recap``). The current batch's rows are
+    # excluded so the recap never replays the turn being delivered.
+    from apps.router.thread_recap import build_thread_recap_block
+
+    recap_block = build_thread_recap_block(
+        tenant,
+        thread_id,
+        exclude_client_msg_ids=_ios_client_msg_ids(batch),
+    )
+    if recap_block:
+        content = recap_block + content
+
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     from apps.cron.gateway_client import get_gateway_token_for_tenant
 
