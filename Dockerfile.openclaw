@@ -67,6 +67,11 @@ COPY runtime/openclaw/plugins/nbhd-site-publishing /opt/nbhd/plugins/nbhd-site-p
 # if any shippable plugin is missing from this block.
 COPY runtime/openclaw/plugins/nbhd-friends-tools /opt/nbhd/plugins/nbhd-friends-tools
 COPY runtime/openclaw/plugins/nbhd-agenda-tools /opt/nbhd/plugins/nbhd-agenda-tools
+# nbhd-doc-taint-guard is emitted into plugins.load.paths by config_generator
+# UNCONDITIONALLY (docs/upload-security-threat-model.md P0-1/P0-2) — same
+# "plugin path not found" boot-crash risk as the 2026-07-05 friends incident
+# if this COPY were missing. Node-built-ins-only (no npm install).
+COPY runtime/openclaw/plugins/nbhd-doc-taint-guard /opt/nbhd/plugins/nbhd-doc-taint-guard
 COPY skills/gws-* /opt/nbhd/skills/
 COPY agent-skills /opt/nbhd/agent-skills
 COPY templates/openclaw /opt/nbhd/templates/openclaw
@@ -74,6 +79,7 @@ COPY runtime/openclaw/proxy.js /opt/nbhd/proxy.js
 COPY runtime/openclaw/suppress-chmod-eperm.js /opt/nbhd/suppress-chmod-eperm.js
 COPY runtime/openclaw/redact-stdout.js /opt/nbhd/redact-stdout.js
 COPY runtime/openclaw/tool-logger.js /opt/nbhd/tool-logger.js
+COPY runtime/openclaw/external-content-wrap.js /opt/nbhd/external-content-wrap.js
 COPY runtime/openclaw/claude-with-token.sh /opt/nbhd/claude-with-token.sh
 COPY runtime/openclaw/claude-settings.json /opt/nbhd/claude-settings.json
 COPY runtime/openclaw/entrypoint.sh /usr/local/bin/nbhd-openclaw-entrypoint

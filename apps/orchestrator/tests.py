@@ -96,6 +96,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -117,6 +118,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -131,11 +133,28 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
         self.assertEqual(config["plugins"]["allow"], ["nbhd-google-tools"])
         self.assertNotIn("nbhd-journal-tools", config["plugins"]["entries"])
+
+    def test_doc_taint_guard_plugin_ships_by_default(self):
+        # The real regression test: with NO override at all, nbhd-doc-taint-guard
+        # ships fleet-wide (docs/upload-security-threat-model.md P0-1/P0-2/P1-2)
+        # — the pdf/image tools it guards are fleet-wide, so this guard must be
+        # too, independent of any per-tenant flag. Mirrors how the other
+        # unconditional plugins (routing-context, cron-enforcement) are proven:
+        # the isolation tests above disable it to test wiring of OTHER plugins
+        # in isolation; this test proves the guard itself is on by default.
+        config = generate_openclaw_config(self.tenant)
+        self.assertIn("nbhd-doc-taint-guard", config["plugins"]["allow"])
+        self.assertEqual(
+            config["plugins"]["entries"]["nbhd-doc-taint-guard"],
+            {"enabled": True, "config": {"mode": "log_only"}},
+        )
+        self.assertIn("/opt/nbhd/plugins/nbhd-doc-taint-guard", config["plugins"]["load"]["paths"])
 
     def test_tools_policy_uses_allow_and_deny_lists(self):
         self.tenant.model_tier = "starter"
@@ -381,6 +400,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)
@@ -403,6 +423,7 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_USAGE_PLUGIN_ID="",
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)
