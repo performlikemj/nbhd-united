@@ -158,6 +158,13 @@ TASK_MAP = {
     # PR-B6 adds the daily schedule. RAISES on a non-'pass' run so a broken
     # journal path lands in the DLQ + owner alert, never a silent green.
     "eval_journey_journal": "apps.evals.tasks.eval_journey_journal_task",
+    # Eval system — cron-fire delivery canary (Wave B / Probe 3). Operator-fired via
+    # a no-body QStash publish to /api/cron/trigger/eval_journey_cron/ (zero-arg).
+    # Arms a REAL one-shot pure_reminder cron on the synthetic journey tenant and
+    # asserts OpenClaw actually fired it by observing a fresh ProactiveOutbound row
+    # (never CronJob registration fields — those don't prove a fire). RAISES on a
+    # non-delivery so it DLQ's + alerts the owner instead of a silent green.
+    "eval_journey_cron": "apps.evals.tasks.eval_journey_cron_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.

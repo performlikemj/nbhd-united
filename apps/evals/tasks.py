@@ -98,6 +98,26 @@ def eval_journey_journal_task(transport=None) -> dict:
 
     # Operator-fired today (no schedule yet); PR-B6 flips this to SCHEDULED.
     run = run_journal_search_suite(transport=transport, trigger=EvalRun.Trigger.MANUAL)
+def eval_journey_cron_task() -> dict:
+    """Fire the ``journey_cron`` suite — the cron-fire delivery canary (Probe 3).
+
+    Zero-arg by contract (the QStash publish path can't carry a body), registered
+    in apps/cron/views.py TASK_MAP, fired by a no-body publish to
+    ``/api/cron/trigger/eval_journey_cron/``. Arms a REAL one-shot ``pure_reminder``
+    cron on the synthetic journey tenant, then polls for the ``ProactiveOutbound``
+    row the delivery view writes when OpenClaw actually fires it.
+
+    RAISES when the run does not close ``pass`` (via ``finalize_task_run``) — a
+    non-delivery lands in the DLQ + alerts the owner instead of a silent green.
+    Single-request (arm + observe); see the suite docstring for the two-phase
+    fallback if a fire ever brushes the 300s worker ceiling.
+    """
+    from apps.evals.models import EvalRun
+    from apps.evals.suites.journey_cron import run_cron_fire_suite
+
+    # Operator-fired today (no schedule exists yet); Wave B6 flips this to
+    # SCHEDULED when a real QStash cron drives it.
+    run = run_cron_fire_suite(trigger=EvalRun.Trigger.MANUAL)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
