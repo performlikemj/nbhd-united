@@ -36,9 +36,11 @@ class FinanceSnapshotCronWiringTests(SimpleTestCase):
 
     def test_system_cron_entry_present(self):
         """SYSTEM_CRONS must include a monthly entry for snapshot-finance-monthly."""
-        from apps.cron.management.commands.register_system_crons import SYSTEM_CRONS
+        from apps.cron.management.commands.register_system_crons import iter_system_crons
 
-        names = [name for name, _cron, _path in SYSTEM_CRONS]
+        # iter_system_crons normalizes 3- and 4-tuple entries (the optional 4th
+        # element is Upstash-Retries) to a uniform 4-tuple.
+        names = [name for name, _cron, _path, _retries in iter_system_crons()]
         self.assertIn(
             "snapshot-finance-monthly",
             names,
@@ -48,10 +50,14 @@ class FinanceSnapshotCronWiringTests(SimpleTestCase):
 
     def test_system_cron_fires_monthly_on_first(self):
         """The cron expression must target the 1st of each month."""
-        from apps.cron.management.commands.register_system_crons import SYSTEM_CRONS
+        from apps.cron.management.commands.register_system_crons import iter_system_crons
 
         entry = next(
-            ((name, cron, path) for name, cron, path in SYSTEM_CRONS if name == "snapshot-finance-monthly"),
+            (
+                (name, cron, path)
+                for name, cron, path, _retries in iter_system_crons()
+                if name == "snapshot-finance-monthly"
+            ),
             None,
         )
         self.assertIsNotNone(entry, "snapshot-finance-monthly not found in SYSTEM_CRONS")

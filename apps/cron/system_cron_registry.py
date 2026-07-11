@@ -55,7 +55,8 @@ def sync_system_crons(base_url: str) -> dict:
 
     from apps.cron.management.commands.register_system_crons import (
         RETIRED_CRON_PATHS,
-        SYSTEM_CRONS,
+        iter_system_crons,
+        schedule_retries,
     )
 
     qstash_token = getattr(settings, "QSTASH_TOKEN", "")
@@ -78,15 +79,25 @@ def sync_system_crons(base_url: str) -> dict:
     skipped: list[str] = []
     failed: list[str] = []
 
-    for name, cron_expr, path in SYSTEM_CRONS:
+    for name, cron_expr, path, retries in iter_system_crons():
         destination = f"{base_url}{path}"
+        # Retries header rides on every create/recreate. ``retries is None`` (a
+        # 3-tuple entry) omits it, so QStash keeps its default of 3.
+        create_headers = {**headers, "Upstash-Cron": cron_expr}
+        if retries is not None:
+            create_headers["Upstash-Retries"] = str(retries)
         if destination in existing:
             existing_sched = existing[destination]
-            if existing_sched.get("cron") == cron_expr:
+            # Same cron AND (retries unpinned OR already at the pinned value) is a
+            # no-op. A pinned retries that differs from the live schedule counts as
+            # a change — delete+recreate — exactly like a changed cron expr, so
+            # flipping retries=0 onto a schedule created at the default 3 re-applies.
+            retries_ok = retries is None or schedule_retries(existing_sched) == retries
+            if existing_sched.get("cron") == cron_expr and retries_ok:
                 skipped.append(name)
                 continue
 
-            # Cron expression changed — delete old and recreate.
+            # Cron expr or retries changed — delete old and recreate.
             schedule_id = existing_sched.get("scheduleId")
             if not schedule_id:
                 skipped.append(name)
@@ -108,7 +119,7 @@ def sync_system_crons(base_url: str) -> dict:
 
             create_resp = httpx.post(
                 f"{QSTASH_SCHEDULES_URL}/{destination}",
-                headers={**headers, "Upstash-Cron": cron_expr},
+                headers=create_headers,
             )
             if create_resp.status_code in (200, 201):
                 updated.append(name)
@@ -125,7 +136,7 @@ def sync_system_crons(base_url: str) -> dict:
 
         create_resp = httpx.post(
             f"{QSTASH_SCHEDULES_URL}/{destination}",
-            headers={**headers, "Upstash-Cron": cron_expr},
+            headers=create_headers,
         )
         if create_resp.status_code in (200, 201):
             registered.append(name)

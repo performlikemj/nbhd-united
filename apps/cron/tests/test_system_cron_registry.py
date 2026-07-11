@@ -12,6 +12,7 @@ lists so each branch is exercised in isolation.
 
 from __future__ import annotations
 
+import re
 from unittest import mock
 
 from django.test import TestCase, override_settings
@@ -101,6 +102,84 @@ class SyncSystemCronsTests(TestCase):
         with override_settings(QSTASH_TOKEN=""), self.assertRaises(registry.SystemCronConfigError):
             registry.sync_system_crons(BASE)
 
+    def test_four_tuple_retries_sets_upstash_retries_header_on_register(self):
+        # A 4-tuple entry (retries=0) with no live schedule → registered, and the
+        # create POST carries Upstash-Retries: "0".
+        crons = [("cap-me", "0 1 * * *", "/api/cron/trigger/cap_me/", 0)]
+        with (
+            mock.patch.object(reg_cmd, "SYSTEM_CRONS", crons),
+            mock.patch.object(reg_cmd, "RETIRED_CRON_PATHS", []),
+            mock.patch("httpx.get", return_value=_resp(json_data=[])),
+            mock.patch("httpx.post", return_value=_resp(status=201)) as m_post,
+            mock.patch("httpx.delete"),
+        ):
+            result = registry.sync_system_crons(BASE)
+        self.assertEqual(result["registered"], ["cap-me"])
+        _args, kwargs = m_post.call_args
+        self.assertEqual(kwargs["headers"].get("Upstash-Retries"), "0")
+
+    def test_three_tuple_entry_omits_retries_header(self):
+        # A legacy 3-tuple entry sends NO Upstash-Retries header (QStash default 3).
+        crons = [("plain", "0 1 * * *", "/api/cron/trigger/plain/")]
+        with (
+            mock.patch.object(reg_cmd, "SYSTEM_CRONS", crons),
+            mock.patch.object(reg_cmd, "RETIRED_CRON_PATHS", []),
+            mock.patch("httpx.get", return_value=_resp(json_data=[])),
+            mock.patch("httpx.post", return_value=_resp(status=201)) as m_post,
+            mock.patch("httpx.delete"),
+        ):
+            result = registry.sync_system_crons(BASE)
+        self.assertEqual(result["registered"], ["plain"])
+        _args, kwargs = m_post.call_args
+        self.assertNotIn("Upstash-Retries", kwargs["headers"])
+
+    def test_retries_drift_recreates_then_matching_retries_skips(self):
+        # Same cron but the live schedule still carries QStash's default retries=3
+        # while the entry pins 0 → counts as a change → delete+recreate with the cap.
+        crons = [("cap-me", "0 0 * * *", "/api/cron/trigger/cap_me/", 0)]
+        stale = [
+            {
+                "destination": f"{BASE}/api/cron/trigger/cap_me/",
+                "cron": "0 0 * * *",
+                "retries": 3,
+                "scheduleId": "s-cap",
+            }
+        ]
+        with (
+            mock.patch.object(reg_cmd, "SYSTEM_CRONS", crons),
+            mock.patch.object(reg_cmd, "RETIRED_CRON_PATHS", []),
+            mock.patch("httpx.get", return_value=_resp(json_data=stale)),
+            mock.patch("httpx.post", return_value=_resp(status=201)) as m_post,
+            mock.patch("httpx.delete", return_value=_resp(status=200)) as m_delete,
+        ):
+            result = registry.sync_system_crons(BASE)
+        self.assertEqual(result["updated"], ["cap-me"])
+        m_delete.assert_called_once()
+        _args, kwargs = m_post.call_args
+        self.assertEqual(kwargs["headers"].get("Upstash-Retries"), "0")
+
+        # Once the live schedule already carries retries=0, the same entry is a
+        # no-op (idempotent after the first sync) — no delete, no recreate.
+        settled = [
+            {
+                "destination": f"{BASE}/api/cron/trigger/cap_me/",
+                "cron": "0 0 * * *",
+                "retries": 0,
+                "scheduleId": "s-cap",
+            }
+        ]
+        with (
+            mock.patch.object(reg_cmd, "SYSTEM_CRONS", crons),
+            mock.patch.object(reg_cmd, "RETIRED_CRON_PATHS", []),
+            mock.patch("httpx.get", return_value=_resp(json_data=settled)),
+            mock.patch("httpx.post") as m_post2,
+            mock.patch("httpx.delete") as m_delete2,
+        ):
+            result = registry.sync_system_crons(BASE)
+        self.assertEqual(result["skipped"], ["cap-me"])
+        m_post2.assert_not_called()
+        m_delete2.assert_not_called()
+
 
 @override_settings(QSTASH_TOKEN="tok", DJANGO_BASE_URL=BASE)
 class ReconcileTaskTests(TestCase):
@@ -126,10 +205,152 @@ class ReconcileTaskTests(TestCase):
         )
 
     def test_reconcile_cron_registered_in_system_crons(self):
-        names = {name for name, _cron, _path in reg_cmd.SYSTEM_CRONS}
+        names = {name for name, _c, _p, _r in reg_cmd.iter_system_crons()}
         self.assertIn("reconcile-system-crons", names)
         entry = next(e for e in reg_cmd.SYSTEM_CRONS if e[0] == "reconcile-system-crons")
         self.assertEqual(entry[2], "/api/cron/trigger/reconcile_system_crons/")
+
+
+class SystemCronsWellFormednessTests(TestCase):
+    """SYSTEM_CRONS structural invariants — no QStash involved.
+
+    Guards the failure mode where a schedule points at a task name that does
+    not exist: sync_system_crons would happily register a QStash schedule whose
+    fires all 404 at ``trigger_task``. Every ``/api/cron/trigger/<name>/`` entry
+    must resolve to a TASK_MAP-registered task. Dedicated-view paths
+    (apply-pending-configs, expire-trials) are not trigger tasks and are skipped
+    by the same regex the router uses.
+    """
+
+    TRIGGER_RE = re.compile(r"^/api/cron/trigger/(?P<name>[a-z0-9_]+)/$")
+
+    def test_every_trigger_path_resolves_to_a_task_map_entry(self):
+        from apps.cron.views import TASK_MAP
+
+        for name, cron_expr, path, _retries in reg_cmd.iter_system_crons():
+            m = self.TRIGGER_RE.match(path)
+            if not m:
+                continue  # dedicated-view endpoint, not a trigger task
+            self.assertIn(
+                m.group("name"),
+                TASK_MAP,
+                msg=f"SYSTEM_CRONS entry {name!r} → {path!r} has no TASK_MAP task",
+            )
+
+    def test_names_and_paths_are_unique(self):
+        names = [name for name, _e, _p, _r in reg_cmd.iter_system_crons()]
+        paths = [path for _n, _e, path, _r in reg_cmd.iter_system_crons()]
+        self.assertEqual(len(names), len(set(names)), "duplicate SYSTEM_CRONS name")
+        self.assertEqual(len(paths), len(set(paths)), "duplicate SYSTEM_CRONS path")
+
+    def test_cron_exprs_have_five_fields(self):
+        for name, cron_expr, _path, _retries in reg_cmd.iter_system_crons():
+            self.assertEqual(
+                len(cron_expr.split()),
+                5,
+                msg=f"SYSTEM_CRONS entry {name!r} has a malformed cron expr {cron_expr!r}",
+            )
+
+    def test_wave_b_eval_probes_are_scheduled(self):
+        """The five Wave B eval probes (PR-B6) are wired with the planned exprs.
+
+        Each carries an explicit ``retries=0`` (the optional 4th tuple element):
+        finalize_task_run alerts the owner + DLQs on the FIRST failing run, so
+        QStash's default 3 retries would only re-run the whole probe. The reaper is
+        HOURLY at :50 (not the original daily 05:35) so a SIGKILL-stranded run is
+        surfaced within ~2h, not ~24h. See the PR-B6 review fixes.
+        """
+        by_name = {name: (cron_expr, path, retries) for name, cron_expr, path, retries in reg_cmd.iter_system_crons()}
+        expected = {
+            "eval-journey-chat": ("*/30 * * * *", "/api/cron/trigger/eval_journey_chat/", 0),
+            "eval-journey-journal": ("5 5 * * *", "/api/cron/trigger/eval_journey_journal/", 0),
+            "eval-journey-wake": ("12 5 * * *", "/api/cron/trigger/eval_journey_wake/", 0),
+            "eval-journey-cron": ("20 5 * * *", "/api/cron/trigger/eval_journey_cron/", 0),
+            "reap-stuck-eval-runs": ("50 * * * *", "/api/cron/trigger/reap_stuck_eval_runs/", 0),
+        }
+        for name, expected_tuple in expected.items():
+            self.assertIn(name, by_name, msg=f"{name} not scheduled in SYSTEM_CRONS")
+            self.assertEqual(by_name[name], expected_tuple)
+
+    def test_daily_eval_probes_avoid_the_chat_probe_fire_boundary(self):
+        """The chat probe fires at :00 and :30 every hour. No daily eval probe
+        may share those minutes, else it races the chat probe (the wake probe
+        force-hibernates the tenant — a concurrent chat fire would wake it
+        mid-test). Probe-1↔Probe-4 race, plan §Green-theater."""
+        chat_minutes = {0, 30}
+        for name, cron_expr, _path, _retries in reg_cmd.iter_system_crons():
+            if not name.startswith(("eval-journey-", "reap-stuck-eval")):
+                continue
+            minute_field = cron_expr.split()[0]
+            if minute_field.startswith("*"):
+                continue  # the chat probe itself (*/30)
+            self.assertNotIn(
+                int(minute_field),
+                chat_minutes,
+                msg=f"{name} fires on a chat-probe minute ({minute_field})",
+            )
+
+    def test_daily_eval_probe_windows_are_disjoint_from_each_other_and_the_chat_fires(self):
+        """Stronger than the minute-set guard above: build each DAILY probe's real
+        ``[fire, fire + worst_case_runtime + margin]`` wall-clock window from the
+        SAME deadline constants the suites run on, then assert those windows are
+        pairwise disjoint AND clear of every :00/:30 chat window (chat fire + its
+        poll deadline). A minute-set check passes ``"29 5"`` even though its runtime
+        crosses the 05:30 chat fire — this catches that, and it FAILS if someone
+        edits a probe's deadline constant into a collision."""
+        from apps.evals.journey.chat_drive import DEFAULT_DEADLINE_SECONDS
+        from apps.evals.journey.wake_control import _WALL_CLOCK_BUDGET_SECONDS
+        from apps.evals.suites.journey_cron import POLL_BUDGET_SECONDS
+        from apps.evals.suites.journey_journal import _HTTP_TIMEOUT_S
+        from apps.evals.suites.journey_wake import WAKE_DEADLINE_SECONDS
+
+        margin_s = 60  # pad beyond each documented worst case
+
+        # Worst-case wall-clock runtime per daily probe, each DERIVED from its own
+        # suite constants (never a re-hardcoded literal, so a drift in the suite
+        # drifts this test with it):
+        #   journal: a sequential PUT + GET, each bounded by _HTTP_TIMEOUT_S.
+        #   wake:    the hibernate-precondition budget + the wake poll deadline.
+        #   cron:    the total arm+poll budget measured from suite start.
+        worst_case = {
+            "eval-journey-journal": 2 * _HTTP_TIMEOUT_S,
+            "eval-journey-wake": _WALL_CLOCK_BUDGET_SECONDS + WAKE_DEADLINE_SECONDS,
+            "eval-journey-cron": POLL_BUDGET_SECONDS,
+        }
+
+        by_name = {name: cron_expr for name, cron_expr, _p, _r in reg_cmd.iter_system_crons()}
+
+        def fire_seconds(cron_expr):
+            minute_f, hour_f = cron_expr.split()[0], cron_expr.split()[1]
+            self.assertTrue(
+                minute_f.isdigit() and hour_f.isdigit(),
+                msg=f"daily probe expr {cron_expr!r} must fire at a fixed HH:MM",
+            )
+            return int(hour_f) * 3600 + int(minute_f) * 60
+
+        # Each daily probe's [start, end) window in seconds-of-day.
+        windows = {}
+        for name, runtime in worst_case.items():
+            self.assertIn(name, by_name, msg=f"{name} missing from SYSTEM_CRONS")
+            start = fire_seconds(by_name[name])
+            windows[name] = (start, start + runtime + margin_s)
+
+        def overlaps(a, b):
+            return a[0] < b[1] and b[0] < a[1]
+
+        # (1) Pairwise disjoint among the daily probes themselves.
+        names = list(windows)
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                a, b = windows[names[i]], windows[names[j]]
+                self.assertFalse(overlaps(a, b), msg=f"{names[i]} window {a} overlaps {names[j]} window {b}")
+
+        # (2) Disjoint from every :00/:30 chat window across the whole day.
+        chat_end_offset = DEFAULT_DEADLINE_SECONDS + margin_s
+        chat_windows = [(h * 3600 + m * 60, h * 3600 + m * 60 + chat_end_offset) for h in range(24) for m in (0, 30)]
+        for name, w in windows.items():
+            for cw in chat_windows:
+                self.assertFalse(overlaps(w, cw), msg=f"{name} window {w} overlaps chat fire window {cw}")
 
 
 class ViewDelegationTests(TestCase):

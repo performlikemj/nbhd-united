@@ -83,9 +83,8 @@ def eval_journey_chat_task() -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.journey_chat import run_chat_roundtrip_suite
 
-    # Operator-fired today (no schedule until PR-B6); flips to SCHEDULED when a
-    # real QStash cron drives it.
-    run = run_chat_roundtrip_suite(trigger=EvalRun.Trigger.MANUAL)
+    # Fired by the eval-journey-chat QStash cron (PR-B6, */30) — a scheduled run.
+    run = run_chat_roundtrip_suite(trigger=EvalRun.Trigger.SCHEDULED)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
@@ -119,8 +118,8 @@ def eval_journey_journal_task(transport=None) -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.journey_journal import run_journal_search_suite
 
-    # Operator-fired today (no schedule yet); PR-B6 flips this to SCHEDULED.
-    run = run_journal_search_suite(transport=transport, trigger=EvalRun.Trigger.MANUAL)
+    # Fired by the eval-journey-journal QStash cron (PR-B6, daily 05:05) — scheduled.
+    run = run_journal_search_suite(transport=transport, trigger=EvalRun.Trigger.SCHEDULED)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
@@ -150,9 +149,8 @@ def eval_journey_cron_task() -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.journey_cron import run_cron_fire_suite
 
-    # Operator-fired today (no schedule exists yet); Wave B6 flips this to
-    # SCHEDULED when a real QStash cron drives it.
-    run = run_cron_fire_suite(trigger=EvalRun.Trigger.MANUAL)
+    # Fired by the eval-journey-cron QStash cron (PR-B6, daily 05:20) — a scheduled run.
+    run = run_cron_fire_suite(trigger=EvalRun.Trigger.SCHEDULED)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
@@ -185,9 +183,9 @@ def eval_journey_wake_task() -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.journey_wake import run_wake_suite
 
-    # Operator-fired today (no schedule until PR-B6); flips to SCHEDULED when a
-    # real QStash cron drives it (staggered off the :00/:30 chat-probe boundary).
-    run = run_wake_suite(trigger=EvalRun.Trigger.MANUAL)
+    # Fired by the eval-journey-wake QStash cron (PR-B6, daily 05:12, staggered off
+    # the :00/:30 chat-probe boundary) — a scheduled run.
+    run = run_wake_suite(trigger=EvalRun.Trigger.SCHEDULED)
 
     # Shared contract: non-pass → alert owner + raise into the DLQ; pass → continue.
     finalize_task_run(run)
