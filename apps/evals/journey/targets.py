@@ -97,9 +97,16 @@ def ensure_synthetic_delivery_channel(tenant) -> bool:
     """
     from apps.router.models import DeviceToken
 
+    # Defense in depth: never plant a delivery channel on a real subscriber's
+    # user, even if a future caller hands this an unvetted tenant. The target
+    # resolver already refuses non-synthetic tenants; this keeps the helper
+    # safe when called on its own.
+    if not getattr(tenant, "is_synthetic", False):
+        raise JourneyConfigError("refusing to plant a synthetic DeviceToken on a NON-synthetic tenant.")
+
     # Keyed on ``token`` (its sole unique constraint) so the call is idempotent —
     # a second run returns the existing row instead of colliding on the constraint.
-    _row, created = DeviceToken.objects.get_or_create(
+    row, created = DeviceToken.objects.get_or_create(
         token=SYNTHETIC_DEVICE_TOKEN,
         defaults={
             "tenant": tenant,
@@ -108,4 +115,15 @@ def ensure_synthetic_delivery_channel(tenant) -> bool:
             "bundle_id": SYNTHETIC_DEVICE_BUNDLE_ID,
         },
     )
+    if not created and (row.user_id != tenant.user_id or row.tenant_id != tenant.id):
+        # ``uniq_device_token`` is GLOBAL: after a journey-tenant re-provision
+        # (new User row) — or a second synthetic tenant reusing this helper — the
+        # surviving row still points at the OLD user, so ``resolve_user_channel``
+        # finds nothing for the NEW one → perpetual 422 while this helper reads
+        # green (created=False). Mirror the registration upsert semantics
+        # (push_views: a token re-points to the registering user) and re-point
+        # the row at THIS tenant's user.
+        row.user = tenant.user
+        row.tenant = tenant
+        row.save(update_fields=["user", "tenant", "last_seen_at"])
     return created

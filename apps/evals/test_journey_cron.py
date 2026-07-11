@@ -23,6 +23,7 @@ from apps.evals.journey.targets import (
     SYNTHETIC_DEVICE_BUNDLE_ID,
     SYNTHETIC_DEVICE_ENVIRONMENT,
     SYNTHETIC_DEVICE_TOKEN,
+    JourneyConfigError,
     ensure_synthetic_delivery_channel,
 )
 from apps.evals.models import EvalResult, EvalRun
@@ -31,6 +32,7 @@ from apps.evals.suites.journey_cron import (
     _observe_delivery,
     run_cron_fire_suite,
 )
+from apps.router.cron_delivery import resolve_user_channel
 from apps.router.models import DeviceToken, ProactiveOutbound
 from apps.tenants.models import Tenant, User
 
@@ -340,9 +342,43 @@ class EnsureSyntheticChannelTest(TestCase):
         self.assertEqual(row.tenant_id, self.tenant.id)
         self.assertEqual(row.environment, SYNTHETIC_DEVICE_ENVIRONMENT)
         self.assertEqual(row.bundle_id, SYNTHETIC_DEVICE_BUNDLE_ID)
+        # Resolver-drift guard: the REAL production resolver must accept the
+        # ensured channel. If resolve_user_channel ever grows a filter this row
+        # doesn't satisfy (environment, staleness, bundle), this fails in CI
+        # instead of as a prod alarm at the next scheduled fire.
+        self.assertEqual(resolve_user_channel(self.tenant.user), "app")
 
     def test_idempotent_when_present(self):
         self.assertTrue(ensure_synthetic_delivery_channel(self.tenant))  # created
         self.assertFalse(ensure_synthetic_delivery_channel(self.tenant))  # existed
         # Idempotent: still exactly one row, no unique-constraint collision.
         self.assertEqual(DeviceToken.objects.filter(user=self.tenant.user).count(), 1)
+        self.assertEqual(resolve_user_channel(self.tenant.user), "app")
+
+    def test_stale_owner_row_is_repointed(self):
+        """uniq_device_token is GLOBAL: a row left pointing at a PRIOR synthetic
+        user (journey tenant re-provisioned, or another synthetic tenant used the
+        helper) must be re-pointed — otherwise ensure reads green (created=False)
+        while resolve_user_channel finds nothing for THIS user → perpetual 422.
+        """
+        stale_owner = _synthetic_tenant()
+        ensure_synthetic_delivery_channel(stale_owner)  # row now owned by stale_owner
+
+        created = ensure_synthetic_delivery_channel(self.tenant)
+
+        self.assertFalse(created)  # existed...
+        row = DeviceToken.objects.get(token=SYNTHETIC_DEVICE_TOKEN)
+        self.assertEqual(row.user_id, self.tenant.user_id)  # ...but re-pointed
+        self.assertEqual(row.tenant_id, self.tenant.id)
+        # And the REAL resolver now routes THIS user to the app channel.
+        self.assertEqual(resolve_user_channel(self.tenant.user), "app")
+        self.assertIsNone(resolve_user_channel(stale_owner.user))
+
+    def test_refuses_non_synthetic_tenant(self):
+        """Defense in depth: never plant a delivery channel on a real subscriber."""
+        email = f"{secrets.token_hex(4)}@e.com"
+        user = User.objects.create_user(username=email, email=email)
+        real = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=False)
+        with self.assertRaises(JourneyConfigError):
+            ensure_synthetic_delivery_channel(real)
+        self.assertFalse(DeviceToken.objects.filter(user=user).exists())
