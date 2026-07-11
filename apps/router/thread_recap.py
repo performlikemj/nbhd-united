@@ -160,8 +160,19 @@ def build_thread_recap_block(
         # Cold session. Pull the last N exchanges with actual assistant text
         # (empty reply_text = a coalesce sibling; the representative row of the
         # same turn carries the combined reply), oldest → newest.
+        #
+        # ENCRYPTION-AT-REST Phase 2 DEBT (CONTINUITY_encryption-phase1.md §1):
+        # AppChatMessage.reply_text is registered for AES-GCM encryption. The
+        # predicate below is correct TODAY (the column is plaintext; "" is the
+        # real stored value for coalesce siblings) — hence the sanctioned noqa.
+        # When the column flips, this whole module must move to the apps.crypto
+        # read path: BOTH this ``exclude(reply_text="")`` (ciphertext never
+        # equals "" — the filter would silently stop matching) AND the
+        # ``.values("user_text", "reply_text")`` fetch below it (which would
+        # otherwise emit raw ciphertext into the recap block). The Phase 2
+        # sweep must not skip this file.
         rows = list(
-            base_qs.exclude(reply_text="")
+            base_qs.exclude(reply_text="")  # noqa: encrypted-predicate
             .order_by("-created_at", "-replied_at")
             .values("user_text", "reply_text")[:RECAP_MAX_EXCHANGES]
         )
