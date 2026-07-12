@@ -17,6 +17,7 @@ import tempfile
 from pathlib import Path
 from unittest import mock
 
+import httpx
 from django.core import mail
 from django.test import TestCase, override_settings
 from django.utils import timezone as dj_timezone
@@ -33,6 +34,7 @@ from apps.evals.behavior.schema import (
 )
 from apps.evals.behavior.targets import BehaviorConfigError, resolve_behavior_tenant
 from apps.evals.behavior.transport import (
+    HttpxBehaviorTransport,
     TurnResult,
     build_behavior_transport,
 )
@@ -80,7 +82,25 @@ def _typed_cron(tenant: Tenant) -> CronJob:
     )
 
 
-class BenignTransport:
+class _ScopedFakeMixin:
+    """Every behavior fake models the per-scenario fresh conversation scope the
+    suite opens (``transport.open_conversation``) before driving each scenario.
+    The default is a benign scope tracker: it records each opened scope id so a
+    test can assert the suite opened exactly one per DRIVEN scenario (and none for
+    a budget-skipped one). Fakes that need real per-scope memory (e.g. proving
+    isolation) override ``open_conversation`` — see ``ContextBleedTransport``."""
+
+    def open_conversation(self) -> str:
+        try:
+            scopes = self.opened_scopes
+        except AttributeError:
+            scopes = self.opened_scopes = []
+        sid = f"scope-{len(scopes)}"
+        scopes.append(sid)
+        return sid
+
+
+class BenignTransport(_ScopedFakeMixin):
     """Returns the same benign, non-empty reply for every turn. Captures the
     per-turn deadlines the suite passes (for the wake-aware first-turn test)."""
 
@@ -95,7 +115,7 @@ class BenignTransport:
         return TurnResult(user_text=text, reply_text=self._reply, ok=True)
 
 
-class EchoTransport:
+class EchoTransport(_ScopedFakeMixin):
     """Echoes the user text back as the reply (so a planted marker gets echoed)."""
 
     def send_turn(self, *, text: str, deadline_seconds: float | None = None) -> TurnResult:
@@ -130,9 +150,49 @@ class SyncShapedCronTransport(BenignTransport):
         return super().send_turn(text=text, deadline_seconds=deadline_seconds)
 
 
-class RaisingTransport:
+class RaisingTransport(_ScopedFakeMixin):
     def send_turn(self, *, text: str, deadline_seconds: float | None = None) -> TurnResult:
         raise RuntimeError("transport exploded")
+
+
+class ContextBleedTransport:
+    """Models a container whose transcript memory is per-SCOPE: each reply echoes
+    every user turn seen so far IN THE ACTIVE SCOPE. ``open_conversation`` switches
+    to a fresh, empty scope (mirroring a fresh OpenClaw session on a new thread).
+
+    This is the isolation oracle: if the suite opens a fresh scope per scenario, a
+    later scenario's replies can NEVER contain an earlier scenario's text. If the
+    suite drove everything in one scope (the run-33 defect), scenario 2's echo WOULD
+    carry scenario 1's content and the isolation assertion flips red — so the test
+    genuinely exercises the fix, not a tautology (proven by
+    ``test_context_bleed_transport_leaks_within_one_scope``)."""
+
+    def __init__(self):
+        self._scopes: dict[str, list[str]] = {}
+        self._active: str | None = None
+
+    def open_conversation(self) -> str:
+        sid = f"scope-{len(self._scopes)}"
+        self._scopes[sid] = []
+        self._active = sid
+        return sid
+
+    def send_turn(self, *, text: str, deadline_seconds: float | None = None) -> TurnResult:
+        assert self._active is not None, "send_turn before open_conversation — isolation not wired"
+        history = self._scopes[self._active]
+        history.append(text)
+        # Reply = the whole ACTIVE scope's user history. A fresh scope holds only
+        # this scenario's turns, so nothing from a prior scenario can appear.
+        return TurnResult(user_text=text, reply_text=" || ".join(history), ok=True)
+
+
+class ScopeOpenFailsTransport(BenignTransport):
+    """open_conversation raises — models a control plane that cannot mint a fresh
+    scope. The suite must ERROR the run loudly rather than drive into a shared,
+    contaminated scope (INVARIANT #3)."""
+
+    def open_conversation(self) -> str:
+        raise BehaviorConfigError("cannot open a fresh conversation scope")
 
 
 class FakeJudge:
@@ -535,6 +595,178 @@ class RunBehaviorSuiteTest(TestCase):
             blob = json.dumps(r.details)
             self.assertNotIn(sentinel_marker, blob)
             self.assertNotIn("SENTINEL_REPLY_XYZZY", blob)
+
+    # --- Scenario isolation (the run-33 cross-scenario contamination fix) --- #
+
+    def test_context_bleed_transport_leaks_within_one_scope(self):
+        # Oracle sanity: the isolation test below is only meaningful if the fake
+        # container ACTUALLY bleeds when turns share a scope. Prove it does (same
+        # scope → later reply carries the earlier turn) and that a fresh scope is
+        # clean — so the cross-scenario PASS is caused by fresh scopes, not by an
+        # inert fake that never leaks.
+        t = ContextBleedTransport()
+        t.open_conversation()
+        t.send_turn(text="remember SECRET_X")
+        second = t.send_turn(text="what did I say")
+        self.assertIn("SECRET_X", second.reply_text)  # same scope → bleeds
+        t.open_conversation()  # a fresh scope
+        third = t.send_turn(text="anything")
+        self.assertNotIn("SECRET_X", third.reply_text)  # new scope → clean
+
+    def test_consecutive_scenarios_run_in_isolated_scopes(self):
+        # THE isolation guarantee. s1 plants a distinctive token; s2 must never see
+        # it. s2's forbidden_absent for that token is the gate: it PASSES only if
+        # s2's container never saw s1's turns — i.e. the suite opened a fresh scope
+        # per scenario. Under the old single-scope behavior s2's echo would include
+        # s1's token and this assertion would FLIP to FAIL.
+        secret = "SCN1_ONLY_TOKEN_ZZZ"
+        s1 = _scenario(scenario_id="s1", script=(f"please remember {secret}",), hard=(HardAssertion("reply_nonempty"),))
+        s2 = _scenario(
+            scenario_id="s2",
+            script=("what did I just tell you",),
+            hard=(HardAssertion("forbidden_absent", forbidden=(secret,)),),
+        )
+        transport = ContextBleedTransport()
+        run = run_behavior_suite(scenarios=[s1, s2], transport=transport, judge=None)
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+        # Two scenarios → two distinct scopes.
+        self.assertEqual(len(transport._scopes), 2)
+        # s2 never saw s1's token → forbidden_absent PASSED with the clean code.
+        s2_hard = [r for r in _hard(run) if r.case_id.startswith("s2::")]
+        self.assertEqual(len(s2_hard), 1)
+        self.assertTrue(s2_hard[0].passed)
+        self.assertEqual(s2_hard[0].details["code"], "clean")
+
+    def test_each_driven_scenario_opens_one_fresh_scope(self):
+        # One fresh scope per DRIVEN scenario; a budget-skipped scenario opens none
+        # (its scope is never created because it never drives a turn).
+        s1 = _scenario(scenario_id="s1", script=("one",))
+        s2 = _scenario(scenario_id="s2", script=("a", "b", "c", "d"))  # 4 warm turns → won't fit 200s
+        transport = BenignTransport()
+        run = run_behavior_suite(scenarios=[s1, s2], transport=transport, judge=None, budget_seconds=200)
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+        # s1 drove (1 turn) and opened exactly one scope; s2 was budget-skipped.
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(len(transport.opened_scopes), 1)
+
+    def test_hard_rows_record_isolation_provenance(self):
+        # Every driven scenario's hard rows carry isolated=True — proof the run used
+        # the fresh-scope isolation path (an old contaminated run has no such flag).
+        s1 = _scenario(scenario_id="s1", script=("one",))
+        s2 = _scenario(scenario_id="s2", script=("two",))
+        run = run_behavior_suite(scenarios=[s1, s2], transport=BenignTransport(), judge=None)
+        hard = _hard(run)
+        self.assertEqual(len(hard), 2)
+        for r in hard:
+            self.assertIs(r.details["isolated"], True)
+
+    def test_scope_open_failure_errors_run_loudly(self):
+        # A scope we cannot open means we cannot isolate — the run must ERROR loudly
+        # (INVARIANT #3), never silently drive into a shared/contaminated scope. The
+        # failure propagates so record_run closes the run 'error' and it hits the DLQ.
+        scenario = _scenario(scenario_id="s1", script=("one",))
+        with self.assertRaises(BehaviorConfigError):
+            run_behavior_suite(scenarios=[scenario], transport=ScopeOpenFailsTransport(), judge=None)
+        # No hard row was recorded for the scenario the failed open guarded.
+        run = EvalRun.objects.filter(suite="behavior").latest("started_at")
+        self.assertEqual(run.status, EvalRun.Status.ERROR)
+        self.assertFalse(run.results.filter(case_id__startswith="s1::hard").exists())
+
+
+# --------------------------------------------------------------------------- #
+# Real transport HTTP behavior — injected httpx client (no network)           #
+# --------------------------------------------------------------------------- #
+class _Resp:
+    """Minimal httpx.Response stand-in (status_code + json())."""
+
+    def __init__(self, status_code: int, payload):
+        self.status_code = status_code
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeHttpxClient:
+    """Scripted httpx.Client for HttpxBehaviorTransport. Routes POSTs by URL suffix
+    and records each POST's JSON body so a test can assert the active scope's
+    thread_id rides the message turn. Never touches the network."""
+
+    def __init__(self, *, threads=None, messages=None, thread_exc=None):
+        self._threads = threads
+        self._messages = messages
+        self._thread_exc = thread_exc
+        self.post_bodies: list[dict] = []
+
+    def post(self, url, json=None, headers=None):
+        self.post_bodies.append({"url": url, "json": json})
+        if url.endswith("/threads/"):
+            if self._thread_exc:
+                raise self._thread_exc
+            return self._threads
+        return self._messages
+
+    def get(self, url, headers=None):  # terminal-on-post → no polling in these tests
+        raise AssertionError("unexpected GET")
+
+    def close(self):
+        pass
+
+
+class HttpxBehaviorTransportTest(TestCase):
+    def _transport(self, client):
+        return HttpxBehaviorTransport(base_url="https://api.test", pat="pat_x", client=client)
+
+    def test_open_conversation_mints_and_activates_thread(self):
+        client = _FakeHttpxClient(
+            threads=_Resp(201, {"id": "thread-123"}),
+            messages=_Resp(200, {"status": "ready", "reply_text": "hi", "error": ""}),
+        )
+        transport = self._transport(client)
+        self.assertEqual(transport.open_conversation(), "thread-123")
+        # The scope's thread_id rides the NEXT turn's POST body → its own session.
+        turn = transport.send_turn(text="hello")
+        self.assertTrue(turn.ok)
+        msg_post = next(b for b in client.post_bodies if b["url"].endswith("/messages/"))
+        self.assertEqual(msg_post["json"]["thread_id"], "thread-123")
+
+    def test_fresh_scope_replaces_the_active_thread(self):
+        # Each open_conversation switches the active scope, so consecutive scenarios
+        # never share a thread id.
+        client = _FakeHttpxClient(
+            threads=_Resp(201, {"id": "thread-A"}),
+            messages=_Resp(200, {"status": "ready", "reply_text": "hi", "error": ""}),
+        )
+        transport = self._transport(client)
+        transport.open_conversation()
+        transport.send_turn(text="turn in A")
+        client._threads = _Resp(201, {"id": "thread-B"})
+        transport.open_conversation()
+        transport.send_turn(text="turn in B")
+        msg_threads = [b["json"]["thread_id"] for b in client.post_bodies if b["url"].endswith("/messages/")]
+        self.assertEqual(msg_threads, ["thread-A", "thread-B"])
+
+    def test_send_turn_without_scope_carries_no_thread_id(self):
+        # The suite always opens a scope first; this documents the fallback is a
+        # clean no-thread turn (not a crash) rather than a silent shared-scope drive.
+        client = _FakeHttpxClient(messages=_Resp(200, {"status": "ready", "reply_text": "hi", "error": ""}))
+        self._transport(client).send_turn(text="hello")
+        self.assertNotIn("thread_id", client.post_bodies[0]["json"])
+
+    def test_open_conversation_non_2xx_raises(self):
+        client = _FakeHttpxClient(threads=_Resp(500, {}))
+        with self.assertRaises(BehaviorConfigError):
+            self._transport(client).open_conversation()
+
+    def test_open_conversation_missing_id_raises(self):
+        client = _FakeHttpxClient(threads=_Resp(201, {}))
+        with self.assertRaises(BehaviorConfigError):
+            self._transport(client).open_conversation()
+
+    def test_open_conversation_http_error_raises(self):
+        client = _FakeHttpxClient(thread_exc=httpx.ConnectError("boom"))
+        with self.assertRaises(BehaviorConfigError):
+            self._transport(client).open_conversation()
 
 
 # --------------------------------------------------------------------------- #

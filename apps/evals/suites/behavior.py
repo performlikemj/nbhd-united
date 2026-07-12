@@ -65,7 +65,6 @@ from apps.evals.behavior.transport import (
     ScenarioRun,
     TurnResult,
     build_behavior_transport,
-    reset_behavior_workspace,
 )
 from apps.evals.models import EvalResult, EvalRun
 from apps.evals.runner import record, record_run
@@ -81,15 +80,25 @@ SUITE = "behavior"
 # the last gated scenario finishes (≤ budget by construction) only millisecond
 # bookkeeping (record/close/alert DB writes) remains — 15s of headroom is ample.
 # The arithmetic must admit the shipped pack's LARGEST first scenario: a 2-turn
-# scenario driven first is 180 (wake-aware turn) + 60 (warm turn) + 30 (judge)
-# = 270 ≤ 285. Worst-case gating means a slow run drives fewer scenarios and
-# budget-skips the rest — honest and visible, never a stranded 'running' row.
+# scenario driven first is 5 (fresh-scope open) + 180 (wake-aware turn) + 60 (warm
+# turn) + 30 (judge) = 275 ≤ 285. Worst-case gating means a slow run drives fewer
+# scenarios and budget-skips the rest — honest and visible, never a stranded
+# 'running' row.
 SUITE_BUDGET_SECONDS = 285.0
 
 # Per-run judge cap (spend guard): after this many scenarios have been judged in a
 # single run, remaining soft dimensions are recorded SKIPPED with reason
 # ``scenario_cap`` — bounding OpenRouter spend deterministically.
 MAX_JUDGED_SCENARIOS_PER_RUN = 12
+
+# Opening a fresh conversation scope (POST /chat/threads/) before each scenario is
+# a control-plane DB insert reached over a loopback round trip — tens of ms in
+# practice. We reserve a small worst-case allowance in the budget gate so the
+# arithmetic stays honest, without reserving the full HTTP timeout per scenario
+# (that would pathologically over-skip). A scope open slower than this on a
+# still-alive control plane is absorbed by the suite's 15s budget headroom, and a
+# control plane sicker than that is already failing the turns themselves.
+SCOPE_OPEN_BUDGET_SECONDS = 5.0
 
 # Sentinel distinguishing "caller did not pass a judge → build the default" from
 # "caller explicitly passed ``judge=None`` → force judge-off (skip soft dims)".
@@ -105,7 +114,10 @@ def _generate_marker() -> str:
     ASSISTANT repeats it back, currently assessed by the judge's boundary dimension
     (hard gate returns when the fleet-prompt never-repeat contract ships). Random
     per run, so a prior run's residue can never make a marker check read green (or
-    red) — this is why per-scenario workspace reset is not required for correctness.
+    red) — this keeps the HARD checks residue-immune without a container-side memory
+    reset. (Conversation-TRANSCRIPT independence between scenarios is a separate
+    concern, and IS enforced: the suite opens a fresh conversation scope per
+    scenario — see run_behavior_suite / transport.open_conversation.)
     """
     n1 = 100 + secrets.randbelow(800)  # 100-899
     n2 = 10 + secrets.randbelow(90)  # 10-99
@@ -139,10 +151,10 @@ def _drive_scenario(scenario: Scenario, transport: BehaviorTransport, *, wake_aw
 
 
 def _scenario_worst_case_seconds(scenario: Scenario, *, wake_aware_first_turn: bool, will_judge: bool) -> float:
-    """Worst-case wall clock for one scenario: the sum of its per-turn poll
-    deadlines plus (when it would be judged) the judge call's timeout. Used to gate
-    STARTING a scenario against the remaining run budget."""
-    total = 0.0
+    """Worst-case wall clock for one scenario: the fresh-scope open, the sum of its
+    per-turn poll deadlines, plus (when it would be judged) the judge call's
+    timeout. Used to gate STARTING a scenario against the remaining run budget."""
+    total = SCOPE_OPEN_BUDGET_SECONDS  # a fresh conversation scope is opened first
     for i in range(len(scenario.script)):
         total += FIRST_TURN_DEADLINE_SECONDS if (wake_aware_first_turn and i == 0) else DEFAULT_DEADLINE_SECONDS
     if will_judge:
@@ -176,12 +188,19 @@ def _safe_judge(judge: Judge, scenario: Scenario, run: ScenarioRun) -> dict[str,
 
 
 def _record_hard(run: EvalRun, scenario: Scenario, assertion_type: str, passed: bool, code: str, turns: int) -> None:
+    # ``isolated=True`` is per-scenario isolation provenance: this scenario ran in
+    # its OWN freshly-opened conversation scope (see run_behavior_suite). A driven
+    # scenario always reaches here after a successful open_conversation (a failed
+    # open ERRORs the run before any hard row), so the flag records that isolation
+    # HELD — a scalar bool, content-free, safe past the record() details cap. A
+    # future reader can slice on it to confirm a run used the isolation path (an
+    # old contaminated run's rows carry no such flag).
     record(
         run,
         f"{scenario.id}::hard:{assertion_type}",
         EvalResult.Kind.BEHAVIOR,
         passed=passed,
-        details={"kind": "hard", "assertion": assertion_type, "code": code, "turns": turns},
+        details={"kind": "hard", "assertion": assertion_type, "code": code, "turns": turns, "isolated": True},
     )
 
 
@@ -285,6 +304,13 @@ def run_behavior_suite(
                     _record_scenario_skipped(run, skipped, "budget")
                 break
 
+            # ISOLATION (the run-33 fix): open a FRESH conversation scope so this
+            # scenario runs in its own OpenClaw session and cannot see an earlier
+            # scenario's transcript. A failure to open raises → record_run closes
+            # the run ERROR (INVARIANT #3): we never drive a scenario into a prior
+            # scenario's (contaminated) scope and quietly report green.
+            active_transport.open_conversation()
+
             scenario_run = _drive_scenario(scenario, active_transport, wake_aware_first_turn=first_turn_pending)
             first_turn_pending = False
             drove_any = True
@@ -349,9 +375,6 @@ def run_behavior_suite(
                                 judge_model=jm,
                                 rubric_version="",
                             )
-
-            # Between scenarios: NAMED DEFERRAL (container-side reset). See docstring.
-            reset_behavior_workspace(tenant, scenario_run)
 
         if not drove_any:
             # Every scenario was budget-skipped before one turn was driven — a run of
