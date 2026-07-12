@@ -23,7 +23,7 @@ Two synthetic tenants provisioned exactly like real ones (real container, real D
 Failure → Mailgun alert to the platform owner + DLQ.
 
 ### Suite 2 — Model behavior (are the assistants acting right?)
-YAML scenario fixtures: persona + multi-turn script + **hard assertions** (deterministic: must call `cron.add`; must NOT echo the planted fake-PII marker; must not reveal system internals) + **soft rubric dimensions** (helpfulness, warmth/SOUL adherence, boundary behavior). Runner drives them against the behavior tenant's real container; code checks hard assertions; a **pinned judge (Claude Sonnet 5 via OpenRouter, rubric v1, capped spend)** scores soft dimensions 1–5 with rationale. Runs nightly AND before any OpenClaw image bump / fleet prompt / config rollout, scored against a trailing baseline. Advisory gate first; hard rollout-blocker once trusted.
+YAML scenario fixtures: persona + multi-turn script + **hard assertions** (deterministic: must call `cron.add`; must NOT echo the planted fake-PII marker; must not reveal system internals) + **soft rubric dimensions** (helpfulness, warmth/SOUL adherence, boundary behavior). Runner drives them against the behavior tenant's real container; code checks hard assertions; a **pinned judge (Claude Opus 4.8 via OpenRouter, rubric v2, capped spend)** scores soft dimensions 1–5 with rationale. Runs nightly AND before any OpenClaw image bump / fleet prompt / config rollout, scored against a trailing baseline. Advisory gate first; hard rollout-blocker once trusted.
 
 ### Suite 3 — Deterministic corpora in CI (never regress a past incident)
 Labeled synthetic corpora asserting exact behavior of the safety pipelines: PII redaction at egress (every past incident → a case) and upload-security ingress hardening. Fast subset on every PR beside the existing predicate/RedactedStr guards; full corpus nightly via QStash. Incidents become permanent tripwires.
@@ -34,7 +34,7 @@ Nightly snapshot from Log Analytics + DB metadata: reply-latency p50/p95 (create
 ## 3. Decisions locked (2026-07-11, MJ)
 - Standing infra: two hibernatable synthetic-tenant containers + a hard monthly OpenRouter ceiling (~$10–20) for the behavior suite + judge.
 - Alerts: Mailgun email to the platform owner (LINE is decommissioning; iOS push later). **Verify the Mailgun key is valid before relying on it — it was invalid during the comeback campaign.**
-- Judge: Claude Sonnet 5 via OpenRouter, pinned, rubric versioned so judges can be swapped without losing comparability.
+- Judge: Claude Opus 4.8 via OpenRouter (swapped from Claude Sonnet 5 on MJ's 2026-07-12 decision; `RUBRIC_VERSION` bumped behavior-v1 → behavior-v2 in lockstep), pinned, rubric versioned so judges can be swapped without losing comparability.
 
 ## 4. Build order
 Wave A foundation (this) → B journeys ∥ C corpora → D behavior suite → E SLO + digest + admin page. Fable-5 orchestrates, reviews every diff with an independent Fable-5 adversarial pass, runs the integration train between waves, and live-verifies in prod after each deploy.
