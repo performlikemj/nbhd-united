@@ -65,7 +65,11 @@ class CallSautaiGeneratePlanTests(TestCase):
 
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.READY)
-        self.assertEqual(job.result["id"], 12)
+        # auto-increment on sautai's side — drifts on every fixture regen,
+        # assert shape not value (see week_start/web_link below for the
+        # deterministically-pinned fields, which stay exact).
+        self.assertIsInstance(job.result["id"], int)
+        self.assertGreater(job.result["id"], 0)
         self.assertEqual(job.result["week_start"], "2026-08-03")
         self.assertEqual(len(job.result["days"]), 7)
         self.assertEqual(job.web_link, "https://sautai.com/meal-plans?week_start=2026-08-03")
