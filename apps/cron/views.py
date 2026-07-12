@@ -184,6 +184,18 @@ TASK_MAP = {
     # truly-dead run, never a live one. Safe to re-fire anytime (idempotent — only
     # touches still-stuck rows).
     "reap_stuck_eval_runs": "apps.evals.tasks.reap_stuck_eval_runs_task",
+    # Eval Wave D — model-behavior suite (docs/evals-directive.md §Suite 2). Drives
+    # YAML scenario fixtures against the synthetic behavior tenant, GATES on
+    # deterministic hard assertions (observable DB rows + reply-text patterns), and
+    # scores soft dimensions with a pinned, spend-capped judge (Claude Sonnet 5 via
+    # OpenRouter) recorded ADVISORY / non-gating. Operator-fired via a no-body QStash
+    # publish to /api/cron/trigger/eval_behavior/ (zero-arg); RAISES on any non-pass
+    # outcome so it DLQs + emails the owner — including the config-error path (the
+    # task wrapper alerts on the 'error'-closed run before re-raising). Lands INERT:
+    # no schedule, and the behavior tenant is not provisioned yet, so a fire today
+    # closes 'error' → owner email + DLQ — the correct loud signal.
+    # Fire-verification follows provisioning.
+    "eval_behavior": "apps.evals.tasks.eval_behavior_task",
     # Eval Suite 4 — nightly production-SLO snapshot (metadata only). Computes
     # reply/wake latency percentiles, error-status rate, proactive-delivery volume
     # (ALL ProactiveOutbound producers, not cron health — see the suite's named
