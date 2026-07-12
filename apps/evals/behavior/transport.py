@@ -14,6 +14,23 @@ replies; production uses ``HttpxBehaviorTransport`` over the real chat path. The
 production factory (``build_behavior_transport``) is a NAMED DEFERRAL until the
 behavior tenant is provisioned — see its docstring.
 
+SCENARIO ISOLATION (the run-33 fix): the suite drives many scenarios against ONE
+behavior tenant in a single fire. If they all shared one conversation, a later
+scenario's judge scores and hard checks would be contaminated by earlier ones —
+observed live on run 33, where the assistant referenced prior scenarios ("three-
+for-three on boundary tests"). Each ChatThread maps to its OWN OpenClaw session
+(``user="thread:<id>"`` — ``apps/router/chat_views.py::_thread_user_param``), and
+OpenClaw holds the running transcript keyed by that session param (the control
+plane does NOT replay DB history into the prompt). So the transport opens a FRESH
+thread before each scenario (``open_conversation``) via the real ``POST
+/chat/threads/`` "new chat" primitive — a fresh, empty transcript with no recap
+bleed — and carries that thread's id on every ``send_turn``. This isolates the
+CONVERSATION TRANSCRIPT (where the contamination lived). Tenant-wide memory
+(USER.md / journal / crons / proactive-context) stays SHARED across scenarios by
+design — a true container-side memory reset has no clean server-side entry point
+today; the suite's fresh-per-run markers + time-windowed DB assertions keep a
+run's HARD checks residue-immune regardless (see ``suites/behavior.py``).
+
 INVARIANT #8: every httpx call here runs OUTSIDE any transaction (the suite opens
 no ``atomic()`` around driving; it writes EvalResult rows only after a turn returns).
 """
@@ -36,6 +53,14 @@ from apps.evals.behavior.targets import BehaviorConfigError
 logger = logging.getLogger(__name__)
 
 _MESSAGES_PATH = "/api/v1/chat/messages/"
+# The "new chat" primitive — POST mints a fresh, non-main ChatThread and returns
+# ``{"id": <uuid>, ...}``. One fresh thread per scenario is the isolation seam:
+# each thread hashes to its own OpenClaw session (thread:<id>), so a fresh thread
+# is a fresh, empty transcript. Same endpoint iOS uses — no new backend surface.
+_THREADS_PATH = "/api/v1/chat/threads/"
+# Content-free label for a per-scenario scope thread (stored + encrypted at rest);
+# never carries scenario content — the scenario id namespaces the recorded rows.
+_SCOPE_THREAD_TITLE = "eval-behavior-scope"
 _TERMINAL_STATUSES = frozenset({"ready", "error"})
 _HTTP_TIMEOUT_SECONDS = 15.0
 # Warm-turn poll deadline. The chat probe's warm SLO is ~45s; 60s gives slack while
@@ -92,6 +117,15 @@ class BehaviorTransport(Protocol):
     run's first turn and the default for the rest.
     """
 
+    def open_conversation(self) -> str:
+        """Open a FRESH conversation scope for the next scenario, make it active for
+        subsequent ``send_turn`` calls, and return its (content-free) scope id. The
+        suite calls this before EACH scenario so scenarios cannot see each other's
+        transcript. MUST raise on failure — an un-openable scope means the run
+        cannot guarantee isolation and must ERROR loudly (directive INVARIANT #3),
+        never silently reuse a prior scenario's (contaminated) scope."""
+        ...
+
     def send_turn(self, *, text: str, deadline_seconds: float | None = None) -> TurnResult: ...
 
 
@@ -120,9 +154,50 @@ class HttpxBehaviorTransport:
         self._deadline = deadline_seconds
         self._poll_interval = poll_interval_seconds
         self._client = client
+        # The active per-scenario conversation scope (a ChatThread id). None until
+        # the suite opens the first scope; ``send_turn`` carries it as ``thread_id``
+        # so every turn lands in this scenario's own OpenClaw session.
+        self._thread_id: str | None = None
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._pat}", "Content-Type": "application/json"}
+
+    def open_conversation(self) -> str:
+        """Mint a FRESH thread (its own OpenClaw session) and make it the active
+        scope. Raises ``BehaviorConfigError`` on any failure so a scope we cannot
+        open ERRORs the run loudly (INVARIANT #3) rather than silently reusing the
+        prior scenario's contaminated scope."""
+        owns_client = self._client is None
+        client = self._client or httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS)
+        threads_url = f"{self._base_url}{_THREADS_PATH}"
+        try:
+            try:
+                resp = client.post(threads_url, json={"title": _SCOPE_THREAD_TITLE}, headers=self._headers())
+            except httpx.HTTPError as exc:
+                raise BehaviorConfigError(
+                    "behavior transport: could not open a fresh conversation scope "
+                    "(POST /chat/threads/ failed) — refusing to drive a scenario into a shared scope"
+                ) from exc
+            if resp.status_code not in (200, 201):
+                raise BehaviorConfigError(
+                    f"behavior transport: opening a fresh conversation scope returned HTTP {resp.status_code}"
+                )
+            try:
+                body = resp.json()
+            except (ValueError, TypeError) as exc:
+                raise BehaviorConfigError(
+                    "behavior transport: /chat/threads/ returned a non-JSON body — cannot scope the scenario"
+                ) from exc
+            thread_id = str((body or {}).get("id") or "").strip()
+            if not thread_id:
+                raise BehaviorConfigError(
+                    "behavior transport: /chat/threads/ returned no thread id — cannot scope the scenario"
+                )
+            self._thread_id = thread_id
+            return thread_id
+        finally:
+            if owns_client:
+                client.close()
 
     def send_turn(self, *, text: str, deadline_seconds: float | None = None) -> TurnResult:
         client_msg_id = uuid.uuid4().hex
@@ -131,13 +206,17 @@ class HttpxBehaviorTransport:
         client = self._client or httpx.Client(timeout=_HTTP_TIMEOUT_SECONDS)
         post_url = f"{self._base_url}{_MESSAGES_PATH}"
         detail_url = f"{self._base_url}{_MESSAGES_PATH}{client_msg_id}/"
+        # Carry the active scope's thread id so this turn lands in the scenario's
+        # own OpenClaw session (transcript isolation). Absent only if a caller drove
+        # a turn without opening a scope — the suite always opens one first.
+        post_body = {"client_msg_id": client_msg_id, "text": text}
+        if self._thread_id:
+            post_body["thread_id"] = self._thread_id
         started = time.monotonic()
         turn_deadline = deadline_seconds if deadline_seconds is not None else self._deadline
         try:
             try:
-                resp = client.post(
-                    post_url, json={"client_msg_id": client_msg_id, "text": text}, headers=self._headers()
-                )
+                resp = client.post(post_url, json=post_body, headers=self._headers())
             except httpx.HTTPError:
                 result.error = "post_error"
                 logger.warning("behavior transport: POST failed")
@@ -244,29 +323,19 @@ def build_behavior_transport(tenant) -> BehaviorTransport:
     return HttpxBehaviorTransport(base_url=base_url, pat=pat)
 
 
-def reset_behavior_workspace(tenant, run: ScenarioRun) -> None:
-    """Reset the behavior tenant's workspace between scenario runs.
-
-    NAMED DEFERRAL. A behavior scenario mutates the tenant's container memory
-    (USER.md, journal, the OpenClaw cron SQLite mirror) and DB rows (CronJob,
-    ProactiveOutbound). A TRUE reset — clearing container memory + the file share,
-    and removing OC-side crons via the ``cron.remove`` lifecycle (invariants.md §9)
-    — is a CONTAINER-SIDE operation with no clean server-side entry point today, so
-    it is deferred until the behavior tenant is provisioned with a reset hook.
-
-    What IS honestly feasible server-side is already done elsewhere: scenarios use a
-    FRESH per-run marker and hard assertions use TIME-WINDOWED DB queries (see
-    ``assertions.py``), so a single run's checks never read a prior run's residue —
-    correctness of one run does not depend on this reset. We deliberately do NOT
-    delete CronJob rows here: deleting the DB row without the OC ``cron.remove``
-    lifecycle would desync the container's SQLite mirror (invariants.md §9) — a fake
-    cleanup that looks like a reset but isn't. Left as a documented no-op rather than
-    a fake implementation.
-    """
-    # Intentionally a documented no-op — see docstring (NAMED DEFERRAL). ``run`` is
-    # accepted so a future container-side reset can scope to this run's mutations.
-    _ = (tenant, run)
-    return None
+# Scenario isolation is now REAL, via a fresh conversation scope per scenario
+# (``BehaviorTransport.open_conversation`` above, called by the suite before each
+# scenario). The retired ``reset_behavior_workspace`` no-op over-scoped the
+# problem: the run-33 contamination was CONVERSATION-TRANSCRIPT bleed, which a
+# fresh per-scenario OpenClaw session isolates cleanly with no container-side
+# reset. The heavier, genuinely-deferred concern remains honest: tenant-wide
+# container memory (USER.md, journal, the OpenClaw cron SQLite mirror) and DB rows
+# (CronJob, ProactiveOutbound) still persist across scenarios — a TRUE memory
+# reset has no clean server-side entry point today (deleting a CronJob row without
+# the OC ``cron.remove`` lifecycle would desync the container's SQLite mirror,
+# invariants.md §9 — a fake cleanup, not a reset). The suite's fresh-per-run
+# markers + time-windowed DB assertions keep a run's HARD checks residue-immune
+# regardless, so correctness never depends on that deferred reset.
 
 
 def now() -> datetime:
