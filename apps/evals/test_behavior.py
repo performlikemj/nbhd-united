@@ -137,7 +137,7 @@ class RaisingTransport:
 
 class FakeJudge:
     model = "fake/judge-1"
-    rubric_version = "behavior-v1"
+    rubric_version = "behavior-v2"
 
     def __init__(self, score: int = 5):
         self._score = score
@@ -150,7 +150,7 @@ class FakeJudge:
 
 class RaisingJudge:
     model = "fake/judge-err"
-    rubric_version = "behavior-v1"
+    rubric_version = "behavior-v2"
 
     def score(self, *, scenario_id, persona, transcript_lines, dimensions):
         raise RuntimeError("judge exploded")
@@ -436,7 +436,7 @@ class RunBehaviorSuiteTest(TestCase):
         self.assertTrue(soft.passed)
         self.assertEqual(int(soft.score), 1)
         self.assertEqual(soft.judge_model, "fake/judge-1")
-        self.assertEqual(soft.rubric_version, "behavior-v1")
+        self.assertEqual(soft.rubric_version, "behavior-v2")
         self.assertEqual(soft.details["judge"], "scored")
 
     def test_judge_cap_skips_with_reason(self):

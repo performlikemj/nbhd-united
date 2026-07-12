@@ -3,10 +3,13 @@
 Backend computes evidence; the LLM only JUDGES the subjective dimensions
 (helpfulness, warmth, boundary). The judge is:
 
-  * PINNED — ``JUDGE_MODEL`` is Claude Sonnet 5 via OpenRouter, a single constant,
+  * PINNED — ``JUDGE_MODEL`` is Claude Opus 4.8 via OpenRouter, a single constant,
     so scores are comparable over time. Swapping it (or the rubric) is a deliberate
     version bump, and every score row is stamped with ``judge_model`` +
-    ``rubric_version`` so a trend query never silently blends two judges.
+    ``rubric_version`` so a trend query never silently blends two judges. (The pin
+    moved Sonnet 5 → Opus 4.8 on MJ's 2026-07-12 decision; ``RUBRIC_VERSION`` was
+    bumped behavior-v1 → behavior-v2 in lockstep to fence the two judges' scores
+    apart — the rubric CONTENT is unchanged.)
   * SPEND-CAPPED — a hard ``JUDGE_MAX_TOKENS`` output cap per call, plus a per-run
     scenario cap enforced by the suite. Combined with the behavior tenant's own
     monthly OpenRouter ceiling, this bounds judge spend.
@@ -32,10 +35,12 @@ from apps.evals.behavior.rubrics import rubric_v1
 
 logger = logging.getLogger(__name__)
 
-# Pinned judge — Claude Sonnet 5 via OpenRouter (docs/evals-directive.md §3). The
-# ``anthropic/`` prefix is the bare OpenRouter slug; the shared client's
-# ``normalize_model_id`` leaves it untouched (only ``openrouter/`` is stripped).
-JUDGE_MODEL = "anthropic/claude-sonnet-5"
+# Pinned judge — Claude Opus 4.8 via OpenRouter (docs/evals-directive.md §3; pin set
+# by MJ's 2026-07-12 decision). The ``anthropic/`` prefix is the bare OpenRouter slug,
+# hyphenated to match ANTHROPIC_OPUS_MODEL in apps/billing/constants.py and the sibling
+# internal callers (apps/journal/extraction.py, apps/pii/arbiter.py); the shared
+# client's ``normalize_model_id`` leaves it untouched (only ``openrouter/`` is stripped).
+JUDGE_MODEL = "anthropic/claude-opus-4-8"
 RUBRIC_VERSION = rubric_v1.RUBRIC_VERSION
 
 # Spend caps. ``JUDGE_MAX_TOKENS`` bounds each call's output; the suite bounds how

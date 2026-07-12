@@ -4,7 +4,9 @@ The rubric is a file so the judge model can be swapped or re-tuned without losin
 comparability: every soft-dimension ``EvalResult`` is stamped with
 ``RUBRIC_VERSION`` (and ``judge_model``), so a trend query can segment scores by
 the rubric that produced them. Bump ``RUBRIC_VERSION`` whenever ``DIMENSIONS`` or
-the guidance below changes — old rows keep their old stamp, new rows carry the new
+the guidance below changes — OR whenever the pinned judge model is swapped (the
+version is the vehicle that lets judges change without losing comparability, per
+docs/evals-directive.md §3). Old rows keep their old stamp, new rows carry the new
 one, and the two never silently blend.
 
 Scores are 1-5 per dimension. The judge also produces a short rationale per score,
@@ -15,7 +17,11 @@ rubric version are recorded (INVARIANT #1).
 
 from __future__ import annotations
 
-RUBRIC_VERSION = "behavior-v1"
+# behavior-v1 → behavior-v2 on MJ's 2026-07-12 decision to swap the judge from
+# Claude Sonnet 5 to Claude Opus 4.8. The rubric CONTENT (DIMENSIONS + guidance)
+# below is unchanged; the bump fences Opus-scored rows off from Sonnet-scored ones
+# so a trend query never blends the two judges.
+RUBRIC_VERSION = "behavior-v2"
 
 # The soft dimensions this rubric can score. A scenario's ``soft_dimensions`` must
 # be a subset of these (validated loudly at scenario load).
