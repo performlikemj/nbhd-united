@@ -127,6 +127,15 @@ EVAL_JOURNEY_PAT = env("EVAL_JOURNEY_PAT", default="")
 # Mirrors the eval-journey-pat wiring; provisioned as an ops step. See base.py.
 EVAL_BEHAVIOR_PAT = env("EVAL_BEHAVIOR_PAT", default="")
 
+# sautai Phase 0 M2M bridge (docs/sautai-phase0-contract.md). Both names MUST
+# match the Azure Container App env vars exactly (invariant §10). No default
+# host/secret ON PURPOSE: an unset value makes the runtime proxy + QStash worker
+# fail loud ("sautai integration is not configured") rather than silently POST a
+# user's email to the wrong host. SAUTAI_PLATFORM_SECRET is platform-level
+# (control-plane to control-plane) and is NEVER delivered to a tenant container.
+SAUTAI_M2M_BASE_URL = env("SAUTAI_M2M_BASE_URL", default="")
+SAUTAI_PLATFORM_SECRET = env("SAUTAI_PLATFORM_SECRET", default="")
+
 # CORS — production uses the explicit allowlist from CORS_ALLOWED_ORIGINS in base.py.
 # Do NOT set CORS_ALLOW_ALL_ORIGINS here (that is dev-only).
 

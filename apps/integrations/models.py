@@ -83,7 +83,11 @@ class SautaiMealPlanJob(models.Model):
     week_start = models.DateField(
         null=True,
         blank=True,
-        help_text="Requested week (Monday). Blank lets sautai default to the current week.",
+        help_text=(
+            "Requested week (Monday), resolved server-side in the tenant's timezone by "
+            "RuntimeSautaiGeneratePlanView — always populated for new jobs; nullable only "
+            "for historical rows."
+        ),
     )
     number_of_days = models.PositiveSmallIntegerField(default=7)
     # Placeholder-space at rest (pseudonymize-at-rest — same posture as

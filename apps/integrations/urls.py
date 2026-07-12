@@ -45,6 +45,7 @@ from .runtime_views import (
     RuntimeProposeMissionTaskView,
     RuntimeProposeShareView,
     RuntimeReconcileScanView,
+    RuntimeSautaiCurrentPlanView,
     RuntimeSautaiGeneratePlanView,
     RuntimeSessionMarkProcessedView,
     RuntimeSessionsPendingView,
@@ -369,11 +370,16 @@ urlpatterns = [
         RedditToolView.as_view(),
         name="runtime-reddit-tool",
     ),
-    # sautai Phase 0 runtime endpoint
+    # sautai Phase 0 runtime endpoints
     path(
         "runtime/<uuid:tenant_id>/sautai/generate-plan/",
         RuntimeSautaiGeneratePlanView.as_view(),
         name="runtime-sautai-generate-plan",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/sautai/current-plan/",
+        RuntimeSautaiCurrentPlanView.as_view(),
+        name="runtime-sautai-current-plan",
     ),
     path("", include(router.urls)),
 ]

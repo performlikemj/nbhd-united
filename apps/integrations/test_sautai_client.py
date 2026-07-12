@@ -2,10 +2,10 @@
 
 The response-shape fixtures are copied verbatim from sautai's
 ``api/tests/fixtures/m2m/`` (docs/sautai-phase0-contract.md — the fixture
-handshake gate: both sides decode the same bytes). Only the endpoint NBHD
-Phase 0 actually calls (``/generate/``) is exercised here; ``current_ok`` /
-``current_not_found`` are for the read endpoint, which is out of scope for
-Phase 0 (the plugin ships a single ``nbhd_generate_meal_plan`` tool).
+handshake gate: both sides decode the same bytes). Both Phase 0 endpoints are
+exercised against the golden fixtures: ``/generate/`` (async QStash task) via
+``CallSautaiGeneratePlanTests`` and ``/current/`` (fast synchronous read) via
+``FetchSautaiCurrentPlanTests``.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
 from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
-from .sautai_client import call_sautai_generate_plan
+from .sautai_client import call_sautai_generate_plan, fetch_sautai_current_plan
 from .tasks import generate_sautai_meal_plan_task
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures" / "m2m"
@@ -44,7 +44,7 @@ def _mock_response(fixture: dict) -> MagicMock:
 # ═════════════════════════════════════════════════════════════════════
 
 
-@override_settings(SAUTAI_API_BASE_URL="https://app.sautai.test", SAUTAI_PLATFORM_SECRET="test-secret")
+@override_settings(SAUTAI_M2M_BASE_URL="https://app.sautai.test", SAUTAI_PLATFORM_SECRET="test-secret")
 class CallSautaiGeneratePlanTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Sautai Client Test", telegram_chat_id=848484)
@@ -299,3 +299,59 @@ class NotifySautaiPlanReadyTests(TestCase):
             delivered = notify_sautai_plan_ready(job)
         self.assertFalse(delivered)
         mock_send.assert_not_called()
+
+
+# ═════════════════════════════════════════════════════════════════════
+# fetch_sautai_current_plan — parses the real /current/ contract fixtures
+# ═════════════════════════════════════════════════════════════════════
+
+
+@override_settings(SAUTAI_M2M_BASE_URL="https://app.sautai.test", SAUTAI_PLATFORM_SECRET="test-secret")
+class FetchSautaiCurrentPlanTests(TestCase):
+    def test_current_ok_returns_plan_and_link(self):
+        fixture = _load_fixture("current_ok.json")
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post:
+            result = fetch_sautai_current_plan(user_email="diner@example.com", week_start_iso="2026-08-03")
+
+        self.assertEqual(result["outcome"], "ok")
+        self.assertEqual(result["plan"]["id"], 66)
+        self.assertEqual(result["plan"]["week_start"], "2026-08-03")
+        self.assertEqual(result["web_link"], "https://sautai.com/meal-plans?week_start=2026-08-03")
+
+        _, kwargs = mock_post.call_args
+        self.assertEqual(kwargs["headers"]["X-NBHD-Platform-Secret"], "test-secret")
+        self.assertEqual(kwargs["json"]["user_email"], "diner@example.com")
+        self.assertEqual(kwargs["json"]["week_start"], "2026-08-03")
+        # Fast read: a short timeout the plugin can wait on inside its 20s budget.
+        self.assertLessEqual(kwargs["timeout"], 15)
+
+    def test_current_not_found_maps_to_not_found(self):
+        fixture = _load_fixture("current_not_found.json")
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)):
+            result = fetch_sautai_current_plan(user_email="nobody@example.com", week_start_iso=None)
+        self.assertEqual(result["outcome"], "not_found")
+
+    def test_current_invalid_secret_is_error(self):
+        fixture = _load_fixture("error_invalid_secret.json")
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)):
+            result = fetch_sautai_current_plan(user_email="diner@example.com", week_start_iso="2026-08-03")
+        self.assertEqual(result["outcome"], "error")
+        self.assertIn("401", result["detail"])
+
+    def test_not_configured_short_circuits_without_network(self):
+        fixture = _load_fixture("current_ok.json")
+        with (
+            override_settings(SAUTAI_M2M_BASE_URL=""),
+            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post,
+        ):
+            result = fetch_sautai_current_plan(user_email="diner@example.com", week_start_iso=None)
+        mock_post.assert_not_called()
+        self.assertEqual(result["outcome"], "not_configured")
+
+    def test_transport_error_maps_to_error(self):
+        import httpx
+
+        with patch("apps.integrations.sautai_client.httpx.post", side_effect=httpx.ConnectTimeout("boom")):
+            result = fetch_sautai_current_plan(user_email="diner@example.com", week_start_iso=None)
+        self.assertEqual(result["outcome"], "error")
+        self.assertIn("request_failed", result["detail"])

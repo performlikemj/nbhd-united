@@ -682,9 +682,13 @@ class SautaiAgentsMdGateTest(TestCase):
         return render_workspace_files("neighbor", tenant=tenant)["NBHD_AGENTS_MD"]
 
     def test_gate_present_for_flagged_tenant(self):
+        # LEAN gate: names both tools and tells the model to SEARCH the catalog
+        # (the tools are toolSearch-discovered, not pre-loaded) and CALL them.
         md = self._agents_md(self.flagged)
         self.assertIn("nbhd_generate_meal_plan", md)
-        self.assertIn("toolSearch", md)
+        self.assertIn("nbhd_get_meal_plan", md)
+        self.assertIn("search the tool catalog", md)
+        self.assertIn("not pre-loaded", md)
 
     def test_gate_absent_for_plain_tenant(self):
         # A tenant without the flag never loads the plugin — the prompt must
@@ -692,11 +696,12 @@ class SautaiAgentsMdGateTest(TestCase):
         md = self._agents_md(self.plain)
         self.assertNotIn("nbhd_generate_meal_plan", md)
 
-    def test_gate_forbids_claiming_plan_ready_from_the_ack(self):
-        # The call is fire-and-forget async; the anti-confabulation half of
-        # the gate matters as much as the call-it instruction itself.
+    def test_gate_forbids_claiming_plan_without_a_tool_result(self):
+        # The anti-confabulation half of the gate matters as much as the call-it
+        # instruction. The detailed async-latency messaging now rides the tool
+        # RESPONSES (the #1175 pattern), not this always-loaded gate.
         md = self._agents_md(self.flagged)
-        self.assertIn("NEVER say the plan is ready", md)
+        self.assertIn("without a successful tool result", md)
 
 
 class VersionAwareConfigTest(TestCase):

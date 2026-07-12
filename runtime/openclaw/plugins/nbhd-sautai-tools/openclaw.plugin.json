@@ -1,10 +1,11 @@
 {
   "id": "nbhd-sautai-tools",
   "name": "NBHD sautai Tools",
-  "description": "Async meal-plan generation backed by sautai's M2M API via the NBHD runtime proxy (Phase 0).",
+  "description": "Meal-plan generation (async) and current-plan read backed by sautai's M2M API via the NBHD runtime proxy (Phase 0).",
   "contracts": {
     "tools": [
-      "nbhd_generate_meal_plan"
+      "nbhd_generate_meal_plan",
+      "nbhd_get_meal_plan"
     ]
   },
   "configSchema": {

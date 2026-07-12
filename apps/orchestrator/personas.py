@@ -790,34 +790,22 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + email_provenance_gate
 
-    # sautai meal-plan gate — behavioral, per-tenant (Phase 0). Only a tenant
-    # with sautai_enabled loads the nbhd-sautai-tools plugin, so the
-    # imperative cue that makes the agent actually CALL nbhd_generate_meal_plan
-    # — rather than confabulate "here's your plan" from the tool catalog entry
-    # alone — is gated the same way (same reconcile-gate shape as the
-    # site-publish gate above: under toolSearch a passive capability note
-    # doesn't make the model reach for the tool). The call is fire-and-forget
-    # async (30-60s server-side), so the SECOND half of this gate — never
-    # claiming the plan is ready from this call's own response — matters as
-    # much as the call itself. Placed BEFORE the larger Gravity block so it
-    # is never the silently-truncated tail if AGENTS.md exceeds the bootstrap
-    # budget (same reasoning as the other flag-gated gates above).
+    # sautai meal-plan gate — behavioral, per-tenant (Phase 0). LEAN by design:
+    # this is only the imperative cue that makes the agent SEARCH the catalog and
+    # actually CALL the sautai tools (under toolSearch a passive note doesn't make
+    # the model reach for them), plus the never-fabricate rule. All usage detail —
+    # the async latency, "started, push coming", don't-list-meals — rides the tool
+    # RESPONSES (see runtime/openclaw/plugins/nbhd-sautai-tools), the #1175 pattern,
+    # so it doesn't spend always-loaded budget. test_sautai_directive.py pins that
+    # this fits the imported BOOTSTRAP_MAX_CHARS in the worst-case render.
     if tenant is not None and getattr(tenant, "sautai_enabled", False):
         sautai_gate = (
             "## Meal plans (sautai)\n\n"
-            "When the user asks for a meal plan, what to eat this week, meal prep, or to "
-            "regenerate/redo their plan for a week — search the tool catalog for "
-            "`nbhd_generate_meal_plan` by name and call it. It is NOT pre-loaded; you must find "
-            "it via toolSearch, then call it. Pass `user_prompt` only if the user gave guidance "
-            "beyond their stored profile (e.g. 'high protein this week'); sautai already stores "
-            "their allergies and dietary preferences, so do NOT interrogate the user for those "
-            "before calling.\n\n"
-            "This call is ASYNC — generation takes 30-60 seconds server-side and the tool "
-            "returns a job acknowledgment only, never the plan itself. Tell the user you've "
-            "started their meal plan and they'll get a notification when it's ready. NEVER say "
-            "the plan is ready, list its meals, or describe its contents — you have not seen "
-            "them. Only call again for the SAME week if the user explicitly asks you to "
-            "regenerate it."
+            "When the user asks about meal plans, meal prep, what to eat, or nutrition, search the "
+            "tool catalog for the sautai tools (`nbhd_generate_meal_plan` to create a plan, "
+            "`nbhd_get_meal_plan` to read the current one) and CALL the right one — they are not "
+            "pre-loaded. Never say a plan was created or describe its meals without a successful "
+            "tool result; follow the tool's response."
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + sautai_gate
 

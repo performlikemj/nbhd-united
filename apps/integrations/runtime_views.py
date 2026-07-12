@@ -192,6 +192,18 @@ def _tenant_today(tenant: Tenant) -> date:
     return _tenant_now(tenant).date()
 
 
+def _tenant_week_start_monday(tenant: Tenant) -> date:
+    """The Monday of the current week in the tenant's timezone (front door §7).
+
+    sautai's generate endpoint defaults an omitted ``week_start`` to ITS OWN
+    server tz's current Monday; we always send an explicit tenant-tz Monday so a
+    late-Sunday / early-Monday timezone gap can't silently generate the wrong
+    week for the user.
+    """
+    today = _tenant_today(tenant)
+    return today - timedelta(days=today.weekday())
+
+
 def _resolve_calendar_window(request, tenant: Tenant) -> tuple[str | None, str | None] | Response:
     """Resolve query-string window params to RFC3339 ``time_min``/``time_max``.
 
@@ -3857,6 +3869,19 @@ class RuntimeSautaiGeneratePlanView(APIView):
             # restart needed to gate the runtime call, mirrors fuel_disabled.
             return Response({"error": "sautai_disabled"}, status=status.HTTP_409_CONFLICT)
 
+        # Fail loud BEFORE creating a job: if the M2M bridge env is unset the
+        # QStash worker could only ever mark the job FAILED with no push, so the
+        # user would be promised a plan that never arrives. Surfacing it here
+        # lets the tool tell them "sautai integration is not configured" instead.
+        from apps.integrations.sautai_client import sautai_m2m_config
+
+        base_url, secret = sautai_m2m_config()
+        if not base_url or not secret:
+            return Response(
+                {"error": "sautai_not_configured", "detail": "sautai integration is not configured"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         user_prompt = str(request.data.get("user_prompt") or "").strip()
         if len(user_prompt) > _SAUTAI_MAX_PROMPT_CHARS:
             return Response(
@@ -3874,6 +3899,15 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 {"error": "invalid_request", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Always resolve to an explicit Monday: sautai's server defaults an
+        # omitted week to ITS OWN tz and 400s a non-Monday (contract #1). When
+        # omitted, use the tenant-tz current Monday; when the agent passes any
+        # date, snap it back to that week's Monday. The stored value is what the
+        # (tenant, week_start) in-flight coalesce below keys on.
+        if week_start is None:
+            week_start = _tenant_week_start_monday(tenant)
+        else:
+            week_start = week_start - timedelta(days=week_start.weekday())
 
         try:
             number_of_days = _parse_positive_int(
@@ -3909,7 +3943,13 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 .first()
             )
             if in_flight:
-                return Response({"job_id": str(in_flight.id), "status": in_flight.status})
+                return Response(
+                    {
+                        "job_id": str(in_flight.id),
+                        "status": in_flight.status,
+                        "week_start": week_start.isoformat(),
+                    }
+                )
 
             # Record the link (Phase 0 has no OAuth consent flow — this is an
             # audit trail, not proof of a completed handshake; see the
@@ -3942,8 +3982,118 @@ class RuntimeSautaiGeneratePlanView(APIView):
             logger.warning("Failed to enqueue sautai meal-plan generation for job %s", job.id)
 
         return Response(
-            {"job_id": str(job.id), "status": job.status},
+            {"job_id": str(job.id), "status": job.status, "week_start": week_start.isoformat()},
             status=status.HTTP_201_CREATED,
+        )
+
+
+class RuntimeSautaiCurrentPlanView(APIView):
+    """POST — read the user's current sautai meal plan (fast, synchronous).
+
+    Unlike generate (fire-and-forget via QStash), this is a read the plugin
+    waits on inside its own 20s tool budget: it calls sautai's ``/current/``
+    endpoint with a short (~10s) timeout. On a sautai timeout/transport error it
+    falls back to the most recent READY ``SautaiMealPlanJob``'s cached plan for
+    the same week (NBHD is a display cache; sautai stays source of truth) and
+    flags the response ``cached: true``. See docs/sautai-phase0-contract.md #2.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        if not getattr(tenant, "sautai_enabled", False):
+            return Response({"error": "sautai_disabled"}, status=status.HTTP_409_CONFLICT)
+
+        from apps.integrations.sautai_client import fetch_sautai_current_plan, sautai_m2m_config
+
+        base_url, secret = sautai_m2m_config()
+        if not base_url or not secret:
+            return Response(
+                {"error": "sautai_not_configured", "detail": "sautai integration is not configured"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            week_start = _parse_iso_date(request.data.get("week_start"), field_name="week_start")
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Resolve the same way generate does so the cached-job fallback can match
+        # on (tenant, week_start): tenant-tz current Monday when omitted, else
+        # snap the provided date back to that week's Monday.
+        if week_start is None:
+            week_start = _tenant_week_start_monday(tenant)
+        else:
+            week_start = week_start - timedelta(days=week_start.weekday())
+
+        # Email is derived SERVER-SIDE from the tenant owner — NEVER from the
+        # plugin payload (an agent-supplied email would be an injection vector).
+        user = getattr(tenant, "user", None)
+        email = (getattr(user, "email", "") or "").strip()
+        if not email:
+            return Response({"status": "no_plan", "week_start": week_start.isoformat()})
+
+        result = fetch_sautai_current_plan(user_email=email, week_start_iso=week_start.isoformat())
+        outcome = result.get("outcome")
+
+        if outcome == "ok":
+            return Response(
+                {
+                    "status": "ok",
+                    "cached": False,
+                    "week_start": week_start.isoformat(),
+                    "plan": result.get("plan"),
+                    "web_link": result.get("web_link", ""),
+                }
+            )
+
+        if outcome == "not_found":
+            return Response({"status": "no_plan", "week_start": week_start.isoformat()})
+
+        if outcome == "not_configured":
+            # Belt-and-suspenders (we checked above; env could race a reload).
+            return Response(
+                {"error": "sautai_not_configured", "detail": "sautai integration is not configured"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # outcome == "error": sautai timed out / errored. Show the last plan NBHD
+        # cached for this week if we have one, flagged stale, rather than nothing.
+        cached_job = (
+            SautaiMealPlanJob.objects.filter(
+                tenant=tenant,
+                week_start=week_start,
+                status=SautaiMealPlanJobStatus.READY,
+            )
+            .order_by("-updated_at")
+            .first()
+        )
+        if cached_job is not None and cached_job.result:
+            return Response(
+                {
+                    "status": "ok",
+                    "cached": True,
+                    "week_start": week_start.isoformat(),
+                    "plan": cached_job.result,
+                    "web_link": cached_job.web_link,
+                    "detail": "sautai was unreachable; showing the last plan NBHD cached for this week.",
+                }
+            )
+
+        return Response(
+            {"error": "sautai_unavailable", "detail": result.get("detail", "sautai could not be reached")},
+            status=status.HTTP_502_BAD_GATEWAY,
         )
 
 
