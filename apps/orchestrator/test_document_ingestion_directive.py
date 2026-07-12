@@ -86,43 +86,68 @@ class FlagGatedToolBlockTest(TestCase):
 
 
 # OpenClaw truncates each bootstrap file's TAIL beyond bootstrapMaxChars at
-# injection time. A finance tenant's AGENTS.md may exceed the cap (the ~6KB
-# Gravity block is the accepted truncation tail when it does). Finding 11 is
-# therefore about POSITION: the base gate + the flag-gated tool block must land
-# ABOVE the cut. IMPORTED, not re-hardcoded — a local pin of the old 18000 cap
-# is exactly how the 2026-07-11 canary truncation went unnoticed with tests
-# green (see test_continuity_capture_directive.py).
+# injection time. This USED to bite the Gravity block: a finance + friends-propose
+# tenant rendered ~24.9 KB (~26.3 KB with the doc flag too) — over the 24 KB cap —
+# and the ~6 KB Gravity block, ordered last, lost its tail. That is now FIXED: the
+# ~3.4 KB voice-register block moved out of the always-loaded bootstrap onto the
+# nbhd_insights_signals tool response, and the observation gate was trimmed, so the
+# worst real shape fits under the cap with nothing truncated. The test below flipped
+# from "load-bearing blocks survive the cut" to "there is no cut" — it still pins the
+# ordering invariant (Gravity is the tail), now also that the whole render fits.
+# IMPORTED, not re-hardcoded — a local pin of the old 18000 cap is exactly how the
+# 2026-07-11 canary truncation went unnoticed with tests green.
 _BOOTSTRAP_MAX_CHARS = BOOTSTRAP_MAX_CHARS
 
 
 @override_settings(GRAVITY_ENABLED=True)
 class FinanceTenantBudgetTest(TestCase):
-    """critic finding 11 — the case the Gravity truncation logic exists for."""
+    """critic finding 11 — the case the Gravity truncation logic existed for,
+    now resolved by moving the register block onto the signals tool response."""
 
-    def test_load_bearing_blocks_survive_the_finance_truncation(self):
+    def test_finance_friends_propose_doc_render_fits_under_cap_no_truncation(self):
+        # The worst real over-cap shape before this PR: finance + friends-propose
+        # + doc-ingestion, which rendered ~26.3 KB. Now it fits under the cap.
         tenant = create_tenant(display_name="Finance", telegram_chat_id=900301)
         tenant.finance_enabled = True
+        tenant.friends_enabled = True
+        tenant.friends_agent_propose_enabled = True
         tenant.document_ingestion_enabled = True
-        tenant.save(update_fields=["finance_enabled", "document_ingestion_enabled"])
+        tenant.save(
+            update_fields=[
+                "finance_enabled",
+                "friends_enabled",
+                "friends_agent_propose_enabled",
+                "document_ingestion_enabled",
+            ]
+        )
         md = _agents_md(tenant)
         self.assertTrue(tenant.finance_active)  # the truncation-relevant case is live
 
         gate_at = md.find("about a day")
         tool_at = md.find("nbhd_document_keep")
         gravity_at = md.find("Gravity Observation Mode")
+        tool_end = md.find("If you can't tell which document they mean")  # end of tool block
         self.assertNotEqual(gate_at, -1)
         self.assertNotEqual(tool_at, -1)
         self.assertNotEqual(gravity_at, -1)
+        self.assertNotEqual(tool_end, -1)
 
-        # Base gate + tool block are above the truncation cut (survive bootstrap).
-        self.assertLess(gate_at, _BOOTSTRAP_MAX_CHARS, "base gate falls in the truncated tail")
-        self.assertLess(
-            md.find("If you can't tell which document they mean"),  # end of the tool block
-            _BOOTSTRAP_MAX_CHARS,
-            "the flag-gated tool block falls in the truncated tail",
-        )
-        # The Gravity block is the intended tail — it sits AFTER the tool block.
+        # Ordering invariant preserved: the Gravity block is the tail, after the
+        # doc-keep tool block.
         self.assertLess(tool_at, gravity_at)
+        # The register rules moved onto the signals tool response — their old
+        # always-loaded signature is gone from the bootstrap.
+        self.assertNotIn("Voice Register Selection", md)
+        # The flip: the whole render fits under the cap — base gate, tool block,
+        # AND the Gravity tail all sit below it. Nothing is silently truncated.
+        self.assertLess(gate_at, _BOOTSTRAP_MAX_CHARS, "base gate falls in the truncated tail")
+        self.assertLess(tool_end, _BOOTSTRAP_MAX_CHARS, "the flag-gated tool block falls in the truncated tail")
+        self.assertLess(
+            len(md),
+            _BOOTSTRAP_MAX_CHARS,
+            f"finance + friends-propose + doc AGENTS.md is {len(md)} chars — past the "
+            f"{_BOOTSTRAP_MAX_CHARS} injection cap; the Gravity tail would be silently truncated",
+        )
 
 
 class PluginEmissionTest(TestCase):

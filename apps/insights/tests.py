@@ -22,7 +22,7 @@ from .baselines import compute_baseline
 from .models import AssistantInsight, PillarSnapshot, TopicAlias, TopicRegistry, UserVoicePref
 from .pillars import Pillar
 from .seed import seed_topics
-from .signals import compute_signals
+from .signals import REGISTER_GUIDANCE, REGISTER_GUIDANCE_MAX_CHARS, compute_signals
 from .snapshots import compute_gravity_snapshot
 from .tasks import snapshot_gravity_weekly_task
 from .topic_resolver import resolve_topic
@@ -1025,6 +1025,52 @@ class ComputeSignalsTests(TestCase):
         self.assertEqual(out["user_voice_pref"]["register_offset"], 1)
         self.assertEqual(out["user_voice_pref"]["scope"], "topic")
 
+    # ── register guidance rides every signals response ────────────────────
+    # These rules used to live in AGENTS.md; they now ship on this tool's
+    # response so they reach the model deterministically at the moment of need
+    # (white-whale rule — a rules/X.md pointer would be read at most once per
+    # conversation). The signals dict is rendered to the model verbatim as
+    # pretty-printed JSON by the plugin, so a present, complete `register_guidance`
+    # key IS the delivery. If someone strips or empties it, register selection
+    # silently regresses — hence a content + length-bound guard here.
+
+    # Load-bearing markers the guidance must always carry — the four register
+    # names, both hard-floor flags, the override field + tool, and the demote cue.
+    _GUIDANCE_MARKERS = (
+        "observation",
+        "hypothesis",
+        "soft",
+        "direct",
+        "hard_floors",
+        "can_be_direct",
+        "can_exceed_observation",
+        "register_offset",
+        "nbhd_insights_voice_pref_set",
+    )
+
+    def test_register_guidance_present_and_bounded_on_known_topic(self):
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="debt")
+        guidance = out["register_guidance"]
+        self.assertTrue(guidance)
+        # Identity with the module constant — the one source of truth.
+        self.assertEqual(guidance, REGISTER_GUIDANCE)
+        for marker in self._GUIDANCE_MARKERS:
+            self.assertIn(marker, guidance, f"register guidance dropped load-bearing marker: {marker!r}")
+        # A sane upper bound so the guidance can't silently bloat back toward
+        # the ~3.4 KB block it replaced (the whole point was to shed budget).
+        self.assertLess(
+            len(guidance),
+            REGISTER_GUIDANCE_MAX_CHARS,
+            f"register guidance is {len(guidance)} chars — over the {REGISTER_GUIDANCE_MAX_CHARS} bound",
+        )
+
+    def test_register_guidance_present_on_unknown_topic_stub(self):
+        # The gate mandates the signals call even before the model knows the
+        # canonical slug, so the stub must carry the guidance too.
+        out = compute_signals(tenant=self.tenant, pillar=Pillar.GRAVITY.value, topic_slug="not_a_topic")
+        self.assertFalse(out["topic_known"])
+        self.assertEqual(out["register_guidance"], REGISTER_GUIDANCE)
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-runtime-key")
 class Phase3EndpointTests(TestCase):
@@ -1067,6 +1113,18 @@ class Phase3EndpointTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertTrue(resp.json()["topic_known"])
+
+    def test_runtime_signals_carries_register_guidance(self):
+        """The register rules must ride the ACTUAL runtime tool response the
+        plugin calls (not just the compute_signals unit) — the plugin renders
+        this JSON verbatim to the model, so this key is how the rules reach it
+        every finance-topic call, deterministically, regardless of chat length."""
+        resp = self.client.get(
+            f"/api/v1/insights/runtime/{self.tenant.id}/signals/?pillar=gravity&topic=debt",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["register_guidance"], REGISTER_GUIDANCE)
 
     def test_set_voice_pref_creates_topic_scoped(self):
         resp = self.client_jwt.post(

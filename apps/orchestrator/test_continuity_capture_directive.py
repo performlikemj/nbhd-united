@@ -199,14 +199,22 @@ class ContinuityCaptureBudgetTest(TestCase):
         self.assertLess(len(agents_md), _BOOTSTRAP_MAX_CHARS)
 
     @override_settings(GRAVITY_ENABLED=True)
-    def test_reflex_survives_finance_truncation(self):
-        """A finance tenant's AGENTS.md may exceed the cap (the ~6KB Gravity
-        block is the accepted truncation tail when it does). The reflex,
-        appended as `agents_md` extras BEFORE the Gravity block, must land
-        above the cut."""
+    def test_finance_friends_propose_render_fits_under_cap_no_truncation(self):
+        """The live over-cap shape, now fixed. Before this PR a finance +
+        friends-propose tenant rendered ~24.9 KB of AGENTS.md — over the 24 KB
+        injection cap — and the ~6 KB Gravity block (ordered last) lost its tail
+        to silent truncation on the two real tenants in that shape. This PR
+        removed the ~3.4 KB voice-register block from the always-loaded bootstrap
+        (it now rides the nbhd_insights_signals tool response) and trimmed the
+        observation gate, so the WHOLE file now fits: there is no cut. Assert
+        both the ordering invariant (reflex above the Gravity tail) AND — the
+        flip from the old "survives the cut" test — that the entire render,
+        Gravity tail included, sits under the cap."""
         tenant = create_tenant(display_name="Finance Continuity", telegram_chat_id=912007)
         tenant.finance_enabled = True
-        tenant.save(update_fields=["finance_enabled"])
+        tenant.friends_enabled = True
+        tenant.friends_agent_propose_enabled = True
+        tenant.save(update_fields=["finance_enabled", "friends_enabled", "friends_agent_propose_enabled"])
         call_command(
             "set_prompt_extras",
             tenant_id=str(tenant.id),
@@ -221,9 +229,24 @@ class ContinuityCaptureBudgetTest(TestCase):
         gravity_at = agents_md.find("Gravity Observation Mode")
         self.assertNotEqual(reflex_at, -1)
         self.assertNotEqual(gravity_at, -1)
-        # Reflex is above the truncation cut, and above the Gravity tail.
-        self.assertLess(reflex_at, _BOOTSTRAP_MAX_CHARS, "the reflex falls in the truncated tail")
+        # Ordering invariant preserved: the reflex still sits above the Gravity tail.
         self.assertLess(reflex_at, gravity_at)
+        # The register rules moved to the signals tool response — their old
+        # always-loaded signature must be gone from the bootstrap.
+        self.assertNotIn("Voice Register Selection", agents_md)
+        # The flip: the whole render — Gravity tail and all — now fits the cap.
+        # Nothing is truncated, so the Gravity block's END is under the cap too.
+        self.assertLess(
+            gravity_at,
+            _BOOTSTRAP_MAX_CHARS,
+            "the Gravity block starts past the cap",
+        )
+        self.assertLess(
+            len(agents_md),
+            _BOOTSTRAP_MAX_CHARS,
+            f"finance + friends-propose AGENTS.md is {len(agents_md)} chars — past the "
+            f"{_BOOTSTRAP_MAX_CHARS} injection cap; the Gravity tail would be silently truncated",
+        )
 
     def test_mirrored_canary_render_with_both_extras_blocks_fits_the_cap(self):
         """The missing case that caught us in production (2026-07-11): the base

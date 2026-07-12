@@ -201,9 +201,14 @@ per tenant at local Sunday 09:00 → the LLM synthesis, `tasks.py:103-184`).
 plugin): the same set plus `yesterdays-signals/` (`runtime_views.py`, `urls.py:59-124`), reusing the console
 serializers/helpers by import.
 
-**Envelope** (`insights/envelope.py`): the observation-mode rules (~6 KB) render into **AGENTS.md** behavior rules
-(`render_observation_mode_rules`, `:126`), while a tiny counts-only block ("Gravity memory: N open, N confirmed…")
-renders into **USER.md** (`render_observation_mode`, `:138`) — both gated on `finance_active`.
+**Envelope** (`insights/envelope.py`): the observation gate (~2.1 KB) renders into **AGENTS.md** behavior rules
+(`render_observation_mode_rules`), while a tiny counts-only block ("Gravity memory: N open, N confirmed…") renders
+into **USER.md** (`render_observation_mode`) — both gated on `finance_active`. The voice-register selection rules
+(~1.9 KB) do **not** live in AGENTS.md: a finance + friends-propose tenant's AGENTS.md overran OpenClaw's 24 KB
+bootstrap cap and silently truncated the register tail, and a `rules/X.md` pointer is unreliable (loaded at most
+once per conversation — the "white whale"). They now ride the `nbhd_insights_signals` tool response
+(`REGISTER_GUIDANCE`, `signals.py`), delivered deterministically on every finance-topic call — the gate mandates
+that call and says the response carries them.
 
 ### Core (`apps/core`) — mindfulness + generated meditations
 
