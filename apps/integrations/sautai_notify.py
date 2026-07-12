@@ -76,7 +76,10 @@ def notify_sautai_plan_ready(job: SautaiMealPlanJob) -> bool:
                 job_name=_READY_JOB_NAME,
             )
         except Exception:
-            logger.debug("sautai notify: proactive record failed", exc_info=True)
+            # For app-channel (iOS-only) users this record IS the delivery — the
+            # APNs push + ?since= feed row are written here — so a swallowed
+            # failure means a READY job with no push. Warn, don't hide it at debug.
+            logger.warning("sautai notify: proactive record failed for job %s", job.id, exc_info=True)
 
     return bool(delivered)
 

@@ -26,6 +26,24 @@ REQUEST_TIMEOUT_SECONDS = 125.0
 CURRENT_PLAN_TIMEOUT_SECONDS = 10.0
 
 
+class RetryableSautaiError(Exception):
+    """A sautai generate failure that QStash should redeliver.
+
+    The job is marked FAILED (claimable again) BEFORE this is raised. It then
+    propagates out of ``generate_sautai_meal_plan_task`` — which the task does
+    NOT catch — so ``apps.cron.views.trigger_task`` returns 500 and QStash
+    redelivers (3x). Each redelivery re-claims the FAILED row (FAILED→GENERATING
+    via the task's atomic CAS) and retries; once QStash's retries are exhausted
+    the row simply stays FAILED. This is the mechanism the contract relies on to
+    absorb sautai's ``503 busy`` (its ``BoundedSemaphore(1)`` when two
+    generations overlap) and cold-start 5xx/transport blips.
+
+    Terminal failures (4xx, non-JSON body, missing plan, no email, unconfigured)
+    do the opposite — ``_fail`` then a normal return (200) — so QStash does NOT
+    retry a request that can never succeed (the #557 no-retry-storm rationale).
+    """
+
+
 def sautai_m2m_config() -> tuple[str, str]:
     """Return ``(base_url, secret)`` for the sautai M2M bridge.
 
@@ -44,10 +62,17 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
     """POST to sautai's ``/api/m2m/meal-plan/generate/`` and persist the result.
 
     On success: ``job.status=READY``, ``result``/``web_link`` stored, then the
-    meditation-style completion notify fires. On any failure: ``job.status=
-    FAILED`` with a safe (never-traceback) error message — QStash's own retry
-    (3x default) re-invokes ``generate_sautai_meal_plan_task``, which
-    re-claims a FAILED job and tries again.
+    meditation-style completion notify fires.
+
+    On failure the job is always marked FAILED with a safe (never-traceback)
+    error, and the failure is classified so QStash retries only what can succeed:
+
+    - RETRYABLE (transport/timeout, ``503`` busy, any ``5xx``) → ``_fail`` then
+      raise :class:`RetryableSautaiError`, which propagates → ``trigger_task``
+      500 → QStash redelivers (3x), re-claiming the FAILED row each time. This is
+      how the contract's "busy resolves on redelivery" actually works.
+    - TERMINAL (``4xx``, non-JSON body, missing plan, no email, unconfigured) →
+      ``_fail`` and return normally (200); QStash must not retry a doomed request.
     """
     tenant = job.tenant
     user = getattr(tenant, "user", None)
@@ -92,9 +117,10 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
     except httpx.HTTPError as exc:
+        # Transport/timeout is always worth a redelivery (sautai cold-starting
+        # right after un-pause is the common case).
         logger.warning("call_sautai_generate_plan: request failed for job %s: %s", job.id, exc)
-        _fail(job, f"request_failed: {exc}")
-        return
+        _fail_retryable(job, f"request_failed: {exc}")
 
     if response.status_code != 200:
         detail = _safe_error_detail(response)
@@ -104,7 +130,12 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
             job.id,
             detail,
         )
-        _fail(job, f"sautai_error_{response.status_code}: {detail}")
+        message = f"sautai_error_{response.status_code}: {detail}"
+        # 503 busy (sautai's BoundedSemaphore(1)) and any 5xx resolve on
+        # redelivery; 4xx (bad request / auth / not found) never will.
+        if response.status_code == 503 or response.status_code >= 500:
+            _fail_retryable(job, message)
+        _fail(job, message)
         return
 
     try:
@@ -138,6 +169,12 @@ def _fail(job: SautaiMealPlanJob, message: str) -> None:
     job.status = SautaiMealPlanJobStatus.FAILED
     job.error = message[:480]
     job.save(update_fields=["status", "error", "updated_at"])
+
+
+def _fail_retryable(job: SautaiMealPlanJob, message: str) -> None:
+    """Mark FAILED (claimable again) then raise so QStash redelivers. Never returns."""
+    _fail(job, message)
+    raise RetryableSautaiError(message)
 
 
 def _safe_error_detail(response: httpx.Response) -> str:

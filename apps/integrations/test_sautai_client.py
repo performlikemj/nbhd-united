@@ -146,6 +146,85 @@ class CallSautaiGeneratePlanTests(TestCase):
         self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
         self.assertIn("not_configured", job.error)
 
+    # ── Retryable vs terminal failure classification (QStash redelivery) ──
+
+    def test_busy_503_marks_failed_and_raises_retryable(self):
+        from .sautai_client import RetryableSautaiError
+
+        busy = {"status_code": 503, "body": {"status": "error", "code": "busy", "detail": "in progress"}}
+        job = self._job()
+        with (
+            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(busy)),
+            self.assertRaises(RetryableSautaiError),
+        ):
+            call_sautai_generate_plan(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+        self.assertIn("503", job.error)
+
+    def test_5xx_marks_failed_and_raises_retryable(self):
+        from .sautai_client import RetryableSautaiError
+
+        err = {"status_code": 500, "body": {"status": "error", "code": "generation_failed", "detail": "boom"}}
+        job = self._job()
+        with (
+            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(err)),
+            self.assertRaises(RetryableSautaiError),
+        ):
+            call_sautai_generate_plan(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+
+    def test_transport_error_marks_failed_and_raises_retryable(self):
+        import httpx
+
+        from .sautai_client import RetryableSautaiError
+
+        job = self._job()
+        with (
+            patch("apps.integrations.sautai_client.httpx.post", side_effect=httpx.ConnectTimeout("boom")),
+            self.assertRaises(RetryableSautaiError),
+        ):
+            call_sautai_generate_plan(job)
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+        self.assertIn("request_failed", job.error)
+
+    def test_terminal_4xx_marks_failed_without_raising(self):
+        # 400 bad request can never succeed on retry — terminal, no raise.
+        bad = {"status_code": 400, "body": {"status": "error", "code": "validation", "detail": "bad"}}
+        job = self._job()
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(bad)):
+            call_sautai_generate_plan(job)  # must NOT raise
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+        self.assertIn("400", job.error)
+
+    def test_redelivery_after_retryable_failure_reclaims_and_succeeds(self):
+        # The whole point of raising: delivery 1 (503) fails the job and raises;
+        # QStash redelivers; delivery 2 re-claims the FAILED row and succeeds.
+        from .sautai_client import RetryableSautaiError
+
+        job = self._job(week_start=date(2026, 8, 3))
+        busy = {"status_code": 503, "body": {"status": "error", "code": "busy", "detail": "in progress"}}
+        ok = _load_fixture("generate_ok.json")
+
+        with (
+            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(busy)),
+            self.assertRaises(RetryableSautaiError),
+        ):
+            generate_sautai_meal_plan_task(str(job.id))
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+
+        with (
+            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(ok)),
+            patch("apps.integrations.sautai_notify.notify_sautai_plan_ready"),
+        ):
+            generate_sautai_meal_plan_task(str(job.id))
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.READY)
+
 
 # ═════════════════════════════════════════════════════════════════════
 # generate_sautai_meal_plan_task — claim guard (idempotent on redelivery)
@@ -212,6 +291,28 @@ class GenerateSautaiMealPlanTaskTests(TestCase):
 
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.GENERATING)
+
+    def test_retryable_failure_propagates_out_of_task(self):
+        # The task must NOT swallow a retryable failure — it has to reach
+        # trigger_task (500) so QStash redelivers.
+        from .sautai_client import RetryableSautaiError
+
+        job = SautaiMealPlanJob.objects.create(tenant=self.tenant)
+        with (
+            patch(
+                "apps.integrations.sautai_client.call_sautai_generate_plan",
+                side_effect=RetryableSautaiError("busy"),
+            ),
+            self.assertRaises(RetryableSautaiError),
+        ):
+            generate_sautai_meal_plan_task(str(job.id))
+
+    def test_terminal_failure_does_not_propagate(self):
+        # A terminal failure returns normally from the client — the task must
+        # not raise (QStash returns 200, no retry).
+        job = SautaiMealPlanJob.objects.create(tenant=self.tenant)
+        with patch("apps.integrations.sautai_client.call_sautai_generate_plan", return_value=None):
+            generate_sautai_meal_plan_task(str(job.id))  # must not raise
 
 
 # ═════════════════════════════════════════════════════════════════════

@@ -119,8 +119,13 @@ def generate_sautai_meal_plan_task(job_id: str) -> None:
     call to sautai / a second completion notify. sautai's own
     ``create_meal_plan_for_user()`` is idempotent per (user, week) too, but
     that's a second line of defense, not a substitute for claiming first.
-    Failure paths in ``call_sautai_generate_plan`` transition GENERATING ->
-    FAILED, which is claimable again on QStash's own retry. See
+
+    Failure paths in ``call_sautai_generate_plan`` always transition
+    GENERATING -> FAILED. A RETRYABLE failure (transport/503/5xx) then raises
+    ``RetryableSautaiError``, which this task deliberately does NOT catch — it
+    propagates so ``apps.cron.views.trigger_task`` returns 500 and QStash
+    redelivers, re-claiming the FAILED row. A TERMINAL failure (4xx / bad body /
+    no email / unconfigured) returns normally, so QStash does not retry it. See
     docs/sautai-phase0-contract.md.
     """
     from apps.integrations.models import SautaiMealPlanJob, SautaiMealPlanJobStatus

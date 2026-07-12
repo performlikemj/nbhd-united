@@ -3942,43 +3942,59 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 .order_by("-created_at")
                 .first()
             )
-            if in_flight:
-                return Response(
-                    {
-                        "job_id": str(in_flight.id),
-                        "status": in_flight.status,
-                        "week_start": week_start.isoformat(),
-                    }
+            if in_flight is None:
+                # Record the link (Phase 0 has no OAuth consent flow — this is an
+                # audit trail, not proof of a completed handshake; see the
+                # research doc's Auth & identity linking section). get_or_create
+                # so a repeat call never trips the (tenant, provider) unique
+                # constraint.
+                Integration.objects.get_or_create(
+                    tenant=tenant,
+                    provider=Integration.Provider.SAUTAI,
+                    defaults={"status": Integration.Status.ACTIVE},
                 )
 
-            # Record the link (Phase 0 has no OAuth consent flow — this is an
-            # audit trail, not proof of a completed handshake; see the
-            # research doc's Auth & identity linking section). get_or_create
-            # so a repeat call never trips the (tenant, provider) unique
-            # constraint.
-            Integration.objects.get_or_create(
-                tenant=tenant,
-                provider=Integration.Provider.SAUTAI,
-                defaults={"status": Integration.Status.ACTIVE},
-            )
+                job = SautaiMealPlanJob.objects.create(
+                    tenant=tenant,
+                    week_start=week_start,
+                    number_of_days=number_of_days,
+                    user_prompt=user_prompt,
+                )
 
-            job = SautaiMealPlanJob.objects.create(
-                tenant=tenant,
-                week_start=week_start,
-                number_of_days=number_of_days,
-                user_prompt=user_prompt,
+        # publish_task is a network call — enqueue AFTER the txn commits
+        # (invariant §8: no external calls inside atomic).
+        from apps.cron.publish import publish_task
+
+        if in_flight is not None:
+            # Coalesce onto the existing request. RECOVERY: if it's a PENDING row
+            # that has gone stale, its original publish_task may have been
+            # swallowed on enqueue — and because EVERY later request coalesces
+            # onto it, that (tenant, week) would be dead forever with no
+            # user-visible way out. Re-enqueue it (best-effort). The worker's
+            # atomic claim makes a redundant delivery harmless if the original
+            # DID land and the worker is merely slow; a GENERATING row is left
+            # alone (it is actively being worked).
+            if in_flight.status == SautaiMealPlanJobStatus.PENDING and (tz.now() - in_flight.updated_at) > timedelta(
+                minutes=3
+            ):
+                try:
+                    publish_task("generate_sautai_meal_plan", str(in_flight.id))
+                except Exception:
+                    logger.warning("Failed to re-enqueue stale sautai job %s", in_flight.id)
+            return Response(
+                {
+                    "job_id": str(in_flight.id),
+                    "status": in_flight.status,
+                    "week_start": week_start.isoformat(),
+                }
             )
 
         try:
-            from apps.cron.publish import publish_task
-
             publish_task("generate_sautai_meal_plan", str(job.id))
         except Exception:
-            # KNOWN GAP (documented, not fixed here — matches the inherited
-            # compose_meditation/CoreComposeView pattern): a swallowed
-            # publish failure leaves this job stranded at PENDING forever —
-            # nothing re-enqueues it. No sweep exists yet on either side of
-            # this mirror; tracked as a fast-follow, not built in Phase 0.
+            # A swallowed publish leaves this PENDING; the stale-re-enqueue branch
+            # above recovers it on the user's next request for the same week —
+            # closing the inherited compose_meditation/CoreComposeView gap.
             logger.warning("Failed to enqueue sautai meal-plan generation for job %s", job.id)
 
         return Response(

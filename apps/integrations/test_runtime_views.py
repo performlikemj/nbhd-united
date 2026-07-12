@@ -907,6 +907,57 @@ class SautaiGeneratePlanViewTests(TestCase):
         job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
         self.assertEqual(job.week_start.isoformat(), "2026-07-13")  # the Monday of that week
 
+    def test_stale_pending_coalesce_reenqueues_recovery(self):
+        # A PENDING job whose original publish_task was swallowed would otherwise
+        # be dead forever — every later request coalesces onto it. A stale one is
+        # re-enqueued so the (tenant, week) can recover.
+        from datetime import date, timedelta
+
+        from django.utils import timezone
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        job = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant, week_start=date(2026, 7, 13), status=SautaiMealPlanJobStatus.PENDING
+        )
+        # .update() bypasses auto_now, so updated_at genuinely lands in the past.
+        SautaiMealPlanJob.objects.filter(id=job.id).update(updated_at=timezone.now() - timedelta(minutes=5))
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["job_id"], str(job.id))
+        mock_publish.assert_called_once_with("generate_sautai_meal_plan", str(job.id))
+        # Coalesced, not duplicated.
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_fresh_pending_coalesce_does_not_reenqueue(self):
+        from datetime import date
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        job = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant, week_start=date(2026, 7, 13), status=SautaiMealPlanJobStatus.PENDING
+        )  # updated_at = now (fresh)
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["job_id"], str(job.id))
+        mock_publish.assert_not_called()
+
 
 @override_settings(
     NBHD_INTERNAL_API_KEY="shared-key",
