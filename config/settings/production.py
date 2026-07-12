@@ -123,6 +123,9 @@ DEFAULT_FROM_EMAIL = env(
 EVAL_JOURNEY_TENANT_ID = env("EVAL_JOURNEY_TENANT_ID", default="")
 EVAL_BEHAVIOR_TENANT_ID = env("EVAL_BEHAVIOR_TENANT_ID", default="")
 EVAL_JOURNEY_PAT = env("EVAL_JOURNEY_PAT", default="")
+# Wave D behavior suite PAT (secretref eval-behavior-pat on the Container App).
+# Mirrors the eval-journey-pat wiring; provisioned as an ops step. See base.py.
+EVAL_BEHAVIOR_PAT = env("EVAL_BEHAVIOR_PAT", default="")
 
 # CORS — production uses the explicit allowlist from CORS_ALLOWED_ORIGINS in base.py.
 # Do NOT set CORS_ALLOW_ALL_ORIGINS here (that is dev-only).

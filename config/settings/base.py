@@ -599,6 +599,13 @@ PLATFORM_OWNER_EMAIL = env("PLATFORM_OWNER_EMAIL", default="")
 EVAL_JOURNEY_TENANT_ID = env("EVAL_JOURNEY_TENANT_ID", default="")
 EVAL_BEHAVIOR_TENANT_ID = env("EVAL_BEHAVIOR_TENANT_ID", default="")
 EVAL_JOURNEY_PAT = env("EVAL_JOURNEY_PAT", default="")
+# Wave D behavior suite: the PAT that authenticates scenario turns as the synthetic
+# behavior tenant's user. Wave D (#1168) read this via getattr() to stay a
+# zero-settings-change PR; the ops provisioning step mints the PAT + sets the secret,
+# so it is promoted to a real env() setting here (mirrored in production.py so the
+# Azure Container App env var name matches). Empty default → resolve_behavior_pat()
+# raises a loud config error when the suite runs unconfigured (INVARIANT #3).
+EVAL_BEHAVIOR_PAT = env("EVAL_BEHAVIOR_PAT", default="")
 
 # Eval Suite 4 — production SLO snapshot thresholds (docs/evals-directive.md §Suite
 # 4). The nightly, metadata-only snapshot (apps/evals/suites/slo_snapshot.py) owns
