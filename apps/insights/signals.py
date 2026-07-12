@@ -35,6 +35,59 @@ from apps.journal.models import Document
 from .baselines import compute_baseline
 from .models import AssistantInsight, PillarSnapshot, TopicRegistry, UserVoicePref
 
+# Voice-register selection rules, delivered on the ``nbhd_insights_signals``
+# tool response (as the ``register_guidance`` key of :func:`compute_signals`).
+#
+# These used to live in AGENTS.md as a ~3.4 KB always-loaded block appended
+# after the observation gate. On a finance + friends-propose tenant the
+# rendered AGENTS.md ran ~24.9 KB — over OpenClaw's 24 KB bootstrap injection
+# cap — so this block, ordered last as the sacrificial tail, was silently
+# truncated mid-rules on the two real tenants in that shape. A ``rules/X.md``
+# pointer is not an option: the assistant loads a referenced rules file at
+# most once per conversation and won't re-reference it (the "white whale" —
+# see feedback_ondemand_rules_files_unreliable). Stapling the rules to the
+# tool response the observation gate ALREADY mandates per finance topic
+# delivers them deterministically at the moment of need, fresh on every call,
+# regardless of conversation length — and independent of AGENTS.md budget.
+#
+# The plugin renders the whole signals dict to the model as pretty-printed
+# JSON (renderPayload → content[].text = JSON.stringify(payload, null, 2)),
+# so this string lands verbatim in model context on every call. It references
+# the sibling keys in the same payload (``data``, ``calibration``, ``intent``,
+# ``user_voice_pref``, ``hard_floors``), so it can be tighter than prompt prose.
+# Keep it compact and under REGISTER_GUIDANCE_MAX_CHARS (guarded by a unit test).
+REGISTER_GUIDANCE_MAX_CHARS = 2200
+
+REGISTER_GUIDANCE = (
+    "Voice register — apply to THIS topic's reply. Pick ONE register; it sets your VOICE, "
+    "not whether you raise the topic (the observation gate's skip-noise + record/confirm/"
+    "refute rules still apply). Registers, coolest to hottest:\n"
+    '- observation: "I see X — ring true?" — default; use for low data, a blocked hard_floor, '
+    "or wrong context (user under stress, a regime change).\n"
+    '- hypothesis: "Looks like X when Y — match?" — some data + some confirms, but no goal '
+    "anchor or shaky context.\n"
+    '- soft: "Given N weeks and what you\'ve confirmed, consider Z. Caveat: [...]." — solid data '
+    "+ calibration + normal context.\n"
+    '- direct: "Against your [goal] you\'re behind. Driver: [point]. Next step: [...]." — all of '
+    "soft PLUS a stated goal to anchor against and clearly the right moment.\n"
+    "Rules:\n"
+    "1. hard_floors are absolute. can_be_direct=false means never direct; can_exceed_observation"
+    "=false means never exceed observation. Only a non-zero user_voice_pref.register_offset lifts "
+    "a floor — don't invent reasons to bypass one.\n"
+    "2. Honor user_voice_pref.register_offset: +1 = one register hotter than your judgment, "
+    "-1 = one cooler, 0 = no override.\n"
+    "3. Within the allowed band, weigh the signals below: high data.sample_size + low data.stdev "
+    "+ high calibration.ratio lean hotter; recent stress / life change / seasonal anomaly lean "
+    'cooler; intent.has_stated_goal with goal_scope="topic" lets you anchor a direct prescription, '
+    "otherwise soft at most; a one-off event that explains the latest point demotes you to "
+    "observation/hypothesis even if the math looks confident.\n"
+    "4. If you go direct, show your reasoning inline — hidden confidence erodes trust faster than "
+    "wrong confidence.\n"
+    "5. Only on the user's EXPLICIT request, persist an override via nbhd_insights_voice_pref_set: "
+    '"just tell me / be direct about X" -> register_offset=+1; "ease up / be more cautious on X" '
+    '-> -1; "go back to default on X" -> 0. Never fire it on your own inference.'
+)
+
 
 def _summarize_goal(goal) -> str | None:
     """Short summary for the intent block.
@@ -80,6 +133,10 @@ def compute_signals(
         # passing a natural string through nbhd_insights_record (which will
         # auto-propose), or falling back to nbhd_insights_history.
         return {
+            # Register rules ride every signals response (see REGISTER_GUIDANCE
+            # above): deterministic delivery at the moment of need. First key so
+            # it's the most salient text in the rendered tool result.
+            "register_guidance": REGISTER_GUIDANCE,
             "pillar": pillar,
             "topic_slug": topic_slug,
             "topic_display_name": None,
@@ -176,6 +233,11 @@ def compute_signals(
     sample_size = baseline.get("sample_size", 0) or 0
 
     return {
+        # Register rules ride every signals response (see REGISTER_GUIDANCE
+        # above): deterministic delivery at the moment of need, fresh on each
+        # call regardless of conversation length. First key so it's the most
+        # salient text in the rendered tool result.
+        "register_guidance": REGISTER_GUIDANCE,
         "pillar": pillar,
         "topic_slug": topic.slug,
         "topic_display_name": topic.display_name,
