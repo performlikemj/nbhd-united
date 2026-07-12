@@ -3,9 +3,14 @@
 These pin the post-refactor contract where behavioral rules move out of
 USER.md and into AGENTS.md:
 
-- Gravity-enabled tenants get the Observation Mode + Voice Register
-  Selection blocks appended to AGENTS.md.
-- Non-Gravity tenants do NOT get those blocks — AGENTS.md stays lean.
+- Gravity-enabled tenants get the Observation Mode gate appended to
+  AGENTS.md. The voice-register selection rules are NOT in AGENTS.md
+  anymore — they ride the ``nbhd_insights_signals`` tool response
+  (:data:`apps.insights.signals.REGISTER_GUIDANCE`) so they don't spend
+  always-loaded bootstrap budget that pushed the block past the injection
+  cap on finance + friends-propose tenants. The gate keeps the mandate to
+  CALL that tool per topic (its delivery vehicle).
+- Non-Gravity tenants do NOT get the gate — AGENTS.md stays lean.
 - USER.md's ``insights_observation_mode`` section carries only the
   small dynamic counts (NOT the long-form rules).
 """
@@ -27,12 +32,18 @@ class RenderWorkspaceFilesObservationModeTest(TestCase):
         files = render_workspace_files("neighbor", tenant=tenant)
         agents_md = files["NBHD_AGENTS_MD"]
 
-        # The block heading and signature phrases from the rules must be
-        # present in AGENTS.md, not USER.md.
+        # The gate heading + its signals-call mandate (the register-rules
+        # delivery vehicle) live in AGENTS.md, not USER.md.
         self.assertIn("## Gravity Observation Mode", agents_md)
-        self.assertIn("Voice Register Selection", agents_md)
         self.assertIn("nbhd_insights_signals", agents_md)
-        self.assertIn("register_offset", agents_md)
+
+        # The register-selection rules themselves NO LONGER live in AGENTS.md —
+        # they ride the signals tool response now. Their old signature phrases
+        # must not reappear in the always-loaded bootstrap (that regression is
+        # exactly the budget overrun this PR removes).
+        self.assertNotIn("Voice Register Selection", agents_md)
+        self.assertNotIn("register_offset", agents_md)
+        self.assertNotIn("can_be_direct", agents_md)
 
     def test_non_finance_tenant_does_not_get_observation_rules(self):
         tenant = create_tenant(display_name="Plain User", telegram_chat_id=900002)
