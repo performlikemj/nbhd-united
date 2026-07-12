@@ -790,6 +790,37 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + email_provenance_gate
 
+    # sautai meal-plan gate — behavioral, per-tenant (Phase 0). Only a tenant
+    # with sautai_enabled loads the nbhd-sautai-tools plugin, so the
+    # imperative cue that makes the agent actually CALL nbhd_generate_meal_plan
+    # — rather than confabulate "here's your plan" from the tool catalog entry
+    # alone — is gated the same way (same reconcile-gate shape as the
+    # site-publish gate above: under toolSearch a passive capability note
+    # doesn't make the model reach for the tool). The call is fire-and-forget
+    # async (30-60s server-side), so the SECOND half of this gate — never
+    # claiming the plan is ready from this call's own response — matters as
+    # much as the call itself. Placed BEFORE the larger Gravity block so it
+    # is never the silently-truncated tail if AGENTS.md exceeds the bootstrap
+    # budget (same reasoning as the other flag-gated gates above).
+    if tenant is not None and getattr(tenant, "sautai_enabled", False):
+        sautai_gate = (
+            "## Meal plans (sautai)\n\n"
+            "When the user asks for a meal plan, what to eat this week, meal prep, or to "
+            "regenerate/redo their plan for a week — search the tool catalog for "
+            "`nbhd_generate_meal_plan` by name and call it. It is NOT pre-loaded; you must find "
+            "it via toolSearch, then call it. Pass `user_prompt` only if the user gave guidance "
+            "beyond their stored profile (e.g. 'high protein this week'); sautai already stores "
+            "their allergies and dietary preferences, so do NOT interrogate the user for those "
+            "before calling.\n\n"
+            "This call is ASYNC — generation takes 30-60 seconds server-side and the tool "
+            "returns a job acknowledgment only, never the plan itself. Tell the user you've "
+            "started their meal plan and they'll get a notification when it's ready. NEVER say "
+            "the plan is ready, list its meals, or describe its contents — you have not seen "
+            "them. Only call again for the SAME week if the user explicitly asks you to "
+            "regenerate it."
+        )
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + sautai_gate
+
     # Gravity observation-mode rules — behavioral, belongs in AGENTS.md
     # (not USER.md). The rules block is ~6 KB of static text; until
     # 2026-05-22 it lived in USER.md via apps/insights/envelope.py, which

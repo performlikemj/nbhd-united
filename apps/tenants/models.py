@@ -669,6 +669,16 @@ class Tenant(models.Model):
         ),
     )
 
+    # sautai integration (nutrition/meal-plan generation) — Phase 0. Gates the
+    # nbhd-sautai-tools plugin (config_generator) and the imperative AGENTS.md
+    # gate (personas.py) that tells the agent to call nbhd_generate_meal_plan.
+    # Diet profile lives on sautai itself, not here — this only turns on the
+    # tool. See docs/sautai-phase0-contract.md.
+    sautai_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable sautai meal-plan generation tools (nutrition sibling of Fuel)",
+    )
+
     # Core module (mindfulness — AI-composed guided meditations)
     core_enabled = models.BooleanField(
         default=False,

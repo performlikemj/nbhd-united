@@ -48,7 +48,7 @@ from .google_api import (
     list_gmail_messages,
 )
 from .internal_auth import InternalAuthError, validate_internal_runtime_request
-from .models import Integration
+from .models import Integration, SautaiMealPlanJob
 from .services import (
     IntegrationInactiveError,
     IntegrationNotConnectedError,
@@ -3818,6 +3818,103 @@ class RedditToolView(APIView):
         result = redact_tool_response(result, tenant)
 
         return Response(result, status=status.HTTP_200_OK)
+
+
+# ── sautai Phase 0 (nbhd-sautai-tools plugin, meal-plan generation) ──────
+#
+# PROXY-THROUGH-DJANGO, same shape as RedditToolView: the plugin never talks
+# to sautai directly (30-60s exceeds its 20s tool timeout, and a container-
+# direct call would bypass the PII rehydrate/redact chokepoint). This view
+# only does the fast ack — job row + QStash enqueue; the actual sautai HTTP
+# call lives in apps.integrations.tasks.generate_sautai_meal_plan_task. See
+# docs/sautai-phase0-contract.md.
+
+_SAUTAI_MAX_PROMPT_CHARS = 2000
+
+
+class RuntimeSautaiGeneratePlanView(APIView):
+    """POST — kick off an async sautai meal-plan generation.
+
+    Fast ack only (<20s — the plugin's own tool-call timeout): creates a
+    PENDING ``SautaiMealPlanJob`` and enqueues ``generate_sautai_meal_plan``
+    via QStash, which does the slow (30-60s) call to sautai's M2M API.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        if not getattr(tenant, "sautai_enabled", False):
+            # Flips immediately via a tenant settings update — no container
+            # restart needed to gate the runtime call, mirrors fuel_disabled.
+            return Response({"error": "sautai_disabled"}, status=status.HTTP_409_CONFLICT)
+
+        user_prompt = str(request.data.get("user_prompt") or "").strip()
+        if len(user_prompt) > _SAUTAI_MAX_PROMPT_CHARS:
+            return Response(
+                {
+                    "error": "invalid_request",
+                    "detail": f"user_prompt exceeds {_SAUTAI_MAX_PROMPT_CHARS} characters",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            week_start = _parse_iso_date(request.data.get("week_start"), field_name="week_start")
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            number_of_days = _parse_positive_int(
+                request.data.get("number_of_days"),
+                default=7,
+                max_value=7,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": f"number_of_days {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Record the link (Phase 0 has no OAuth consent flow — this is an
+        # audit trail, not proof of a completed handshake; see the research
+        # doc's Auth & identity linking section). get_or_create so a repeat
+        # call never trips the (tenant, provider) unique constraint.
+        Integration.objects.get_or_create(
+            tenant=tenant,
+            provider=Integration.Provider.SAUTAI,
+            defaults={"status": Integration.Status.ACTIVE},
+        )
+
+        job = SautaiMealPlanJob.objects.create(
+            tenant=tenant,
+            week_start=week_start,
+            number_of_days=number_of_days,
+            user_prompt=user_prompt,
+        )
+
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task("generate_sautai_meal_plan", str(job.id))
+        except Exception:
+            logger.warning("Failed to enqueue sautai meal-plan generation for job %s", job.id)
+
+        return Response(
+            {"job_id": str(job.id), "status": job.status},
+            status=status.HTTP_201_CREATED,
+        )
 
 
 # ── Typed cron creation (feat/cron-typed-patterns) ──────────────────────

@@ -50,6 +50,7 @@ COPY runtime/openclaw/plugins/nbhd-image-gen /opt/nbhd/plugins/nbhd-image-gen
 COPY runtime/openclaw/plugins/nbhd-reddit-tools /opt/nbhd/plugins/nbhd-reddit-tools
 COPY runtime/openclaw/plugins/nbhd-finance-tools /opt/nbhd/plugins/nbhd-finance-tools
 COPY runtime/openclaw/plugins/nbhd-fuel-tools /opt/nbhd/plugins/nbhd-fuel-tools
+COPY runtime/openclaw/plugins/nbhd-sautai-tools /opt/nbhd/plugins/nbhd-sautai-tools
 COPY runtime/openclaw/plugins/nbhd-insights-tools /opt/nbhd/plugins/nbhd-insights-tools
 COPY runtime/openclaw/plugins/nbhd-settings-tools /opt/nbhd/plugins/nbhd-settings-tools
 COPY runtime/openclaw/plugins/nbhd-routing-context /opt/nbhd/plugins/nbhd-routing-context

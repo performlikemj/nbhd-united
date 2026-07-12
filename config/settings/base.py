@@ -358,6 +358,11 @@ OPENCLAW_REDDIT_PLUGIN_PATH = env(
     "OPENCLAW_REDDIT_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-reddit-tools",
 )
+OPENCLAW_SAUTAI_PLUGIN_ID = env("OPENCLAW_SAUTAI_PLUGIN_ID", default="nbhd-sautai-tools")
+OPENCLAW_SAUTAI_PLUGIN_PATH = env(
+    "OPENCLAW_SAUTAI_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-sautai-tools",
+)
 OPENCLAW_SETTINGS_PLUGIN_ID = env("OPENCLAW_SETTINGS_PLUGIN_ID", default="nbhd-settings-tools")
 OPENCLAW_SETTINGS_PLUGIN_PATH = env(
     "OPENCLAW_SETTINGS_PLUGIN_PATH",
@@ -667,6 +672,13 @@ GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default="")
 GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET", default="")
 SAUTAI_OAUTH_CLIENT_ID = env("SAUTAI_OAUTH_CLIENT_ID", default="")
 SAUTAI_OAUTH_CLIENT_SECRET = env("SAUTAI_OAUTH_CLIENT_SECRET", default="")
+
+# sautai Phase 0 M2M bridge — platform-level shared secret (control-plane to
+# control-plane, never delivered to a tenant container). See
+# docs/sautai-phase0-contract.md. Separate from the OAuth stub above, which
+# points at a sautai OAuth server that does not exist yet.
+SAUTAI_API_BASE_URL = env("SAUTAI_API_BASE_URL", default="https://app.sautai.com").rstrip("/")
+SAUTAI_PLATFORM_SECRET = env("SAUTAI_PLATFORM_SECRET", default="")
 
 # Composio (managed OAuth integrations)
 COMPOSIO_API_KEY = env("COMPOSIO_API_KEY", default="")

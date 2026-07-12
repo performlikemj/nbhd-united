@@ -106,3 +106,33 @@ def refresh_expiring_integrations_task() -> dict[str, int]:
         "expired": expired,
         "errored": errored,
     }
+
+
+def generate_sautai_meal_plan_task(job_id: str) -> None:
+    """Call sautai's M2M generate endpoint for a pending SautaiMealPlanJob.
+
+    Idempotent on redelivery: only PENDING/FAILED jobs are (re)attempted —
+    mirrors ``apps.core.tasks.render_meditation_task``'s claim guard. sautai's
+    ``create_meal_plan_for_user()`` is itself idempotent per (user, week), so
+    a retry after a transient network failure is safe even if the first call
+    actually landed on sautai's side. See docs/sautai-phase0-contract.md.
+    """
+    from apps.integrations.models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+    try:
+        job = SautaiMealPlanJob.objects.select_related("tenant__user").get(id=job_id)
+    except SautaiMealPlanJob.DoesNotExist:
+        logger.warning("generate_sautai_meal_plan_task: job %s not found", str(job_id)[:8])
+        return
+
+    if job.status not in (SautaiMealPlanJobStatus.PENDING, SautaiMealPlanJobStatus.FAILED):
+        logger.info(
+            "generate_sautai_meal_plan_task: job %s already %s — skipping",
+            str(job_id)[:8],
+            job.status,
+        )
+        return
+
+    from apps.integrations.sautai_client import call_sautai_generate_plan
+
+    call_sautai_generate_plan(job)

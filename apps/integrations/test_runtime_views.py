@@ -671,6 +671,113 @@ class RedditViewTests(TestCase):
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class SautaiGeneratePlanViewTests(TestCase):
+    """Tests for the Phase 0 sautai runtime proxy (fast-ack only)."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Sautai Test", telegram_chat_id=838383)
+        seed_internal_key(self.tenant)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "shared-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _url(self) -> str:
+        return f"/api/v1/integrations/runtime/{self.tenant.id}/sautai/generate-plan/"
+
+    def test_requires_internal_auth(self):
+        response = self.client.post(self._url(), data={}, content_type="application/json")
+        self.assertEqual(response.status_code, 401)
+
+    def test_disabled_flag_returns_409(self):
+        # sautai_enabled defaults False — the endpoint must refuse before
+        # touching the job table, mirroring fuel_disabled.
+        response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "sautai_disabled")
+
+        from .models import SautaiMealPlanJob
+
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_invalid_week_start_rejected(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        response = self.client.post(
+            self._url(),
+            data={"week_start": "not-a-date"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid_request")
+
+    def test_user_prompt_too_long_rejected(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        response = self.client.post(
+            self._url(),
+            data={"user_prompt": "x" * 2001},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid_request")
+
+    def test_happy_path_creates_pending_job_enqueues_and_records_integration(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(
+                self._url(),
+                data={"user_prompt": "high protein, no pork", "week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["status"], "pending")
+        self.assertIn("job_id", body)
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        job = SautaiMealPlanJob.objects.get(id=body["job_id"])
+        self.assertEqual(job.tenant_id, self.tenant.id)
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.PENDING)
+        self.assertEqual(job.user_prompt, "high protein, no pork")
+        self.assertEqual(job.week_start.isoformat(), "2026-07-13")
+
+        mock_publish.assert_called_once_with("generate_sautai_meal_plan", str(job.id))
+
+        from .models import Integration
+
+        integration = Integration.objects.get(tenant=self.tenant, provider=Integration.Provider.SAUTAI)
+        self.assertEqual(integration.status, Integration.Status.ACTIVE)
+
+    def test_repeat_call_does_not_duplicate_integration_row(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+            self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+
+        from .models import Integration, SautaiMealPlanJob
+
+        self.assertEqual(
+            Integration.objects.filter(tenant=self.tenant, provider=Integration.Provider.SAUTAI).count(),
+            1,
+        )
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 2)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeCronPhase2SummaryViewTest(TestCase):
     """Tool-delegation contract for the Phase 2 sync flow.
 

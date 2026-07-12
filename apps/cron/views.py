@@ -95,6 +95,10 @@ TASK_MAP = {
     # in the platform owner's inbox.
     "preview_email": "apps.tenants.tasks.preview_email_task",
     "refresh_expiring_integrations": "apps.integrations.tasks.refresh_expiring_integrations_task",
+    # sautai Phase 0 — async meal-plan generation (proxy creates the PENDING
+    # job, this task does the slow 30-60s sautai M2M call). See
+    # docs/sautai-phase0-contract.md.
+    "generate_sautai_meal_plan": "apps.integrations.tasks.generate_sautai_meal_plan_task",
     # Sweep PENDING action-gate rows past their 5-min expiry: flip to EXPIRED,
     # audit-log, and refresh the platform message so stale Approve/Deny buttons
     # are cleared. GatePollView expires lazily on poll, but abandoned actions
