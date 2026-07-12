@@ -474,15 +474,19 @@ class OutboundContractParityTests(SimpleTestCase):
                 self.assertEqual(ok, expected_ok)
 
 
-# Minimal schema-valid payload per pattern that pins a fire-time model — the four
-# patterns that hardcoded "haiku-4.5" (daily_briefing pins its own model and is
-# out of scope here). Used to assert each pattern's resolved model lands inside
-# the firing tenant's allowlist.
+# Minimal schema-valid payload per pattern that pins a fire-time model. All five
+# typed-cron patterns now pin the allowlist-safe DeepSeek Flash model: the four
+# that hardcoded "haiku-4.5" (fixed in #1167) plus daily_briefing, which pinned
+# "sonnet-4.6" until MJ's 2026-07-12 decision to trade briefing quality for
+# allowlist safety on non-BYO tenants (sonnet is a BYO-only model, so it failed
+# preflight for everyone without an active Anthropic credential). Used to assert
+# each pattern's resolved model lands inside the firing tenant's allowlist.
 _MODEL_PINNING_PATTERN_PAYLOADS: dict[str, dict] = {
     "pure_reminder": {"text": "Take out trash"},
     "quote_user_intent": {"text": "appointment Tuesday 3pm"},
     "domain_summary": {"query_tool": "nbhd_task_list", "render_block": "task_summary"},
     "workout_congrats": {"activity": "Push Day"},
+    "daily_briefing": {"sections": ["overdue_tasks", "due_today"], "warmth_level": "warm"},
 }
 
 
