@@ -48,7 +48,7 @@ from .google_api import (
     list_gmail_messages,
 )
 from .internal_auth import InternalAuthError, validate_internal_runtime_request
-from .models import Integration, SautaiMealPlanJob
+from .models import Integration, SautaiMealPlanJob, SautaiMealPlanJobStatus
 from .services import (
     IntegrationInactiveError,
     IntegrationNotConnectedError,
@@ -3887,28 +3887,58 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Record the link (Phase 0 has no OAuth consent flow — this is an
-        # audit trail, not proof of a completed handshake; see the research
-        # doc's Auth & identity linking section). get_or_create so a repeat
-        # call never trips the (tenant, provider) unique constraint.
-        Integration.objects.get_or_create(
-            tenant=tenant,
-            provider=Integration.Provider.SAUTAI,
-            defaults={"status": Integration.Status.ACTIVE},
-        )
+        # Atomic coalesce: lock the tenant row so concurrent POSTs (the agent
+        # retrying after its OWN 20s tool-call timeout, while the first
+        # request already created the job, is the realistic trigger — not
+        # just a theoretical race) cannot both pass the in-flight check and
+        # create duplicate jobs, which would fire duplicate "plan ready"
+        # pushes once each finishes. Mirrors
+        # apps.core.views.CoreComposeView's compose-coalesce guard. Scoped to
+        # (tenant, week_start) — that's how a user perceives "my request";
+        # a different week is a genuinely different ask.
+        with transaction.atomic():
+            Tenant.objects.select_for_update().get(pk=tenant.pk)
 
-        job = SautaiMealPlanJob.objects.create(
-            tenant=tenant,
-            week_start=week_start,
-            number_of_days=number_of_days,
-            user_prompt=user_prompt,
-        )
+            in_flight = (
+                SautaiMealPlanJob.objects.filter(
+                    tenant=tenant,
+                    week_start=week_start,
+                    status__in=[SautaiMealPlanJobStatus.PENDING, SautaiMealPlanJobStatus.GENERATING],
+                )
+                .order_by("-created_at")
+                .first()
+            )
+            if in_flight:
+                return Response({"job_id": str(in_flight.id), "status": in_flight.status})
+
+            # Record the link (Phase 0 has no OAuth consent flow — this is an
+            # audit trail, not proof of a completed handshake; see the
+            # research doc's Auth & identity linking section). get_or_create
+            # so a repeat call never trips the (tenant, provider) unique
+            # constraint.
+            Integration.objects.get_or_create(
+                tenant=tenant,
+                provider=Integration.Provider.SAUTAI,
+                defaults={"status": Integration.Status.ACTIVE},
+            )
+
+            job = SautaiMealPlanJob.objects.create(
+                tenant=tenant,
+                week_start=week_start,
+                number_of_days=number_of_days,
+                user_prompt=user_prompt,
+            )
 
         try:
             from apps.cron.publish import publish_task
 
             publish_task("generate_sautai_meal_plan", str(job.id))
         except Exception:
+            # KNOWN GAP (documented, not fixed here — matches the inherited
+            # compose_meditation/CoreComposeView pattern): a swallowed
+            # publish failure leaves this job stranded at PENDING forever —
+            # nothing re-enqueues it. No sweep exists yet on either side of
+            # this mirror; tracked as a fast-follow, not built in Phase 0.
             logger.warning("Failed to enqueue sautai meal-plan generation for job %s", job.id)
 
         return Response(

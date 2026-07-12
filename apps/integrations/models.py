@@ -57,6 +57,7 @@ class Integration(models.Model):
 
 class SautaiMealPlanJobStatus(models.TextChoices):
     PENDING = "pending", "Pending"
+    GENERATING = "generating", "Generating"
     READY = "ready", "Ready"
     FAILED = "failed", "Failed"
 

@@ -429,6 +429,34 @@ class ConfigGeneratorTest(TestCase):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)
 
+    # ── sautai plugin (Phase 0) ───────────────────────────────────────
+    # 2026-07-05 incident class: an untested flag-gated plugin can be
+    # emitted into plugins.load.paths without ever being packaged/COPY'd,
+    # or (the mirror bug) COPY'd but never actually gated correctly — both
+    # are only caught by asserting BOTH directions of the flag.
+
+    def test_sautai_plugin_loaded_when_enabled(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save()
+        config = generate_openclaw_config(self.tenant)
+        self.assertIn("plugins", config)
+        self.assertIn("nbhd-sautai-tools", config["plugins"]["allow"])
+        self.assertIn("nbhd-sautai-tools", config["plugins"]["entries"])
+
+    def test_sautai_plugin_not_loaded_when_disabled(self):
+        self.tenant.sautai_enabled = False
+        self.tenant.save()
+        with override_settings(
+            OPENCLAW_GOOGLE_PLUGIN_ID="",
+            OPENCLAW_JOURNAL_PLUGIN_ID="",
+            OPENCLAW_USAGE_PLUGIN_ID="",
+            OPENCLAW_SETTINGS_PLUGIN_ID="",
+            OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
+            OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
+        ):
+            config = generate_openclaw_config(self.tenant)
+        self.assertNotIn("plugins", config)
+
     # ── Heartbeat cron ──────────────────────────────────────────────
 
     def test_heartbeat_cron_expr_default(self):
@@ -635,6 +663,40 @@ class ConfigGeneratorTest(TestCase):
         jobs = build_cron_seed_jobs(self.tenant)
         names = [j["name"] for j in jobs]
         self.assertNotIn("Heartbeat Check-in", names)
+
+
+class SautaiAgentsMdGateTest(TestCase):
+    """The imperative AGENTS.md gate (personas.py) must be flag-gated too —
+    same 2026-07-05 incident class as the plugin-emission tests above,
+    applied to the OTHER half of the wiring (the prompt, not the config)."""
+
+    def setUp(self):
+        self.plain = create_tenant(display_name="Sautai Plain", telegram_chat_id=900301)
+        self.flagged = create_tenant(display_name="Sautai Flagged", telegram_chat_id=900302)
+        self.flagged.sautai_enabled = True
+        self.flagged.save(update_fields=["sautai_enabled"])
+
+    def _agents_md(self, tenant):
+        from .personas import render_workspace_files
+
+        return render_workspace_files("neighbor", tenant=tenant)["NBHD_AGENTS_MD"]
+
+    def test_gate_present_for_flagged_tenant(self):
+        md = self._agents_md(self.flagged)
+        self.assertIn("nbhd_generate_meal_plan", md)
+        self.assertIn("toolSearch", md)
+
+    def test_gate_absent_for_plain_tenant(self):
+        # A tenant without the flag never loads the plugin — the prompt must
+        # not name a tool that isn't there for them to find.
+        md = self._agents_md(self.plain)
+        self.assertNotIn("nbhd_generate_meal_plan", md)
+
+    def test_gate_forbids_claiming_plan_ready_from_the_ack(self):
+        # The call is fire-and-forget async; the anti-confabulation half of
+        # the gate matters as much as the call-it instruction itself.
+        md = self._agents_md(self.flagged)
+        self.assertIn("NEVER say the plan is ready", md)
 
 
 class VersionAwareConfigTest(TestCase):

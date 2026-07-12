@@ -166,7 +166,11 @@ class GenerateSautaiMealPlanTaskTests(TestCase):
         with patch("apps.integrations.sautai_client.call_sautai_generate_plan") as mock_call:
             generate_sautai_meal_plan_task(str(job.id))
         mock_call.assert_called_once()
-        self.assertEqual(mock_call.call_args.args[0].id, job.id)
+        claimed_job = mock_call.call_args.args[0]
+        self.assertEqual(claimed_job.id, job.id)
+        # The atomic CAS must have already flipped the row to GENERATING
+        # before call_sautai_generate_plan is ever invoked.
+        self.assertEqual(claimed_job.status, SautaiMealPlanJobStatus.GENERATING)
 
     def test_ready_job_is_skipped(self):
         job = SautaiMealPlanJob.objects.create(tenant=self.tenant, status=SautaiMealPlanJobStatus.READY)
@@ -179,6 +183,35 @@ class GenerateSautaiMealPlanTaskTests(TestCase):
         with patch("apps.integrations.sautai_client.call_sautai_generate_plan") as mock_call:
             generate_sautai_meal_plan_task(str(job.id))
         mock_call.assert_called_once()
+
+    def test_overlapping_qstash_deliveries_second_one_skips(self):
+        """Two QStash deliveries for the same job racing the atomic claim.
+
+        Simulates the real hazard: delivery A's claim UPDATE lands first
+        (job now GENERATING); delivery B arrives (retry, redelivery, or a
+        genuine race) and must find zero claimable rows and skip WITHOUT
+        ever calling the HTTP client — no second sautai call, no second
+        completion notify.
+        """
+        job = SautaiMealPlanJob.objects.create(tenant=self.tenant)
+
+        # Delivery A's claim (the real generate_sautai_meal_plan_task would
+        # do this itself; asserting the guard in isolation from the mocked
+        # HTTP call, mirroring how render_meditation's CAS is unit-tested).
+        first_claim = SautaiMealPlanJob.objects.filter(
+            id=job.id,
+            status__in=[SautaiMealPlanJobStatus.PENDING, SautaiMealPlanJobStatus.FAILED],
+        ).update(status=SautaiMealPlanJobStatus.GENERATING)
+        self.assertEqual(first_claim, 1)
+
+        # Delivery B — the task's own claim attempt now finds nothing to
+        # take, and must never reach the HTTP client.
+        with patch("apps.integrations.sautai_client.call_sautai_generate_plan") as mock_call:
+            generate_sautai_meal_plan_task(str(job.id))
+        mock_call.assert_not_called()
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.GENERATING)
 
 
 # ═════════════════════════════════════════════════════════════════════

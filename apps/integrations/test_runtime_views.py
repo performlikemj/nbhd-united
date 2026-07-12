@@ -760,20 +760,92 @@ class SautaiGeneratePlanViewTests(TestCase):
         integration = Integration.objects.get(tenant=self.tenant, provider=Integration.Provider.SAUTAI)
         self.assertEqual(integration.status, Integration.Status.ACTIVE)
 
-    def test_repeat_call_does_not_duplicate_integration_row(self):
+    def test_repeat_call_same_week_coalesces_to_existing_job(self):
+        # Realistic trigger: the plugin's 20s tool timeout fires while this
+        # proxy already created the job, so the agent retries. Without the
+        # in-flight coalesce this would create a second job -> a second
+        # QStash generation -> a second "plan ready" push for one request.
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
 
-        with patch("apps.cron.publish.publish_task"):
-            self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
-            self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            first = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
 
         from .models import Integration, SautaiMealPlanJob
 
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["job_id"], second.json()["job_id"])
         self.assertEqual(
             Integration.objects.filter(tenant=self.tenant, provider=Integration.Provider.SAUTAI).count(),
             1,
         )
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
+        # QStash enqueue happens once, for the original job — not re-fired
+        # on the coalesced second request.
+        mock_publish.assert_called_once()
+
+    def test_repeat_call_different_week_creates_separate_job(self):
+        # Scope is (tenant, week_start) — a different week is a genuinely
+        # different request and must not be coalesced away.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            first = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-20"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        from .models import SautaiMealPlanJob
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertNotEqual(first.json()["job_id"], second.json()["job_id"])
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 2)
+
+    def test_repeat_call_after_ready_creates_new_job(self):
+        # A completed job is not "in flight" — a fresh request for the same
+        # week (e.g. the user asking to regenerate) must create a new one.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.READY,
+        )
+
+        with patch("apps.cron.publish.publish_task"):
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 201)
         self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 2)
 
 
