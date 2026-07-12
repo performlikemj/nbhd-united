@@ -30,10 +30,28 @@ from typing import Any
 
 from pydantic import Field, field_validator
 
+from apps.billing.constants import DEEPSEEK_FLASH_MODEL
+
 from . import register_handler
 from .base import PatternHandler, PatternPayload
 
-_DEFAULT_MODEL = "sonnet-4.6"  # briefings warrant a stronger model than reminders
+# Like the other typed-cron patterns (see #1167 / pure_reminder), the briefing
+# fires a platform-initiated agent turn, so its model MUST sit in the firing
+# tenant's agents.defaults.models allowlist or OpenClaw's cron preflight rejects
+# the turn ("payload.model rejected by agents.defaults.models allowlist") before
+# nbhd_send_to_user runs — no briefing is delivered. DeepSeek V4 Flash is a
+# member of every tier's allowlist (config_generator: HEARTBEAT_MODEL /
+# TIER_MODEL_CONFIGS), so preflight accepts it for starter, higher tiers, and BYO
+# alike. Pin the full "openrouter/…" id (the value the working platform crons
+# already use), which round-trips through preflight.
+#
+# Deliberate tradeoff (MJ's decision, 2026-07-12): briefings ride this cheap,
+# allowlist-safe model rather than a stronger off-allowlist model like the old
+# hardcoded "sonnet-4.6" — that only worked for tenants with an active BYO
+# Anthropic credential and was preflight-rejected for everyone else (same failure
+# class #1167 fixed). Briefing quality on the cheaper model is accepted until a
+# BYO-aware resolver can pick a stronger model where the allowlist permits it.
+_CRON_MODEL = DEEPSEEK_FLASH_MODEL
 _TURN_TIMEOUT_SECONDS = 90
 
 # Read-only query tools the briefing may call. Mutations are absent
@@ -150,7 +168,7 @@ class DailyBriefingHandler(PatternHandler):
             "payload": {
                 "kind": "agentTurn",
                 "message": message,
-                "model": _DEFAULT_MODEL,
+                "model": _CRON_MODEL,
                 "lightContext": False,
                 "toolsAllow": self.get_tools_allow(payload),
                 "timeoutSeconds": _TURN_TIMEOUT_SECONDS,
