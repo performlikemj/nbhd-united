@@ -670,6 +670,407 @@ class RedditViewTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
 
+@override_settings(
+    NBHD_INTERNAL_API_KEY="shared-key",
+    SAUTAI_M2M_BASE_URL="https://app.sautai.test",
+    SAUTAI_PLATFORM_SECRET="test-secret",
+)
+class SautaiGeneratePlanViewTests(TestCase):
+    """Tests for the Phase 0 sautai runtime proxy (fast-ack only)."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Sautai Test", telegram_chat_id=838383)
+        seed_internal_key(self.tenant)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "shared-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _url(self) -> str:
+        return f"/api/v1/integrations/runtime/{self.tenant.id}/sautai/generate-plan/"
+
+    def test_requires_internal_auth(self):
+        response = self.client.post(self._url(), data={}, content_type="application/json")
+        self.assertEqual(response.status_code, 401)
+
+    def test_disabled_flag_returns_409(self):
+        # sautai_enabled defaults False — the endpoint must refuse before
+        # touching the job table, mirroring fuel_disabled.
+        response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "sautai_disabled")
+
+        from .models import SautaiMealPlanJob
+
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_invalid_week_start_rejected(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        response = self.client.post(
+            self._url(),
+            data={"week_start": "not-a-date"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid_request")
+
+    def test_user_prompt_too_long_rejected(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        response = self.client.post(
+            self._url(),
+            data={"user_prompt": "x" * 2001},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "invalid_request")
+
+    def test_happy_path_creates_pending_job_enqueues_and_records_integration(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(
+                self._url(),
+                data={"user_prompt": "high protein, no pork", "week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 201)
+        body = response.json()
+        self.assertEqual(body["status"], "pending")
+        self.assertIn("job_id", body)
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        job = SautaiMealPlanJob.objects.get(id=body["job_id"])
+        self.assertEqual(job.tenant_id, self.tenant.id)
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.PENDING)
+        self.assertEqual(job.user_prompt, "high protein, no pork")
+        self.assertEqual(job.week_start.isoformat(), "2026-07-13")
+
+        mock_publish.assert_called_once_with("generate_sautai_meal_plan", str(job.id))
+
+        from .models import Integration
+
+        integration = Integration.objects.get(tenant=self.tenant, provider=Integration.Provider.SAUTAI)
+        self.assertEqual(integration.status, Integration.Status.ACTIVE)
+
+    def test_repeat_call_same_week_coalesces_to_existing_job(self):
+        # Realistic trigger: the plugin's 20s tool timeout fires while this
+        # proxy already created the job, so the agent retries. Without the
+        # in-flight coalesce this would create a second job -> a second
+        # QStash generation -> a second "plan ready" push for one request.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            first = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        from .models import Integration, SautaiMealPlanJob
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["job_id"], second.json()["job_id"])
+        self.assertEqual(
+            Integration.objects.filter(tenant=self.tenant, provider=Integration.Provider.SAUTAI).count(),
+            1,
+        )
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
+        # QStash enqueue happens once, for the original job — not re-fired
+        # on the coalesced second request.
+        mock_publish.assert_called_once()
+
+    def test_repeat_call_different_week_creates_separate_job(self):
+        # Scope is (tenant, week_start) — a different week is a genuinely
+        # different request and must not be coalesced away.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            first = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-20"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        from .models import SautaiMealPlanJob
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertNotEqual(first.json()["job_id"], second.json()["job_id"])
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 2)
+
+    def test_repeat_call_after_ready_creates_new_job(self):
+        # A completed job is not "in flight" — a fresh request for the same
+        # week (e.g. the user asking to regenerate) must create a new one.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.READY,
+        )
+
+        with patch("apps.cron.publish.publish_task"):
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 2)
+
+    @override_settings(SAUTAI_M2M_BASE_URL="", SAUTAI_PLATFORM_SECRET="")
+    def test_unconfigured_bridge_returns_503_and_creates_no_job(self):
+        # Fail loud BEFORE creating a job — otherwise the worker could only ever
+        # mark it FAILED with no push, promising a plan that never arrives.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        from .models import SautaiMealPlanJob
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"], "sautai_not_configured")
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+        mock_publish.assert_not_called()
+
+    def test_omitted_week_start_defaults_to_a_monday(self):
+        # sautai defaults an omitted week to its OWN tz; we resolve the tenant-tz
+        # Monday server-side and store it, so the payload is always explicit.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+
+        self.assertEqual(response.status_code, 201)
+        self.assertIn("week_start", response.json())
+
+        from .models import SautaiMealPlanJob
+
+        job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
+        self.assertIsNotNone(job.week_start)
+        self.assertEqual(job.week_start.weekday(), 0)  # Monday
+        self.assertEqual(response.json()["week_start"], job.week_start.isoformat())
+
+    def test_non_monday_week_start_is_snapped_back_to_its_monday(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-15"},  # a Wednesday
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 201)
+
+        from .models import SautaiMealPlanJob
+
+        job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
+        self.assertEqual(job.week_start.isoformat(), "2026-07-13")  # the Monday of that week
+
+    def test_stale_pending_coalesce_reenqueues_recovery(self):
+        # A PENDING job whose original publish_task was swallowed would otherwise
+        # be dead forever — every later request coalesces onto it. A stale one is
+        # re-enqueued so the (tenant, week) can recover.
+        from datetime import date, timedelta
+
+        from django.utils import timezone
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        job = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant, week_start=date(2026, 7, 13), status=SautaiMealPlanJobStatus.PENDING
+        )
+        # .update() bypasses auto_now, so updated_at genuinely lands in the past.
+        SautaiMealPlanJob.objects.filter(id=job.id).update(updated_at=timezone.now() - timedelta(minutes=5))
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["job_id"], str(job.id))
+        mock_publish.assert_called_once_with("generate_sautai_meal_plan", str(job.id))
+        # Coalesced, not duplicated.
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_fresh_pending_coalesce_does_not_reenqueue(self):
+        from datetime import date
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        job = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant, week_start=date(2026, 7, 13), status=SautaiMealPlanJobStatus.PENDING
+        )  # updated_at = now (fresh)
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["job_id"], str(job.id))
+        mock_publish.assert_not_called()
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="shared-key",
+    SAUTAI_M2M_BASE_URL="https://app.sautai.test",
+    SAUTAI_PLATFORM_SECRET="test-secret",
+)
+class SautaiCurrentPlanViewTests(TestCase):
+    """Tests for the Phase 0 sautai current-plan proxy (synchronous read)."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Sautai Read", telegram_chat_id=848484)
+        seed_internal_key(self.tenant)
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+        # create_tenant() never sets an email — set one since the view derives it.
+        self.tenant.user.email = "diner@example.com"
+        self.tenant.user.save(update_fields=["email"])
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "shared-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _url(self) -> str:
+        return f"/api/v1/integrations/runtime/{self.tenant.id}/sautai/current-plan/"
+
+    def test_requires_internal_auth(self):
+        response = self.client.post(self._url(), data={}, content_type="application/json")
+        self.assertEqual(response.status_code, 401)
+
+    def test_disabled_flag_returns_409(self):
+        self.tenant.sautai_enabled = False
+        self.tenant.save(update_fields=["sautai_enabled"])
+        response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "sautai_disabled")
+
+    @override_settings(SAUTAI_M2M_BASE_URL="", SAUTAI_PLATFORM_SECRET="")
+    def test_unconfigured_bridge_returns_503(self):
+        response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"], "sautai_not_configured")
+
+    def test_ok_returns_plan_and_derives_email_server_side(self):
+        # A payload-supplied email must be IGNORED — the view derives it from the
+        # tenant owner (an agent-supplied email would be an injection vector).
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            mock_fetch.return_value = {
+                "outcome": "ok",
+                "plan": {"id": 66, "week_start": "2026-07-13"},
+                "web_link": "https://sautai.com/x",
+            }
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "user_email": "attacker@evil.com"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertFalse(body["cached"])
+        self.assertEqual(body["plan"]["id"], 66)
+        # Called with the tenant owner's email, never the payload's.
+        self.assertEqual(mock_fetch.call_args.kwargs["user_email"], "diner@example.com")
+
+    def test_no_plan_maps_to_no_plan(self):
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            mock_fetch.return_value = {"outcome": "not_found"}
+            response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "no_plan")
+
+    def test_sautai_error_falls_back_to_cached_ready_job(self):
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.READY,
+            result={"id": 42, "week_start": "2026-07-13"},
+            web_link="https://sautai.com/cached",
+        )
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            mock_fetch.return_value = {"outcome": "error", "detail": "request_failed: timeout"}
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["status"], "ok")
+        self.assertTrue(body["cached"])
+        self.assertEqual(body["plan"]["id"], 42)
+
+    def test_sautai_error_without_cache_returns_502(self):
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            mock_fetch.return_value = {"outcome": "error", "detail": "request_failed: timeout"}
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.json()["error"], "sautai_unavailable")
+
+
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeCronPhase2SummaryViewTest(TestCase):
     """Tool-delegation contract for the Phase 2 sync flow.

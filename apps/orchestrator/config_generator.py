@@ -1944,6 +1944,19 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
+    # sautai plugin (Phase 0 meal-plan generation) — conditionally loaded
+    # when tenant has sautai enabled. The nutrition sibling of Fuel. See
+    # docs/sautai-phase0-contract.md.
+    if getattr(tenant, "sautai_enabled", False):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_SAUTAI_PLUGIN_ID", "nbhd-sautai-tools") or "").strip(),
+                str(
+                    getattr(settings, "OPENCLAW_SAUTAI_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-sautai-tools") or ""
+                ).strip(),
+            )
+        )
+
     # Site-publishing plugin — conditionally loaded when the tenant has site
     # publishing enabled. Lets the assistant push portfolio images to the
     # subscriber's own website (Azure Blob + Cosmos) via the tenant MI. The

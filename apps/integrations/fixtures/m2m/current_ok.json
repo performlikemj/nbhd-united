@@ -1,0 +1,23 @@
+{
+  "body": {
+    "plan": {
+      "days": [
+        {
+          "day": "Monday",
+          "meals": [
+            {
+              "meal_type": "Dinner",
+              "name": "Monday Dinner"
+            }
+          ]
+        }
+      ],
+      "id": 66,
+      "week_end": "2026-08-09",
+      "week_start": "2026-08-03"
+    },
+    "status": "ok",
+    "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03"
+  },
+  "status_code": 200
+}

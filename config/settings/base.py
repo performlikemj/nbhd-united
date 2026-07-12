@@ -358,6 +358,11 @@ OPENCLAW_REDDIT_PLUGIN_PATH = env(
     "OPENCLAW_REDDIT_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-reddit-tools",
 )
+OPENCLAW_SAUTAI_PLUGIN_ID = env("OPENCLAW_SAUTAI_PLUGIN_ID", default="nbhd-sautai-tools")
+OPENCLAW_SAUTAI_PLUGIN_PATH = env(
+    "OPENCLAW_SAUTAI_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-sautai-tools",
+)
 OPENCLAW_SETTINGS_PLUGIN_ID = env("OPENCLAW_SETTINGS_PLUGIN_ID", default="nbhd-settings-tools")
 OPENCLAW_SETTINGS_PLUGIN_PATH = env(
     "OPENCLAW_SETTINGS_PLUGIN_PATH",
@@ -674,6 +679,14 @@ GOOGLE_OAUTH_CLIENT_ID = env("GOOGLE_OAUTH_CLIENT_ID", default="")
 GOOGLE_OAUTH_CLIENT_SECRET = env("GOOGLE_OAUTH_CLIENT_SECRET", default="")
 SAUTAI_OAUTH_CLIENT_ID = env("SAUTAI_OAUTH_CLIENT_ID", default="")
 SAUTAI_OAUTH_CLIENT_SECRET = env("SAUTAI_OAUTH_CLIENT_SECRET", default="")
+
+# sautai Phase 0 M2M bridge (SAUTAI_M2M_BASE_URL + SAUTAI_PLATFORM_SECRET) is
+# defined in config/settings/production.py, NOT here — the env-var names must
+# match the Azure Container App exactly (invariant §10) and there is
+# deliberately NO default host/secret, so an unset value fails loud rather than
+# silently calling the wrong sautai. Dev/test read them via override_settings.
+# The OAuth stub above is separate and points at a sautai OAuth server that
+# does not exist yet.
 
 # Composio (managed OAuth integrations)
 COMPOSIO_API_KEY = env("COMPOSIO_API_KEY", default="")

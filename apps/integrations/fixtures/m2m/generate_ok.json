@@ -1,0 +1,135 @@
+{
+  "body": {
+    "already_existed": true,
+    "plan": {
+      "days": [
+        {
+          "day": "Monday",
+          "meals": [
+            {
+              "meal_type": "Breakfast",
+              "name": "Monday Breakfast"
+            },
+            {
+              "meal_type": "Lunch",
+              "name": "Monday Lunch"
+            },
+            {
+              "meal_type": "Dinner",
+              "name": "Monday Dinner"
+            }
+          ]
+        },
+        {
+          "day": "Tuesday",
+          "meals": [
+            {
+              "meal_type": "Breakfast",
+              "name": "Tuesday Breakfast"
+            },
+            {
+              "meal_type": "Lunch",
+              "name": "Tuesday Lunch"
+            },
+            {
+              "meal_type": "Dinner",
+              "name": "Tuesday Dinner"
+            }
+          ]
+        },
+        {
+          "day": "Wednesday",
+          "meals": [
+            {
+              "meal_type": "Breakfast",
+              "name": "Wednesday Breakfast"
+            },
+            {
+              "meal_type": "Lunch",
+              "name": "Wednesday Lunch"
+            },
+            {
+              "meal_type": "Dinner",
+              "name": "Wednesday Dinner"
+            }
+          ]
+        },
+        {
+          "day": "Thursday",
+          "meals": [
+            {
+              "meal_type": "Breakfast",
+              "name": "Thursday Breakfast"
+            },
+            {
+              "meal_type": "Lunch",
+              "name": "Thursday Lunch"
+            },
+            {
+              "meal_type": "Dinner",
+              "name": "Thursday Dinner"
+            }
+          ]
+        },
+        {
+          "day": "Friday",
+          "meals": [
+            {
+              "meal_type": "Breakfast",
+              "name": "Friday Breakfast"
+            },
+            {
+              "meal_type": "Lunch",
+              "name": "Friday Lunch"
+            },
+            {
+              "meal_type": "Dinner",
+              "name": "Friday Dinner"
+            }
+          ]
+        },
+        {
+          "day": "Saturday",
+          "meals": [
+            {
+              "meal_type": "Breakfast",
+              "name": "Saturday Breakfast"
+            },
+            {
+              "meal_type": "Lunch",
+              "name": "Saturday Lunch"
+            },
+            {
+              "meal_type": "Dinner",
+              "name": "Saturday Dinner"
+            }
+          ]
+        },
+        {
+          "day": "Sunday",
+          "meals": [
+            {
+              "meal_type": "Breakfast",
+              "name": "Sunday Breakfast"
+            },
+            {
+              "meal_type": "Lunch",
+              "name": "Sunday Lunch"
+            },
+            {
+              "meal_type": "Dinner",
+              "name": "Sunday Dinner"
+            }
+          ]
+        }
+      ],
+      "id": 67,
+      "week_end": "2026-08-09",
+      "week_start": "2026-08-03"
+    },
+    "status": "ok",
+    "user_created": false,
+    "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03"
+  },
+  "status_code": 200
+}

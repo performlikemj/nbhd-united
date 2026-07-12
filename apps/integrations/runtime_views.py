@@ -48,7 +48,7 @@ from .google_api import (
     list_gmail_messages,
 )
 from .internal_auth import InternalAuthError, validate_internal_runtime_request
-from .models import Integration
+from .models import Integration, SautaiMealPlanJob, SautaiMealPlanJobStatus
 from .services import (
     IntegrationInactiveError,
     IntegrationNotConnectedError,
@@ -190,6 +190,18 @@ def _tenant_now(tenant: Tenant) -> datetime:
 
 def _tenant_today(tenant: Tenant) -> date:
     return _tenant_now(tenant).date()
+
+
+def _tenant_week_start_monday(tenant: Tenant) -> date:
+    """The Monday of the current week in the tenant's timezone (front door §7).
+
+    sautai's generate endpoint defaults an omitted ``week_start`` to ITS OWN
+    server tz's current Monday; we always send an explicit tenant-tz Monday so a
+    late-Sunday / early-Monday timezone gap can't silently generate the wrong
+    week for the user.
+    """
+    today = _tenant_today(tenant)
+    return today - timedelta(days=today.weekday())
 
 
 def _resolve_calendar_window(request, tenant: Tenant) -> tuple[str | None, str | None] | Response:
@@ -3818,6 +3830,287 @@ class RedditToolView(APIView):
         result = redact_tool_response(result, tenant)
 
         return Response(result, status=status.HTTP_200_OK)
+
+
+# ── sautai Phase 0 (nbhd-sautai-tools plugin, meal-plan generation) ──────
+#
+# PROXY-THROUGH-DJANGO, same shape as RedditToolView: the plugin never talks
+# to sautai directly (30-60s exceeds its 20s tool timeout, and a container-
+# direct call would bypass the PII rehydrate/redact chokepoint). This view
+# only does the fast ack — job row + QStash enqueue; the actual sautai HTTP
+# call lives in apps.integrations.tasks.generate_sautai_meal_plan_task. See
+# docs/sautai-phase0-contract.md.
+
+_SAUTAI_MAX_PROMPT_CHARS = 2000
+
+
+class RuntimeSautaiGeneratePlanView(APIView):
+    """POST — kick off an async sautai meal-plan generation.
+
+    Fast ack only (<20s — the plugin's own tool-call timeout): creates a
+    PENDING ``SautaiMealPlanJob`` and enqueues ``generate_sautai_meal_plan``
+    via QStash, which does the slow (30-60s) call to sautai's M2M API.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        if not getattr(tenant, "sautai_enabled", False):
+            # Flips immediately via a tenant settings update — no container
+            # restart needed to gate the runtime call, mirrors fuel_disabled.
+            return Response({"error": "sautai_disabled"}, status=status.HTTP_409_CONFLICT)
+
+        # Fail loud BEFORE creating a job: if the M2M bridge env is unset the
+        # QStash worker could only ever mark the job FAILED with no push, so the
+        # user would be promised a plan that never arrives. Surfacing it here
+        # lets the tool tell them "sautai integration is not configured" instead.
+        from apps.integrations.sautai_client import sautai_m2m_config
+
+        base_url, secret = sautai_m2m_config()
+        if not base_url or not secret:
+            return Response(
+                {"error": "sautai_not_configured", "detail": "sautai integration is not configured"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        user_prompt = str(request.data.get("user_prompt") or "").strip()
+        if len(user_prompt) > _SAUTAI_MAX_PROMPT_CHARS:
+            return Response(
+                {
+                    "error": "invalid_request",
+                    "detail": f"user_prompt exceeds {_SAUTAI_MAX_PROMPT_CHARS} characters",
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            week_start = _parse_iso_date(request.data.get("week_start"), field_name="week_start")
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Always resolve to an explicit Monday: sautai's server defaults an
+        # omitted week to ITS OWN tz and 400s a non-Monday (contract #1). When
+        # omitted, use the tenant-tz current Monday; when the agent passes any
+        # date, snap it back to that week's Monday. The stored value is what the
+        # (tenant, week_start) in-flight coalesce below keys on.
+        if week_start is None:
+            week_start = _tenant_week_start_monday(tenant)
+        else:
+            week_start = week_start - timedelta(days=week_start.weekday())
+
+        try:
+            number_of_days = _parse_positive_int(
+                request.data.get("number_of_days"),
+                default=7,
+                max_value=7,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": f"number_of_days {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Atomic coalesce: lock the tenant row so concurrent POSTs (the agent
+        # retrying after its OWN 20s tool-call timeout, while the first
+        # request already created the job, is the realistic trigger — not
+        # just a theoretical race) cannot both pass the in-flight check and
+        # create duplicate jobs, which would fire duplicate "plan ready"
+        # pushes once each finishes. Mirrors
+        # apps.core.views.CoreComposeView's compose-coalesce guard. Scoped to
+        # (tenant, week_start) — that's how a user perceives "my request";
+        # a different week is a genuinely different ask.
+        with transaction.atomic():
+            Tenant.objects.select_for_update().get(pk=tenant.pk)
+
+            in_flight = (
+                SautaiMealPlanJob.objects.filter(
+                    tenant=tenant,
+                    week_start=week_start,
+                    status__in=[SautaiMealPlanJobStatus.PENDING, SautaiMealPlanJobStatus.GENERATING],
+                )
+                .order_by("-created_at")
+                .first()
+            )
+            if in_flight is None:
+                # Record the link (Phase 0 has no OAuth consent flow — this is an
+                # audit trail, not proof of a completed handshake; see the
+                # research doc's Auth & identity linking section). get_or_create
+                # so a repeat call never trips the (tenant, provider) unique
+                # constraint.
+                Integration.objects.get_or_create(
+                    tenant=tenant,
+                    provider=Integration.Provider.SAUTAI,
+                    defaults={"status": Integration.Status.ACTIVE},
+                )
+
+                job = SautaiMealPlanJob.objects.create(
+                    tenant=tenant,
+                    week_start=week_start,
+                    number_of_days=number_of_days,
+                    user_prompt=user_prompt,
+                )
+
+        # publish_task is a network call — enqueue AFTER the txn commits
+        # (invariant §8: no external calls inside atomic).
+        from apps.cron.publish import publish_task
+
+        if in_flight is not None:
+            # Coalesce onto the existing request. RECOVERY: if it's a PENDING row
+            # that has gone stale, its original publish_task may have been
+            # swallowed on enqueue — and because EVERY later request coalesces
+            # onto it, that (tenant, week) would be dead forever with no
+            # user-visible way out. Re-enqueue it (best-effort). The worker's
+            # atomic claim makes a redundant delivery harmless if the original
+            # DID land and the worker is merely slow; a GENERATING row is left
+            # alone (it is actively being worked).
+            if in_flight.status == SautaiMealPlanJobStatus.PENDING and (tz.now() - in_flight.updated_at) > timedelta(
+                minutes=3
+            ):
+                try:
+                    publish_task("generate_sautai_meal_plan", str(in_flight.id))
+                except Exception:
+                    logger.warning("Failed to re-enqueue stale sautai job %s", in_flight.id)
+            return Response(
+                {
+                    "job_id": str(in_flight.id),
+                    "status": in_flight.status,
+                    "week_start": week_start.isoformat(),
+                }
+            )
+
+        try:
+            publish_task("generate_sautai_meal_plan", str(job.id))
+        except Exception:
+            # A swallowed publish leaves this PENDING; the stale-re-enqueue branch
+            # above recovers it on the user's next request for the same week —
+            # closing the inherited compose_meditation/CoreComposeView gap.
+            logger.warning("Failed to enqueue sautai meal-plan generation for job %s", job.id)
+
+        return Response(
+            {"job_id": str(job.id), "status": job.status, "week_start": week_start.isoformat()},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class RuntimeSautaiCurrentPlanView(APIView):
+    """POST — read the user's current sautai meal plan (fast, synchronous).
+
+    Unlike generate (fire-and-forget via QStash), this is a read the plugin
+    waits on inside its own 20s tool budget: it calls sautai's ``/current/``
+    endpoint with a short (~10s) timeout. On a sautai timeout/transport error it
+    falls back to the most recent READY ``SautaiMealPlanJob``'s cached plan for
+    the same week (NBHD is a display cache; sautai stays source of truth) and
+    flags the response ``cached: true``. See docs/sautai-phase0-contract.md #2.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        if not getattr(tenant, "sautai_enabled", False):
+            return Response({"error": "sautai_disabled"}, status=status.HTTP_409_CONFLICT)
+
+        from apps.integrations.sautai_client import fetch_sautai_current_plan, sautai_m2m_config
+
+        base_url, secret = sautai_m2m_config()
+        if not base_url or not secret:
+            return Response(
+                {"error": "sautai_not_configured", "detail": "sautai integration is not configured"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            week_start = _parse_iso_date(request.data.get("week_start"), field_name="week_start")
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # Resolve the same way generate does so the cached-job fallback can match
+        # on (tenant, week_start): tenant-tz current Monday when omitted, else
+        # snap the provided date back to that week's Monday.
+        if week_start is None:
+            week_start = _tenant_week_start_monday(tenant)
+        else:
+            week_start = week_start - timedelta(days=week_start.weekday())
+
+        # Email is derived SERVER-SIDE from the tenant owner — NEVER from the
+        # plugin payload (an agent-supplied email would be an injection vector).
+        user = getattr(tenant, "user", None)
+        email = (getattr(user, "email", "") or "").strip()
+        if not email:
+            return Response({"status": "no_plan", "week_start": week_start.isoformat()})
+
+        result = fetch_sautai_current_plan(user_email=email, week_start_iso=week_start.isoformat())
+        outcome = result.get("outcome")
+
+        if outcome == "ok":
+            return Response(
+                {
+                    "status": "ok",
+                    "cached": False,
+                    "week_start": week_start.isoformat(),
+                    "plan": result.get("plan"),
+                    "web_link": result.get("web_link", ""),
+                }
+            )
+
+        if outcome == "not_found":
+            return Response({"status": "no_plan", "week_start": week_start.isoformat()})
+
+        if outcome == "not_configured":
+            # Belt-and-suspenders (we checked above; env could race a reload).
+            return Response(
+                {"error": "sautai_not_configured", "detail": "sautai integration is not configured"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        # outcome == "error": sautai timed out / errored. Show the last plan NBHD
+        # cached for this week if we have one, flagged stale, rather than nothing.
+        cached_job = (
+            SautaiMealPlanJob.objects.filter(
+                tenant=tenant,
+                week_start=week_start,
+                status=SautaiMealPlanJobStatus.READY,
+            )
+            .order_by("-updated_at")
+            .first()
+        )
+        if cached_job is not None and cached_job.result:
+            return Response(
+                {
+                    "status": "ok",
+                    "cached": True,
+                    "week_start": week_start.isoformat(),
+                    "plan": cached_job.result,
+                    "web_link": cached_job.web_link,
+                    "detail": "sautai was unreachable; showing the last plan NBHD cached for this week.",
+                }
+            )
+
+        return Response(
+            {"error": "sautai_unavailable", "detail": result.get("detail", "sautai could not be reached")},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
 
 
 # ── Typed cron creation (feat/cron-typed-patterns) ──────────────────────

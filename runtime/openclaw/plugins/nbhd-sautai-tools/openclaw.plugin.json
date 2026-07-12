@@ -1,0 +1,27 @@
+{
+  "id": "nbhd-sautai-tools",
+  "name": "NBHD sautai Tools",
+  "description": "Meal-plan generation (async) and current-plan read backed by sautai's M2M API via the NBHD runtime proxy (Phase 0).",
+  "contracts": {
+    "tools": [
+      "nbhd_generate_meal_plan",
+      "nbhd_get_meal_plan"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 20000,
+        "description": "HTTP timeout for the NBHD runtime endpoint request — the fast ack only, never the slow sautai generation itself."
+      }
+    }
+  }
+}
