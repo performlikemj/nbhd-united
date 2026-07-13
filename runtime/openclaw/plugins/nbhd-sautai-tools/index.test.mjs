@@ -89,6 +89,37 @@ test("generate — passes through user_prompt, week_start and number_of_days", a
   assert.equal(body.number_of_days, 5);
 });
 
+test("generate — passes regenerate=true through, omits it otherwise", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  const calls = [];
+  global.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    return mockResponse({ payload: { job_id: "job-r", status: "pending" } });
+  };
+
+  register(api);
+  const tool = tools.get("nbhd_generate_meal_plan");
+
+  await tool.execute("2r", { regenerate: true });
+  assert.equal(JSON.parse(calls[0].options.body).regenerate, true);
+
+  // Anything not strictly true is omitted (default keep-existing behavior).
+  await tool.execute("2r2", { regenerate: false });
+  assert.equal(JSON.parse(calls[1].options.body).regenerate, undefined);
+  await tool.execute("2r3", {});
+  assert.equal(JSON.parse(calls[2].options.body).regenerate, undefined);
+});
+
+test("generate — response carries the powered-by-sautai attribution", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () => mockResponse({ payload: { job_id: "job-a", status: "pending", week_start: "2026-07-13" } });
+  register(api);
+  const result = await tools.get("nbhd_generate_meal_plan").execute("2a", {});
+  assert.match(result.content[0].text, /powered by sautai/i);
+});
+
 test("generate — clamps out-of-range number_of_days into 1-7", async () => {
   setupEnv();
   const { api, tools } = buildApi();

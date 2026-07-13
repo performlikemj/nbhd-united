@@ -1,0 +1,24 @@
+{
+  "body": {
+    "status": "ok",
+    "user_created": false,
+    "already_existed": true,
+    "account_claimed": true,
+    "plan_count": 3,
+    "plan": {
+      "id": 89,
+      "week_start": "2026-07-13",
+      "week_end": "2026-07-19",
+      "days": [
+        {
+          "day": "Monday",
+          "meals": [
+            { "meal_type": "Dinner", "name": "Regenerated Monday Dinner" }
+          ]
+        }
+      ]
+    },
+    "web_link": "https://sautai.com/meal-plans?week_start=2026-07-13"
+  },
+  "status_code": 200
+}

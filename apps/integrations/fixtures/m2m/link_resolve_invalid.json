@@ -1,0 +1,7 @@
+{
+  "body": {
+    "status": "error",
+    "code": "invalid_key"
+  },
+  "status_code": 404
+}

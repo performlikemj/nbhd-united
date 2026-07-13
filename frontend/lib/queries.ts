@@ -158,6 +158,9 @@ import {
   fetchPATs,
   mintPAT,
   revokePAT,
+  fetchSautaiLink,
+  connectSautaiLink,
+  disconnectSautaiLink,
   fetchByoCredentials,
   connectByoCredential,
   disconnectByoCredential,
@@ -1822,6 +1825,37 @@ export function useRevokePATMutation() {
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["pats"] });
+    },
+  });
+}
+
+// sautai account link (Connected Apps)
+
+export function useSautaiLinkQuery() {
+  return useQuery({
+    queryKey: ["sautai-link"],
+    queryFn: fetchSautaiLink,
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useConnectSautaiMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (connectKey: string) => connectSautaiLink(connectKey),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["sautai-link"] });
+    },
+  });
+}
+
+export function useDisconnectSautaiMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: disconnectSautaiLink,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["sautai-link"] });
     },
   });
 }

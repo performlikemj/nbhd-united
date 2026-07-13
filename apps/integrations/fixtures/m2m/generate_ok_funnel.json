@@ -1,0 +1,25 @@
+{
+  "body": {
+    "status": "ok",
+    "user_created": true,
+    "already_existed": false,
+    "account_claimed": false,
+    "plan_count": 1,
+    "claim_link": "https://sautai.com/claim?token=CLAIMTOKEN&src=nbhd",
+    "plan": {
+      "id": 88,
+      "week_start": "2026-07-13",
+      "week_end": "2026-07-19",
+      "days": [
+        {
+          "day": "Monday",
+          "meals": [
+            { "meal_type": "Dinner", "name": "Monday Dinner" }
+          ]
+        }
+      ]
+    },
+    "web_link": "https://sautai.com/meal-plans?week_start=2026-07-13"
+  },
+  "status_code": 200
+}

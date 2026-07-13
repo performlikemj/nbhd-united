@@ -1,0 +1,8 @@
+{
+  "body": {
+    "status": "ok",
+    "sautai_user_id": 501,
+    "email": "diner@example.com"
+  },
+  "status_code": 200
+}

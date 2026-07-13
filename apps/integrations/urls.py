@@ -4,6 +4,7 @@ from rest_framework.routers import DefaultRouter
 from apps.platform_logs.views import PlatformIssueReportView as _PlatformIssueReportView
 from apps.router.cron_delivery import CronDeliveryView as _CronDeliveryView
 
+from .link_views import SautaiLinkView
 from .runtime_views import (
     RedditCompleteView,
     RedditConnectView,
@@ -381,5 +382,9 @@ urlpatterns = [
         RuntimeSautaiCurrentPlanView.as_view(),
         name="runtime-sautai-current-plan",
     ),
+    # sautai Phase 0.5 console account-link (authenticated; GET status / POST
+    # connect key / DELETE disconnect). Listed before the router so it never
+    # collides with the Integration detail route.
+    path("sautai/link/", SautaiLinkView.as_view(), name="sautai-link"),
     path("", include(router.urls)),
 ]

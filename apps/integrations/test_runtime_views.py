@@ -958,6 +958,25 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(response.json()["job_id"], str(job.id))
         mock_publish.assert_not_called()
 
+    def test_regenerate_flag_is_stored_on_the_job(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "regenerate": True},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 201)
+
+        from .models import SautaiMealPlanJob
+
+        job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
+        self.assertTrue(job.regenerate)
+
 
 @override_settings(
     NBHD_INTERNAL_API_KEY="shared-key",
@@ -1024,7 +1043,7 @@ class SautaiCurrentPlanViewTests(TestCase):
         self.assertFalse(body["cached"])
         self.assertEqual(body["plan"]["id"], 66)
         # Called with the tenant owner's email, never the payload's.
-        self.assertEqual(mock_fetch.call_args.kwargs["user_email"], "diner@example.com")
+        self.assertEqual(mock_fetch.call_args.kwargs["identity"], {"user_email": "diner@example.com"})
 
     def test_no_plan_maps_to_no_plan(self):
         with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
@@ -1069,6 +1088,26 @@ class SautaiCurrentPlanViewTests(TestCase):
             )
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json()["error"], "sautai_unavailable")
+
+    def test_linked_tenant_reads_by_sautai_user_id(self):
+        # A linked Integration makes the read address sautai by user id, not email.
+        from django.utils import timezone
+
+        from .models import Integration
+
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider=Integration.Provider.SAUTAI,
+            status=Integration.Status.ACTIVE,
+            sautai_user_id=501,
+            linked_at=timezone.now(),
+        )
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            mock_fetch.return_value = {"outcome": "not_found"}
+            response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_fetch.call_args.kwargs["identity"], {"sautai_user_id": 501})
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
