@@ -293,6 +293,12 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None, user_text: Redac
     quick_replies = rehydrate_quick_replies(
         msg.quick_replies, entity_map, tenant_id=msg.tenant_id, channel="ios_detail"
     )
+    # journal_link.title is likewise stored PLACEHOLDER-space; rehydrate here via
+    # the SAME shared helper the ?since= feed calls (_app_rows) so the two seams
+    # can't drift on how a stored title resolves.
+    from apps.router.journal_link import rehydrate_journal_link
+
+    journal_link = rehydrate_journal_link(msg.journal_link, entity_map, tenant_id=msg.tenant_id, channel="ios_detail")
     return {
         "client_msg_id": msg.client_msg_id,
         "thread_id": str(msg.thread_id),
@@ -334,6 +340,11 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None, user_text: Redac
         # to real values above. null when the turn carried no marker, or the
         # rehydrated labels overflowed the length cap (dropped, not truncated).
         "quick_replies": quick_replies,
+        # A tappable "View in Journal" deep-link ({"kind", "slug", "title"})
+        # parsed from a trailing [[journal-link: kind|slug|title]] marker on the
+        # reply (iOS-only); title REHYDRATED above. null when the turn carried no
+        # (valid) marker. Shared source of truth with the ?since= feed.
+        "journal_link": journal_link,
     }
 
 
@@ -990,12 +1001,12 @@ def _parse_partial(data: dict) -> tuple[str | None, int | None]:
     yields ``(None, None)`` — the caller treats that as "no partial in this event".
 
     Strips a trailing (complete OR still-typing/unclosed) ``[[quick-replies:``
-    marker at WRITE time — the same cumulative ``text`` is persisted verbatim
-    to ``AppChatMessage.partial_text`` and served unstripped while pending
-    (``_serialize_message``), so without this the streaming bubble would flash
-    the raw marker for however long it takes the terminal reply to land.
-    Truncating first (so a boundary cut mid-marker still leaves a strippable
-    trailing fragment), then stripping.
+    or ``[[journal-link:`` marker at WRITE time — the same cumulative ``text``
+    is persisted verbatim to ``AppChatMessage.partial_text`` and served
+    unstripped while pending (``_serialize_message``), so without this the
+    streaming bubble would flash the raw marker for however long it takes the
+    terminal reply to land. Truncating first (so a boundary cut mid-marker still
+    leaves a strippable trailing fragment), then stripping.
     """
     raw_text = data.get("text")
     if not isinstance(raw_text, str):
@@ -1006,9 +1017,12 @@ def _parse_partial(data: dict) -> tuple[str | None, int | None]:
         return None, None
     if seq <= 0:
         return None, None
+    from apps.router.journal_link import strip_streaming_journal_link_marker
     from apps.router.quick_replies import strip_streaming_quick_reply_marker
 
-    text = strip_streaming_quick_reply_marker(raw_text[:_MAX_PARTIAL_TEXT_CHARS])
+    # Both are no-ops unless their own opener is the trailing fragment, and only
+    # one marker can be the reply's final line, so chaining them is safe.
+    text = strip_streaming_journal_link_marker(strip_streaming_quick_reply_marker(raw_text[:_MAX_PARTIAL_TEXT_CHARS]))
     return text, seq
 
 

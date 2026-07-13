@@ -530,6 +530,30 @@ class PendingMessageTelegramTest(TestCase):
         self.assertNotIn("quick-replies", bodies)
         self.assertIn("Save both changes?", bodies)
 
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_journal_link_marker_stripped_never_leaks(self, mock_post):
+        """The journal deep-link chip is iOS-only — Telegram has no transport
+        for it, so the marker must be stripped, never sent raw."""
+        from apps.router.pending_queue import relay_ai_response_to_telegram
+
+        ok = MagicMock()
+        ok.is_success = True
+        ok.status_code = 200
+        mock_post.return_value = ok
+
+        user = _make_user(telegram_chat_id=556)
+        tenant = _make_tenant(user)
+
+        relay_ai_response_to_telegram(
+            tenant, 556, "Logged today's note.\n[[journal-link: daily|2026-07-13|Morning Report]]"
+        )
+
+        send_calls = [c for c in mock_post.call_args_list if "sendMessage" in c.args[0]]
+        self.assertTrue(send_calls)
+        bodies = " ".join(c.kwargs["json"]["text"] for c in send_calls)
+        self.assertNotIn("journal-link", bodies)
+        self.assertIn("Logged today's note.", bodies)
+
 
 @override_settings(
     NBHD_INTERNAL_API_KEY="test-key",

@@ -22,6 +22,7 @@ Shape per message row (the contract iOS dedups/merges against):
       "user_redactions": [{"placeholder", "value"}],   # optional; user rows only
       "reply_redactions": [{"placeholder", "value"}],  # optional; assistant rows only
       "quick_replies": ["Label A", "Label B"],          # optional; assistant rows only, iOS-only
+      "journal_link": {"kind", "slug", "title"},         # optional; assistant rows only (app + cron), iOS-only
     }
 
 Both ``*_redactions`` keys are OMITTED when nothing was obfuscated (and are only
@@ -167,6 +168,7 @@ def _row(
     user_redactions=None,
     reply_redactions=None,
     quick_replies=None,
+    journal_link=None,
 ):
     """A single message row + its (created_at, id) sort key.
 
@@ -202,6 +204,10 @@ def _row(
     # older iOS builds ignore unknown keys anyway.
     if quick_replies:
         msg["quick_replies"] = quick_replies
+    # "View in Journal" deep-link (iOS-only; assistant rows only — app + cron).
+    # Omitted entirely when empty, same convention as above.
+    if journal_link:
+        msg["journal_link"] = journal_link
     return {"_sort": (created_at, row_id), "msg": msg}
 
 
@@ -216,6 +222,7 @@ def _app_rows(m, main_thread_id, entity_map=None, *, user_text=None):
     row-build egress. The emptiness check runs on the decrypted value so a
     ``b""``-sealed empty turn is dropped exactly like a legacy empty one."""
     from apps.crypto.nolog import RedactedStr
+    from apps.router.journal_link import rehydrate_journal_link
     from apps.router.models import AppChatMessage
     from apps.router.quick_replies import rehydrate_quick_replies
 
@@ -242,10 +249,10 @@ def _app_rows(m, main_thread_id, entity_map=None, *, user_text=None):
                 user_redactions=m.user_redactions,
             )
         )
-    # Also emit a bare quick_replies-only assistant row in the (expected rare)
-    # case the agent's entire final reply was the marker line — reply_text
-    # strips to empty, but the buttons must not silently vanish.
-    if m.status == AppChatMessage.Status.READY and ((m.reply_text or "").strip() or m.quick_replies):
+    # Also emit a bare marker-only assistant row in the (expected rare) case the
+    # agent's entire final reply was a marker line — reply_text strips to empty,
+    # but the quick-reply buttons / journal-link chip must not silently vanish.
+    if m.status == AppChatMessage.Status.READY and ((m.reply_text or "").strip() or m.quick_replies or m.journal_link):
         out.append(
             _row(
                 row_id=f"app:{m.id}:1",
@@ -276,6 +283,12 @@ def _app_rows(m, main_thread_id, entity_map=None, *, user_text=None):
                 # rehydrated at the other.
                 quick_replies=rehydrate_quick_replies(
                     m.quick_replies, entity_map, tenant_id=m.tenant_id, channel="ios_feed"
+                ),
+                # Same as quick_replies: stored placeholder-space (title parsed
+                # before reply_text is rehydrated), rehydrated via the SAME
+                # shared helper the detail seam calls so the two can't drift.
+                journal_link=rehydrate_journal_link(
+                    m.journal_link, entity_map, tenant_id=m.tenant_id, channel="ios_feed"
                 ),
             )
         )
@@ -317,7 +330,12 @@ def _conv_rows(t, main_thread_id, entity_map=None):
 def _proactive_rows(p, main_thread_id, entity_map=None):
     """A ``ProactiveOutbound`` (cron / proactive send) → one assistant row.
 
-    ``message_text`` is stored placeholder-space and rehydrated here (owner-facing)."""
+    ``message_text`` is stored placeholder-space and rehydrated here (owner-facing).
+    A ``journal_link`` (e.g. from MJ's Telegram-delivered morning report) rides
+    the row too — rehydrated via the same shared helper the app-message seams use
+    so a proactive chip and an app-reply chip resolve a stored title identically."""
+    from apps.router.journal_link import rehydrate_journal_link
+
     if not (p.message_text or "").strip():
         return []
     return [
@@ -328,6 +346,7 @@ def _proactive_rows(p, main_thread_id, entity_map=None):
             text=_rehydrate(p.message_text, entity_map),
             source="cron",
             thread_id=main_thread_id,
+            journal_link=rehydrate_journal_link(p.journal_link, entity_map, tenant_id=p.tenant_id, channel="cron_feed"),
         )
     ]
 

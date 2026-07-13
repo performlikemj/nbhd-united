@@ -115,3 +115,59 @@ class CronDeliveryViewTest(TestCase):
 
         stored = ProactiveOutbound.objects.get(tenant=self.tenant)
         self.assertNotIn("quick-replies", stored.message_text)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_journal_link_marker_stripped_from_send_and_persisted(self, mock_client_cls):
+        """Unlike quick-replies, the journal deep-link IS persisted for cron/
+        proactive sends: it rides ProactiveOutbound.journal_link and surfaces in
+        the iOS ?since= feed, so a Telegram-delivered morning report gets a
+        tappable chip in the app. The marker is still stripped from the sent
+        Telegram text (no chip transport there)."""
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        resp = self.client.post(
+            self.url,
+            {"message": "Here's your morning report.\n[[journal-link: daily|2026-07-13|Morning Report]]"},
+            format="json",
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        sent_text = mock_http.post.call_args.kwargs["json"]["text"]
+        self.assertNotIn("journal-link", sent_text)
+        self.assertIn("morning report", sent_text)
+
+        from apps.router.models import ProactiveOutbound
+
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertNotIn("journal-link", stored.message_text)
+        self.assertEqual(
+            stored.journal_link,
+            {"kind": "daily", "slug": "2026-07-13", "title": "Morning Report"},
+        )
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_no_journal_link_marker_leaves_column_null(self, mock_client_cls):
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        resp = self.client.post(self.url, {"message": "Plain check-in."}, format="json", **self._headers())
+        self.assertEqual(resp.status_code, 200)
+
+        from apps.router.models import ProactiveOutbound
+
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertIsNone(stored.journal_link)

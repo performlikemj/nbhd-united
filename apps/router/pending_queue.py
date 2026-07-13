@@ -1686,7 +1686,7 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         return
     now = timezone.now()
     if ai_text:
-        text, push_text, reply_redactions, quick_replies = _clean_assistant_text_for_app(tenant, ai_text)
+        text, push_text, reply_redactions, quick_replies, journal_link = _clean_assistant_text_for_app(tenant, ai_text)
         # A coalesced batch (N>1) yields ONE combined reply. Attach it to a single
         # representative row (the last message in the batch) so the since-feed,
         # thread history, and the USER.md digest each emit exactly one assistant
@@ -1712,6 +1712,9 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
             # Quick-reply button labels ride the same representative row, for
             # the same reason. null when the reply carried no marker.
             quick_replies=quick_replies or None,
+            # The "View in Journal" deep-link rides the same representative row,
+            # for the same reason. null when the reply carried no marker.
+            journal_link=journal_link or None,
         )
         other_ids = [cid for cid in client_ids if cid != rep_id]
         if other_ids:
@@ -1795,11 +1798,14 @@ def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict]:
     return out
 
 
-def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> tuple[str, str, list[dict], list[str] | None]:
+def _clean_assistant_text_for_app(
+    tenant: Tenant, ai_text: str
+) -> tuple[str, str, list[dict], list[str] | None, dict | None]:
     """Split one agent reply into its at-rest form, its lock-screen form, its
-    PII-transparency metadata, and any quick-reply button labels.
+    PII-transparency metadata, any quick-reply button labels, and any journal
+    deep-link.
 
-    Returns ``(stored_text, push_text, reply_redactions, quick_replies)``:
+    Returns ``(stored_text, push_text, reply_redactions, quick_replies, journal_link)``:
 
     * ``stored_text`` — PLACEHOLDER-SPACE (``[PERSON_1]`` kept verbatim), agent
       markers stripped. This is what lands in ``AppChatMessage.reply_text``
@@ -1814,6 +1820,10 @@ def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> tuple[str, st
     * ``quick_replies`` — up to 3 tappable choice labels parsed from a trailing
       ``[[quick-replies: A | B | C]]`` marker (see
       ``apps.router.quick_replies.extract_quick_replies``), or ``None``.
+    * ``journal_link`` — a ``{"kind", "slug", "title"}`` deep-link parsed from a
+      trailing ``[[journal-link: kind|slug|title]]`` marker (see
+      ``apps.router.journal_link.extract_journal_link``), or ``None``. ``title``
+      is captured placeholder-space and rehydrated at the owner-facing seams.
 
     Insight recording still runs on the rehydrated copy so ``AssistantInsight``
     statements keep their existing real-value behaviour (insights have their own
@@ -1822,13 +1832,18 @@ def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> tuple[str, st
     of ``relay_ai_response_to_telegram``."""
     from apps.insights.markers import INSIGHT_MARKER_RE
     from apps.pii.redactor import rehydrate_text
+    from apps.router.journal_link import extract_journal_link
     from apps.router.quick_replies import extract_quick_replies
 
-    # Parse the quick-reply marker FIRST, off the raw reply, so every
-    # downstream step (insight extraction, chart/MEDIA stripping, rehydration)
-    # operates on text that's already marker-free — the raw agent text is the
-    # only place the marker is guaranteed to still be the literal final line.
+    # Parse the trailing markers FIRST, off the raw reply, so every downstream
+    # step (insight extraction, chart/MEDIA stripping, rehydration) operates on
+    # text that's already marker-free — the raw agent text is the only place the
+    # marker is guaranteed to still be the literal final line. Quick-replies
+    # first, then journal-link on the remainder: an agent that stacks both on
+    # separate trailing lines has each stripped in turn (the journal-link line
+    # becomes the last line once the quick-replies line above it is removed).
     ai_text, quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="ios")
+    ai_text, journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="ios")
 
     entity_map = getattr(tenant, "pii_entity_map", None)
     # Capture BEFORE any rehydration — this is the last moment the reply carries
@@ -1854,7 +1869,7 @@ def _clean_assistant_text_for_app(tenant: Tenant, ai_text: str) -> tuple[str, st
     stored_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", stored_text)
     stored_text = re.sub(r"MEDIA:\S+", "", stored_text)
 
-    return stored_text.strip(), push_text.strip(), reply_redactions, quick_replies
+    return stored_text.strip(), push_text.strip(), reply_redactions, quick_replies, journal_link
 
 
 # ---------------------------------------------------------------------------
@@ -1882,11 +1897,14 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
     if not ai_text or not chat_id:
         return False
 
-    # Quick-reply buttons are iOS-only for now — Telegram has no transport for
-    # them here, so just strip the marker (never let it leak as raw text).
+    # Quick-reply buttons and the journal deep-link chip are iOS-only for now —
+    # Telegram has no transport for either here, so just strip the markers
+    # (never let them leak as raw text).
+    from apps.router.journal_link import extract_journal_link
     from apps.router.quick_replies import extract_quick_replies
 
     ai_text, _quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="telegram_drain")
+    ai_text, _journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="telegram_drain")
 
     # Rehydrate PII placeholders before sending to user.
     entity_map = getattr(tenant, "pii_entity_map", None)

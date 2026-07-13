@@ -336,11 +336,14 @@ class TelegramPoller:
         """
         import re
 
-        # Quick-reply buttons are iOS-only for now — Telegram has no transport
-        # for them here, so just strip the marker (never let it leak as raw text).
+        # Quick-reply buttons and the journal deep-link chip are iOS-only for
+        # now — Telegram has no transport for either here, so just strip the
+        # markers (never let them leak as raw text).
+        from apps.router.journal_link import extract_journal_link
         from apps.router.quick_replies import extract_quick_replies
 
         text, _quick_replies = extract_quick_replies(text, tenant_id=tenant.id, channel="telegram_poller")
+        text, _journal_link = extract_journal_link(text, tenant_id=tenant.id, channel="telegram_poller")
 
         # Rehydrate PII placeholders before sending to user
         entity_map = getattr(tenant, "pii_entity_map", None)

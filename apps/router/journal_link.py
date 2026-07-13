@@ -1,0 +1,223 @@
+"""Shared parser for the journal deep-link marker.
+
+The agent ends a reply with a marker on its OWN final line to attach a
+tappable "View in Journal" chip pointing at a specific journal document:
+
+    [[journal-link: daily|2026-07-13|Morning Report]]
+
+The three fields are ``kind|slug|title``:
+
+* ``kind`` — a real ``apps.journal.models.Document.Kind`` value
+  (``daily``/``weekly``/``monthly``/``goal``/``project``/``tasks``/``ideas``/
+  ``memory``). Anything else is agent misuse and the whole marker is dropped.
+* ``slug`` — the document's slug (an ISO date like ``2026-07-13`` for daily
+  notes, or a slugified identifier). It MUST be the value the journal tool
+  echoed / today's ISO date — never invented — because iOS navigates by it.
+* ``title`` — a short human-readable label for the chip.
+
+Mirrors :mod:`apps.router.quick_replies` in spirit: only the LAST line of a
+reply is recognized (ordinary prose that references the shape elsewhere passes
+through untouched), the marker name is case-insensitive, and any marker that IS
+shaped correctly but fails validation is still STRIPPED (never shown raw) and
+logged as a telemetry warning instead of raising — fail-open, never leak.
+
+Only the iOS app path turns the parsed link into a stored structured field
+(``AppChatMessage.journal_link`` / ``ProactiveOutbound.journal_link``);
+Telegram/LINE discard it and keep only the stripped text.
+
+``title`` is parsed (and length-validated) in PII-PLACEHOLDER space, before the
+reply is ever rehydrated — a document titled "Reconnect with [PERSON_1]" would
+be echoed placeholder-space by the agent. See :func:`rehydrate_journal_link`,
+the shared helper the two owner-facing read seams (``chat_views._serialize_message``
+and ``chat_history._app_rows`` / ``_proactive_rows``) both call so a stored
+``[PERSON_1]`` in a title always resolves to the same real name at both seams,
+and never ships raw. (``kind`` is an enum and ``slug`` is slugified/an ISO date,
+so neither can carry PII — only ``title`` is rehydrated.)
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+
+logger = logging.getLogger(__name__)
+
+# Cap on the chip title (placeholder-space at parse time). A title over this is
+# treated as agent misuse and the marker is dropped (like an over-long
+# quick-reply label). Kept well under Document.title's 256 so a long rehydrated
+# real name still has headroom before the read-seam truncation kicks in.
+MAX_TITLE_LEN = 80
+# Matches ``apps.journal.models.Document.slug`` max_length — a slug that can't
+# be a real Document slug can't resolve to a document on tap.
+MAX_SLUG_LEN = 128
+
+# Slugs are ISO dates (2026-07-13) or Django-slugified identifiers; both live in
+# ``[A-Za-z0-9._-]``. Rejecting anything else keeps a stray ``|``-free but
+# otherwise junk slug (spaces, brackets, control bytes) from ever reaching the
+# iOS navigation contract.
+_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# The whole trimmed final line must match — no leading/trailing prose on that
+# line — so a marker embedded mid-sentence is left as ordinary text.
+_JOURNAL_LINK_MARKER_RE = re.compile(r"^\[\[journal-link:\s*(.+)\]\]$", re.IGNORECASE)
+
+
+def extract_journal_link(
+    text: str,
+    *,
+    tenant_id=None,
+    channel: str = "",
+) -> tuple[str, dict | None]:
+    """Parse + strip a trailing ``[[journal-link: kind|slug|title]]`` marker.
+
+    Returns ``(text_without_marker, journal_link)``. ``journal_link`` is
+    ``None`` when no marker is present (the marker must be the LAST line, after
+    trimming trailing whitespace — a marker anywhere else in the text is left
+    alone and ``text`` is returned unchanged). When present and valid it is a
+    ``{"kind", "slug", "title"}`` dict, all in PII-placeholder space.
+
+    A marker that IS shaped correctly but fails validation (not exactly three
+    ``|``-separated fields, an unknown ``kind``, an empty / over-long / bad-
+    charset ``slug``, or an empty / over-long ``title``) is still stripped —
+    never shown to a user raw — but yields ``journal_link=None`` and logs a
+    telemetry warning (agent misuse signal) instead of raising.
+    """
+    if not text:
+        return text, None
+
+    stripped = text.rstrip()
+    if not stripped:
+        return text, None
+
+    lines = stripped.split("\n")
+    last_line = lines[-1].strip()
+    match = _JOURNAL_LINK_MARKER_RE.match(last_line)
+    if not match:
+        return text, None
+
+    remainder = "\n".join(lines[:-1]).rstrip()
+    # split on the FIRST two pipes only, so a title that itself contains a "|"
+    # survives intact (kind/slug can't contain one).
+    parts = match.group(1).split("|", 2)
+    if len(parts) != 3:
+        _log_malformed(tenant_id=tenant_id, channel=channel, reason="field_count", sample=last_line)
+        return remainder, None
+
+    kind, slug, title = (part.strip() for part in parts)
+    reason = _validation_error(kind, slug, title)
+    if reason:
+        _log_malformed(tenant_id=tenant_id, channel=channel, reason=reason, sample=last_line)
+        return remainder, None
+    return remainder, {"kind": kind, "slug": slug, "title": title}
+
+
+def _validation_error(kind: str, slug: str, title: str) -> str | None:
+    """Return a short reason string if the parsed fields are invalid, else None."""
+    from apps.journal.models import Document
+
+    if kind not in set(Document.Kind.values):
+        return "bad_kind"
+    if not slug or len(slug) > MAX_SLUG_LEN or not _SLUG_RE.match(slug):
+        return "bad_slug"
+    if not title or len(title) > MAX_TITLE_LEN:
+        return "bad_title"
+    return None
+
+
+def _log_malformed(*, tenant_id, channel: str, reason: str, sample: str) -> None:
+    logger.warning(
+        "journal_link_marker_malformed",
+        extra={
+            "tenant_id": str(tenant_id) if tenant_id is not None else None,
+            "channel": channel,
+            "reason": reason,
+            "sample": sample[:200],
+        },
+    )
+
+
+def rehydrate_journal_link(
+    journal_link: dict | None,
+    entity_map: dict | None,
+    *,
+    tenant_id=None,
+    channel: str = "",
+) -> dict | None:
+    """Rehydrate a stored ``journal_link`` from PII-placeholder space to real
+    values for owner-facing egress.
+
+    Only ``title`` can carry PII (``kind`` is an enum, ``slug`` is slugified /
+    an ISO date), so only ``title`` is rehydrated. Call this from BOTH owner-
+    facing read seams (``chat_views._serialize_message`` and
+    ``chat_history._app_rows`` / ``_proactive_rows``) so they can't drift on how
+    a stored title resolves — mirrors :func:`rehydrate_quick_replies`.
+
+    Unlike a quick-reply label (whose displayed text is re-sent verbatim on
+    tap, so an overflow after rehydration DROPS the whole set), the chip title
+    is display-only — the tap navigates by ``kind`` + ``slug``. A title that
+    overflows ``MAX_TITLE_LEN`` once a placeholder resolves to a long real name
+    is therefore TRUNCATED (display trimmed) rather than dropped: the link stays
+    tappable, which is the useful part. A telemetry warning is still logged.
+
+    Fails open on an unexpected rehydration error: serves the link with the
+    title unchanged (still placeholder-space — a stale display label, not a
+    security leak), mirroring how ``reply_text`` rehydration fails open at the
+    same seams.
+    """
+    if not journal_link:
+        return None
+    title = journal_link.get("title") or ""
+    if entity_map and title:
+        try:
+            from apps.pii.redactor import rehydrate_text
+
+            title = rehydrate_text(title, entity_map)
+        except Exception:
+            logger.exception("journal_link: title rehydrate failed (non-fatal, serving placeholder title)")
+            return dict(journal_link)
+
+    if len(title) > MAX_TITLE_LEN:
+        # sample is the PLACEHOLDER-space title, never the rehydrated one — the
+        # latter holds the real value (a name); this warning lands in Azure
+        # console logs (Sentry's PII-off setting doesn't govern custom `extra`
+        # fields on our own logger calls).
+        _log_malformed(
+            tenant_id=tenant_id,
+            channel=channel,
+            reason="rehydration_overflow",
+            sample=journal_link.get("title") or "",
+        )
+        title = title[:MAX_TITLE_LEN].rstrip()
+    return {**journal_link, "title": title}
+
+
+# The literal opener this streaming heuristic watches for. Checked against at
+# least 3 characters so a bare "[[" — which could be the start of ANY marker
+# ([[chart:, [[button:, [[quick-replies:, [[journal-link:...) — isn't mistaken
+# for this one; the third character alone ("j") already disambiguates.
+_STREAMING_MARKER_OPENER = "[[journal-link:"
+_STREAMING_MIN_MATCH = 3
+
+
+def strip_streaming_journal_link_marker(text: str) -> str:
+    """Hide an in-progress ``[[journal-link: ...`` marker from the LIVE
+    streaming ``partial_text`` bubble — whether it's mid-typing (unclosed) or
+    already complete. ``partial_text`` is cumulative text-so-far written on
+    every model-call step (see ``ChatProgressEventView``), so this runs on
+    every write; a marker that hasn't started yet (no trailing ``[[``) is a
+    no-op. Purely cosmetic — real parsing/validation only ever happens on the
+    terminal reply via :func:`extract_journal_link`.
+    """
+    if not text:
+        return text
+    idx = text.rfind("[[")
+    if idx == -1:
+        return text
+    tail = text[idx:]
+    check_len = min(len(tail), len(_STREAMING_MARKER_OPENER))
+    if check_len < _STREAMING_MIN_MATCH:
+        return text
+    if tail[:check_len].lower() != _STREAMING_MARKER_OPENER[:check_len].lower():
+        return text
+    cut = idx - 1 if idx > 0 and text[idx - 1] == "\n" else idx
+    return text[:cut]

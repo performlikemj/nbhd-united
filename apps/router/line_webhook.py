@@ -696,9 +696,13 @@ def relay_ai_response_to_line(
     # Quick-reply buttons are iOS-only for now — LINE has its own
     # [[button:label|data]] marker (extract_quick_reply_buttons below) for
     # postback buttons; this one is just stripped so it never leaks as raw text.
+    # The journal deep-link chip is likewise iOS-only — LINE has no transport
+    # for it, so strip its marker too.
+    from apps.router.journal_link import extract_journal_link
     from apps.router.quick_replies import extract_quick_replies
 
     ai_text, _quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="line")
+    ai_text, _journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="line")
 
     # Capture a placeholder-space excerpt BEFORE rehydration — this is what we
     # persist for quote-reply lookups (``LineOutboundMessage.text_excerpt``), so

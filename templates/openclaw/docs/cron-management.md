@@ -44,6 +44,13 @@ The native `message` tool also does not work in subscriber containers — `nbhd_
 
 **Journal writes are MANDATORY when the cron prompt asks for them.** Use `nbhd_daily_note_set_section` and `nbhd_daily_note_append` exactly as the cron prompt instructs. Do not assume normal memory hooks will cover it — they will not, and the Journal app will be empty if you skip the explicit calls.
 
+**Link the message to the document you wrote.** When a cron writes a journal document (a morning report writes today's daily note, etc.), end the `nbhd_send_to_user` message with a `[[journal-link: kind|slug|title]]` marker on its **own final line** so the iOS app renders a tappable "View in Journal" chip that opens exactly that document. The `slug` MUST be the value the journal tool echoed, or **today's ISO date** for a daily note — never invented. It works on every delivery channel: the chip renders in the iOS app (even for a Telegram/LINE user, when they open the app), and the marker is silently stripped from the Telegram/LINE text. See the [`[[journal-link:]]` chip](tools-reference.md#linking-a-reply-to-a-journal-document-the-journal-link-chip) in tools-reference for the full format and ✅/❌ examples.
+
+```
+✅  "...here's your morning report.\n\n[[journal-link: daily|2026-07-13|Morning Report]]"   // taps through to today's note
+❌   marker on the same line as prose, or a made-up slug                                     // won't parse / opens nothing
+```
+
 ## Two flavours of scheduling
 
 Pick the right shape for the user's intent:

@@ -2,6 +2,35 @@
 
 ## Journal Tools (`nbhd-journal-tools` plugin)
 
+### Linking a reply to a journal document (the `[[journal-link:]]` chip)
+
+When your reply references a journal document you **just wrote or updated**, you
+may end the reply with a deep-link marker on its **own final line** so the iOS
+app renders a tappable **"View in Journal"** chip that opens that document:
+
+```
+[[journal-link: kind|slug|title]]
+```
+
+- **`kind`** — the document kind, one of `daily`, `weekly`, `monthly`, `goal`,
+  `project`, `tasks`, `ideas`, `memory`.
+- **`slug`** — the document's slug. It MUST be the exact slug the journal tool
+  echoed back (e.g. the `slug` returned by `nbhd_document_put` /
+  `nbhd_document_get`), or **today's ISO date** (`2026-07-13`) for a daily note.
+  **Never invent a slug from memory** — a wrong slug opens nothing.
+- **`title`** — a short human label for the chip (≤ 80 chars).
+
+Rules: the marker must be the **last line, alone** (a marker mid-sentence is
+left as ordinary text). It is **iOS-only** — on Telegram/LINE it is silently
+stripped, so it never leaks as raw text. Emit it **only** when you actually
+touched a specific document this turn; don't decorate every reply with it.
+
+✅ `Logged today's note.\n\n[[journal-link: daily|2026-07-13|Morning Report]]`
+✅ `Saved your goal.\n\n[[journal-link: goal|debt-freedom|Become debt-free]]`
+❌ `[[journal-link: daily|2026-07-13|Morning Report]] — anything after the marker` — not the last line, won't parse
+❌ `[[journal-link: note|some-slug|X]]` — `note` is not a real kind → dropped
+❌ `[[journal-link: daily|July 13th|Report]]` — slug must be the echoed slug / ISO date, not prose
+
 ### Documents
 | Tool | Purpose |
 |------|---------|

@@ -328,6 +328,95 @@ class IOSChatQuickReplyTest(TestCase):
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class IOSChatJournalLinkTest(TestCase):
+    """The [[journal-link: kind|slug|title]] marker end-to-end: the agent's raw
+    reply carries it, the drain (_clean_assistant_text_for_app) parses + strips
+    it, and the polling client sees a clean reply_text plus a journal_link dict
+    that iOS renders as a "View in Journal" chip."""
+
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def _ask(self, ai_reply: str, cid: str = "j1"):
+        with patch("apps.router.pending_queue.httpx.post") as mock_post:
+            mock_post.return_value = _ok_chat_response(ai_reply)
+            resp = self.client.post(
+                "/api/v1/chat/messages/",
+                {"text": "log my note", "client_msg_id": cid},
+                format="json",
+            )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        return self.client.get(f"/api/v1/chat/messages/{cid}/")
+
+    def test_valid_link_parsed_stripped_and_stored(self):
+        poll = self._ask("Logged today's note.\n[[journal-link: daily|2026-07-13|Morning Report]]")
+        self.assertEqual(poll.data["reply_text"], "Logged today's note.")
+        self.assertEqual(
+            poll.data["journal_link"],
+            {"kind": "daily", "slug": "2026-07-13", "title": "Morning Report"},
+        )
+        self.assertNotIn("journal-link", poll.data["reply_text"])
+
+    def test_no_marker_journal_link_is_null(self):
+        poll = self._ask("Just a normal reply, nothing special.")
+        self.assertIsNone(poll.data["journal_link"])
+        self.assertEqual(poll.data["reply_text"], "Just a normal reply, nothing special.")
+
+    def test_malformed_marker_stripped_but_no_link(self):
+        # 'note' is not a real Document.Kind — never shown raw; no link stored.
+        poll = self._ask("Saved.\n[[journal-link: note|some-slug|Title]]")
+        self.assertEqual(poll.data["reply_text"], "Saved.")
+        self.assertIsNone(poll.data["journal_link"])
+        self.assertNotIn("journal-link", poll.data["reply_text"])
+
+    def test_marker_mid_text_is_left_as_plain_text(self):
+        reply = "Note: [[journal-link: daily|2026-07-13|Report]] is a debug artifact. Ignore it."
+        poll = self._ask(reply)
+        self.assertIsNone(poll.data["journal_link"])
+        self.assertIn("[[journal-link: daily|2026-07-13|Report]]", poll.data["reply_text"])
+
+    def test_title_rehydrated_at_both_seams(self):
+        # title is parsed pre-rehydration (placeholder space, alongside
+        # reply_text) but must be REHYDRATED at both owner-facing read seams —
+        # the detail poll AND the ?since= feed — exactly like reply_text.
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        poll = self._ask(
+            "Saved your goal.\n[[journal-link: goal|reconnect|Reconnect with [PERSON_1]]]",
+            cid="jl-rehydrate",
+        )
+        self.assertEqual(poll.data["journal_link"]["title"], "Reconnect with Alice")
+        self.assertNotIn("[PERSON_1]", str(poll.data["journal_link"]))
+
+        since = self.client.get("/api/v1/chat/messages/")
+        assistant_row = next(
+            row
+            for row in since.data["messages"]
+            if row.get("client_msg_id") == "jl-rehydrate" and row["role"] == "assistant"
+        )
+        self.assertEqual(assistant_row["journal_link"]["title"], "Reconnect with Alice")
+
+    def test_marker_only_reply_still_emits_chip_row(self):
+        # A reply that is ENTIRELY the marker line: reply_text strips to empty,
+        # but the chip must not silently vanish from the feed.
+        poll = self._ask("[[journal-link: daily|2026-07-13|Morning Report]]", cid="jl-only")
+        self.assertEqual(poll.data["reply_text"], "")
+        self.assertIsNotNone(poll.data["journal_link"])
+
+        since = self.client.get("/api/v1/chat/messages/")
+        assistant_row = next(
+            row
+            for row in since.data["messages"]
+            if row.get("client_msg_id") == "jl-only" and row["role"] == "assistant"
+        )
+        self.assertEqual(assistant_row["journal_link"]["slug"], "2026-07-13")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class IOSChatImageTest(TestCase):
     """Inbound image ingress: an app-uploaded photo is stored on the tenant
     share and referenced from the LLM-bound text via the ``[Photo attached:
@@ -1143,7 +1232,18 @@ class ChatSinceFeedTest(TestCase):
     def _at(self, minutes: int):
         return self._base + self._td(minutes=minutes)
 
-    def _app_turn(self, *, cid, user_text, reply_text, minute, status="ready", attachment_path="", quick_replies=None):
+    def _app_turn(
+        self,
+        *,
+        cid,
+        user_text,
+        reply_text,
+        minute,
+        status="ready",
+        attachment_path="",
+        quick_replies=None,
+        journal_link=None,
+    ):
         m = AppChatMessage.objects.create(
             tenant=self.tenant,
             user=self.user,
@@ -1154,6 +1254,7 @@ class ChatSinceFeedTest(TestCase):
             status=status,
             attachment_path=attachment_path,
             quick_replies=quick_replies,
+            journal_link=journal_link,
         )
         AppChatMessage.objects.filter(pk=m.pk).update(created_at=self._at(minute))
         return m
@@ -1173,7 +1274,7 @@ class ChatSinceFeedTest(TestCase):
         ConversationTurn.objects.filter(pk=t.pk).update(created_at=self._at(minute))
         return t
 
-    def _cron_send(self, *, message_text, minute):
+    def _cron_send(self, *, message_text, minute, journal_link=None):
         from apps.router.models import ProactiveOutbound
 
         p = ProactiveOutbound.objects.create(
@@ -1182,6 +1283,7 @@ class ChatSinceFeedTest(TestCase):
             channel_user_id="123",
             message_text=message_text,
             job_name="Morning Briefing",
+            journal_link=journal_link,
         )
         ProactiveOutbound.objects.filter(pk=p.pk).update(created_at=self._at(minute))
         return p
@@ -1217,6 +1319,31 @@ class ChatSinceFeedTest(TestCase):
         self.assertEqual(stamps, sorted(stamps))
         # Cursor returned for the next poll.
         self.assertIsNotNone(resp.data["cursor"])
+
+    def test_cron_row_surfaces_journal_link_chip(self):
+        # A Telegram-delivered morning report that carried a journal-link marker
+        # stores it on ProactiveOutbound.journal_link; the cross-channel feed
+        # surfaces it (rehydrated) as a chip on the source="cron" assistant row.
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        self._cron_send(
+            message_text="Morning, [PERSON_1].",
+            minute=1,
+            journal_link={"kind": "daily", "slug": "2026-07-13", "title": "Report for [PERSON_1]"},
+        )
+
+        msgs = self._get().data["messages"]
+        cron_row = next(m for m in msgs if m["source"] == "cron")
+        self.assertEqual(cron_row["text"], "Morning, Alice.")
+        self.assertEqual(
+            cron_row["journal_link"],
+            {"kind": "daily", "slug": "2026-07-13", "title": "Report for Alice"},
+        )
+
+    def test_cron_row_without_journal_link_omits_key(self):
+        self._cron_send(message_text="Plain check-in.", minute=1)
+        cron_row = next(m for m in self._get().data["messages"] if m["source"] == "cron")
+        self.assertNotIn("journal_link", cron_row)
 
     def test_client_msg_id_on_both_device_rows_not_other_channels(self):
         self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)
@@ -1590,6 +1717,30 @@ class ChatSinceFeedTest(TestCase):
                 if row.get("client_msg_id") == f"qr{i}" and row["role"] == "assistant"
             )
             self.assertEqual(feed_assistant.get("quick_replies"), want)
+
+    def test_detail_and_feed_journal_link_agree(self):
+        # Same anti-drift shape: the detail serializer always emits the key
+        # (None when empty); the feed OMITS the key when empty, so compare via
+        # .get() on the feed side.
+        from apps.router.chat_views import _serialize_message
+
+        cases = [
+            (
+                {"kind": "daily", "slug": "2026-07-13", "title": "Report"},
+                {"kind": "daily", "slug": "2026-07-13", "title": "Report"},
+            ),
+            (None, None),
+        ]
+        for i, (stored, want) in enumerate(cases):
+            m = self._app_turn(cid=f"jl{i}", user_text="hi", reply_text="yo", minute=30 + i, journal_link=stored)
+            detail = _serialize_message(m)
+            self.assertEqual(detail["journal_link"], want)
+            feed_assistant = next(
+                row
+                for row in self._get().data["messages"]
+                if row.get("client_msg_id") == f"jl{i}" and row["role"] == "assistant"
+            )
+            self.assertEqual(feed_assistant.get("journal_link"), want)
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
