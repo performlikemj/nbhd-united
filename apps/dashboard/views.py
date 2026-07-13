@@ -57,6 +57,29 @@ def _clean_markdown_preview(markdown: str, max_chars: int = 180) -> str:
     return text
 
 
+def _dedupe_legacy_goal_docs(docs: list[dict]) -> list[dict]:
+    """Collapse legacy ``Document(kind=GOAL)`` rows that share a normalized key.
+
+    The typed-Goal migration (``migrate_documents_to_typed_models._goal_key``)
+    folds title-collisions like "Goals"/"Goal" into a single typed Goal but
+    marks ONLY the primary source Document as migrated — the other rows in the
+    group are left untouched and keep surfacing as separate, duplicate cards on
+    Horizons (the reported "three Goals cards" symptom). Reproduce that grouping
+    here, at read time, keeping just the most-recently-updated document per key.
+    Pure and reversible: no rows are deleted or mutated, no schema change. Uses
+    the exact same normalization as the migration's ``_goal_key`` so the display
+    collapses precisely what the migration would have consolidated.
+    """
+    best: dict[str, dict] = {}
+    for doc in docs:
+        raw = (doc.get("title") or doc.get("slug") or "").strip().lower()
+        key = raw.rstrip("s") or "_blank"
+        current = best.get(key)
+        if current is None or doc["updated_at"] > current["updated_at"]:
+            best[key] = doc
+    return list(best.values())
+
+
 def _derive_week_bounds(slug: str, fallback: date) -> tuple[date, date]:
     """Given a weekly document slug (YYYY-MM-DD, Monday) return (week_start, week_end).
 
@@ -242,6 +265,9 @@ class HorizonsView(APIView):
                 "updated_at",
             )
         )
+        # Collapse title-colliding legacy docs the typed-Goal migration left
+        # un-pruned (see _dedupe_legacy_goal_docs) so the same goal renders once.
+        legacy_goals = _dedupe_legacy_goal_docs(legacy_goals)
         goals = sorted(
             typed_goals + legacy_goals,
             key=lambda g: g["updated_at"],
@@ -417,7 +443,7 @@ class HorizonsView(APIView):
                         "id": str(g["id"]),
                         "title": g["title"] or "Untitled Goal",
                         "slug": g["slug"],
-                        "preview": (g["markdown"] or "")[:200],
+                        "preview": _clean_markdown_preview(g["markdown"] or ""),
                         "markdown": g["markdown"] or "",
                         "created_at": g["created_at"].isoformat(),
                         "updated_at": g["updated_at"].isoformat(),

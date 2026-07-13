@@ -44,6 +44,34 @@ DAILY_SLUG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 MAX_SLUG_LEN = 128  # matches Document.slug max_length
 
+# Kinds that are app-wide singletons: exactly one such document per tenant,
+# addressed everywhere by a single canonical slug (see
+# apps/router/extraction_callbacks.py, apps/journal/envelope.py, and the agent
+# instructions in apps/orchestrator/config_generator.py). The runtime endpoints
+# historically defaulted an omitted slug to the *kind* string, so a ``goal``
+# write landed under slug "goal" (singular) instead of the canonical "goals"
+# (plural). Combined with ``_default_title`` returning the identical "Goals"
+# title for any kind="goal" row, that minted stray duplicate cards
+# indistinguishable from the real one. Coerce these two kinds onto their
+# canonical slug at the trust boundary so the agent tools can never fork a
+# second copy. Other kinds (daily/weekly/monthly/project/ideas/memory) are
+# intentionally multi-instance and pass through untouched.
+CANONICAL_SINGLETON_SLUGS: dict[str, str] = {
+    Document.Kind.GOAL.value: "goals",
+    Document.Kind.TASKS.value: "tasks",
+}
+
+
+def canonical_singleton_slug(kind: str, slug: str) -> str:
+    """Resolve singleton-kind documents onto their one-per-tenant slug.
+
+    ``goal`` → ``goals`` and ``tasks`` → ``tasks`` regardless of what the caller
+    passed — an omitted/blank slug (which the endpoint would otherwise default
+    to the kind string), the singular ``goal``, or anything else. Every other
+    kind is returned unchanged.
+    """
+    return CANONICAL_SINGLETON_SLUGS.get(kind, slug)
+
 
 def validate_kind_slug(kind: str, slug: str) -> tuple[str, str] | None:
     """Return ``(error_code, detail)`` if invalid, else ``None``.

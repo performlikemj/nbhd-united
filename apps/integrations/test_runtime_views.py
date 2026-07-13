@@ -1442,3 +1442,112 @@ class RuntimeConstellationNotesViewTest(TestCase):
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["stars"][0]["id"], star.id)
         mock_search.assert_called_once()
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
+class RuntimeDocumentSingletonSlugTest(TestCase):
+    """Singleton-kind slug canonicalization (goal→"goals", tasks→"tasks").
+
+    Threads disabled: each Document write fires an envelope-refresh receiver
+    that otherwise spawns a daemon thread whose own Postgres connection can
+    race a get_or_create in a later test (duplicate-key on (goal, goals)) and
+    leak past test-DB teardown — same guard the dashboard Horizons tests use.
+
+    The runtime document tools historically defaulted an omitted slug to the
+    *kind* string, so a goal write landed under slug "goal" (singular) instead
+    of the canonical "goals" (plural) used everywhere else — and because
+    ``_default_title`` returns the same "Goals" title for any kind="goal" row,
+    that minted stray duplicate cards. These tests pin that every goal-kind
+    read/write (slug omitted, slug="goal", or slug="goals") resolves to ONE
+    canonical Document(slug="goals") per tenant.
+    """
+
+    def setUp(self):
+        from apps.tenants.test_utils import seed_internal_key
+
+        self.tenant = create_tenant(display_name="DocSingleton", telegram_chat_id=606061)
+        seed_internal_key(self.tenant)
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "shared-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _url(self) -> str:
+        return f"/api/v1/integrations/runtime/{self.tenant.id}/document/"
+
+    def _append_url(self) -> str:
+        return f"/api/v1/integrations/runtime/{self.tenant.id}/document/append/"
+
+    def _goal_docs(self):
+        from apps.journal.models import Document
+
+        return Document.objects.filter(tenant=self.tenant, kind="goal")
+
+    def test_get_goal_slug_omitted_uses_canonical_goals(self):
+        resp = self.client.get(self._url() + "?kind=goal", **self._headers())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["slug"], "goals")
+        self.assertEqual(self._goal_docs().count(), 1)
+        self.assertEqual(self._goal_docs().first().slug, "goals")
+
+    def test_get_goal_singular_slug_resolves_to_same_row(self):
+        first = self.client.get(self._url() + "?kind=goal", **self._headers())
+        second = self.client.get(self._url() + "?kind=goal&slug=goal", **self._headers())
+        third = self.client.get(self._url() + "?kind=goal&slug=goals", **self._headers())
+        self.assertEqual(first.status_code, 200, first.content)
+        self.assertEqual(second.status_code, 200, second.content)
+        self.assertEqual(third.status_code, 200, third.content)
+        # All three point at the same physical row (slug canonicalized to "goals").
+        self.assertEqual(first.json()["id"], second.json()["id"])
+        self.assertEqual(first.json()["id"], third.json()["id"])
+        self.assertEqual(second.json()["slug"], "goals")
+        self.assertEqual(self._goal_docs().count(), 1)
+
+    def test_put_goal_omitted_and_singular_write_same_row(self):
+        omitted = self.client.put(
+            self._url(),
+            data={"kind": "goal", "markdown": "first body"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        singular = self.client.put(
+            self._url(),
+            data={"kind": "goal", "slug": "goal", "markdown": "second body"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertIn(omitted.status_code, (200, 201), omitted.content)
+        self.assertIn(singular.status_code, (200, 201), singular.content)
+        self.assertEqual(omitted.json()["id"], singular.json()["id"])
+        self.assertEqual(singular.json()["slug"], "goals")
+        # Exactly one goal doc, holding the most recent write.
+        self.assertEqual(self._goal_docs().count(), 1)
+        self.assertEqual(self._goal_docs().first().markdown, "second body")
+
+    def test_append_goal_singular_slug_hits_canonical_row(self):
+        resp = self.client.post(
+            self._append_url(),
+            data={"kind": "goal", "slug": "goal", "content": "one appended line"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        self.assertEqual(resp.json()["slug"], "goals")
+        self.assertEqual(self._goal_docs().count(), 1)
+        self.assertEqual(self._goal_docs().first().slug, "goals")
+
+    def test_tasks_singular_slug_resolves_to_tasks(self):
+        from apps.journal.models import Document
+
+        resp = self.client.get(self._url() + "?kind=tasks&slug=task", **self._headers())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["slug"], "tasks")
+        self.assertEqual(Document.objects.filter(tenant=self.tenant, kind="tasks").count(), 1)
+
+    def test_non_singleton_kind_slug_preserved(self):
+        # weekly is intentionally multi-instance — slug must NOT be coerced.
+        resp = self.client.get(self._url() + "?kind=weekly&slug=2026-04-06", **self._headers())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["slug"], "2026-04-06")
