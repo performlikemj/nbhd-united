@@ -3993,13 +3993,19 @@ class RuntimeSautaiGeneratePlanView(APIView):
                     publish_task("generate_sautai_meal_plan", str(in_flight.id))
                 except Exception:
                     logger.warning("Failed to re-enqueue stale sautai job %s", in_flight.id)
-            return Response(
-                {
-                    "job_id": str(in_flight.id),
-                    "status": in_flight.status,
-                    "week_start": week_start.isoformat(),
-                }
-            )
+
+            coalesced = {
+                "job_id": str(in_flight.id),
+                "status": in_flight.status,
+                "week_start": week_start.isoformat(),
+            }
+            # Honesty guard: this request carried NEW guidance (regenerate or a
+            # fresh user_prompt) but coalesced onto an in-flight generation that
+            # does NOT include it — the guidance is being dropped. Flag it so the
+            # tool can tell the user rather than imply their guidance was applied.
+            if regenerate or user_prompt:
+                coalesced["request_applied"] = False
+            return Response(coalesced)
 
         try:
             publish_task("generate_sautai_meal_plan", str(job.id))

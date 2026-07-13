@@ -977,6 +977,62 @@ class SautaiGeneratePlanViewTests(TestCase):
         job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
         self.assertTrue(job.regenerate)
 
+    def test_coalesce_with_regenerate_flags_request_not_applied(self):
+        # A regenerate that lands mid-generation coalesces onto the in-flight
+        # job — the guidance is dropped, so the response must say so honestly.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            first = self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "regenerate": True},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["job_id"], second.json()["job_id"])  # coalesced
+        self.assertIs(second.json()["request_applied"], False)
+
+    def test_coalesce_with_fresh_prompt_flags_request_not_applied(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "user_prompt": "make it high protein"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertIs(second.json()["request_applied"], False)
+
+    def test_plain_coalesce_has_no_request_applied_flag(self):
+        # No new guidance → the in-flight job IS their request; no flag needed.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+            second = self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertNotIn("request_applied", second.json())
+
 
 @override_settings(
     NBHD_INTERNAL_API_KEY="shared-key",

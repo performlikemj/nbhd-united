@@ -193,6 +193,20 @@ export default function register(api) {
 
           const week = asTrimmedString(payload.week_start);
           const weekPhrase = week ? ` for the week of ${week}` : "";
+
+          // The proxy coalesced this onto an already-running generation that does
+          // NOT include the new guidance (regenerate / this call's user_prompt).
+          // Be honest: the guidance was NOT applied to what's cooking.
+          if (payload.request_applied === false) {
+            return renderResult(
+              `A meal plan${weekPhrase} is ALREADY being generated, but WITHOUT this new guidance — it was ` +
+                "requested moments ago and is still running. Tell the user their plan is already on the way, and " +
+                "that once it arrives you can regenerate it with their guidance (a fresh request with " +
+                "regenerate=true). Do NOT claim their new guidance was applied, and do NOT say the plan is ready.",
+              payload,
+            );
+          }
+
           return renderResult(
             `Meal-plan generation started${weekPhrase}, powered by sautai. It runs in the background and takes ` +
               "about a minute; the user will get a push notification when it's ready. Tell them you've started it " +

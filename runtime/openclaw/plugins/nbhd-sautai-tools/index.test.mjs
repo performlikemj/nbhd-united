@@ -111,6 +111,33 @@ test("generate — passes regenerate=true through, omits it otherwise", async ()
   assert.equal(JSON.parse(calls[2].options.body).regenerate, undefined);
 });
 
+test("generate — coalesced request_applied:false yields an honest 'not applied' copy", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () =>
+    mockResponse({
+      payload: { job_id: "job-c", status: "generating", week_start: "2026-07-13", request_applied: false },
+    });
+
+  register(api);
+  const result = await tools.get("nbhd_generate_meal_plan").execute("2c", { regenerate: true });
+  assert.match(result.content[0].text, /ALREADY being generated/i);
+  assert.match(result.content[0].text, /regenerate=true/);
+  assert.match(result.content[0].text, /do NOT claim their new guidance was applied/i);
+});
+
+test("generate — request_applied omitted uses the normal started copy", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () =>
+    mockResponse({ payload: { job_id: "job-n", status: "pending", week_start: "2026-07-13" } });
+
+  register(api);
+  const result = await tools.get("nbhd_generate_meal_plan").execute("2n", {});
+  assert.match(result.content[0].text, /generation started/i);
+  assert.doesNotMatch(result.content[0].text, /ALREADY being generated/i);
+});
+
 test("generate — response carries the powered-by-sautai attribution", async () => {
   setupEnv();
   const { api, tools } = buildApi();
