@@ -1442,3 +1442,80 @@ class RuntimeConstellationNotesViewTest(TestCase):
         self.assertEqual(body["count"], 1)
         self.assertEqual(body["stars"][0]["id"], star.id)
         mock_search.assert_called_once()
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeDocumentSlugCoercionTest(TestCase):
+    """RuntimeDocumentView collapses singleton kinds onto their one canonical
+    slug so agent get/set calls never spawn off-canonical duplicate rows — the
+    faucet behind the duplicate raw "Goals" cards on the Horizons dashboard.
+    Multi-doc kinds (project/daily/...) and the split-convention ``memory`` kind
+    pass through untouched.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="DocSlug", telegram_chat_id=828282)
+        seed_internal_key(self.tenant)
+
+    def _headers(self, tenant_id: str | None = None, key: str = "shared-key") -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": key,
+            "HTTP_X_NBHD_TENANT_ID": tenant_id or str(self.tenant.id),
+        }
+
+    def _url(self, tenant_id: str | None = None) -> str:
+        return f"/api/v1/integrations/runtime/{tenant_id or self.tenant.id}/document/"
+
+    def test_get_goal_without_slug_lands_on_canonical_goals(self):
+        resp = self.client.get(self._url() + "?kind=goal", **self._headers())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["slug"], "goals")
+
+    def test_get_goal_with_singular_slug_is_coerced(self):
+        resp = self.client.get(self._url() + "?kind=goal&slug=goal", **self._headers())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["slug"], "goals")
+
+    def test_set_goal_freeform_slugs_collapse_to_single_row(self):
+        from apps.journal.models import Document
+
+        for slug in ("goal", "my-goals", ""):
+            body = {"kind": "goal", "markdown": f"content for {slug!r}"}
+            if slug:
+                body["slug"] = slug
+            resp = self.client.put(
+                self._url(),
+                data=body,
+                content_type="application/json",
+                **self._headers(),
+            )
+            self.assertIn(resp.status_code, (200, 201), resp.content)
+            self.assertEqual(resp.json()["slug"], "goals")
+
+        # Every write landed on the one canonical row — no duplicate goal docs.
+        self.assertEqual(Document.objects.filter(tenant=self.tenant, kind="goal").count(), 1)
+        self.assertEqual(Document.objects.get(tenant=self.tenant, kind="goal").slug, "goals")
+
+    def test_tasks_and_ideas_slugs_are_coerced(self):
+        for kind, canonical in (("tasks", "tasks"), ("ideas", "ideas")):
+            resp = self.client.get(self._url() + f"?kind={kind}&slug=whatever", **self._headers())
+            self.assertEqual(resp.status_code, 200, resp.content)
+            self.assertEqual(resp.json()["slug"], canonical)
+
+    def test_multidoc_kind_slug_preserved(self):
+        # Projects legitimately have many docs — the slug must survive untouched.
+        resp = self.client.put(
+            self._url(),
+            data={"kind": "project", "slug": "launch-nbhd", "markdown": "# Launch"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertIn(resp.status_code, (200, 201), resp.content)
+        self.assertEqual(resp.json()["slug"], "launch-nbhd")
+
+    def test_memory_slug_not_coerced(self):
+        # memory has no single canonical slug (live endpoints use "long-term",
+        # seeding uses "memory") — must pass through so live memory is not forked.
+        resp = self.client.get(self._url() + "?kind=memory&slug=long-term", **self._headers())
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json()["slug"], "long-term")

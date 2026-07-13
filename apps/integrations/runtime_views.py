@@ -1983,6 +1983,42 @@ class RuntimeConstellationNotesView(APIView):
 # v2 Document runtime endpoints (unified model)
 # ---------------------------------------------------------------------------
 
+# Singleton document kinds have exactly one canonical (kind, slug) row per
+# tenant. The agent often omits slug — RuntimeDocumentView then defaults
+# ``slug = kind`` (so kind="goal" ⇒ slug "goal", NOT the canonical "goals") —
+# or sends a free-form slug, and get_or_create then spawns an off-canonical
+# duplicate row. That is the faucet behind the duplicate raw "Goals" cards on
+# the Horizons dashboard. Coerce these kinds to their one canonical slug so
+# every get/set lands on the same row.
+#
+# ``memory`` is intentionally absent: its live agent/console endpoints
+# (RuntimeMemoryView / MemoryView) read+write slug="long-term" while document
+# seeding uses slug="memory" — there is no single canonical slug, so forcing
+# one here would fork live memory. Multi-doc kinds (daily/weekly/monthly/
+# project) are absent too and pass through unchanged.
+_SINGLETON_CANONICAL_SLUG: dict[str, str] = {
+    "goal": "goals",
+    "tasks": "tasks",
+    "ideas": "ideas",
+}
+
+
+def _coerce_singleton_slug(kind: str, slug: str) -> str:
+    """Return the canonical slug for a singleton ``kind``, else ``slug`` as-is.
+
+    Logs when it rewrites a caller-supplied slug so slug drift stays visible.
+    """
+    canonical = _SINGLETON_CANONICAL_SLUG.get(kind)
+    if canonical is not None and slug != canonical:
+        logger.info(
+            "runtime_document: coerced singleton slug kind=%s requested=%s canonical=%s",
+            kind,
+            slug,
+            canonical,
+        )
+        return canonical
+    return slug
+
 
 class RuntimeDocumentView(APIView):
     """GET/PUT a document by kind+slug (agent access)."""
@@ -2012,6 +2048,9 @@ class RuntimeDocumentView(APIView):
         if not slug:
             # For singleton docs, use kind as slug
             slug = kind
+        # Singleton kinds live in exactly one canonical (kind, slug) row —
+        # collapse any requested/defaulted slug onto it to avoid duplicate rows.
+        slug = _coerce_singleton_slug(kind, slug)
 
         # Validate daily slugs must be valid dates (stricter than the general rule)
         if kind == "daily":
@@ -2086,6 +2125,9 @@ class RuntimeDocumentView(APIView):
             )
         if not slug:
             slug = kind
+        # Singleton kinds live in exactly one canonical (kind, slug) row —
+        # collapse any requested/defaulted slug onto it to avoid duplicate rows.
+        slug = _coerce_singleton_slug(kind, slug)
 
         validation_error = validate_kind_slug(kind, slug)
         if validation_error is not None:

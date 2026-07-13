@@ -143,9 +143,11 @@ class Command(BaseCommand):
 
     @staticmethod
     def _goal_key(doc) -> str:
-        base = (doc.title or doc.slug or "").strip().lower()
-        # Singularize a trailing 's' to fold "goal" vs "goals" collisions.
-        return base.rstrip("s") or "_blank"
+        # Delegates to the shared key so the dashboard dual-read folds duplicate
+        # goal docs identically. See apps.journal.services.goal_dedup_key.
+        from apps.journal.services import goal_dedup_key
+
+        return goal_dedup_key(doc.title, doc.slug)
 
     @staticmethod
     def _map_intent_status(intent_status: str | None):

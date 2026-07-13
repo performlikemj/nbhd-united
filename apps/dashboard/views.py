@@ -209,11 +209,40 @@ class HorizonsView(APIView):
         from apps.journal.models import Goal
 
         typed_goals_qs = Goal.objects.filter(tenant=tenant, status=Goal.Status.ACTIVE).order_by("-updated_at")
-        migrated_doc_ids = list(
-            typed_goals_qs.exclude(migrated_from_document_id__isnull=True).values_list(
+
+        # Legacy dual-read exclusion + dedup. Two stale-duplicate sources feed
+        # the goals list, both of which surfaced as repeated raw "Goals" cards:
+        #
+        #   (1) Migration-fold leftovers. migrate_documents_to_typed_models folds
+        #       duplicate legacy GOAL docs (grouped by goal_dedup_key) into one
+        #       typed Goal but marks only the *primary* of each group via
+        #       migrated_from_document — the non-primary siblings linger. Exclude
+        #       the whole folded group, keyed off the migrated primaries.
+        #   (2) Pre-migration off-canonical containers. Before the migration runs
+        #       a tenant can accumulate several aggregate "Goals" docs at
+        #       different slugs (e.g. "goal", "goals", a UUID slug) — all titled
+        #       "Goals", so all one key. Collapse same-key legacy docs to their
+        #       most-recently-updated representative (mirrors the migration's own
+        #       keep-newest fold), handled just below where legacy_goals is built.
+        #
+        # Both are render-time only (no deletion). Tenants whose legacy docs are
+        # all distinct (no typed migration, no key collisions) are unaffected.
+        # Local import — see feedback_local_reimport_pattern memory.
+        from apps.journal.services import goal_dedup_key
+
+        primary_doc_ids = list(
+            Goal.objects.filter(tenant=tenant, migrated_from_document_id__isnull=False).values_list(
                 "migrated_from_document_id", flat=True
             )
         )
+        excluded_doc_ids = set(primary_doc_ids)
+        if primary_doc_ids:
+            primary_id_set = set(primary_doc_ids)
+            goal_docs = list(
+                Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL).only("id", "title", "slug")
+            )
+            group_keys = {goal_dedup_key(d.title, d.slug) for d in goal_docs if d.id in primary_id_set}
+            excluded_doc_ids.update(d.id for d in goal_docs if goal_dedup_key(d.title, d.slug) in group_keys)
 
         typed_goals = [
             {
@@ -231,7 +260,7 @@ class HorizonsView(APIView):
                 tenant=tenant,
                 kind=Document.Kind.GOAL,
             )
-            .exclude(id__in=migrated_doc_ids)
+            .exclude(id__in=excluded_doc_ids)
             .order_by("-updated_at")[:20]
             .values(
                 "id",
@@ -242,6 +271,18 @@ class HorizonsView(APIView):
                 "updated_at",
             )
         )
+        # (2) Collapse same-key legacy duplicates, keeping the newest. legacy_goals
+        # is ordered -updated_at, so the first row seen for a key is the newest.
+        deduped_legacy = []
+        seen_goal_keys: set[str] = set()
+        for g in legacy_goals:
+            key = goal_dedup_key(g["title"], g["slug"])
+            if key in seen_goal_keys:
+                continue
+            seen_goal_keys.add(key)
+            deduped_legacy.append(g)
+        legacy_goals = deduped_legacy
+
         goals = sorted(
             typed_goals + legacy_goals,
             key=lambda g: g["updated_at"],
@@ -417,7 +458,7 @@ class HorizonsView(APIView):
                         "id": str(g["id"]),
                         "title": g["title"] or "Untitled Goal",
                         "slug": g["slug"],
-                        "preview": (g["markdown"] or "")[:200],
+                        "preview": _clean_markdown_preview(g["markdown"] or "", max_chars=200),
                         "markdown": g["markdown"] or "",
                         "created_at": g["created_at"].isoformat(),
                         "updated_at": g["updated_at"].isoformat(),

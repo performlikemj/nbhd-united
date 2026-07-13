@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -237,6 +238,79 @@ class HorizonsViewGoalsDualReadTests(TestCase):
         titles = self._titles()
         self.assertIn("Typed goal A", titles)
         self.assertIn("Unmigrated legacy goal", titles)
+
+    def test_folded_nonprimary_docs_excluded(self):
+        # The migration folds goal/goal.md + goal/goals.md (same goal_dedup_key)
+        # into one typed Goal but marks ONLY the primary via
+        # migrated_from_document. The non-primary sibling must not leak through as
+        # a second raw card. (Clear the seeded (goal, goals) doc for a precise
+        # fixture — unique_together forbids a second one.)
+        Document.objects.filter(tenant=self.tenant, kind=Document.Kind.GOAL).delete()
+        primary = Document.objects.create(
+            tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals", title="Goals", markdown="primary content"
+        )
+        Document.objects.create(
+            tenant=self.tenant, kind=Document.Kind.GOAL, slug="goal", title="Goals", markdown="earlier draft"
+        )
+        Goal.objects.create(
+            tenant=self.tenant, title="Goals", status=Goal.Status.ACTIVE, migrated_from_document=primary
+        )
+        # Only the single typed Goal renders — neither legacy "Goals" doc leaks.
+        self.assertEqual(self._titles().count("Goals"), 1)
+
+    def test_folded_nonprimary_docs_excluded_for_nonactive_goal(self):
+        # The fold hides leftover legacy docs even when their typed Goal is not
+        # ACTIVE (achieved goals drop from the active list, but their folded
+        # legacy siblings must not reappear as raw cards).
+        Document.objects.filter(tenant=self.tenant, kind=Document.Kind.GOAL).delete()
+        primary = Document.objects.create(
+            tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals", title="Run a marathon", markdown="primary"
+        )
+        Document.objects.create(
+            tenant=self.tenant, kind=Document.Kind.GOAL, slug="goal", title="Run a marathon", markdown="draft"
+        )
+        Goal.objects.create(
+            tenant=self.tenant, title="Run a marathon", status=Goal.Status.ACHIEVED, migrated_from_document=primary
+        )
+        self.assertNotIn("Run a marathon", self._titles())
+
+    def test_duplicate_legacy_containers_collapse_without_migration(self):
+        # Prod reality (fleet typed_migrated=0): a tenant accumulates several
+        # aggregate "Goals" container docs at different slugs, all titled "Goals"
+        # (one goal_dedup_key), with NO migration run. They must collapse to a
+        # single, newest card — not render as several raw "Goals" cards.
+        Document.objects.filter(tenant=self.tenant, kind=Document.Kind.GOAL).delete()
+        older = Document.objects.create(
+            tenant=self.tenant, kind=Document.Kind.GOAL, slug="goal", title="Goals", markdown="older real content"
+        )
+        newer = Document.objects.create(
+            tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals", title="Goals", markdown="newer stub"
+        )
+        # Deterministic recency (auto_now sets both to ~now at create time).
+        Document.objects.filter(pk=older.pk).update(updated_at=timezone.now() - timedelta(days=2))
+        Document.objects.filter(pk=newer.pk).update(updated_at=timezone.now())
+        resp = self.client.get("/api/v1/dashboard/horizons/")
+        goals = [g for g in resp.json()["goals"] if g["title"] == "Goals"]
+        self.assertEqual(len(goals), 1)
+        self.assertEqual(goals[0]["slug"], "goals")  # newest representative kept
+
+    def test_goal_preview_is_cleaned_not_raw_markdown(self):
+        # Regression: the goals card 'preview' used to be raw markdown[:200], so
+        # headings/blockquotes/bold rendered literally on the iOS card. It must
+        # now be prose-only (clean THEN truncate).
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="legacy-goal",
+            title="My goal",
+            markdown="# Goals\n\n## Active Goals\n\n> **Note**: ship the thing by Q3.",
+        )
+        resp = self.client.get("/api/v1/dashboard/horizons/")
+        self.assertEqual(resp.status_code, 200)
+        preview = next(g["preview"] for g in resp.json()["goals"] if g["title"] == "My goal")
+        for marker in ("#", ">", "**"):
+            self.assertNotIn(marker, preview)
+        self.assertIn("ship the thing", preview)
 
 
 @override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)

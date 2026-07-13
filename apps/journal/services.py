@@ -168,6 +168,19 @@ STARTER_DOCUMENT_TEMPLATES = [
 ]
 
 
+def goal_dedup_key(title: str | None, slug: str | None) -> str:
+    """Canonical dedup key for a goal ``Document``.
+
+    Folds "goal"/"goals" title and slug collisions (trailing ``s`` stripped) so
+    the old aggregate "Goals" container docs a tenant may have accumulated at
+    different slugs collapse to one key. Single source of truth shared by the
+    typed-Goal migration (``migrate_documents_to_typed_models``) and the Horizons
+    dashboard dual-read dedup, so both group duplicates identically.
+    """
+    base = (title or slug or "").strip().lower()
+    return base.rstrip("s") or "_blank"
+
+
 def seed_default_documents_for_tenant(*, tenant, dry_run: bool = False):
     """Seed starter documents for PKM sections if they do not already exist."""
     if dry_run:
