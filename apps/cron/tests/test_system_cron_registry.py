@@ -272,6 +272,52 @@ class SystemCronsWellFormednessTests(TestCase):
             self.assertIn(name, by_name, msg=f"{name} not scheduled in SYSTEM_CRONS")
             self.assertEqual(by_name[name], expected_tuple)
 
+    def test_wave_d_e_eval_schedules_are_scheduled(self):
+        """The nightly behavior suite (Wave D) and the SLO snapshot + weekly digest
+        (Wave E) are wired with the planned exprs — the exact-tuple lock that mirrors
+        test_wave_b_eval_probes_are_scheduled and closes out the eval program.
+
+        Each carries an explicit ``retries=0`` (the 4th tuple element), same policy as
+        the Wave B probes: ``eval_behavior`` + ``slo_snapshot`` RAISE on a non-pass /
+        threshold breach → owner alert + DLQ on the FIRST failing run, so QStash's
+        default 3 retries would only re-run the whole (up-to-285s) suite and multiply
+        owner emails. ``weekly_slo_digest`` is a readout that NEVER raises/DLQs, so
+        retries are inert for it — 0 keeps the convention and guards a double-email on
+        any unexpected raise.
+        """
+        by_name = {name: (cron_expr, path, retries) for name, cron_expr, path, retries in reg_cmd.iter_system_crons()}
+        expected = {
+            "eval-behavior": ("40 5 * * *", "/api/cron/trigger/eval_behavior/", 0),
+            "slo-snapshot": ("55 5 * * *", "/api/cron/trigger/slo_snapshot/", 0),
+            "weekly-slo-digest": ("15 6 * * 1", "/api/cron/trigger/weekly_slo_digest/", 0),
+        }
+        for name, expected_tuple in expected.items():
+            self.assertIn(name, by_name, msg=f"{name} not scheduled in SYSTEM_CRONS")
+            self.assertEqual(by_name[name], expected_tuple)
+
+    def test_nightly_eval_suites_stay_off_the_chat_and_journey_probe_fires(self):
+        """Stagger discipline for the Wave D/E nightly fires: none may land on a
+        :00/:30 chat-probe minute, and the two 05:xx suites must not collide with the
+        existing 05:xx journey probes (05:05/05:12/05:20) or the hourly :50 reaper.
+
+        These run against the BEHAVIOR tenant / read metadata (not the journey
+        tenant), so they can't race the journey probes at the tenant level — this is
+        shared-control-plane-worker hygiene, hence a minute-stagger check rather than
+        the journey probes' wall-clock-window disjointness test above."""
+        by_name = {name: cron_expr for name, cron_expr, _p, _r in reg_cmd.iter_system_crons()}
+        # (1) No Wave D/E fire lands on a :00/:30 chat-probe minute.
+        for name in ("eval-behavior", "slo-snapshot", "weekly-slo-digest"):
+            self.assertIn(name, by_name, msg=f"{name} missing from SYSTEM_CRONS")
+            minute_field = by_name[name].split()[0]
+            self.assertTrue(minute_field.isdigit(), msg=f"{name} must fire at a fixed minute")
+            self.assertNotIn(int(minute_field), {0, 30}, msg=f"{name} fires on a :00/:30 chat-probe minute")
+        # (2) The two nightly-at-05:xx suites avoid the existing 05:xx eval fires.
+        taken_at_05 = {0, 5, 12, 20, 50}  # cleanup-inbound-media + 3 journey probes + hourly reaper
+        for name in ("eval-behavior", "slo-snapshot"):
+            minute_field, hour_field = by_name[name].split()[0], by_name[name].split()[1]
+            if hour_field == "5":
+                self.assertNotIn(int(minute_field), taken_at_05, msg=f"{name} collides with an existing 05:xx fire")
+
     def test_daily_eval_probes_avoid_the_chat_probe_fire_boundary(self):
         """The chat probe fires at :00 and :30 every hour. No daily eval probe
         may share those minutes, else it races the chat probe (the wake probe

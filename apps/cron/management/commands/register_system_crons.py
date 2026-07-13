@@ -210,6 +210,40 @@ SYSTEM_CRONS = [
     ("eval-journey-cron", "20 5 * * *", "/api/cron/trigger/eval_journey_cron/", 0),
     # Hourly at :50 UTC — crash-recovery reaper for orphaned EvalRun rows (see above).
     ("reap-stuck-eval-runs", "50 * * * *", "/api/cron/trigger/reap_stuck_eval_runs/", 0),
+    # --- Eval Wave D behavior suite + Wave E SLO readout (close the eval program;
+    # docs/evals-directive.md §Suite 2 / §Suite 4). ---
+    # Like the Wave B probes above, each carries an explicit retries=0 (the 4th
+    # tuple element). eval_behavior + slo_snapshot RAISE on a non-pass / threshold
+    # breach → owner alert + DLQ on the FIRST failing run (finalize_task_run
+    # contract), so QStash's default 3 retries only re-runs the whole (up-to-285s)
+    # suite and multiplies owner emails. weekly_slo_digest is a READOUT that NEVER
+    # raises/DLQs, so retries are inert for it — 0 keeps the convention and guards
+    # against a double-email on any unexpected raise.
+    #
+    # Stagger: both nightly fires sit in the 05:xx block but OFF the :00/:30
+    # chat-probe fires and clear of the 05:05/05:12/05:20 journey probes and the
+    # :50 reaper. The behavior suite drives the BEHAVIOR tenant (not the journey
+    # tenant), so it can't race the journey probes at the tenant level — this is
+    # shared-control-plane-worker hygiene, not a tenant-race guard, hence a
+    # minute-stagger rather than the journey probes' wall-clock disjointness.
+    # Daily at 05:40 UTC — model-behavior suite (Wave D). Drives the YAML scenarios
+    # against the synthetic behavior tenant; deterministic hard assertions GATE the
+    # run, the pinned judge's soft scores are advisory. RAISES on any non-pass so a
+    # broken run DLQs + emails the owner. See apps/evals/suites/behavior.py.
+    ("eval-behavior", "40 5 * * *", "/api/cron/trigger/eval_behavior/", 0),
+    # Daily at 05:55 UTC — production-SLO snapshot (Wave E, metadata only). Placed at
+    # the tail of the nightly block so its trailing-24h read captures the night's
+    # journey-probe + behavior runs. A per-metric threshold BREACH closes the run
+    # 'fail' → owner alert + DLQ (that IS the breach signal). See
+    # apps/evals/suites/slo_snapshot.py.
+    ("slo-snapshot", "55 5 * * *", "/api/cron/trigger/slo_snapshot/", 0),
+    # Weekly Monday 06:15 UTC — SLO trend digest (Wave E). Reads the trailing 7 days
+    # of slo_snapshot runs and emails the owner a one-page plain-text readout. Sends
+    # even when all-green and NEVER raises/DLQs — a readout, not an alarm. Fires
+    # AFTER Monday's 05:55 snapshot (so that morning is in the window) and off the
+    # :00/:30 chat fires + the 06:00/06:30 fires. Monday == cron day-of-week 1. See
+    # apps/evals/tasks.py:weekly_slo_digest_task.
+    ("weekly-slo-digest", "15 6 * * 1", "/api/cron/trigger/weekly_slo_digest/", 0),
 ]
 
 # Destinations for crons that have been RETIRED. The register loop above only
