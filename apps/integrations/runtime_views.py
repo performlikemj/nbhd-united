@@ -1991,7 +1991,7 @@ class RuntimeDocumentView(APIView):
     authentication_classes = []
 
     def get(self, request, tenant_id):
-        from apps.journal.path_validation import validate_kind_slug
+        from apps.journal.path_validation import canonical_singleton_slug, validate_kind_slug
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
@@ -2009,8 +2009,13 @@ class RuntimeDocumentView(APIView):
                 {"error": "invalid_request", "detail": "kind is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Singleton kinds (goal→"goals", tasks→"tasks") resolve to their
+        # one-per-tenant canonical slug regardless of what the caller passed —
+        # closes the footgun where an omitted slug defaulted to the kind string
+        # ("goal", singular) and forked a duplicate doc from the real "goals".
+        slug = canonical_singleton_slug(kind, slug)
         if not slug:
-            # For singleton docs, use kind as slug
+            # Remaining kinds with no slug fall back to the kind string.
             slug = kind
 
         # Validate daily slugs must be valid dates (stricter than the general rule)
@@ -2058,7 +2063,7 @@ class RuntimeDocumentView(APIView):
         )
 
     def put(self, request, tenant_id):
-        from apps.journal.path_validation import validate_kind_slug
+        from apps.journal.path_validation import canonical_singleton_slug, validate_kind_slug
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
@@ -2084,6 +2089,9 @@ class RuntimeDocumentView(APIView):
                 {"error": "invalid_request", "detail": "kind is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Singleton kinds resolve to their canonical slug so a goal write never
+        # forks a second "goals" doc under slug "goal" (see get() above).
+        slug = canonical_singleton_slug(kind, slug)
         if not slug:
             slug = kind
 
@@ -2459,7 +2467,7 @@ class RuntimeDocumentAppendView(APIView):
     authentication_classes = []
 
     def post(self, request, tenant_id):
-        from apps.journal.path_validation import validate_kind_slug
+        from apps.journal.path_validation import canonical_singleton_slug, validate_kind_slug
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
@@ -2485,6 +2493,9 @@ class RuntimeDocumentAppendView(APIView):
         # P0-3: strip agent-written markdown-image beacons before they reach
         # any durable store — see apps/integrations/content_sanitize.py.
         content = neutralize_remote_image_markdown(content)
+        # Singleton kinds resolve to their canonical slug so an append never
+        # forks a second "goals" doc under slug "goal" (see RuntimeDocumentView).
+        slug = canonical_singleton_slug(kind, slug)
         if not slug:
             if kind == "daily":
                 slug = str(_tenant_today(tenant))

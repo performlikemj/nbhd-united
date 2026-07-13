@@ -238,6 +238,75 @@ class HorizonsViewGoalsDualReadTests(TestCase):
         self.assertIn("Typed goal A", titles)
         self.assertIn("Unmigrated legacy goal", titles)
 
+    def test_title_colliding_legacy_docs_collapse_to_one_clean_card(self):
+        """Un-migrated legacy goal docs whose titles singularize to the same key
+        ("Goals" / "Goal") must render as ONE card (the most-recently-updated
+        one), and its preview must be markdown-clean — no raw #, ##, or >
+        syntax leaking into the goal card. Reproduces the reported screenshot:
+        three "Goals" cards with raw markdown headings/blockquotes.
+
+        create_tenant already seeds a Document(kind=goal, slug="goals",
+        title="Goals") — that is collision #1. We add two more legacy goal docs
+        under distinct slugs (the (tenant,kind,slug) unique constraint forbids a
+        second "goals" slug) whose titles collapse to the same normalized key.
+        """
+        from django.utils import timezone
+
+        older = Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals-legacy-a",
+            title="Goals",
+            markdown="# Goals\n\n## Active Goals\n\n> **Note:** stale earlier draft\n\nold body text here",
+        )
+        winner = Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals-legacy-b",
+            title="Goal",
+            markdown="# Goals\n\n## Active Goals\n\n> **Note:** the winner\n\nfresh body text here",
+        )
+        # Make every OTHER goal doc for this tenant (the seeded "goals" doc plus
+        # `older`) strictly older so `winner` is the deterministic survivor.
+        # .update() bypasses the auto_now stamp that .save() would apply.
+        Document.objects.filter(tenant=self.tenant, kind=Document.Kind.GOAL).exclude(id=winner.id).update(
+            updated_at=timezone.now() - timezone.timedelta(days=3)
+        )
+
+        resp = self.client.get("/api/v1/dashboard/horizons/")
+        self.assertEqual(resp.status_code, 200)
+        goals = resp.json()["goals"]
+
+        # (a) all three title-colliding docs collapse to a single card
+        self.assertEqual(len(goals), 1, goals)
+        card = goals[0]
+
+        # (a cont.) the survivor is the most-recently-updated doc
+        self.assertIn("fresh body text here", card["preview"])
+        self.assertNotIn("old body text here", card["preview"])
+
+        # (b) preview is markdown-clean — no raw heading / blockquote / bold syntax
+        self.assertNotIn("#", card["preview"])
+        self.assertNotIn(">", card["preview"])
+        self.assertNotIn("**", card["preview"])
+        # blockquote/bold CONTENT survives, only the markers are stripped
+        self.assertIn("Note: the winner", card["preview"])
+
+    def test_legacy_goal_preview_strips_markdown_even_without_collision(self):
+        """A single legacy goal doc's preview is cleaned, not raw-sliced."""
+        # Reuse the tenant's seeded goals doc (slug "goals") — give it real
+        # markdown with headings + a blockquote and confirm the preview is clean.
+        doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals")
+        doc.markdown = "# Goals\n\n## Active\n\n> quoted intent\n\nplain goal prose"
+        doc.save()
+
+        resp = self.client.get("/api/v1/dashboard/horizons/")
+        card = next(g for g in resp.json()["goals"] if g["slug"] == "goals")
+        self.assertNotIn("#", card["preview"])
+        self.assertNotIn(">", card["preview"])
+        self.assertIn("plain goal prose", card["preview"])
+        self.assertIn("quoted intent", card["preview"])
+
 
 @override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
 class HorizonsViewTopicSignalsTests(TestCase):
