@@ -1017,6 +1017,30 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(second.status_code, 200)
         self.assertIs(second.json()["request_applied"], False)
 
+    def test_coalesce_with_identical_prompt_has_no_flag(self):
+        # The plugin retrying the SAME body after its own 20s timeout is exactly
+        # what coalesce exists for — the in-flight job already carries this
+        # guidance, so it must NOT be flagged "not applied".
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "user_prompt": "high protein"},
+                content_type="application/json",
+                **self._headers(),
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "user_prompt": "high protein"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertNotIn("request_applied", second.json())
+
     def test_plain_coalesce_has_no_request_applied_flag(self):
         # No new guidance → the in-flight job IS their request; no flag needed.
         self.tenant.sautai_enabled = True

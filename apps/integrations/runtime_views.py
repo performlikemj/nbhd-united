@@ -3999,11 +3999,13 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 "status": in_flight.status,
                 "week_start": week_start.isoformat(),
             }
-            # Honesty guard: this request carried NEW guidance (regenerate or a
-            # fresh user_prompt) but coalesced onto an in-flight generation that
-            # does NOT include it — the guidance is being dropped. Flag it so the
-            # tool can tell the user rather than imply their guidance was applied.
-            if regenerate or user_prompt:
+            # Honesty guard: this request carried NEW guidance (regenerate, or a
+            # user_prompt that DIFFERS from the in-flight job's) but coalesced onto
+            # a generation that does NOT include it — the guidance is being dropped.
+            # An IDENTICAL user_prompt is the plugin retrying the same body after its
+            # own timeout (the case coalesce exists for) — the in-flight job already
+            # carries that guidance, so it is NOT a false "not applied".
+            if regenerate or (user_prompt and user_prompt != in_flight.user_prompt):
                 coalesced["request_applied"] = False
             return Response(coalesced)
 
