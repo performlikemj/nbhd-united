@@ -97,6 +97,7 @@ def record_proactive_outbound(
     channel_user_id: str,
     message_text: str,
     job_name: str = "",
+    journal_link: dict | None = None,
 ) -> ProactiveOutbound | None:
     """Persist a row describing one successful proactive push.
 
@@ -122,6 +123,10 @@ def record_proactive_outbound(
             message_text=message_text,
             job_name=(job_name or "")[:64],
             parsed_items=parse_markdown_items(message_text),
+            # Parsed "View in Journal" deep-link (``{kind, slug, title}``, title
+            # in placeholder space) — surfaced + rehydrated by the ?since= feed.
+            # None on sends that carried no marker.
+            journal_link=journal_link,
         )
     except Exception:
         logger.exception(

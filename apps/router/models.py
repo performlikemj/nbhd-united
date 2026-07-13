@@ -341,6 +341,21 @@ class ProactiveOutbound(models.Model):
             "thread continuity), which is deliberately re-surfaced."
         ),
     )
+    journal_link = models.JSONField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text=(
+            "A tappable 'View in Journal' deep-link parsed from a trailing "
+            "``[[journal-link: kind|slug|title]]`` marker on a proactive / cron "
+            "send (see ``apps.router.journal_link.extract_journal_link``). "
+            "Stored as ``{kind, slug, title}`` in PII-placeholder space "
+            "(``title`` rehydrated only at the owner-facing ``?since=`` feed). "
+            "Populated only for app-channel sends; null on Telegram/LINE (marker "
+            "stripped, no transport) and when the send carried no marker. This "
+            "is the path MJ's morning report uses."
+        ),
+    )
 
     class Meta:
         db_table = "proactive_outbounds"
@@ -743,6 +758,15 @@ class AppChatMessage(models.Model):
     # are indistinguishable and both mean "show no buttons". iOS-only for
     # now; Telegram/LINE strip the marker but never populate this field.
     quick_replies = models.JSONField(null=True, blank=True, default=None)
+    # A tappable "View in Journal" deep-link parsed from a trailing
+    # ``[[journal-link: kind|slug|title]]`` marker on the assistant reply (see
+    # ``apps.router.journal_link.extract_journal_link``). Rides the SAME
+    # representative row as ``reply_text`` (siblings stay null). Stored as
+    # ``{"kind", "slug", "title"}`` in PII-placeholder space; the owner-facing
+    # read seams rehydrate ``title``. null/absent means the turn carried no
+    # marker (or predates the feature) — both mean "show no chip". iOS-only;
+    # Telegram/LINE strip the marker but never populate this field.
+    journal_link = models.JSONField(null=True, blank=True, default=None)
 
     @property
     def attachment_flags(self) -> tuple[bool, bool]:
