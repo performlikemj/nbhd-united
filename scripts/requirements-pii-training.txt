@@ -9,4 +9,4 @@ seqeval>=1.2.2
 optimum[onnxruntime]>=2.2.0
 onnxruntime>=1.27.0
 numpy<3
-sentencepiece>=0.2
+sentencepiece>=0.2.2

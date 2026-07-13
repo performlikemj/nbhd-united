@@ -462,7 +462,7 @@ rpds-py==0.30.0
     #   referencing
 safetensors==0.7.0
     # via transformers
-sentencepiece==0.2.1
+sentencepiece==0.2.2
     # via -r requirements.in
 sentry-sdk==2.64.0
     # via -r requirements.in
