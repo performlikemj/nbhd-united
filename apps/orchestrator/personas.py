@@ -582,13 +582,14 @@ def _resolve_channel_formatting(tenant=None) -> str | None:
       * an iOS device token registered  → ``app-formatting.md`` (the app is the
         delivery surface; prefer it even when a channel is also linked, to match
         the delivery direction);
-      * else LINE linked (``line_user_id``)         → ``line-formatting.md``;
       * else Telegram linked (``telegram_chat_id``) → ``telegram-formatting.md``;
+      * else LINE linked (``line_user_id``)         → ``line-formatting.md``;
       * else nothing linked                         → ``app-formatting.md``
         (the neutral default — standard Markdown; NEVER telegram).
 
-    The app → line → telegram precedence matches PR #1199's channel-resolver
-    order (the both-linked-no-token cohort is empty today; consistency is free).
+    The app → telegram → line precedence matches the final resolve_user_channel
+    fallback order (integration-train fix, sha 094e7744; the both-linked-no-token
+    cohort is empty today, so this is consistency, not a behavior change).
     """
     doc = "app"
     if tenant is not None:
@@ -596,10 +597,10 @@ def _resolve_channel_formatting(tenant=None) -> str | None:
             user = tenant.user
             if tenant.device_tokens.exists():
                 doc = "app"
-            elif getattr(user, "line_user_id", None):
-                doc = "line"
             elif getattr(user, "telegram_chat_id", None):
                 doc = "telegram"
+            elif getattr(user, "line_user_id", None):
+                doc = "line"
             else:
                 doc = "app"
         except Exception:

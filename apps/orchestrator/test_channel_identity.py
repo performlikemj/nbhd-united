@@ -86,8 +86,9 @@ class ResolveChannelFormattingTest(TestCase):
         content = _resolve_channel_formatting(None)
         self.assertIn("NBHD App Formatting", content)
 
-    def test_both_linked_no_token_prefers_line(self):
-        # Precedence locks to app → line → telegram (PR #1199's resolver order).
+    def test_both_linked_no_token_prefers_telegram(self):
+        # Precedence locks to app → telegram → line, matching the final
+        # resolve_user_channel fallback order (integration-train fix 094e7744).
         from apps.orchestrator.personas import _resolve_channel_formatting
 
         t = _make_tenant(suffix=5)  # telegram linked by create_tenant
@@ -95,7 +96,7 @@ class ResolveChannelFormattingTest(TestCase):
         t.user.save()
 
         content = _resolve_channel_formatting(_fresh(t))
-        self.assertIn("LINE Formatting", content)
+        self.assertIn("Telegram Formatting", content)
 
 
 class ToolsMdConvergenceTest(TestCase):
