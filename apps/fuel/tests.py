@@ -3289,6 +3289,106 @@ class ConsumerWorkoutPlanTests(TestCase):
         self.assertEqual(resp.data[0]["plan_name"], "My Plan")
 
 
+class ConsumerPlanPatchPrescriptionTests(TestCase):
+    """The consumer PATCH is wholesale schedule replacement (delete-and-regen,
+    no strip loop, no reconciler), so it validates with require_detail=True:
+    a strength day that omits detail_json must be rejected, not silently
+    expanded into detail_json={} across the remaining calendar — the exact
+    production symptom this fix exists to close, on the JWT surface.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Consumer Rx Patch", telegram_chat_id=800063)
+        self.client = APIClient()
+        refresh = RefreshToken.for_user(self.tenant.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {refresh.access_token}")
+
+        # Plan starting next Monday so its planned workouts are in the future
+        # (the regen path only touches date >= today).
+        self.plan_start = date.today() + timedelta(days=((7 - date.today().weekday()) % 7) or 7)
+        self.plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Consumer Plan",
+            start_date=self.plan_start,
+            weeks=2,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Push", "category": "strength", **_STRENGTH_DETAIL}},
+        )
+        for week in range(2):
+            Workout.objects.create(
+                tenant=self.tenant,
+                plan=self.plan,
+                date=self.plan_start + timedelta(weeks=week),
+                status="planned",
+                category="strength",
+                activity="Push",
+                detail_json=_STRENGTH_DETAIL["detail_json"],
+            )
+
+    def _url(self):
+        return f"/api/v1/fuel/plans/{self.plan.id}/"
+
+    def test_patch_omitting_strength_detail_400_leaves_everything_untouched(self):
+        original_schedule = json.loads(json.dumps(self.plan.schedule_json))
+        workouts_before = Workout.objects.filter(plan=self.plan, status="planned").count()
+
+        resp = self.client.patch(
+            self._url(),
+            {"schedule_json": {"0": {"activity": "Push", "category": "strength"}}},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertEqual(resp.data["error"], "validation_failed")
+        self.assertEqual(resp.data["weekday"], 0)
+        self.assertEqual(resp.data["details"][0]["type"], "missing_prescription")
+        # Plan row + schedule untouched.
+        self.plan.refresh_from_db()
+        self.assertEqual(self.plan.schedule_json, original_schedule)
+        # Future planned workouts untouched — same count, prescriptions intact.
+        self.assertEqual(Workout.objects.filter(plan=self.plan, status="planned").count(), workouts_before)
+        sampled = Workout.objects.filter(plan=self.plan, status="planned").first()
+        self.assertEqual(sampled.detail_json["exercises"][0]["name"], "Bench Press")
+
+    def test_patch_complete_schedule_200_regen_carries_detail(self):
+        new_detail = {
+            "exercises": [{"name": "Overhead Press", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 40}]}]
+        }
+        resp = self.client.patch(
+            self._url(),
+            {"schedule_json": {"0": {"activity": "Press Day", "category": "strength", "detail_json": new_detail}}},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        regen = Workout.objects.filter(plan=self.plan, status="planned").order_by("date")
+        self.assertGreater(regen.count(), 0)
+        for w in regen:
+            self.assertEqual(w.activity, "Press Day")
+            self.assertEqual(w.detail_json["exercises"][0]["name"], "Overhead Press")
+
+    def test_status_only_patch_on_legacy_empty_schedule_succeeds(self):
+        # A legacy plan whose STORED schedule has empty details must still
+        # accept a status-only PATCH — the validator is gated on the presence
+        # of schedule_json in the request, so there is no retro-enforcement.
+        legacy = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Legacy Consumer",
+            start_date=self.plan_start,
+            weeks=1,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Push", "category": "strength", "detail_json": {}}},
+            status="paused",
+        )
+        resp = self.client.patch(
+            f"/api/v1/fuel/plans/{legacy.id}/",
+            {"status": "completed"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.status, "completed")
+
+
 # ═════════════════════════════════════════════════════════════════════
 # Phase 0 — shape-agnostic set-metric accessor (#593)
 # ═════════════════════════════════════════════════════════════════════

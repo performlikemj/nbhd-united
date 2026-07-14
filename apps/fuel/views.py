@@ -1394,10 +1394,20 @@ class WorkoutPlanDetailView(APIView):
         # inside _expand_plan_workouts (mirrors the runtime regen path).
         raw_schedule = serializer.validated_data.get("schedule_json")
         if raw_schedule:
-            # require_detail=False on the update path: only a day that explicitly
-            # supplies an empty strength/calisthenics detail_json is rejected, so
-            # re-saving an unrelated field on a legacy plan isn't retro-wedged.
-            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule, require_detail=False)
+            # STRICT here (require_detail=True), unlike the runtime PATCH. This
+            # endpoint is wholesale schedule replacement: the normalized schedule
+            # (where the validator injects detail_json={} for omitted days) is
+            # saved as-is and the regen below deletes all future planned workouts
+            # and re-expands straight from it — there is no strip-injected-key
+            # loop and no reconciler to honor "omitted = leave the existing
+            # prescription alone". Lenient validation would let an ordinary PATCH
+            # that omits detail on a strength day silently blank prescriptions
+            # across the whole remaining calendar. An incomplete strength day
+            # must be rejected, not silently blanked; partial-edit semantics live
+            # on the runtime PATCH + reconcile path. Status/notes-only PATCHes
+            # never enter this branch (gated on `if raw_schedule`), so legacy
+            # plans with empty stored details are not retro-wedged.
+            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule)
             if sched_err is not None:
                 return sched_err
             serializer.validated_data["schedule_json"] = normalized_schedule
