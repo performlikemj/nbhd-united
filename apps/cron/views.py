@@ -139,6 +139,19 @@ TASK_MAP = {
     # re-fire after a completed backfill is a no-op; safe to leave registered.
     "encrypt_chat_history": "apps.orchestrator.tasks.encrypt_chat_history_task",
     "encrypt_chat_history_dry_run": "apps.orchestrator.tasks.encrypt_chat_history_dry_run_task",
+    # Encryption-at-rest Phase 2 — MJ-gated convergence of the post-2026-07-11
+    # cohort: tenants provisioned before chat-encryption flags were set at
+    # provision time (and never covered by the one-time fleet UPDATE) still
+    # write+read plaintext chat. Per tenant this flips encrypt_chat_writes ON,
+    # runs the PR-3 backfill, verifies zero plaintext-only rows remain, then
+    # flips read_encrypted_chat ON — the fleet ladder compressed and idempotent.
+    # Fired via a no-body QStash publish to /api/cron/trigger/<name>/ — hence the
+    # zero-arg pair. No-op once the fleet is converged; ships DARK (nothing fires
+    # it until an operator does). Blocks the PR-6 plaintext erase until it has run.
+    "converge_unencrypted_chat_tenants": "apps.orchestrator.tasks.converge_unencrypted_chat_tenants_task",
+    "converge_unencrypted_chat_tenants_dry_run": (
+        "apps.orchestrator.tasks.converge_unencrypted_chat_tenants_dry_run_task"
+    ),
     # Eval system (see docs/evals-directive.md) — chassis proof. Operator-fired via
     # a no-body QStash publish to /api/cron/trigger/eval_smoke/ (zero-arg, because
     # the publish path we use can't carry a body). Writes real EvalRun/EvalResult
