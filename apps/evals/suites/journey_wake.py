@@ -6,6 +6,16 @@ has hit 3 in the worst case" (hibernation.py:29-41), and the wake chain has
 produced silent-loop incidents (canary 148ccf1c). This probe drives the REAL
 path and asserts the WHOLE chain actually ran.
 
+DO NOT DISARM THIS WITHOUT READING THIS PARAGRAPH. Since 2026-07-14, Suite 4's
+``compute_reply_latency`` deliberately EXCLUDES turns that woke a container (they were
+being judged twice, against two ceilings that disagree — see slo_snapshot.py), and
+``compute_wake_latency_p95`` measures only the WAKE PORTION (``waking_at → replied_at``),
+not the full wait. So THIS CANARY is the only end-to-end coverage of what a real user
+actually experiences on a cold start. Suite 4's deferral of that metric is honest ONLY
+while this probe runs. Disarm it, let its tenant's budget cap trip for a stretch, or
+deprovision that tenant, and the cold-start hole silently reopens — with Suite 4 still
+reporting green, because it deliberately isn't looking.
+
 It reuses Probe 1's driver (``apps/evals/journey/chat_drive.drive_chat_turn``) —
 same POST-a-message-and-poll implementation — so the wake probe and the chat
 probe share one real-path core. What makes THIS the wake probe is the three hard
