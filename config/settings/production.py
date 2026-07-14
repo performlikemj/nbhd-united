@@ -156,12 +156,18 @@ LOGGING = {
         "redact_byo_paste_body": {
             "()": "apps.byo_models.logging_filters.RedactBYOPasteBody",
         },
+        # Scrubs the shared Telegram bot token out of every record on its way to
+        # stdout. httpx logs each outbound Bot API request at INFO with the token
+        # embedded in the URL path; without this it streams into Log Analytics.
+        "redact_telegram_token": {
+            "()": "apps.router.logging_filters.RedactTelegramToken",
+        },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
             "formatter": "verbose",
-            "filters": ["redact_byo_paste_body"],
+            "filters": ["redact_byo_paste_body", "redact_telegram_token"],
         },
     },
     "root": {
