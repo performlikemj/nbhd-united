@@ -116,7 +116,11 @@ if in_use; then
 fi
 
 rm -rf .venv.old
-[ -d .venv ] && mv .venv .venv.old
+# `if`, not `[ -d .venv ] && mv ...`. Under `set -e` that one-liner is exempt only because
+# it is not the final command in the script — move it to the end, or append nothing after
+# it, and a FIRST-TIME setup (no .venv to move) exits 1 having actually succeeded. `make
+# setup` now routes here, so the no-.venv path is the common one, not the exotic one.
+if [ -d .venv ]; then mv .venv .venv.old; fi
 mv .venv.new .venv
 # Accepted residual: this only guards `manage.py test`. A long-lived runserver/shell holding
 # the old venv survives the move via open file handles — only NEW spawns land on the new one.
