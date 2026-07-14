@@ -1394,7 +1394,10 @@ class WorkoutPlanDetailView(APIView):
         # inside _expand_plan_workouts (mirrors the runtime regen path).
         raw_schedule = serializer.validated_data.get("schedule_json")
         if raw_schedule:
-            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule)
+            # require_detail=False on the update path: only a day that explicitly
+            # supplies an empty strength/calisthenics detail_json is rejected, so
+            # re-saving an unrelated field on a legacy plan isn't retro-wedged.
+            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule, require_detail=False)
             if sched_err is not None:
                 return sched_err
             serializer.validated_data["schedule_json"] = normalized_schedule

@@ -20,6 +20,15 @@ from apps.tenants.test_utils import seed_internal_key
 from .models import BodyWeightLog, FuelProfile, PlanSlot, Workout, WorkoutPlan
 from .services import est_1rm
 
+# Minimal valid strength prescription. Strength/calisthenics plan days now
+# require a non-empty exercises list at the runtime create chokepoint, so tests
+# that create a strength plan through the endpoint spread this into each day.
+_STRENGTH_DETAIL = {
+    "detail_json": {
+        "exercises": [{"name": "Bench Press", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 60}]}]
+    }
+}
+
 # ═════════════════════════════════════════════════════════════════════
 # 1. Service Tests (pure math, no DB)
 # ═════════════════════════════════════════════════════════════════════
@@ -2396,9 +2405,9 @@ class RuntimeWorkoutPlanTests(TestCase):
                 "weeks": 4,
                 "days_per_week": 3,
                 "schedule_json": {
-                    "0": {"activity": "Push", "category": "strength", "duration_minutes": 60},
-                    "2": {"activity": "Pull", "category": "strength", "duration_minutes": 60},
-                    "4": {"activity": "Legs", "category": "strength", "duration_minutes": 55},
+                    "0": {"activity": "Push", "category": "strength", "duration_minutes": 60, **_STRENGTH_DETAIL},
+                    "2": {"activity": "Pull", "category": "strength", "duration_minutes": 60, **_STRENGTH_DETAIL},
+                    "4": {"activity": "Legs", "category": "strength", "duration_minutes": 55, **_STRENGTH_DETAIL},
                 },
                 "notes": "Linear progression: add 2.5kg each week.",
             },
@@ -2422,7 +2431,7 @@ class RuntimeWorkoutPlanTests(TestCase):
                 "weeks": 1,
                 "days_per_week": 2,
                 "schedule_json": {
-                    "0": {"activity": "Mon Workout", "category": "strength"},
+                    "0": {"activity": "Mon Workout", "category": "strength", **_STRENGTH_DETAIL},
                     "4": {"activity": "Fri Workout", "category": "cardio"},
                 },
             },
@@ -2743,6 +2752,147 @@ class RuntimeWorkoutPlanTests(TestCase):
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RequirePrescriptionOnStrengthDaysTests(TestCase):
+    """A strength/calisthenics plan day must carry an exercise prescription.
+
+    The production bug: an assistant created a plan with ``detail_json: {}`` on
+    every strength day, so all 35 expanded planned workouts had zero exercises
+    and the iOS Fuel tab showed empty strength days. The server now rejects an
+    empty prescription at the validation chokepoint (before any persistence) so
+    the agent self-corrects in-loop.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="RT Require Rx", telegram_chat_id=800077)
+        seed_internal_key(self.tenant)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _plans_url(self):
+        return f"/api/v1/fuel/runtime/{self.tenant.id}/plans/"
+
+    def _post(self, schedule_json, **extra):
+        body = {
+            "name": extra.pop("name", "Rx Plan"),
+            "start_date": "2026-04-27",
+            "weeks": 1,
+            "days_per_week": len(schedule_json) or 1,
+            "schedule_json": schedule_json,
+        }
+        body.update(extra)
+        return self.client.post(self._plans_url(), body, format="json", **self.headers)
+
+    def test_create_strength_empty_detail_400_and_persists_nothing(self):
+        # A pre-existing active plan must NOT be superseded by a rejected create.
+        existing = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Existing Active",
+            start_date=date(2026, 4, 20),
+            weeks=1,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Legacy", "category": "strength"}},
+        )
+
+        resp = self._post({"0": {"activity": "Push", "category": "strength", "detail_json": {}}})
+
+        self.assertEqual(resp.status_code, 400)
+        # Self-correction envelope: weekday index + guidance + a concrete example.
+        self.assertEqual(resp.data["weekday"], 0)
+        self.assertEqual(resp.data["error"], "validation_failed")
+        self.assertIn("prescription", resp.data["message"].lower())
+        self.assertEqual(resp.data["details"][0]["type"], "missing_prescription")
+        self.assertIn("exercises", resp.data["details"][0]["example"])
+        # Nothing persisted: no new plan, no slots, no workouts, no supersede.
+        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(PlanSlot.objects.filter(plan__tenant=self.tenant).count(), 0)
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 0)
+        existing.refresh_from_db()
+        self.assertEqual(existing.status, "active")
+
+    def test_create_strength_missing_detail_key_400(self):
+        # No detail_json key at all is still an empty prescription on create.
+        resp = self._post({"0": {"activity": "Push", "category": "strength"}})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["weekday"], 0)
+        self.assertFalse(WorkoutPlan.objects.filter(tenant=self.tenant).exists())
+
+    def test_create_strength_valid_detail_201_expands_with_detail(self):
+        resp = self._post({"0": {"activity": "Push", "category": "strength", **_STRENGTH_DETAIL}})
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["workouts_created"], 1)
+        w = Workout.objects.get(tenant=self.tenant, status="planned")
+        self.assertEqual(w.detail_json["exercises"][0]["name"], "Bench Press")
+
+    def test_create_cardio_duration_only_accepted(self):
+        resp = self._post({"0": {"activity": "Run", "category": "cardio", "duration_minutes": 30}})
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant, category="cardio").count(), 1)
+
+    def test_week_override_empty_strength_400_persists_nothing(self):
+        resp = self._post(
+            {"0": {"activity": "Push", "category": "strength", **_STRENGTH_DETAIL}},
+            weeks=2,
+            week_overrides={"1": {"0": {"activity": "Deload", "category": "strength", "detail_json": {}}}},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["weekday"], 0)
+        self.assertFalse(WorkoutPlan.objects.filter(tenant=self.tenant).exists())
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 0)
+
+    def test_week_override_null_rest_day_accepted(self):
+        resp = self._post(
+            {"0": {"activity": "Push", "category": "strength", **_STRENGTH_DETAIL}},
+            weeks=2,
+            week_overrides={"1": {"0": None}},
+        )
+        self.assertEqual(resp.status_code, 201)
+        # Week 1 (offset 0) trains Monday; week 2 (offset 1) rests it → 1 workout.
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_update_empty_strength_day_400_leaves_plan_untouched(self):
+        create = self._post({"0": {"activity": "Push", "category": "strength", **_STRENGTH_DETAIL}})
+        self.assertEqual(create.status_code, 201)
+        plan_id = create.data["id"]
+        workouts_before = Workout.objects.filter(tenant=self.tenant).count()
+        stored_schedule = WorkoutPlan.objects.get(id=plan_id).schedule_json
+
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan_id}/",
+            {"schedule_json": {"0": {"activity": "Push", "category": "strength", "detail_json": {}}}},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data["weekday"], 0)
+        plan = WorkoutPlan.objects.get(id=plan_id)
+        self.assertEqual(plan.schedule_json, stored_schedule)
+        self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), workouts_before)
+
+    def test_update_status_only_on_legacy_empty_plan_succeeds(self):
+        # A legacy plan whose stored schedule already has empty strength detail
+        # must still accept a status-only PATCH — no retro-enforcement.
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Legacy Empty",
+            start_date=date(2026, 4, 27),
+            weeks=1,
+            days_per_week=1,
+            schedule_json={"0": {"activity": "Push", "category": "strength", "detail_json": {}}},
+        )
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan.id}/",
+            {"status": "paused"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["status"], "paused")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
 class PlanReconcilerRaceTests(TestCase):
     """The deterministic race test the durable fix is supposed to win.
 
@@ -2775,6 +2925,17 @@ class PlanReconcilerRaceTests(TestCase):
     def _make_plan_with_workout(self, schedule):
         """Create a plan + its workouts via the runtime API so slots are
         populated end-to-end (same code path production hits)."""
+        # Strength/calisthenics days need a real prescription at the create
+        # chokepoint — inject one for any such day the caller left bare so these
+        # tests keep exercising slot identity, not the empty-prescription gate.
+        schedule = {
+            day: (
+                {**wd, **_STRENGTH_DETAIL}
+                if wd.get("category") in ("strength", "calisthenics") and "detail_json" not in wd
+                else wd
+            )
+            for day, wd in schedule.items()
+        }
         resp = self.client.post(
             f"/api/v1/fuel/runtime/{self.tenant.id}/plans/",
             {
@@ -3029,7 +3190,7 @@ class ConsumerWorkoutPlanTests(TestCase):
                 "start_date": "2026-04-27",
                 "weeks": 4,
                 "days_per_week": 3,
-                "schedule_json": {"0": {"activity": "Push", "category": "strength"}},
+                "schedule_json": {"0": {"activity": "Push", "category": "strength", **_STRENGTH_DETAIL}},
             },
             format="json",
         )
@@ -3982,13 +4143,13 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
                 "days_per_week": 3,
                 "start_date": "2026-06-15",
                 "schedule_json": {
-                    "0": {"category": "strength", "activity": "Upper Pull"},
+                    "0": {"category": "strength", "activity": "Upper Pull", **_STRENGTH_DETAIL},
                     "2": {
                         "category": "cardio",
                         "activity": "Tempo Run",
                         "detail_json": {"distance_km": 5, "pace": "5:30"},
                     },
-                    "4": {"category": "strength", "activity": "Lower Power"},
+                    "4": {"category": "strength", "activity": "Lower Power", **_STRENGTH_DETAIL},
                 },
             }
         )
@@ -4010,7 +4171,7 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
                 "name": "Default Start",
                 "weeks": 1,
                 "days_per_week": 1,
-                "schedule_json": {"0": {"category": "strength", "activity": "Full Body"}},
+                "schedule_json": {"0": {"category": "strength", "activity": "Full Body", **_STRENGTH_DETAIL}},
             }
         )
         self.assertEqual(resp.status_code, 201, resp.data)
@@ -4024,7 +4185,9 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
                 "weeks": 1,
                 "days_per_week": 1,
                 "start_date": "2026-06-15",
-                "schedule_json": {"0": {"category": "strength", "activity": "Squats", "target_rpe": 8}},
+                "schedule_json": {
+                    "0": {"category": "strength", "activity": "Squats", "target_rpe": 8, **_STRENGTH_DETAIL}
+                },
             }
         )
         self.assertEqual(resp.status_code, 201, resp.data)
@@ -4072,7 +4235,7 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
             "weeks": 1,
             "days_per_week": 1,
             "start_date": "2026-06-15",
-            "schedule_json": {"0": {"category": "strength", "activity": "Squats"}},
+            "schedule_json": {"0": {"category": "strength", "activity": "Squats", **_STRENGTH_DETAIL}},
         }
         r1 = self._post(body)
         self.assertEqual(r1.status_code, 201, r1.data)
@@ -4090,12 +4253,12 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
                 "days_per_week": 2,
                 "start_date": "2026-06-15",
                 "schedule_json": {
-                    "0": {"category": "strength", "activity": "Heavy Squats", "target_rpe": 9},
-                    "2": {"category": "strength", "activity": "Heavy Bench", "target_rpe": 9},
+                    "0": {"category": "strength", "activity": "Heavy Squats", "target_rpe": 9, **_STRENGTH_DETAIL},
+                    "2": {"category": "strength", "activity": "Heavy Bench", "target_rpe": 9, **_STRENGTH_DETAIL},
                 },
                 "week_overrides": {
                     "1": {
-                        "0": {"category": "strength", "activity": "Deload Squats", "target_rpe": 5},
+                        "0": {"category": "strength", "activity": "Deload Squats", "target_rpe": 5, **_STRENGTH_DETAIL},
                         "2": None,
                     }
                 },
@@ -4118,7 +4281,7 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
                 "days_per_week": 1,
                 "start_date": "2026-06-15",
                 "objective": "Build pull strength",
-                "schedule_json": {"0": {"category": "strength", "activity": "Pull-ups"}},
+                "schedule_json": {"0": {"category": "strength", "activity": "Pull-ups", **_STRENGTH_DETAIL}},
             }
         )
         self.assertEqual(resp.status_code, 201, resp.data)
@@ -5461,7 +5624,7 @@ class RuntimePlanSingleActiveTests(TestCase):
             "days_per_week": 2,
             "start_date": "2026-06-15",
             "schedule_json": {
-                "0": {"category": "strength", "activity": "Push"},
+                "0": {"category": "strength", "activity": "Push", **_STRENGTH_DETAIL},
                 "2": {"category": "cardio", "activity": "Run"},
             },
         }
