@@ -54,10 +54,22 @@ def expire_finished_at_crons_task() -> dict:
     now = timezone.now()
     cutoff = now - AT_CRON_GRACE
 
-    # ``managed=False`` is what create_typed_cron / create_freeform_cron stamp on
-    # an at-kind schedule (services.py::_is_at_schedule). Deliberately NOT filtered
-    # on creation_path: a freeform at-cron squats its name identically.
-    candidates = CronJob.objects.filter(managed=False, enabled=True).values_list("id", "data")
+    # The ``kind == "at"`` gate below is the ONLY discriminator, and it is sufficient:
+    # a recurring cron has kind "cron"/"every", never "at".
+    #
+    # Deliberately NOT filtered on ``managed=False``, even though that is what
+    # create_typed_cron / create_freeform_cron stamp on an at-kind schedule
+    # (services.py::_is_at_schedule). ``upsert_jobs_to_cache`` (apps/cron/cache.py)
+    # mirrors gateway jobs into Postgres WITHOUT passing ``managed``, so it takes the
+    # model default of True — meaning a one-shot that got mirrored by a console open is
+    # ``managed=True`` and a managed-only filter would skip it forever, leaving it to
+    # squat its name with no retirement path. Filtering on ``managed`` would reintroduce
+    # the very bug this task exists to fix, for a row shape that is reachable today (the
+    # agent's raw ``cron`` tool is still on every tenant; the deny-list cutover has not
+    # happened).
+    #
+    # Nor on creation_path: a freeform at-cron squats its name identically.
+    candidates = CronJob.objects.filter(enabled=True).values_list("id", "data")
 
     expired_ids: list[int] = []
     for cron_id, data in candidates:
@@ -83,6 +95,9 @@ def expire_finished_at_crons_task() -> dict:
         logger.info("expire_finished_at_crons: nothing to retire")
         return {"expired": 0, "ids": []}
 
-    expired = CronJob.objects.filter(id__in=expired_ids, enabled=True).update(enabled=False)
+    # ``updated_at`` is stamped explicitly: .update() bypasses auto_now along with the
+    # signals, and "when was this retired?" is the first forensic question anyone asks
+    # of a disabled cron.
+    expired = CronJob.objects.filter(id__in=expired_ids, enabled=True).update(enabled=False, updated_at=now)
     logger.info("expire_finished_at_crons: retired %s spent at-cron(s) %s", expired, expired_ids)
     return {"expired": expired, "ids": expired_ids}

@@ -144,7 +144,8 @@ class ExpireFinishedAtCronsSweepTests(TestCase):
 
     def test_recurring_managed_cron_is_never_touched(self):
         # A daily briefing has no "at" — and is managed by the reconciler. The sweep
-        # must not go anywhere near it, whatever its dates say.
+        # must not go anywhere near it, whatever its dates say. ``kind`` is the only
+        # discriminator, so this must hold without any managed-flag filtering.
         row = self._row(
             "daily-briefing",
             schedule={"kind": "cron", "expr": "0 8 * * *", "tz": "Asia/Tokyo"},
@@ -153,6 +154,43 @@ class ExpireFinishedAtCronsSweepTests(TestCase):
         expire_finished_at_crons_task()
         row.refresh_from_db()
         self.assertTrue(row.enabled)
+
+    def test_a_MIRRORED_at_cron_is_retired_too(self):
+        """``managed=True`` must NOT exempt a spent one-shot.
+
+        ``upsert_jobs_to_cache`` (apps/cron/cache.py) mirrors gateway jobs into Postgres
+        without passing ``managed``, so it takes the model default of True. A one-shot
+        that a console open mirrored is therefore ``managed=True`` — and a sweep that
+        filtered on ``managed=False`` would skip it forever, leaving it squatting its
+        name with no retirement path. That is the original bug, reintroduced through a
+        side door.
+        """
+        row = self._row(
+            "mirrored-one-shot",
+            schedule=_at(timezone.now() - timedelta(hours=3)),
+            managed=True,
+        )
+        expire_finished_at_crons_task()
+        row.refresh_from_db()
+        self.assertFalse(row.enabled, "a mirrored (managed=True) spent at-cron kept squatting its name")
+
+    def test_naive_at_timestamp_is_handled(self):
+        # A schedule written without a timezone suffix must not raise on comparison and
+        # must still be retired. Treated as UTC.
+        row = self._row("naive", schedule={"kind": "at", "at": "2026-07-12T15:00:00"})
+        expire_finished_at_crons_task()
+        row.refresh_from_db()
+        self.assertFalse(row.enabled)
+
+    def test_retirement_stamps_updated_at(self):
+        # .update() bypasses auto_now, so the task sets it explicitly — "when was this
+        # retired?" is the first forensic question.
+        row = self._row("spent", schedule=_at(timezone.now() - timedelta(hours=3)))
+        before = row.updated_at
+        expire_finished_at_crons_task()
+        row.refresh_from_db()
+        self.assertFalse(row.enabled)
+        self.assertGreater(row.updated_at, before)
 
     def test_malformed_schedule_is_skipped_not_crashed(self):
         # A broken writer must stay VISIBLE (warning log), never be silently retired
