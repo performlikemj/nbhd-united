@@ -25,8 +25,14 @@ fi
 # requirements.txt is compiled on LINUX. Re-compiling it on macOS silently DROPS the
 # Linux-only CUDA/torch pins the PII model needs, and the loss is invisible until a
 # deploy. Standing MJ rule, previously enforced only by memory — mechanical now.
-if printf '%s' "$cmd" | grep -qE '(^|[[:space:]/])pip-compile([[:space:]]|$|;)'; then
-  block "Blocked by .claude/hooks/git_guard.sh: pip-compile on macOS strips the Linux/CUDA pins from requirements.txt and you will not notice until deploy. Hand-edit requirements.txt instead, or run pip-compile inside the Linux container."
+#
+# `make compile-deps` MUST be listed separately. A hook only ever sees the command STRING
+# the caller typed, never what make expands it to — so blocking the literal `pip-compile`
+# leaves the Makefile target as an unguarded side door straight to the same damage. (Found
+# by reading the Makefile instead of assuming: `make integrate` doesn't exist either — the
+# target is `integrate-gate`.) Any new wrapper around pip-compile belongs on this line.
+if printf '%s' "$cmd" | grep -qE '(^|[[:space:]/])pip-compile([[:space:]]|$|;)|(^|[[:space:]])make[[:space:]]+compile-deps([[:space:]]|$|;)'; then
+  block "Blocked by .claude/hooks/git_guard.sh: pip-compile on macOS strips the Linux/CUDA pins from requirements.txt and you will not notice until deploy. (This includes 'make compile-deps', which is just pip-compile wearing a hat.) Hand-edit requirements.txt instead, or run pip-compile inside the Linux container."
 fi
 
 exit 0

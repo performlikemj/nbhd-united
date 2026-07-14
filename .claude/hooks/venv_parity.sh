@@ -24,12 +24,18 @@ CMD=$(jq -r '.tool_input.command // empty' 2>/dev/null)
 
 case "$CMD" in
   *manage.py\ test*|*manage.py\ makemigrations*|*manage.py\ migrate*|*pytest*) ;;
-  # The repo's OWN front door: CLAUDE.md's Key commands lead with `make test`. The hook
-  # only sees the command STRING, so "make test" matched nothing and sailed straight past
-  # — the one shape a human MJ session is most likely to use, and the one with no reviewer
-  # watching. `make integrate` runs the CI-mirroring suite, and "the integrate gate was
-  # green" is precisely the citation this hook exists to poison.
-  *make\ test*|*make\ migrate*|*make\ integrate*) ;;
+  # The repo's OWN front door: CLAUDE.md's Key commands lead with `make test`. A hook only
+  # ever sees the command STRING, never what make expands it to, so "make test" matched
+  # nothing and sailed straight past — the one shape a human MJ session is most likely to
+  # use, and the one with no reviewer watching.
+  #
+  # `make integrate-gate` is what /integrate runs to stamp a branch combination as safe to
+  # land: it mirrors CI (ruff check + format --check, makemigrations --check, the backend
+  # suite, frontend lint+build). "The integrate gate was green" is therefore the single most
+  # load-bearing citation in the repo — and the one this hook most needs to poison, because
+  # a gate run on a drifted venv stamps a lie. (There is no `make integrate`; assuming there
+  # was, and writing a comment saying so, was itself this PR's own species of error.)
+  *make\ test*|*make\ migrate*|*make\ integrate-gate*) ;;
   *) exit 0 ;;  # fast path: no python spawned for ordinary Bash
 esac
 
