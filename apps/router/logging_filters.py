@@ -56,8 +56,14 @@ class RedactTelegramToken(logging.Filter):
     record is formatted. We therefore render the message via
     ``record.getMessage()`` and, *only when* a token is present, collapse the
     record onto the redacted, fully-rendered text (``record.msg``) and clear
-    ``record.args``. Records without a token are left untouched. Always returns
-    True — this filter redacts, it never drops records.
+    ``record.args``. Records without a token are left untouched.
+
+    The formatter appends exception and stack text *after* formatting the
+    message. Pre-rendering ``exc_info`` into logging's cached ``exc_text`` lets
+    us scrub that text before the handler formatter sees it; because
+    ``Formatter.format`` reuses a populated ``exc_text``, it will not overwrite
+    the redacted traceback. Stack text is scrubbed in place for the same reason.
+    Always returns True — this filter redacts, it never drops records.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -65,8 +71,24 @@ class RedactTelegramToken(logging.Filter):
             message = record.getMessage()
         except Exception:
             # A formatting error here must never suppress the log record.
-            return True
-        if _TELEGRAM_TOKEN_RE.search(message):
-            record.msg = scrub_telegram_token(message)
-            record.args = ()
+            pass
+        else:
+            if _TELEGRAM_TOKEN_RE.search(message):
+                record.msg = scrub_telegram_token(message)
+                record.args = ()
+
+        try:
+            if record.exc_info and not record.exc_text:
+                record.exc_text = logging.Formatter().formatException(record.exc_info)
+            if record.exc_text:
+                record.exc_text = scrub_telegram_token(record.exc_text)
+        except Exception:
+            # Redaction must not turn a logging failure into a dropped record.
+            pass
+
+        try:
+            if record.stack_info:
+                record.stack_info = scrub_telegram_token(record.stack_info)
+        except Exception:
+            pass
         return True

@@ -8,7 +8,9 @@ this filter the shared bot token streams into Log Analytics on every call.
 from __future__ import annotations
 
 import ast
+import io
 import logging
+import sys
 from pathlib import Path
 
 import httpx
@@ -135,6 +137,63 @@ class RedactTelegramTokenFilterTests(SimpleTestCase):
         self.assertTrue(self.filter.filter(innocent))
         self.assertEqual(innocent.msg, "HTTP Request: %s %s")
         self.assertEqual(innocent.args, ("GET", "https://openrouter.ai/api/v1/chat"))
+
+    def test_handler_redacts_http_status_error_exc_info(self):
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(
+            logging.Formatter(
+                "{levelname} {asctime} {name} {message}",
+                style="{",
+            )
+        )
+        handler.addFilter(self.filter)
+
+        request = httpx.Request(
+            "POST",
+            f"https://api.telegram.org/bot{_FAKE_TOKEN}/getUpdates",
+        )
+        response = httpx.Response(409, request=request)
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError:
+            record = logging.LogRecord(
+                name="apps.router.poller",
+                level=logging.ERROR,
+                pathname=__file__,
+                lineno=1,
+                msg="Error in poll loop, backing off %ds",
+                args=(1,),
+                exc_info=sys.exc_info(),
+            )
+
+        handler.handle(record)
+        rendered = stream.getvalue()
+
+        self.assertNotIn(_FAKE_SECRET, rendered)
+        self.assertIn(f"{_FAKE_ID}:[REDACTED]", rendered)
+        self.assertIn("httpx.HTTPStatusError", rendered)
+        self.assertIn("/getUpdates", rendered)
+
+    def test_handler_redacts_stack_info(self):
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(
+            logging.Formatter(
+                "{levelname} {asctime} {name} {message}",
+                style="{",
+            )
+        )
+        handler.addFilter(self.filter)
+        record = _record("diagnostic stack")
+        record.stack_info = f"Stack: https://api.telegram.org/bot{_FAKE_TOKEN}/getUpdates"
+
+        handler.handle(record)
+        rendered = stream.getvalue()
+
+        self.assertNotIn(_FAKE_SECRET, rendered)
+        self.assertIn(f"{_FAKE_ID}:[REDACTED]", rendered)
+        self.assertIn("/getUpdates", rendered)
 
 
 class ProductionLoggingConfigTests(SimpleTestCase):
