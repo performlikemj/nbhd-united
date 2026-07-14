@@ -41,9 +41,21 @@ IGNORE_FILE="$HERE/../.claude/hooks/venv_parity_ignore.txt"
 cd "$(git worktree list | head -1 | awk '{print $1}')"
 
 CI_PYTHON=3.12  # .github/workflows/ci-cd.yml: python-version
-PY_BIN="/opt/homebrew/opt/python@${CI_PYTHON}/bin/python${CI_PYTHON}"
 
-[ -x "$PY_BIN" ] || { echo "Missing CI python. Run: brew install python@${CI_PYTHON}" >&2; exit 1; }
+# ASK brew where it lives; never hardcode /opt/homebrew. That path is Apple-Silicon-only —
+# on an Intel Mac homebrew sits under /usr/local, so the hardcoded form fails, tells you to
+# `brew install python@3.12`, you obey, and it fails again with the identical message. A
+# remedy loop is the worst kind of error: it makes the user doubt their own correct action.
+PY_BIN="$(brew --prefix "python@${CI_PYTHON}" 2>/dev/null || true)/bin/python${CI_PYTHON}"
+[ -x "$PY_BIN" ] || PY_BIN="/opt/homebrew/opt/python@${CI_PYTHON}/bin/python${CI_PYTHON}"   # Apple Silicon
+[ -x "$PY_BIN" ] || PY_BIN="/usr/local/opt/python@${CI_PYTHON}/bin/python${CI_PYTHON}"       # Intel
+[ -x "$PY_BIN" ] || PY_BIN="$(command -v "python${CI_PYTHON}" 2>/dev/null || true)"          # anything on PATH
+
+[ -x "$PY_BIN" ] || {
+  echo "No python${CI_PYTHON} found (CI runs ${CI_PYTHON}; Django 6 has no py3.11 wheels)." >&2
+  echo "  brew install python@${CI_PYTHON}" >&2
+  exit 1
+}
 [ -f "$IGNORE_FILE" ] || { echo "Missing ignore file: $IGNORE_FILE" >&2; exit 1; }
 
 # The venv is SHARED MUTABLE STATE across concurrent Claude sessions. Checked twice: once
@@ -56,13 +68,34 @@ PY_BIN="/opt/homebrew/opt/python@${CI_PYTHON}/bin/python${CI_PYTHON}"
 # for nine minutes while the machine was idle. Require the match to be an actual python
 # interpreter — that is what a real test run is.
 in_use() {
+  local root="$PWD" pid comm cwd
   pgrep -f "manage.py test" 2>/dev/null | while read -r pid; do
-    case "$(ps -o comm= -p "$pid" 2>/dev/null)" in *python*) echo x ;; esac
+    # Must be a real interpreter. `pgrep -f` matches full command lines, so a caller whose
+    # OWN command line contains the pattern (a wrapper loop, a `watch`, this script quoted in
+    # a shell one-liner) self-matches and sees phantom tests forever. Confirmed live: a
+    # polling wrapper "saw" 3-5 test processes for nine minutes on an idle machine.
+    comm=$(ps -o comm= -p "$pid" 2>/dev/null || true)
+    case "$comm" in *[Pp]ython*) ;; *) continue ;; esac
+
+    # ...and it must be OUR repo. A machine-wide pgrep refuses an nbhd onboarding because
+    # SAUTAI is running tests — safe, but the refusal would assert a relationship that does
+    # not exist, and an error message that lies is how error messages get ignored. Scope by
+    # working directory: worktrees live under the primary root, so they match; other repos
+    # do not. (comm cannot do this — a venv python execs the brew framework binary, so comm
+    # reports the Cellar path, never `.venv/bin/python`.)
+    cwd=$(lsof -a -d cwd -p "$pid" -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)
+    [ -n "$cwd" ] || cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)
+
+    # Undeterminable cwd → FAIL CLOSED. Guessing "not ours" would yank a live interpreter;
+    # guessing "ours" only costs a wait.
+    if [ -z "$cwd" ]; then echo x; continue; fi
+    case "$cwd" in "$root"*) echo x ;; esac
   done | grep -q x
 }
 refuse() {
-  echo "REFUSING: another session is mid-test against this venv. Swapping it now breaks" >&2
-  echo "their run. Wait for it to finish and re-run." >&2
+  echo "REFUSING: a test is running out of this checkout (or a worktree of it) against the" >&2
+  echo "venv this script is about to replace. Swapping it now yanks their interpreter" >&2
+  echo "mid-run. Wait for it to finish, then re-run." >&2
   exit 1
 }
 in_use && refuse

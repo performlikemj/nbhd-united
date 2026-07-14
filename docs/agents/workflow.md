@@ -14,8 +14,8 @@ The `/deploy` skill walks the full commit→push→verify sequence. This doc is 
 1. `.venv/bin/ruff check <files>` **and** `.venv/bin/ruff format <files>` — CI runs `ruff format --check .` as a separate, stricter gate. (The on-edit hook now auto-formats, but verify before push.)
 2. `python manage.py makemigrations --check --dry-run` — CI fails on any model↔migration drift, including `help_text` typos. Always **generate** migrations (`makemigrations <app> --name <slug>`), never hand-write.
 3. Adding ANY migration to an app with `public.*` tables? Add a fresh tenants relock migration depending on it (topo-sort shifts can push the RLS lockdown before new tables exist). Fast check: `python manage.py test apps.tenants.test_public_schema_lockdown --noinput`.
-4. Local venv is Python 3.11 and can lag CI's pins (e.g. Django 6 removed `CheckConstraint(check=)` → use `condition=`). When CI fails on an apparently-unrelated subsystem, suspect version-pin/topo drift, not your code.
-5. Never pip-compile `requirements.txt` on macOS — it strips Linux CUDA/triton torch pins. Hand-edit the lockfile.
+4. The local venv is Python **3.12** at CI parity — but it *drifts*, and a drifted venv makes a local green meaningless (it once ran Django 5.1.15 against CI's 6.0.7, and a real RLS failure got called "pre-existing" on the strength of it). `make setup` rebuilds it. A `PostToolUse` hook flags drift on test/migration runs — but it is **silent when clean**, and silence means only "matched origin/main *as of your last fetch*". When CI fails on an apparently-unrelated subsystem, suspect version-pin/topo drift before suspecting your code (e.g. Django 6 removed `CheckConstraint(check=)` → use `condition=`).
+5. Never pip-compile `requirements.txt` on macOS — it strips ~37 Linux CUDA/triton pins and nothing fails until the PII container deploys. Hand-edit the lockfile. The `compile-deps` target refuses to run off Linux, and `git_guard.sh` blocks every wrapper (`pip-compile`, `make compile-deps`, `uv pip compile`, `python -m piptools compile`).
 
 ## Merging
 

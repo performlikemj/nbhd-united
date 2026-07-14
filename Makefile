@@ -65,7 +65,21 @@ integrate-gate:
 	DJANGO_TEST_DB_NAME=test_nbhd_united_train python manage.py test apps/ --noinput
 	cd frontend && npm ci && npm run lint && npm run build
 
+# Refuses off Linux, IN THE RECIPE — not just in the Claude hook. A string-matching hook
+# guards only the doorway: it lives inside Claude sessions, so a human typing this in a plain
+# terminal has none, a worktree branched before this PR carries the old hook, and every make
+# spelling (`-j2`, `-C .`, trailing targets) is another string to chase. The damage is silent
+# and deferred — ~37 Linux CUDA/triton pins vanish from requirements.txt and nothing fails
+# until the PII container deploys — so the refusal belongs where the damage is done.
+# git_guard.sh stays as a backstop for raw `pip-compile` invocations, which is all a string
+# match can honestly be.
 compile-deps:
+	@[ "$$(uname)" = "Linux" ] || { \
+	  echo "REFUSING: pip-compile on macOS re-resolves for THIS platform and silently drops"; \
+	  echo "~37 Linux-only CUDA/triton pins from requirements.txt. Nothing fails until the"; \
+	  echo "PII container deploys. Run this inside the Linux container, or hand-edit"; \
+	  echo "requirements.txt. To rebuild your virtualenv you want: make setup"; \
+	  exit 1; }
 	pip-compile requirements.in
 
 sync-deps:
