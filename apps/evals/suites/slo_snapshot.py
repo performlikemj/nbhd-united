@@ -47,6 +47,16 @@ missed) — each needs infra Django cannot reach from a task:
   * **CryptoError count** — a ``box.py`` decrypt/tamper exception surfaces as a
     Sentry event / stdout log line, not a counted DB row; it belongs to the same
     Log-Analytics follow-up.
+  * **full cold-path user-perceived latency** — ``created_at → replied_at`` for turns
+    that woke a container. Since 2026-07-14 ``compute_reply_latency`` excludes woken
+    turns (they were being judged twice, and losing to the warm ceiling), and
+    ``compute_wake_latency_p95`` measures only the WAKE PORTION
+    (``waking_at → replied_at``). So the number a user actually experiences on a cold
+    start — the full wait, wake plus turn — is deliberately not a metric here. It is
+    NOT unmeasured: the journey-wake canary (Probe 4) drives that path end-to-end
+    against its own SLO, and ``n_woken`` in the reply-latency details says how many
+    real turns took it. Naming it so a future reader sees the seam was chosen, not
+    missed.
   * **cron success RATE** — ``ProactiveOutbound`` only records deliveries that
     HAPPENED, and it records every proactive producer (cron fires, meditation-ready,
     nightly_extraction), so the DB holds neither a cron-only numerator nor an
@@ -79,6 +89,29 @@ SUITE = "slo_snapshot"
 WINDOW_HOURS = 24
 # The trailing span the weekly digest trends over.
 DIGEST_WINDOW_DAYS = 7
+
+# Minimum sample sizes below which a percentile is NOT a percentile.
+#
+# Prod, 2026-07-13: the whole 24h window held **16 real turns across the entire
+# fleet** — 14 of them one user's. At n=16 the type-7 "p95" is an interpolation
+# between the 15th and 16th sorted values: roughly the second-slowest turn of the day
+# wearing a statistical costume. One slow turn moves it enormously, so the metric
+# breaches on any day somebody waits — and a metric that always breaches gets ignored,
+# which is strictly worse than not having it.
+#
+# A p95 needs at least 1/0.05 = 20 observations before the top 5% is even a distinct
+# observation. A median is far more forgiving, so it gets a lower floor rather than
+# being dragged down with it.
+#
+# Below the floor the metric is recorded SKIPPED-WITH-REASON (score=None,
+# details.skipped=True, details.n=<actual>) — the suite's standing rule that missing
+# data is SURFACED, never passed off as a green zero, applies just as much to
+# *insufficient* data as to none. A persistently-skipped p95 is itself the finding:
+# the fleet does not yet produce enough turns in 24h to have a measurable tail. That
+# is a true statement about the business, and it should be visible rather than
+# papered over with a number that means nothing.
+MIN_SAMPLE_P50 = 10
+MIN_SAMPLE_P95 = 20
 
 # The flagship journey canaries that treat a synthetic-tenant personal
 # budget-cap trip as a SOFT pass (journey_chat.py / journey_wake.py). That design
@@ -197,18 +230,33 @@ def _window(now):
 
 
 def compute_reply_latency(now) -> dict | None:
-    """(p50, p95, n) of REAL-tenant, tenant-produced, ready-turn reply latency (ms).
+    """(p50, p95, n) of REAL-tenant, tenant-produced, WARM ready-turn latency (ms).
 
     METADATA ONLY: selects ``created_at`` / ``replied_at`` — never a body column.
     Filters to ``status=ready`` + ``source=tenant`` so a fabricated on-device
     reply (instant, source=on_device) and a still-pending turn cannot flatter the
     number, and excludes synthetic tenants. Returns ``None`` on an empty window.
+
+    WOKEN TURNS ARE EXCLUDED (``waking_at__isnull=True``). A turn that had to spin
+    up a hibernated container carries the cold start ON TOP of the turn, and
+    ``compute_wake_latency_p95`` already measures exactly those turns against a
+    deliberately higher ceiling (90s vs 45s) *because* the wake path is the slow one.
+    Counting them here too meant the SAME turn was judged twice by two standards that
+    disagree — and the reply SLO lost. Prod, 2026-07-13: a 95.4s turn PASSED the wake
+    SLO (80.5s of it was the wake, under the 90s ceiling) while simultaneously
+    breaching the 45s reply ceiling, and the p50 breach (16,198ms vs a 15,000ms
+    threshold) was entirely an artifact of the two cold starts in that window —
+    warm-only it was 14,812ms, i.e. green.
+
+    What survives the exclusion is the honest signal, and it is not comfortable: two
+    turns took 70.4s and 61.9s on ALREADY-WARM containers that day. Those are real.
     """
     since, until = _window(now)
     rows = AppChatMessage.objects.filter(
         tenant__is_synthetic=False,
         status=AppChatMessage.Status.READY,
         source=AppChatMessage.Source.TENANT,
+        waking_at__isnull=True,  # warm turns only — see the docstring
         replied_at__isnull=False,
         created_at__gte=since,
         created_at__lte=until,
@@ -219,9 +267,29 @@ def compute_reply_latency(now) -> dict | None:
         for created, replied in rows.iterator()
         if created is not None and replied is not None and replied >= created
     ]
+
+    # How many turns we EXCLUDED. Carried into details so a reader can never mistake a
+    # thin warm sample for a quiet fleet: "n=14, n_woken=2" says plainly that two real
+    # users waited on a cold start and are accounted for by ``wake_latency_p95``, not
+    # dropped on the floor.
+    n_woken = AppChatMessage.objects.filter(
+        tenant__is_synthetic=False,
+        status=AppChatMessage.Status.READY,
+        source=AppChatMessage.Source.TENANT,
+        waking_at__isnull=False,
+        replied_at__isnull=False,
+        created_at__gte=since,
+        created_at__lte=until,
+    ).count()
+
     if not latencies:
         return None
-    return {"p50": percentile(latencies, 50), "p95": percentile(latencies, 95), "n": len(latencies)}
+    return {
+        "p50": percentile(latencies, 50),
+        "p95": percentile(latencies, 95),
+        "n": len(latencies),
+        "n_woken": n_woken,
+    }
 
 
 def compute_wake_latency_p95(now) -> dict | None:
@@ -415,13 +483,17 @@ def _record_measured(run, case_id, value, threshold, details) -> None:
     )
 
 
-def _record_skipped(run, case_id, threshold, reason) -> None:
-    """Record a metric with no data as skipped-with-reason (never a passing zero).
+def _record_skipped(run, case_id, threshold, reason, **extra) -> None:
+    """Record a metric we could not honestly measure as skipped-with-reason.
 
     ``passed=True`` (missing data is not, by itself, a threshold breach) but
     ``score=None`` and ``details.skipped=True`` make it unmistakably distinct from
     a real measured value — so the digest and any reader can tell "we couldn't
     measure this" from "this was 0 and fine".
+
+    Covers BOTH no data and NOT ENOUGH data. ``extra`` carries the diagnostic that
+    makes the skip actionable (e.g. ``n=16`` against a floor of 20) — counts only,
+    so it rides the ``record()`` details chokepoint unchanged.
     """
     record(
         run,
@@ -430,7 +502,7 @@ def _record_skipped(run, case_id, threshold, reason) -> None:
         passed=True,
         score=None,
         threshold=threshold,
-        details={"skipped": True, "reason": reason[:60], "window_h": WINDOW_HOURS},
+        details={"skipped": True, "reason": reason[:60], "window_h": WINDOW_HOURS, **extra},
     )
 
 
@@ -447,16 +519,34 @@ def run_slo_snapshot_suite(*, trigger: str = EvalRun.Trigger.MANUAL, now=None) -
     thr = thresholds()
 
     with record_run(SUITE, trigger, image_tag=None) as run:
-        # --- reply latency p50 / p95 (one query, two metrics) ---
+        # --- WARM reply latency p50 / p95 (one query, two metrics, two sample floors) ---
+        # Each percentile is gated on its own minimum sample: a median survives a thin
+        # window, a 95th percentile does not. Below the floor we say so (skipped, with
+        # the actual n) rather than publish a number that is really "the second-slowest
+        # turn of the day" and let it breach a threshold it was never able to measure.
         latency = compute_reply_latency(now)
         if latency is None:
-            _record_skipped(run, M_REPLY_P50, thr[M_REPLY_P50], "no_ready_turns_24h")
-            _record_skipped(run, M_REPLY_P95, thr[M_REPLY_P95], "no_ready_turns_24h")
+            _record_skipped(run, M_REPLY_P50, thr[M_REPLY_P50], "no_warm_ready_turns_24h")
+            _record_skipped(run, M_REPLY_P95, thr[M_REPLY_P95], "no_warm_ready_turns_24h")
         else:
-            p50 = round(latency["p50"], 3)
-            p95 = round(latency["p95"], 3)
-            _record_measured(run, M_REPLY_P50, p50, thr[M_REPLY_P50], {"n": latency["n"], "pctl": 50})
-            _record_measured(run, M_REPLY_P95, p95, thr[M_REPLY_P95], {"n": latency["n"], "pctl": 95})
+            n, woken = latency["n"], latency["n_woken"]
+            if n < MIN_SAMPLE_P50:
+                _record_skipped(
+                    run, M_REPLY_P50, thr[M_REPLY_P50], "insufficient_sample", n=n, floor=MIN_SAMPLE_P50, n_woken=woken
+                )
+            else:
+                _record_measured(
+                    run, M_REPLY_P50, round(latency["p50"], 3), thr[M_REPLY_P50], {"n": n, "pctl": 50, "n_woken": woken}
+                )
+
+            if n < MIN_SAMPLE_P95:
+                _record_skipped(
+                    run, M_REPLY_P95, thr[M_REPLY_P95], "insufficient_sample", n=n, floor=MIN_SAMPLE_P95, n_woken=woken
+                )
+            else:
+                _record_measured(
+                    run, M_REPLY_P95, round(latency["p95"], 3), thr[M_REPLY_P95], {"n": n, "pctl": 95, "n_woken": woken}
+                )
 
         # --- wake-path latency p95 ---
         wake = compute_wake_latency_p95(now)
