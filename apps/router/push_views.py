@@ -1,7 +1,8 @@
 """APNs device-token registration + the reply-ready push helper.
 
 ``PushRegisterView`` (JWT-authed) lets the iOS app register/refresh/unregister
-its APNs device token. ``notify_app_reply_ready`` is called from the iOS drain
+its APNs device token, while ``PushStatusView`` gives the web app a token-free
+registration check. ``notify_app_reply_ready`` is called from the iOS drain
 when a turn's reply lands, to push "your answer is ready" — closing the
 fire-and-forget gap (see ``HER_SIRI_ARCHITECTURE.md``). Both are no-ops in
 substance until APNs is provisioned (see ``apps.common.apns``).
@@ -130,6 +131,17 @@ class PushRegisterView(APIView):
             return Response({"error": "invalid_token"}, status=status.HTTP_400_BAD_REQUEST)
         DeviceToken.objects.filter(user=request.user, token=token).delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PushStatusView(APIView):
+    """GET: report whether this tenant has a registered iOS device."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        registered = bool(tenant and DeviceToken.objects.filter(user=request.user, tenant=tenant).exists())
+        return Response({"registered": registered}, status=status.HTTP_200_OK)
 
 
 class PushTestView(APIView):

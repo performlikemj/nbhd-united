@@ -31,6 +31,17 @@ def line_generate_link(request):
             status=400,
         )
 
+    # The frontend also disables this action from line_status(), but the
+    # fleet-wide cap can be reached after that read or the request can bypass
+    # the UI. Reject before minting a token that cannot lead to a usable link.
+    from apps.router.line_quota import is_quota_exhausted
+
+    if is_quota_exhausted():
+        return Response(
+            {"code": "line_quota_exhausted"},
+            status=409,
+        )
+
     try:
         token = svc.generate_link_token(user)
         return Response(
@@ -59,8 +70,8 @@ def line_unlink(request):
 @permission_classes([IsAuthenticated])
 def line_status(request):
     """Get the user's LINE link status + fleet-wide LINE Push quota
-    state. The quota state is included so the frontend channel selector
-    can disable the LINE radio when the monthly cap has been hit (see
+    state. The quota state is included so the frontend channel UI can
+    disable the connect action when the monthly cap has been hit (see
     apps/router/line_quota.py)."""
     from apps.router.models import LineQuotaState
 

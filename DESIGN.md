@@ -58,6 +58,15 @@ All colours are exposed as CSS variables in `:root` and as Tailwind utilities vi
 | `--signal-text` / `text-signal-text` | `#4ECDC4` | Signal used as text |
 | `--signal-faint` | `rgba(78,205,196,0.15)` | Signal hover / soft fill |
 
+### Messaging brands
+
+These tokens are limited to each channel’s official glyph and direct open/connect action. They are not surface, status, or hierarchy colours.
+
+| Token | Value | Role |
+|---|---|---|
+| `--telegram` / `text-telegram` | `#229ED9` | Telegram glyph and direct action |
+| `--line` / `text-line` | `#06C755` | LINE glyph and direct action |
+
 ### Constellation palette (landing + marketing)
 
 Only used under `.landing-dark` / `.constellation-bg` / `.nebula-bg`. Tailwind prefix: `c-`.

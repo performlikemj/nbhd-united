@@ -56,6 +56,7 @@ import {
   fetchMe,
   fetchPersonas,
   fetchPreferences,
+  fetchPushStatus,
   fetchProvisioningStatus,
   fetchRefreshConfigStatus,
   fetchSidebarTree,
@@ -548,6 +549,8 @@ export function useTelegramStatusQuery(enabled = true, pairingActive = false) {
     queryKey: ["telegram-status"],
     queryFn: fetchTelegramStatus,
     enabled: isLoggedIn() && enabled,
+    staleTime: 0,
+    refetchOnWindowFocus: "always",
     refetchInterval: enabled
       ? (query) => {
           if (query.state.status === "error") return false;
@@ -561,6 +564,7 @@ export function useTelegramStatusQuery(enabled = true, pairingActive = false) {
 export function useGenerateTelegramLinkMutation() {
   return useMutation({
     mutationFn: generateTelegramLink,
+    meta: { skipErrorToast: true },
   });
 }
 
@@ -594,6 +598,8 @@ export function useLineStatusQuery(enabled = true, pairingActive = false) {
     queryKey: ["line-status"],
     queryFn: fetchLineStatus,
     enabled: isLoggedIn() && enabled,
+    staleTime: 0,
+    refetchOnWindowFocus: "always",
     refetchInterval: enabled
       ? (query) => {
           if (query.state.status === "error") return false;
@@ -607,6 +613,19 @@ export function useLineStatusQuery(enabled = true, pairingActive = false) {
 export function useGenerateLineLinkMutation() {
   return useMutation({
     mutationFn: generateLineLink,
+    meta: { skipErrorToast: true },
+  });
+}
+
+export function usePushStatusQuery(enabled = true) {
+  return useQuery({
+    queryKey: ["push-status"],
+    queryFn: fetchPushStatus,
+    enabled: isLoggedIn() && enabled,
+    staleTime: 0,
+    refetchOnWindowFocus: "always",
+    refetchInterval: (query) =>
+      query.state.data?.registered === false ? 15_000 : false,
   });
 }
 

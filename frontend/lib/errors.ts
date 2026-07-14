@@ -11,6 +11,8 @@ const FRIENDLY_BY_CODE: Record<string, string> = {
   no_tenant: "No active tenant for this session.",
   no_profile: "No fitness profile yet — set one up in the Fuel tab.",
   no_container: "Your assistant isn't running right now — try again in a moment.",
+  line_quota_exhausted:
+    "LINE’s monthly messaging allowance is used up across the platform. You’ll be able to connect LINE again at the start of next month.",
 };
 
 function friendlyForStatus(status: number | undefined, fallback: string): string {
@@ -38,9 +40,17 @@ export function getErrorMessage(err: unknown): string {
   // apiFetch puts the response body in .message — try JSON first.
   if (raw.startsWith("{")) {
     try {
-      const parsed = JSON.parse(raw) as { error?: string; detail?: string; message?: string };
+      const parsed = JSON.parse(raw) as {
+        code?: string;
+        error?: string;
+        detail?: string;
+        message?: string;
+      };
       if (typeof parsed.detail === "string" && parsed.detail) return parsed.detail;
       if (typeof parsed.message === "string" && parsed.message) return parsed.message;
+      if (typeof parsed.code === "string" && parsed.code) {
+        return FRIENDLY_BY_CODE[parsed.code] ?? parsed.code;
+      }
       if (typeof parsed.error === "string" && parsed.error) {
         return FRIENDLY_BY_CODE[parsed.error] ?? parsed.error;
       }
