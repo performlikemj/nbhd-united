@@ -46,39 +46,46 @@ def _record_send(tenant_id: str) -> None:
 
 
 def resolve_user_channel(user) -> str | None:
-    """Determine which channel to use for outbound messages to ``user``.
+    """Determine which channel to use for outbound / proactive messages to ``user``.
 
-    Respects ``preferred_channel`` when that channel is linked; otherwise falls
-    back to whichever messaging channel is linked. When NO Telegram/LINE channel
-    is linked but the user has a registered iOS device, returns ``"app"`` — an
-    iOS-only user (the common case for App Store installs) still gets crons,
-    delivered as an APNs push + a ``?since=`` feed row instead of a chat message.
-    Returns None only when there is no delivery surface at all.
+    Order (MJ direction — keep Telegram/LINE, but push toward the app when it's
+    installed):
+
+    1. iOS device token registered → ``"app"``. Proactive content lands in the
+       app feed as the PRIMARY surface: the APNs push + the ``?since=`` feed row
+       (both produced by ``record_proactive_outbound``) ARE the delivery, so the
+       same content no longer ALSO arrives in Telegram/LINE for token-holders.
+    2. else LINE linked → ``"line"``.
+    3. else Telegram linked → ``"telegram"``.
+    4. else ``None`` (no delivery surface at all).
+
+    ``preferred_channel`` is deliberately NOT honoured. In production all rows
+    carry the schema default ``"telegram"`` (nobody ever chose it — the frontend
+    hook is dead code and iOS never shipped the control), so reading it would
+    honour noise, not intent. The column is left in place but vestigial; see the
+    PR description.
+
+    Linked Telegram/LINE users WITHOUT the app are unaffected — they keep full
+    two-way delivery via their linked channel. Only token-holders flip from
+    telegram/line to the app.
 
     Module-level so backend proactive senders (e.g. Core notify-on-ready) route
     identically to ``CronDeliveryView`` without duplicating the logic.
     """
-    preferred = getattr(user, "preferred_channel", "telegram")
-    line_user_id = getattr(user, "line_user_id", None)
-    telegram_chat_id = getattr(user, "telegram_chat_id", None)
-
-    # Honour preference if that channel is linked.
-    if preferred == "line" and line_user_id:
-        return "line"
-    if preferred == "telegram" and telegram_chat_id:
-        return "telegram"
-
-    # Fallback: whichever messaging channel is linked.
-    if line_user_id:
-        return "line"
-    if telegram_chat_id:
-        return "telegram"
-
-    # No Telegram/LINE link — deliver straight to the iOS app if it's installed.
+    # 1. Prefer the app whenever an iOS device is registered.
     from apps.router.models import DeviceToken
 
     if DeviceToken.objects.filter(user=user).exists():
         return "app"
+
+    # 2/3. No device — fall back to whichever messaging channel is linked so
+    # linked users without the app keep working.
+    line_user_id = getattr(user, "line_user_id", None)
+    telegram_chat_id = getattr(user, "telegram_chat_id", None)
+    if line_user_id:
+        return "line"
+    if telegram_chat_id:
+        return "telegram"
 
     return None
 

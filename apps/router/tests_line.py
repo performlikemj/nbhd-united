@@ -374,47 +374,48 @@ class LineLinkingFlowTest(TestCase):
 
 
 class CronDeliveryChannelRoutingTest(TestCase):
-    """Test _resolve_channel logic in CronDeliveryView."""
+    """CronDeliveryView._resolve_channel delegates to the app-first
+    ``resolve_user_channel``: app (iOS device token) → line → telegram → None.
+    ``preferred_channel`` is not consulted. Uses real Users because the resolver
+    now does a DeviceToken lookup for every user (a MagicMock can't back that
+    query)."""
 
     def _get_view(self):
         from apps.router.cron_delivery import CronDeliveryView
 
         return CronDeliveryView()
 
-    def test_resolve_channel_prefers_telegram_when_linked(self):
+    def _user_tenant(self, username, **user_kwargs):
+        user = User.objects.create_user(username=username, email=f"{username}@example.com", **user_kwargs)
+        tenant = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE)
+        return user, tenant
+
+    def test_resolve_channel_prefers_app_when_device_registered(self):
+        from apps.router.models import DeviceToken
+
         view = self._get_view()
-        user = MagicMock()
-        user.preferred_channel = "telegram"
-        user.telegram_chat_id = 123
-        user.line_user_id = "U_123"
+        # Device token beats BOTH linked messaging channels.
+        user, tenant = self._user_tenant("routing_app", telegram_chat_id=123, line_user_id="U_123")
+        DeviceToken.objects.create(user=user, tenant=tenant, token="d" * 64)
+        self.assertEqual(view._resolve_channel(user), "app")
+
+    def test_resolve_channel_line_before_telegram_without_device(self):
+        view = self._get_view()
+        # No device → LINE (step 2) is chosen over Telegram (step 3).
+        user, _ = self._user_tenant("routing_line_tg", telegram_chat_id=456, line_user_id="U_123")
+        self.assertEqual(view._resolve_channel(user), "line")
+
+    def test_resolve_channel_telegram_when_only_telegram(self):
+        view = self._get_view()
+        # No device, no LINE → linked Telegram user keeps full delivery.
+        user, _ = self._user_tenant("routing_tg", telegram_chat_id=456)
         self.assertEqual(view._resolve_channel(user), "telegram")
-
-    def test_resolve_channel_prefers_line_when_linked(self):
-        view = self._get_view()
-        user = MagicMock()
-        user.preferred_channel = "line"
-        user.line_user_id = "U_123"
-        user.telegram_chat_id = 456
-        self.assertEqual(view._resolve_channel(user), "line")
-
-    def test_resolve_channel_falls_back_to_linked(self):
-        view = self._get_view()
-        user = MagicMock()
-        user.preferred_channel = "telegram"
-        user.line_user_id = "U_123"
-        user.telegram_chat_id = None
-        self.assertEqual(view._resolve_channel(user), "line")
 
     def test_resolve_channel_none_when_unlinked(self):
         # A genuinely unlinked user — no Telegram/LINE AND no registered iOS
-        # device — has no delivery surface, so the channel is None. Uses a real
-        # User (not a MagicMock) because resolve now does a DeviceToken lookup on
-        # the no-messaging-link path. (A user with only a device resolves to
-        # 'app'; see ResolveUserChannelTest in test_proactive_push.py.)
-        from apps.tenants.models import User
-
+        # device — has no delivery surface, so the channel is None.
         view = self._get_view()
-        user = User.objects.create_user(username="unlinked_routing", email="unlinked_routing@example.com")
+        user, _ = self._user_tenant("unlinked_routing")
         self.assertIsNone(view._resolve_channel(user))
 
 

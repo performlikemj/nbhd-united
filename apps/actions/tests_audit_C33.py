@@ -119,3 +119,25 @@ class SendGateConfirmationChannelResolutionTests(TestCase):
         tg.assert_not_called()
         action.refresh_from_db()
         self.assertEqual(action.platform_channel, "line")
+
+    def test_app_token_with_telegram_still_routes_to_telegram(self):
+        """Load-bearing gate exception (MJ's case): a user with BOTH an iOS
+        device token AND a linked Telegram must still get gate buttons on
+        Telegram — NOT hit the app dead-end where the action silently expires.
+
+        Gate resolution is linked-channel-first, unlike the now-app-first
+        ``resolve_user_channel`` used for plain proactive sends: the app has no
+        interactive approve/deny surface, so gates never target it while a
+        messaging channel is linked."""
+        tenant, action = self._make("c33_app_tg", telegram_chat_id=123456789)
+        DeviceToken.objects.create(tenant=tenant, user=tenant.user, token="e" * 64, environment="production")
+
+        patcher, tg, line = self._patched_senders(tg=mock.Mock(return_value="777"))
+        with patcher:
+            result = send_gate_confirmation(tenant, action)
+
+        self.assertIs(result, True)
+        tg.assert_called_once_with(tenant, action)
+        line.assert_not_called()
+        action.refresh_from_db()
+        self.assertEqual(action.platform_channel, "telegram")

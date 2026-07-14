@@ -298,35 +298,74 @@ class CronDeliveryEmitsPushTest(TestCase):
 
 
 class ResolveUserChannelTest(TestCase):
-    """The 'app' delivery target: an iOS-only user (no Telegram/LINE) resolves to
-    'app' so crons still reach them; nothing linked at all → None."""
+    """Outbound channel resolution order (MJ direction — prefer the app when an
+    iOS device token exists; Telegram/LINE preserved for linked users without
+    one): app → line → telegram → None. ``preferred_channel`` is not consulted."""
 
     def setUp(self):
         self.user = _make_user()
         self.tenant = _make_tenant(self.user)
 
-    def test_app_only_user_resolves_to_app(self):
+    def _add_token(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+
+    def test_token_beats_telegram_and_line(self):
+        # token + tg + line → "app": the device token wins outright.
+        self.user.telegram_chat_id = 999
+        self.user.line_user_id = "U" + "1" * 32
+        self.user.save()
+        self._add_token()
         from apps.router.cron_delivery import resolve_user_channel
 
-        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
         self.assertEqual(resolve_user_channel(self.user), "app")
+
+    def test_app_token_wins_over_telegram(self):
+        # Behaviour flip vs the old resolver: a user with BOTH Telegram and the
+        # app now routes to "app" (was "telegram"). The content lands in the app
+        # feed as primary and no longer ALSO arrives in Telegram. They still get
+        # the APNs push via record_proactive_outbound (as they always did).
+        self.user.telegram_chat_id = 999
+        self.user.save()
+        self._add_token()
+        from apps.router.cron_delivery import resolve_user_channel
+
+        self.assertEqual(resolve_user_channel(self.user), "app")
+
+    def test_token_only_resolves_to_app(self):
+        self._add_token()
+        from apps.router.cron_delivery import resolve_user_channel
+
+        self.assertEqual(resolve_user_channel(self.user), "app")
+
+    def test_telegram_only_resolves_to_telegram(self):
+        # No token: a linked Telegram user keeps full two-way delivery.
+        self.user.telegram_chat_id = 999
+        self.user.save()
+        from apps.router.cron_delivery import resolve_user_channel
+
+        self.assertEqual(resolve_user_channel(self.user), "telegram")
+
+    def test_line_only_resolves_to_line(self):
+        self.user.line_user_id = "U" + "1" * 32
+        self.user.save()
+        from apps.router.cron_delivery import resolve_user_channel
+
+        self.assertEqual(resolve_user_channel(self.user), "line")
+
+    def test_line_beats_telegram_without_token(self):
+        # Both messaging channels linked, no token → LINE (step 2 before step 3).
+        self.user.telegram_chat_id = 999
+        self.user.line_user_id = "U" + "1" * 32
+        self.user.save()
+        from apps.router.cron_delivery import resolve_user_channel
+
+        self.assertEqual(resolve_user_channel(self.user), "line")
 
     def test_no_surface_resolves_to_none(self):
         from apps.router.cron_delivery import resolve_user_channel
 
         # No Telegram, no LINE, no device → genuinely nowhere to deliver.
         self.assertIsNone(resolve_user_channel(self.user))
-
-    def test_telegram_link_wins_over_app(self):
-        # A user with both Telegram and the app keeps Telegram as the channel —
-        # 'app' is only a fallback for users with no messaging link. (They still
-        # get the parallel iOS push via record_proactive_outbound.)
-        from apps.router.cron_delivery import resolve_user_channel
-
-        self.user.telegram_chat_id = 999
-        self.user.save()
-        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
-        self.assertEqual(resolve_user_channel(self.user), "telegram")
 
 
 @override_settings(
