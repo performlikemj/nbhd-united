@@ -90,6 +90,26 @@ class WorkoutPlan(models.Model):
     def __str__(self) -> str:
         return f"{self.name} ({self.status}, {self.weeks}w)"
 
+    @property
+    def end_date(self):
+        """The INCLUSIVE last calendar day the program is running.
+
+        A plan runs from ``start_date`` for ``weeks`` weeks, so its final day is
+        ``start_date + weeks*7 - 1`` — the Sunday that closes the last week.
+
+        Relationship to the completion sweep: ``complete_elapsed_plans_task``
+        (apps/orchestrator/tasks.py) completes a plan once
+        ``start_date + weeks*7 <= tenant_today`` — i.e. the day AFTER
+        ``end_date``. That boundary is EXCLUSIVE (the first day the plan counts
+        as over); ``end_date`` here is INCLUSIVE (the last day it's still on).
+        So ``end_date + 1 day`` is exactly that task's exclusive boundary.
+
+        Derived, not stored — no column, no migration.
+        """
+        from datetime import timedelta
+
+        return self.start_date + timedelta(days=self.weeks * 7 - 1)
+
 
 class PlanSlot(models.Model):
     """A stable identity for a planned session.
