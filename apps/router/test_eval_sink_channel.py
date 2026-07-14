@@ -131,6 +131,52 @@ class CronDeliveryToTheSinkTest(TestCase):
         self.assertFalse(ProactiveOutbound.objects.filter(tenant=real).exists())
 
 
+class SyntheticTenantsGetNoProactiveContextTest(TestCase):
+    """The door the sink opened, closed.
+
+    ``surface_proactive_context`` is the SECOND model-facing consumer of
+    ProactiveOutbound — it prepends "[earlier-from-you]: <text>" onto inbound turns on
+    every ingress path, including the one the behavior transport drives. It was
+    harmless only because a synthetic tenant had no rows (everything 422'd).
+
+    The sink creates them. The eval tenant's daily system crons (Morning Briefing,
+    Evening Check-in) call ``nbhd_send_to_user`` and now record a row every day — so
+    without this gate the FIRST scenario turn of every nightly would drain yesterday's
+    briefing into its prompt, and the reminder scenario could read back its own previous
+    water-nudge, all while the run stamped ``isolated: True``. That is the exact
+    contamination this PR exists to end, re-entering through the PR's own door.
+    """
+
+    def test_a_synthetic_tenants_sink_rows_never_reach_the_model(self):
+        from apps.router.proactive_context import record_proactive_outbound, surface_proactive_context
+
+        tenant = _make(synthetic=True, username="synth-ctx")
+        record_proactive_outbound(
+            tenant=tenant,
+            channel=ProactiveOutbound.Channel.EVAL,
+            channel_user_id=str(tenant.user_id),
+            message_text="Morning Briefing: here is your day",
+            job_name="morning_briefing",
+        )
+        self.assertTrue(ProactiveOutbound.objects.filter(tenant=tenant).exists())
+        self.assertEqual(surface_proactive_context(tenant=tenant), "")
+
+    def test_a_real_tenant_still_gets_its_proactive_context(self):
+        """The suppression is scoped to synthetic tenants — this block is a real product
+        feature (it stops the assistant being amnesiac about its own proactive sends)."""
+        from apps.router.proactive_context import record_proactive_outbound, surface_proactive_context
+
+        tenant = _make(synthetic=False, username="real-ctx", telegram=777)
+        record_proactive_outbound(
+            tenant=tenant,
+            channel=ProactiveOutbound.Channel.TELEGRAM,
+            channel_user_id="777",
+            message_text="Did you book the dentist?",
+            job_name="nudge",
+        )
+        self.assertNotEqual(surface_proactive_context(tenant=tenant), "")
+
+
 class SyntheticTenantsGetNoConversationDigestTest(TestCase):
     """The USER.md "Conversation so far" block is what silently defeated the behavior
     suite's per-scenario isolation: the transport opens a fresh thread per scenario, and

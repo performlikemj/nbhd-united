@@ -249,6 +249,8 @@ def surface_proactive_context(
 ) -> str:
     """Look up recent proactive outbounds for ``tenant`` and return a prepend block.
 
+    SYNTHETIC EVAL TENANTS GET NOTHING — see the gate below.
+
     TENANT-scoped, transport-agnostic (see module docstring): the query
     matches the tenant's recent rows regardless of which ``channel`` /
     ``channel_user_id`` they were recorded under, so a reply on ANY inbound
@@ -279,6 +281,33 @@ def surface_proactive_context(
 
     Returns the empty string when there's nothing to surface.
     """
+    # SYNTHETIC EVAL TENANTS: never surface anything into the model's context.
+    #
+    # This is the SECOND model-facing consumer of ProactiveOutbound (the USER.md
+    # "Conversation so far" digest is the first, gated the same way in
+    # conversation_capture.build_conversation_digest). It prepends
+    # "[earlier-from-you]: <text>" onto inbound turns on EVERY ingress path,
+    # including ``_drain_ios_batch`` — which is exactly the path the behavior
+    # transport drives.
+    #
+    # It was harmless right up until the ``eval`` sink landed, because a synthetic
+    # tenant had no ProactiveOutbound rows at all (everything 422'd). The sink
+    # creates them: the eval tenant's daily system crons (Morning Briefing, Evening
+    # Check-in) call nbhd_send_to_user and now record rows every single day. Without
+    # this gate, the FIRST scenario turn of every nightly behavior run would drain
+    # yesterday's briefing text into its prompt — and the reminder scenario could read
+    # back its OWN previous water-nudge — while the run stamped ``isolated: True``.
+    #
+    # That is the same cross-turn contamination this PR exists to kill, walking back
+    # in through the door the PR itself opened. Gate it at the function, so all four
+    # ingress paths are covered at once.
+    #
+    # Consequence, deliberately accepted: sink rows are never marked consumed and
+    # stay unconsumed forever. They are evidence rows — nothing expires on
+    # consumption state, and nothing reads them but the eval assertions.
+    if getattr(tenant, "is_synthetic", False):
+        return ""
+
     now = timezone.now()
     # Consumed rows keep the tight recency window; unconsumed rows get the
     # long one so a never-answered question stays surfaceable for days.

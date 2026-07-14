@@ -822,7 +822,7 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
                 message_text=_build_summary_text(added_items, task_actions, entity_map=None),
                 job_name="nightly_extraction",
             )
-        else:  # channel == "none": the work above still ran; nothing to deliver to
+        else:  # channel "none" or "eval" (synthetic): the work above ran; nothing to deliver to
             logger.info(
                 "extraction: tenant=%s extraction/reconciliation ran but no delivery surface — summary not sent",
                 str(tenant.id)[:8],
