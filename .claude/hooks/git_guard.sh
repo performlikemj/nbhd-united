@@ -22,4 +22,11 @@ if printf '%s' "$cmd" | grep -qE 'git push[^|;&]*(--force|--force-with-lease|-f[
   block "Blocked by .claude/hooks/git_guard.sh: force-push touching main is never allowed."
 fi
 
+# requirements.txt is compiled on LINUX. Re-compiling it on macOS silently DROPS the
+# Linux-only CUDA/torch pins the PII model needs, and the loss is invisible until a
+# deploy. Standing MJ rule, previously enforced only by memory — mechanical now.
+if printf '%s' "$cmd" | grep -qE '(^|[[:space:]/])pip-compile([[:space:]]|$|;)'; then
+  block "Blocked by .claude/hooks/git_guard.sh: pip-compile on macOS strips the Linux/CUDA pins from requirements.txt and you will not notice until deploy. Hand-edit requirements.txt instead, or run pip-compile inside the Linux container."
+fi
+
 exit 0

@@ -2,6 +2,18 @@
 
 There is no staging — prod is where things are verified. The `/production-logs` skill wraps the common commands; this doc is the diagnostic knowledge.
 
+## Investigation discipline — the failure is always the same one
+
+**When a theory forms, your next action is the cheapest read that could KILL it — never more theory.** Every wrong conclusion below was plausible, and every correction was not better reasoning but a read that had been skipped. The tell that you are about to be wrong: your sentence makes a claim about an artifact that has never appeared in your tool results.
+
+Each line is a real 2026-07-14 miss, all five in one investigation:
+
+- **A model doing something strange is usually obeying something you haven't read.** Open what it was TOLD — `templates/openclaw/AGENTS.md`, `USER.md` on the tenant's share, the tool descriptions — before theorising about its behaviour. The assistant "refusing to set reminders" was following a capability list to the letter; reminders simply weren't on it.
+- **The datapoint your theory can't explain is the verdict, not the noise.** If you are explaining one away, the theory is already dead. A "leftover cron blocks it" theory survived three runs by ignoring the fourth, which had failed before any cron existed.
+- **Before theorising about why a call failed, prove the call HAPPENED.** One log query showed zero requests ever reached the endpoint; a whole 409-conflict theory died in thirty seconds.
+- **Before citing a log line as evidence, grep what emits it and when.** `tool-search: cataloged 62 tools` fires on every session boot, not when the model searches. Counting those lines built an entire false mechanism.
+- **A local test green is a LOGIC SMOKE, never CI parity.** The venv drifts from `requirements.txt` and cannot always be fixed by pip (Django 6 has no py3.11 wheels). A `PostToolUse` hook now says so on every test run — read it. An RLS failure was called "pre-existing, not ours" on the strength of a local green. It was ours.
+
 ## Log sources — pick the right one
 
 - **Live tail (last ~10 min only):** `az containerapp logs show --name <app> -g rg-nbhd-prod --tail 300 --follow false`. It caps at 300 lines and **will lie about absence** for anything older.

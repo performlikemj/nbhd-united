@@ -51,3 +51,9 @@ All scheduling goes through QStash (`apps/cron/publish.py`). Never add `django_c
 ## 11. Secrets discipline
 
 Never print secrets or dump env vars into the conversation. Rotation flows through the `/rotate-keys` skill (reads via `read -s`, writes to `kv-nbhd-prod`). OpenRouter platform key lives at KV secret `openrouter-api-key`.
+
+## 12. A new writer means auditing every reader
+
+When a change lets something new **write** to shared state — a table, a share file, a queue — or makes an existing writer emit new content, **grep for every reader of that state before shipping, and list them in the PR.** New rows land in every context that renders the table, not only the one you built the writer for. Same shape as "cover ALL channels" (#4), one layer down.
+
+Broke it once: the eval sink (#1203) gated one consumer of `ProactiveOutbound` (the `USER.md` digest) and missed the second (`surface_proactive_context`, which prepends proactive text onto inbound turns). The tenant's daily briefings would then have re-injected the exact contamination the PR existed to eliminate — caught in review, not by the author.

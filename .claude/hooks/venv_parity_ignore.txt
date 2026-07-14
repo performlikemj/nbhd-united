@@ -1,0 +1,30 @@
+# Packages pinned in requirements.txt that CANNOT install on macOS.
+#
+# requirements.txt is pip-compiled on LINUX and carries no platform markers, so these
+# have no macOS wheels and pip resolves ATOMICALLY — one of them fails and the whole
+# install fails. They are torch's CUDA runtime + its GPU kernel compiler; they serve
+# the PII model, which runs in its own container. torch ITSELF builds on macOS and is
+# deliberately NOT ignored here.
+#
+# venv_parity.sh treats a package listed here as legitimately absent, not as drift.
+# Anything NOT listed here that is missing from the venv is real drift and gets reported.
+#
+cuda-bindings
+cuda-pathfinder
+cuda-toolkit
+nvidia-cublas
+nvidia-cuda-cupti
+nvidia-cuda-nvrtc
+nvidia-cuda-runtime
+nvidia-cudnn-cu13
+nvidia-cufft
+nvidia-cufile
+nvidia-curand
+nvidia-cusolver
+nvidia-cusparse
+nvidia-cusparselt-cu13
+nvidia-nccl-cu13
+nvidia-nvjitlink
+nvidia-nvshmem-cu13
+nvidia-nvtx
+triton
