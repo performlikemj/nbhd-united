@@ -86,6 +86,17 @@ class ResolveChannelFormattingTest(TestCase):
         content = _resolve_channel_formatting(None)
         self.assertIn("NBHD App Formatting", content)
 
+    def test_both_linked_no_token_prefers_line(self):
+        # Precedence locks to app → line → telegram (PR #1199's resolver order).
+        from apps.orchestrator.personas import _resolve_channel_formatting
+
+        t = _make_tenant(suffix=5)  # telegram linked by create_tenant
+        t.user.line_user_id = "U" + "d" * 32
+        t.user.save()
+
+        content = _resolve_channel_formatting(_fresh(t))
+        self.assertIn("LINE Formatting", content)
+
 
 class ToolsMdConvergenceTest(TestCase):
     """TOOLS.md seed-once convergence — surgical channel-line swap."""
@@ -176,6 +187,17 @@ class ToolsMdConvergenceTest(TestCase):
         self.assertNotIn(self._LEGACY, tmpl)
         self.assertNotIn("Telegram is the primary channel", tmpl)
         self.assertIn(_TOOLS_MD_CHANNEL_BODY, tmpl)
+
+
+class ConvergeToolsMdCommandTest(TestCase):
+    """CLI ergonomics of the fleet-convergence command."""
+
+    def test_malformed_tenant_uuid_raises_command_error(self):
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("converge_tools_md", tenant="not-a-uuid")
 
 
 class BuildChannelsConfigTest(TestCase):

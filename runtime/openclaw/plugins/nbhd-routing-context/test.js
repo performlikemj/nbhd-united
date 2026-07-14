@@ -20,7 +20,7 @@ import register, {
 const SYSTEM_PROMPT_ECHO_PATTERNS = [
   /\[Now:\s*\d/,
   /\[Active workspace:/i,
-  /\[chat:\s*user is mid-conversation/i,
+  /\[chat\b[^\]]*user is mid-conversation/i,
 ];
 const REPEATED_WORD_RUN = /\b(\w+)\b(?:\s+\1\b){7,}/i;
 const DOUBLED_YEAR_DATE = /\b\d{4}-\d{4}-\d{2}-\d{2}\b/;
@@ -68,6 +68,32 @@ describe("isDegenerateOutput", () => {
     assert.equal(
       isDegenerateOutput("[chat: user is mid-conversation, reply concisely without loading]"),
       "system_prompt_echo",
+    );
+  });
+
+  it("flags the channel-stamped [chat via ...] marker echo (all three channels)", () => {
+    // The channel-identity fix stamps the active channel into the marker;
+    // a degenerate reply echoing the new shape must still be dropped.
+    assert.equal(
+      isDegenerateOutput("[chat via NBHD app: user is mid-conversation, reply concisely]"),
+      "system_prompt_echo",
+    );
+    assert.equal(
+      isDegenerateOutput("[chat via Telegram: user is mid-conversation, reply concisely]"),
+      "system_prompt_echo",
+    );
+    assert.equal(
+      isDegenerateOutput("[chat via LINE: user is mid-conversation, reply concisely]"),
+      "system_prompt_echo",
+    );
+  });
+
+  it("does NOT flag prose that merely mentions chat", () => {
+    // The broadened pattern must not catch ordinary sentences: the bracketed
+    // form with the marker phrase inside the same bracket is required.
+    assert.equal(
+      isDegenerateOutput("In our chat earlier the user is mid-conversation about dinner plans."),
+      null,
     );
   });
 

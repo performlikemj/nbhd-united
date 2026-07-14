@@ -494,7 +494,9 @@ class TelegramPollerForwardTest(TestCase):
         msg = PendingMessage.objects.filter(tenant=self.tenant).order_by("-created_at").first()
         self.assertIsNotNone(msg)
         self.assertNotIn("[Now:", msg.user_text)
-        self.assertNotIn("[chat:", msg.user_text)
+        # "[chat" (no colon) so the guard still bites now that the marker is
+        # channel-stamped ("[chat via Telegram: ...").
+        self.assertNotIn("[chat", msg.user_text)
         self.assertEqual(msg.user_text, "what time is my next meeting?")
         # The agent-facing payload still has the markers — the queue is
         # dumb and forwards the prepared text verbatim.

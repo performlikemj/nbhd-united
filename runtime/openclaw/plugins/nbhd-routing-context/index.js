@@ -30,7 +30,10 @@
 const SYSTEM_PROMPT_ECHO_PATTERNS = [
   /\[Now:\s*\d/,
   /\[Active workspace:/i,
-  /\[chat:\s*user is mid-conversation/i,
+  // Matches both the legacy neutral marker ("[chat: user is mid-conversation")
+  // and the channel-stamped shape ("[chat via NBHD app: user is mid-conversation",
+  // "via Telegram", "via LINE") from the channel-identity fix.
+  /\[chat\b[^\]]*user is mid-conversation/i,
 ];
 // Detect "User User User User User User User User User" — same word >=8
 // times in a row, separated only by whitespace. Lower bound chosen so

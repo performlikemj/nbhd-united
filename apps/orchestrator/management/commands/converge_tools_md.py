@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+from uuid import UUID
 
 from django.core.management.base import BaseCommand, CommandError
 
@@ -60,7 +61,11 @@ class Command(BaseCommand):
         max_workers = max(1, options["max_workers"])
 
         if options["tenant"]:
-            qs = Tenant.objects.filter(id=options["tenant"])
+            try:
+                tenant_uuid = UUID(str(options["tenant"]))
+            except ValueError:
+                raise CommandError(f"--tenant must be a valid UUID, got: {options['tenant']!r}")
+            qs = Tenant.objects.filter(id=tenant_uuid)
         else:
             qs = Tenant.objects.filter(status=Tenant.Status.ACTIVE, container_id__gt="")
             if not include_hibernated:

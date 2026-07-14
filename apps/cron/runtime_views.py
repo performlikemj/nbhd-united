@@ -106,12 +106,20 @@ class RuntimeContainerStartedView(APIView):
         tools_md_refreshed = False
         channel_formatting_refreshed = False
         try:
-            from apps.orchestrator.services import reassert_channel_formatting, reassert_tools_md
+            from apps.orchestrator.services import reassert_tools_md
 
             tools_md_refreshed = reassert_tools_md(tenant)
+        except Exception:
+            logger.exception("RuntimeContainerStartedView: TOOLS.md re-assert failed for tenant %s", tenant_id)
+        try:
+            from apps.orchestrator.services import reassert_channel_formatting
+
             channel_formatting_refreshed = reassert_channel_formatting(tenant)
         except Exception:
-            logger.exception("RuntimeContainerStartedView: channel-identity re-assert failed for tenant %s", tenant_id)
+            logger.exception(
+                "RuntimeContainerStartedView: channel-formatting re-assert failed for tenant %s",
+                tenant_id,
+            )
 
         if not getattr(tenant, "postgres_cron_canonical", False):
             return Response(
