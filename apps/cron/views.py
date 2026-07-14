@@ -260,6 +260,11 @@ TASK_MAP = {
     # Cron dedup (enqueued by dedup-crons)
     "dedup_cron_jobs": "apps.orchestrator.tasks.dedup_cron_jobs_task",
     "remove_zombie_heartbeats": "apps.orchestrator.tasks.remove_zombie_heartbeats_task",
+    # Retire one-shot ("at") crons whose fire time has passed. The container
+    # deletes its own copy when the job fires but never tells Django, so without
+    # this the row stays enabled=True and squats its (tenant, name) forever —
+    # a user asking for the same reminder twice used to get a 409. Hourly.
+    "expire_finished_at_crons": "apps.cron.tasks.expire_finished_at_crons_task",
     # Daily infra cost refresh from Azure billing
     "refresh_infra_costs": "apps.billing.tasks.refresh_infra_costs_task",
     # Monthly donation ledger — records each paying subscriber's revenue-%

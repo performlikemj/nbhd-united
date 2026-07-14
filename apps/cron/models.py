@@ -165,8 +165,19 @@ class CronJob(models.Model):
 
     class Meta:
         constraints = [
+            # Scoped to ENABLED rows. A one-shot ("at") cron auto-deletes inside
+            # the container when it fires, but nothing disables the Postgres row —
+            # so an unconditional constraint left the name squatted forever and a
+            # user asking for the same reminder twice got a 409 on the second ask
+            # ("remind me at 3pm to call Mom" works once, never again). Disabled
+            # rows are retained for audit but release their name.
+            # ``expire_finished_at_crons_task`` (apps/cron/tasks.py) is what flips
+            # a fired at-cron to enabled=False. The NAME is load-bearing:
+            # create_typed_cron / create_freeform_cron match on it in the
+            # IntegrityError text to raise CronNameConflictError.
             models.UniqueConstraint(
                 fields=["tenant", "name"],
+                condition=models.Q(enabled=True),
                 name="cron_unique_tenant_name",
             ),
             # Freeform crons must carry an explicit user confirmation timestamp.
