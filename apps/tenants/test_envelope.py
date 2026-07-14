@@ -176,3 +176,88 @@ class IdentityContextSubSectionTests(TestCase):
         body = render_privacy_placeholders(tenant)
         self.assertIn("Preserve placeholders exactly as written", body)
         self.assertIn("### Identity context", body)
+
+
+class ProfileDeliveryChannelTests(TestCase):
+    """The Profile block must render the RESOLVED delivery channel, never the
+    raw ``preferred_channel`` column.
+
+    ``preferred_channel`` is the untouched schema default ("telegram") on
+    essentially every prod row, so rendering it asserted "Preferred channel:
+    telegram" into the agent-visible context of iOS-only tenants who never
+    linked Telegram — the exact falsehood the channel-identity fix kills.
+    """
+
+    def _tenant(self, *, suffix: int):
+        t = create_tenant(display_name=f"Env-{suffix}", telegram_chat_id=990000 + suffix)
+        # Every row carries the schema default regardless of what's linked.
+        self.assertEqual(t.user.preferred_channel, "telegram")
+        return t
+
+    def test_ios_only_tenant_never_says_telegram(self):
+        from apps.router.models import DeviceToken
+        from apps.tenants.envelope import render_profile
+
+        t = self._tenant(suffix=1)
+        t.user.telegram_chat_id = None
+        t.user.line_user_id = ""
+        t.user.save()
+        DeviceToken.objects.create(
+            tenant=t, user=t.user, token="e" * 64, environment=DeviceToken.Environment.PRODUCTION
+        )
+
+        body = render_profile(t)
+        self.assertIn("- Delivery channel: NBHD app", body)
+        self.assertNotIn("Telegram", body)
+        self.assertNotIn("Preferred channel", body)
+
+    def test_telegram_linked_tenant_still_reads_telegram(self):
+        from apps.tenants.envelope import render_profile
+
+        t = self._tenant(suffix=2)  # telegram_chat_id set by create_tenant
+        body = render_profile(t)
+        self.assertIn("- Delivery channel: Telegram", body)
+
+    def test_line_linked_tenant_reads_line(self):
+        from apps.tenants.envelope import render_profile
+
+        t = self._tenant(suffix=3)
+        t.user.telegram_chat_id = None
+        t.user.line_user_id = "U" + "f" * 32
+        t.user.save()
+
+        body = render_profile(t)
+        self.assertIn("- Delivery channel: LINE", body)
+        self.assertNotIn("Telegram", body)
+
+    def test_no_delivery_surface_omits_the_line_entirely(self):
+        # Printing nothing beats printing a falsehood.
+        from apps.tenants.envelope import render_profile
+
+        t = self._tenant(suffix=4)
+        t.user.telegram_chat_id = None
+        t.user.line_user_id = ""
+        t.user.save()
+
+        body = render_profile(t)
+        self.assertNotIn("Delivery channel", body)
+        self.assertNotIn("Telegram", body)
+
+    def test_ios_only_managed_region_asserts_no_telegram(self):
+        """The end-to-end symptom: the AGENT-VISIBLE USER.md region an iOS-only
+        tenant's assistant reads must not claim Telegram anywhere."""
+        from apps.orchestrator.workspace_envelope import render_managed_region
+        from apps.router.models import DeviceToken
+
+        t = self._tenant(suffix=5)
+        t.user.telegram_chat_id = None
+        t.user.line_user_id = ""
+        t.user.save()
+        DeviceToken.objects.create(
+            tenant=t, user=t.user, token="c" * 64, environment=DeviceToken.Environment.PRODUCTION
+        )
+        t.refresh_from_db()
+
+        region = render_managed_region(t)
+        self.assertIn("- Delivery channel: NBHD app", region)
+        self.assertNotIn("telegram", region.lower())
