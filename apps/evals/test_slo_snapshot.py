@@ -258,6 +258,37 @@ class InsufficientSampleIsSkippedNotScoredTest(_ChatFixtureMixin, TestCase):
         self.assertFalse(p50.passed)
         self.assertEqual(run.status, EvalRun.Status.FAIL)
 
+    def test_an_all_cold_start_day_is_NOT_reported_as_a_quiet_one(self):
+        """These two read as opposites and must never collapse into one message.
+
+        At this fleet size an all-cold day is entirely plausible — a handful of users
+        who chat once, whose containers hibernate in between, so every turn they send
+        wakes one. Reporting that as "no ready turns" would tell the reader nothing
+        happened, when in fact every single user who showed up waited on a spin-up.
+        """
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        created = now - timedelta(hours=1)
+        for _ in range(3):
+            self._msg(
+                real,
+                created=created,
+                waking=created + timedelta(milliseconds=1_000),
+                replied=created + timedelta(milliseconds=80_000),
+            )
+
+        run = run_slo_snapshot_suite(now=now)
+        run.refresh_from_db()
+
+        for cid in (M_REPLY_P50, M_REPLY_P95):
+            r = run.results.get(case_id=cid)
+            self.assertTrue(r.details.get("skipped"))
+            self.assertIsNone(r.score)
+            self.assertEqual(r.details.get("reason"), "all_turns_were_cold_starts")
+            # The day is legible from THIS row — no cross-referencing the wake metric.
+            self.assertEqual(r.details.get("n"), 0)
+            self.assertEqual(r.details.get("n_woken"), 3)
+
     def test_the_median_survives_a_window_the_p95_cannot(self):
         """The floors are per-metric on purpose: a median is far more forgiving than a
         tail, so a thin window must not drag the p50 down with the p95."""
@@ -400,8 +431,8 @@ class EmptyWindowSkippedNotGreenTest(TestCase):
         run.refresh_from_db()
         # Latency/rate metrics: recorded, but as SKIPPED — score is None, not 0.
         for cid, reason in (
-            (M_REPLY_P50, "no_warm_ready_turns_24h"),
-            (M_REPLY_P95, "no_warm_ready_turns_24h"),
+            (M_REPLY_P50, "no_ready_turns_24h"),
+            (M_REPLY_P95, "no_ready_turns_24h"),
             (M_WAKE_P95, "no_wake_turns_24h"),
             (M_ERROR_RATE, "no_finished_turns_24h"),
             (M_JOURNEY_BUDGET_CAPPED, "no_journey_runs_24h"),

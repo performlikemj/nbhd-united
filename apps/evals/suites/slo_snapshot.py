@@ -297,7 +297,22 @@ def compute_reply_latency(now) -> dict | None:
         latencies.append((replied - created).total_seconds() * 1000.0)
 
     if not latencies:
-        return None
+        # No WARM turns — but that covers two situations which read as OPPOSITES, and
+        # collapsing them into one "no data" skip would report the reverse of the truth:
+        #
+        #   n_woken == 0  → the fleet genuinely was quiet. An absence.
+        #   n_woken  > 0  → the fleet was NOT quiet. EVERY turn was a cold start. That
+        #                   is a finding, and a loud one — reporting it as "no turns"
+        #                   would tell the reader nothing happened when in fact every
+        #                   user who showed up waited on a container spin-up.
+        #
+        # Entirely plausible at this fleet size: three turns, three wakes. The caller
+        # records the second case with its own reason and carries n_woken, so the day
+        # is legible from a single row instead of by cross-reading the wake metric.
+        if n_woken == 0:
+            return None
+        return {"p50": None, "p95": None, "n": 0, "n_woken": n_woken}
+
     return {
         "p50": percentile(latencies, 50),
         "p95": percentile(latencies, 95),
@@ -564,8 +579,14 @@ def run_slo_snapshot_suite(*, trigger: str = EvalRun.Trigger.MANUAL, now=None) -
         # turn of the day" and let it breach a threshold it was never able to measure.
         latency = compute_reply_latency(now)
         if latency is None:
-            _record_skipped(run, M_REPLY_P50, thr[M_REPLY_P50], "no_warm_ready_turns_24h")
-            _record_skipped(run, M_REPLY_P95, thr[M_REPLY_P95], "no_warm_ready_turns_24h")
+            # Genuinely no traffic at all.
+            _record_skipped(run, M_REPLY_P50, thr[M_REPLY_P50], "no_ready_turns_24h")
+            _record_skipped(run, M_REPLY_P95, thr[M_REPLY_P95], "no_ready_turns_24h")
+        elif latency["n"] == 0:
+            # Traffic existed and EVERY turn of it was a cold start. The opposite of a
+            # quiet day, and it must not be reported as one.
+            for cid in (M_REPLY_P50, M_REPLY_P95):
+                _record_skipped(run, cid, thr[cid], "all_turns_were_cold_starts", n=0, n_woken=latency["n_woken"])
         else:
             n, woken = latency["n"], latency["n_woken"]
             if n < MIN_SAMPLE_P50:
