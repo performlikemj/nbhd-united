@@ -1688,3 +1688,70 @@ def encrypt_chat_history_task() -> dict:
     tail = buf.getvalue()[-4000:]
     logger.info("encrypt_chat_history: %s", tail)
     return {"output": tail}
+
+
+def converge_unencrypted_chat_tenants_dry_run_task() -> dict:
+    """Encryption-at-rest Phase 2 — dry-run of the post-flip convergence.
+
+    One-off operator fire. Zero-arg by contract (the QStash publish path we
+    use can't carry a body), registered in apps/cron/views.py TASK_MAP, and
+    triggered by a no-body QStash publish to
+    ``/api/cron/trigger/converge_unencrypted_chat_tenants_dry_run/``. Wraps the
+    ``converge_unencrypted_chat_tenants`` command with ``--dry-run`` so it reports
+    the cohort of tenants still writing+reading plaintext chat and the COUNT of
+    rows that WOULD be sealed (never content), flipping no flag and making no
+    write. Read-only, so QStash retries are harmless.
+
+    Output is counts + tenant-id prefixes only (no user content) — safe to log,
+    which we do so the result is visible in Log Analytics even when the QStash
+    response body is hard to retrieve.
+    """
+    import logging
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    logger = logging.getLogger(__name__)
+
+    buf = StringIO()
+    call_command("converge_unencrypted_chat_tenants", dry_run=True, stdout=buf)
+    tail = buf.getvalue()[-4000:]
+    logger.info("converge_unencrypted_chat_tenants (dry-run): %s", tail)
+    return {"output": tail}
+
+
+def converge_unencrypted_chat_tenants_task() -> dict:
+    """Encryption-at-rest Phase 2 — converge the post-flip plaintext-chat cohort.
+
+    One-off, MJ-gated operator fire. Zero-arg by contract (the QStash publish
+    path we use can't carry a body), registered in apps/cron/views.py TASK_MAP,
+    and triggered by a no-body QStash publish to
+    ``/api/cron/trigger/converge_unencrypted_chat_tenants/``. Wraps the
+    ``converge_unencrypted_chat_tenants`` command (real run): for every
+    ACTIVE/SUSPENDED tenant that still writes+reads plaintext chat it flips
+    ``encrypt_chat_writes`` ON, seals the pre-flip plaintext into the ``*_enc``
+    sidecars, verifies zero plaintext-only rows remain, then flips
+    ``read_encrypted_chat`` ON — the fleet rollout ladder compressed per-tenant.
+
+    Idempotent and no-op safe: a fully-converged tenant is skipped untouched, so
+    a re-fire after convergence does nothing; a tenant whose backfill left rows
+    unsealed keeps reads OFF and is retried on the next fire. QStash retries are
+    therefore harmless.
+
+    Captures ``stderr`` as well as ``stdout`` — the underlying sealer writes
+    per-row failures to stderr. Output is counts + tenant-id prefixes only (no
+    user content) — safe to log, which we do so the result is visible in Log
+    Analytics even when the QStash response body is hard to retrieve.
+    """
+    import logging
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    logger = logging.getLogger(__name__)
+
+    buf = StringIO()
+    call_command("converge_unencrypted_chat_tenants", stdout=buf, stderr=buf)
+    tail = buf.getvalue()[-4000:]
+    logger.info("converge_unencrypted_chat_tenants: %s", tail)
+    return {"output": tail}

@@ -591,7 +591,10 @@ class RuntimeFuelSummaryView(APIView):
             rhr_data = {"date": str(latest_rhr.date), "bpm": latest_rhr.bpm}
 
         # Active workout plans
-        active_plans = WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE)[:3]
+        from .services import plan_progress_fields, rest_dates_for_window
+
+        today = today_in_tenant_tz(tenant)
+        active_plans = list(WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE)[:3])
         plans_data = []
         for p in active_plans:
             total = Workout.objects.filter(plan=p).count()
@@ -609,8 +612,18 @@ class RuntimeFuelSummaryView(APIView):
                     "days_per_week": p.days_per_week,
                     "workout_count": total,
                     "completed_count": done,
+                    # Additive program-progress: end_date / days_remaining / current_week.
+                    **plan_progress_fields(p, today),
                 }
             )
+
+        # rest_today — is today a PROGRAMMED rest day (an active plan covers it
+        # but prescribes no session on this weekday) with no real row logged? A
+        # programmed rest day is on-plan adherence, not a gap — surfaced here
+        # alongside planned_workouts so a "what's today?" turn frames it right.
+        rest_today = bool(rest_dates_for_window(tenant, today, today, plans=active_plans)) and not (
+            Workout.objects.filter(tenant=tenant, date=today).exists()
+        )
 
         # Computed 4-week aggregates (volume, frequency-by-activity, recency,
         # recent PRs) so a deep-dive answers off trends, not just the raw row
@@ -629,6 +642,7 @@ class RuntimeFuelSummaryView(APIView):
             {
                 "recent_workouts": recent_data,
                 "planned_workouts": planned_data,
+                "rest_today": rest_today,
                 "active_plans": plans_data,
                 "latest_body_weight": weight_data,
                 "latest_sleep": sleep_data,
@@ -891,8 +905,18 @@ class RuntimeSleepView(APIView):
 # ── Workout Plan CRUD ────────────────────────────────────────────────
 
 
-def _serialize_plan(plan, include_workouts=False):
-    """Serialize a WorkoutPlan with optional workout list."""
+def _serialize_plan(plan, include_workouts=False, *, today=None):
+    """Serialize a WorkoutPlan with optional workout list.
+
+    ``today`` is the tenant-local date backing the derived program-progress
+    fields (``end_date`` / ``days_remaining`` / ``current_week``). Callers
+    serializing several plans compute it once and pass it in; when omitted it is
+    resolved from the plan's tenant (one extra query — fine for a single plan).
+    """
+    from .services import plan_progress_fields
+
+    if today is None:
+        today = today_in_tenant_tz(plan.tenant)
     total = Workout.objects.filter(plan=plan).count()
     done = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
     data = {
@@ -908,6 +932,9 @@ def _serialize_plan(plan, include_workouts=False):
         "notes": plan.notes,
         "workout_count": total,
         "completed_count": done,
+        # Additive program-progress: end_date (inclusive last day), days_remaining
+        # (0 once over), current_week (1-based). All off the tenant-local today.
+        **plan_progress_fields(plan, today),
     }
     if include_workouts:
         workouts = Workout.objects.filter(plan=plan).order_by("date", "created_at")
@@ -926,7 +953,26 @@ def _serialize_plan(plan, include_workouts=False):
     return data
 
 
-def _validate_normalize_schedule(schedule_json):
+_EMPTY_PRESCRIPTION_EXAMPLE = {
+    "exercises": [{"name": "Bench Press", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 60}]}]
+}
+
+
+def _has_prescription(detail) -> bool:
+    """True when ``detail`` carries at least one exercise (or calisthenics
+    ``skills``) entry.
+
+    Used to reject strength/calisthenics plan days whose normalized
+    ``detail_json`` would expand into a planned Workout with no exercises at
+    all — the empty-plan bug the iOS Fuel tab surfaces (activity name shown, but
+    zero exercises to do).
+    """
+    if not isinstance(detail, dict):
+        return False
+    return any(isinstance(detail.get(key), list) and detail.get(key) for key in ("exercises", "skills"))
+
+
+def _validate_normalize_schedule(schedule_json, *, require_detail=True):
     """Validate weekday keys + normalize/validate each day's prescription.
 
     Returns ``(normalized_schedule, error_response)``. On any problem
@@ -935,6 +981,15 @@ def _validate_normalize_schedule(schedule_json):
     ``detail_json`` is the culprit, so the agent self-corrects in-loop (the same
     chokepoint the log-workout path uses). Atomic by design: the caller persists
     nothing unless the whole schedule validates.
+
+    ``require_detail`` (default True, the create path) additionally rejects any
+    strength/calisthenics day whose prescription is empty — even when the caller
+    supplied no ``detail_json`` at all — because a fresh plan expands every day
+    into a brand-new Workout, and an empty strength day means the user opens it
+    to no exercises. On the update path pass ``require_detail=False``: there a
+    day that OMITS ``detail_json`` is a "leave the existing prescription alone"
+    signal (the caller strips the injected empty key), so only a day that
+    explicitly supplied an empty ``detail_json`` is rejected.
     """
     from .set_contract import normalize_detail, validate_detail
 
@@ -963,11 +1018,48 @@ def _validate_normalize_schedule(schedule_json):
             category = "other"
         activity = str(workout_def.get("activity") or WorkoutCategory(category).label).strip()
 
+        detail_supplied = "detail_json" in workout_def
         detail = workout_def.get("detail_json", {}) or {}
         detail, category = normalize_detail(detail, category, activity=activity)[:2]
         detail, verr = validate_detail(detail, category)
         if verr is not None:
             payload = dict(verr.as_tool_result())
+            payload["weekday"] = day_int
+            return None, Response(payload, status=status.HTTP_400_BAD_REQUEST)
+
+        # A strength/calisthenics day with no exercises passes validate_detail
+        # (it only checks sets that ARE present) but expands into a planned
+        # Workout with nothing to do — the empty-plan the iOS Fuel tab surfaces.
+        # Reject it in the same self-correction envelope the malformed-set path
+        # uses so the agent adds a real prescription and retries in-loop. Skip
+        # days that merely omitted detail_json on the update path
+        # (require_detail=False): those mean "leave the existing plan alone" and
+        # the caller strips the injected empty key — enforcing here would wedge
+        # a status/duration-only edit of a legacy plan.
+        if (
+            category in ("strength", "calisthenics")
+            and (require_detail or detail_supplied)
+            and not _has_prescription(detail)
+        ):
+            from apps.common.llm_contracts import LLMValidationError
+
+            pres_err = LLMValidationError(
+                message=(
+                    "Strength and calisthenics training days require an exercise "
+                    "prescription. Add at least one exercise with sets under "
+                    "detail_json.exercises before retrying — design the real "
+                    "programming for the day, don't drop the category to dodge this."
+                ),
+                details=[
+                    {
+                        "loc": ["schedule_json", str(day_int), "detail_json", "exercises"],
+                        "msg": "strength/calisthenics days require a non-empty exercises list",
+                        "type": "missing_prescription",
+                        "example": _EMPTY_PRESCRIPTION_EXAMPLE,
+                    }
+                ],
+            )
+            payload = dict(pres_err.as_tool_result())
             payload["weekday"] = day_int
             return None, Response(payload, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1282,7 +1374,8 @@ class RuntimeWorkoutPlanListCreateView(APIView):
             "-created_at",
         )[:10]
 
-        return Response({"plans": [_serialize_plan(p) for p in plans]})
+        today = today_in_tenant_tz(tenant)
+        return Response({"plans": [_serialize_plan(p, today=today) for p in plans]})
 
     def post(self, request, tenant_id):
         err = _internal_auth_or_401(request, tenant_id)
@@ -1370,7 +1463,7 @@ class RuntimeWorkoutPlanListCreateView(APIView):
             superseded = [] if concurrent else _supersede_other_active_plans(tenant, existing)
             if superseded:
                 _manage_fuel_cron(tenant, existing, action="update")
-            result = _serialize_plan(existing)
+            result = _serialize_plan(existing, today=today_in_tenant_tz(tenant))
             result["deduped"] = True
             if superseded:
                 result["superseded_plans"] = superseded
@@ -1412,7 +1505,7 @@ class RuntimeWorkoutPlanListCreateView(APIView):
         # and keeps only the new plan's.
         _manage_fuel_cron(tenant, plan, action="create")
 
-        result = _serialize_plan(plan)
+        result = _serialize_plan(plan, today=today_in_tenant_tz(tenant))
         result["workouts_created"] = workouts_created
         if superseded:
             result["superseded_plans"] = superseded
@@ -1443,7 +1536,7 @@ class RuntimeWorkoutPlanDetailView(APIView):
         if not plan:
             return Response({"error": "plan_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        return Response(_serialize_plan(plan, include_workouts=True))
+        return Response(_serialize_plan(plan, include_workouts=True, today=today_in_tenant_tz(tenant)))
 
     def patch(self, request, tenant_id, plan_id):
         err = _internal_auth_or_401(request, tenant_id)
@@ -1490,7 +1583,12 @@ class RuntimeWorkoutPlanDetailView(APIView):
             # rather than landing unvalidated in future Workout.detail_json via
             # reconcile/apply (which does no detail validation).
             raw_schedule = data["schedule_json"]
-            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule)
+            # require_detail=False: a day that omits detail_json here means
+            # "leave the existing prescription alone" (its injected empty key is
+            # stripped below), so only a day that explicitly supplied an empty
+            # strength/calisthenics detail_json is rejected — a status/duration
+            # edit of a legacy plan must not be retro-wedged.
+            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule, require_detail=False)
             if sched_err is not None:
                 return sched_err
             # _validate_normalize_schedule injects a ``detail_json`` key on every
@@ -1600,7 +1698,7 @@ class RuntimeWorkoutPlanDetailView(APIView):
                 # Paused, completed, archived → remove cron
                 _manage_fuel_cron(tenant, plan, action="remove")
 
-        resp = _serialize_plan(plan, include_workouts=True)
+        resp = _serialize_plan(plan, include_workouts=True, today=today_in_tenant_tz(tenant))
         if superseded:
             resp["superseded_plans"] = superseded
         return Response(resp)
@@ -1683,6 +1781,8 @@ class RuntimeFuelAuditView(APIView):
         from apps.orchestrator.fuel_cron import _FUEL_SESSION_PREFIX
         from apps.orchestrator.services import _extract_cron_jobs
 
+        from .services import plan_progress_fields, rest_dates_for_window
+
         err = _internal_auth_or_401(request, tenant_id)
         if err:
             return err
@@ -1737,6 +1837,24 @@ class RuntimeFuelAuditView(APIView):
             }
             for w in next_14d_qs
         ]
+
+        # Active plans, fetched once — they drive both the programmed rest days
+        # injected into the 14d horizon here and the ``active_plans`` summary
+        # further down. One active-plans query for the whole view.
+        active_plan_objs = list(
+            WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE).order_by("-created_at")
+        )
+
+        # Programmed rest days are first-class in the horizon: a date a plan
+        # covers but trains no session on, with no real row. Injected as
+        # {date, status:"rest", activity:"Rest day"} so a rest day reads as
+        # on-plan adherence, never a blank gap. Never on a date with a real row.
+        real_horizon_dates = {w["date"] for w in next_14d}
+        for rd in sorted(rest_dates_for_window(tenant, today, horizon_14d_end, plans=active_plan_objs)):
+            if str(rd) in real_horizon_dates:
+                continue
+            next_14d.append({"date": str(rd), "status": "rest", "activity": "Rest day"})
+        next_14d.sort(key=lambda w: w["date"])
 
         # today_plan fallback — the daily-note Fuel section is authored only by
         # the prep cron (active plan + training day + cron already fired) and is
@@ -1819,8 +1937,10 @@ class RuntimeFuelAuditView(APIView):
                 by_fire.setdefault(key, []).append(c["name"])
         duplicate_fires = [{"fires_at": k, "crons": names} for k, names in by_fire.items() if len(names) > 1]
 
-        # orphan_crons: _fuel:{8-hex} cron whose Workout (by short id) isn't in next_14d
-        next_14d_short_ids = {w["id"].split("-")[0] for w in next_14d}
+        # orphan_crons: _fuel:{8-hex} cron whose Workout (by short id) isn't in next_14d.
+        # Derived from the queryset (real rows), not the list — the injected rest-day
+        # entries carry no ``id`` and must not participate in cron reconciliation.
+        next_14d_short_ids = {str(w.id).split("-")[0] for w in next_14d_qs}
         orphan_crons = [
             {"name": c["name"], "kind": c["kind"]}
             for c in fuel_crons
@@ -1855,8 +1975,10 @@ class RuntimeFuelAuditView(APIView):
                 "weeks": p.weeks,
                 "days_per_week": p.days_per_week,
                 "objective": p.objective,
+                # Additive program-progress: end_date / days_remaining / current_week.
+                **plan_progress_fields(p, today),
             }
-            for p in WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE).order_by("-created_at")
+            for p in active_plan_objs
         ]
 
         return Response(
@@ -1918,6 +2040,23 @@ def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list, a
             "call nbhd_fuel_update_workout or nbhd_fuel_delete_workout directly. "
             "Workout IDs are already in this response — do NOT call nbhd_fuel_summary "
             "just to retrieve them."
+        )
+    elif today_plan.get("workouts") and all(w.get("status") == "rest" for w in today_plan["workouts"]):
+        # Pure programmed rest day: today_plan.workouts holds only the injected
+        # rest stub(s), no real Workout row. Without this branch the generic
+        # "already on the calendar … deliver the planned session" wording below
+        # would fire — instructing the agent to push a session onto a rest day,
+        # the exact harm rest days exist to prevent. The injection sites already
+        # guarantee rest stubs never coexist with a real row on the same date,
+        # but the every-entry-is-rest predicate is the safe gate regardless:
+        # any real row present routes to the existing branch below.
+        base = (
+            "Today is a programmed rest day — part of the user's plan, not a gap "
+            "and not a missed session. Do NOT propose or deliver a training "
+            "session; acknowledge the rest day and support recovery. If the user "
+            "explicitly wants to train anyway, help — but frame it as their "
+            "choice against a planned rest day. (Rest entries also appear in "
+            "next_14d_workouts with status 'rest'.)"
         )
     elif today_plan.get("workouts"):
         base = (

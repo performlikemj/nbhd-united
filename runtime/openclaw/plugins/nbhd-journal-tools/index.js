@@ -389,7 +389,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_daily_note_set_section",
       description:
-        "Set the content of a specific section in the daily note. REQUIRED: `section_slug` (the section to write, e.g. 'morning-report') AND `content` (the markdown). Both must be set in every call. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in.",
+        "Set the content of a specific section in the daily note. REQUIRED: `section_slug` (the section to write, e.g. 'morning-report') AND `content` (the markdown). Both must be set in every call. Use for writing structured sections like Morning Report, Weather, News, Focus, or Evening Check-in. If the section describes events from a different day than today, pass `date` for THAT day rather than today's — and prefer absolute dates in the content over relative words like 'yesterday', which stop being accurate once the note is read later.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -434,7 +434,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_daily_note_append",
       description:
-        "Append a quick timestamped log entry to the daily note. REQUIRED: `content` (the markdown to append) — must be set in every call. Auto-timestamps with current time and author=agent. Use ONLY for narrative reflection, mood, observations, or prose journaling. For ACTIONABLE ITEMS the user wants to remember to do (reminders, follow-ups, todos, 'remind me to X') use `nbhd_task_create` instead — even if mentioned casually in chat. Tasks have status + due_date and are queryable; daily-note prose is not.",
+        "Append a quick timestamped log entry to the daily note. REQUIRED: `content` (the markdown to append) — must be set in every call. Auto-timestamps with current time and author=agent. Use ONLY for narrative reflection, mood, observations, or prose journaling. For ACTIONABLE ITEMS the user wants to remember to do (reminders, follow-ups, todos, 'remind me to X') use `nbhd_task_create` instead — even if mentioned casually in chat. Tasks have status + due_date and are queryable; daily-note prose is not. If the user is recounting something that happened on a different day (e.g. 'yesterday's dinner'), pass `date` for THAT day instead of leaving it to default to today, and prefer absolute dates in the content over relative words like 'yesterday' so later reads can't misattribute them.",
       parameters: {
         type: "object",
         additionalProperties: false,
