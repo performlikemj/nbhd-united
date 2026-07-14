@@ -1,8 +1,8 @@
 {
   "body": {
     "account_claimed": false,
-    "already_existed": false,
-    "claim_link": "https://sautai.com/claim?uid=Mg&token=fixture-token&src=nbhd",
+    "already_existed": true,
+    "claim_link": "https://sautai.com/claim?uid=NA&token=fixture-token&src=nbhd",
     "plan": {
       "days": [
         {
@@ -10,15 +10,15 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Monday Breakfast"
+              "name": "Friday Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Monday Lunch"
+              "name": "Friday Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Monday Dinner"
+              "name": "Friday Dinner"
             }
           ]
         },
@@ -27,15 +27,15 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Tuesday Breakfast"
+              "name": "Friday Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Tuesday Lunch"
+              "name": "Friday Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Tuesday Dinner"
+              "name": "Friday Dinner"
             }
           ]
         },
@@ -44,15 +44,15 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Wednesday Breakfast"
+              "name": "Friday Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Wednesday Lunch"
+              "name": "Friday Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Wednesday Dinner"
+              "name": "Friday Dinner"
             }
           ]
         },
@@ -61,15 +61,15 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Thursday Breakfast"
+              "name": "Friday Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Thursday Lunch"
+              "name": "Friday Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Thursday Dinner"
+              "name": "Friday Dinner"
             }
           ]
         },
@@ -95,15 +95,15 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Saturday Breakfast"
+              "name": "Friday Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Saturday Lunch"
+              "name": "Friday Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Saturday Dinner"
+              "name": "Friday Dinner"
             }
           ]
         },
@@ -112,26 +112,26 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Sunday Breakfast"
+              "name": "Friday Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Sunday Lunch"
+              "name": "Friday Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Sunday Dinner"
+              "name": "Friday Dinner"
             }
           ]
         }
       ],
-      "id": 2,
+      "id": 4,
       "week_end": "2026-08-09",
       "week_start": "2026-08-03"
     },
     "plan_count": 1,
     "status": "ok",
-    "user_created": true,
+    "user_created": false,
     "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03"
   },
   "status_code": 200

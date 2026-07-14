@@ -3961,6 +3961,17 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        try:
+            # Phase 0.5: regenerate=true asks sautai to REPLACE an existing
+            # (user, week) plan honoring user_prompt instead of the idempotent
+            # stale return. Carried on the job → sent by the worker.
+            regenerate = _parse_bool(request.data.get("regenerate"), default=False)
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": f"regenerate {exc}"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         # Atomic coalesce: lock the tenant row so concurrent POSTs (the agent
         # retrying after its OWN 20s tool-call timeout, while the first
         # request already created the job, is the realistic trigger — not
@@ -3999,6 +4010,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
                     week_start=week_start,
                     number_of_days=number_of_days,
                     user_prompt=user_prompt,
+                    regenerate=regenerate,
                 )
 
         # publish_task is a network call — enqueue AFTER the txn commits
@@ -4021,13 +4033,21 @@ class RuntimeSautaiGeneratePlanView(APIView):
                     publish_task("generate_sautai_meal_plan", str(in_flight.id))
                 except Exception:
                     logger.warning("Failed to re-enqueue stale sautai job %s", in_flight.id)
-            return Response(
-                {
-                    "job_id": str(in_flight.id),
-                    "status": in_flight.status,
-                    "week_start": week_start.isoformat(),
-                }
-            )
+
+            coalesced = {
+                "job_id": str(in_flight.id),
+                "status": in_flight.status,
+                "week_start": week_start.isoformat(),
+            }
+            # Honesty guard: this request carried NEW guidance (regenerate, or a
+            # user_prompt that DIFFERS from the in-flight job's) but coalesced onto
+            # a generation that does NOT include it — the guidance is being dropped.
+            # An IDENTICAL user_prompt is the plugin retrying the same body after its
+            # own timeout (the case coalesce exists for) — the in-flight job already
+            # carries that guidance, so it is NOT a false "not applied".
+            if regenerate or (user_prompt and user_prompt != in_flight.user_prompt):
+                coalesced["request_applied"] = False
+            return Response(coalesced)
 
         try:
             publish_task("generate_sautai_meal_plan", str(job.id))
@@ -4069,7 +4089,11 @@ class RuntimeSautaiCurrentPlanView(APIView):
         if not getattr(tenant, "sautai_enabled", False):
             return Response({"error": "sautai_disabled"}, status=status.HTTP_409_CONFLICT)
 
-        from apps.integrations.sautai_client import fetch_sautai_current_plan, sautai_m2m_config
+        from apps.integrations.sautai_client import (
+            fetch_sautai_current_plan,
+            sautai_identity,
+            sautai_m2m_config,
+        )
 
         base_url, secret = sautai_m2m_config()
         if not base_url or not secret:
@@ -4093,14 +4117,14 @@ class RuntimeSautaiCurrentPlanView(APIView):
         else:
             week_start = week_start - timedelta(days=week_start.weekday())
 
-        # Email is derived SERVER-SIDE from the tenant owner — NEVER from the
-        # plugin payload (an agent-supplied email would be an injection vector).
-        user = getattr(tenant, "user", None)
-        email = (getattr(user, "email", "") or "").strip()
-        if not email:
+        # Identity is derived SERVER-SIDE (linked sautai_user_id, else the tenant
+        # owner's verified email) — NEVER from the plugin payload (an agent-supplied
+        # id/email would be an injection vector).
+        identity, _integration = sautai_identity(tenant)
+        if not identity:
             return Response({"status": "no_plan", "week_start": week_start.isoformat()})
 
-        result = fetch_sautai_current_plan(user_email=email, week_start_iso=week_start.isoformat())
+        result = fetch_sautai_current_plan(identity=identity, week_start_iso=week_start.isoformat())
         outcome = result.get("outcome")
 
         if outcome == "ok":
@@ -4111,6 +4135,7 @@ class RuntimeSautaiCurrentPlanView(APIView):
                     "week_start": week_start.isoformat(),
                     "plan": result.get("plan"),
                     "web_link": result.get("web_link", ""),
+                    "funnel": result.get("funnel", {}),
                 }
             )
 
@@ -4143,6 +4168,7 @@ class RuntimeSautaiCurrentPlanView(APIView):
                     "week_start": week_start.isoformat(),
                     "plan": cached_job.result,
                     "web_link": cached_job.web_link,
+                    "funnel": cached_job.funnel or {},
                     "detail": "sautai was unreachable; showing the last plan NBHD cached for this week.",
                 }
             )

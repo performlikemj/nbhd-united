@@ -1690,6 +1690,28 @@ export async function revokePAT(id: string): Promise<void> {
   await apiFetch(`/api/v1/auth/tokens/${id}/`, { method: "DELETE" });
 }
 
+// sautai account link (Connected Apps → "powered by sautai" meal planning).
+// The connect key is sent to Django, which exchanges it server-side — the key
+// never persists and the platform secret never reaches the browser.
+export function fetchSautaiLink(): Promise<import("@/lib/types").SautaiLinkStatus> {
+  return apiFetch<import("@/lib/types").SautaiLinkStatus>("/api/v1/integrations/sautai/link/");
+}
+
+export function connectSautaiLink(
+  connectKey: string,
+): Promise<import("@/lib/types").SautaiLinkConnectResponse> {
+  return apiFetch<import("@/lib/types").SautaiLinkConnectResponse>("/api/v1/integrations/sautai/link/", {
+    method: "POST",
+    body: JSON.stringify({ connect_key: connectKey }),
+  });
+}
+
+export function disconnectSautaiLink(): Promise<import("@/lib/types").SautaiLinkStatus> {
+  return apiFetch<import("@/lib/types").SautaiLinkStatus>("/api/v1/integrations/sautai/link/", {
+    method: "DELETE",
+  });
+}
+
 // BYO subscription credentials (bring-your-own Anthropic / OpenAI)
 
 export function fetchByoCredentials(): Promise<import("@/lib/types").BYOCredential[]> {

@@ -7,7 +7,14 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
-import { useMintPATMutation, usePATsQuery, useRevokePATMutation } from "@/lib/queries";
+import {
+  useConnectSautaiMutation,
+  useDisconnectSautaiMutation,
+  useMintPATMutation,
+  usePATsQuery,
+  useRevokePATMutation,
+  useSautaiLinkQuery,
+} from "@/lib/queries";
 import type { PATCreateResponse, PATScope, PersonalAccessToken } from "@/lib/types";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -676,6 +683,137 @@ function ConnectedAppsContent() {
   );
 }
 
+// ── sautai account link ───────────────────────────────────────────────────────
+
+function parseDetail(err: unknown): string | null {
+  if (!(err instanceof Error) || !err.message) return null;
+  try {
+    const body = JSON.parse(err.message) as { detail?: unknown };
+    if (typeof body.detail === "string" && body.detail.trim()) return body.detail;
+  } catch {
+    // Message isn't JSON — no structured detail.
+  }
+  return null;
+}
+
+function sautaiErrorMessage(err: unknown): string {
+  const status = (err as Error & { status?: number }).status;
+  if (status === 400) {
+    return (
+      parseDetail(err) ??
+      "That connect key is invalid, expired, or already used. Generate a fresh one in sautai and try again."
+    );
+  }
+  if (status === 503) {
+    return (
+      parseDetail(err) ??
+      "sautai meal planning isn't set up on this account yet. Please try again later."
+    );
+  }
+  return parseDetail(err) ?? "Couldn't reach sautai just now. Please try again.";
+}
+
+function SautaiLinkCard() {
+  const { data: link, isLoading } = useSautaiLinkQuery();
+  const connect = useConnectSautaiMutation();
+  const disconnect = useDisconnectSautaiMutation();
+  const [connectKey, setConnectKey] = useState("");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const submitConnect = async () => {
+    setErrorMsg(null);
+    const key = connectKey.trim();
+    if (!key) return;
+    try {
+      await connect.mutateAsync(key);
+      setConnectKey("");
+    } catch (err) {
+      setErrorMsg(sautaiErrorMessage(err));
+    }
+  };
+
+  const submitDisconnect = async () => {
+    setErrorMsg(null);
+    try {
+      await disconnect.mutateAsync();
+    } catch (err) {
+      setErrorMsg(sautaiErrorMessage(err));
+    }
+  };
+
+  if (isLoading) return <SectionCardSkeleton lines={3} />;
+
+  const linked = Boolean(link?.linked);
+
+  return (
+    <SectionCard
+      title="Meal planning"
+      subtitle="Powered by sautai. Link your sautai account so your assistant's meal plans use your real dietary profile."
+    >
+      {linked ? (
+        <div className="rounded-panel border border-border bg-surface-elevated p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <StatusPill status="active" />
+                <span className="text-sm text-ink">
+                  Connected{link?.email ? <> as {link.email}</> : null}
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-ink-faint">
+                Your meal plans now use your sautai dietary profile.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={submitDisconnect}
+              disabled={disconnect.isPending}
+              className="rounded-full border border-rose-border/60 px-3 py-1.5 text-sm text-rose-text transition hover:bg-rose-bg/50 disabled:cursor-not-allowed disabled:opacity-45 min-h-[36px]"
+            >
+              {disconnect.isPending ? "Disconnecting…" : "Disconnect"}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <p className="text-sm text-ink-muted">
+            Already have a sautai account? In sautai, create a one-time connect key and paste it
+            here — your assistant will use your saved allergies and preferences automatically.
+          </p>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              type="text"
+              value={connectKey}
+              onChange={(e) => setConnectKey(e.target.value)}
+              placeholder="Paste your sautai connect key"
+              aria-label="sautai connect key"
+              className="min-w-0 flex-1 rounded-xl border border-white/10 bg-white/[0.05] px-4 py-3 font-mono text-sm text-[#e0e3e8] placeholder:text-white/25 focus:border-[#5dd9d0]/50 focus:shadow-[0_0_8px_rgba(93,217,208,0.15)] outline-none transition"
+            />
+            <button
+              type="button"
+              onClick={submitConnect}
+              disabled={connect.isPending || !connectKey.trim()}
+              className="glow-purple rounded-full bg-accent px-5 py-3 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 min-h-[44px] whitespace-nowrap"
+            >
+              {connect.isPending ? "Connecting…" : "Connect sautai"}
+            </button>
+          </div>
+          <p className="text-xs text-ink-faint">
+            No sautai account? You&apos;ll still get meal plans — your assistant can make you one,
+            and you can claim the account later.
+          </p>
+        </div>
+      )}
+
+      {errorMsg ? (
+        <p className="mt-4 rounded-xl border border-rose-border bg-rose-bg px-4 py-2.5 text-sm text-rose-text">
+          {errorMsg}
+        </p>
+      ) : null}
+    </SectionCard>
+  );
+}
+
 export default function ConnectedAppsPage() {
   return (
     <div className="space-y-4">
@@ -688,6 +826,17 @@ export default function ConnectedAppsPage() {
           }
         >
           <ConnectedAppsContent />
+        </ErrorBoundary>
+      </Suspense>
+      <Suspense fallback={<SectionCardSkeleton lines={3} />}>
+        <ErrorBoundary
+          fallback={
+            <p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">
+              Could not load meal-plan linking. Please refresh and try again.
+            </p>
+          }
+        >
+          <SautaiLinkCard />
         </ErrorBoundary>
       </Suspense>
     </div>

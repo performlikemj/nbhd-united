@@ -43,6 +43,13 @@ class Integration(models.Model):
         default="",
         help_text="Composio connected account ID (for Composio-managed providers)",
     )
+    # sautai Phase 0.5 account link. When set on the Provider.SAUTAI row, the
+    # M2M proxy/worker address sautai by this user id instead of the tenant
+    # email (see docs/sautai-phase05-contract.md) — the user's real dietary
+    # profile then applies. Cleared on disconnect or when sautai reports the
+    # linked account no longer exists (email auto-create fallback resumes).
+    sautai_user_id = models.IntegerField(null=True, blank=True)
+    linked_at = models.DateTimeField(null=True, blank=True)
     token_expires_at = models.DateTimeField(null=True, blank=True)
     connected_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -95,7 +102,15 @@ class SautaiMealPlanJob(models.Model):
     # (may carry [PERSON_N] placeholders); rehydrated only at sautai egress in
     # the QStash task, never persisted rehydrated.
     user_prompt = models.TextField(blank=True, default="")
+    # Phase 0.5: when true, ask sautai to REPLACE an existing (user, week) plan
+    # honoring user_prompt instead of returning the idempotent stale one.
+    regenerate = models.BooleanField(default=False)
     result = models.JSONField(default=dict, blank=True, help_text="sautai's plan payload, once READY")
+    # Phase 0.5 funnel data captured from the generate response:
+    # {account_claimed: bool, plan_count: int, claim_link: str, already_existed: bool}.
+    # Drives the "claim your account" ready-notification for unlinked users and
+    # the "a plan already existed — regenerate?" honesty branch.
+    funnel = models.JSONField(default=dict, blank=True)
     web_link = models.CharField(max_length=500, blank=True, default="")
     error = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)

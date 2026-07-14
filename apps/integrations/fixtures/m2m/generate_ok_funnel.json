@@ -2,7 +2,7 @@
   "body": {
     "account_claimed": false,
     "already_existed": false,
-    "claim_link": "https://sautai.com/claim?uid=Mg&token=fixture-token&src=nbhd",
+    "claim_link": "https://sautai.com/claim?uid=Mw&token=fixture-token&src=nbhd",
     "plan": {
       "days": [
         {
@@ -125,7 +125,7 @@
           ]
         }
       ],
-      "id": 2,
+      "id": 3,
       "week_end": "2026-08-09",
       "week_start": "2026-08-03"
     },

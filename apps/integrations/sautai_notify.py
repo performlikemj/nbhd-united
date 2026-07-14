@@ -85,13 +85,41 @@ def notify_sautai_plan_ready(job: SautaiMealPlanJob) -> bool:
 
 
 def _ready_message(job: SautaiMealPlanJob) -> str:
-    """Build the "meal plan ready" body from the stored sautai plan payload."""
+    """Build the "meal plan ready" body, with Phase 0.5 funnel copy.
+
+    Attribution is always present ("powered by sautai"). For an UNCLAIMED account
+    (``account_claimed is False``) the CTA is the claim link + plan count — the
+    sautai funnel — instead of the plain web link. For a claimed/linked account
+    the plain web link stays. If a plan already existed for the week and the user
+    had given fresh guidance we didn't regenerate on, add an honest nudge rather
+    than implying the plan is freshly tailored.
+    """
     plan = job.result if isinstance(job.result, dict) else {}
+    funnel = job.funnel if isinstance(job.funnel, dict) else {}
     week_start = plan.get("week_start") or (job.week_start.isoformat() if job.week_start else "")
-    text = f"Your meal plan for the week of {week_start} is ready." if week_start else "Your meal plan is ready."
+
+    base = f"Your meal plan for the week of {week_start} is ready" if week_start else "Your meal plan is ready"
+    text = f"{base} — powered by sautai."
+
+    account_claimed = funnel.get("account_claimed")
+    claim_link = (funnel.get("claim_link") or "").strip()
+    plan_count = funnel.get("plan_count")
     web_link = (job.web_link or "").strip()
-    if web_link:
+
+    if account_claimed is False and claim_link:
+        if isinstance(plan_count, int) and plan_count > 1:
+            text += f" You've created {plan_count} plans — claim your sautai account to see them all: {claim_link}"
+        else:
+            text += f" Claim your sautai account to keep it and view it any time: {claim_link}"
+    elif web_link:
         text += f" View it: {web_link}"
+
+    if funnel.get("already_existed") and (job.user_prompt or "").strip() and not job.regenerate:
+        text += (
+            " (This was your existing plan for the week — ask me to regenerate it "
+            "if you want your latest notes applied.)"
+        )
+
     return text
 
 

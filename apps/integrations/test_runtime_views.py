@@ -958,6 +958,105 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(response.json()["job_id"], str(job.id))
         mock_publish.assert_not_called()
 
+    def test_regenerate_flag_is_stored_on_the_job(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "regenerate": True},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 201)
+
+        from .models import SautaiMealPlanJob
+
+        job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
+        self.assertTrue(job.regenerate)
+
+    def test_coalesce_with_regenerate_flags_request_not_applied(self):
+        # A regenerate that lands mid-generation coalesces onto the in-flight
+        # job — the guidance is dropped, so the response must say so honestly.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            first = self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "regenerate": True},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.json()["job_id"], second.json()["job_id"])  # coalesced
+        self.assertIs(second.json()["request_applied"], False)
+
+    def test_coalesce_with_fresh_prompt_flags_request_not_applied(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "user_prompt": "make it high protein"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertIs(second.json()["request_applied"], False)
+
+    def test_coalesce_with_identical_prompt_has_no_flag(self):
+        # The plugin retrying the SAME body after its own 20s timeout is exactly
+        # what coalesce exists for — the in-flight job already carries this
+        # guidance, so it must NOT be flagged "not applied".
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "user_prompt": "high protein"},
+                content_type="application/json",
+                **self._headers(),
+            )
+            second = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "user_prompt": "high protein"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertNotIn("request_applied", second.json())
+
+    def test_plain_coalesce_has_no_request_applied_flag(self):
+        # No new guidance → the in-flight job IS their request; no flag needed.
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        with patch("apps.cron.publish.publish_task"):
+            self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+            second = self.client.post(
+                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
+            )
+
+        self.assertEqual(second.status_code, 200)
+        self.assertNotIn("request_applied", second.json())
+
 
 @override_settings(
     NBHD_INTERNAL_API_KEY="shared-key",
@@ -1024,7 +1123,7 @@ class SautaiCurrentPlanViewTests(TestCase):
         self.assertFalse(body["cached"])
         self.assertEqual(body["plan"]["id"], 66)
         # Called with the tenant owner's email, never the payload's.
-        self.assertEqual(mock_fetch.call_args.kwargs["user_email"], "diner@example.com")
+        self.assertEqual(mock_fetch.call_args.kwargs["identity"], {"user_email": "diner@example.com"})
 
     def test_no_plan_maps_to_no_plan(self):
         with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
@@ -1069,6 +1168,26 @@ class SautaiCurrentPlanViewTests(TestCase):
             )
         self.assertEqual(response.status_code, 502)
         self.assertEqual(response.json()["error"], "sautai_unavailable")
+
+    def test_linked_tenant_reads_by_sautai_user_id(self):
+        # A linked Integration makes the read address sautai by user id, not email.
+        from django.utils import timezone
+
+        from .models import Integration
+
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider=Integration.Provider.SAUTAI,
+            status=Integration.Status.ACTIVE,
+            sautai_user_id=501,
+            linked_at=timezone.now(),
+        )
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            mock_fetch.return_value = {"outcome": "not_found"}
+            response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(mock_fetch.call_args.kwargs["identity"], {"sautai_user_id": 501})
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
