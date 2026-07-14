@@ -104,6 +104,15 @@ class ProvisionMintsDekTest(TestCase):
 
         self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)
 
+        # Encryption-at-rest Phase 2: a freshly-provisioned tenant is chat-
+        # encrypted from its very first message — BOTH per-tenant flags flip ON
+        # at provision (right after the fail-closed DEK mint proves a key
+        # exists). A brand-new tenant has zero chat history, so no staged ladder
+        # is needed; without this the tenant would silently write+read plaintext
+        # forever (the production gap this PR closes).
+        self.assertTrue(self.tenant.encrypt_chat_writes)
+        self.assertTrue(self.tenant.read_encrypted_chat)
+
         dek_row = TenantDek.objects.get(tenant=self.tenant, dek_epoch=0)
         self.assertEqual(dek_row.kek_version, "mock-v1")
         self.assertTrue(bytes(dek_row.wrapped_dek))

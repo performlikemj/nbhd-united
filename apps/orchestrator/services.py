@@ -295,6 +295,31 @@ def provision_tenant(tenant_id: str) -> None:
 
         mint_and_wrap_dek(tenant)
 
+        # 2a3b. (Encryption-at-rest Phase 2) Turn chat encryption ON for this
+        # brand-new tenant from its very first message. The two model defaults
+        # are False — load-bearing for LEGACY tenants whose plaintext history
+        # must be converged through the staged ladder first (see the
+        # converge_unencrypted_chat_tenants task) — but a freshly-provisioned
+        # tenant has ZERO chat history, so there is no pre-flip plaintext gap to
+        # backfill and no dual-write window: every AppChatMessage.user_text /
+        # ChatThread.title is sealed to its ``_enc`` sidecar on write
+        # (encrypt_chat_writes) and served from ``_enc`` on read
+        # (read_encrypted_chat). box.decrypt dual-reads regardless — any row a
+        # writer ever stored plaintext-only (``_enc`` NULL) still resolves via
+        # the plaintext fallback — so flipping BOTH flags together is safe for a
+        # zero-history tenant; the staged ladder exists only to protect
+        # EXISTING plaintext rows, of which a new tenant has none.
+        #
+        # Ordering: this sits AFTER the fail-closed DEK mint above, so the
+        # tenant provably has a DEK before its writers are asked to seal, and
+        # BEFORE the tenant becomes usable (container created + status=ACTIVE
+        # below). Idempotent under provision re-runs / QStash retries (re-setting
+        # True is a no-op). Persisted immediately so it holds even if a later
+        # step fails and the tenant is reset to PENDING then re-provisioned.
+        tenant.encrypt_chat_writes = True
+        tenant.read_encrypted_chat = True
+        tenant.save(update_fields=["encrypt_chat_writes", "read_encrypted_chat", "updated_at"])
+
         # 2a2. (PR #1.6) Per-tenant OpenRouter sub-key. When the feature
         # flag is on AND the management key is configured, create a
         # dedicated OR sub-key with a server-side spending limit. OR
