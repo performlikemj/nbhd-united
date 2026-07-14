@@ -2,10 +2,13 @@
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 from django.test import TestCase, override_settings
 
 from apps.router.poller import TelegramPoller
 from apps.tenants.models import Tenant
+
+_FAKE_BOT_TOKEN = "123456789:AAH_Fake-Token_value_000111222333444"  # noqa: S105
 
 
 @override_settings(
@@ -36,6 +39,69 @@ class TelegramPollerInitTest(TestCase):
         poller._delete_webhook()
         mock_post.assert_called_once()
         self.assertIn("deleteWebhook", mock_post.call_args[0][0])
+
+    @patch("apps.router.poller.time.sleep")
+    @patch("apps.router.poller.httpx.Client")
+    @patch("apps.router.poller.TelegramPoller._install_signal_handlers")
+    @patch("apps.router.poller.TelegramPoller._delete_webhook")
+    @patch("apps.crypto.prewarm.start_prewarm_thread")
+    def test_expected_get_updates_409_logs_concise_warning_without_traceback(
+        self,
+        _prewarm,
+        _delete_webhook,
+        _signals,
+        mock_client_cls,
+        mock_sleep,
+    ):
+        request = httpx.Request(
+            "POST",
+            f"https://api.telegram.org/bot{_FAKE_BOT_TOKEN}/getUpdates",
+        )
+        response = httpx.Response(409, request=request)
+        conflict = httpx.HTTPStatusError(
+            "Telegram conflict",
+            request=request,
+            response=response,
+        )
+        poller = TelegramPoller()
+        calls = 0
+
+        def get_updates():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise conflict
+            poller.stop()
+            return []
+
+        poller._get_updates = get_updates
+        mock_client_cls.return_value = MagicMock()
+
+        with self.assertLogs("apps.router.poller", level="WARNING") as captured:
+            poller.start()
+
+        rendered = "\n".join(captured.output)
+        self.assertIn("status=409 endpoint=/getUpdates", rendered)
+        self.assertNotIn(_FAKE_BOT_TOKEN, rendered)
+        self.assertNotIn("HTTPStatusError", rendered)
+        mock_sleep.assert_called_once_with(1)
+
+    def test_expected_conflict_classifier_is_narrow(self):
+        cases = (
+            (409, "https://example.com/bot-placeholder/getUpdates"),
+            (409, "http://api.telegram.org/bot-placeholder/getUpdates"),
+            (500, "https://api.telegram.org/bot-placeholder/getUpdates"),
+            (409, "https://api.telegram.org/bot-placeholder/sendMessage"),
+        )
+        for status, url in cases:
+            with self.subTest(status=status, url=url):
+                request = httpx.Request("POST", url)
+                exc = httpx.HTTPStatusError(
+                    "unexpected",
+                    request=request,
+                    response=httpx.Response(status, request=request),
+                )
+                self.assertFalse(TelegramPoller._is_expected_get_updates_conflict(exc))
 
 
 @override_settings(

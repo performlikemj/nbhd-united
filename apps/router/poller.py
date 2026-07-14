@@ -99,6 +99,18 @@ class TelegramPoller:
                 except httpx.TimeoutException:
                     # Normal for long-polling — just retry
                     continue
+                except httpx.HTTPStatusError as exc:
+                    if self._is_expected_get_updates_conflict(exc):
+                        logger.warning(
+                            "Telegram getUpdates conflict "
+                            "(status=%d endpoint=/getUpdates); another poller is active, backing off %ds",
+                            exc.response.status_code,
+                            self._backoff,
+                        )
+                    else:
+                        logger.exception("Error in poll loop, backing off %ds", self._backoff)
+                    time.sleep(self._backoff)
+                    self._backoff = min(self._backoff * 2, MAX_BACKOFF)
                 except Exception:
                     logger.exception("Error in poll loop, backing off %ds", self._backoff)
                     time.sleep(self._backoff)
@@ -173,6 +185,21 @@ class TelegramPoller:
             logger.error("getUpdates returned ok=false: %s", data)
             return []
         return data.get("result", [])
+
+    @staticmethod
+    def _is_expected_get_updates_conflict(exc: httpx.HTTPStatusError) -> bool:
+        """Return whether ``exc`` is Telegram's expected competing-poller 409."""
+        try:
+            url = exc.request.url
+            return (
+                exc.response.status_code == 409
+                and url.scheme == "https"
+                and url.host == "api.telegram.org"
+                and url.path.startswith("/bot")
+                and url.path.endswith("/getUpdates")
+            )
+        except (AttributeError, RuntimeError):
+            return False
 
     def _send_message(self, chat_id: int, text: str, **kwargs: Any) -> None:
         """Send a message via Telegram Bot API."""
