@@ -47,6 +47,8 @@ class WorkoutPlan(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="workout_plans")
     name = models.CharField(max_length=128, help_text="Plan name, e.g. '4-Week Strength Builder'")
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.WORKOUT_PLAN_NAME``) — ships DARK.
+    name_enc = models.BinaryField(null=True)
     status = models.CharField(max_length=12, choices=PlanStatus.choices, default=PlanStatus.ACTIVE)
     start_date = models.DateField(help_text="First day of the plan")
     weeks = models.IntegerField(
@@ -70,6 +72,11 @@ class WorkoutPlan(models.Model):
         help_text="Structured one-line objective for the plan, e.g. 'Run a sub-25 5K' or 'Build pull strength'. "
         "The plan's through-line, kept out of free-form notes.",
     )
+    # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
+    # ``enc_columns.WORKOUT_PLAN_NOTES`` / ``WORKOUT_PLAN_OBJECTIVE``. ``schedule_json`` /
+    # ``week_overrides`` stay plaintext (structured render/config, no free text — plan §1.5).
+    notes_enc = models.BinaryField(null=True)
+    objective_enc = models.BinaryField(null=True)
     week_overrides = models.JSONField(
         default=dict,
         blank=True,
@@ -243,6 +250,10 @@ class Workout(models.Model):
         default="",
         help_text="Reason captured when status=skipped (e.g. 'traveling', 'kid sick').",
     )
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.WORKOUT_SKIP_REASON``) — ships DARK.
+    # Nothing reads/writes it yet (PR-2 dual-writes behind ``Tenant.encrypt_fuel_writes``,
+    # PR-4 reads behind ``read_encrypted_fuel``). NULL = not-yet-encrypted; ``b""`` = empty.
+    skip_reason_enc = models.BinaryField(null=True)
     external_id = models.CharField(
         max_length=64,
         blank=True,
@@ -253,6 +264,8 @@ class Workout(models.Model):
     )
     category = models.CharField(max_length=16, choices=WorkoutCategory.choices)
     activity = models.CharField(max_length=128, help_text="Free-text activity name, e.g. 'Push — Chest & Shoulders'")
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.WORKOUT_ACTIVITY``) — ships DARK.
+    activity_enc = models.BinaryField(null=True)
     duration_minutes = models.IntegerField(null=True, blank=True)
     duration_seconds = models.IntegerField(
         null=True,
@@ -278,6 +291,11 @@ class Workout(models.Model):
         blank=True,
         help_text="Category-specific data: exercises/sets for strength, distance/pace for cardio, etc.",
     )
+    # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
+    # ``enc_columns.WORKOUT_NOTES`` / ``WORKOUT_NOTES_THREAD`` (JSON) / ``WORKOUT_DETAIL_JSON`` (JSON).
+    notes_enc = models.BinaryField(null=True)
+    notes_thread_enc = models.BinaryField(null=True)
+    detail_json_enc = models.BinaryField(null=True)
     version = models.PositiveIntegerField(
         default=0,
         help_text="Monotonic write counter. Bumped on every save (user or runtime). "
@@ -378,6 +396,10 @@ class FuelProfile(models.Model):
     limitations = models.JSONField(
         default=list, blank=True, help_text="Injuries or restrictions, e.g. ['right shoulder — rotator cuff']"
     )
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.FUEL_PROFILE_LIMITATIONS``, JSON) — ships DARK.
+    # ``goals`` / ``equipment`` / ``preferred_time`` / ``fitness_level`` stay plaintext
+    # (structured prefs / enums, tier S — plan §1.3).
+    limitations_enc = models.BinaryField(null=True)
     equipment = models.JSONField(
         default=list, blank=True, help_text="Available equipment, e.g. ['dumbbells', 'pull_up_bar']"
     )
@@ -399,6 +421,8 @@ class FuelProfile(models.Model):
         help_text="Preferred workout time: morning, afternoon, evening, or empty",
     )
     additional_context = models.TextField(blank=True, default="", help_text="Free-form fitness context")
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.FUEL_PROFILE_ADDITIONAL_CONTEXT``) — ships DARK.
+    additional_context_enc = models.BinaryField(null=True)
     use_session_scheduling = models.BooleanField(
         default=False,
         help_text=(
@@ -432,10 +456,15 @@ class WorkoutTemplate(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="workout_templates")
     name = models.CharField(max_length=128, help_text="Template name, e.g. 'Push Day A'")
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.WORKOUT_TEMPLATE_NAME``) — ships DARK.
+    # ``activity`` stays plaintext here (only ``Workout.activity`` is in scope — plan §1.3).
+    name_enc = models.BinaryField(null=True)
     category = models.CharField(max_length=16, choices=WorkoutCategory.choices)
     activity = models.CharField(max_length=128)
     duration_minutes = models.IntegerField(null=True, blank=True)
     detail_json = models.JSONField(default=dict, blank=True)
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.WORKOUT_TEMPLATE_DETAIL_JSON``, JSON) — ships DARK.
+    detail_json_enc = models.BinaryField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -529,6 +558,9 @@ class SleepLog(models.Model):
         help_text="Sleep quality rating 1-5 (optional)",
     )
     notes = models.TextField(blank=True, default="", help_text="Optional notes, e.g. 'woke up twice'")
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.SLEEP_LOG_NOTES``) — ships DARK.
+    # ``duration_hours`` / ``quality`` stay plaintext (numeric body-metrics, DEFER to 3b).
+    notes_enc = models.BinaryField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
