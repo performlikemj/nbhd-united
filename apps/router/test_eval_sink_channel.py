@@ -255,3 +255,57 @@ class EvalSinkRowIsolationTest(TestCase):
         push.assert_not_called()
         self.row.refresh_from_db()
         self.assertIsNone(self.row.notified_at)
+
+
+class EvalRowsExcludedForNonSinkTenantsTest(TestCase):
+    """The QUERYSET-level excludes — which the function-level sink gate hides.
+
+    ``build_conversation_digest`` and ``surface_proactive_context`` each return
+    early for an ``is_eval_sink`` tenant, so for THOSE tenants the
+    ``.exclude(channel=EVAL)`` inside each query is never reached: every test
+    above still passes with both excludes deleted. A NON-sink tenant holding an
+    ``eval`` row is the only fixture that exercises them.
+
+    That fixture is not contrived — the flag is per-tenant and reversible, and
+    the rows outlive the flag (see ``EvalSinkRowIsolationTest``). An eval evidence
+    row leaking into a real tenant's digest or proactive context is internal text
+    the user never received being replayed to their assistant as though they had.
+
+    Both assertions carry a POSITIVE CONTROL (the ordinary row must still render),
+    so neither can pass vacuously against an empty string.
+    """
+
+    def setUp(self):
+        from apps.router.proactive_context import record_proactive_outbound
+
+        self.tenant = _make(synthetic=False, username="non-sink-excludes", telegram=777)
+        self.assertFalse(self.tenant.is_eval_sink)  # gate OFF ⇒ the excludes are load-bearing
+
+        record_proactive_outbound(
+            tenant=self.tenant,
+            channel=ProactiveOutbound.Channel.EVAL,
+            channel_user_id=str(self.tenant.user_id),
+            message_text="EVAL-ONLY internal evidence",
+            job_name="eval_probe",
+        )
+        record_proactive_outbound(
+            tenant=self.tenant,
+            channel=ProactiveOutbound.Channel.TELEGRAM,
+            channel_user_id="777",
+            message_text="Did you book the dentist?",
+            job_name="nudge",
+        )
+
+    def test_digest_excludes_the_eval_row(self):
+        from apps.router.conversation_capture import build_conversation_digest
+
+        digest = build_conversation_digest(self.tenant)
+        self.assertIn("Did you book the dentist?", digest)  # positive control
+        self.assertNotIn("EVAL-ONLY internal evidence", digest)
+
+    def test_proactive_context_excludes_the_eval_row(self):
+        from apps.router.proactive_context import surface_proactive_context
+
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertIn("Did you book the dentist?", block)  # positive control
+        self.assertNotIn("EVAL-ONLY internal evidence", block)
