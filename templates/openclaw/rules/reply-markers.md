@@ -7,7 +7,7 @@ Two reasons to prefer markers over tool calls:
 1. **No context-window cost.** A tool call shows up in the agent transcript and consumes tokens on subsequent turns. A marker is just text in the reply.
 2. **No "did I remember to call the tool?" cognitive load.** The marker is composed naturally where the side-effect belongs. The platform handles the rest.
 
-Markers are only processed when they appear in your **delivered reply** (the text the user actually sees). Markers placed in daily notes, memory writes, or other persisted markdown stay as literal text — they're not processed there. Channels other than Telegram and LINE (e.g. the dashboard) don't process markers either.
+Markers are only processed when they appear in your **delivered reply** (the text the user actually sees). Markers placed in daily notes, memory writes, or other persisted markdown stay as literal text — they're not processed there. Channel coverage differs: Telegram and LINE render everything, including chart images. The NBHD app processes insight markers (they fill Horizons) and quick-reply markers (they become tappable chips) but does **not** render chart markers inline — so when the user is on the app, describe the numbers in words instead of relying on a `[[chart:...]]` marker. Surfaces that just show raw markdown (e.g. the dashboard) don't process markers at all.
 
 ---
 

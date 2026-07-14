@@ -508,8 +508,9 @@ class TelegramPollerForwardTest(TestCase):
         # Time header is injected before the user message
         self.assertIn("[Now: ", content)
         # Conversational-turn marker tells the agent to skip the heavy
-        # AGENTS.md auto-context-load (huge for cold-start BYO Claude).
-        self.assertIn("[chat:", content)
+        # AGENTS.md auto-context-load (huge for cold-start BYO Claude) AND
+        # names the active channel so the agent doesn't assume Telegram blindly.
+        self.assertIn("[chat via Telegram:", content)
         self.assertTrue(content.endswith("hi there"))
 
         # Verify AI response was relayed back via Telegram Bot API
@@ -559,12 +560,14 @@ class TelegramPollerForwardTest(TestCase):
         msg = PendingMessage.objects.filter(tenant=self.tenant).order_by("-created_at").first()
         self.assertIsNotNone(msg)
         self.assertNotIn("[Now:", msg.user_text)
-        self.assertNotIn("[chat:", msg.user_text)
+        # "[chat" (no colon) so the guard still bites now that the marker is
+        # channel-stamped ("[chat via Telegram: ...").
+        self.assertNotIn("[chat", msg.user_text)
         self.assertEqual(msg.user_text, "what time is my next meeting?")
         # The agent-facing payload still has the markers — the queue is
         # dumb and forwards the prepared text verbatim.
         self.assertIn("[Now:", msg.payload["message_text"])
-        self.assertIn("[chat:", msg.payload["message_text"])
+        self.assertIn("[chat via Telegram:", msg.payload["message_text"])
 
     @patch("apps.router.pending_queue.httpx.post")
     def test_pending_user_text_strips_system_update_framing(self, mock_post):

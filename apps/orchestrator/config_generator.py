@@ -1758,9 +1758,18 @@ def _build_tools_section(tier: str, version: str = OPENCLAW_CURRENT_VERSION) -> 
 def _build_channels_config(tenant: Tenant) -> dict[str, Any]:
     """Build channels config based on which messaging channels the tenant has linked.
 
-    Only enables channels the user has actually connected (has a chat/user ID).
-    Falls back to the preferred_channel if nothing is linked yet (pre-connection
-    provisioning), so the assistant still knows which surface to expect.
+    Only enables channels the user has ACTUALLY connected (has a chat/user ID).
+    There is NO ``preferred_channel`` fallback: ``preferred_channel`` defaults to
+    ``"telegram"`` for every signup, so the old fallback activated the Telegram
+    channel plugin for pure iOS-only tenants who never touched Telegram (the same
+    class of bug as the channel-formatting doc). Enabling an unlinked channel is
+    also what the plugin-validation comment at the ``channels`` call site warns
+    against (OpenClaw >= 2026.4.21 rejects an enabled-but-unconfigured channel).
+
+    An unlinked tenant therefore gets an EMPTY channels dict — the container is
+    reached over the gateway ``/v1/chat/completions`` endpoint (used by the app,
+    the Telegram poller, and the LINE drain alike), which does not depend on any
+    ``channels`` entry. The config validator accepts an empty channels dict.
     """
     user = tenant.user
     channels: dict[str, Any] = {}
@@ -1769,12 +1778,6 @@ def _build_channels_config(tenant: Tenant) -> dict[str, Any]:
         channels["telegram"] = {"enabled": True}
     if getattr(user, "line_user_id", None):
         channels["line"] = {"enabled": True}
-
-    # Fallback: if no channel linked yet, enable the preferred channel so the
-    # assistant can format messages for the expected surface during onboarding.
-    if not channels:
-        preferred = getattr(user, "preferred_channel", "telegram") or "telegram"
-        channels[preferred] = {"enabled": True}
 
     return channels
 

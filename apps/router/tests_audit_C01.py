@@ -68,7 +68,7 @@ class PollerInboundRedactionTest(TestCase):
         self.assertIn("[EMAIL_ADDRESS_1]", body)
         # Agent-only markers are still prepended (not corrupted by redaction).
         self.assertIn("[Now: ", body)
-        self.assertIn("[chat:", body)
+        self.assertIn("[chat via Telegram:", body)
 
         # The persisted apology excerpt is redacted too — no raw PII at rest.
         self.assertNotIn("alice.johnson@acme.com", kwargs["user_text_excerpt"])

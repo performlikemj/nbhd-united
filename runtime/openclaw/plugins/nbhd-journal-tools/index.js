@@ -992,7 +992,8 @@ export default function register(api) {
   api.registerTool(wrap({
     name: "nbhd_send_to_user",
     description:
-      "Send a message to the user via Telegram or LINE. Use this in cron " +
+      "Send a message to the user on their active channel (the NBHD app, " +
+      "Telegram, or LINE). Use this in cron " +
       "sessions or whenever you need to proactively reach out. Do NOT use " +
       "during normal conversation — just reply directly instead. When " +
       "running inside a cron job, pass `job_name` (find it in the prompt " +

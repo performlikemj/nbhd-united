@@ -98,6 +98,29 @@ class RuntimeContainerStartedView(APIView):
         except Exception:
             logger.exception("RuntimeContainerStartedView: identity re-assert failed for tenant %s", tenant_id)
 
+        # Self-heal the channel-identity surface on every boot so hibernated
+        # tenants converge at wake: TOOLS.md is seed-once with no other reassert
+        # path (surgical channel-line swap), and the channel-formatting doc is
+        # re-picked by the linkage-based selection (an iOS-only tenant sheds the
+        # stale telegram doc). Both are share-only, fail-open, never fatal.
+        tools_md_refreshed = False
+        channel_formatting_refreshed = False
+        try:
+            from apps.orchestrator.services import reassert_tools_md
+
+            tools_md_refreshed = reassert_tools_md(tenant)
+        except Exception:
+            logger.exception("RuntimeContainerStartedView: TOOLS.md re-assert failed for tenant %s", tenant_id)
+        try:
+            from apps.orchestrator.services import reassert_channel_formatting
+
+            channel_formatting_refreshed = reassert_channel_formatting(tenant)
+        except Exception:
+            logger.exception(
+                "RuntimeContainerStartedView: channel-formatting re-assert failed for tenant %s",
+                tenant_id,
+            )
+
         if not getattr(tenant, "postgres_cron_canonical", False):
             return Response(
                 {
@@ -105,6 +128,8 @@ class RuntimeContainerStartedView(APIView):
                     "reason": "tenant not on postgres-canonical flow",
                     "agents_md_refreshed": agents_md_refreshed,
                     "identity_files_refreshed": identity_files_refreshed,
+                    "tools_md_refreshed": tools_md_refreshed,
+                    "channel_formatting_refreshed": channel_formatting_refreshed,
                 },
                 status=status.HTTP_200_OK,
             )
@@ -121,6 +146,8 @@ class RuntimeContainerStartedView(APIView):
                     "detail": str(exc),
                     "agents_md_refreshed": agents_md_refreshed,
                     "identity_files_refreshed": identity_files_refreshed,
+                    "tools_md_refreshed": tools_md_refreshed,
+                    "channel_formatting_refreshed": channel_formatting_refreshed,
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
@@ -129,6 +156,8 @@ class RuntimeContainerStartedView(APIView):
                 "ok": True,
                 "agents_md_refreshed": agents_md_refreshed,
                 "identity_files_refreshed": identity_files_refreshed,
+                "tools_md_refreshed": tools_md_refreshed,
+                "channel_formatting_refreshed": channel_formatting_refreshed,
                 **summary,
             },
             status=status.HTTP_200_OK,
