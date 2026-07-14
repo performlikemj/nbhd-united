@@ -10,15 +10,33 @@ block() {
   exit 2
 }
 
-if printf '%s' "$cmd" | grep -qE 'git add +(-A|--all|\.)([[:space:]]|$|;)'; then
+# SCAN THE COMMAND WITH MESSAGE PAYLOADS REMOVED. A commit message that NAMES a forbidden
+# command is not that command — but every rule below matched raw text, so the guard blocked
+# people for DESCRIBING it: `git commit -m "block pip-compile"` tripped the pip-compile rule,
+# `git commit -m "never git add -A"` tripped the staging rule. This PR's own commit messages
+# escaped only by accident (backticks happened not to match the leading-whitespace anchor).
+# A guard that punishes you for documenting it teaches you to route around it, and a guard
+# people route around is worse than none.
+#
+# Strips ONLY the argument to -m/--message/-b/--body/-F/--notes, and truncates at a heredoc
+# introducer (a heredoc body is data by definition). Deliberately NOT a blanket quote-strip:
+# that would let `bash -c "pip-compile requirements.in"` through, which is real execution.
+# Chained commands still land — `git commit -m "x" && pip-compile y` keeps the pip-compile.
+MSGFLAG='(-m|-am|-sm|--message|-b|--body|-F|--notes|-t|--title)'
+scan=$(printf '%s\n' "$cmd" \
+  | sed -E "s/${MSGFLAG}[[:space:]]+'[^']*'/\1 /g" \
+  | sed -E "s/${MSGFLAG}[[:space:]]+\"[^\"]*\"/\1 /g" \
+  | sed -n '/<</q;p')
+
+if printf '%s' "$scan" | grep -qE 'git add +(-A|--all|\.)([[:space:]]|$|;)'; then
   block "Blocked by .claude/hooks/git_guard.sh: broad staging (git add -A/./--all) risks committing .env, models, or unrelated WIP. Stage specific files by path (docs/agents/workflow.md)."
 fi
 
-if printf '%s' "$cmd" | grep -qE 'git commit[^|;&]*--no-verify'; then
+if printf '%s' "$scan" | grep -qE 'git commit[^|;&]*--no-verify'; then
   block "Blocked by .claude/hooks/git_guard.sh: --no-verify skips pre-commit hooks. Only allowed for a scanner false positive in scanner code itself — ask MJ first."
 fi
 
-if printf '%s' "$cmd" | grep -qE 'git push[^|;&]*(--force|--force-with-lease|-f[[:space:]])' && printf '%s' "$cmd" | grep -qE '(^|[[:space:]:])main([[:space:]]|$|;)'; then
+if printf '%s' "$scan" | grep -qE 'git push[^|;&]*(--force|--force-with-lease|-f[[:space:]])' && printf '%s' "$scan" | grep -qE '(^|[[:space:]:])main([[:space:]]|$|;)'; then
   block "Blocked by .claude/hooks/git_guard.sh: force-push touching main is never allowed."
 fi
 
@@ -36,7 +54,12 @@ fi
 # — flags and preceding targets are the normal way people invoke make, so the strict form was
 # guarding only the one spelling nobody has to use. `uv pip compile` and `python -m piptools
 # compile` are the same tool under other names. Any new alias belongs on this line.
-if printf '%s' "$cmd" | grep -qE '(^|[[:space:]/])pip-compile([[:space:]]|$|;)|(^|[[:space:]])make[^|;&]*compile-deps|(^|[[:space:]/])uv[[:space:]]+pip[[:space:]]+compile|piptools[[:space:]]+compile'; then
+#
+# The boundary is `[^A-Za-z0-9._-]`, not `[[:space:]/]`: the whitespace anchor never matched a
+# QUOTE, so `bash -c "pip-compile requirements.in"` — real execution, real damage — walked
+# straight through the guard from the day it was written. Found by a truth table, not by
+# reading the regex; a regex you only read is a regex you only hope about.
+if printf '%s' "$scan" | grep -qE '(^|[^A-Za-z0-9._-])pip-compile([^A-Za-z0-9._-]|$)|(^|[[:space:]])make[^|;&]*compile-deps|(^|[^A-Za-z0-9._-])uv[[:space:]]+pip[[:space:]]+compile|piptools[[:space:]]+compile'; then
   block "Blocked by .claude/hooks/git_guard.sh: pip-compile on macOS strips the Linux/CUDA pins from requirements.txt and you will not notice until deploy. (Includes 'make compile-deps', 'uv pip compile' and 'python -m piptools compile' — same tool, different hat.) Hand-edit requirements.txt instead, or run pip-compile inside the Linux container. To rebuild the venv you almost certainly want 'make setup'."
 fi
 

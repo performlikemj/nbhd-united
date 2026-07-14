@@ -102,25 +102,36 @@ if [ -n "$MB" ]; then
   git -C "$REPO" diff --quiet "$MB" origin/main -- requirements.txt 2>/dev/null || MAIN_CHANGED=1
 fi
 
-# How old is the baseline? See "WHAT SILENCE MEANS" above.
-FH=$(git -C "$REPO" rev-parse --git-path FETCH_HEAD 2>/dev/null || true)
-case "$FH" in /*) ;; *) FH="$REPO/$FH" ;; esac
-FETCH_AGE=""
-if [ -f "$FH" ]; then
-  NOW=$(date +%s)
-  MT=$(stat -f %m "$FH" 2>/dev/null || stat -c %Y "$FH" 2>/dev/null || echo "$NOW")
-  FETCH_AGE=$(( (NOW - MT) / 86400 ))
+# AGE THE SHARED REF, NOT THE LOCAL FETCH RITUAL. See "WHAT SILENCE MEANS" above.
+#
+# The first version of this read FETCH_HEAD's mtime — and FETCH_HEAD is PER-WORKTREE and
+# records the last fetch of ANYTHING, while origin/main is a ref every worktree SHARES. This
+# machine carries 30+ worktrees whose FETCH_HEAD mtimes span days, all reading an origin/main
+# fetched minutes ago. The banner therefore CONTRADICTED ITSELF: it reported "MAIN'S PINS
+# MOVED" (computed from the fresh shared ref) and then, two sentences later, "a bump merged
+# since then is invisible and would show as CLEAN" — about the very bump it had just
+# reported. Worse, a worktree with no FETCH_HEAD produced an empty age that was treated as
+# FRESH: the unknown case defaulted to silence, which is precisely the direction this probe
+# exists to close.
+#
+# origin/main's TIP DATE is shared, always present, and needs no network. It is a proxy, so
+# what it feeds must be an honest either/or: an old tip means EITHER nothing has merged OR
+# you have not fetched. At this repo's merge velocity, two days of either is worth saying.
+TIP_AGE=""
+TIP=$(git -C "$REPO" log -1 --format=%ct origin/main 2>/dev/null || true)
+if [ -n "$TIP" ]; then
+  TIP_AGE=$(( ( $(date +%s) - TIP ) / 86400 ))
 fi
 
 "$PY" - "$REQ" "$IGNORE" "$CI_PYTHON" "$CMD" "$BRANCH_CHANGED" "$MAIN_CHANGED" \
-        "$FETCH_AGE" "$BASELINE_STALE_DAYS" "$BASELINE" <<'PYEOF'
+        "$TIP_AGE" "$BASELINE_STALE_DAYS" "$BASELINE" <<'PYEOF'
 import json, re, sys
 from importlib.metadata import PackageNotFoundError, version
 
 req_path, ignore_path, ci_python, cmd = sys.argv[1:5]
 branch_changed = sys.argv[5] == "1"
 main_changed = sys.argv[6] == "1"
-fetch_age = sys.argv[7]                 # whole days, or "" if unknown
+tip_age = sys.argv[7]                   # age in days of origin/main's TIP, or "" if unknown
 stale_days = int(sys.argv[8])
 baseline = sys.argv[9]                  # "origin/main" | "local-file"
 
@@ -166,10 +177,14 @@ with open(req_path) as fh:
 
 py_now = f"{sys.version_info[0]}.{sys.version_info[1]}"
 py_drift = py_now != ci_python
-baseline_stale = bool(fetch_age) and int(fetch_age) >= stale_days
+
+# An UNKNOWN age must never read as fresh. Defaulting the unknown case to silence is the
+# exact failure this probe exists to close, so it is its own reason to speak.
+age_unknown = tip_age == ""
+baseline_stale = (not age_unknown) and int(tip_age) >= stale_days
 
 if not (wrong or absent or py_drift or unparsed or branch_changed or main_changed
-        or baseline_stale or baseline == "local-file"):
+        or baseline_stale or age_unknown or baseline == "local-file"):
     sys.exit(0)  # clean — say nothing
 
 # Headline the packages whose version actually changes behaviour, then NAME the rest before
@@ -218,11 +233,15 @@ if branch_changed:
         "dependency set CI will use for this branch, and any drift named above is expected."
     )
 if main_changed:
+    # When the venv is ALSO drifted, "main's newer dependencies" would overstate what the run
+    # actually uses — the drifted venv is what it uses. The drift lines print first with exact
+    # versions, so point at them rather than assert past them.
+    qualifier = " (see the drift above — the venv is not currently at main either)" if bits else ""
     parts.append(
-        "MAIN'S PINS MOVED since this branch was cut. The shared venv tracks main, so this "
-        "run puts main's NEWER dependencies against this branch's OLDER code — while CI will "
-        "install the branch's OLDER file. Local differs from CI in BOTH directions. Rebase or "
-        "pull to converge."
+        "MAIN'S PINS MOVED since this branch was cut. The shared venv tracks main, so this run "
+        f"puts main's NEWER dependencies against this branch's OLDER code{qualifier} — while CI "
+        "will install the branch's OLDER file. Local differs from CI in BOTH directions. Rebase "
+        "or pull to converge."
     )
 if baseline == "local-file":
     parts.append(
@@ -230,14 +249,24 @@ if baseline == "local-file":
         "requirements.txt, which is the original bug this hook was written to catch. "
         "`git fetch origin main` and re-run; until then this check proves nothing."
     )
-if baseline_stale:
+if age_unknown:
     parts.append(
-        f"BASELINE IS {fetch_age}d OLD — origin/main was last fetched {fetch_age} days ago, so "
-        "a dependency bump merged since then is invisible here and would show as CLEAN. "
+        "BASELINE AGE UNKNOWN — could not read origin/main's tip date, so this check cannot "
+        "tell you whether the baseline is current. Do not read a clean result as reassurance. "
+        "`git fetch origin main`."
+    )
+elif baseline_stale:
+    # Honest either/or. Tip age is a PROXY for fetch age: an old tip means either nothing
+    # merged, or you have not fetched. Never assert which — the previous version asserted the
+    # fetch story and contradicted its own MAIN'S-PINS-MOVED clause two sentences earlier.
+    parts.append(
+        f"BASELINE MAY BE STALE — origin/main's tip is {tip_age}d old. Either nothing has merged "
+        f"in {tip_age} days, or you have not fetched in {tip_age} days; at this repo's pace the "
+        "second is likelier. A bump merged since your last fetch would show here as CLEAN. "
         "`git fetch origin main`."
     )
 
-age_note = f" (baseline: origin/main as last fetched {fetch_age}d ago.)" if fetch_age and not baseline_stale else ""
+age_note = f" (baseline: origin/main, tip {tip_age}d old.)" if not age_unknown and not baseline_stale else ""
 extra = (
     " A migration generated here carries the LOCAL Django version in its header, and "
     "`makemigrations --check` in CI is the only drift verdict that counts."
