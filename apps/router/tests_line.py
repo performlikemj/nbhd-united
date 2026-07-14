@@ -949,6 +949,20 @@ class LineLinkViewsTest(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_generate_link_rejects_exhausted_quota_without_minting_token(self):
+        from apps.router.line_quota import mark_quota_exhausted_from_429
+
+        mark_quota_exhausted_from_429()
+
+        response = self.client.post(
+            "/api/v1/tenants/line/generate-link/",
+            **self.auth_header,
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json(), {"code": "line_quota_exhausted"})
+        self.assertFalse(LineLinkToken.objects.filter(user=self.user).exists())
+
     def test_line_status_unlinked(self):
         response = self.client.get(
             "/api/v1/tenants/line/status/",

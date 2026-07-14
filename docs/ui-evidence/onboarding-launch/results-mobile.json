@@ -1,0 +1,263 @@
+[
+  {
+    "tag": "skipped-mobile",
+    "states": [
+      {
+        "at": "building-start",
+        "step": "STEP 3 OF 3",
+        "h1": "Launching your\nuniverse",
+        "subtitle": "We’re building your private AI space. This takes about a minute.",
+        "tip": "Your assistant runs in its own private container — nobody else can see your conversations or data.",
+        "monoFooter": "This usually takes under a minute",
+        "buttons": [],
+        "links": [
+          "Skip to main content -> #main-content",
+          "Neighborhood United -> /",
+          "iOS App -> https://apps.apple.com/us/app/nbhd/id6779158519",
+          "Terms of Service -> /legal/terms",
+          "Privacy Policy -> /legal/privacy",
+          "Refund Policy -> /legal/refund",
+          "特定商取引法 -> /legal/commerce-disclosure",
+          "Contact -> mailto:mj@bywayofmj.com"
+        ],
+        "progressLabels": [
+          "Private space",
+          "AI model",
+          "Secure links",
+          "Warming up...",
+          "Ready"
+        ]
+      },
+      {
+        "at": "ready",
+        "step": "STEP 3 OF 3",
+        "h1": "Your universe is ready",
+        "subtitle": "Your private AI space is ready. Connect a channel anytime in Settings.",
+        "tip": null,
+        "monoFooter": null,
+        "buttons": [
+          "Start exploring"
+        ],
+        "links": [
+          "Skip to main content -> #main-content",
+          "Settings → Integrations -> /settings/integrations",
+          "Neighborhood United -> /",
+          "iOS App -> https://apps.apple.com/us/app/nbhd/id6779158519",
+          "Terms of Service -> /legal/terms",
+          "Privacy Policy -> /legal/privacy",
+          "Refund Policy -> /legal/refund",
+          "特定商取引法 -> /legal/commerce-disclosure",
+          "Contact -> mailto:mj@bywayofmj.com"
+        ],
+        "progressLabels": [
+          "Private space",
+          "AI model",
+          "Secure links",
+          "Warming up...",
+          "Ready"
+        ]
+      }
+    ],
+    "tips": [
+      "Your assistant runs in its own private container — nobody else can see your conversations or data.",
+      "You can connect the iPhone app, Telegram, or LINE later in Settings → Integrations.",
+      "Your journal and settings will be ready here when provisioning finishes."
+    ],
+    "notes": []
+  },
+  {
+    "tag": "telegram-mobile",
+    "states": [
+      {
+        "at": "building-start",
+        "step": "STEP 3 OF 3",
+        "h1": "Launching your\nuniverse",
+        "subtitle": "We’re building your private AI space. This takes about a minute.",
+        "tip": "Your assistant runs in its own private container — nobody else can see your conversations or data.",
+        "monoFooter": "This usually takes under a minute",
+        "buttons": [],
+        "links": [
+          "Skip to main content -> #main-content",
+          "Neighborhood United -> /",
+          "iOS App -> https://apps.apple.com/us/app/nbhd/id6779158519",
+          "Terms of Service -> /legal/terms",
+          "Privacy Policy -> /legal/privacy",
+          "Refund Policy -> /legal/refund",
+          "特定商取引法 -> /legal/commerce-disclosure",
+          "Contact -> mailto:mj@bywayofmj.com"
+        ],
+        "progressLabels": [
+          "Private space",
+          "AI model",
+          "Secure links",
+          "Warming up...",
+          "Ready"
+        ]
+      },
+      {
+        "at": "ready",
+        "step": "STEP 3 OF 3",
+        "h1": "Your universe is ready",
+        "subtitle": "Your private AI assistant is active. Open Telegram whenever you’re ready to talk.",
+        "tip": null,
+        "monoFooter": null,
+        "buttons": [
+          "Start exploring"
+        ],
+        "links": [
+          "Skip to main content -> #main-content",
+          "Neighborhood United -> /",
+          "iOS App -> https://apps.apple.com/us/app/nbhd/id6779158519",
+          "Terms of Service -> /legal/terms",
+          "Privacy Policy -> /legal/privacy",
+          "Refund Policy -> /legal/refund",
+          "特定商取引法 -> /legal/commerce-disclosure",
+          "Contact -> mailto:mj@bywayofmj.com"
+        ],
+        "progressLabels": [
+          "Private space",
+          "AI model",
+          "Secure links",
+          "Warming up...",
+          "Ready"
+        ]
+      }
+    ],
+    "tips": [
+      "Your assistant runs in its own private container — nobody else can see your conversations or data.",
+      "Once launch finishes, open Telegram whenever you’re ready to talk.",
+      "You can add or remove channels anytime in Settings → Integrations."
+    ],
+    "notes": []
+  },
+  {
+    "tag": "line-mobile",
+    "states": [
+      {
+        "at": "building-start",
+        "step": "STEP 3 OF 3",
+        "h1": "Launching your\nuniverse",
+        "subtitle": "We’re building your private AI space. This takes about a minute.",
+        "tip": "Your assistant runs in its own private container — nobody else can see your conversations or data.",
+        "monoFooter": "This usually takes under a minute",
+        "buttons": [],
+        "links": [
+          "Skip to main content -> #main-content",
+          "Neighborhood United -> /",
+          "iOS App -> https://apps.apple.com/us/app/nbhd/id6779158519",
+          "Terms of Service -> /legal/terms",
+          "Privacy Policy -> /legal/privacy",
+          "Refund Policy -> /legal/refund",
+          "特定商取引法 -> /legal/commerce-disclosure",
+          "Contact -> mailto:mj@bywayofmj.com"
+        ],
+        "progressLabels": [
+          "Private space",
+          "AI model",
+          "Secure links",
+          "Warming up...",
+          "Ready"
+        ]
+      },
+      {
+        "at": "ready",
+        "step": "STEP 3 OF 3",
+        "h1": "Your universe is ready",
+        "subtitle": "Your private AI assistant is active. Open LINE whenever you’re ready to talk.",
+        "tip": null,
+        "monoFooter": null,
+        "buttons": [
+          "Start exploring"
+        ],
+        "links": [
+          "Skip to main content -> #main-content",
+          "Neighborhood United -> /",
+          "iOS App -> https://apps.apple.com/us/app/nbhd/id6779158519",
+          "Terms of Service -> /legal/terms",
+          "Privacy Policy -> /legal/privacy",
+          "Refund Policy -> /legal/refund",
+          "特定商取引法 -> /legal/commerce-disclosure",
+          "Contact -> mailto:mj@bywayofmj.com"
+        ],
+        "progressLabels": [
+          "Private space",
+          "AI model",
+          "Secure links",
+          "Warming up...",
+          "Ready"
+        ]
+      }
+    ],
+    "tips": [
+      "Your assistant runs in its own private container — nobody else can see your conversations or data.",
+      "Once launch finishes, open LINE whenever you’re ready to talk.",
+      "You can add or remove channels anytime in Settings → Integrations."
+    ],
+    "notes": []
+  },
+  {
+    "tag": "ios-mobile",
+    "states": [
+      {
+        "at": "building-start",
+        "step": "STEP 3 OF 3",
+        "h1": "Launching your\nuniverse",
+        "subtitle": "We’re building your private AI space. This takes about a minute.",
+        "tip": "Your assistant runs in its own private container — nobody else can see your conversations or data.",
+        "monoFooter": "This usually takes under a minute",
+        "buttons": [],
+        "links": [
+          "Skip to main content -> #main-content",
+          "Neighborhood United -> /",
+          "iOS App -> https://apps.apple.com/us/app/nbhd/id6779158519",
+          "Terms of Service -> /legal/terms",
+          "Privacy Policy -> /legal/privacy",
+          "Refund Policy -> /legal/refund",
+          "特定商取引法 -> /legal/commerce-disclosure",
+          "Contact -> mailto:mj@bywayofmj.com"
+        ],
+        "progressLabels": [
+          "Private space",
+          "AI model",
+          "Secure links",
+          "Warming up...",
+          "Ready"
+        ]
+      },
+      {
+        "at": "ready",
+        "step": "STEP 3 OF 3",
+        "h1": "Your universe is ready",
+        "subtitle": "Your private AI assistant is active. Open NBHD on your iPhone whenever you’re ready to talk.",
+        "tip": null,
+        "monoFooter": null,
+        "buttons": [
+          "Start exploring"
+        ],
+        "links": [
+          "Skip to main content -> #main-content",
+          "Neighborhood United -> /",
+          "iOS App -> https://apps.apple.com/us/app/nbhd/id6779158519",
+          "Terms of Service -> /legal/terms",
+          "Privacy Policy -> /legal/privacy",
+          "Refund Policy -> /legal/refund",
+          "特定商取引法 -> /legal/commerce-disclosure",
+          "Contact -> mailto:mj@bywayofmj.com"
+        ],
+        "progressLabels": [
+          "Private space",
+          "AI model",
+          "Secure links",
+          "Warming up...",
+          "Ready"
+        ]
+      }
+    ],
+    "tips": [
+      "Your assistant runs in its own private container — nobody else can see your conversations or data.",
+      "Once launch finishes, open NBHD on your iPhone whenever you’re ready to talk.",
+      "You can add or remove channels anytime in Settings → Integrations."
+    ],
+    "notes": []
+  }
+]

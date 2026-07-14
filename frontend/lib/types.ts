@@ -182,7 +182,7 @@ export interface ProvisioningStatus {
   provisioned_at: string | null;
   created_at: string;
   updated_at: string;
-  ready: boolean;
+  ready?: boolean;
 }
 
 export interface Integration {

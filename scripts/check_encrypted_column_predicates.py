@@ -179,8 +179,6 @@ _JSON_COLUMNS: set[tuple[str, str]] = {
 # Entries: (path relative to repo root, 1-indexed line of the predicate, column)
 # ---------------------------------------------------------------------------
 _ALLOWLISTED_SITES: set[tuple[str, int, str]] = {
-    # AppChatMessage.reply_text — unread-badge count excludes empty replies.
-    ("apps/router/push_views.py", 290, "reply_text"),
     # ProactiveOutbound.parsed_items — ops report: count rows with structured
     # extraction vs raw text only.
     ("apps/router/management/commands/audit_proactive_sync.py", 63, "parsed_items"),

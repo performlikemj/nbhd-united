@@ -4,17 +4,20 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { PendingConfigChip } from "@/components/pending-config-chip";
+import { MessagingChannelCard } from "@/components/channel/messaging-channel-card";
+import type { MessagingChannel } from "@/components/channel/types";
+import {
+  useLineConnection,
+  useTelegramConnection,
+} from "@/components/channel/use-channel-connection";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import {
   useDisconnectIntegrationMutation,
-  useGenerateTelegramLinkMutation,
-  useGenerateLineLinkMutation,
   useIntegrationsQuery,
-  useLineStatusQuery,
   useOAuthAuthorizeMutation,
-  useTelegramStatusQuery,
+  usePushStatusQuery,
   useTenantQuery,
   useUnlinkLineMutation,
   useUnlinkTelegramMutation,
@@ -23,7 +26,6 @@ import {
   useUpdateCoreSettingsMutation,
   useFuelProfileQuery,
 } from "@/lib/queries";
-import type { TelegramLinkResponse, LineLinkResponse } from "@/lib/api";
 import { ServiceIcon } from "@/components/service-icon";
 import { AppStoreBadge } from "@/components/app-store-badge";
 import { ErrorBoundary } from "@/components/error-boundary";
@@ -42,11 +44,16 @@ const providers: { key: string; label: string; description?: string }[] = [
 ];
 
 function AppCard() {
+  const { data: pushStatus } = usePushStatusQuery();
+
   return (
     <article className="rounded-panel border border-border bg-surface-elevated p-4">
-      <div className="flex items-center gap-2">
-        <span className="text-base" aria-hidden="true">◇</span>
-        <h3 className="text-base font-medium">NBHD for iPhone</h3>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-base" aria-hidden="true">◇</span>
+          <h3 className="text-base font-medium">NBHD for iPhone</h3>
+        </div>
+        {pushStatus?.registered ? <StatusPill status="active" /> : null}
       </div>
       <p className="mt-2 text-sm text-ink-muted">
         Talk to your assistant on the go — voice notes, photos, and daily
@@ -55,6 +62,11 @@ function AppCard() {
       <div className="mt-4">
         <AppStoreBadge height={44} />
       </div>
+      {pushStatus?.registered ? (
+        <p className="mt-3 text-sm text-emerald-text" role="status">
+          Connected on iPhone
+        </p>
+      ) : null}
     </article>
   );
 }
@@ -65,299 +77,73 @@ function AppCard() {
 // from a chat client they already keep open. Delivery preference is automatic
 // (app-first when installed), so there is deliberately no channel toggle here.
 
-function TelegramGlyph() {
-  return (
-    <svg
-      width={20}
-      height={20}
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      aria-hidden="true"
-      className="shrink-0 text-[#229ED9]"
-    >
-      <path d="M9.78 18.65l.28-4.23 7.68-6.92c.34-.31-.07-.46-.52-.19L7.74 13.3 3.64 12c-.88-.25-.89-.86.2-1.3l15.97-6.16c.73-.33 1.43.18 1.15 1.3l-2.72 12.81c-.19.91-.74 1.13-1.5.71l-4.14-3.06-1.99 1.93c-.23.23-.42.42-.83.42z" />
-    </svg>
-  );
+interface SettingsChannelCardProps {
+  pairingOpen: boolean;
+  onPairingOpenChange: (channel: MessagingChannel | null) => void;
 }
 
-function LineGlyph() {
-  return (
-    <svg
-      width={20}
-      height={20}
-      viewBox="0 0 24 24"
-      fill="currentColor"
-      aria-hidden="true"
-      className="shrink-0 text-[#06C755]"
-    >
-      <path d="M12 2.75c-5.24 0-9.5 3.44-9.5 7.68 0 3.8 3.38 6.98 7.94 7.58.31.07.73.2.84.47.09.24.06.62.03.87l-.13.81c-.04.24-.19.94.82.51 1.02-.43 5.48-3.23 7.48-5.53 1.38-1.51 2.02-3.05 2.02-5.19 0-4.24-4.26-7.68-9.52-7.68zM8.2 12.62H6.31c-.27 0-.5-.22-.5-.5V8.34c0-.28.23-.5.5-.5s.5.22.5.5v3.28H8.2c.28 0 .5.22.5.5s-.22.5-.5.5zm1.94-.5c0 .28-.22.5-.5.5s-.5-.22-.5-.5V8.34c0-.28.22-.5.5-.5s.5.22.5.5v3.78zm4.42 0c0 .21-.13.4-.34.47a.51.51 0 0 1-.55-.16l-1.93-2.63v2.32c0 .28-.22.5-.5.5s-.5-.22-.5-.5V8.34c0-.21.14-.4.34-.47.2-.07.43 0 .55.17l1.94 2.63V8.34c0-.28.22-.5.5-.5s.49.22.49.5v3.78zm3-2.39c.28 0 .5.22.5.5s-.22.5-.5.5h-1.39v.89h1.39c.28 0 .5.23.5.5 0 .28-.22.5-.5.5h-1.89c-.27 0-.5-.22-.5-.5V8.34c0-.28.23-.5.5-.5h1.89c.28 0 .5.22.5.5s-.22.5-.5.5h-1.39v.89h1.39z" />
-    </svg>
-  );
-}
-
-function TelegramCard() {
-  const [linkData, setLinkData] = useState<TelegramLinkResponse | null>(null);
-  const [confirmingUnlink, setConfirmingUnlink] = useState(false);
-  // Always fetch status — not just after generating a link. Fast 3s polling
-  // only while a pairing QR/deep-link is on screen; 15s otherwise.
-  const { data: status } = useTelegramStatusQuery(true, !!linkData);
-  const generateLink = useGenerateTelegramLinkMutation();
+function TelegramCard({ pairingOpen, onPairingOpenChange }: SettingsChannelCardProps) {
+  const connection = useTelegramConnection(pairingOpen);
   const unlinkMutation = useUnlinkTelegramMutation();
 
-  const linked = status?.linked ?? false;
-
-  const handleConnect = async () => {
-    try {
-      const data = await generateLink.mutateAsync();
-      setLinkData(data);
-    } catch {
-      // handled by mutation
-    }
-  };
-
   return (
-    <article className="rounded-panel border border-border bg-surface-elevated p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <TelegramGlyph />
-          <h3 className="text-base font-medium">Telegram</h3>
-        </div>
-        <StatusPill status={linked ? "active" : "pending"} />
-      </div>
-
-      {linked ? (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">
-            {status?.telegram_username ? `Connected as @${status.telegram_username}` : "Connected"}
-          </p>
-          {confirmingUnlink ? (
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <span className="text-sm text-ink-muted">Unlink Telegram?</span>
-              <button
-                className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:bg-rose-bg disabled:cursor-not-allowed disabled:opacity-45 min-h-[44px]"
-                type="button"
-                disabled={unlinkMutation.isPending}
-                onClick={() => {
-                  unlinkMutation.mutate();
-                  setConfirmingUnlink(false);
-                }}
-              >
-                {unlinkMutation.isPending ? "Unlinking..." : "Confirm unlink"}
-              </button>
-              <button
-                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong min-h-[44px]"
-                type="button"
-                onClick={() => setConfirmingUnlink(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <div className="mt-4">
-              <button
-                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45 min-h-[44px]"
-                type="button"
-                onClick={() => setConfirmingUnlink(true)}
-              >
-                Unlink
-              </button>
-            </div>
-          )}
-        </>
-      ) : (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">
-            Optional. Chat with your assistant from Telegram if you already keep it open.
-          </p>
-
-          {!linkData && (
-            <div className="mt-4">
-              <button
-                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45 min-h-[44px]"
-                type="button"
-                disabled={generateLink.isPending}
-                onClick={handleConnect}
-              >
-                {generateLink.isPending ? "Generating..." : "Connect"}
-              </button>
-            </div>
-          )}
-
-          {linkData && (
-            <div className="mt-3 space-y-3">
-              <p className="text-sm text-ink-muted">Scan the QR code or tap the link:</p>
-              <div className="flex items-start gap-4">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={linkData.qr_code}
-                  alt="Telegram QR Code"
-                  className="h-32 w-32 rounded-panel border border-border"
-                />
-                <a
-                  href={linkData.deep_link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex min-h-[44px] items-center rounded-full bg-[#229ED9] px-4 py-2 text-sm text-white transition hover:brightness-110"
-                >
-                  Open in Telegram
-                </a>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </article>
+    <MessagingChannelCard
+      channel="telegram"
+      description="Chat with your assistant in Telegram."
+      panelId="settings-telegram-pairing"
+      linked={connection.status?.linked ?? false}
+      connectedIdentity={
+        connection.status?.telegram_username
+          ? `@${connection.status.telegram_username}`
+          : undefined
+      }
+      statusReady={connection.statusReady}
+      statusError={connection.statusError}
+      pairingOpen={pairingOpen}
+      link={connection.link}
+      isGenerating={connection.isGenerating}
+      generationError={connection.generationError}
+      onConnect={async () => {
+        onPairingOpenChange("telegram");
+        if (!connection.link) await connection.generate();
+      }}
+      onRegenerate={connection.generate}
+      onRetryStatus={connection.retryStatus}
+      onClose={() => onPairingOpenChange(null)}
+      onUnlink={() => unlinkMutation.mutate()}
+      unlinkPending={unlinkMutation.isPending}
+    />
   );
 }
 
-function LineCard() {
-  const [linkData, setLinkData] = useState<LineLinkResponse | null>(null);
-  const [confirmingUnlink, setConfirmingUnlink] = useState(false);
-  // 3s polling only while the pairing QR/deep-link is visible; 15s otherwise.
-  const { data: status } = useLineStatusQuery(true, !!linkData);
-  const generateLink = useGenerateLineLinkMutation();
+function LineCard({ pairingOpen, onPairingOpenChange }: SettingsChannelCardProps) {
+  const connection = useLineConnection(pairingOpen);
   const unlinkMutation = useUnlinkLineMutation();
 
-  const linked = status?.linked ?? false;
-  // Fleet-wide LINE Push monthly quota. When exhausted the platform can't
-  // deliver to LINE, so we don't invite new links until it resets — greyed
-  // out with a note rather than silently failing after they connect.
-  const quotaExhausted = status?.quota?.exhausted ?? false;
-
-  const handleConnect = async () => {
-    try {
-      const data = await generateLink.mutateAsync();
-      setLinkData(data);
-    } catch {
-      // handled by mutation
-    }
-  };
-
   return (
-    <article className="rounded-panel border border-border bg-surface-elevated p-4">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <LineGlyph />
-          <h3 className="text-base font-medium">LINE</h3>
-        </div>
-        <StatusPill status={linked ? "active" : "pending"} />
-      </div>
-
-      {linked ? (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">
-            {status?.line_display_name ? `Connected as ${status.line_display_name}` : "Connected"}
-          </p>
-          {confirmingUnlink ? (
-            <div className="mt-4 flex flex-wrap items-center gap-2">
-              <span className="text-sm text-ink-muted">Unlink LINE?</span>
-              <button
-                className="rounded-full border border-rose-border px-3 py-1.5 text-sm text-rose-text hover:bg-rose-bg disabled:cursor-not-allowed disabled:opacity-45 min-h-[44px]"
-                type="button"
-                disabled={unlinkMutation.isPending}
-                onClick={() => {
-                  unlinkMutation.mutate();
-                  setConfirmingUnlink(false);
-                }}
-              >
-                {unlinkMutation.isPending ? "Unlinking..." : "Confirm unlink"}
-              </button>
-              <button
-                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong min-h-[44px]"
-                type="button"
-                onClick={() => setConfirmingUnlink(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <div className="mt-4">
-              <button
-                className="rounded-full border border-border-strong px-3 py-1.5 text-sm hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-45 min-h-[44px]"
-                type="button"
-                onClick={() => setConfirmingUnlink(true)}
-              >
-                Unlink
-              </button>
-            </div>
-          )}
-        </>
-      ) : quotaExhausted ? (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">
-            Optional. Chat with your assistant from LINE if you already keep it open.
-          </p>
-          <div className="mt-3 rounded-panel border border-amber-border bg-amber-bg p-3">
-            <p className="text-sm text-amber-text">
-              LINE&rsquo;s monthly messaging allowance is used up across the platform.
-              You&rsquo;ll be able to connect LINE again at the start of next month.
-            </p>
-          </div>
-          <div className="mt-4">
-            <button
-              className="rounded-full border border-border px-3 py-1.5 text-sm text-ink-faint cursor-not-allowed opacity-45 min-h-[44px]"
-              type="button"
-              disabled
-              aria-disabled="true"
-              title="LINE monthly messaging allowance reached. Connectable again at the start of next month."
-            >
-              Connect LINE
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <p className="mt-2 text-sm text-ink-muted">
-            Optional. Chat with your assistant from LINE if you already keep it open.
-          </p>
-
-          {!linkData && (
-            <div className="mt-4">
-              <button
-                className="rounded-full border border-[#06C755] px-3 py-1.5 text-sm text-[#06C755] hover:bg-[#06C755]/10 disabled:cursor-not-allowed disabled:opacity-45 min-h-[44px]"
-                type="button"
-                disabled={generateLink.isPending}
-                onClick={handleConnect}
-              >
-                {generateLink.isPending ? "Generating..." : "Connect LINE"}
-              </button>
-            </div>
-          )}
-
-          {linkData && (
-            <div className="mt-3 space-y-3">
-              <div className="rounded-panel border border-[#06C755]/20 bg-[#06C755]/5 p-3">
-                <p className="text-sm font-medium text-ink">How to connect:</p>
-                <ol className="mt-1.5 list-inside list-decimal space-y-1 text-sm text-ink-muted">
-                  <li>Tap <strong>&quot;Open in LINE&quot;</strong> below (or scan the QR code)</li>
-                  <li>LINE will open with a message ready to send</li>
-                  <li>Tap <strong>Send</strong> — that&apos;s it!</li>
-                </ol>
-              </div>
-              <div className="flex items-start gap-4">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={linkData.qr_code}
-                  alt="LINE QR Code"
-                  className="h-32 w-32 rounded-panel border border-border"
-                />
-                <div className="flex flex-col gap-2">
-                  <a
-                    href={linkData.deep_link}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex min-h-[44px] items-center justify-center rounded-full bg-[#06C755] px-4 py-2 text-center text-sm text-white transition hover:brightness-110"
-                  >
-                    Open in LINE
-                  </a>
-                  <p className="text-xs text-ink-muted">Link expires in 15 minutes</p>
-                </div>
-              </div>
-            </div>
-          )}
-        </>
-      )}
-    </article>
+    <MessagingChannelCard
+      channel="line"
+      description="Chat with your assistant in LINE."
+      panelId="settings-line-pairing"
+      linked={connection.status?.linked ?? false}
+      connectedIdentity={connection.status?.line_display_name}
+      statusReady={connection.statusReady}
+      statusError={connection.statusError}
+      quotaExhausted={connection.status?.quota?.exhausted ?? false}
+      pairingOpen={pairingOpen}
+      link={connection.link}
+      isGenerating={connection.isGenerating}
+      generationError={connection.generationError}
+      onConnect={async () => {
+        onPairingOpenChange("line");
+        if (!connection.link) await connection.generate();
+      }}
+      onRegenerate={connection.generate}
+      onRetryStatus={connection.retryStatus}
+      onClose={() => onPairingOpenChange(null)}
+      onUnlink={() => unlinkMutation.mutate()}
+      unlinkPending={unlinkMutation.isPending}
+    />
   );
 }
 
@@ -647,6 +433,8 @@ function IntegrationsContent() {
   const authorize = useOAuthAuthorizeMutation();
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [activeMessagingChannel, setActiveMessagingChannel] =
+    useState<MessagingChannel | null>(null);
 
   const connectedProvider = searchParams.get("connected");
   const oauthError = searchParams.get("error");
@@ -701,10 +489,16 @@ function IntegrationsContent() {
       </p>
       <div className="space-y-3">
         <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Telegram settings.</p>}>
-          <TelegramCard />
+          <TelegramCard
+            pairingOpen={activeMessagingChannel === "telegram"}
+            onPairingOpenChange={setActiveMessagingChannel}
+          />
         </ErrorBoundary>
         <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load LINE settings.</p>}>
-          <LineCard />
+          <LineCard
+            pairingOpen={activeMessagingChannel === "line"}
+            onPairingOpenChange={setActiveMessagingChannel}
+          />
         </ErrorBoundary>
       </div>
 

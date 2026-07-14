@@ -104,6 +104,41 @@ class PushRegisterTest(TestCase):
         self.assertEqual(DeviceToken.objects.filter(token=_VALID_TOKEN).count(), 0)
 
 
+class PushStatusTest(TestCase):
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_requires_auth(self):
+        resp = APIClient().get("/api/v1/push/status/")
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_reports_current_tenant_registration_without_token_data(self):
+        resp = self.client.get("/api/v1/push/status/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json(), {"registered": False})
+
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN)
+
+        resp = self.client.get("/api/v1/push/status/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json(), {"registered": True})
+
+    def test_ignores_device_row_from_another_tenant(self):
+        other = _make_user()
+        other_tenant = _make_tenant(other)
+        # A mismatched row should not make this tenant appear connected even if
+        # legacy/corrupt data happens to associate it with the caller's user.
+        DeviceToken.objects.create(user=self.user, tenant=other_tenant, token=_VALID_TOKEN)
+
+        resp = self.client.get("/api/v1/push/status/")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json(), {"registered": False})
+
+
 class ApnsSenderTest(TestCase):
     def test_skips_when_not_configured(self):
         from apps.common.apns import send_push

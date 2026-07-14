@@ -1,0 +1,22 @@
+[
+  {
+    "tag": "native-skipped-desktop",
+    "readyAfterSeconds": "16.4",
+    "readySubtitle": "Your private AI space is ready. Connect a channel anytime in Settings."
+  },
+  {
+    "tag": "native-telegram-desktop",
+    "readyAfterSeconds": "16.2",
+    "readySubtitle": "Your private AI assistant is active. Open Telegram whenever you’re ready to talk."
+  },
+  {
+    "tag": "native-line-desktop",
+    "readyAfterSeconds": "16.2",
+    "readySubtitle": "Your private AI assistant is active. Open LINE whenever you’re ready to talk."
+  },
+  {
+    "tag": "native-ios-desktop",
+    "readyAfterSeconds": "16.1",
+    "readySubtitle": "Your private AI assistant is active. Open NBHD on your iPhone whenever you’re ready to talk."
+  }
+]
