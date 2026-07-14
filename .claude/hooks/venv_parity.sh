@@ -192,7 +192,12 @@ if len(tail) > NAMED:
 if absent:
     bits.append(f"{len(absent)} pinned absent ({', '.join(absent[:3])})")
 
-what = "migration" if "makemigrations" in cmd or re.search(r"manage\.py migrate", cmd) else "test run"
+# `make migrate` must classify as a migration too. The old test only matched the `manage.py`
+# spellings, so the repo's own front door got the generic test-run wording and never saw the
+# sentence that actually matters for it — the one about the migration header carrying the
+# LOCAL Django version. Same blind spot as the matcher itself had: reasoning about the tool
+# people are told to use, while checking only the tool they don't.
+what = "migration" if re.search(r"makemigrations|manage\.py migrate|make\s+migrate", cmd) else "test run"
 
 parts = []
 if bits:
