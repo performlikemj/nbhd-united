@@ -393,8 +393,12 @@ TENANT_ID=`, and a `canary-*` set for single-tenant pre-merge OpenClaw validatio
 (`az acr build` a `canary-<sha>` tag → `canary_tenant_image` → poll admin-health).
 [`docker-compose.yml`](../../docker-compose.yml) brings up Postgres 16 + Redis +
 Django with `AZURE_MOCK=true`. Ruff config in [`pyproject.toml`](../../pyproject.toml)
-(`line-length=120`, `E/F/I/UP/B/SIM`). `make setup` runs `pip-compile` — **do not
-run it on macOS** (strips Linux CUDA torch pins); hand-edit `requirements.txt`.
+(`line-length=120`, `E/F/I/UP/B/SIM`). `make setup` no longer runs `pip-compile` — it
+delegates to `scripts/rebuild_venv.sh`, which builds `.venv` at CI parity from
+`origin/main`'s pins. **Never run `pip-compile` (or `make compile-deps`) on macOS**: it
+strips ~37 Linux CUDA/triton pins from `requirements.txt` and nothing fails until the PII
+container deploys. `.claude/hooks/git_guard.sh` now blocks both. Hand-edit
+`requirements.txt` to add a dependency, or regenerate inside the Linux container.
 Dependabot patch/minor PRs auto-squash-merge
 ([`dependabot-auto-merge.yml`](../../.github/workflows/dependabot-auto-merge.yml));
 majors are held.

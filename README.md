@@ -56,14 +56,15 @@ This is **NOT** an AI runtime — [OpenClaw](https://github.com/nichochar/opencl
 # Clone and enter
 cd nbhd-united
 
-# Create virtual environment
-python -m venv .venv
+# Create the virtualenv at CI parity (python 3.12, installs from origin/main's pins)
+make setup
 source .venv/bin/activate
 
-# Install dependencies
-pip install pip-tools
-pip-compile requirements.in
-pip-sync requirements.txt
+# NEVER run `pip-compile` on macOS. requirements.txt is a Linux-generated lockfile;
+# re-compiling it here silently drops ~37 CUDA/triton pins that the PII container
+# needs, and nothing fails until deploy. A git hook blocks it. To add a dependency,
+# hand-edit requirements.txt; to regenerate it properly, run pip-compile in the
+# Linux container.
 
 # Configure
 cp .env.example .env

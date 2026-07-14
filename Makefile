@@ -10,11 +10,17 @@ CANARY_RG        ?= rg-nbhd-prod
 CANARY_TAG       ?= canary-$(shell git rev-parse --short HEAD)
 ADMIN_HEALTH_URL ?= https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io/api/v1/cron/admin-health/
 
+# Builds .venv at CI parity from origin/main's requirements.txt. It deliberately does
+# NOT run pip-compile: on macOS that silently DROPS ~37 Linux-only CUDA/triton pins from
+# requirements.txt, and the loss stays invisible until the PII container fails to deploy.
+# This target used to do precisely that, guarded by nothing but one sentence in a
+# reference doc — and `make setup` is the very first thing anyone reaches for when told
+# their venv has drifted, which is a message the parity hook now actively emits. A warning
+# whose obvious remedy is a landmine is worse than no warning.
+# Deliberate regeneration still lives in `compile-deps` (hook-blocked on macOS — run it
+# inside the Linux container).
 setup:
-	python -m venv .venv
-	.venv/bin/pip install pip-tools
-	.venv/bin/pip-compile requirements.in
-	.venv/bin/pip-sync requirements.txt
+	./scripts/rebuild_venv.sh
 
 migrate:
 	python manage.py migrate
