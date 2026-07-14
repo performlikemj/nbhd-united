@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0122_relock_after_sautai_job"),
+        ("tenants", "0124_relock_after_enc_p3"),
     ]
 
     operations = [
