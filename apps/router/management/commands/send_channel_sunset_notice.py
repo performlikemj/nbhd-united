@@ -9,9 +9,13 @@ email to the account address, so a user who never opens one still hears it on
 another.
 
 This is the ONLY new Telegram/LINE-sending code the campaign adds; it is
-retired with Phase 3. It is transactional in intent — these users lose their
-current way to reach their assistant, so the notice is sent regardless of
-marketing opt-out — and it makes no external calls inside a transaction.
+retired with Phase 3. It makes no external calls inside a transaction.
+
+Opt-out semantics: the notice is a service/operational message, so the
+MARKETING opt-out (``User.email_opt_out``) does not apply. The EMAIL leg
+honors the service-notice opt-out (``User.service_email_opt_out``) and each
+email carries an RFC 8058 one-click unsubscribe for that category; the
+channel messages are in-product notice, not email, and are always sent.
 
 Copy lives in module-level constants below so it can be reviewed and tweaked
 in the PR. Substance is MJ-approved (2026-07-14): NBHD is now an iOS app;
@@ -38,11 +42,12 @@ from datetime import datetime
 
 import httpx
 from django.conf import settings
-from django.core.mail import send_mail
+from django.core.mail import EmailMessage
 from django.core.management.base import BaseCommand, CommandError
 from django.db.models import Q
 
 from apps.tenants.models import User
+from apps.tenants.unsubscribe_signing import CATEGORY_SERVICE, make_unsubscribe_token
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +57,11 @@ logger = logging.getLogger(__name__)
 APP_STORE_URL = "https://apps.apple.com/us/app/nbhd/id6779158519"
 
 # ---------------------------------------------------------------------------
-# Message copy — edit freely in review. Substance MJ-approved 2026-07-14.
-# ``{cutover_date}`` renders as e.g. "July 28, 2026"; ``{app_store_url}`` and
-# ``{display_name}`` are substituted at send time. No other literal braces.
+# Message copy — edit freely in review. Substance MJ-approved 2026-07-14;
+# tone straightened per MJ review of PR #1195 ("just straight up").
+# ``{cutover_date}`` renders as e.g. "July 28, 2026"; ``{app_store_url}``,
+# ``{support_contact}``, ``{display_name}`` and ``{unsubscribe_url}`` are
+# substituted at send time. No other literal braces.
 # ---------------------------------------------------------------------------
 
 # Short plain text for the live channel (Telegram / LINE).
@@ -64,9 +71,11 @@ CHANNEL_MESSAGE = (
     "Your assistant will keep answering you here until {cutover_date} — about "
     "two more weeks — so you have time to see what NBHD can do as your personal "
     "assistant before the switch.\n\n"
+    "After {cutover_date}, this chat stops working and the app is the way to "
+    "reach your assistant.\n\n"
     "Download the app and pick up right where you left off:\n"
     "{app_store_url}\n\n"
-    "Thanks for being part of this.\n"
+    "Questions? Email {support_contact}.\n"
     "— NBHD"
 )
 
@@ -80,18 +89,21 @@ EMAIL_BODY = (
     "messaging is now a tap away on your iPhone home screen.\n\n"
     "Because of that move, we're retiring the chat channel you use today. Your "
     "assistant will keep replying there until {cutover_date} — about two more "
-    "weeks. We wanted to give you that window on purpose: enough time to "
-    "download the app and really see what NBHD can do as your personal "
-    "assistant before anything changes.\n\n"
+    "weeks, so you have time to download the app and see what NBHD can do as "
+    "your personal assistant before the switch.\n\n"
     "Download NBHD on the App Store:\n"
     "{app_store_url}\n\n"
-    "After {cutover_date}, the app becomes the way to reach your assistant. "
-    "Everything you've built with it comes along — nothing is lost.\n\n"
-    "Questions? Just reply to this email.\n\n"
-    "Thanks for being here,\n"
+    "After {cutover_date}, this chat channel stops working and the app is the "
+    "way to reach your assistant.\n\n"
+    "Questions? Email {support_contact}.\n\n"
     "— The NBHD team\n"
     "neighborhoodunited.org"
 )
+
+# Appended to the email body. The link carries a service-category token
+# (``apps/tenants/unsubscribe_signing.py``) — POSTing it sets
+# ``service_email_opt_out``, never the marketing flag.
+EMAIL_UNSUBSCRIBE_FOOTER = "\n\n---\nDon't want service notices like this by email? Unsubscribe: {unsubscribe_url}"
 
 
 def format_cutover_date(cutover_date: str) -> str:
@@ -102,16 +114,39 @@ def format_cutover_date(cutover_date: str) -> str:
     return f"{dt:%B} {dt.day}, {dt.year}"
 
 
+def support_contact() -> str:
+    """The human-monitored support mailbox (env-backed setting — never a
+    literal in copy or code)."""
+    return (getattr(settings, "SUPPORT_CONTACT_EMAIL", "") or "").strip()
+
+
+def service_unsubscribe_url(user) -> str:
+    """Per-user one-click unsubscribe URL for the SERVICE category.
+
+    Mirrors the promo campaign's ``_unsubscribe_url`` (backend Django view —
+    it renders its own confirmation page and is the RFC 8058
+    ``List-Unsubscribe-Post`` target), but mints a service-category token.
+    """
+    api_base = (getattr(settings, "API_BASE_URL", "") or "http://localhost:8000").rstrip("/")
+    token = make_unsubscribe_token(user.id, category=CATEGORY_SERVICE)
+    return f"{api_base}/api/v1/tenants/unsubscribe/{token}/"
+
+
 def render_channel_message(cutover_display: str) -> str:
-    return CHANNEL_MESSAGE.format(cutover_date=cutover_display, app_store_url=APP_STORE_URL)
+    return CHANNEL_MESSAGE.format(
+        cutover_date=cutover_display,
+        app_store_url=APP_STORE_URL,
+        support_contact=support_contact(),
+    )
 
 
-def render_email(display_name: str, cutover_display: str) -> tuple[str, str]:
+def render_email(display_name: str, cutover_display: str, unsubscribe_url: str) -> tuple[str, str]:
     body = EMAIL_BODY.format(
         display_name=display_name or "there",
         cutover_date=cutover_display,
         app_store_url=APP_STORE_URL,
-    )
+        support_contact=support_contact(),
+    ) + EMAIL_UNSUBSCRIBE_FOOTER.format(unsubscribe_url=unsubscribe_url)
     return EMAIL_SUBJECT, body
 
 
@@ -120,7 +155,9 @@ def build_target_queryset(tenant_ids: list[str] | None = None):
 
     The synthetic filter automatically excludes the App Review demo tenant and
     every eval synthetic — no marketing/service mail is issued against them.
-    A user linked to both channels matches once (Q-OR dedupes).
+    A user linked to both channels matches once (Q-OR dedupes). Service
+    opt-out does NOT narrow this queryset — opted-out users still get the
+    in-product channel message; only the email leg skips them.
     """
     linked = Q(telegram_chat_id__isnull=False) | (Q(line_user_id__isnull=False) & ~Q(line_user_id=""))
     qs = User.objects.filter(tenant__is_synthetic=False).filter(linked).select_related("tenant")
@@ -131,9 +168,9 @@ def build_target_queryset(tenant_ids: list[str] | None = None):
 
 # ---------------------------------------------------------------------------
 # Per-channel senders (module-level so tests can patch/exercise them
-# independently). Each returns True on a confirmed send, False otherwise, and
-# never raises — the caller's per-tenant try/except is a backstop, not the
-# primary guard.
+# independently). Telegram/LINE senders return True on a confirmed send,
+# False otherwise, and never raise — the caller's per-tenant try/except is a
+# backstop, not the primary guard.
 # ---------------------------------------------------------------------------
 
 
@@ -187,20 +224,32 @@ def send_line_notice(tenant, line_user_id: str, text: str) -> bool:
     return True
 
 
-def send_email_notice(user, subject: str, body: str) -> bool:
+def send_email_notice(user, subject: str, body: str, unsubscribe_url: str) -> bool:
     """Send the sunset email to ``user.email`` via the configured backend
-    (Mailgun SMTP in prod). ``from_email=None`` uses DEFAULT_FROM_EMAIL — no
-    hardcoded addresses. Returns False (no raise) when there is no recipient."""
+    (Mailgun SMTP in prod).
+
+    ``from_email=None`` uses DEFAULT_FROM_EMAIL and Reply-To is the
+    env-backed support mailbox — no hardcoded addresses. ``EmailMessage``
+    (not ``send_mail``) so the RFC 2369/8058 List-Unsubscribe headers and
+    Reply-To ride along, exactly like the promo-campaign precedent.
+    Returns False (no raise) when there is no recipient.
+    """
     recipient = (user.email or "").strip()
     if not recipient:
         return False
-    send_mail(
+    reply_to = support_contact()
+    message = EmailMessage(
         subject=subject,
-        message=body,
+        body=body,
         from_email=None,  # DEFAULT_FROM_EMAIL
-        recipient_list=[recipient],
-        fail_silently=False,
+        to=[recipient],
+        reply_to=[reply_to] if reply_to else None,
+        headers={
+            "List-Unsubscribe": f"<{unsubscribe_url}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
     )
+    message.send(fail_silently=False)
     return True
 
 
@@ -236,10 +285,14 @@ class Command(BaseCommand):
 
         tg_targets = sum(1 for u in users if u.telegram_chat_id)
         line_targets = sum(1 for u in users if (u.line_user_id or "").strip())
-        email_targets = sum(1 for u in users if (u.email or "").strip())
+        email_targets = sum(1 for u in users if (u.email or "").strip() and not u.service_email_opt_out)
+        email_optout = sum(1 for u in users if (u.email or "").strip() and u.service_email_opt_out)
 
         self.stdout.write(f"Targets: {len(users)} tenant(s)")
-        self.stdout.write(f"Channels: telegram={tg_targets}, line={line_targets}, email={email_targets}")
+        self.stdout.write(
+            f"Channels: telegram={tg_targets}, line={line_targets}, "
+            f"email={email_targets} (service-opt-out skipped: {email_optout})"
+        )
 
         if not execute:
             self.stdout.write(self.style.WARNING("[dry-run] no messages will be sent. Tenant ids:"))
@@ -265,6 +318,7 @@ class Command(BaseCommand):
             "line_failed": 0,
             "email_sent": 0,
             "email_failed": 0,
+            "email_skipped_optout": 0,
             "tenant_errors": 0,
         }
 
@@ -285,15 +339,21 @@ class Command(BaseCommand):
                         stats["line_failed"] += 1
 
                 if (user.email or "").strip():
-                    subject, body = render_email(user.display_name, cutover_display)
-                    try:
-                        if send_email_notice(user, subject, body):
-                            stats["email_sent"] += 1
-                        else:
+                    if user.service_email_opt_out:
+                        # Service-notice opt-out honors the EMAIL leg only —
+                        # the channel messages above are in-product notice.
+                        stats["email_skipped_optout"] += 1
+                    else:
+                        unsub_url = service_unsubscribe_url(user)
+                        subject, body = render_email(user.display_name, cutover_display, unsub_url)
+                        try:
+                            if send_email_notice(user, subject, body, unsub_url):
+                                stats["email_sent"] += 1
+                            else:
+                                stats["email_failed"] += 1
+                        except Exception:
                             stats["email_failed"] += 1
-                    except Exception:
-                        stats["email_failed"] += 1
-                        logger.exception("sunset: email failed for tenant %s", user.tenant.id)
+                            logger.exception("sunset: email failed for tenant %s", user.tenant.id)
             except Exception:
                 stats["tenant_errors"] += 1
                 logger.exception("sunset: broadcast failed for tenant %s", getattr(user, "tenant", None))
@@ -302,7 +362,10 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(f"Cutover date rendered as: {cutover_display}"))
         self.stdout.write(f"Telegram: sent={stats['tg_sent']} failed={stats['tg_failed']}")
         self.stdout.write(f"LINE:     sent={stats['line_sent']} failed={stats['line_failed']}")
-        self.stdout.write(f"Email:    sent={stats['email_sent']} failed={stats['email_failed']}")
+        self.stdout.write(
+            f"Email:    sent={stats['email_sent']} failed={stats['email_failed']} "
+            f"skipped-optout={stats['email_skipped_optout']}"
+        )
         if stats["tenant_errors"]:
             self.stdout.write(self.style.ERROR(f"Tenant-level errors: {stats['tenant_errors']}"))
         self.stdout.write(self.style.SUCCESS(f"Tenants processed: {len(users)}"))

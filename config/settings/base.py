@@ -595,6 +595,13 @@ WELCOME_VIDEO_URL = env("WELCOME_VIDEO_URL", default="")
 # also exposed here so app code can read it via settings rather than os.environ.
 PLATFORM_OWNER_EMAIL = env("PLATFORM_OWNER_EMAIL", default="")
 
+# Human-monitored support mailbox rendered into user-facing service-notice
+# copy ("Questions? Email ...") and set as Reply-To on those sends — the
+# DEFAULT_FROM_EMAIL mailbox is send-only and does not accept replies.
+# Env-backed with a safe default: no Azure env var is required, but it can
+# be overridden without touching code.
+SUPPORT_CONTACT_EMAIL = env("SUPPORT_CONTACT_EMAIL", default="mj@bywayofmj.com")
+
 # Eval system journey canaries (Wave B, docs/evals-wave-b-plan.md). The probes
 # target SYNTHETIC tenants by id (never a hardcoded UUID) — provisioning them is
 # a separate ops step. Both names are plumbed now; only eval-journey is
