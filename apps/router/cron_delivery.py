@@ -53,11 +53,19 @@ def resolve_user_channel(user) -> str | None:
     is linked but the user has a registered iOS device, returns ``"app"`` — an
     iOS-only user (the common case for App Store installs) still gets crons,
     delivered as an APNs push + a ``?since=`` feed row instead of a chat message.
-    Returns None only when there is no delivery surface at all.
+    Explicit eval-sink tenants return ``"eval"`` regardless of linked surfaces;
+    other users return None when there is no delivery surface.
 
     Module-level so backend proactive senders (e.g. Core notify-on-ready) route
     identically to ``CronDeliveryView`` without duplicating the logic.
     """
+    # Eval-sink is an explicit operational mode, independent of the broader
+    # ``is_synthetic`` business-aggregate flag. Check it first so a stale or
+    # accidentally registered real transport cannot make an eval target emit.
+    tenant = getattr(user, "tenant", None)
+    if getattr(tenant, "is_eval_sink", False):
+        return "eval"
+
     preferred = getattr(user, "preferred_channel", "telegram")
     line_user_id = getattr(user, "line_user_id", None)
     telegram_chat_id = getattr(user, "telegram_chat_id", None)
@@ -80,7 +88,7 @@ def resolve_user_channel(user) -> str | None:
     if DeviceToken.objects.filter(user=user).exists():
         return "app"
 
-    # SYNTHETIC EVAL TENANTS: a sink channel instead of "no delivery surface".
+    # No linked surface and not an explicitly configured eval sink.
     #
     # A synthetic tenant has no phone and no chat account, so it used to fall
     # through to None → HTTP 422 no_channel_linked → CronDeliveryView returned
@@ -96,13 +104,6 @@ def resolve_user_channel(user) -> str | None:
     # destroyed the channel for the next fire (prod runs 8→9 alternated
     # pass/fail forever). The sink removes the need for it entirely.
     #
-    # Gated on ``is_synthetic`` — the same standing invariant that keeps synthetic
-    # tenants out of every business aggregate (evals-directive §1.5). A REAL user
-    # with no channel still gets a 422; that is a genuine error and must stay loud.
-    tenant = getattr(user, "tenant", None)
-    if getattr(tenant, "is_synthetic", False):
-        return "eval"
-
     return None
 
 
@@ -246,9 +247,9 @@ class CronDeliveryView(APIView):
             channel_user_id = str(tenant.user_id)
             resp = Response({"status": "sent", "channel": "app"})
         elif channel == "eval":
-            # SYNTHETIC EVAL TENANT — a sink. NOTHING leaves the process: no
-            # Telegram, no LINE, no APNs. The ProactiveOutbound row written below
-            # IS the delivery, and it is the evidence the eval suites assert on.
+            # EXPLICIT EVAL-SINK TENANT: no Telegram, LINE, or APNs call is made.
+            # The ProactiveOutbound row written below is internal evidence for
+            # eval assertions and is excluded from operational history readers.
             #
             # This branch MUST sit above the telegram fallback below: that fallback
             # is an ``else``, so an unrecognised channel would silently attempt a

@@ -93,6 +93,20 @@ class SendGateConfirmationChannelResolutionTests(TestCase):
         action.refresh_from_db()
         self.assertEqual(action.platform_channel, "")
 
+    def test_eval_sink_user_does_not_invoke_any_sender(self):
+        tenant, action = self._make("c33_eval", telegram_chat_id=123456789)
+        tenant.is_synthetic = True
+        tenant.is_eval_sink = True
+        tenant.save(update_fields=["is_synthetic", "is_eval_sink"])
+
+        patcher, tg, line = self._patched_senders()
+        with patcher:
+            delivered = send_gate_confirmation(tenant, action)
+
+        self.assertFalse(delivered)
+        tg.assert_not_called()
+        line.assert_not_called()
+
     def test_telegram_user_still_routed_to_telegram(self):
         """Linked Telegram user is unaffected: sender runs and result stored."""
         tenant, action = self._make("c33_tg", telegram_chat_id=123456789)

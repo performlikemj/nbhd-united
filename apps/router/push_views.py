@@ -290,10 +290,13 @@ def _compute_unread_count(user) -> int | None:
             .exclude(reply_text="")
             .count()
         )
-        # ``notified_at`` is set only when an APNs push was fired for the row, so
-        # this counts exactly the proactive/cron sends that produced a visible
-        # alert after the read cursor.
-        proactive = ProactiveOutbound.objects.filter(tenant=tenant, notified_at__gt=cursor).count()
+        # ``notified_at`` marks non-eval proactive rows claimed by the APNs path.
+        # Eval evidence is excluded even if an older code path stamped it.
+        proactive = (
+            ProactiveOutbound.objects.filter(tenant=tenant, notified_at__gt=cursor)
+            .exclude(channel=ProactiveOutbound.Channel.EVAL)
+            .count()
+        )
         return replies + proactive
     except Exception:
         logger.warning("push: unread count failed (non-fatal)", exc_info=True)
@@ -395,8 +398,10 @@ def notify_proactive_ready(tenant, proactive_id, body_source: str | None) -> Non
 
         # Atomic claim: only the first push for this row wins. A re-run for the
         # same row (a future retry / reconcile path) is a no-op (rowcount 0).
-        claimed = ProactiveOutbound.objects.filter(id=proactive_id, notified_at__isnull=True).update(
-            notified_at=timezone.now()
+        claimed = (
+            ProactiveOutbound.objects.filter(id=proactive_id, notified_at__isnull=True)
+            .exclude(channel=ProactiveOutbound.Channel.EVAL)
+            .update(notified_at=timezone.now())
         )
         if not claimed:
             return

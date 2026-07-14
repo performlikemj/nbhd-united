@@ -289,6 +289,15 @@ class DigestTest(TestCase):
         self.assertIn("July Steps", text)
         self.assertIn("crew", text.lower())
 
+    def test_eval_sink_does_not_fall_through_to_telegram(self):
+        self.a.is_synthetic = True
+        self.a.is_eval_sink = True
+        self.a.save(update_fields=["is_synthetic", "is_eval_sink"])
+        with mock.patch("apps.router.services.send_telegram_message") as send:
+            delivered = digest._deliver_text(self.a, "weekly update")
+        self.assertFalse(delivered)
+        send.assert_not_called()
+
 
 class EnvelopeMissionsTest(TestCase):
     def test_renders_active_missions_and_hides_after_leave(self):

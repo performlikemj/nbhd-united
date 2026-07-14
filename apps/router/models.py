@@ -244,8 +244,10 @@ class ProcessedInboundEvent(models.Model):
 
 
 class ProactiveOutbound(models.Model):
-    """Records every proactive ``nbhd_send_to_user`` push so the next
-    inbound from that user can surface it as conversation context.
+    """Records proactive delivery events and internal eval evidence.
+
+    User-visible rows can surface as context on the next inbound; ``eval`` rows
+    are deliberately excluded from all user/model readers.
 
     The conversation-state-loss problem this solves: cron-fired sessions
     and main-chat sessions are separate OpenClaw sessions. When a cron
@@ -258,9 +260,9 @@ class ProactiveOutbound(models.Model):
     ``_sync:`` cron that injects a summary into the main session, but
     that path is LLM-mediated and unreliably fired.
 
-    This model is the deterministic replacement: every successful push
-    from ``CronDeliveryView`` writes a row here, and the inbound
-    envelope composer (LINE webhook, Telegram webhook, Telegram poller)
+    This model is the deterministic replacement: every accepted delivery from
+    ``CronDeliveryView`` writes a row here. For user-delivery channels, the
+    inbound envelope composer (LINE webhook, Telegram webhook, Telegram poller)
     pulls unconsumed rows from the last 24h and prepends them as a
     ``[earlier-from-you ...]`` block before the user's text.
 
@@ -281,15 +283,11 @@ class ProactiveOutbound(models.Model):
         # iOS-only users have no Telegram/LINE chat id — the message is delivered
         # as an APNs push + a ?since= feed row, so the iOS app is its own channel.
         APP = "app"
-        # SYNTHETIC EVAL TENANTS ONLY (``Tenant.is_synthetic``). A sink: nothing is
-        # sent anywhere, and THIS ROW IS THE DELIVERY — it is the evidence the eval
-        # suites assert on. Before it existed, a synthetic tenant had no delivery
-        # surface at all, so CronDeliveryView 422'd and no row was ever written:
-        # the eval-behavior tenant has ZERO ProactiveOutbound rows to this day, and
-        # even its one PASSING reminder run delivered nothing a user would ever see.
-        # ``resolve_user_channel`` gates this on ``is_synthetic``, so a real user's
-        # message can NEVER land in the sink — a real user with no channel is still
-        # a genuine 422.
+        # EXPLICIT EVAL-SINK TENANTS ONLY (``Tenant.is_eval_sink``). No user
+        # transport is invoked; this internal evidence row is the delivery the eval
+        # suites assert on. Operational history/model readers exclude these rows.
+        # The dedicated flag prevents ordinary synthetic tenants (including demo
+        # accounts) from being reclassified merely because they are synthetic.
         EVAL = "eval"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)

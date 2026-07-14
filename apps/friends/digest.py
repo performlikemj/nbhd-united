@@ -93,6 +93,11 @@ def _deliver_text(tenant, text: str) -> bool:
         return _send_line_text(tenant, getattr(user, "line_user_id", "") or "", text)
     if channel == "app":
         return True  # iOS-only: APNs push + ?since= feed row is the delivery
+    if channel == "eval":
+        # This sender has no ProactiveOutbound recording seam, so there is no
+        # internal evidence row to write. Suppress delivery explicitly rather
+        # than falling through to the Telegram branch.
+        return False
     from apps.router.services import send_telegram_message
 
     chat_id = getattr(user, "telegram_chat_id", None)

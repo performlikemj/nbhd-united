@@ -332,6 +332,11 @@ def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
     from apps.router.cron_delivery import resolve_user_channel
 
     channel = resolve_user_channel(tenant.user)
+    if channel == "eval":
+        # Confirmation gates require a human approve/deny surface. An eval sink
+        # has none, and must never fall through to a transport sender.
+        logger.info("Gate confirmation suppressed for eval-sink tenant %s", tenant.id)
+        return False
     sender, _ = _SENDERS.get(channel, (None, None))
 
     if not sender:

@@ -51,7 +51,12 @@ from apps.tenants.pat_models import PersonalAccessToken, generate_pat
 def _synthetic_tenant() -> Tenant:
     email = f"{secrets.token_hex(4)}@e.com"
     user = User.objects.create_user(username=email, email=email)
-    return Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=True)
+    return Tenant.objects.create(
+        user=user,
+        status=Tenant.Status.ACTIVE,
+        is_synthetic=True,
+        is_eval_sink=True,
+    )
 
 
 def _mint_pat(user, *, revoked: bool = False) -> str:
@@ -364,14 +369,21 @@ class ResolveBehaviorTenantTest(TestCase):
         with override_settings(EVAL_BEHAVIOR_TENANT_ID=missing), self.assertRaises(BehaviorConfigError):
             resolve_behavior_tenant()
 
-    def test_non_synthetic_raises(self):
+    def test_non_eval_sink_raises(self):
         email = f"{secrets.token_hex(4)}@e.com"
         user = User.objects.create_user(username=email, email=email)
         real = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=False)
         with override_settings(EVAL_BEHAVIOR_TENANT_ID=str(real.id)), self.assertRaises(BehaviorConfigError):
             resolve_behavior_tenant()
 
-    def test_synthetic_resolves(self):
+    def test_synthetic_demo_account_also_raises(self):
+        email = f"{secrets.token_hex(4)}@e.com"
+        user = User.objects.create_user(username=email, email=email)
+        demo = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=True)
+        with override_settings(EVAL_BEHAVIOR_TENANT_ID=str(demo.id)), self.assertRaises(BehaviorConfigError):
+            resolve_behavior_tenant()
+
+    def test_eval_sink_resolves(self):
         synth = _synthetic_tenant()
         with override_settings(EVAL_BEHAVIOR_TENANT_ID=str(synth.id)):
             self.assertEqual(resolve_behavior_tenant().id, synth.id)

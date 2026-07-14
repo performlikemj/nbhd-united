@@ -303,8 +303,9 @@ def _recent_proactive_lines(tenant, tz) -> list[str]:
 
     Cron sessions and the heartbeat run as SEPARATE isolated OpenClaw sessions,
     so two routines firing the same morning each speak into apparent silence and
-    can re-ask the same question. ``ProactiveOutbound`` records every proactive
-    push but is read only on the *inbound* reply path — never cron-to-cron. By
+    can re-ask the same question. ``ProactiveOutbound`` records proactive
+    delivery events and is read both on inbound replies and here for cron-to-cron
+    dedup (internal eval evidence rows are excluded). By
     rendering "what you/a sibling routine already sent in the last 24h" into the
     same USER.md digest the isolated session already reads, a composing cron can
     see the heartbeat/briefing already asked it and not repeat.
@@ -321,6 +322,7 @@ def _recent_proactive_lines(tenant, tz) -> list[str]:
     since = timezone.now() - timedelta(hours=DEFAULT_WINDOW_HOURS)
     rows = list(
         ProactiveOutbound.objects.filter(tenant=tenant, created_at__gte=since)
+        .exclude(channel=ProactiveOutbound.Channel.EVAL)
         .only("created_at", "message_text", "job_name")
         .order_by("-created_at")[:DEFAULT_LIMIT]
     )
@@ -347,7 +349,7 @@ def build_conversation_digest(tenant) -> str:
     replays recent proactive sends for cron-to-cron dedup (D2). Deterministic —
     no LLM, no summarization.
 
-    SYNTHETIC EVAL TENANTS GET NO DIGEST — see the guard below.
+    EVAL-SINK TENANTS GET NO DIGEST — see the guard below.
     """
     # This block is what silently defeated the behavior suite's per-scenario
     # isolation. The transport opens a FRESH ChatThread per scenario (its own
@@ -371,7 +373,7 @@ def build_conversation_digest(tenant) -> str:
     # FIRST-CONTACT behavior — which is exactly what a new subscriber's first chat
     # is, and the case the reminder bug actually broke. A warm-continuity scenario
     # would need its own tenant with the digest left on.
-    if getattr(tenant, "is_synthetic", False):
+    if getattr(tenant, "is_eval_sink", False):
         return ""
 
     from apps.common.tenant_tz import tenant_today

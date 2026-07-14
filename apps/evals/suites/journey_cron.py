@@ -37,9 +37,9 @@ that brushing the ceiling, the documented fallback is two-phase — arm run N,
 observe run N+1 — but the primary design here is single-phase because it gives a
 true same-run end-to-end assertion.
 
-INVARIANT #1: nothing recorded here is user content. The reminder text is a fixed
-synthetic string sent to the synthetic tenant's own user; the eval sink only ever
-sees existence, counts and durations — never the message body.
+INVARIANT #1: no real-user content is involved. The fixed synthetic reminder is
+stored on the sink's ProactiveOutbound evidence row; the EvalResult records only
+existence, counts, and durations, never the body.
 """
 
 from __future__ import annotations
@@ -69,8 +69,8 @@ SCHEDULE_LEAD_SECONDS = 75
 POLL_BUDGET_SECONDS = 240
 POLL_INTERVAL_SECONDS = 5
 
-# Fixed synthetic reminder text (no PII). Delivered to the synthetic tenant's own
-# user via ``nbhd_send_to_user``; harmless, and the eval sink never sees it.
+# Fixed synthetic reminder text (no PII). Sent through ``nbhd_send_to_user`` and
+# stored on the eval-only ProactiveOutbound evidence row; no user transport sees it.
 _REMINDER_TEXT = "eval-journey cron-fire canary — automated probe, please disregard."
 
 DeliveryObservation = namedtuple("DeliveryObservation", ["delivered", "poll_count", "elapsed_ms"])
@@ -135,6 +135,7 @@ def _observe_delivery(
         poll_count += 1
         delivered = ProactiveOutbound.objects.filter(
             tenant=tenant,
+            channel=ProactiveOutbound.Channel.EVAL,
             job_name=job_name,
             created_at__gte=window_start,
         ).exists()
@@ -177,9 +178,9 @@ def run_cron_fire_suite(
     with record_run(SUITE, trigger) as run:
         tenant = resolve_journey_tenant()
 
-        # No delivery precondition to set up any more. A synthetic tenant resolves
-        # to the ``eval`` SINK channel (resolve_user_channel, gated on
-        # ``is_synthetic``), so CronDeliveryView always writes the
+        # No delivery precondition to set up any more. An explicitly configured
+        # eval-sink tenant resolves to ``eval`` (gated on ``is_eval_sink``), so
+        # CronDeliveryView writes the
         # ``ProactiveOutbound`` row this probe asserts on. The fabricated APNs
         # DeviceToken this used to plant before every arm — and which every
         # successful fire then destroyed, alternating pass/fail forever — is gone.

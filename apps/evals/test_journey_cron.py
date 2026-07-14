@@ -34,7 +34,12 @@ _GATEWAY = "apps.cron.gateway_client.invoke_gateway_tool"
 def _synthetic_tenant() -> Tenant:
     email = f"{secrets.token_hex(4)}@e.com"
     user = User.objects.create_user(username=email, email=email)
-    return Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=True)
+    return Tenant.objects.create(
+        user=user,
+        status=Tenant.Status.ACTIVE,
+        is_synthetic=True,
+        is_eval_sink=True,
+    )
 
 
 def _make_outbound(tenant, *, job_name: str, created_at=None) -> ProactiveOutbound:
@@ -45,7 +50,7 @@ def _make_outbound(tenant, *, job_name: str, created_at=None) -> ProactiveOutbou
     """
     row = ProactiveOutbound.objects.create(
         tenant=tenant,
-        channel=ProactiveOutbound.Channel.APP,
+        channel=ProactiveOutbound.Channel.EVAL,
         channel_user_id=str(tenant.user_id),
         message_text="[reminder]",
         job_name=job_name,
@@ -78,6 +83,11 @@ class ObserveDeliveryTest(TestCase):
     def test_in_window_matching_row_is_detected(self):
         _make_outbound(self.tenant, job_name=self.job_name)  # created_at = now (>= window_start)
         self.assertTrue(self._observe().delivered)
+
+    def test_non_eval_channel_row_does_not_pass(self):
+        row = _make_outbound(self.tenant, job_name=self.job_name)
+        ProactiveOutbound.objects.filter(pk=row.pk).update(channel=ProactiveOutbound.Channel.APP)
+        self.assertFalse(self._observe().delivered)
 
     def test_stale_historical_row_does_not_pass(self):
         # Same job_name, but created BEFORE the window opened → must NOT count.
@@ -210,10 +220,10 @@ class RunCronFireSuiteTest(TestCase):
         self.assertIn("delivered", details)
         self.assertIn("armed", details)
         # ``channel_ensured`` / ``channel_created`` are GONE (2026-07-14): there is no
-        # delivery precondition to ensure any more. A synthetic tenant resolves to the
-        # ``eval`` sink channel, so the fabricated APNs DeviceToken this probe used to
-        # plant before every arm — and which every SUCCESSFUL fire then destroyed — is
-        # retired. Their absence is the point, not an omission.
+        # delivery precondition to ensure any more. An explicitly flagged tenant
+        # resolves to the ``eval`` sink channel, so the fabricated APNs DeviceToken
+        # this probe used to plant before every arm — and which every SUCCESSFUL fire
+        # then destroyed — is retired. Their absence is the point, not an omission.
         self.assertNotIn("channel_ensured", details)
         self.assertNotIn("channel_created", details)
 

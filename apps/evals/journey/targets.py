@@ -24,12 +24,12 @@ class JourneyConfigError(RuntimeError):
 
 
 def resolve_journey_tenant() -> Tenant:
-    """Return the synthetic journey tenant, or RAISE ``JourneyConfigError``.
+    """Return the configured eval-sink journey tenant, or raise.
 
     Raises (loudly) when ``EVAL_JOURNEY_TENANT_ID`` is unset, malformed, points at
     a missing tenant, or — defense against a config slip — points at a
-    NON-synthetic tenant: a probe must never drive traffic through a real
-    subscriber's account.
+    tenant that is not explicitly marked as an eval sink: a probe must never
+    drive traffic through an ordinary or demo account.
     """
     tenant_id = getattr(settings, "EVAL_JOURNEY_TENANT_ID", "") or ""
     if not tenant_id:
@@ -46,10 +46,10 @@ def resolve_journey_tenant() -> Tenant:
             f"EVAL_JOURNEY_TENANT_ID={tenant_id!r} is not a valid tenant id ({type(exc).__name__})."
         ) from exc
 
-    if not tenant.is_synthetic:
+    if not tenant.is_eval_sink:
         raise JourneyConfigError(
-            f"EVAL_JOURNEY_TENANT_ID={tenant_id!r} points at a NON-synthetic tenant — "
-            "refusing to run a journey probe against a real subscriber."
+            f"EVAL_JOURNEY_TENANT_ID={tenant_id!r} does not point at an eval-sink tenant — "
+            "refusing to run a journey probe against an ordinary or demo account."
         )
     return tenant
 
@@ -66,7 +66,7 @@ def resolve_journey_tenant() -> Tenant:
 # every pass destroyed the channel for the next fire (prod runs 8→9 alternated
 # pass/fail forever), and it fired a real, rejected request at Apple on every run.
 #
-# Synthetic tenants now resolve to the ``eval`` SINK channel instead
-# (``resolve_user_channel``, gated on ``Tenant.is_synthetic``): nothing is sent
-# anywhere, the ProactiveOutbound row IS the delivery, and there is no token to
-# prune. Nothing to ensure, nothing to re-create, no Apple round trip.
+# Explicit eval-sink tenants now resolve to ``eval`` instead
+# (``resolve_user_channel``, gated on ``Tenant.is_eval_sink``): no external
+# transport is called, the ProactiveOutbound row is internal delivery evidence,
+# and there is no token to prune or Apple round trip.

@@ -660,6 +660,23 @@ class NotifyMeditationReadyTests(TestCase):
         self.assertEqual(mock_record.call_args.kwargs["channel"], "app")
         self.assertEqual(mock_record.call_args.kwargs["channel_user_id"], str(user.id))
 
+    def test_eval_sink_records_evidence_without_telegram(self):
+        self.tenant.is_synthetic = True
+        self.tenant.is_eval_sink = True
+        self.tenant.save(update_fields=["is_synthetic", "is_eval_sink"])
+        session = self._session()
+        with (
+            patch("apps.router.services.send_telegram_message") as mock_send,
+            patch("apps.router.proactive_context.record_proactive_outbound") as mock_record,
+        ):
+            delivered = services.notify_meditation_ready(session)
+
+        self.assertTrue(delivered)
+        mock_send.assert_not_called()
+        mock_record.assert_called_once()
+        self.assertEqual(mock_record.call_args.kwargs["channel"], "eval")
+        self.assertEqual(mock_record.call_args.kwargs["channel_user_id"], str(self.tenant.user_id))
+
     def test_inactive_tenant_does_not_send(self):
         self.tenant.status = Tenant.Status.PENDING
         self.tenant.save(update_fields=["status"])
