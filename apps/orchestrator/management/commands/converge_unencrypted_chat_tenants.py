@@ -46,14 +46,9 @@ from __future__ import annotations
 
 from django.core.management.base import BaseCommand
 
-from apps.router.models import AppChatMessage, ChatThread
+from apps.orchestrator.chat_encryption import CHAT_ENC_COLUMNS, count_unsealed_chat_rows
+from apps.router.models import AppChatMessage
 from apps.tenants.models import Tenant
-
-# (model, plaintext field, _enc field) for the two in-scope chat columns.
-_COLUMNS = (
-    (AppChatMessage, "user_text", "user_text_enc"),
-    (ChatThread, "title", "title_enc"),
-)
 
 
 class Command(BaseCommand):
@@ -161,7 +156,7 @@ class Command(BaseCommand):
             # Preview only: count the rows the backfill WOULD seal (every
             # ``_enc IS NULL`` row, empty legacy included → sealed to b""). No
             # flag flip, no write.
-            for model, _value_field, enc_field in _COLUMNS:
+            for model, _value_field, enc_field in CHAT_ENC_COLUMNS:
                 key = "user_text" if model is AppChatMessage else "title"
                 result[key] = model.objects.filter(tenant=tenant, **{f"{enc_field}__isnull": True}).count()
             return result
@@ -184,16 +179,12 @@ class Command(BaseCommand):
 
         # 3. VERIFY the backfill is complete: zero plaintext-only CONTENT rows
         #    remain (``_enc IS NULL AND legacy <> ''`` — the plan §7 completeness
-        #    query). Empty legacy rows are excluded: they read as "" via the
-        #    fallback either way, so they never block the flip. A per-row backfill
-        #    error leaves its non-empty row here and keeps reads OFF.
-        remaining = 0
-        for model, value_field, enc_field in _COLUMNS:
-            remaining += (
-                model.objects.filter(tenant=tenant, **{f"{enc_field}__isnull": True})
-                .exclude(**{value_field: ""})
-                .count()
-            )
+        #    query, via the SHARED helper provision_tenant also gates on, so the
+        #    two gates can never drift). Empty legacy rows are excluded: they
+        #    read as "" via the fallback either way, so they never block the
+        #    flip. A per-row backfill error leaves its non-empty row here and
+        #    keeps reads OFF.
+        remaining = count_unsealed_chat_rows(tenant)
         result["remaining"] = remaining
 
         # 4. Flip the read-flag ON only when the backfill is provably complete.
