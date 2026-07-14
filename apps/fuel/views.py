@@ -57,6 +57,7 @@ from .services import (
     aggregate_hiit_progress,
     aggregate_strength_progress,
     detect_prs,
+    rest_dates_for_window,
 )
 
 _FUEL_WELCOME_PROMPT_TEMPLATE = (
@@ -510,7 +511,22 @@ def _calendar_month_payload(tenant, year, month):
     for w in workouts:
         by_date[str(w.date)].append(WorkoutStubSerializer(w).data)
 
-    return [{"date": d, "workouts": ws} for d, ws in sorted(by_date.items())]
+    entries = [{"date": d, "workouts": ws} for d, ws in sorted(by_date.items())]
+
+    # Programmed rest days as day-level flags — a date an active plan covers but
+    # trains no session on, and that carries NO real row (the real row wins).
+    # Day-level ``rest: true`` only; no synthetic workout stubs. Existing
+    # workout-day entries are left byte-identical (no ``rest`` key added). One
+    # extra active-plans query via rest_dates_for_window.
+    real_dates = set(by_date.keys())
+    rest_dates = rest_dates_for_window(tenant, date_cls(year, month, 1), date_cls(year, month, days_in_month))
+    for rd in rest_dates:
+        if str(rd) in real_dates:
+            continue
+        entries.append({"date": str(rd), "rest": True, "workouts": []})
+
+    entries.sort(key=lambda e: e["date"])
+    return entries
 
 
 class WorkoutCalendarView(APIView):
@@ -1290,9 +1306,13 @@ class WorkoutPlanListView(APIView):
         if status_filter:
             qs = qs.filter(status=status_filter)
 
+        # Compute the tenant-local today once and thread it into every
+        # serializer so the derived program-progress fields don't fire a
+        # per-plan tenant lookup (N+1) resolving "today".
+        today = today_in_tenant_tz(tenant)
         result = []
         for plan in qs.order_by("-created_at")[:20]:
-            data = WorkoutPlanSerializer(plan).data
+            data = WorkoutPlanSerializer(plan, context={"today": today}).data
             data["workout_count"] = Workout.objects.filter(plan=plan).count()
             data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
             result.append(data)
@@ -1329,7 +1349,7 @@ class WorkoutPlanListView(APIView):
                 tenant=tenant, name=name, start_date=start_date, status=PlanStatus.ACTIVE
             ).first()
             if existing is not None:
-                data = WorkoutPlanSerializer(existing).data
+                data = WorkoutPlanSerializer(existing, context={"today": today_in_tenant_tz(tenant)}).data
                 data["workout_count"] = Workout.objects.filter(plan=existing).count()
                 data["deduped"] = True
                 return Response(data, status=status.HTTP_200_OK)
@@ -1347,7 +1367,7 @@ class WorkoutPlanListView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        data = WorkoutPlanSerializer(plan).data
+        data = WorkoutPlanSerializer(plan, context={"today": today_in_tenant_tz(tenant)}).data
         data["workout_count"] = Workout.objects.filter(plan=plan).count()
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -1365,7 +1385,7 @@ class WorkoutPlanDetailView(APIView):
             plan = WorkoutPlan.objects.get(id=plan_id, tenant=tenant)
         except WorkoutPlan.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
-        data = WorkoutPlanSerializer(plan).data
+        data = WorkoutPlanSerializer(plan, context={"today": today_in_tenant_tz(tenant)}).data
         data["workout_count"] = Workout.objects.filter(plan=plan).count()
         data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
         return Response(data)
@@ -1394,6 +1414,19 @@ class WorkoutPlanDetailView(APIView):
         # inside _expand_plan_workouts (mirrors the runtime regen path).
         raw_schedule = serializer.validated_data.get("schedule_json")
         if raw_schedule:
+            # STRICT here (require_detail=True), unlike the runtime PATCH. This
+            # endpoint is wholesale schedule replacement: the normalized schedule
+            # (where the validator injects detail_json={} for omitted days) is
+            # saved as-is and the regen below deletes all future planned workouts
+            # and re-expands straight from it — there is no strip-injected-key
+            # loop and no reconciler to honor "omitted = leave the existing
+            # prescription alone". Lenient validation would let an ordinary PATCH
+            # that omits detail on a strength day silently blank prescriptions
+            # across the whole remaining calendar. An incomplete strength day
+            # must be rejected, not silently blanked; partial-edit semantics live
+            # on the runtime PATCH + reconcile path. Status/notes-only PATCHes
+            # never enter this branch (gated on `if raw_schedule`), so legacy
+            # plans with empty stored details are not retro-wedged.
             normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule)
             if sched_err is not None:
                 return sched_err
@@ -1421,7 +1454,7 @@ class WorkoutPlanDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        data = WorkoutPlanSerializer(plan).data
+        data = WorkoutPlanSerializer(plan, context={"today": today_in_tenant_tz(tenant)}).data
         data["workout_count"] = Workout.objects.filter(plan=plan).count()
         data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
         return Response(data)

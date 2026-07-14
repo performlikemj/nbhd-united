@@ -124,6 +124,91 @@ def _effective_template_for_week(
     return effective
 
 
+def plan_progress_fields(plan, today: _date) -> dict:
+    """Additive program-progress fields derived from a plan + tenant-local today.
+
+    Pure — no DB. ``today`` MUST come from the tenant-tz front door
+    (``apps.common.tenant_tz.tenant_today`` / ``today_in_tenant_tz``), never a
+    bare ``date.today()``, so a tenant offset from UTC doesn't see the wrong day.
+
+    Returns:
+      * ``end_date``       — ISO string of the INCLUSIVE last program day
+                             (``WorkoutPlan.end_date``).
+      * ``days_remaining`` — ``max(0, (end_date - today).days)``; 0 on the final
+                             day and once the program is over.
+      * ``current_week``   — 1-based week index, clamped to ``[1, weeks]`` (week
+                             1 before the plan starts, ``weeks`` after it ends).
+    """
+    end = plan.end_date
+    days_remaining = max(0, (end - today).days)
+    elapsed_days = (today - plan.start_date).days
+    if elapsed_days < 0:
+        current_week = 1
+    else:
+        current_week = min(plan.weeks, elapsed_days // 7 + 1)
+    return {
+        "end_date": end.isoformat(),
+        "days_remaining": days_remaining,
+        "current_week": current_week,
+    }
+
+
+def rest_dates_for_window(
+    tenant,
+    window_start: _date,
+    window_end: _date,
+    *,
+    plans=None,
+) -> set[_date]:
+    """Dates in ``[window_start, window_end]`` that are programmed REST days.
+
+    A date is REST iff at least one ACTIVE plan covers it within its
+    ``[start_date, end_date]`` span AND no active plan's *effective* template
+    (``_effective_template_for_week`` — which already drops ``week_overrides``
+    null-days) trains that weekday for that date. Multi-plan union: a date is
+    rest only when NO active plan trains it (one plan training it wins).
+
+    Pure Python over the fetched plans — the ONLY DB hit is the active-plans
+    fetch, and callers with the plans already in hand pass them via ``plans`` to
+    avoid even that. Callers subtract dates carrying a real ``Workout`` row: an
+    ad-hoc row always wins over a computed rest day.
+    """
+    from .models import PlanStatus, WorkoutPlan
+
+    if plans is None:
+        plans = list(WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE))
+    else:
+        plans = [p for p in plans if p.status == PlanStatus.ACTIVE]
+    if not plans:
+        return set()
+
+    # Precompute each plan's base template + Monday-of-week-0 anchor once.
+    prepared = []
+    for p in plans:
+        base_by_weekday = _parse_schedule_template(p.schedule_json)
+        plan_monday = p.start_date - timedelta(days=p.start_date.weekday())
+        prepared.append((p, base_by_weekday, plan_monday))
+
+    rest: set[_date] = set()
+    d = window_start
+    while d <= window_end:
+        covered = False
+        trained = False
+        for p, base_by_weekday, plan_monday in prepared:
+            if not (p.start_date <= d <= p.end_date):
+                continue
+            covered = True
+            week_index = (d - plan_monday).days // 7
+            effective = _effective_template_for_week(base_by_weekday, p.week_overrides, week_index)
+            if d.weekday() in effective:
+                trained = True
+                break
+        if covered and not trained:
+            rest.add(d)
+        d += timedelta(days=1)
+    return rest
+
+
 def reconcile_plan_state(
     plan,
     schedule_json: dict,

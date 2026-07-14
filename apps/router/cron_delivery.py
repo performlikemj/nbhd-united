@@ -175,9 +175,19 @@ class CronDeliveryView(APIView):
         # ProactiveOutbound column, no iOS UI for it this cycle — see PR
         # description). Still strip the marker here so it can never leak as
         # raw text on ANY channel if an agent emits it on a proactive send.
+        from apps.router.journal_link import extract_journal_link
         from apps.router.quick_replies import extract_quick_replies
 
         placeholder_message_text, _quick_replies = extract_quick_replies(
+            placeholder_message_text, tenant_id=tenant.id, channel=f"cron_{channel}"
+        )
+        # The journal deep-link chip, unlike quick-replies, IS persisted for
+        # proactive sends: it rides the ProactiveOutbound row and surfaces in the
+        # iOS ?since= feed (cross-channel), so a Telegram-delivered morning report
+        # still gets a tappable "View in Journal" chip when its author opens the
+        # app. Strip the marker from the text sent on every channel (no chip
+        # transport on Telegram/LINE), but keep the parsed link for the row below.
+        placeholder_message_text, journal_link = extract_journal_link(
             placeholder_message_text, tenant_id=tenant.id, channel=f"cron_{channel}"
         )
 
@@ -242,6 +252,10 @@ class CronDeliveryView(APIView):
                 # only for the owner-facing iOS push it fires.
                 message_text=placeholder_message_text,
                 job_name=request.headers.get("X-NBHD-Job-Name", ""),
+                # Parsed "View in Journal" deep-link (placeholder-space title);
+                # the ?since= feed rehydrates + renders it as a chip. None when
+                # the send carried no marker.
+                journal_link=journal_link,
             )
 
         return resp

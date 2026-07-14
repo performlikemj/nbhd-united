@@ -17,29 +17,43 @@ future PR — written by someone who doesn't know column X flipped to
 ciphertext in Phase 3 — fails at PR time instead of shipping a query that
 quietly returns nothing.
 
-How it works: scans ``apps/**/*.py`` for ``.filter(``, ``.exclude(``, and
-``Q(`` calls (paren-depth matched, so nested calls are each also inspected).
-Inside each call's argument list, it looks for a keyword predicate against a
-registered column — either a value-comparison lookup suffix
-(``__icontains``, ``__gt``, ``__exact``, ...) or bare equality
-(``col=value``). To avoid false positives from same-named columns on
-unrelated models (``title``, ``text``, and ``markdown`` are common field
-names — see ``Task.title``, ``Goal.title`` for real examples that must NOT
-trigger this), a hit only counts when the model name appears nearby (within
-~25 lines above the call, e.g. ``Document.objects.filter(...)`` or, in a
-data migration, ``apps.get_model("journal", "Document")``).
+How it works — three detectors:
 
-Two escape hatches, by design:
+  A. **ORM value-predicates.** Scans ``apps/**/*.py`` for ``.filter(``,
+     ``.exclude(``, and ``Q(`` calls (paren-depth matched, so nested calls
+     are each also inspected). Inside each call's argument list, it looks for
+     a keyword predicate against a registered column — a value-comparison
+     lookup suffix (``__icontains``, ``__gt``, ``__exact``, ...) or bare
+     equality (``col=value``). To avoid false positives from same-named
+     columns on unrelated models (``title``, ``text``, ``name`` are common —
+     see ``Task.title``, ``Goal.title``), a hit only counts when the model
+     name appears nearby (within ~25 lines above the call, e.g.
+     ``Document.objects.filter(...)`` or, in a data migration,
+     ``apps.get_model("journal", "Document")``).
+  B. **JSON key-path predicates** (Phase 3). A registered ``JSONField`` column
+     (``_JSON_COLUMNS``) seals as one opaque envelope, so ANY ``__``-suffixed
+     key-path breaks — not just the scalar lookups. Those columns are scanned
+     with a broadened pattern (``col__anything=``) so ``detail_json__key=`` is
+     caught too, via ``_json_column_pattern``.
+  C. **Admin ``search_fields``** (Phase 3). Staff admin search issues a raw
+     ``__icontains`` OR across ``ModelAdmin.search_fields``, so it silently
+     breaks once a listed column is ciphertext. ``_scan_admin_search_fields``
+     (``admin.py`` only) maps each ``search_fields`` entry to its
+     ``@admin.register`` model and flags a registered column named directly, or
+     a relation whose terminal segment is a registered column name.
 
-  1. **In-script allowlist** (``_ALLOWLISTED_SITES``) — the known
-     pre-existing sites, all written before their column was ever a
-     candidate for encryption. Do NOT edit product code to appease this
-     guard; the allowlist is the record of "this predicate predates the
-     flip, revisit when the column encrypts."
-  2. **Inline** ``# noqa: encrypted-predicate`` on the offending line — for
+Three escape hatches, by design:
+
+  1. **Predicate allowlist** (``_ALLOWLISTED_SITES``) — known pre-existing
+     ORM/JSON predicate sites, each carrying the ladder PR that resolves it.
+     Do NOT edit product code to appease this guard; the allowlist is the
+     record of "this predicate predates the flip, revisit when the column
+     encrypts."
+  2. **Admin-search allowlist** (``_ALLOWLISTED_ADMIN_SEARCH_FIELDS``) — same,
+     for ``search_fields`` entries.
+  3. **Inline** ``# noqa: encrypted-predicate`` on the offending line — for
      a new PR that has a deliberate, reviewed reason to touch a registered
-     column before its phase lands (e.g. cleanup code that only ever
-     touches Phase-3 columns while they're still plaintext, during Phase 1).
+     column before its phase lands.
 
 Known limitation (shared with any regex/paren-depth text scan, not an
 AST): a string literal containing an unescaped ``(`` or ``)`` inside a
@@ -73,14 +87,85 @@ ENCRYPTED_COLUMNS: dict[tuple[str, str], str] = {
     ("ChatThread", "title"): "phase2",
     ("ProactiveOutbound", "message_text"): "phase2",
     ("ProactiveOutbound", "parsed_items"): "phase2",
-    # Phase 3 — journal (+ blind-index search)
+    # Phase 3 — journal group (+ lessons + insights + core, one flag pair) and
+    # fuel free-text (its own flag pair). AAD constants live in each app's
+    # ``enc_columns.py``; the sidecar columns ship DARK in PR-1.
+    # Document.markdown/title are Phase 3 but DEFERRED to the search-coupled 3b
+    # sub-phase (blind index) — kept registered so the guard still polices them.
     ("Document", "markdown"): "phase3",
     ("Document", "title"): "phase3",
+    # -- journal app --
+    ("PendingExtraction", "text"): "phase3",
+    ("Goal", "title"): "phase3",
+    ("Goal", "description"): "phase3",
+    ("Purpose", "statement"): "phase3",
+    ("Purpose", "evidence"): "phase3",
+    ("Task", "title"): "phase3",
+    ("Task", "description"): "phase3",
+    ("PendingTaskAction", "evidence"): "phase3",
+    ("DocumentChunk", "text"): "phase3",
+    ("DocumentIngestion", "original_filename"): "phase3",
+    ("DocumentIngestionArtifact", "content_excerpt"): "phase3",
+    ("DailyNote", "markdown"): "phase3",
+    ("Session", "summary"): "phase3",
+    ("Session", "accomplishments"): "phase3",
+    ("Session", "blockers"): "phase3",
+    ("Session", "next_steps"): "phase3",
+    # -- lessons app --
     ("Lesson", "text"): "phase3",
     ("Lesson", "galaxy_note"): "phase3",
+    ("Lesson", "context"): "phase3",
+    ("TutoringSession", "messages"): "phase3",
+    ("TutoringSession", "connections_made"): "phase3",
+    ("StarJournalEntry", "text"): "phase3",
+    # -- insights app --
+    ("AssistantInsight", "statement"): "phase3",
+    ("AssistantInsight", "user_responses"): "phase3",
+    # -- core app --
+    ("CoreProfile", "additional_context"): "phase3",
+    ("MeditationSession", "feedback_note"): "phase3",
+    ("MeditationSession", "title"): "phase3",
+    ("MeditationSession", "theme"): "phase3",
+    ("MeditationSession", "manifest"): "phase3",
+    ("MeditationSession", "guidance_text"): "phase3",
+    # -- fuel app (free-text set only; numeric body-metrics DEFER to 3b) --
+    ("Workout", "notes"): "phase3",
+    ("Workout", "notes_thread"): "phase3",
+    ("Workout", "detail_json"): "phase3",
+    ("Workout", "skip_reason"): "phase3",
+    ("Workout", "activity"): "phase3",
+    ("WorkoutPlan", "notes"): "phase3",
+    ("WorkoutPlan", "objective"): "phase3",
+    ("WorkoutPlan", "name"): "phase3",
+    ("FuelProfile", "additional_context"): "phase3",
+    ("FuelProfile", "limitations"): "phase3",
+    ("WorkoutTemplate", "name"): "phase3",
+    ("WorkoutTemplate", "detail_json"): "phase3",
+    ("SleepLog", "notes"): "phase3",
     # Phase 4 — PII map
     ("Tenant", "pii_entity_map"): "phase4",
     ("Tenant", "pii_denylist"): "phase4",
+}
+
+# JSONField columns among the registered set. A ``JSONField`` seals as one opaque
+# ``json.dumps(...)`` envelope (plan §1.5), so ANY key-path / transform predicate
+# against it (``col__somekey=``, ``col__0=``, ``col__contains=``, ``col__has_key=``)
+# silently stops matching once the column is ciphertext — not just the scalar
+# lookups in ``_VALUE_LOOKUPS``. These columns are scanned with a broadened
+# pattern (``col(__\w+)*=``) so JSON key-path predicates are caught too.
+_JSON_COLUMNS: set[tuple[str, str]] = {
+    ("Purpose", "evidence"),
+    ("Session", "accomplishments"),
+    ("Session", "blockers"),
+    ("Session", "next_steps"),
+    ("TutoringSession", "messages"),
+    ("TutoringSession", "connections_made"),
+    ("AssistantInsight", "user_responses"),
+    ("MeditationSession", "manifest"),
+    ("Workout", "notes_thread"),
+    ("Workout", "detail_json"),
+    ("FuelProfile", "limitations"),
+    ("WorkoutTemplate", "detail_json"),
 }
 
 # ---------------------------------------------------------------------------
@@ -115,9 +200,89 @@ _ALLOWLISTED_SITES: set[tuple[str, int, str]] = {
     ("apps/pii/junk_sweep.py", 297, "pii_entity_map"),
     ("apps/pii/management/commands/denylist_degenerate_pii.py", 77, "pii_entity_map"),
     ("apps/tenants/migrations/0109_seed_pii_type_counters.py", 61, "pii_entity_map"),
+    # ── Phase 3 pre-existing predicate sites (plan §7.8) ──────────────────────
+    # Each is a raw predicate on a column this PR registers for Phase 3. No
+    # trivially-equivalent post-encryption rewrite exists (equality/startswith on
+    # ciphertext never matches), so each is allowlisted with the ladder PR that
+    # resolves it — do NOT weaken the guard to appease it.
+    # Goal.title / Task.title — the Siri EntityQuery / Shortcuts ``?q=``
+    # disambiguation picker. A real search feature; the read-flip PR
+    # (feat/enc-p3-journal-read) rewrites it to a decrypt-and-scan match, not a
+    # sidecar boolean.
+    ("apps/journal/lifecycle_views.py", 273, "title"),
+    ("apps/journal/lifecycle_views.py", 316, "title"),
+    # Task.title — one-time legacy Document→typed-model migration dedup, runs on
+    # plaintext during migration; resolved by feat/enc-p3-journal-read (or retired
+    # with the legacy Document path).
+    ("apps/journal/management/commands/migrate_documents_to_typed_models.py", 124, "title"),
+    # Lesson.context — dedup management command tags goal-derived lessons by a
+    # ``context`` prefix; resolved in feat/enc-p3-journal-read (decrypt-and-scan).
+    ("apps/lessons/management/commands/dedup_lessons.py", 51, "context"),
+    # WorkoutPlan.name — active-plan idempotency dedup (double-submit returns the
+    # existing plan instead of duplicating its calendar). Equality on ``name`` can't
+    # match ciphertext; feat/enc-p3-fuel-read reworks dedup to (tenant, start_date,
+    # status) + decrypt-and-compare.
+    ("apps/fuel/runtime_views.py", 1460, "name"),
+    ("apps/fuel/views.py", 1349, "name"),
+    # ── Phase 3 pre-existing TEST predicates (assert the plaintext dedup behavior
+    # the product sites above implement; updated alongside feat/enc-p3-*-read). ──
+    ("apps/fuel/tests.py", 3014, "activity"),
+    ("apps/fuel/tests.py", 4319, "name"),
+    ("apps/fuel/tests.py", 4333, "name"),
+    ("apps/fuel/tests.py", 4348, "name"),
+    ("apps/fuel/tests_audit_adv_A33.py", 150, "name"),
+    ("apps/journal/test_dedup.py", 193, "title"),
+    ("apps/journal/test_dedup.py", 205, "title"),
 }
 
+# ---------------------------------------------------------------------------
+# Admin-search allowlist: ``ModelAdmin.search_fields`` entries that target a
+# registered column (directly, or via a relation whose terminal segment is a
+# registered column). Staff admin search issues a raw ``__icontains`` OR across
+# these fields, so it silently breaks the moment the column flips to ciphertext
+# (plan §7.8). Each is allowlisted with the ladder PR that resolves it — the
+# read-flip PR either drops the encrypted field from ``search_fields`` or accepts
+# admin search over that column goes dark. Do NOT quietly delete a field to dodge
+# the guard.
+#
+# Entries: (path relative to repo root, 1-indexed line of the search_field, field)
+# ---------------------------------------------------------------------------
+_ALLOWLISTED_ADMIN_SEARCH_FIELDS: set[tuple[str, int, str]] = {
+    # core.MeditationSession — feat/enc-p3-journal-read
+    ("apps/core/admin.py", 18, "title"),
+    ("apps/core/admin.py", 18, "theme"),
+    # insights.AssistantInsight — feat/enc-p3-journal-read
+    ("apps/insights/admin.py", 31, "statement"),
+    # lessons.Lesson — feat/enc-p3-journal-read
+    ("apps/lessons/admin.py", 19, "text"),
+    ("apps/lessons/admin.py", 19, "context"),
+    # lessons.LessonConnection — search spans from_lesson/to_lesson → Lesson.text
+    ("apps/lessons/admin.py", 35, "from_lesson__text"),
+    ("apps/lessons/admin.py", 36, "to_lesson__text"),
+    # lessons.TutoringSession — messages (own) + star → Lesson.text
+    ("apps/lessons/admin.py", 53, "star__text"),
+    ("apps/lessons/admin.py", 53, "messages"),
+    # lessons.StarJournalEntry — text (own) + star → Lesson.text
+    ("apps/lessons/admin.py", 68, "text"),
+    ("apps/lessons/admin.py", 68, "star__text"),
+    # fuel.Workout / WorkoutTemplate / WorkoutPlan — feat/enc-p3-fuel-read
+    ("apps/fuel/admin.py", 20, "activity"),
+    ("apps/fuel/admin.py", 43, "name"),
+    ("apps/fuel/admin.py", 80, "name"),
+}
+
+# Every registered column *name* (across models) — used to flag a spanning
+# ``search_fields`` entry (``star__text``) whose terminal segment is an encrypted
+# column on the (statically-unresolvable) relation target. Fail-safe: over-flag
+# and allowlist, never silently miss.
+_ALL_REGISTERED_COLUMN_NAMES: frozenset[str] = frozenset(col for _model, col in ENCRYPTED_COLUMNS)
+
 _NOQA_MARKER = "# noqa: encrypted-predicate"
+
+# ``@admin.register(Model, ...)`` and the ``search_fields = (/[`` opener.
+_ADMIN_REGISTER_RE = re.compile(r"@admin\.register\(([^)]*)\)")
+_SEARCH_FIELDS_OPENER_RE = re.compile(r"\bsearch_fields\s*=\s*[([]")
+_ADMIN_FIELD_LITERAL_RE = re.compile(r"""["']([A-Za-z_][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)*)["']""")
 
 # Django ORM lookup suffixes that compare against the column's *content*.
 # Presence-only lookups (isnull, ...) are intentionally excluded — they stay
@@ -173,6 +338,16 @@ def _column_pattern(column: str) -> re.Pattern[str]:
     return re.compile(rf"(?<![\w.=!<>]){escaped}(?:__(?:{suffixes}))?\s*=(?!=)")
 
 
+def _json_column_pattern(column: str) -> re.Pattern[str]:
+    """Broadened predicate regex for a ``JSONField`` column: bare equality OR any
+    ``__``-suffixed key-path / transform / lookup (``col__anything=``, incl.
+    ``col__key__nested=``, ``col__0=``, ``col__has_key=``). A JSON column seals as
+    one opaque envelope, so EVERY key-path predicate breaks once it is ciphertext
+    — not just the scalar lookups in ``_VALUE_LOOKUPS`` (plan §1.5, §7.8)."""
+    escaped = re.escape(column)
+    return re.compile(rf"(?<![\w.=!<>]){escaped}(?:__\w+)*\s*=(?!=)")
+
+
 def _matching_close_paren(text: str, open_idx: int) -> int:
     """Index just past the ``)`` that closes ``text[open_idx] == '('``.
 
@@ -224,7 +399,8 @@ def _scan_file(text: str, relpath: str) -> list[tuple[str, int, str, str]]:
         for (model, column), _phase in ENCRYPTED_COLUMNS.items():
             if not _model_pattern(model).search(lookback_text):
                 continue
-            for m in _column_pattern(column).finditer(span_text):
+            col_re = _json_column_pattern(column) if (model, column) in _JSON_COLUMNS else _column_pattern(column)
+            for m in col_re.finditer(span_text):
                 abs_pos = args_start + m.start()
                 line_no = _line_number(text, abs_pos)
                 if _NOQA_MARKER in _line_text(text, abs_pos):
@@ -234,6 +410,64 @@ def _scan_file(text: str, relpath: str) -> list[tuple[str, int, str, str]]:
                     continue
                 seen.add(key)
                 hits.append((relpath, line_no, model, column))
+
+    return hits
+
+
+def _scan_admin_search_fields(text: str, relpath: str) -> list[tuple[str, int, str, str, str]]:
+    """Return ``(relpath, line_no, admin_model, field, phase)`` for every
+    ``ModelAdmin.search_fields`` entry that targets a registered column — bare
+    (``"statement"``) on the admin's ``@admin.register`` model, or spanning a
+    relation whose terminal segment names a registered column (``"star__text"``).
+    Allowlist NOT applied here (pure detection). Runs on ``admin.py`` files only."""
+    hits: list[tuple[str, int, str, str, str]] = []
+
+    registers: list[tuple[int, list[str]]] = []
+    for rm in _ADMIN_REGISTER_RE.finditer(text):
+        models = [t.strip() for t in rm.group(1).split(",") if t.strip()]
+        registers.append((_line_number(text, rm.start()) - 1, models))
+    registers.sort()
+
+    def _models_before(line_idx: int) -> list[str]:
+        chosen: list[str] = []
+        for reg_line, models in registers:
+            if reg_line < line_idx:
+                chosen = models
+            else:
+                break
+        return chosen
+
+    for sf in _SEARCH_FIELDS_OPENER_RE.finditer(text):
+        open_idx = sf.end() - 1
+        bracket = text[open_idx]
+        close = ")" if bracket == "(" else "]"
+        depth = 1
+        i = open_idx + 1
+        n = len(text)
+        while i < n and depth:
+            if text[i] == bracket:
+                depth += 1
+            elif text[i] == close:
+                depth -= 1
+            i += 1
+        span = text[open_idx + 1 : i - 1]
+        admin_models = _models_before(_line_number(text, sf.start()) - 1)
+        if not admin_models:
+            continue
+
+        for lm in _ADMIN_FIELD_LITERAL_RE.finditer(span):
+            field = lm.group(1)
+            line_no = _line_number(text, open_idx + 1 + lm.start())
+            if "__" not in field:
+                for model in admin_models:
+                    if (model, field) in ENCRYPTED_COLUMNS:
+                        hits.append((relpath, line_no, model, field, ENCRYPTED_COLUMNS[(model, field)]))
+                        break
+            else:
+                terminal = field.split("__")[-1]
+                if terminal in _ALL_REGISTERED_COLUMN_NAMES:
+                    phase = next(p for (_m, c), p in ENCRYPTED_COLUMNS.items() if c == terminal)
+                    hits.append((relpath, line_no, admin_models[0], field, phase))
 
     return hits
 
@@ -271,6 +505,20 @@ def find_predicate_violations(repo_root: Path = REPO_ROOT) -> list[str]:
                 "on this line."
             )
 
+        if relpath.endswith("admin.py"):
+            for relpath_hit, line_no, model, field, phase in _scan_admin_search_fields(text, relpath):
+                if (relpath_hit, line_no, field) in _ALLOWLISTED_ADMIN_SEARCH_FIELDS:
+                    continue
+                errors.append(
+                    f"{relpath_hit}:{line_no}: ModelAdmin.search_fields entry "
+                    f"'{field}' targets {model}'s encrypted column (registered for "
+                    f"{phase} encryption-at-rest). Admin search issues a raw "
+                    "__icontains across search_fields, so it silently stops "
+                    "matching once the column is ciphertext. Drop the field from "
+                    "search_fields when the column flips, or allowlist it in "
+                    "_ALLOWLISTED_ADMIN_SEARCH_FIELDS with the resolving ladder PR."
+                )
+
     return errors
 
 
@@ -285,7 +533,8 @@ def main() -> int:
     print(
         f"OK: no new raw DB value-predicates against the {len(ENCRYPTED_COLUMNS)} "
         f"column(s) registered for Phase 2-4 encryption-at-rest "
-        f"({len(_ALLOWLISTED_SITES)} pre-existing site(s) allowlisted)."
+        f"({len(_ALLOWLISTED_SITES)} pre-existing predicate site(s) + "
+        f"{len(_ALLOWLISTED_ADMIN_SEARCH_FIELDS)} admin search_fields site(s) allowlisted)."
     )
     return 0
 

@@ -1239,6 +1239,14 @@ class RuntimeDailyNotesView(APIView):
         )
 
 
+# P1: relative-day words that rot once a fact is filed under the day it was
+# REPORTED rather than the day it HAPPENED — "yesterday's dinner" appended to
+# tonight's note reads correctly at write time but misattributes on later
+# recall (which keys off the note's date, not the relative word). Longest
+# phrase first so "day before yesterday" wins over the "yesterday" it contains.
+_RELATIVE_DAY_RE = re.compile(r"\b(day before yesterday|yesterday|last night)\b", re.IGNORECASE)
+
+
 class RuntimeDailyNoteAppendView(APIView):
     """POST append markdown content to a daily note (agent access). Backed by Document model."""
 
@@ -1270,12 +1278,32 @@ class RuntimeDailyNoteAppendView(APIView):
         content = neutralize_remote_image_markdown(content)
 
         try:
-            d = _parse_iso_date(request.data.get("date"), field_name="date") or _tenant_today(tenant)
+            explicit_date = _parse_iso_date(request.data.get("date"), field_name="date")
         except ValueError as exc:
             return Response(
                 {"error": "invalid_request", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        d = explicit_date or _tenant_today(tenant)
+
+        # P1: only nudge when the caller left `date` to our default AND the
+        # content uses a relative-day word — an explicit `date` means the
+        # agent already made a dating decision, and this is a nudge (surfaced
+        # via the tool response, the one channel that reliably steers agent
+        # behavior), never a block on the write itself.
+        date_attribution_warning = None
+        if explicit_date is None:
+            relative_match = _RELATIVE_DAY_RE.search(content)
+            if relative_match is not None:
+                yesterday = d - timedelta(days=1)
+                date_attribution_warning = (
+                    f"This entry was filed under {d} (the note's date). It mentions "
+                    f"'{relative_match.group(0)}' — if it describes events from a "
+                    f"different day, append those facts to that day's note by passing "
+                    f"date=YYYY-MM-DD (tenant-local yesterday is {yesterday}), and "
+                    f"prefer absolute dates in prose so later reads can't misattribute "
+                    f"them."
+                )
 
         slug = str(d)
         # get_or_create outside the lock is fine — it only races on the very
@@ -1337,15 +1365,16 @@ class RuntimeDailyNoteAppendView(APIView):
 
             doc.save(update_fields=["markdown", "updated_at"])
 
-        return Response(
-            {
-                "tenant_id": str(tenant.id),
-                "date": str(d),
-                "markdown": doc.markdown,
-                "sections": parse_daily_sections(doc.markdown),
-            },
-            status=status.HTTP_201_CREATED,
-        )
+        response_payload = {
+            "tenant_id": str(tenant.id),
+            "date": str(d),
+            "markdown": doc.markdown,
+            "sections": parse_daily_sections(doc.markdown),
+        }
+        if date_attribution_warning:
+            response_payload["date_attribution_warning"] = date_attribution_warning
+
+        return Response(response_payload, status=status.HTTP_201_CREATED)
 
 
 def _upsert_markdown_section(md: str, heading: str, body: str) -> str:
@@ -1991,7 +2020,7 @@ class RuntimeDocumentView(APIView):
     authentication_classes = []
 
     def get(self, request, tenant_id):
-        from apps.journal.path_validation import validate_kind_slug
+        from apps.journal.path_validation import canonical_singleton_slug, validate_kind_slug
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
@@ -2009,8 +2038,13 @@ class RuntimeDocumentView(APIView):
                 {"error": "invalid_request", "detail": "kind is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Singleton kinds (goal→"goals", tasks→"tasks") resolve to their
+        # one-per-tenant canonical slug regardless of what the caller passed —
+        # closes the footgun where an omitted slug defaulted to the kind string
+        # ("goal", singular) and forked a duplicate doc from the real "goals".
+        slug = canonical_singleton_slug(kind, slug)
         if not slug:
-            # For singleton docs, use kind as slug
+            # Remaining kinds with no slug fall back to the kind string.
             slug = kind
 
         # Validate daily slugs must be valid dates (stricter than the general rule)
@@ -2058,7 +2092,7 @@ class RuntimeDocumentView(APIView):
         )
 
     def put(self, request, tenant_id):
-        from apps.journal.path_validation import validate_kind_slug
+        from apps.journal.path_validation import canonical_singleton_slug, validate_kind_slug
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
@@ -2084,6 +2118,9 @@ class RuntimeDocumentView(APIView):
                 {"error": "invalid_request", "detail": "kind is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # Singleton kinds resolve to their canonical slug so a goal write never
+        # forks a second "goals" doc under slug "goal" (see get() above).
+        slug = canonical_singleton_slug(kind, slug)
         if not slug:
             slug = kind
 
@@ -2459,7 +2496,7 @@ class RuntimeDocumentAppendView(APIView):
     authentication_classes = []
 
     def post(self, request, tenant_id):
-        from apps.journal.path_validation import validate_kind_slug
+        from apps.journal.path_validation import canonical_singleton_slug, validate_kind_slug
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
@@ -2485,6 +2522,9 @@ class RuntimeDocumentAppendView(APIView):
         # P0-3: strip agent-written markdown-image beacons before they reach
         # any durable store — see apps/integrations/content_sanitize.py.
         content = neutralize_remote_image_markdown(content)
+        # Singleton kinds resolve to their canonical slug so an append never
+        # forks a second "goals" doc under slug "goal" (see RuntimeDocumentView).
+        slug = canonical_singleton_slug(kind, slug)
         if not slug:
             if kind == "daily":
                 slug = str(_tenant_today(tenant))

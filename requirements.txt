@@ -248,7 +248,7 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 kiwisolver==1.5.0
     # via matplotlib
-litellm==1.91.1
+litellm==1.92.0
     # via -r requirements.in
 markdown-it-py==4.0.0
     # via rich
@@ -462,9 +462,9 @@ rpds-py==0.30.0
     #   referencing
 safetensors==0.7.0
     # via transformers
-sentencepiece==0.2.1
+sentencepiece==0.2.2
     # via -r requirements.in
-sentry-sdk==2.64.0
+sentry-sdk==2.65.0
     # via -r requirements.in
 shellingham==1.5.4
     # via typer

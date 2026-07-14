@@ -83,3 +83,25 @@ class YesterdaysSignalsToolInPromptsTest(SimpleTestCase):
         body = config_generator._HEARTBEAT_CHECKIN_PROMPT
         self.assertIn("DO NOT turn this into a quiz", body)
         self.assertIn("Personal Question cron", body)
+
+
+class MorningBriefingJournalLinkMarkerTest(SimpleTestCase):
+    """The Morning Briefing prompt must instruct the agent to end its
+    ``nbhd_send_to_user`` message with a ``[[journal-link: daily|...]]``
+    marker so the iOS app renders a tappable "View in Journal" chip
+    (backend parse/persist shipped in PR #1182; the marker syntax is
+    owned by ``apps.router.journal_link``). If this instruction is
+    dropped, the briefing stops emitting the chip and the feature
+    silently regresses on the legacy cron path.
+    """
+
+    def test_morning_briefing_prompt_emits_journal_link_marker(self):
+        body = config_generator._MORNING_BRIEFING_PROMPT_TEMPLATE
+        # The literal marker template the agent is told to emit. The `daily`
+        # kind + `<DATE>` slug placeholder must match apps.router.journal_link's
+        # parser (kind in Document.Kind, slug is the daily-note ISO date).
+        self.assertIn("[[journal-link: daily|<DATE>|Morning Report]]", body)
+        # And the guardrails that keep the emitted marker parseable: it must be
+        # the last line alone, and the date must be the real daily-note slug.
+        self.assertIn("its very last line", body)
+        self.assertIn("must be the daily note's actual slug", body)

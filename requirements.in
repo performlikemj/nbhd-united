@@ -22,7 +22,7 @@ python-telegram-bot>=22.8
 qrcode[pil]
 
 # AI / LLM
-litellm>=1.91.1,<1.91.2  # 1.82.8 compromised — supply chain attack
+litellm>=1.92.0,<1.92.1  # 1.82.8 compromised — supply chain attack
 openai
 tiktoken
 pgvector
@@ -43,7 +43,7 @@ presidio-analyzer>=2.2.363    # Pattern recognizers only (credit card Luhn, IBAN
 # via the `torch` package — production images don't have CUDA.
 torch>=2.13.0,<3.0
 transformers>=5.9.0,<5.10.0
-sentencepiece>=0.2
+sentencepiece>=0.2.2
 
 # HTTP client (for routing to OpenClaw instances). [http2] pulls h2 — APNs
 # speaks HTTP/2 only (see apps/common/apns.py).
@@ -75,7 +75,7 @@ croniter
 
 # Error / performance monitoring (Django integration ships in the core SDK,
 # auto-enabled. Inert unless SENTRY_DSN is set — see config/settings/base.py).
-sentry-sdk>=2.64.0
+sentry-sdk>=2.65.0
 
 # Utils
 whitenoise

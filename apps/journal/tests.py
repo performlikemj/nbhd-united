@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -730,6 +730,142 @@ class RuntimeDailyNoteAPITest(TestCase):
         )
         self.assertEqual(resp.status_code, 201)
         self.assertEqual(resp.data["date"], str(expected_local_date))
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+class RuntimeDailyNoteDateAttributionWarningTest(TestCase):
+    """P1: a fact reported today about a DIFFERENT day (e.g. 'yesterday's
+    dinner' told to the assistant tonight) used to get filed under today's
+    note with only a relative word distinguishing it — correct at write time,
+    but recall attributes by the note's date and later misreports the day.
+    The fix is a deterministic nudge in the tool response (never a block)
+    when the caller left `date` to our default AND the content contains a
+    relative-day word.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="testuser_dnw", password="testpass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+        seed_internal_key(self.tenant)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    @patch("apps.integrations.runtime_views.tz.now")
+    def test_yesterday_no_date_param_warns_with_tenant_local_yesterday(self, mock_now):
+        self.user.timezone = "Asia/Tokyo"
+        self.user.save(update_fields=["timezone"])
+
+        utc_now = datetime(2026, 2, 21, 15, 0, 0, tzinfo=ZoneInfo("UTC"))
+        mock_now.return_value = utc_now
+        note_date = utc_now.astimezone(ZoneInfo("Asia/Tokyo")).date()
+        expected_yesterday = note_date - timedelta(days=1)
+
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Yesterday's dinner (context): Sushi — great omakase spot."},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertIn("Yesterday's dinner", resp.data["markdown"])
+        self.assertEqual(resp.data["date"], str(note_date))
+
+        warning = resp.data.get("date_attribution_warning")
+        self.assertIsNotNone(warning, "expected date_attribution_warning on the response")
+        self.assertIn(str(expected_yesterday), warning)
+        self.assertIn("date=YYYY-MM-DD", warning)
+
+    def test_explicit_date_suppresses_warning(self):
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Yesterday's dinner was sushi.", "date": "2026-02-20"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertNotIn("date_attribution_warning", resp.data)
+
+    def test_clean_content_no_date_no_warning(self):
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Went for a run, felt great."},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertNotIn("date_attribution_warning", resp.data)
+
+    def test_section_write_with_last_night_warns_and_writes_normally(self):
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Watched a movie, went to bed late.", "section_slug": "evening-check-in"},
+            format="json",
+            **self.headers,
+        )
+        # Control: no relative word yet.
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertNotIn("date_attribution_warning", resp.data)
+
+        resp2 = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Last night we stayed up late talking.", "section_slug": "evening-check-in"},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp2.status_code, 201, resp2.content)
+        self.assertIn("## Evening Check In", resp2.data["markdown"])
+        self.assertIn("Last night we stayed up late talking.", resp2.data["markdown"])
+        warning = resp2.data.get("date_attribution_warning")
+        self.assertIsNotNone(warning)
+        self.assertIn("last night", warning.lower())
+
+    def test_case_insensitive_match(self):
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "YESTERDAY we went hiking."},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertIsNotNone(resp.data.get("date_attribution_warning"))
+
+    def test_word_boundary_does_not_match_substring(self):
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Attached yesterdays_export.csv for review."},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertNotIn("date_attribution_warning", resp.data)
+
+    @patch("apps.integrations.runtime_views.tz.now")
+    def test_timezone_correctness_chicago_yesterday_not_utc_yesterday(self, mock_now):
+        # Frozen just after UTC midnight so the UTC calendar date has already
+        # rolled to the 15th, while Chicago (CDT, UTC-5 in July) is still on
+        # the 14th evening — the bug this guards against is a warning that
+        # reports UTC-yesterday (07-14) instead of Chicago-yesterday (07-13).
+        self.user.timezone = "America/Chicago"
+        self.user.save(update_fields=["timezone"])
+
+        utc_now = datetime(2026, 7, 15, 2, 0, 0, tzinfo=ZoneInfo("UTC"))
+        mock_now.return_value = utc_now
+
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/daily-note/append/",
+            {"content": "Yesterday's dinner (context): Sushi."},
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertEqual(resp.data["date"], "2026-07-14")  # Chicago-local today
+
+        warning = resp.data.get("date_attribution_warning")
+        self.assertIsNotNone(warning)
+        self.assertIn("2026-07-13", warning)  # Chicago-local yesterday, not UTC's 07-14
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
