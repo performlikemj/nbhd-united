@@ -20,7 +20,7 @@ Skills available as slash commands on this machine: `/deploy` (commit→push→v
 
 ## Tech stack
 
-- **Backend**: Django 6 + DRF, Python 3.12 (local venv MUST match — it once drifted a whole Django major and a local green meant nothing; a hook warns on every test run, `scripts/rebuild_venv.sh` repairs it), QStash for ALL scheduling (never Celery), PostgreSQL 16 via Supabase us-west-1
+- **Backend**: Django 6 + DRF, Python 3.12 (local venv MUST match — it once drifted a whole Django major and a local green meant nothing; `make setup` rebuilds it at parity, and a hook flags drift on test/migration runs — but it is silent when clean, and silence only means "matched origin/main as of your last fetch"), QStash for ALL scheduling (never Celery), PostgreSQL 16 via Supabase us-west-1
 - **Frontend**: Next.js 14 static export (`out/`, no SSR), TypeScript, Tailwind, TipTap editor
 - **Infra**: Azure Container Apps (`rg-nbhd-prod`), Key Vault `kv-nbhd-prod`, ACR `nbhdunited.azurecr.io`, Static Web Apps
 - **Billing**: Stripe via dj-stripe · **Messaging**: Telegram Bot API, LINE Messaging API

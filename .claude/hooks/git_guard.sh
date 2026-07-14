@@ -26,13 +26,18 @@ fi
 # Linux-only CUDA/torch pins the PII model needs, and the loss is invisible until a
 # deploy. Standing MJ rule, previously enforced only by memory — mechanical now.
 #
-# `make compile-deps` MUST be listed separately. A hook only ever sees the command STRING
-# the caller typed, never what make expands it to — so blocking the literal `pip-compile`
-# leaves the Makefile target as an unguarded side door straight to the same damage. (Found
-# by reading the Makefile instead of assuming: `make integrate` doesn't exist either — the
-# target is `integrate-gate`.) Any new wrapper around pip-compile belongs on this line.
-if printf '%s' "$cmd" | grep -qE '(^|[[:space:]/])pip-compile([[:space:]]|$|;)|(^|[[:space:]])make[[:space:]]+compile-deps([[:space:]]|$|;)'; then
-  block "Blocked by .claude/hooks/git_guard.sh: pip-compile on macOS strips the Linux/CUDA pins from requirements.txt and you will not notice until deploy. (This includes 'make compile-deps', which is just pip-compile wearing a hat.) Hand-edit requirements.txt instead, or run pip-compile inside the Linux container."
+# EVERY WRAPPER, not just the literal command. A hook only ever sees the command STRING the
+# caller typed, never what make expands it to — so blocking bare `pip-compile` left
+# `make compile-deps` as an unguarded side door to identical damage. (`make setup` was a
+# third door; it is now fixed at the source and delegates to scripts/rebuild_venv.sh.)
+#
+# `make[^|;&]*compile-deps` rather than `make[[:space:]]+compile-deps`: the strict form is
+# defeated by `make -j2 compile-deps`, `make -C . compile-deps`, and `make lint compile-deps`
+# — flags and preceding targets are the normal way people invoke make, so the strict form was
+# guarding only the one spelling nobody has to use. `uv pip compile` and `python -m piptools
+# compile` are the same tool under other names. Any new alias belongs on this line.
+if printf '%s' "$cmd" | grep -qE '(^|[[:space:]/])pip-compile([[:space:]]|$|;)|(^|[[:space:]])make[^|;&]*compile-deps|(^|[[:space:]/])uv[[:space:]]+pip[[:space:]]+compile|piptools[[:space:]]+compile'; then
+  block "Blocked by .claude/hooks/git_guard.sh: pip-compile on macOS strips the Linux/CUDA pins from requirements.txt and you will not notice until deploy. (Includes 'make compile-deps', 'uv pip compile' and 'python -m piptools compile' — same tool, different hat.) Hand-edit requirements.txt instead, or run pip-compile inside the Linux container. To rebuild the venv you almost certainly want 'make setup'."
 fi
 
 exit 0

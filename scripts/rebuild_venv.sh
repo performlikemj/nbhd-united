@@ -67,11 +67,29 @@ refuse() {
 }
 in_use && refuse
 
-echo "==> fetching origin (parity means ORIGIN, not the local checkout — see header)"
-git fetch origin main --quiet
+# LOCK AGAINST ANOTHER COPY OF THIS SCRIPT — not just against test runners.
+#
+# Venv drift is machine-GLOBAL by construction (one .venv, every worktree borrows it), so
+# the parity hook's "Fix: make setup" line surfaces in EVERY concurrent session at the same
+# moment — and MJ runs several worktree sessions by design. Two sessions dutifully obeying
+# it interleave `rm -rf .venv.new` and two parallel pip installs into the same directory:
+# a torn tree, the first mover swaps it in, and the parity print at the end can still show
+# perfectly clean versions. The in_use() guards watch for test RUNNERS; they never watched
+# for this script. `make setup` now IS this script, so it is the documented path too.
+# mkdir is atomic — the only portable mutex worth trusting here.
+LOCK=".venv.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  echo "REFUSING: another venv rebuild is already running (found $PWD/$LOCK)." >&2
+  echo "Wait for it to finish, then re-run. If you are certain none is running:" >&2
+  echo "  rmdir $PWD/$LOCK" >&2
+  exit 1
+fi
 
 TMP_REQ="$(mktemp)"
-trap 'rm -f "$TMP_REQ"' EXIT
+trap 'rmdir "$LOCK" 2>/dev/null || true; rm -f "$TMP_REQ"' EXIT
+
+echo "==> fetching origin (parity means ORIGIN, not the local checkout — see header)"
+git fetch origin main --quiet
 
 # ONE list, ONE truth: the exclusions come from the same file the hook uses to decide what
 # counts as legitimately-absent. Two hand-maintained lists encoding the same fact will
@@ -115,15 +133,29 @@ if in_use; then
   in_use && { echo "(the new venv is built and waiting at .venv.new — re-run to swap it in)" >&2; refuse; }
 fi
 
-rm -rf .venv.old
-# `if`, not `[ -d .venv ] && mv ...`. Under `set -e` that one-liner is exempt only because
-# it is not the final command in the script — move it to the end, or append nothing after
-# it, and a FIRST-TIME setup (no .venv to move) exits 1 having actually succeeded. `make
-# setup` now routes here, so the no-.venv path is the common one, not the exotic one.
+# SWAP WITH RENAMES ONLY, THEN DELETE. `rm -rf .venv.old` on a ~2GB tree takes seconds, and
+# it used to sit between the final in-use check and the swap — so a test starting inside that
+# window still got its interpreter yanked mid-run, which is the precise thing the guards
+# exist to prevent. Renames are effectively instant; the vulnerable window is now
+# microseconds, and the slow delete happens once `.venv` is already whole.
+#
+# `if`, not `[ -d .venv ] && mv ...`: under `set -e` that one-liner is exempt only because it
+# is not the script's final command. Move it, or append nothing after it, and a FIRST-TIME
+# setup (no .venv to move) exits 1 having actually succeeded. `make setup` routes here now,
+# so "no .venv yet" is the common path, not the exotic one.
+TRASH=".venv.trash.$$"
+if [ -d .venv.old ]; then mv .venv.old "$TRASH"; fi
 if [ -d .venv ]; then mv .venv .venv.old; fi
 mv .venv.new .venv
-# Accepted residual: this only guards `manage.py test`. A long-lived runserver/shell holding
-# the old venv survives the move via open file handles — only NEW spawns land on the new one.
+rm -rf "$TRASH"
+
+# ACCEPTED RESIDUAL, described honestly — this PR of all PRs must not ship a comment that
+# asserts the reverse of what happens. A long-lived process started from the old venv does
+# NOT keep cleanly using it: sys.path entries are PATH STRINGS, so every FUTURE lazy import
+# resolves through `.venv/...`, which now points into the NEW tree. Such a process becomes a
+# version-mixed chimera, and Django's autoreloader will re-exec straight onto the new
+# interpreter. The guards above cover `manage.py test` — the runs this hook's citations rest
+# on. A stray runserver is accepted, not prevented.
 
 echo "==> parity:"
 .venv/bin/python -c "
