@@ -22,10 +22,20 @@ block() {
 # introducer (a heredoc body is data by definition). Deliberately NOT a blanket quote-strip:
 # that would let `bash -c "pip-compile requirements.in"` through, which is real execution.
 # Chained commands still land — `git commit -m "x" && pip-compile y` keeps the pip-compile.
+# `[[:space:]]*=?[[:space:]]*`, not `[[:space:]]+`: `-m"msg"` (no space) and `--message="msg"`
+# are ordinary spellings, and requiring a space meant they were NOT payload-stripped and so
+# could still false-block. Rare, but it fails in the loud direction, which is the direction
+# that erodes the guard.
+#
+# KNOWN RESIDUAL, stated rather than left to be discovered: the heredoc rule truncates the
+# scan at the introducer, so a command chained AFTER a heredoc body in the SAME Bash call is
+# never scanned. Exotic, and `compile-deps` has the Makefile recipe's uname check as its real
+# wall — the string layer is a backstop, not the barrier. If that ever needs closing, delete
+# only the heredoc BODY (introducer through terminator) instead of truncating.
 MSGFLAG='(-m|-am|-sm|--message|-b|--body|-F|--notes|-t|--title)'
 scan=$(printf '%s\n' "$cmd" \
-  | sed -E "s/${MSGFLAG}[[:space:]]+'[^']*'/\1 /g" \
-  | sed -E "s/${MSGFLAG}[[:space:]]+\"[^\"]*\"/\1 /g" \
+  | sed -E "s/${MSGFLAG}[[:space:]]*=?[[:space:]]*'[^']*'/\1 /g" \
+  | sed -E "s/${MSGFLAG}[[:space:]]*=?[[:space:]]*\"[^\"]*\"/\1 /g" \
   | sed -n '/<</q;p')
 
 if printf '%s' "$scan" | grep -qE 'git add +(-A|--all|\.)([[:space:]]|$|;)'; then
