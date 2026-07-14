@@ -314,8 +314,16 @@ def _resolve_gate_channel(user) -> str | None:
     Deliberately NOT ``resolve_user_channel`` (which is now app-first): a gate
     needs an actionable approve/deny surface, and those handlers exist ONLY in
     the Telegram poller and LINE webhook — there is no in-app gate UI this cycle.
-    So gate delivery resolves to a LINKED MESSAGING channel (LINE first, then
-    Telegram) or fails fast; the app channel is never a gate target.
+    So gate delivery resolves to a LINKED MESSAGING channel (Telegram first,
+    then LINE) or fails fast; the app channel is never a gate target.
+
+    Linked-Telegram-first (unlike the resolver's line-before-telegram fallback)
+    because it preserves prior behavior for the only both-linked cohort in
+    production: the old resolver honoured ``preferred_channel`` (universally the
+    "telegram" default), so a user with BOTH channels linked has always received
+    gate buttons on Telegram — flipping them to LINE would silently move the
+    approval surface out from under an active Telegram user. LINE next covers
+    line-only users.
 
     This is the load-bearing exception to the app-first outbound routing: a
     token-holding user who ALSO has Telegram linked (e.g. MJ) still gets gate
@@ -324,10 +332,10 @@ def _resolve_gate_channel(user) -> str | None:
     ignored for the same reason it is in ``resolve_user_channel`` (production noise
     — every row is the schema default).
     """
-    if getattr(user, "line_user_id", None):
-        return "line"
     if getattr(user, "telegram_chat_id", None):
         return "telegram"
+    if getattr(user, "line_user_id", None):
+        return "line"
     return None
 
 
