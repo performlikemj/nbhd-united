@@ -49,11 +49,19 @@ class TypedCronError(Exception):
 
 
 class CronNameConflictError(TypedCronError):
-    """A cron with the same (tenant, name) already exists."""
+    """An ENABLED cron with the same (tenant, name) already exists.
+
+    The uniqueness constraint is scoped to ``enabled=True`` (apps/cron/models.py),
+    so a spent one-shot that has been retired by ``expire_finished_at_crons_task``
+    no longer conflicts. The message is relayed verbatim to the agent in the 409
+    body (apps/integrations/runtime_views.py), so it must be actionable: it is the
+    only guidance the model gets at the moment it needs to recover.
+    """
 
     def __init__(self, name: str):
         super().__init__(
-            f"A cron named {name!r} already exists for this tenant.",
+            f"An active cron named {name!r} already exists for this tenant — "
+            f"choose a different name, or update or disable the existing one first.",
             code="name_conflict",
         )
         self.name = name

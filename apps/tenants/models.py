@@ -510,12 +510,14 @@ class Tenant(models.Model):
     # a cron is the typed wrapper. That cutover is gated on this flag
     # being True fleet-wide.
     experimental_typed_crons = models.BooleanField(
-        default=False,
+        default=True,
         help_text=(
-            "Experimental: typed cron patterns (pure_reminder, "
-            "quote_user_intent, domain_summary, daily_briefing). "
-            "Loads nbhd-automation-tools + nbhd-cron-enforcement plugins. "
-            "Canary-gated rollout."
+            "Typed cron patterns (pure_reminder, quote_user_intent, "
+            "domain_summary, daily_briefing). Loads nbhd-automation-tools + "
+            "nbhd-cron-enforcement plugins. Fleet-wide since 2026-07-13; "
+            "default True so a new tenant gets the cron-create tools the base "
+            "AGENTS.md capability list advertises — a flag-off tenant would "
+            "read that it can set reminders and have no tool to do it."
         ),
     )
 

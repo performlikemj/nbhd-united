@@ -97,6 +97,12 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
             OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
+            # experimental_typed_crons now defaults True (the base AGENTS.md tells every
+            # tenant it can set reminders, so every tenant must actually have the tools),
+            # which loads nbhd-automation-tools on a bare tenant. These cases assert the
+            # ID-driven WIRING mechanism, so blank this ID too — otherwise there is no
+            # zero-plugin baseline left to assert against.
+            OPENCLAW_AUTOMATION_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -119,6 +125,12 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
             OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
+            # experimental_typed_crons now defaults True (the base AGENTS.md tells every
+            # tenant it can set reminders, so every tenant must actually have the tools),
+            # which loads nbhd-automation-tools on a bare tenant. These cases assert the
+            # ID-driven WIRING mechanism, so blank this ID too — otherwise there is no
+            # zero-plugin baseline left to assert against.
+            OPENCLAW_AUTOMATION_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -134,6 +146,12 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
             OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
+            # experimental_typed_crons now defaults True (the base AGENTS.md tells every
+            # tenant it can set reminders, so every tenant must actually have the tools),
+            # which loads nbhd-automation-tools on a bare tenant. These cases assert the
+            # ID-driven WIRING mechanism, so blank this ID too — otherwise there is no
+            # zero-plugin baseline left to assert against.
+            OPENCLAW_AUTOMATION_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
 
@@ -402,6 +420,12 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
             OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
+            # experimental_typed_crons now defaults True (the base AGENTS.md tells every
+            # tenant it can set reminders, so every tenant must actually have the tools),
+            # which loads nbhd-automation-tools on a bare tenant. These cases assert the
+            # ID-driven WIRING mechanism, so blank this ID too — otherwise there is no
+            # zero-plugin baseline left to assert against.
+            OPENCLAW_AUTOMATION_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)
@@ -425,6 +449,12 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
             OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
+            # experimental_typed_crons now defaults True (the base AGENTS.md tells every
+            # tenant it can set reminders, so every tenant must actually have the tools),
+            # which loads nbhd-automation-tools on a bare tenant. These cases assert the
+            # ID-driven WIRING mechanism, so blank this ID too — otherwise there is no
+            # zero-plugin baseline left to assert against.
+            OPENCLAW_AUTOMATION_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)
@@ -453,6 +483,12 @@ class ConfigGeneratorTest(TestCase):
             OPENCLAW_SETTINGS_PLUGIN_ID="",
             OPENCLAW_ROUTING_CONTEXT_PLUGIN_ID="",
             OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID="",
+            # experimental_typed_crons now defaults True (the base AGENTS.md tells every
+            # tenant it can set reminders, so every tenant must actually have the tools),
+            # which loads nbhd-automation-tools on a bare tenant. These cases assert the
+            # ID-driven WIRING mechanism, so blank this ID too — otherwise there is no
+            # zero-plugin baseline left to assert against.
+            OPENCLAW_AUTOMATION_PLUGIN_ID="",
         ):
             config = generate_openclaw_config(self.tenant)
         self.assertNotIn("plugins", config)
