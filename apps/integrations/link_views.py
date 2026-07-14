@@ -65,7 +65,7 @@ class SautaiLinkView(APIView):
 
         # Server-side exchange with the platform secret; the raw key never leaves
         # Django and is never persisted.
-        result = resolve_sautai_link_key(connect_key)
+        result = resolve_sautai_link_key(connect_key, nbhd_tenant_id=str(tenant.id))
         outcome = result.get("outcome")
 
         if outcome == "invalid_key":
@@ -82,6 +82,11 @@ class SautaiLinkView(APIView):
         if outcome == "not_configured":
             return Response(
                 {"error": "sautai_not_configured", "detail": "The sautai integration is not configured."},
+                status=503,
+            )
+        if outcome == "retryable":
+            return Response(
+                {"error": "sautai_busy", "detail": "sautai is busy just now. Please try again."},
                 status=503,
             )
         if outcome != "ok":

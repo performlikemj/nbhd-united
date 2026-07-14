@@ -4,7 +4,7 @@
 public tables (``integrations``: sautai_user_id + linked_at; ``sautai_meal_plan_jobs``:
 regenerate + funnel). It adds no new table, but per the recurring topo-shift hazard
 (``0066``/``0073``/``0078``/``0080``/``0083``/``0097``/``0098``/``0099``/``0106``/
-``0111``/``0114``/``0116``/``0117``/``0119``/``0122``), adding ANY migration can
+``0111``/``0114``/``0116``/``0117``/``0119``/``0122``/``0124``), adding ANY migration can
 re-sort a PRIOR relock earlier in the graph, leaving some owned public table with
 ``rowsecurity = false`` at migration time —
 ``apps.tenants.test_public_schema_lockdown.test_rls_enabled_on_owned_public_tables``
@@ -43,7 +43,7 @@ REVERSE_SQL = "-- Do not auto-reverse; would leave tables unlocked at migration 
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0122_relock_after_sautai_job"),
+        ("tenants", "0124_relock_after_enc_p3"),
         ("integrations", "0009_sautai_phase05_link_and_funnel"),
     ]
 

@@ -315,17 +315,19 @@ def fetch_sautai_current_plan(*, identity: dict, week_start_iso: str | None) -> 
     }
 
 
-def resolve_sautai_link_key(link_key: str) -> dict:
+def resolve_sautai_link_key(link_key: str, *, nbhd_tenant_id: str) -> dict:
     """Exchange a one-time connect key for a sautai user id + email via ``/link/resolve/``.
 
     Called SERVER-SIDE from the console connect endpoint (the raw key is never
     stored — one-time exchange, burn after resolve). Contract addendum #1: 200
-    ``{"status":"ok","sautai_user_id":int,"email":str}``; unknown/expired/used key
-    → 404 ``{"code":"invalid_key"}``. Outcomes:
+    echoes the required opaque ``nbhd_tenant_id`` alongside ``sautai_user_id``
+    and ``email``; unknown/expired/used key → 404 ``{"code":"invalid_key"}``.
+    Outcomes:
 
-    - ``{"outcome": "ok", "sautai_user_id": int, "email": str}``
+    - ``{"outcome": "ok", ..., "nbhd_tenant_id": str}``
     - ``{"outcome": "invalid_key"}`` — reject with a clear user-facing message.
     - ``{"outcome": "not_configured"}`` — the M2M bridge env is unset.
+    - ``{"outcome": "retryable", "detail": "..."}`` — 503 busy; caller retries.
     - ``{"outcome": "error", "detail": "..."}`` — timeout / transport / non-200.
     """
     base_url, secret = sautai_m2m_config()
@@ -336,7 +338,7 @@ def resolve_sautai_link_key(link_key: str) -> dict:
     try:
         response = httpx.post(
             url,
-            json={"link_key": link_key},
+            json={"link_key": link_key, "nbhd_tenant_id": nbhd_tenant_id},
             headers={"X-NBHD-Platform-Secret": secret},
             timeout=LINK_RESOLVE_TIMEOUT_SECONDS,
         )
@@ -346,6 +348,11 @@ def resolve_sautai_link_key(link_key: str) -> dict:
 
     if response.status_code == 404:
         return {"outcome": "invalid_key"}
+    if response.status_code == 503:
+        return {
+            "outcome": "retryable",
+            "detail": f"sautai_error_503: {_safe_error_detail(response)}",
+        }
     if response.status_code != 200:
         return {"outcome": "error", "detail": f"sautai_error_{response.status_code}: {_safe_error_detail(response)}"}
 
@@ -357,4 +364,12 @@ def resolve_sautai_link_key(link_key: str) -> dict:
     sautai_user_id = body.get("sautai_user_id") if isinstance(body, dict) else None
     if not isinstance(sautai_user_id, int) or isinstance(sautai_user_id, bool):
         return {"outcome": "error", "detail": "invalid_response: missing sautai_user_id"}
-    return {"outcome": "ok", "sautai_user_id": sautai_user_id, "email": str(body.get("email") or "")}
+    echoed_tenant_id = body.get("nbhd_tenant_id")
+    if echoed_tenant_id != nbhd_tenant_id:
+        return {"outcome": "error", "detail": "invalid_response: nbhd_tenant_id echo mismatch"}
+    return {
+        "outcome": "ok",
+        "sautai_user_id": sautai_user_id,
+        "email": str(body.get("email") or ""),
+        "nbhd_tenant_id": echoed_tenant_id,
+    }

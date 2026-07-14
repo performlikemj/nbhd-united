@@ -14,12 +14,19 @@ Auth is unchanged — every request carries `X-NBHD-Platform-Secret` (sautai rea
 Exchange a one-time connect key (minted in sautai, pasted into the NBHD console)
 for the sautai user id. Single-use, 1h expiry.
 
-- Request: `{"link_key": "..."}`
-- 200: `{"status":"ok","sautai_user_id":<int>,"email":"..."}`
+- Request: `{"link_key": "...", "nbhd_tenant_id": "..."}`. The tenant id is
+  NBHD's opaque tenant UUID string (non-blank, at most 255 characters).
+- 200: `{"status":"ok","sautai_user_id":<int>,"email":"...","nbhd_tenant_id":"<echoed>"}`
+- Malformed request or missing/invalid tenant id → 400 `{"status":"error","code":"validation","detail":"..."}`
+- Missing/invalid platform secret → 401 `{"status":"error","code":"invalid_secret"}`
 - Unknown / expired / already-used key → 404 `{"status":"error","code":"invalid_key"}`
+- Saturated resolve capacity → 503 `{"status":"error","code":"busy","detail":"..."}`;
+  retry the exchange, matching `/generate/` busy handling.
+- Unexpected consume failure → 500 `{"status":"error","code":"internal_error","detail":"..."}`
 
-NBHD calls this SERVER-SIDE from the console connect endpoint and never stores the
-raw key (burn after resolve). See `apps/integrations/link_views.py`.
+NBHD calls this SERVER-SIDE from the console connect endpoint, verifies the tenant
+echo, and never stores the raw key (burn after resolve). See
+`apps/integrations/link_views.py`.
 
 ## 2. Identity by `sautai_user_id`
 

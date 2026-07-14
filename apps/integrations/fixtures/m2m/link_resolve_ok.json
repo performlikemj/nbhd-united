@@ -1,8 +1,9 @@
 {
   "body": {
-    "status": "ok",
-    "sautai_user_id": 501,
-    "email": "diner@example.com"
+    "email": "fixture-link@example.com",
+    "nbhd_tenant_id": "nbhd-tenant-fixture",
+    "sautai_user_id": 5,
+    "status": "ok"
   },
   "status_code": 200
 }

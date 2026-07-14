@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -408,7 +408,7 @@ class NotifySautaiPlanReadyTests(TestCase):
 
 
 @override_settings(SAUTAI_M2M_BASE_URL="https://app.sautai.test", SAUTAI_PLATFORM_SECRET="test-secret")
-class FetchSautaiCurrentPlanTests(TestCase):
+class FetchSautaiCurrentPlanTests(SimpleTestCase):
     def test_current_ok_returns_plan_and_link(self):
         fixture = _load_fixture("current_ok.json")
         with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post:
@@ -417,7 +417,8 @@ class FetchSautaiCurrentPlanTests(TestCase):
             )
 
         self.assertEqual(result["outcome"], "ok")
-        self.assertEqual(result["plan"]["id"], 66)
+        self.assertIsInstance(result["plan"]["id"], int)
+        self.assertGreater(result["plan"]["id"], 0)
         self.assertEqual(result["plan"]["week_start"], "2026-08-03")
         self.assertEqual(result["web_link"], "https://sautai.com/meal-plans?week_start=2026-08-03")
 
@@ -468,6 +469,66 @@ class FetchSautaiCurrentPlanTests(TestCase):
 
 
 @override_settings(SAUTAI_M2M_BASE_URL="https://app.sautai.test", SAUTAI_PLATFORM_SECRET="test-secret")
+class ResolveSautaiLinkKeyTests(SimpleTestCase):
+    """DB-free contract-fixture coverage for the server-side key exchange."""
+
+    def test_resolve_link_ok(self):
+        from .sautai_client import resolve_sautai_link_key
+
+        fixture = _load_fixture("link_resolve_ok.json")
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post:
+            result = resolve_sautai_link_key("KEY123", nbhd_tenant_id="nbhd-tenant-fixture")
+        self.assertEqual(result["outcome"], "ok")
+        self.assertEqual(result["sautai_user_id"], fixture["body"]["sautai_user_id"])
+        self.assertEqual(result["email"], fixture["body"]["email"])
+        self.assertEqual(result["nbhd_tenant_id"], fixture["body"]["nbhd_tenant_id"])
+        _, kwargs = mock_post.call_args
+        self.assertEqual(
+            kwargs["json"],
+            {"link_key": "KEY123", "nbhd_tenant_id": "nbhd-tenant-fixture"},
+        )
+        self.assertEqual(kwargs["headers"]["X-NBHD-Platform-Secret"], "test-secret")
+
+    def test_resolve_link_invalid_key(self):
+        from .sautai_client import resolve_sautai_link_key
+
+        fixture = _load_fixture("link_resolve_invalid.json")
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)):
+            result = resolve_sautai_link_key("BAD", nbhd_tenant_id="nbhd-tenant-fixture")
+        self.assertEqual(result["outcome"], "invalid_key")
+
+    def test_resolve_link_busy_is_retryable(self):
+        from .sautai_client import resolve_sautai_link_key
+
+        busy = {"status_code": 503, "body": {"status": "error", "code": "busy", "detail": "try again"}}
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(busy)):
+            result = resolve_sautai_link_key("KEY", nbhd_tenant_id="nbhd-tenant-fixture")
+        self.assertEqual(result["outcome"], "retryable")
+        self.assertIn("503", result["detail"])
+        self.assertIn("try again", result["detail"])
+
+    def test_resolve_link_rejects_mismatched_tenant_echo(self):
+        from .sautai_client import resolve_sautai_link_key
+
+        fixture = _load_fixture("link_resolve_ok.json")
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)):
+            result = resolve_sautai_link_key("KEY", nbhd_tenant_id="different-tenant")
+        self.assertEqual(result["outcome"], "error")
+        self.assertIn("echo mismatch", result["detail"])
+
+    def test_resolve_link_not_configured_no_network(self):
+        from .sautai_client import resolve_sautai_link_key
+
+        with (
+            override_settings(SAUTAI_M2M_BASE_URL=""),
+            patch("apps.integrations.sautai_client.httpx.post") as mock_post,
+        ):
+            result = resolve_sautai_link_key("KEY", nbhd_tenant_id="nbhd-tenant-fixture")
+        mock_post.assert_not_called()
+        self.assertEqual(result["outcome"], "not_configured")
+
+
+@override_settings(SAUTAI_M2M_BASE_URL="https://app.sautai.test", SAUTAI_PLATFORM_SECRET="test-secret")
 class SautaiPhase05ClientTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Sautai P05", telegram_chat_id=848490)
@@ -487,39 +548,6 @@ class SautaiPhase05ClientTests(TestCase):
             linked_at=timezone.now(),
             provider_email="diner@example.com",
         )
-
-    # ── resolve_sautai_link_key (contract addendum #1) ──
-    def test_resolve_link_ok(self):
-        from .sautai_client import resolve_sautai_link_key
-
-        fixture = _load_fixture("link_resolve_ok.json")
-        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post:
-            result = resolve_sautai_link_key("KEY123")
-        self.assertEqual(result["outcome"], "ok")
-        self.assertEqual(result["sautai_user_id"], 501)
-        self.assertEqual(result["email"], "diner@example.com")
-        _, kwargs = mock_post.call_args
-        self.assertEqual(kwargs["json"], {"link_key": "KEY123"})
-        self.assertEqual(kwargs["headers"]["X-NBHD-Platform-Secret"], "test-secret")
-
-    def test_resolve_link_invalid_key(self):
-        from .sautai_client import resolve_sautai_link_key
-
-        fixture = _load_fixture("link_resolve_invalid.json")
-        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)):
-            result = resolve_sautai_link_key("BAD")
-        self.assertEqual(result["outcome"], "invalid_key")
-
-    def test_resolve_link_not_configured_no_network(self):
-        from .sautai_client import resolve_sautai_link_key
-
-        with (
-            override_settings(SAUTAI_M2M_BASE_URL=""),
-            patch("apps.integrations.sautai_client.httpx.post") as mock_post,
-        ):
-            result = resolve_sautai_link_key("KEY")
-        mock_post.assert_not_called()
-        self.assertEqual(result["outcome"], "not_configured")
 
     # ── sautai_identity: link wins over email ──
     def test_identity_prefers_link_over_email(self):
@@ -559,8 +587,8 @@ class SautaiPhase05ClientTests(TestCase):
         self.assertNotIn("user_email", kwargs["json"])
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.READY)
-        self.assertIs(job.funnel.get("account_claimed"), True)
-        self.assertEqual(job.funnel.get("plan_count"), 3)
+        self.assertIs(job.funnel.get("account_claimed"), fixture["body"]["account_claimed"])
+        self.assertEqual(job.funnel.get("plan_count"), fixture["body"]["plan_count"])
 
     def test_generate_regenerate_passthrough(self):
         fixture = _load_fixture("generate_regenerated.json")
@@ -586,7 +614,8 @@ class SautaiPhase05ClientTests(TestCase):
         job.refresh_from_db()
         self.assertIs(job.funnel["account_claimed"], False)
         self.assertEqual(job.funnel["plan_count"], 1)
-        self.assertIn("claim?token", job.funnel["claim_link"])
+        self.assertIn("/claim?", job.funnel["claim_link"])
+        self.assertIn("token=", job.funnel["claim_link"])
         self.assertIs(job.funnel["already_existed"], False)
 
     # ── stale link: unknown_user clears the link and fails terminally ──

@@ -43,9 +43,15 @@ class SautaiLinkViewTests(TestCase):
 
     def test_connect_stores_link_and_never_persists_key(self):
         with patch("apps.integrations.sautai_client.resolve_sautai_link_key") as mock_resolve:
-            mock_resolve.return_value = {"outcome": "ok", "sautai_user_id": 501, "email": "diner@example.com"}
+            mock_resolve.return_value = {
+                "outcome": "ok",
+                "sautai_user_id": 501,
+                "email": "diner@example.com",
+                "nbhd_tenant_id": str(self.tenant.id),
+            }
             resp = self.client.post(self.URL, {"connect_key": "SECRET-KEY-XYZ"}, format="json")
 
+        mock_resolve.assert_called_once_with("SECRET-KEY-XYZ", nbhd_tenant_id=str(self.tenant.id))
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(body["status"], "connected")
@@ -76,6 +82,16 @@ class SautaiLinkViewTests(TestCase):
         ):
             resp = self.client.post(self.URL, {"connect_key": "x"}, format="json")
         self.assertEqual(resp.status_code, 503)
+
+    def test_connect_busy_returns_retryable_503_and_creates_nothing(self):
+        with patch(
+            "apps.integrations.sautai_client.resolve_sautai_link_key",
+            return_value={"outcome": "retryable", "detail": "sautai_error_503: busy"},
+        ):
+            resp = self.client.post(self.URL, {"connect_key": "x"}, format="json")
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.json()["error"], "sautai_busy")
+        self.assertIsNone(self._integration())
 
     def test_connect_requires_key(self):
         resp = self.client.post(self.URL, {}, format="json")

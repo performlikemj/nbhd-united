@@ -705,7 +705,10 @@ function sautaiErrorMessage(err: unknown): string {
     );
   }
   if (status === 503) {
-    return "sautai meal planning isn't set up on this account yet. Please try again later.";
+    return (
+      parseDetail(err) ??
+      "sautai meal planning isn't set up on this account yet. Please try again later."
+    );
   }
   return parseDetail(err) ?? "Couldn't reach sautai just now. Please try again.";
 }
