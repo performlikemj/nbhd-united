@@ -17,45 +17,82 @@
 #   * `pip-compile` would "fix" that by silently dropping those Linux pins from
 #     requirements.txt, breaking the PII container at deploy. It is hook-blocked.
 #
-# So: build on CI's Python, install everything EXCEPT the Linux-only set, then replicate
-# the two extra steps CI performs (ci-cd.yml installs ruff and the spaCy model separately —
-# neither is in requirements.txt, and a venv without them is not CI parity either).
+# WHY IT BUILDS FROM origin/main AND NOT THE LOCAL FILE. The first version of this script
+# used the checkout's own requirements.txt — and was run from the PRIMARY checkout, which
+# this repo deliberately keeps as a stale integration station (66 commits behind at the
+# time). It therefore built a "parity" venv that was three packages out of date on the day
+# it was born. The script written to fix "trusting a stale local artifact" trusted a stale
+# local artifact. The hook it ships alongside caught it, in a reviewer's tool output,
+# mid-review. Parity means ORIGIN, not whatever happens to be on disk.
 
 set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel)"
+# Resolve our OWN resources relative to this script, BEFORE cd-ing anywhere. The ignore file
+# is this script's sibling; if we resolved it from the cwd we'd look for it in whichever
+# checkout holds the venv — which is a DIFFERENT checkout when the script is run from a
+# worktree (and, until this PR merges, one where the file does not exist at all).
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IGNORE_FILE="$HERE/../.claude/hooks/venv_parity_ignore.txt"
+
+# Now cd to the PRIMARY checkout — NOT `git rev-parse --show-toplevel`. There is ONE .venv
+# and it lives in the primary; every worktree borrows it. Run from a worktree, show-toplevel
+# returns the worktree and we would build a stray venv there while the real one stayed
+# rotten. `git worktree list` prints the main worktree first — documented, not luck.
+cd "$(git worktree list | head -1 | awk '{print $1}')"
 
 CI_PYTHON=3.12  # .github/workflows/ci-cd.yml: python-version
 PY_BIN="/opt/homebrew/opt/python@${CI_PYTHON}/bin/python${CI_PYTHON}"
 
 [ -x "$PY_BIN" ] || { echo "Missing CI python. Run: brew install python@${CI_PYTHON}" >&2; exit 1; }
+[ -f "$IGNORE_FILE" ] || { echo "Missing ignore file: $IGNORE_FILE" >&2; exit 1; }
 
-if pgrep -f "manage.py test" >/dev/null 2>&1; then
-  echo "REFUSING: another session is mid-test against this venv." >&2
-  echo "The venv is shared mutable state across concurrent Claude sessions — swapping it now" >&2
-  echo "breaks their run. Wait for it to finish." >&2
+# The venv is SHARED MUTABLE STATE across concurrent Claude sessions. Checked twice: once
+# now (fail fast), and again immediately before the swap — the dangerous moment is minutes
+# from now, after the installs, and a run that starts inside that window would have its
+# interpreter yanked out from under it.
+# `pgrep -f` matches full command lines, so a caller whose OWN command line contains the
+# pattern (a wrapper loop, a `watch`, this script quoted in a shell one-liner) self-matches
+# and sees phantom tests forever. Confirmed live: a polling wrapper "saw" 3-5 test processes
+# for nine minutes while the machine was idle. Require the match to be an actual python
+# interpreter — that is what a real test run is.
+in_use() {
+  pgrep -f "manage.py test" 2>/dev/null | while read -r pid; do
+    case "$(ps -o comm= -p "$pid" 2>/dev/null)" in *python*) echo x ;; esac
+  done | grep -q x
+}
+refuse() {
+  echo "REFUSING: another session is mid-test against this venv. Swapping it now breaks" >&2
+  echo "their run. Wait for it to finish and re-run." >&2
   exit 1
-fi
+}
+in_use && refuse
+
+echo "==> fetching origin (parity means ORIGIN, not the local checkout — see header)"
+git fetch origin main --quiet
 
 TMP_REQ="$(mktemp)"
 trap 'rm -f "$TMP_REQ"' EXIT
 
-# Linux-only: no macOS wheels exist. torch itself DOES build on macOS — do not drop it.
-grep -vE '^(nvidia-|cuda-|triton==)' requirements.txt > "$TMP_REQ"
+# ONE list, ONE truth: the exclusions come from the same file the hook uses to decide what
+# counts as legitimately-absent. Two hand-maintained lists encoding the same fact will
+# diverge, and the divergence is invisible — a package excluded here but not ignored there
+# reads as permanent drift; the reverse hides real drift forever.
+EXCLUDE=$(grep -vE '^\s*(#|$)' "$IGNORE_FILE" | paste -sd'|' -)
+git show origin/main:requirements.txt | grep -vE "^(${EXCLUDE})" > "$TMP_REQ"
 
 echo "==> building a fresh venv on Python ${CI_PYTHON}"
 rm -rf .venv.new
 "$PY_BIN" -m venv .venv.new
 .venv.new/bin/python -m pip install -q --upgrade pip wheel
 
-echo "==> installing requirements.txt (minus the Linux-only set)"
+echo "==> installing origin/main's requirements.txt (minus the $(grep -cvE '^\s*(#|$)' "$IGNORE_FILE") Linux-only pins)"
 .venv.new/bin/python -m pip install -q -r "$TMP_REQ"
 
 echo "==> replicating CI's extra steps (ci-cd.yml — NOT in requirements.txt)"
 .venv.new/bin/python -m pip install -q ruff
 .venv.new/bin/python -m spacy download en_core_web_sm
 
-# Rewrite shebangs so the venv survives the move (they hard-code the build path), keeping
+# Rewrite shebangs so the venv survives the move (they hard-code the build path). This keeps
 # the swap window sub-second instead of a multi-minute reinstall gap.
 OLD="$PWD/.venv.new"; NEW="$PWD/.venv"
 for f in .venv.new/bin/*; do
@@ -63,9 +100,26 @@ for f in .venv.new/bin/*; do
 done
 sed -i '' "s|$OLD|$NEW|g" .venv.new/bin/activate* 2>/dev/null || true
 
+# SECOND guard — the one that matters. Minutes have passed since the first check, and a test
+# that started during the build would have its interpreter yanked mid-run.
+#
+# This one WAITS rather than refusing: the venv is already built, so throwing away five
+# minutes of work because someone started a test at the wrong moment is a bad trade. Fail
+# fast BEFORE the work; be patient AFTER it.
+if in_use; then
+  echo "==> a test started during the build — waiting for a clear window before swapping"
+  for _ in $(seq 1 60); do   # up to ~8 min
+    in_use || break
+    sleep 8
+  done
+  in_use && { echo "(the new venv is built and waiting at .venv.new — re-run to swap it in)" >&2; refuse; }
+fi
+
 rm -rf .venv.old
 [ -d .venv ] && mv .venv .venv.old
 mv .venv.new .venv
+# Accepted residual: this only guards `manage.py test`. A long-lived runserver/shell holding
+# the old venv survives the move via open file handles — only NEW spawns land on the new one.
 
 echo "==> parity:"
 .venv/bin/python -c "
