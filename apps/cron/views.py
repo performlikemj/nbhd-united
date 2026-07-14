@@ -1010,11 +1010,13 @@ def bump_all_pending_configs(request):
     from django.db.models import F as DbF
     from django.db.models import Q
 
-    has_channel = Q(user__telegram_chat_id__isnull=False) | Q(user__line_user_id__isnull=False)
+    has_channel = (
+        Q(user__telegram_chat_id__isnull=False) | Q(user__line_user_id__isnull=False) | Q(device_tokens__isnull=False)
+    )
     grace_cutoff = timezone.now() - timedelta(days=1)
 
     # Reset no-channel tenants created >1 day ago to version 0
-    # (new tenants get a 24h grace period to link Telegram/LINE)
+    # (new tenants get a 24h grace period to register a channel)
     no_channel_reset = (
         Tenant.objects.filter(
             status=Tenant.Status.ACTIVE,

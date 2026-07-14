@@ -6,11 +6,12 @@ import json
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.crypto import audit
+from apps.router.models import DeviceToken
 from apps.tenants.models import Tenant, User
 
 
@@ -98,6 +99,86 @@ class ApplyPendingConfigsTest(TestCase):
         stale.refresh_from_db()
         self.assertEqual(ready.config_version, 1)
         self.assertEqual(stale.config_version, 1)
+
+
+@override_settings(DEPLOY_SECRET="test-deploy-secret")
+class BumpAllPendingConfigsTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+
+    def _post(self):
+        return self.client.post(
+            "/api/v1/cron/bump-all-pending-configs/",
+            HTTP_X_DEPLOY_SECRET="test-deploy-secret",
+        )
+
+    def _age_past_channel_grace_period(self, *tenants):
+        Tenant.objects.filter(pk__in=[tenant.pk for tenant in tenants]).update(
+            created_at=timezone.now() - timedelta(days=2)
+        )
+
+    def test_app_only_tenant_is_bumped(self):
+        tenant = _create_tenant_with_config_state(
+            config_version=4,
+            pending_config_version=4,
+            suffix=10,
+        )
+        self._age_past_channel_grace_period(tenant)
+        DeviceToken.objects.create(
+            user=tenant.user,
+            tenant=tenant,
+            token="a" * 64,
+            environment=DeviceToken.Environment.SANDBOX,
+        )
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["queued"], 1)
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.config_version, 4)
+        self.assertEqual(tenant.pending_config_version, 5)
+
+    def test_tenant_without_any_channel_is_not_bumped(self):
+        tenant = _create_tenant_with_config_state(
+            config_version=4,
+            pending_config_version=4,
+            suffix=11,
+        )
+        self._age_past_channel_grace_period(tenant)
+        self.assertFalse(tenant.device_tokens.exists())
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["queued"], 0)
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.config_version, 0)
+        self.assertEqual(tenant.pending_config_version, 0)
+
+    def test_telegram_and_line_tenants_are_still_bumped(self):
+        telegram_tenant = _create_tenant_with_config_state(
+            config_version=2,
+            pending_config_version=2,
+            suffix=12,
+        )
+        line_tenant = _create_tenant_with_config_state(
+            config_version=7,
+            pending_config_version=7,
+            suffix=13,
+        )
+        User.objects.filter(pk=telegram_tenant.user_id).update(telegram_chat_id=123456)
+        User.objects.filter(pk=line_tenant.user_id).update(line_user_id="U-test-channel")
+        self._age_past_channel_grace_period(telegram_tenant, line_tenant)
+
+        response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["queued"], 2)
+        telegram_tenant.refresh_from_db()
+        line_tenant.refresh_from_db()
+        self.assertEqual(telegram_tenant.pending_config_version, 3)
+        self.assertEqual(line_tenant.pending_config_version, 8)
 
 
 class CronAuthTest(TestCase):
