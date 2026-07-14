@@ -19,7 +19,7 @@ type ConnectedSurface = Exclude<ChannelOutcome, "skipped">;
 
 const STEP_TIMINGS = [0, 8, 18, 30, 48];
 const PRIVATE_SPACE_TIP =
-  "Your assistant runs in its own private container — nobody else can see your conversations or data.";
+  "Your assistant runs in its own private container, isolated from every other subscriber.";
 
 function readySubtitle(surfaces: ConnectedSurface[]): string {
   if (surfaces.length > 1) {
@@ -71,8 +71,11 @@ export function LaunchSequence({ outcome }: { outcome: ChannelOutcome }) {
   const [elapsed, setElapsed] = useState(0);
   const [tipIndex, setTipIndex] = useState(0);
   const isReady =
-    provisioningStatus?.status === "active" &&
-    Boolean(provisioningStatus?.container_id);
+    provisioningStatus?.ready ??
+    (provisioningStatus?.status === "active" &&
+      Boolean(provisioningStatus?.container_id) &&
+      Boolean(provisioningStatus?.container_fqdn));
+  const isRetryingAutomatically = provisioningStatus?.status === "pending";
 
   useEffect(() => {
     const interval = window.setInterval(() => setElapsed((value) => value + 1), 1000);
@@ -103,7 +106,7 @@ export function LaunchSequence({ outcome }: { outcome: ChannelOutcome }) {
   const tips = provisioningTips(connectedSurfaces);
 
   const timedSteps = STEP_TIMINGS.filter((time) => elapsed >= time).length;
-  const completedSteps = isReady ? 5 : Math.min(timedSteps, 4);
+  const showRetry = isRetryingAutomatically || elapsed > 90;
 
   return (
     <div className="flex w-full max-w-[640px] flex-col items-center text-center">
@@ -118,10 +121,12 @@ export function LaunchSequence({ outcome }: { outcome: ChannelOutcome }) {
       <p className="mb-16 max-w-[440px] text-[15px] leading-relaxed text-ink-muted sm:mb-20">
         {isReady
           ? readySubtitle(connectedSurfaces)
-          : "We’re building your private AI space. This takes about a minute."}
+          : isRetryingAutomatically
+            ? "This is taking longer than expected. We’re retrying automatically."
+            : "We’re building your private AI space. This takes about a minute."}
       </p>
 
-      <ConstellationProgress completedSteps={completedSteps} />
+      <ConstellationProgress isComplete={isReady} litSteps={timedSteps} />
 
       {isReady ? (
         <div className="mt-12 flex flex-col items-center gap-3">
@@ -147,7 +152,7 @@ export function LaunchSequence({ outcome }: { outcome: ChannelOutcome }) {
         </div>
       ) : (
         <>
-          {elapsed > 90 ? (
+          {showRetry ? (
             <div className="mt-6 flex flex-col items-center gap-2">
               <button
                 type="button"
@@ -194,10 +199,6 @@ export function LaunchSequence({ outcome }: { outcome: ChannelOutcome }) {
               ))}
             </div>
           </div>
-
-          <p className="mt-10 font-mono text-[10px] uppercase tracking-[0.15em] text-ink-faint">
-            This usually takes under a minute
-          </p>
         </>
       )}
     </div>

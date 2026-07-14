@@ -2,9 +2,14 @@
 
 import clsx from "clsx";
 
-type NodeState = "complete" | "active" | "pending";
+type NodeState = "complete" | "lit" | "pending";
 
 const LABELS = ["Private space", "AI model", "Secure links", "Warming up...", "Ready"];
+
+interface ConstellationProgressProps {
+  isComplete: boolean;
+  litSteps: number;
+}
 
 function CheckIcon() {
   return (
@@ -14,11 +19,12 @@ function CheckIcon() {
   );
 }
 
-export function ConstellationProgress({ completedSteps }: { completedSteps: number }) {
+export function ConstellationProgress({ isComplete, litSteps }: ConstellationProgressProps) {
+  const visibleLitSteps = Math.min(Math.max(litSteps, 0), LABELS.length);
+  const latestLitStep = isComplete ? -1 : visibleLitSteps - 1;
   const states: NodeState[] = LABELS.map((_, i) => {
-    if (i < completedSteps) return "complete";
-    if (i === completedSteps) return "active";
-    return "pending";
+    if (isComplete) return "complete";
+    return i < visibleLitSteps ? "lit" : "pending";
   });
 
   return (
@@ -30,12 +36,12 @@ export function ConstellationProgress({ completedSteps }: { completedSteps: numb
             const leftState = states[i];
             const rightState = states[i + 1];
             if (leftState === "complete" && rightState === "complete") {
-              return <div key={i} className="flex-1 h-full bg-[#5dd9d0]/80" />;
+              return <div key={i} className="h-full flex-1 bg-signal/80" />;
             }
-            if (leftState === "complete" && rightState === "active") {
-              return <div key={i} className="flex-1 h-full bg-gradient-to-r from-[#5dd9d0]/80 to-[#c7bfff]/60" />;
+            if (leftState === "lit" && rightState === "lit") {
+              return <div key={i} className="h-full flex-1 bg-accent-hover/60" />;
             }
-            return <div key={i} className="flex-1 h-full border-t-2 border-dashed border-white/15" />;
+            return <div key={i} className="h-full flex-1 border-t-2 border-dashed border-border" />;
           })}
         </div>
       </div>
@@ -50,27 +56,26 @@ export function ConstellationProgress({ completedSteps }: { completedSteps: numb
                 className={clsx(
                   "flex items-center justify-center rounded-full transition-all duration-500",
                   "w-8 h-8 sm:w-10 sm:h-10",
-                  state === "complete" && "bg-[#5dd9d0] text-[#003734] shadow-[0_0_16px_rgba(93,217,208,0.4)]",
-                  state === "active" && "bg-[#c7bfff] shadow-[0_0_20px_rgba(199,191,255,0.4)] animate-[pulseNode_2s_ease-out_infinite]",
-                  state === "pending" && "border-2 border-white/20 bg-transparent",
+                  state === "complete" && "glow-signal bg-signal text-bg",
+                  state === "lit" && "glow-purple bg-accent-hover",
+                  state === "lit" && i === latestLitStep && "animate-[pulseNode_2s_ease-out_infinite]",
+                  state === "pending" && "border-2 border-border-strong bg-transparent",
                 )}
+                aria-label={`${label}: ${state === "complete" ? "complete" : state === "lit" ? "in progress" : "waiting"}`}
+                role="img"
               >
                 {state === "complete" && <CheckIcon />}
-                {state === "active" && <div className="w-2 h-2 sm:w-2.5 sm:h-2.5 rounded-full bg-white" />}
+                {state === "lit" && <div className="h-2 w-2 rounded-full bg-white sm:h-2.5 sm:w-2.5" />}
               </div>
               <span
                 className={clsx(
                   "font-mono text-[8px] sm:text-[10px] uppercase tracking-wider whitespace-nowrap",
-                  state === "complete" && "text-[#5dd9d0]/90",
-                  state === "active" && "text-[#c7bfff]",
-                  state === "pending" && "text-white/30",
+                  state === "complete" && "text-signal-text",
+                  state === "lit" && "text-accent-hover",
+                  state === "pending" && "text-ink-faint",
                 )}
               >
-                {state === "active" && i === completedSteps
-                  ? label
-                  : i < completedSteps
-                    ? LABELS[i]
-                    : label}
+                {label}
               </span>
             </div>
           );
