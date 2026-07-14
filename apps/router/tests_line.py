@@ -413,6 +413,15 @@ class CronDeliveryChannelRoutingTest(TestCase):
         user, _ = self._user_tenant("routing_tg", telegram_chat_id=456)
         self.assertEqual(view._resolve_channel(user), "telegram")
 
+    def test_resolve_channel_line_when_only_line(self):
+        view = self._get_view()
+        # No device, no Telegram → a line-only user (the cohort LINE delivery
+        # still exists for) resolves LINE. Pins step 3 of the fallback so the
+        # LINE send path can never be shadowed out of coverage by the
+        # telegram-first reorder.
+        user, _ = self._user_tenant("routing_line", line_user_id="U_456")
+        self.assertEqual(view._resolve_channel(user), "line")
+
     def test_resolve_channel_none_when_unlinked(self):
         # A genuinely unlinked user — no Telegram/LINE AND no registered iOS
         # device — has no delivery surface, so the channel is None.

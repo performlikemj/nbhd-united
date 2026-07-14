@@ -458,6 +458,43 @@ class CronDeliveryRecordsProactiveOutboundTest(_TenantFixture):
         self.assertEqual(row.job_name, "Morning Briefing")
         self.assertEqual(row.parsed_items, ["one", "two"])
 
+    @override_settings(LINE_CHANNEL_ACCESS_TOKEN="line-token")
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_line_send_records_outbound_for_line_only_user(self, mock_client_cls):
+        # LINE-ONLY user (fixture links both; drop Telegram here). The resolver is
+        # app → telegram → line, so the cron LINE leg is reached by LINKAGE alone.
+        # Pins _send_via_line end-to-end: without this, a telegram-first fallback
+        # can shadow the LINE send out of coverage entirely and nothing fails.
+        self.user.telegram_chat_id = None
+        self.user.save(update_fields=["telegram_chat_id"])
+
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sentMessages": [{"id": "1"}]}
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        resp = self.client.post(
+            self.url,
+            {"message": "Evening:\n- one\n- two"},
+            format="json",
+            **self._headers(job_name="Evening Digest"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("api.line.me", mock_http.post.call_args.args[0])
+
+        rows = list(ProactiveOutbound.objects.filter(tenant=self.tenant))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.channel, "line")
+        self.assertEqual(row.channel_user_id, self.user.line_user_id)
+        self.assertEqual(row.job_name, "Evening Digest")
+        self.assertEqual(row.parsed_items, ["one", "two"])
+
     @patch("apps.router.cron_delivery.httpx.Client")
     def test_failed_send_does_not_record(self, mock_client_cls):
         mock_http = MagicMock()
