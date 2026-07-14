@@ -6139,6 +6139,37 @@ class RestDaysRuntimeTests(TestCase):
         self.assertTrue(today_entries)
         self.assertNotIn("rest", [w.get("status") for w in today_entries])  # real row wins, no rest dup
 
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_guidance_rest_day_not_already_on_calendar(self, mock_invoke):
+        """On a pure programmed rest day the guidance must say REST — never the
+        'already on the calendar … deliver the planned session' branch, which
+        would instruct the agent to push a session onto a rest day (the exact
+        product harm this feature exists to prevent)."""
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._rest_today_plan()
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        guidance = resp.data["guidance"]
+        self.assertIn("programmed rest day", guidance)
+        self.assertIn("Do NOT propose or deliver a training session", guidance)
+        self.assertNotIn("already on the calendar", guidance)
+        self.assertNotIn("deliver the planned session", guidance)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_guidance_real_row_keeps_existing_branch(self, mock_invoke):
+        """A real row today (training day) keeps the existing 'already on the
+        calendar' guidance verbatim — the rest branch fires only when EVERY
+        today entry is a rest stub."""
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._rest_today_plan()
+        today = today_in_tenant_tz(self.tenant)
+        Workout.objects.create(
+            tenant=self.tenant, date=today, status="planned", category="strength", activity="Leg Day"
+        )
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        guidance = resp.data["guidance"]
+        self.assertIn("already on the calendar", guidance)
+        self.assertNotIn("programmed rest day —", guidance)
+
 
 class RestDaysCalendarTests(TestCase):
     """Track B4 — day-level rest flags in the calendar payload."""

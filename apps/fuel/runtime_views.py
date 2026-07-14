@@ -2041,6 +2041,23 @@ def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list, a
             "Workout IDs are already in this response — do NOT call nbhd_fuel_summary "
             "just to retrieve them."
         )
+    elif today_plan.get("workouts") and all(w.get("status") == "rest" for w in today_plan["workouts"]):
+        # Pure programmed rest day: today_plan.workouts holds only the injected
+        # rest stub(s), no real Workout row. Without this branch the generic
+        # "already on the calendar … deliver the planned session" wording below
+        # would fire — instructing the agent to push a session onto a rest day,
+        # the exact harm rest days exist to prevent. The injection sites already
+        # guarantee rest stubs never coexist with a real row on the same date,
+        # but the every-entry-is-rest predicate is the safe gate regardless:
+        # any real row present routes to the existing branch below.
+        base = (
+            "Today is a programmed rest day — part of the user's plan, not a gap "
+            "and not a missed session. Do NOT propose or deliver a training "
+            "session; acknowledge the rest day and support recovery. If the user "
+            "explicitly wants to train anyway, help — but frame it as their "
+            "choice against a planned rest day. (Rest entries also appear in "
+            "next_14d_workouts with status 'rest'.)"
+        )
     elif today_plan.get("workouts"):
         base = (
             "A workout is already on the calendar for today (today_plan.workouts, also "
