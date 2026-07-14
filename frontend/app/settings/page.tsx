@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 import { PendingConfigChip } from "@/components/pending-config-chip";
@@ -665,6 +666,50 @@ export default function SettingsPage() {
                   </div>
                 </div>
               )}
+            </div>
+
+            {/* Telegram — read-only status; connect/unlink lives on Integrations */}
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">Telegram</dt>
+              <dd className="mt-1">
+                {me.telegram_chat_id ? (
+                  <span className="break-words text-base text-ink">
+                    {me.telegram_username ? `@${me.telegram_username}` : "Connected"}
+                  </span>
+                ) : (
+                  <div className="space-y-2">
+                    <StatusPill status="pending" />
+                    <Link
+                      href="/settings/integrations"
+                      className="inline-flex rounded-full border border-border-strong px-3 py-1.5 text-xs text-ink hover:border-border transition min-h-[44px] items-center"
+                    >
+                      Connect Telegram
+                    </Link>
+                  </div>
+                )}
+              </dd>
+            </div>
+
+            {/* LINE — read-only status; connect/unlink lives on Integrations */}
+            <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">
+              <dt className="font-mono text-[11px] uppercase tracking-[0.14em] text-ink-muted">LINE</dt>
+              <dd className="mt-1">
+                {me.line_user_id ? (
+                  <span className="break-words text-base text-ink">
+                    {me.line_display_name || "Connected"}
+                  </span>
+                ) : (
+                  <div className="space-y-2">
+                    <StatusPill status="pending" />
+                    <Link
+                      href="/settings/integrations"
+                      className="inline-flex rounded-full border border-border-strong px-3 py-1.5 text-xs text-ink hover:border-border transition min-h-[44px] items-center"
+                    >
+                      Connect LINE
+                    </Link>
+                  </div>
+                )}
+              </dd>
             </div>
 
             {/* Tenant */}
