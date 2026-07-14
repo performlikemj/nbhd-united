@@ -299,7 +299,7 @@ def _compute_unread_count(user) -> int | None:
                 status=AppChatMessage.Status.READY,
                 replied_at__gt=cursor,
             )
-            .exclude(reply_text="")
+            .exclude(reply_text="")  # noqa: encrypted-predicate
             .count()
         )
         # ``notified_at`` is set only when an APNs push was fired for the row, so
