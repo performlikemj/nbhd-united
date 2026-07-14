@@ -509,3 +509,84 @@ class CronDeliveryRecordsProactiveOutboundTest(_TenantFixture):
 
         self.client.post(self.url, {"message": "anything"}, format="json", **self._headers())
         self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 0)
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    NBHD_DISABLE_BACKGROUND_THREADS=True,
+)
+class CronDeliveryAppChannelIsDurableTest(_TenantFixture):
+    """On the app channel the ProactiveOutbound row IS the delivery (it produces
+    the APNs push and the ``?since=`` feed entry) — not an audit trail of a send
+    that already happened elsewhere.
+
+    ``record_proactive_outbound`` swallows write failures and returns None BY
+    DESIGN ("losing the audit row is a smaller wrong than 500ing the cron tool
+    call"), which is correct for telegram/line. On app that same best-effort
+    write would let the view answer 200 "sent" while delivering NOTHING, and the
+    cron would never retry. So the row is persisted BEFORE the response and the
+    response is gated on it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.router.models import DeviceToken
+
+        # iOS-only user: drop both messaging links and register a device so
+        # resolve_user_channel (app → telegram → line) picks "app".
+        self.user.telegram_chat_id = None
+        self.user.line_user_id = None
+        self.user.save(update_fields=["telegram_chat_id", "line_user_id"])
+        DeviceToken.objects.create(tenant=self.tenant, user=self.user, token="d" * 64)
+        self.client = APIClient()
+        self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"
+        _rate_counts.clear()
+
+    def _headers(self, job_name: str | None = None):
+        h = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+        if job_name:
+            h["HTTP_X_NBHD_JOB_NAME"] = job_name
+        return h
+
+    @patch("apps.router.proactive_context._dispatch_ios_push")
+    def test_app_send_persists_row_then_returns_200(self, _push):
+        resp = self.client.post(
+            self.url,
+            {"message": "Morning:\n- one\n- two\n[[journal-link: daily|2026-07-14|Morning Report]]"},
+            format="json",
+            **self._headers(job_name="Morning Briefing"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["channel"], "app")
+
+        rows = list(ProactiveOutbound.objects.filter(tenant=self.tenant))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.channel, "app")
+        self.assertEqual(row.channel_user_id, str(self.user.id))
+        self.assertEqual(row.job_name, "Morning Briefing")
+        self.assertEqual(row.parsed_items, ["one", "two"])
+        # The journal deep-link still rides the app row (the chip the ?since=
+        # feed renders) — it must survive the record-before-respond reorder.
+        self.assertEqual(
+            row.journal_link,
+            {"kind": "daily", "slug": "2026-07-14", "title": "Morning Report"},
+        )
+        self.assertNotIn("journal-link", row.message_text)
+        # Counted against the runaway-cron cap exactly once.
+        self.assertEqual(len(_rate_counts.get(str(self.tenant.id), [])), 1)
+
+    @patch("apps.router.proactive_context.record_proactive_outbound", return_value=None)
+    def test_app_row_write_failure_returns_retryable_5xx_not_200(self, mock_record):
+        # The row write lost, so NOTHING was delivered. The view must not claim
+        # success — it must hand QStash a retryable 5xx so the cron runs again.
+        resp = self.client.post(self.url, {"message": "anything"}, format="json", **self._headers())
+
+        mock_record.assert_called_once()
+        self.assertGreaterEqual(resp.status_code, 500)
+        self.assertEqual(resp.json()["error"], "app_delivery_not_recorded")
+        # A delivery that never happened must not burn the hourly budget.
+        self.assertEqual(_rate_counts.get(str(self.tenant.id), []), [])

@@ -221,6 +221,10 @@ class CronDeliveryView(APIView):
 
         log_ascii_chart_leak(message_text, tenant_id=tenant.id, channel=f"cron_{channel}")
 
+        from apps.router.proactive_context import record_proactive_outbound
+
+        job_name = request.headers.get("X-NBHD-Job-Name", "")
+
         # Route to appropriate channel
         if channel == "line":
             channel_user_id = tenant.user.line_user_id or ""
@@ -233,12 +237,47 @@ class CronDeliveryView(APIView):
                 excerpt_override=placeholder_message_text,
             )
         elif channel == "app":
-            # iOS-only user: there's no Telegram/LINE chat to send to. The APNs
-            # push + the ?since= feed row ARE the delivery — both produced by
-            # record_proactive_outbound below. Use the user id as the stable
-            # per-user app identifier.
+            # iOS-only user: there's no Telegram/LINE chat to send to — the
+            # ProactiveOutbound row (the APNs push + the ?since= feed row it
+            # produces) IS the delivery, not an audit trail of one that already
+            # happened. So it has to be PERSISTED before we claim success.
+            #
+            # record_proactive_outbound swallows write failures and returns None
+            # by design ("losing the audit row is a smaller wrong than 500ing the
+            # cron tool call"). That trade is right for telegram/line — the send
+            # already reached the user — but on app it would answer 200 "sent"
+            # while delivering absolutely nothing. So record FIRST and gate the
+            # response on the row: a lost write returns a retryable 5xx and QStash
+            # runs the cron again.
             channel_user_id = str(tenant.user_id)
-            resp = Response({"status": "sent", "channel": "app"})
+            row = record_proactive_outbound(
+                tenant=tenant,
+                channel=channel,
+                channel_user_id=channel_user_id,
+                # Placeholder-space at rest; record_proactive_outbound rehydrates
+                # only for the owner-facing iOS push it fires.
+                message_text=placeholder_message_text,
+                job_name=job_name,
+                # Parsed "View in Journal" deep-link (placeholder-space title);
+                # the ?since= feed rehydrates + renders it as a chip. None when
+                # the send carried no marker.
+                journal_link=journal_link,
+            )
+            if row is None:
+                logger.error(
+                    "Cron delivery (app): ProactiveOutbound write failed for tenant %s — "
+                    "nothing was delivered; returning 503 so the cron retries",
+                    tid,
+                )
+                return Response(
+                    {
+                        "error": "app_delivery_not_recorded",
+                        "detail": "Could not persist the app-feed row; nothing was delivered.",
+                    },
+                    status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            _record_send(tid)
+            return Response({"status": "sent", "channel": "app"})
         else:
             channel_user_id = str(tenant.user.telegram_chat_id or "")
             resp = self._send_via_telegram(
@@ -248,19 +287,20 @@ class CronDeliveryView(APIView):
                 parse_mode=parse_mode,
             )
 
-        # Count every successful send against the per-tenant hourly cap. Done
-        # here (not per-branch) so the runaway-loop throttle covers ALL channels
-        # uniformly — including the app channel, whose inline 2xx Response never
-        # passes through _send_via_telegram/_send_via_line.
+        # Telegram/LINE only from here — the app channel recorded, counted and
+        # returned above (its row IS the delivery, so it can't be best-effort).
+
+        # Count every successful send against the per-tenant hourly cap, so the
+        # runaway-loop throttle covers all channels uniformly.
         if 200 <= resp.status_code < 300:
             _record_send(tid)
 
         # Record the outbound for thread-continuity on the next inbound.
         # This is the deterministic replacement for the LLM-mediated
         # ``_phase2_sync_block`` path — see apps.router.proactive_context.
+        # Best-effort here BY DESIGN: the message already reached the user on
+        # telegram/line, so a lost row must not 5xx a delivery that happened.
         if 200 <= resp.status_code < 300 and channel_user_id:
-            from apps.router.proactive_context import record_proactive_outbound
-
             record_proactive_outbound(
                 tenant=tenant,
                 channel=channel,
@@ -268,7 +308,7 @@ class CronDeliveryView(APIView):
                 # Placeholder-space at rest; record_proactive_outbound rehydrates
                 # only for the owner-facing iOS push it fires.
                 message_text=placeholder_message_text,
-                job_name=request.headers.get("X-NBHD-Job-Name", ""),
+                job_name=job_name,
                 # Parsed "View in Journal" deep-link (placeholder-space title);
                 # the ?since= feed rehydrates + renders it as a chip. None when
                 # the send carried no marker.

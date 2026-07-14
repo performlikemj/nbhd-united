@@ -3,7 +3,7 @@
 For one-off system notices that are NOT an LLM turn — e.g. "your model was
 switched because the free promo ended". Routes via the canonical, app-first
 ``resolve_user_channel`` (apps/router/cron_delivery.py): the app when an iOS
-device is registered, else LINE, else Telegram, else nowhere. When the resolved
+device is registered, else Telegram, else LINE, else nowhere. When the resolved
 channel is the app there is no chat to push to, so delivery is a
 ``ProactiveOutbound`` row (which fires the APNs wake-push + writes the ?since=
 feed row) — otherwise a platform notice to a token-holding user would silently
@@ -47,7 +47,7 @@ def _resolve_channel(user) -> str | None:
     """App-first channel resolution, shared with the cron / proactive senders.
 
     Delegates to ``resolve_user_channel`` so system notices route identically:
-    app when an iOS device is registered, else LINE, else Telegram, else None.
+    app when an iOS device is registered, else Telegram, else LINE, else None.
     ``preferred_channel`` is intentionally not consulted (see resolve_user_channel).
     """
     from apps.router.cron_delivery import resolve_user_channel
