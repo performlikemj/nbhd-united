@@ -2,10 +2,13 @@
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 from django.test import TestCase, override_settings
 
 from apps.router.poller import TelegramPoller
 from apps.tenants.models import Tenant
+
+_FAKE_BOT_TOKEN = "123456789:AAH_Fake-Token_value_000111222333444"  # noqa: S105
 
 
 @override_settings(
@@ -36,6 +39,69 @@ class TelegramPollerInitTest(TestCase):
         poller._delete_webhook()
         mock_post.assert_called_once()
         self.assertIn("deleteWebhook", mock_post.call_args[0][0])
+
+    @patch("apps.router.poller.time.sleep")
+    @patch("apps.router.poller.httpx.Client")
+    @patch("apps.router.poller.TelegramPoller._install_signal_handlers")
+    @patch("apps.router.poller.TelegramPoller._delete_webhook")
+    @patch("apps.crypto.prewarm.start_prewarm_thread")
+    def test_expected_get_updates_409_logs_concise_warning_without_traceback(
+        self,
+        _prewarm,
+        _delete_webhook,
+        _signals,
+        mock_client_cls,
+        mock_sleep,
+    ):
+        request = httpx.Request(
+            "POST",
+            f"https://api.telegram.org/bot{_FAKE_BOT_TOKEN}/getUpdates",
+        )
+        response = httpx.Response(409, request=request)
+        conflict = httpx.HTTPStatusError(
+            "Telegram conflict",
+            request=request,
+            response=response,
+        )
+        poller = TelegramPoller()
+        calls = 0
+
+        def get_updates():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise conflict
+            poller.stop()
+            return []
+
+        poller._get_updates = get_updates
+        mock_client_cls.return_value = MagicMock()
+
+        with self.assertLogs("apps.router.poller", level="WARNING") as captured:
+            poller.start()
+
+        rendered = "\n".join(captured.output)
+        self.assertIn("status=409 endpoint=/getUpdates", rendered)
+        self.assertNotIn(_FAKE_BOT_TOKEN, rendered)
+        self.assertNotIn("HTTPStatusError", rendered)
+        mock_sleep.assert_called_once_with(1)
+
+    def test_expected_conflict_classifier_is_narrow(self):
+        cases = (
+            (409, "https://example.com/bot-placeholder/getUpdates"),
+            (409, "http://api.telegram.org/bot-placeholder/getUpdates"),
+            (500, "https://api.telegram.org/bot-placeholder/getUpdates"),
+            (409, "https://api.telegram.org/bot-placeholder/sendMessage"),
+        )
+        for status, url in cases:
+            with self.subTest(status=status, url=url):
+                request = httpx.Request("POST", url)
+                exc = httpx.HTTPStatusError(
+                    "unexpected",
+                    request=request,
+                    response=httpx.Response(status, request=request),
+                )
+                self.assertFalse(TelegramPoller._is_expected_get_updates_conflict(exc))
 
 
 @override_settings(
@@ -442,8 +508,9 @@ class TelegramPollerForwardTest(TestCase):
         # Time header is injected before the user message
         self.assertIn("[Now: ", content)
         # Conversational-turn marker tells the agent to skip the heavy
-        # AGENTS.md auto-context-load (huge for cold-start BYO Claude).
-        self.assertIn("[chat:", content)
+        # AGENTS.md auto-context-load (huge for cold-start BYO Claude) AND
+        # names the active channel so the agent doesn't assume Telegram blindly.
+        self.assertIn("[chat via Telegram:", content)
         self.assertTrue(content.endswith("hi there"))
 
         # Verify AI response was relayed back via Telegram Bot API
@@ -493,12 +560,14 @@ class TelegramPollerForwardTest(TestCase):
         msg = PendingMessage.objects.filter(tenant=self.tenant).order_by("-created_at").first()
         self.assertIsNotNone(msg)
         self.assertNotIn("[Now:", msg.user_text)
-        self.assertNotIn("[chat:", msg.user_text)
+        # "[chat" (no colon) so the guard still bites now that the marker is
+        # channel-stamped ("[chat via Telegram: ...").
+        self.assertNotIn("[chat", msg.user_text)
         self.assertEqual(msg.user_text, "what time is my next meeting?")
         # The agent-facing payload still has the markers — the queue is
         # dumb and forwards the prepared text verbatim.
         self.assertIn("[Now:", msg.payload["message_text"])
-        self.assertIn("[chat:", msg.payload["message_text"])
+        self.assertIn("[chat via Telegram:", msg.payload["message_text"])
 
     @patch("apps.router.pending_queue.httpx.post")
     def test_pending_user_text_strips_system_update_framing(self, mock_post):

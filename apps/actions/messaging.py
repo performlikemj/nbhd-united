@@ -308,37 +308,65 @@ _SENDERS = {
 }
 
 
+def _resolve_gate_channel(user) -> str | None:
+    """Resolve the channel for an INTERACTIVE gate confirmation.
+
+    Deliberately NOT ``resolve_user_channel`` (which is now app-first): a gate
+    needs an actionable approve/deny surface, and those handlers exist ONLY in
+    the Telegram poller and LINE webhook — there is no in-app gate UI this cycle.
+    So gate delivery resolves to a LINKED MESSAGING channel (Telegram first,
+    then LINE) or fails fast; the app channel is never a gate target.
+
+    Linked-Telegram-first (matching ``resolve_user_channel``'s messaging
+    fallback) because it preserves prior behavior for the only both-linked cohort
+    in production: the old resolver honoured ``preferred_channel`` (universally
+    the "telegram" default), so a user with BOTH channels linked has always
+    received gate buttons on Telegram — flipping them to LINE would silently move
+    the approval surface out from under an active Telegram user. LINE next covers
+    line-only users.
+
+    This is the load-bearing exception to the app-first outbound routing: a
+    token-holding user who ALSO has Telegram linked (e.g. MJ) still gets gate
+    buttons on Telegram rather than hitting the app dead-end where the action
+    would silently expire with no prompt ever delivered. ``preferred_channel`` is
+    ignored for the same reason it is in ``resolve_user_channel`` (production noise
+    — every row is the schema default).
+    """
+    if getattr(user, "telegram_chat_id", None):
+        return "telegram"
+    if getattr(user, "line_user_id", None):
+        return "line"
+    return None
+
+
 def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
     """Send a confirmation prompt to the user on their delivery channel.
 
-    Resolves the channel via ``resolve_user_channel`` (the same logic the cron /
-    proactive senders use) rather than reading ``preferred_channel`` directly.
-    ``preferred_channel`` defaults to ``"telegram"`` even for iOS-only App Store
-    users (who have a ``DeviceToken`` but no ``telegram_chat_id``/``line_user_id``),
-    so reading it directly would route an iOS-only user to the Telegram sender,
-    which fails deep with a misleading "no Telegram chat_id" log while the action
-    silently expires with no prompt ever delivered.
+    Resolves the channel via ``_resolve_gate_channel`` (LINKED Telegram/LINE
+    only) rather than the app-first ``resolve_user_channel`` used for plain
+    proactive sends. Gates need an interactive approve/deny surface, which today
+    exists only in the Telegram poller and LINE webhook — there is no in-app gate
+    UI — so a token-holding user with a linked messaging channel still gets the
+    buttons there, and a genuinely iOS-only user (DeviceToken but no Telegram/LINE)
+    fails fast instead of hitting a dead end.
 
     Returns ``True`` if the confirmation was dispatched to a real channel,
-    ``False`` when no deliverable channel exists (iOS-only / no surface).
+    ``False`` when no deliverable (messaging) channel exists (iOS-only / no surface).
     The caller can use the return value to decide whether to return HTTP 202
     "pending" (real channel) or indicate "undeliverable" (no channel).
 
-    There is currently no in-app gate surface (approve/deny handlers exist only in
-    the Telegram poller and LINE webhook), so when no Telegram/LINE channel is
-    linked we cannot deliver an actionable confirmation. Rather than fail silently,
-    log a clear, explicit warning so the no-surface case is visible and diagnosable.
+    When no Telegram/LINE channel is linked we cannot deliver an actionable
+    confirmation. Rather than fail silently, log a clear, explicit warning so the
+    no-surface case is visible and diagnosable.
     """
-    from apps.router.cron_delivery import resolve_user_channel
-
-    channel = resolve_user_channel(tenant.user)
+    channel = _resolve_gate_channel(tenant.user)
     sender, _ = _SENDERS.get(channel, (None, None))
 
     if not sender:
-        # ``channel`` is "app" (iOS-only DeviceToken user) or None (no surface).
-        # No actionable in-app gate path exists yet — return False so the caller
-        # can surface the undeliverable state instead of leaving the action to
-        # silently expire.
+        # ``channel`` is None — no linked Telegram/LINE surface (iOS-only or
+        # nothing linked at all). No actionable in-app gate path exists yet —
+        # return False so the caller can surface the undeliverable state instead
+        # of leaving the action to silently expire.
         logger.warning(
             "Cannot deliver gate confirmation for action %s (tenant %s): "
             "no Telegram/LINE channel for resolved channel %r — action will "

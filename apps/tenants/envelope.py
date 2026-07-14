@@ -9,6 +9,31 @@ from __future__ import annotations
 from apps.orchestrator.envelope_registry import register_section
 from apps.tenants.models import Tenant, User
 
+# Agent-facing labels for the resolved delivery channel. Mirrors the marker
+# labels in apps/router/services.py (_CHANNEL_LABELS) so the Profile block and
+# the per-turn "[chat via …]" stamp name the same surface the same way.
+_DELIVERY_CHANNEL_LABELS = {
+    "app": "NBHD app",
+    "telegram": "Telegram",
+    "line": "LINE",
+}
+
+
+def _resolve_delivery_channel_label(user) -> str:
+    """Human label for the channel outbound messages actually go to, or ``""``.
+
+    Fail-open: any resolver error degrades to omitting the line rather than
+    risking a wrong channel in the agent's context (the whole point of this
+    change) or breaking the USER.md render.
+    """
+    try:
+        from apps.router.cron_delivery import resolve_user_channel
+
+        channel = resolve_user_channel(user)
+    except Exception:
+        return ""
+    return _DELIVERY_CHANNEL_LABELS.get(channel or "", "")
+
 
 @register_section(
     key="profile",
@@ -22,8 +47,22 @@ def render_profile(tenant: Tenant) -> str:
 
     Default values (``display_name="Friend"``, ``timezone="UTC"``,
     ``language="en"``) are suppressed so the block stays short.
-    ``preferred_channel`` always renders because it's load-bearing for
-    routing/formatting decisions.
+
+    The channel line renders the RESOLVED delivery channel, never the raw
+    ``preferred_channel`` column. ``preferred_channel`` is the untouched schema
+    default (``"telegram"``) on essentially every row, so rendering it asserted
+    "Preferred channel: telegram" into the agent-visible context of iOS-only
+    tenants who never linked Telegram — the exact falsehood the channel-identity
+    fix exists to kill. We delegate to ``resolve_user_channel`` (the single
+    source of truth the outbound senders route on) rather than duplicating the
+    rule, so this line automatically inherits any correction to that resolver.
+    When it returns None (no delivery surface at all) the line is omitted —
+    printing nothing beats printing a falsehood.
+
+    The ``apps.router`` import is function-local: ``apps.router.cron_delivery``
+    imports ``apps.tenants.models`` at module scope, and this module is imported
+    during envelope-registry setup. A local import matches the established
+    tenants→router pattern (see ``apps/tenants/emails.py``, ``line_views.py``).
     """
     user = getattr(tenant, "user", None)
     if user is None:
@@ -39,9 +78,9 @@ def render_profile(tenant: Tenant) -> str:
     if user_tz and user_tz != "UTC":
         lines.append(f"- Timezone: {user_tz}")
 
-    preferred_channel = (getattr(user, "preferred_channel", "") or "").strip()
-    if preferred_channel:
-        lines.append(f"- Preferred channel: {preferred_channel}")
+    delivery_channel = _resolve_delivery_channel_label(user)
+    if delivery_channel:
+        lines.append(f"- Delivery channel: {delivery_channel}")
 
     language = (getattr(user, "language", "") or "").strip()
     if language and language != "en":

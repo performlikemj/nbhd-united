@@ -1,9 +1,13 @@
 """Platform-initiated plain-text notifications to a tenant's chat channel.
 
 For one-off system notices that are NOT an LLM turn — e.g. "your model was
-switched because the free promo ended". Routes to the tenant's preferred channel
-(Telegram or LINE), falling back to whichever is linked. Mirrors the channel
-selection in apps/lessons/notifications.py and apps/router/cron_delivery.py.
+switched because the free promo ended". Routes via the canonical, app-first
+``resolve_user_channel`` (apps/router/cron_delivery.py): the app when an iOS
+device is registered, else Telegram, else LINE, else nowhere. When the resolved
+channel is the app there is no chat to push to, so delivery is a
+``ProactiveOutbound`` row (which fires the APNs wake-push + writes the ?since=
+feed row) — otherwise a platform notice to a token-holding user would silently
+vanish once outbound routing became app-first.
 
 The text here is platform-authored and carries no tenant PII, so (unlike the
 lesson / gate senders, which echo user content) no rehydration is applied.
@@ -29,6 +33,8 @@ def send_system_notification(tenant: Tenant, message: str) -> bool:
     tenant has no linked channel or the send failed.
     """
     channel = _resolve_channel(tenant.user)
+    if channel == "app":
+        return _send_app(tenant, message)
     if channel == "telegram":
         return _send_telegram(tenant, message)
     if channel == "line":
@@ -38,21 +44,37 @@ def send_system_notification(tenant: Tenant, message: str) -> bool:
 
 
 def _resolve_channel(user) -> str | None:
-    """Honour ``preferred_channel`` if that channel is linked, else fall back to
-    whichever one is."""
-    preferred = getattr(user, "preferred_channel", "telegram") or "telegram"
-    line_user_id = getattr(user, "line_user_id", None)
-    telegram_chat_id = getattr(user, "telegram_chat_id", None)
+    """App-first channel resolution, shared with the cron / proactive senders.
 
-    if preferred == "line" and line_user_id:
-        return "line"
-    if preferred == "telegram" and telegram_chat_id:
-        return "telegram"
-    if line_user_id:
-        return "line"
-    if telegram_chat_id:
-        return "telegram"
-    return None
+    Delegates to ``resolve_user_channel`` so system notices route identically:
+    app when an iOS device is registered, else Telegram, else LINE, else None.
+    ``preferred_channel`` is intentionally not consulted (see resolve_user_channel).
+    """
+    from apps.router.cron_delivery import resolve_user_channel
+
+    return resolve_user_channel(user)
+
+
+def _send_app(tenant: Tenant, message: str) -> bool:
+    """App-preferred user (iOS device registered): there's no Telegram/LINE chat
+    to push to. Recording a ``ProactiveOutbound`` row IS the delivery — the single
+    chokepoint that fires the APNs wake-push and writes the ?since= feed row the
+    app drains. Without this branch a platform notice (e.g. a model-health switch)
+    to a token-holding user would silently vanish now that routing is app-first.
+    The text is platform-authored and PII-free, so it stores as-is."""
+    from apps.router.proactive_context import record_proactive_outbound
+
+    user = getattr(tenant, "user", None)
+    if user is None:
+        return False
+    row = record_proactive_outbound(
+        tenant=tenant,
+        channel="app",
+        channel_user_id=str(getattr(user, "id", "") or ""),
+        message_text=message,
+        job_name="_system_notify",
+    )
+    return row is not None
 
 
 def _send_telegram(tenant: Tenant, message: str) -> bool:

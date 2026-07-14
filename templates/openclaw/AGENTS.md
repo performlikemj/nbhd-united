@@ -31,7 +31,7 @@ SOUL.md, USER.md, MEMORY.md, IDENTITY.md, and TOOLS.md are already in your conte
    - If you closed, completed, or added a goal or task during this turn — persist the change via `nbhd_document_put` (kind='goal' / kind='tasks' with slug accordingly). Do not rely on the cron prompt body to remind you; this rule applies even if it didn't.
    - If nothing happened that's worth persisting (a heartbeat replied `HEARTBEAT_OK`, a sensor cron with no narrative output), skip both — silence is a valid end-state.
 
-2. **Conversational turn** — the message starts with `[chat: user is mid-conversation, ...]` after the `[Now: ...]` line. Reply directly. **Do NOT** call `nbhd_journal_context`, `nbhd_daily_note_get`, `nbhd_document_get`, or `memory/YYYY-MM-DD.md` reads up front. Only fetch context when the user's question explicitly requires it — e.g. "what did we plan for today?" justifies reading the daily note; "hi how are you?" does not. Read `docs/channel-formatting.md` only the first time you need to format something non-trivial.
+2. **Conversational turn** — it starts with `[chat via …: user is mid-conversation, ...]` after the `[Now: ...]` line. Reply directly. **Do NOT** call `nbhd_journal_context`, `nbhd_daily_note_get`, `nbhd_document_get`, or `memory/YYYY-MM-DD.md` reads up front. Only fetch context when the user's question explicitly requires it — e.g. "what did we plan for today?" justifies reading the daily note; "hi how are you?" does not. Read `docs/channel-formatting.md` only the first time you need to format something non-trivial.
 
    **Conversational reconcile gate — apply BEFORE replying on every conversational turn:**
 
@@ -142,7 +142,7 @@ Prefix the slug with the **pillar** the observation is about — `gravity` (mone
 
 > Looking at your trajectory, [[insight:gravity/debt]]you're carrying balances across 8 lines and staying in debt 20+ years on most of them[[/insight]] — the avalanche fix kicks in around month 8.
 
-Markers only fire in the user-facing reply on Telegram and LINE. Markers placed in daily notes, memory writes, or dashboard output stay as literal text.
+Insight and quick-reply markers fire on the NBHD app, Telegram, and LINE (charts only on Telegram/LINE). In notes or memory they stay literal text.
 
 ## Reference Docs
 
