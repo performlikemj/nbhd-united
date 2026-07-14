@@ -384,6 +384,11 @@ class CronDeliveryChannelRoutingTest(TestCase):
     def test_resolve_channel_prefers_telegram_when_linked(self):
         view = self._get_view()
         user = MagicMock()
+        # Pin the mock as tenant-less: resolve checks tenant.is_eval_sink BEFORE
+        # preferred_channel, and a bare MagicMock auto-fabricates that attribute
+        # as truthy — which would route every mocked user to 'eval'. The same
+        # pin is repeated below for each mocked user in this class.
+        user.tenant = None
         user.preferred_channel = "telegram"
         user.telegram_chat_id = 123
         user.line_user_id = "U_123"
@@ -392,6 +397,7 @@ class CronDeliveryChannelRoutingTest(TestCase):
     def test_resolve_channel_prefers_line_when_linked(self):
         view = self._get_view()
         user = MagicMock()
+        user.tenant = None
         user.preferred_channel = "line"
         user.line_user_id = "U_123"
         user.telegram_chat_id = 456
@@ -400,6 +406,7 @@ class CronDeliveryChannelRoutingTest(TestCase):
     def test_resolve_channel_falls_back_to_linked(self):
         view = self._get_view()
         user = MagicMock()
+        user.tenant = None
         user.preferred_channel = "telegram"
         user.line_user_id = "U_123"
         user.telegram_chat_id = None
