@@ -274,3 +274,27 @@ Decoupled, MJ-gated, AFTER 07-18 (NOT due 07-18):
 ---
 
 **Build order in one line:** stand up two per-group flag pairs + `_enc` sidecars + CI-guard registrations → dual-write (lock the 3 unlocked Document writers) → clone the chat backfill per group → read-flip through a bulk-aware dual-read helper (decrypt-before-redact in memory_sync) → verify-gated provisioning + generalized converge task → prove on canary+demo by 07-18 → fleet + per-group erase MJ-gated after → Document.markdown+search (blind index or decrypt-scan) and fuel numerics as Phase 3b → friends cross-tenant and the PII map (Phase 4, after #1074) each get their own design.
+
+---
+
+## Decision record (2026-07-14)
+
+MJ's decisions on §8, stamped before PR-1 (`feat/enc-p3-expand`) was implemented:
+
+1. **Decision 1 — search fork: Option A.** `Document.markdown` + `Document.title`
+   are **EXCLUDED from this phase** — they ship in Phase 3b together with the
+   blind index / search-parity work. PR-1 encrypts the rest of the journal group.
+2. **Decision 2 — fuel numeric body-metrics: DEFER to Phase 3b.** `bpm`,
+   `weight_kg`, sleep `duration_hours`/`quality`, `Workout.rpe`/`duration_seconds`
+   stay plaintext this phase (they need the numeric codec + a per-reader
+   aggregation audit). PR-1 covers the fuel **free-text** set only.
+3. **Decision 3 / minor — flag grouping: SHARE.** lessons + insights + core
+   flip under the journal flag pair (`encrypt_journal_writes` /
+   `read_encrypted_journal`); fuel keeps its own pair. (The framing yes — 07-18
+   chat erase stays fixed and Phase 3 is decoupled — is also accepted.)
+
+PR-1 (`feat/enc-p3-expand`) implements exactly this scope: `_enc` sidecars for
+every §1 verdict-NOW column across journal/lessons/insights/core/fuel-free-text
+(EXCLUDING `Document.markdown`/`title` and the fuel numeric metrics), the two
+flag pairs on `Tenant`, per-app `enc_columns.py` constants, and the CI-guard
+registrations. No writer/reader touched; flags default False; deploy is a no-op.

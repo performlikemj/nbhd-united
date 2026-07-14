@@ -113,6 +113,9 @@ class DailyNote(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="daily_notes")
     date = models.DateField()
     markdown = models.TextField(default="")
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.DAILY_NOTE_MARKDOWN``) — ships DARK.
+    # DailyNote is legacy v1 but still live-written (plan §1.1), so it is in scope.
+    markdown_enc = models.BinaryField(null=True)
     template = models.ForeignKey(
         NoteTemplate,
         on_delete=models.SET_NULL,
@@ -236,6 +239,11 @@ class PendingExtraction(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="pending_extractions")
     kind = models.CharField(max_length=16, choices=Kind.choices)
     text = models.TextField()
+    # Encryption-at-rest Phase 3 sidecar — sealed envelope of ``text`` under AAD
+    # ``enc_columns.PENDING_EXTRACTION_TEXT``. Ships DARK (nothing reads/writes it
+    # yet; PR-2 dual-writes behind ``Tenant.encrypt_journal_writes``, PR-4 reads
+    # behind ``read_encrypted_journal``). NULL = not-yet-encrypted; ``b""`` = empty.
+    text_enc = models.BinaryField(null=True)
     tags = models.JSONField(default=list)
     confidence = models.CharField(max_length=8, default="medium")  # high | medium
     source_date = models.DateField(null=True, blank=True)  # date of daily note extracted from
@@ -298,6 +306,10 @@ class Goal(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="goals")
     title = models.CharField(max_length=256)
     description = models.TextField(blank=True, default="")
+    # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
+    # ``enc_columns.GOAL_TITLE`` / ``GOAL_DESCRIPTION``. See PendingExtraction.text_enc.
+    title_enc = models.BinaryField(null=True)
+    description_enc = models.BinaryField(null=True)
     pillar = models.CharField(max_length=32, choices=Pillar.choices, blank=True, default="")
     topic = models.ForeignKey(
         "insights.TopicRegistry",
@@ -394,6 +406,8 @@ class Purpose(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="purposes")
     statement = models.TextField()
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.PURPOSE_STATEMENT``) — ships DARK.
+    statement_enc = models.BinaryField(null=True)
     # List of pillar slugs this purpose spans (see apps.insights.pillars.Pillar).
     # A North Star is usually cross-pillar — that breadth is what distinguishes
     # it from a single-pillar goal.
@@ -404,6 +418,8 @@ class Purpose(models.Model):
     # (e.g. {"kind": "journal", "ref": "2026-06-30", "note": "..."}). Empty for
     # user-created purposes.
     evidence = models.JSONField(default=list, blank=True)
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.PURPOSE_EVIDENCE``, JSON) — ships DARK.
+    evidence_enc = models.BinaryField(null=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)
     retired_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -461,6 +477,10 @@ class Task(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="tasks")
     title = models.CharField(max_length=256)
     description = models.TextField(blank=True, default="")
+    # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
+    # ``enc_columns.TASK_TITLE`` / ``TASK_DESCRIPTION``. See PendingExtraction.text_enc.
+    title_enc = models.BinaryField(null=True)
+    description_enc = models.BinaryField(null=True)
     pillar = models.CharField(max_length=32, choices=Pillar.choices, blank=True, default="")
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
     due_date = models.DateField(null=True, blank=True)
@@ -573,6 +593,8 @@ class PendingTaskAction(models.Model):
     )
 
     evidence = models.TextField(blank=True, default="")
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.PENDING_TASK_ACTION_EVIDENCE``) — ships DARK.
+    evidence_enc = models.BinaryField(null=True)
     source_date = models.DateField()
     before_state = models.JSONField(null=True, blank=True)
 
@@ -607,6 +629,9 @@ class DocumentChunk(models.Model):
     document = models.ForeignKey("journal.Document", on_delete=models.CASCADE, related_name="chunks")
     chunk_index = models.IntegerField()
     text = models.TextField()
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.DOCUMENT_CHUNK_TEXT``) — ships DARK.
+    # The ``embedding`` vector stays plaintext (disclosed residual, plan §7.4).
+    text_enc = models.BinaryField(null=True)
     embedding = VectorField(dimensions=1536)
     source_date = models.DateField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -687,6 +712,9 @@ class DocumentIngestion(models.Model):
     # Human display label: a filename for UPLOAD, the email subject / event title /
     # post title for the P3 sources. Reused by the list + forget rendering.
     original_filename = models.CharField(max_length=255)
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.DOCUMENT_INGESTION_ORIGINAL_FILENAME``) —
+    # ships DARK. ``source_ref`` stays plaintext (it is a source id, not user content).
+    original_filename_enc = models.BinaryField(null=True)
     content_hash = models.CharField(max_length=64, blank=True, default="")
     # Copy of the attachment path — dead after the 24h GC, kept for provenance.
     workspace_path = models.CharField(max_length=255, blank=True, default="")
@@ -745,6 +773,8 @@ class DocumentIngestionArtifact(models.Model):
     object_id = models.CharField(max_length=128)
     destination = models.CharField(max_length=255, blank=True, default="")
     content_excerpt = models.TextField(blank=True, default="")
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.DOCUMENT_INGESTION_ARTIFACT_CONTENT_EXCERPT``) — ships DARK.
+    content_excerpt_enc = models.BinaryField(null=True)
     removal_strategy = models.CharField(max_length=32, blank=True, default="")
     removed_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=255, blank=True, default="")
