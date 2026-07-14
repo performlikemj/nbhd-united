@@ -723,6 +723,31 @@ class Tenant(models.Model):
         help_text="Read chat content back through the *_enc column when present (encryption-at-rest Phase 2).",
     )
 
+    # Encryption-at-rest Phase 3 (expand/contract) — journal-group + fuel content.
+    # Same two-gate shape as the chat pair, one pair per store-group (plan §3.1):
+    #   encrypt_journal_writes / read_encrypted_journal — the journal group PLUS
+    #     lessons + insights + core (they co-feed the USER.md envelope / memory_sync
+    #     and read as one memory surface, so they flip together).
+    #   encrypt_fuel_writes / read_encrypted_fuel — the fuel free-text surface
+    #     (independent envelope/runtime views; its own rollback lever).
+    # All default False; the sidecar *_enc columns ship DARK until PR-2 dual-writes.
+    encrypt_journal_writes = models.BooleanField(
+        default=False,
+        help_text="Dual-write sealed *_enc envelopes for journal/lessons/insights/core content (encryption-at-rest Phase 3).",
+    )
+    read_encrypted_journal = models.BooleanField(
+        default=False,
+        help_text="Read journal/lessons/insights/core content back through the *_enc column when present (encryption-at-rest Phase 3).",
+    )
+    encrypt_fuel_writes = models.BooleanField(
+        default=False,
+        help_text="Dual-write sealed *_enc envelopes for fuel content (encryption-at-rest Phase 3).",
+    )
+    read_encrypted_fuel = models.BooleanField(
+        default=False,
+        help_text="Read fuel content back through the *_enc column when present (encryption-at-rest Phase 3).",
+    )
+
     # Site publishing module — lets the assistant push portfolio images to the
     # subscriber's own website (Azure Blob + Cosmos) via the tenant managed
     # identity. Gated per tenant in config_generator; the plugin self-gates on

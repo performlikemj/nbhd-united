@@ -295,6 +295,56 @@ def provision_tenant(tenant_id: str) -> None:
 
         mint_and_wrap_dek(tenant)
 
+        # Encryption-at-rest Phase 2 — runs immediately after the DEK mint
+        # above (which fail-closed proves a key exists): turn chat encryption
+        # ON for this tenant from here forward. The two model defaults are
+        # False — load-bearing for LEGACY tenants whose plaintext history must
+        # be converged through the staged ladder first (see the
+        # converge_unencrypted_chat_tenants task) — but a tenant at provision
+        # time has (almost) no chat history, so the ladder compresses to this
+        # single verify-gated pass.
+        #
+        # Write-flag FIRST, persisted immediately: from this instant every new
+        # AppChatMessage.user_text / ChatThread.title dual-writes its ``_enc``
+        # sidecar (chat_views._encrypt_chat_value), so the completeness check
+        # below can never race a concurrent write. Idempotent under provision
+        # re-runs / QStash retries (re-setting True is a no-op), and it holds
+        # even if a later step fails and the tenant is re-provisioned.
+        tenant.encrypt_chat_writes = True
+        tenant.save(update_fields=["encrypt_chat_writes", "updated_at"])
+
+        # Read-flag is VERIFY-GATED, never assumed: the chat endpoints
+        # deliberately carry no tenant.status gate (messaging while the
+        # container spins up is a supported flow), so plaintext-only rows CAN
+        # already exist for a PENDING/PROVISIONING tenant. Flipping reads over
+        # such rows would make the tenant look fully-converged — the converge
+        # command would skip it forever, and the irreversible PR-6 erase would
+        # destroy the only copy. Same completeness predicate as the converge
+        # command (shared helper — the two gates must never drift): zero
+        # plaintext-only rows → reads ON (the overwhelmingly common case: two
+        # indexed COUNTs over zero rows). Any remainder → reads stay OFF and we
+        # log LOUDLY; the tenant is then (writes=ON, reads=OFF), exactly the
+        # shape the converge command's candidate filter picks up to seal + flip
+        # later. box.decrypt dual-reads regardless, so those rows stay readable
+        # via the plaintext fallback until then. Local import: same-app helper
+        # pulling in apps.router models that services.py otherwise doesn't
+        # need at module scope.
+        from .chat_encryption import count_unsealed_chat_rows
+
+        unsealed = count_unsealed_chat_rows(tenant)
+        if unsealed == 0:
+            tenant.read_encrypted_chat = True
+            tenant.save(update_fields=["read_encrypted_chat", "updated_at"])
+        else:
+            logger.warning(
+                "Chat read-flip DEFERRED for tenant %s — %d plaintext-only chat row(s) "
+                "predate provisioning (written while PENDING/PROVISIONING); "
+                "encrypt_chat_writes is ON, read_encrypted_chat stays OFF until "
+                "converge_unencrypted_chat_tenants seals them and verifies clean.",
+                tenant.id,
+                unsealed,
+            )
+
         # 2a2. (PR #1.6) Per-tenant OpenRouter sub-key. When the feature
         # flag is on AND the management key is configured, create a
         # dedicated OR sub-key with a server-side spending limit. OR
