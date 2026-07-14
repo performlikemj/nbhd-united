@@ -198,19 +198,49 @@ _SENDERS = {
 }
 
 
-def send_lesson_approval_buttons(tenant: Tenant, lesson: Lesson) -> bool:
-    """Send approval buttons for a pending lesson to the user's preferred channel.
+def _send_app_lesson(tenant: Tenant, lesson: Lesson) -> bool:
+    """Notification-only lesson delivery for an iOS-only user.
 
-    Tries the preferred channel first, falls back to the other if unavailable.
-    Returns True if sent successfully on any channel.
+    Telegram/LINE are being decommissioned (Phase 1 — see
+    ``CONTINUITY_channel_decommission.md``), so there are no approve/skip buttons
+    on the app path (an iOS-parity follow-up per decision D2). The APNs push +
+    ``?since=`` feed row written by ``record_proactive_outbound`` ARE the
+    delivery. ``lesson.text`` is passed placeholder-space; the chokepoint
+    rehydrates only for the owner-facing push and stores it placeholder-space.
+    Returns True if the row was written.
     """
-    preferred = getattr(tenant.user, "preferred_channel", "") or "telegram"
-    fallback = "line" if preferred == "telegram" else "telegram"
+    from apps.router.proactive_context import record_proactive_outbound
 
-    for channel in (preferred, fallback):
-        sender = _SENDERS.get(channel)
-        if sender and sender(tenant, lesson):
-            return True
+    lesson_text = (lesson.text or "").strip()
+    text = f"\U0001f4a1 Something worth remembering:\n\n“{lesson_text}”\n\nOpen NBHD to add it to your constellation."
+    row = record_proactive_outbound(
+        tenant=tenant,
+        channel="app",
+        channel_user_id=str(tenant.user_id),
+        message_text=text,
+        job_name="lesson_approval",
+    )
+    return row is not None
+
+
+def send_lesson_approval_buttons(tenant: Tenant, lesson: Lesson) -> bool:
+    """Send a pending-lesson approval prompt to the user's delivery channel.
+
+    Channel selection goes through the canonical ``resolve_user_channel``:
+    iOS-only users (the common case now) get a notification-only app push
+    (:func:`_send_app_lesson`); Telegram/LINE-linked users fall through to the
+    (decommissioned, unreachable-by-resolver) ``_SENDERS`` senders. Returns True
+    if delivered.
+    """
+    from apps.router.cron_delivery import resolve_user_channel
+
+    channel = resolve_user_channel(tenant.user)
+    if channel == "app":
+        return _send_app_lesson(tenant, lesson)
+
+    sender = _SENDERS.get(channel)
+    if sender and sender(tenant, lesson):
+        return True
 
     logger.warning("Could not send lesson notification for tenant %s on any channel", tenant.id)
     return False

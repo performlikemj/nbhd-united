@@ -23,7 +23,7 @@ from rest_framework.test import APIClient
 from apps.actions import messaging
 from apps.actions.messaging import send_gate_confirmation
 from apps.actions.models import ActionStatus, ActionType, PendingAction
-from apps.router.models import DeviceToken
+from apps.router.models import DeviceToken, ProactiveOutbound
 from apps.tenants.models import Tenant
 from apps.tenants.test_utils import seed_internal_key
 
@@ -32,6 +32,7 @@ User = get_user_model()
 INTERNAL_KEY = "a11-test-internal-key-xyzzy"
 
 
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
 class SendGateConfirmationReturnValueTests(TestCase):
     """send_gate_confirmation must return bool, not None."""
 
@@ -64,8 +65,10 @@ class SendGateConfirmationReturnValueTests(TestCase):
             line,
         )
 
-    def test_ios_only_user_returns_false(self):
-        """iOS-only user (no Telegram/LINE) → returns False (undeliverable)."""
+    def test_ios_only_user_delivers_app_notification_returns_true(self):
+        """iOS-only user (DeviceToken, no Telegram/LINE) → notification-only app
+        delivery: returns True, Telegram/LINE senders untouched, a ProactiveOutbound
+        row is written (the APNs push + ?since= feed row)."""
         user = User.objects.create_user(username="a11_ios", email="a11_ios@example.com", password="x")
         tenant = Tenant.objects.create(
             user=user,
@@ -84,51 +87,35 @@ class SendGateConfirmationReturnValueTests(TestCase):
         with patcher:
             result = send_gate_confirmation(tenant, action)
 
-        self.assertIs(result, False)
+        self.assertIs(result, True)
         tg.assert_not_called()
         line.assert_not_called()
+        self.assertTrue(ProactiveOutbound.objects.filter(tenant=tenant, channel="app").exists())
 
     def test_no_surface_returns_false(self):
-        """User with no channel at all → returns False."""
+        """User with no channel and no device → returns False."""
         tenant, action = self._make("a11_none")
         patcher, tg, line = self._patched_senders()
         with patcher:
             result = send_gate_confirmation(tenant, action)
 
         self.assertIs(result, False)
+        self.assertFalse(ProactiveOutbound.objects.filter(tenant=tenant).exists())
 
-    def test_telegram_user_returns_true(self):
-        """Telegram-linked user → sender fires, returns True."""
+    def test_telegram_only_no_device_returns_false(self):
+        """A Telegram link with no registered device is no longer a delivery
+        surface (decommission Phase 1) → returns False, no sender fires."""
         tenant, action = self._make("a11_tg", telegram_chat_id=777888999)
         patcher, tg, line = self._patched_senders(tg=mock.Mock(return_value="999"))
         with patcher:
             result = send_gate_confirmation(tenant, action)
 
-        self.assertIs(result, True)
-        tg.assert_called_once_with(tenant, action)
-
-    def test_telegram_user_sender_returns_none_still_true(self):
-        """Telegram sender ran but returned None (transient failure) → True
-        (we dispatched; the failure is downstream, not a missing channel)."""
-        tenant, action = self._make("a11_tg_fail", telegram_chat_id=111222333)
-        patcher, tg, line = self._patched_senders(tg=mock.Mock(return_value=None))
-        with patcher:
-            result = send_gate_confirmation(tenant, action)
-
-        self.assertIs(result, True)
-
-    def test_line_user_returns_true(self):
-        """LINE-linked user → LINE sender fires, returns True."""
-        tenant, action = self._make("a11_line", line_user_id="U" + "1" * 32, preferred_channel="line")
-        patcher, tg, line_mock = self._patched_senders(line=mock.Mock(return_value="line-push-y"))
-        with patcher:
-            result = send_gate_confirmation(tenant, action)
-
-        self.assertIs(result, True)
-        line_mock.assert_called_once_with(tenant, action)
+        self.assertIs(result, False)
+        tg.assert_not_called()
+        line.assert_not_called()
 
 
-@override_settings(NBHD_INTERNAL_API_KEY=INTERNAL_KEY)
+@override_settings(NBHD_INTERNAL_API_KEY=INTERNAL_KEY, NBHD_DISABLE_BACKGROUND_THREADS=True)
 class GateRequestViewUndeliverableTests(TestCase):
     """GateRequestView returns 422 undeliverable when no channel exists.
 
@@ -167,8 +154,12 @@ class GateRequestViewUndeliverableTests(TestCase):
             HTTP_X_TENANT_ID=str(tenant.id),
         )
 
-    def test_ios_only_returns_422_undeliverable(self):
-        """iOS-only user triggers gate request → 422 with status=undeliverable."""
+    def test_ios_only_returns_202_pending_with_app_notification(self):
+        """iOS-only user (DeviceToken) now gets a notification-only app delivery
+        instead of an undeliverable 422: the gate returns 202 pending, the action
+        stays PENDING, and a ProactiveOutbound row is written. (There is still no
+        in-app approve/deny surface, so it will expire unapproved — an iOS-parity
+        follow-up per decommission decision D2.)"""
         tenant = self._make_tenant("a11_view_ios")
         DeviceToken.objects.create(
             tenant=tenant,
@@ -180,13 +171,13 @@ class GateRequestViewUndeliverableTests(TestCase):
         with mock.patch("apps.router.cron_delivery.resolve_user_channel", return_value="app"):
             resp = self._post_gate(tenant)
 
-        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.status_code, 202)
         data = resp.json()
-        self.assertEqual(data["status"], "undeliverable")
-        self.assertEqual(data["reason"], "no_channel")
-        # Action must be EXPIRED immediately (not left as PENDING)
+        self.assertEqual(data["status"], "pending")
+        self.assertIn("expires_at", data)
         action = PendingAction.objects.get(id=data["action_id"])
-        self.assertEqual(action.status, ActionStatus.EXPIRED)
+        self.assertEqual(action.status, ActionStatus.PENDING)
+        self.assertTrue(ProactiveOutbound.objects.filter(tenant=tenant, channel="app").exists())
 
     def test_no_channel_returns_422_undeliverable(self):
         """User with no channel at all → 422 undeliverable, action immediately expired."""

@@ -545,8 +545,13 @@ class NotifyMeditationReadyTests(TestCase):
         )
 
     def test_telegram_send_and_record(self):
+        # Telegram/LINE delivery is decommissioned (Phase 1): the shared resolver
+        # no longer selects them, but the sender code is retained for revert
+        # safety. Force the resolver to "telegram" to verify that retained path
+        # still functions if a revert re-enables it.
         session = self._session()
         with (
+            patch("apps.router.cron_delivery.resolve_user_channel", return_value="telegram"),
             patch("apps.router.services.send_telegram_message", return_value=True) as mock_send,
             patch("apps.router.proactive_context.record_proactive_outbound") as mock_record,
         ):
@@ -572,7 +577,10 @@ class NotifyMeditationReadyTests(TestCase):
         fake_resp.status_code = 200
         fake_resp.json.return_value = {"sentMessages": [{"id": "1"}]}
 
+        # LINE delivery is decommissioned (Phase 1); force the resolver to "line"
+        # to verify the retained LINE sender still functions (revert safety).
         with (
+            patch("apps.router.cron_delivery.resolve_user_channel", return_value="line"),
             patch("httpx.post", return_value=fake_resp) as mock_post,
             patch("apps.router.line_webhook._record_line_outbound") as mock_line_record,
             patch("apps.router.proactive_context.record_proactive_outbound") as mock_record,
@@ -598,7 +606,10 @@ class NotifyMeditationReadyTests(TestCase):
         fake_resp.status_code = 429
         fake_resp.text = "monthly limit exceeded"
 
+        # LINE decommissioned (Phase 1); force the resolver to exercise the
+        # retained LINE failure/quota path (revert safety).
         with (
+            patch("apps.router.cron_delivery.resolve_user_channel", return_value="line"),
             patch("httpx.post", return_value=fake_resp),
             patch("apps.router.line_webhook._maybe_trip_monthly_quota") as mock_trip,
             patch("apps.router.proactive_context.record_proactive_outbound") as mock_record,
@@ -620,7 +631,10 @@ class NotifyMeditationReadyTests(TestCase):
             status=MeditationStatus.READY,
             title="Letting go for [PERSON_0]",
         )
+        # Force the (retained, decommissioned) Telegram sender so this asserts
+        # the rehydrate-before-egress boundary on a real chat send.
         with (
+            patch("apps.router.cron_delivery.resolve_user_channel", return_value="telegram"),
             patch("apps.router.services.send_telegram_message", return_value=True) as mock_send,
             patch("apps.router.proactive_context.record_proactive_outbound"),
         ):

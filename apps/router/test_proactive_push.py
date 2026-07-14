@@ -298,8 +298,10 @@ class CronDeliveryEmitsPushTest(TestCase):
 
 
 class ResolveUserChannelTest(TestCase):
-    """The 'app' delivery target: an iOS-only user (no Telegram/LINE) resolves to
-    'app' so crons still reach them; nothing linked at all → None."""
+    """The 'app' delivery target: post-decommission (Phase 1) every valid user
+    resolves to 'app' — the ?since= feed row IS the delivery and the APNs push is
+    best-effort on top (no-op with zero tokens). None only when there is no user
+    at all."""
 
     def setUp(self):
         self.user = _make_user()
@@ -311,22 +313,38 @@ class ResolveUserChannelTest(TestCase):
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
         self.assertEqual(resolve_user_channel(self.user), "app")
 
-    def test_no_surface_resolves_to_none(self):
+    def test_token_less_user_still_resolves_to_app(self):
+        # No Telegram, no LINE, no device — but the console/app surface exists by
+        # definition (the ?since= feed row is the delivery), so still 'app'. This
+        # stops proactive content from silently vanishing for token-less users.
         from apps.router.cron_delivery import resolve_user_channel
 
-        # No Telegram, no LINE, no device → genuinely nowhere to deliver.
-        self.assertIsNone(resolve_user_channel(self.user))
+        self.assertEqual(resolve_user_channel(self.user), "app")
 
-    def test_telegram_link_wins_over_app(self):
-        # A user with both Telegram and the app keeps Telegram as the channel —
-        # 'app' is only a fallback for users with no messaging link. (They still
-        # get the parallel iOS push via record_proactive_outbound.)
+    def test_no_user_resolves_to_none(self):
+        # Genuinely unresolvable input (no user) is the only None case.
+        from apps.router.cron_delivery import resolve_user_channel
+
+        self.assertIsNone(resolve_user_channel(None))
+
+    def test_device_and_telegram_link_still_app(self):
+        # A user with both a Telegram link and a registered device routes to
+        # 'app' (Telegram is decommissioned).
         from apps.router.cron_delivery import resolve_user_channel
 
         self.user.telegram_chat_id = 999
         self.user.save()
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
-        self.assertEqual(resolve_user_channel(self.user), "telegram")
+        self.assertEqual(resolve_user_channel(self.user), "app")
+
+    def test_telegram_link_without_device_still_app(self):
+        # A Telegram link with no device still routes to 'app' — the app/console
+        # surface is always present.
+        from apps.router.cron_delivery import resolve_user_channel
+
+        self.user.telegram_chat_id = 999
+        self.user.save()
+        self.assertEqual(resolve_user_channel(self.user), "app")
 
 
 @override_settings(

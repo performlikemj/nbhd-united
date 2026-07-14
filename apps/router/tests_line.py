@@ -374,48 +374,60 @@ class LineLinkingFlowTest(TestCase):
 
 
 class CronDeliveryChannelRoutingTest(TestCase):
-    """Test _resolve_channel logic in CronDeliveryView."""
+    """Test _resolve_channel logic in CronDeliveryView.
+
+    Post-decommission (Phase 1 — see CONTINUITY_channel_decommission.md) every
+    valid user routes to "app" (the ?since= feed row IS the delivery; the APNs
+    push is best-effort on top). None only when there is no user at all.
+    Telegram/LINE links no longer select a channel (senders remain but are
+    unreachable from the resolver).
+    """
 
     def _get_view(self):
         from apps.router.cron_delivery import CronDeliveryView
 
         return CronDeliveryView()
 
-    def test_resolve_channel_prefers_telegram_when_linked(self):
-        view = self._get_view()
-        user = MagicMock()
-        user.preferred_channel = "telegram"
-        user.telegram_chat_id = 123
-        user.line_user_id = "U_123"
-        self.assertEqual(view._resolve_channel(user), "telegram")
-
-    def test_resolve_channel_prefers_line_when_linked(self):
-        view = self._get_view()
-        user = MagicMock()
-        user.preferred_channel = "line"
-        user.line_user_id = "U_123"
-        user.telegram_chat_id = 456
-        self.assertEqual(view._resolve_channel(user), "line")
-
-    def test_resolve_channel_falls_back_to_linked(self):
-        view = self._get_view()
-        user = MagicMock()
-        user.preferred_channel = "telegram"
-        user.line_user_id = "U_123"
-        user.telegram_chat_id = None
-        self.assertEqual(view._resolve_channel(user), "line")
-
-    def test_resolve_channel_none_when_unlinked(self):
-        # A genuinely unlinked user — no Telegram/LINE AND no registered iOS
-        # device — has no delivery surface, so the channel is None. Uses a real
-        # User (not a MagicMock) because resolve now does a DeviceToken lookup on
-        # the no-messaging-link path. (A user with only a device resolves to
-        # 'app'; see ResolveUserChannelTest in test_proactive_push.py.)
-        from apps.tenants.models import User
+    def test_resolve_channel_app_when_device_registered(self):
+        from apps.router.models import DeviceToken
 
         view = self._get_view()
-        user = User.objects.create_user(username="unlinked_routing", email="unlinked_routing@example.com")
-        self.assertIsNone(view._resolve_channel(user))
+        user = _make_user()
+        tenant = _make_tenant(user)
+        DeviceToken.objects.create(tenant=tenant, user=user, token="a" * 64, environment="sandbox")
+        self.assertEqual(view._resolve_channel(user), "app")
+
+    def test_resolve_channel_app_ignores_telegram_link(self):
+        # A Telegram-linked user with a registered device now routes to the app —
+        # the Telegram link is ignored (decommission Phase 1).
+        from apps.router.models import DeviceToken
+
+        view = self._get_view()
+        user = _make_user(telegram_chat_id=123)
+        tenant = _make_tenant(user)
+        DeviceToken.objects.create(tenant=tenant, user=user, token="b" * 64, environment="sandbox")
+        self.assertEqual(view._resolve_channel(user), "app")
+
+    def test_resolve_channel_telegram_link_without_device_still_app(self):
+        # Telegram/LINE links no longer select a channel; the app/console surface
+        # is always present, so a token-less user still routes to 'app'.
+        view = self._get_view()
+        user = _make_user(telegram_chat_id=456, line_user_id="U_456")
+        _make_tenant(user)
+        self.assertEqual(view._resolve_channel(user), "app")
+
+    def test_resolve_channel_app_even_when_unlinked(self):
+        # An unlinked user with no registered device still has the app/console
+        # surface → 'app' (never silently unreachable).
+        view = self._get_view()
+        user = _make_user()
+        _make_tenant(user)
+        self.assertEqual(view._resolve_channel(user), "app")
+
+    def test_resolve_channel_none_when_no_user(self):
+        # Only genuinely unresolvable input (no user) yields None.
+        view = self._get_view()
+        self.assertIsNone(view._resolve_channel(None))
 
 
 # ────────────────────────────────────────────────────────────────────────────

@@ -339,7 +339,11 @@ class NotifySautaiPlanReadyTests(TestCase):
         from .sautai_notify import notify_sautai_plan_ready
 
         job = self._job()
+        # Telegram/LINE delivery is decommissioned (Phase 1): the shared resolver
+        # no longer selects them, but the sender is retained for revert safety.
+        # Force "telegram" to verify that retained path still functions.
         with (
+            patch("apps.router.cron_delivery.resolve_user_channel", return_value="telegram"),
             patch("apps.router.services.send_telegram_message", return_value=True) as mock_send,
             patch("apps.router.proactive_context.record_proactive_outbound") as mock_record,
         ):

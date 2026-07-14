@@ -6,11 +6,12 @@ import json
 from datetime import timedelta
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.crypto import audit
+from apps.router.models import DeviceToken
 from apps.tenants.models import Tenant, User
 
 
@@ -498,3 +499,57 @@ class TriggerTaskPrincipalTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(captured.get("principal"), "system_cron")
+
+
+@override_settings(DEPLOY_SECRET="deploy-secret-x")
+class BumpAllPendingConfigsChannelGraceTest(TestCase):
+    """The has_channel grace gate in bump_all_pending_configs must count a
+    registered iOS device as a delivery channel — otherwise, once Telegram/LINE
+    are decommissioned (Phase 1), iOS-only tenants get their config_version
+    incorrectly reset to 0 after the 24h grace window and stop receiving bumps.
+    """
+
+    URL = "/api/cron/bump-all-pending-configs/"
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def _aged_active_tenant(self, username):
+        user = User.objects.create_user(username=username, password="pass")
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            container_id=f"oc-{username}",
+            container_fqdn=f"oc-{username}.internal",
+            config_version=5,
+            pending_config_version=5,
+        )
+        # created_at is auto_now_add; age it past the 24h grace window via update().
+        Tenant.objects.filter(id=tenant.id).update(created_at=timezone.now() - timedelta(days=3))
+        return tenant
+
+    def _post(self):
+        return self.client.post(self.URL, HTTP_X_DEPLOY_SECRET="deploy-secret-x")
+
+    def test_device_only_tenant_counts_as_channel(self):
+        tenant = self._aged_active_tenant("bump_dev")
+        DeviceToken.objects.create(tenant=tenant, user=tenant.user, token="g" * 64, environment="production")
+
+        resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+
+        tenant.refresh_from_db()
+        # NOT reset to 0 (device counts as a channel) and bumped for config update.
+        self.assertEqual(tenant.config_version, 5)
+        self.assertEqual(tenant.pending_config_version, 6)
+
+    def test_no_channel_no_device_tenant_is_reset(self):
+        tenant = self._aged_active_tenant("bump_none")
+
+        resp = self._post()
+        self.assertEqual(resp.status_code, 200)
+
+        tenant.refresh_from_db()
+        # No channel + no device + aged out of the grace window → reset to 0.
+        self.assertEqual(tenant.config_version, 0)
+        self.assertEqual(tenant.pending_config_version, 0)

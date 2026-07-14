@@ -308,40 +308,70 @@ _SENDERS = {
 }
 
 
+def _send_app_confirmation(tenant: Tenant, action: PendingAction) -> bool:
+    """Notification-only gate delivery for an iOS-only user.
+
+    Telegram/LINE are being decommissioned (Phase 1 — see
+    ``CONTINUITY_channel_decommission.md``) and there is no in-app approve/deny
+    surface yet (iOS-parity follow-up per decision D2), so this is a
+    notification-only heads-up: the APNs push + ``?since=`` feed row written by
+    ``record_proactive_outbound`` ARE the delivery. The action still needs a
+    confirmation the app cannot yet collect, so it will expire unapproved — but
+    the user is told what their assistant wanted to do. ``display_summary`` is
+    placeholder-space; the chokepoint rehydrates only for the owner-facing push.
+    Returns True (a real surface — the app — accepted the notification).
+    """
+    from apps.router.proactive_context import record_proactive_outbound
+
+    summary = (action.display_summary or "").strip() or "do something that needs your OK"
+    message_text = f"⚠️ Your assistant wants to: {summary}\n\nOpen NBHD to review — this needs your confirmation."
+    row = record_proactive_outbound(
+        tenant=tenant,
+        channel="app",
+        channel_user_id=str(tenant.user_id),
+        message_text=message_text,
+        job_name="gate_confirmation",
+    )
+    action.platform_channel = "app"
+    if row is not None:
+        action.platform_message_id = str(row.id)
+    action.save(update_fields=["platform_message_id", "platform_channel"])
+    return True
+
+
 def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
     """Send a confirmation prompt to the user on their delivery channel.
 
     Resolves the channel via ``resolve_user_channel`` (the same logic the cron /
     proactive senders use) rather than reading ``preferred_channel`` directly.
-    ``preferred_channel`` defaults to ``"telegram"`` even for iOS-only App Store
-    users (who have a ``DeviceToken`` but no ``telegram_chat_id``/``line_user_id``),
-    so reading it directly would route an iOS-only user to the Telegram sender,
-    which fails deep with a misleading "no Telegram chat_id" log while the action
-    silently expires with no prompt ever delivered.
 
-    Returns ``True`` if the confirmation was dispatched to a real channel,
-    ``False`` when no deliverable channel exists (iOS-only / no surface).
-    The caller can use the return value to decide whether to return HTTP 202
-    "pending" (real channel) or indicate "undeliverable" (no channel).
+    Telegram/LINE are being decommissioned (Phase 1): the resolver now returns
+    ``"app"`` (iOS device registered) or ``None`` (no surface). iOS-only users
+    get a notification-only heads-up via :func:`_send_app_confirmation` — there
+    are no approve/deny buttons in the app yet, so the action still expires
+    unapproved (iOS-parity follow-up per decision D2), but the user is told what
+    was asked instead of getting silence.
 
-    There is currently no in-app gate surface (approve/deny handlers exist only in
-    the Telegram poller and LINE webhook), so when no Telegram/LINE channel is
-    linked we cannot deliver an actionable confirmation. Rather than fail silently,
-    log a clear, explicit warning so the no-surface case is visible and diagnosable.
+    Returns ``True`` if a notification/prompt was dispatched to a real surface
+    (app / Telegram / LINE), ``False`` only when no surface exists at all. The
+    caller uses the return value to decide HTTP 202 "pending" vs 422
+    "undeliverable". The Telegram/LINE senders below are unreachable from the
+    narrowed resolver (kept so a single revert restores them).
     """
     from apps.router.cron_delivery import resolve_user_channel
 
     channel = resolve_user_channel(tenant.user)
-    sender, _ = _SENDERS.get(channel, (None, None))
 
+    if channel == "app":
+        return _send_app_confirmation(tenant, action)
+
+    sender, _ = _SENDERS.get(channel, (None, None))
     if not sender:
-        # ``channel`` is "app" (iOS-only DeviceToken user) or None (no surface).
-        # No actionable in-app gate path exists yet — return False so the caller
-        # can surface the undeliverable state instead of leaving the action to
-        # silently expire.
+        # ``channel`` is None — no delivery surface at all. Log clearly so the
+        # no-surface case is visible and diagnosable rather than silent.
         logger.warning(
             "Cannot deliver gate confirmation for action %s (tenant %s): "
-            "no Telegram/LINE channel for resolved channel %r — action will "
+            "no delivery surface for resolved channel %r — action will "
             "not be delivered",
             action.id,
             tenant.id,

@@ -994,14 +994,23 @@ def bump_all_pending_configs(request):
         logger.warning("Unauthorized bump_all_pending_configs attempt")
         return JsonResponse({"error": "Unauthorized"}, status=401)
 
+    from django.db.models import Exists, OuterRef, Q
     from django.db.models import F as DbF
-    from django.db.models import Q
 
-    has_channel = Q(user__telegram_chat_id__isnull=False) | Q(user__line_user_id__isnull=False)
+    from apps.router.models import DeviceToken
+
+    # A tenant "has a delivery channel" if Telegram/LINE is linked OR the user
+    # has a registered iOS device. Telegram/LINE are being decommissioned
+    # (Phase 1 — see CONTINUITY_channel_decommission.md); the app is now the
+    # real outbound surface, so an iOS-only tenant MUST count as reachable here,
+    # otherwise its config_version gets reset to 0 after the 24h grace window
+    # and it stops receiving config bumps.
+    has_device = Exists(DeviceToken.objects.filter(user_id=OuterRef("user_id")))
+    has_channel = Q(user__telegram_chat_id__isnull=False) | Q(user__line_user_id__isnull=False) | has_device
     grace_cutoff = timezone.now() - timedelta(days=1)
 
     # Reset no-channel tenants created >1 day ago to version 0
-    # (new tenants get a 24h grace period to link Telegram/LINE)
+    # (new tenants get a 24h grace period to link a channel / register a device)
     no_channel_reset = (
         Tenant.objects.filter(
             status=Tenant.Status.ACTIVE,

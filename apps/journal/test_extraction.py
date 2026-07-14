@@ -157,7 +157,11 @@ class TestRunExtractionForTenant(TestCase):
     @patch("apps.journal.extraction._deliver_summary_telegram")
     @patch("django.conf.settings.TELEGRAM_BOT_TOKEN", "test-token", create=True)
     def test_sends_one_summary_message(self, mock_summary, mock_llm):
-        run_extraction_for_tenant(self.tenant)
+        # Telegram/LINE delivery is decommissioned (Phase 1): the shared resolver
+        # no longer selects them, but the sender is retained for revert safety.
+        # Force "telegram" to verify the retained summary path still fires once.
+        with patch("apps.router.cron_delivery.resolve_user_channel", return_value="telegram"):
+            run_extraction_for_tenant(self.tenant)
         # Should be called exactly once with all items
         mock_summary.assert_called_once()
         items = mock_summary.call_args[0][2]

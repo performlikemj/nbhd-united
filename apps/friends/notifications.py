@@ -156,19 +156,53 @@ def _send_line_wave(tenant: Tenant, friendship: Friendship) -> bool:
 _SENDERS = {"telegram": _send_telegram_wave, "line": _send_line_wave}
 
 
+def _send_app_wave(tenant: Tenant, friendship: Friendship) -> bool:
+    """Notification-only wave delivery for an iOS-only addressee.
+
+    Telegram/LINE are being decommissioned (Phase 1 — see
+    ``CONTINUITY_channel_decommission.md``), so there are no accept/decline
+    buttons on the app path (an iOS-parity follow-up per decision D2); the wave
+    is already visible in the console. The APNs push + ``?since=`` feed row
+    written by ``record_proactive_outbound`` ARE the delivery, so the addressee
+    is nudged to open the app and answer. Returns True if the row was written.
+    """
+    from apps.router.proactive_context import record_proactive_outbound
+
+    name = _waver_name(friendship)
+    note = (friendship.invite_note or "").strip()
+    text = f"\U0001f44b {name} waved — want to be neighbors? Open NBHD to answer."
+    if note:
+        text += f"\n\n“{note}”"
+    row = record_proactive_outbound(
+        tenant=tenant,
+        channel="app",
+        channel_user_id=str(tenant.user_id),
+        message_text=text,
+        job_name="friend_wave",
+    )
+    return row is not None
+
+
 def notify_wave_received(friendship: Friendship) -> bool:
-    """Notify the addressee of a pending wave on their preferred channel, with
-    fallback. Returns True if any channel accepted it. Never raises."""
+    """Notify the addressee of a pending wave on their delivery channel.
+
+    Channel selection goes through the canonical
+    ``resolve_user_channel``: iOS-only addressees (the common case now) get a
+    notification-only app push (:func:`_send_app_wave`); Telegram/LINE-linked
+    addressees fall through to the (decommissioned, unreachable-by-resolver)
+    ``_SENDERS`` senders. Returns True if delivered. Never raises."""
     try:
         addressee = friendship.addressee
         if friendship.status != Friendship.Status.PENDING:
             return False
-        preferred = getattr(addressee.user, "preferred_channel", "") or "telegram"
-        fallback = "line" if preferred == "telegram" else "telegram"
-        for channel in (preferred, fallback):
-            sender = _SENDERS.get(channel)
-            if sender and sender(addressee, friendship):
-                return True
+        from apps.router.cron_delivery import resolve_user_channel
+
+        channel = resolve_user_channel(addressee.user)
+        if channel == "app":
+            return _send_app_wave(addressee, friendship)
+        sender = _SENDERS.get(channel)
+        if sender and sender(addressee, friendship):
+            return True
         return False
     except Exception:
         logger.exception("notify_wave_received failed for friendship %s", getattr(friendship, "id", "?"))

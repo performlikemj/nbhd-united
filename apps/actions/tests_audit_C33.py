@@ -1,4 +1,4 @@
-"""Regression tests for FA-0006 (cluster C33).
+"""Regression tests for FA-0006 (cluster C33), updated for channel decommission.
 
 ``send_gate_confirmation`` previously read ``tenant.user.preferred_channel``
 directly and indexed ``_SENDERS`` (which maps only ``telegram``/``line``).
@@ -7,25 +7,29 @@ users (DeviceToken but no telegram_chat_id/line_user_id), so the Telegram sender
 ran, failed deep with a misleading "no Telegram chat_id" log, and the gate
 action silently expired with no prompt ever delivered.
 
-The fix routes channel resolution through ``resolve_user_channel`` (the same
-logic the cron/proactive senders use) and, when no Telegram/LINE surface exists,
-logs a clear no-surface warning instead of attempting a doomed Telegram send.
+The C33 fix routed channel resolution through ``resolve_user_channel``. Phase 1
+of the channel decommission (see ``CONTINUITY_channel_decommission.md``) narrows
+that resolver to app-or-nothing: a device-holding user now gets a
+notification-only app push (ProactiveOutbound row + APNs), and a Telegram/LINE
+link with no device is no longer a delivery surface. The core C33 invariant is
+preserved and strengthened: the Telegram/LINE senders are never invoked.
 """
 
 from unittest import mock
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
 from apps.actions import messaging
 from apps.actions.messaging import send_gate_confirmation
 from apps.actions.models import ActionType, PendingAction
-from apps.router.models import DeviceToken
+from apps.router.models import DeviceToken, ProactiveOutbound
 from apps.tenants.models import Tenant
 
 User = get_user_model()
 
 
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
 class SendGateConfirmationChannelResolutionTests(TestCase):
     def _make(self, username, **user_kwargs):
         user = User.objects.create_user(username=username, email=f"{username}@example.com", password="x", **user_kwargs)
@@ -59,63 +63,73 @@ class SendGateConfirmationChannelResolutionTests(TestCase):
             line,
         )
 
-    def test_ios_only_user_does_not_invoke_telegram_sender(self):
+    def test_ios_only_user_routes_to_app_notification(self):
         """iOS-only user (DeviceToken, no telegram/line link, default
         preferred_channel='telegram') must NOT reach the Telegram sender and
-        must leave the action un-delivered (no platform message id/channel)."""
+        gets a notification-only app delivery (ProactiveOutbound row)."""
         tenant, action = self._make("c33_ios")
-        # preferred_channel defaults to 'telegram'; no telegram_chat_id set.
         self.assertEqual(tenant.user.preferred_channel, "telegram")
         self.assertIsNone(tenant.user.telegram_chat_id)
         DeviceToken.objects.create(tenant=tenant, user=tenant.user, token="a" * 64, environment="production")
 
         patcher, tg, line = self._patched_senders()
         with patcher:
-            send_gate_confirmation(tenant, action)
+            result = send_gate_confirmation(tenant, action)
 
+        self.assertIs(result, True)
         tg.assert_not_called()
         line.assert_not_called()
 
         action.refresh_from_db()
-        self.assertEqual(action.platform_message_id, "")
-        self.assertEqual(action.platform_channel, "")
+        self.assertEqual(action.platform_channel, "app")
+        row = ProactiveOutbound.objects.get(tenant=tenant)
+        self.assertEqual(row.channel, "app")
 
-    def test_no_surface_user_does_not_invoke_any_sender(self):
-        """User with neither messaging channel nor DeviceToken: no sender runs."""
+    def test_token_less_user_routes_to_app_notification(self):
+        """A user with neither a messaging channel nor a DeviceToken still has the
+        app/console surface: the gate is delivered notification-only via the app,
+        the Telegram/LINE senders are never invoked, and a ProactiveOutbound row
+        is written (the APNs push is a best-effort no-op with zero tokens)."""
         tenant, action = self._make("c33_none")
 
         patcher, tg, line = self._patched_senders()
         with patcher:
-            send_gate_confirmation(tenant, action)
+            result = send_gate_confirmation(tenant, action)
 
+        self.assertIs(result, True)
+        tg.assert_not_called()
+        line.assert_not_called()
+        action.refresh_from_db()
+        self.assertEqual(action.platform_channel, "app")
+        self.assertTrue(ProactiveOutbound.objects.filter(tenant=tenant, channel="app").exists())
+
+    def test_telegram_linked_with_device_routes_to_app(self):
+        """A Telegram-linked user who also has a device routes to the app — the
+        Telegram sender is never invoked (decommission Phase 1)."""
+        tenant, action = self._make("c33_tg_dev", telegram_chat_id=123456789)
+        DeviceToken.objects.create(tenant=tenant, user=tenant.user, token="c" * 64, environment="production")
+
+        patcher, tg, line = self._patched_senders(tg=mock.Mock(return_value="555"))
+        with patcher:
+            result = send_gate_confirmation(tenant, action)
+
+        self.assertIs(result, True)
+        tg.assert_not_called()
+        line.assert_not_called()
+        action.refresh_from_db()
+        self.assertEqual(action.platform_channel, "app")
+
+    def test_telegram_linked_without_device_is_undeliverable(self):
+        """A Telegram link with no registered device is no longer a delivery
+        surface: nothing is sent and the action is left un-delivered."""
+        tenant, action = self._make("c33_tg_only", telegram_chat_id=123456789)
+
+        patcher, tg, line = self._patched_senders(tg=mock.Mock(return_value="555"))
+        with patcher:
+            result = send_gate_confirmation(tenant, action)
+
+        self.assertIs(result, False)
         tg.assert_not_called()
         line.assert_not_called()
         action.refresh_from_db()
         self.assertEqual(action.platform_channel, "")
-
-    def test_telegram_user_still_routed_to_telegram(self):
-        """Linked Telegram user is unaffected: sender runs and result stored."""
-        tenant, action = self._make("c33_tg", telegram_chat_id=123456789)
-
-        patcher, tg, line = self._patched_senders(tg=mock.Mock(return_value="555"))
-        with patcher:
-            send_gate_confirmation(tenant, action)
-
-        tg.assert_called_once_with(tenant, action)
-        line.assert_not_called()
-        action.refresh_from_db()
-        self.assertEqual(action.platform_message_id, "555")
-        self.assertEqual(action.platform_channel, "telegram")
-
-    def test_line_user_routed_to_line(self):
-        """Linked LINE user (preferred_channel='line') routes to the LINE sender."""
-        tenant, action = self._make("c33_line", line_user_id="U" + "0" * 32, preferred_channel="line")
-
-        patcher, tg, line = self._patched_senders(line=mock.Mock(return_value="line-push-x"))
-        with patcher:
-            send_gate_confirmation(tenant, action)
-
-        line.assert_called_once_with(tenant, action)
-        tg.assert_not_called()
-        action.refresh_from_db()
-        self.assertEqual(action.platform_channel, "line")

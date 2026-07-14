@@ -1,9 +1,14 @@
 """Platform-initiated plain-text notifications to a tenant's chat channel.
 
 For one-off system notices that are NOT an LLM turn — e.g. "your model was
-switched because the free promo ended". Routes to the tenant's preferred channel
-(Telegram or LINE), falling back to whichever is linked. Mirrors the channel
-selection in apps/lessons/notifications.py and apps/router/cron_delivery.py.
+switched because the free promo ended". Channel selection goes through the
+canonical :func:`apps.router.cron_delivery.resolve_user_channel` (no local copy).
+
+Telegram/LINE are being decommissioned (Phase 1 — see
+``CONTINUITY_channel_decommission.md``): the resolver now returns only ``"app"``
+or ``None``, so these Telegram/LINE senders are unreachable and system notices
+are skipped for iOS-only tenants until a Phase-3 rewrite adds an app path here.
+The senders are left in place so a single resolver revert restores delivery.
 
 The text here is platform-authored and carries no tenant PII, so (unlike the
 lesson / gate senders, which echo user content) no rehydration is applied.
@@ -15,6 +20,7 @@ import logging
 
 from django.conf import settings
 
+from apps.router.cron_delivery import resolve_user_channel
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -28,31 +34,13 @@ def send_system_notification(tenant: Tenant, message: str) -> bool:
     Returns True if it was handed to a channel API successfully, False if the
     tenant has no linked channel or the send failed.
     """
-    channel = _resolve_channel(tenant.user)
+    channel = resolve_user_channel(tenant.user)
     if channel == "telegram":
         return _send_telegram(tenant, message)
     if channel == "line":
         return _send_line(tenant, message)
-    logger.info("system_notify: tenant %s has no linked channel; skipped", str(tenant.id)[:8])
+    logger.info("system_notify: tenant %s has no telegram/line channel; skipped", str(tenant.id)[:8])
     return False
-
-
-def _resolve_channel(user) -> str | None:
-    """Honour ``preferred_channel`` if that channel is linked, else fall back to
-    whichever one is."""
-    preferred = getattr(user, "preferred_channel", "telegram") or "telegram"
-    line_user_id = getattr(user, "line_user_id", None)
-    telegram_chat_id = getattr(user, "telegram_chat_id", None)
-
-    if preferred == "line" and line_user_id:
-        return "line"
-    if preferred == "telegram" and telegram_chat_id:
-        return "telegram"
-    if line_user_id:
-        return "line"
-    if telegram_chat_id:
-        return "telegram"
-    return None
 
 
 def _send_telegram(tenant: Tenant, message: str) -> bool:

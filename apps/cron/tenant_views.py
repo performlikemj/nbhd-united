@@ -287,6 +287,7 @@ class CronJobListCreateView(APIView):
                 )
 
             delivery = data.get("delivery", {})
+            # legacy alias: iOS <=2.1.0 sends channel="telegram"; mode is the real switch (decommission plan D3)
             if isinstance(delivery, dict) and delivery.get("channel") == "telegram" and delivery.get("mode") != "none":
                 chat_id = _tenant_telegram_chat_id(tenant)
                 if chat_id and not delivery.get("to"):
