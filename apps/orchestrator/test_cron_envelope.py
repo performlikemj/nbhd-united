@@ -619,30 +619,61 @@ class RenderProfileSectionTest(TestCase):
     ``heading`` attribute, not by the fetcher itself.
     """
 
-    def test_minimal_tenant_only_shows_preferred_channel(self):
+    def test_minimal_tenant_shows_only_the_resolved_delivery_channel(self):
         # Default tenant: display_name="Friend", timezone="UTC", language="en",
-        # no city. preferred_channel always has a default ("telegram") and
-        # is meaningful for routing/formatting decisions, so it always shows.
+        # no city — every default is suppressed, so the resolved delivery channel
+        # is the only line left and the block stays minimal.
+        #
+        # That line is the RESOLVED channel (via resolve_user_channel), never the
+        # raw preferred_channel column: the column is the untouched schema default
+        # ("telegram") on essentially every row, so rendering it asserted
+        # "Preferred channel: telegram" into the agent context of iOS-only tenants
+        # who never linked Telegram. Telegram-linked, no device token → Telegram.
         tenant = create_tenant(display_name="Friend", telegram_chat_id=910100)
         out = render_profile_section(tenant)
-        self.assertIn("Preferred channel: telegram", out)
+        self.assertIn("Delivery channel: Telegram", out)
+        self.assertNotIn("Preferred channel", out)
         # Defaults that should be skipped
         self.assertNotIn("Display name: Friend", out)
         self.assertNotIn("Timezone: UTC", out)
         self.assertNotIn("Language: en", out)
         self.assertNotIn("Location:", out)
 
+    def test_device_token_tenant_reads_as_the_app_not_telegram(self):
+        # The case the raw column got wrong: an iOS tenant resolves "app".
+        from apps.router.models import DeviceToken
+
+        tenant = create_tenant(display_name="Friend", telegram_chat_id=910103)
+        tenant.user.telegram_chat_id = None
+        tenant.user.save()
+        DeviceToken.objects.create(tenant=tenant, user=tenant.user, token="e" * 64)
+
+        out = render_profile_section(tenant)
+        self.assertIn("Delivery channel: NBHD app", out)
+        self.assertNotIn("Telegram", out)
+
+    def test_no_delivery_surface_omits_the_channel_line(self):
+        # No device, no Telegram, no LINE → resolve_user_channel returns None and
+        # the line is dropped. Printing nothing beats printing a falsehood.
+        tenant = create_tenant(display_name="Friend", telegram_chat_id=910104)
+        tenant.user.telegram_chat_id = None
+        tenant.user.save()
+
+        out = render_profile_section(tenant)
+        self.assertNotIn("Delivery channel", out)
+        self.assertNotIn("Preferred channel", out)
+
     def test_includes_set_fields_only(self):
         tenant = create_tenant(display_name="Mike", telegram_chat_id=910101)
         tenant.user.timezone = "Asia/Tokyo"
-        tenant.user.preferred_channel = "line"
         tenant.user.location_city = "Osaka"
         tenant.user.save()
 
         out = render_profile_section(tenant)
         self.assertIn("Display name: Mike", out)
         self.assertIn("Timezone: Asia/Tokyo", out)
-        self.assertIn("Preferred channel: line", out)
+        # Telegram-linked, no device token → the resolved channel is Telegram.
+        self.assertIn("Delivery channel: Telegram", out)
         self.assertIn("Location: Osaka", out)
         # Default language not included
         self.assertNotIn("Language:", out)
@@ -651,7 +682,6 @@ class RenderProfileSectionTest(TestCase):
         """End-to-end: the ## Profile heading is added by render_managed_region."""
         tenant = create_tenant(display_name="Mike", telegram_chat_id=910102)
         tenant.user.timezone = "Asia/Tokyo"
-        tenant.user.preferred_channel = "line"
         tenant.user.save()
 
         out = render_managed_region(tenant)
@@ -672,10 +702,11 @@ class RenderManagedRegionTest(TestCase):
         self.assertIn(BEGIN_MARKER, out)
         self.assertIn(END_MARKER, out)
         self.assertIn("Last refreshed:", out)
-        # Profile always renders preferred_channel default, so the managed
-        # region is never *truly* empty for an active tenant. The agent's
-        # signal that there's no domain state is the absence of section
-        # headings (## Active goals, ## Open tasks, etc.) below Profile.
+        # Profile renders the resolved delivery channel for a linked tenant (this
+        # fixture has telegram_chat_id), so the managed region is never *truly*
+        # empty for an active tenant. The agent's signal that there's no domain
+        # state is the absence of section headings (## Active goals, ## Open
+        # tasks, etc.) below Profile.
         self.assertNotIn("## Active goals", out)
         self.assertNotIn("## Open tasks", out)
 
