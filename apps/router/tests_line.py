@@ -375,7 +375,7 @@ class LineLinkingFlowTest(TestCase):
 
 class CronDeliveryChannelRoutingTest(TestCase):
     """CronDeliveryView._resolve_channel delegates to the app-first
-    ``resolve_user_channel``: app (iOS device token) → line → telegram → None.
+    ``resolve_user_channel``: app (iOS device token) → telegram → line → None.
     ``preferred_channel`` is not consulted. Uses real Users because the resolver
     now does a DeviceToken lookup for every user (a MagicMock can't back that
     query)."""
@@ -399,11 +399,13 @@ class CronDeliveryChannelRoutingTest(TestCase):
         DeviceToken.objects.create(user=user, tenant=tenant, token="d" * 64)
         self.assertEqual(view._resolve_channel(user), "app")
 
-    def test_resolve_channel_line_before_telegram_without_device(self):
+    def test_resolve_channel_telegram_before_line_without_device(self):
         view = self._get_view()
-        # No device → LINE (step 2) is chosen over Telegram (step 3).
-        user, _ = self._user_tenant("routing_line_tg", telegram_chat_id=456, line_user_id="U_123")
-        self.assertEqual(view._resolve_channel(user), "line")
+        # No device → TELEGRAM (step 2) is chosen over LINE (step 3): both-linked
+        # users keep the Telegram surface the old preferred_channel default gave
+        # them, matching _resolve_gate_channel.
+        user, _ = self._user_tenant("routing_tg_line", telegram_chat_id=456, line_user_id="U_123")
+        self.assertEqual(view._resolve_channel(user), "telegram")
 
     def test_resolve_channel_telegram_when_only_telegram(self):
         view = self._get_view()

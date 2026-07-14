@@ -55,9 +55,17 @@ def resolve_user_channel(user) -> str | None:
        app feed as the PRIMARY surface: the APNs push + the ``?since=`` feed row
        (both produced by ``record_proactive_outbound``) ARE the delivery, so the
        same content no longer ALSO arrives in Telegram/LINE for token-holders.
-    2. else LINE linked → ``"line"``.
-    3. else Telegram linked → ``"telegram"``.
+    2. else Telegram linked → ``"telegram"``.
+    3. else LINE linked → ``"line"``.
     4. else ``None`` (no delivery surface at all).
+
+    Telegram-before-LINE in the messaging fallback (mirroring
+    ``_resolve_gate_channel``) preserves prior behavior for the only both-linked
+    cohort in production. The old resolver honoured ``preferred_channel``
+    (universally the "telegram" schema default), so a user with BOTH channels
+    linked has always received proactive/outbound messages on Telegram — a
+    line-first fallback would silently move their delivery surface to LINE and
+    split it from where their interactive gates land.
 
     ``preferred_channel`` is deliberately NOT honoured. In production all rows
     carry the schema default ``"telegram"`` (nobody ever chose it — the frontend
@@ -79,13 +87,15 @@ def resolve_user_channel(user) -> str | None:
         return "app"
 
     # 2/3. No device — fall back to whichever messaging channel is linked so
-    # linked users without the app keep working.
+    # linked users without the app keep working. Telegram before LINE so a
+    # both-linked user keeps the delivery surface they've always had (see
+    # docstring); line-only users still resolve to LINE.
     line_user_id = getattr(user, "line_user_id", None)
     telegram_chat_id = getattr(user, "telegram_chat_id", None)
-    if line_user_id:
-        return "line"
     if telegram_chat_id:
         return "telegram"
+    if line_user_id:
+        return "line"
 
     return None
 

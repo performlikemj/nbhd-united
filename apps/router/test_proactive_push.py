@@ -300,7 +300,9 @@ class CronDeliveryEmitsPushTest(TestCase):
 class ResolveUserChannelTest(TestCase):
     """Outbound channel resolution order (MJ direction — prefer the app when an
     iOS device token exists; Telegram/LINE preserved for linked users without
-    one): app → line → telegram → None. ``preferred_channel`` is not consulted."""
+    one): app → telegram → line → None. ``preferred_channel`` is not consulted.
+    Telegram before LINE preserves the delivery surface for both-linked users
+    (the old resolver's telegram default) — see ``resolve_user_channel``."""
 
     def setUp(self):
         self.user = _make_user()
@@ -352,14 +354,18 @@ class ResolveUserChannelTest(TestCase):
 
         self.assertEqual(resolve_user_channel(self.user), "line")
 
-    def test_line_beats_telegram_without_token(self):
-        # Both messaging channels linked, no token → LINE (step 2 before step 3).
+    def test_telegram_beats_line_without_token(self):
+        # Both messaging channels linked, no token → TELEGRAM (step 2 before
+        # step 3). The old resolver honoured preferred_channel (universally the
+        # "telegram" default), so both-linked users have always been delivered on
+        # Telegram; a line-first fallback would silently move them to LINE and
+        # split them from where their gates land (_resolve_gate_channel).
         self.user.telegram_chat_id = 999
         self.user.line_user_id = "U" + "1" * 32
         self.user.save()
         from apps.router.cron_delivery import resolve_user_channel
 
-        self.assertEqual(resolve_user_channel(self.user), "line")
+        self.assertEqual(resolve_user_channel(self.user), "telegram")
 
     def test_no_surface_resolves_to_none(self):
         from apps.router.cron_delivery import resolve_user_channel

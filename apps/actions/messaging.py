@@ -317,12 +317,12 @@ def _resolve_gate_channel(user) -> str | None:
     So gate delivery resolves to a LINKED MESSAGING channel (Telegram first,
     then LINE) or fails fast; the app channel is never a gate target.
 
-    Linked-Telegram-first (unlike the resolver's line-before-telegram fallback)
-    because it preserves prior behavior for the only both-linked cohort in
-    production: the old resolver honoured ``preferred_channel`` (universally the
-    "telegram" default), so a user with BOTH channels linked has always received
-    gate buttons on Telegram — flipping them to LINE would silently move the
-    approval surface out from under an active Telegram user. LINE next covers
+    Linked-Telegram-first (matching ``resolve_user_channel``'s messaging
+    fallback) because it preserves prior behavior for the only both-linked cohort
+    in production: the old resolver honoured ``preferred_channel`` (universally
+    the "telegram" default), so a user with BOTH channels linked has always
+    received gate buttons on Telegram — flipping them to LINE would silently move
+    the approval surface out from under an active Telegram user. LINE next covers
     line-only users.
 
     This is the load-bearing exception to the app-first outbound routing: a
