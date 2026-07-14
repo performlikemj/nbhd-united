@@ -561,10 +561,14 @@ class NotifyMeditationReadyTests(TestCase):
 
     @override_settings(LINE_CHANNEL_ACCESS_TOKEN="line-token")
     def test_line_send_and_record(self):
+        # LINE-ONLY user (no telegram_chat_id, no device token). resolve_user_channel
+        # is app → telegram → line and no longer consults preferred_channel, so the
+        # LINE path is reached by LINKAGE alone — this is the line-only cohort
+        # (e.g. Kiho) whose delivery still runs through _send_line_text.
         user = self.tenant.user
         user.line_user_id = "U" + "a" * 32
-        user.preferred_channel = "line"
-        user.save(update_fields=["line_user_id", "preferred_channel"])
+        user.telegram_chat_id = None
+        user.save(update_fields=["line_user_id", "telegram_chat_id"])
         session = self._session()
 
         fake_resp = MagicMock()
@@ -587,10 +591,12 @@ class NotifyMeditationReadyTests(TestCase):
 
     @override_settings(LINE_CHANNEL_ACCESS_TOKEN="line-token")
     def test_line_failure_trips_quota_and_returns_false(self):
+        # LINE-ONLY user, as above — keeps the monthly-quota trip on a LINE 429
+        # genuinely covered rather than silently routing to Telegram.
         user = self.tenant.user
         user.line_user_id = "U" + "b" * 32
-        user.preferred_channel = "line"
-        user.save(update_fields=["line_user_id", "preferred_channel"])
+        user.telegram_chat_id = None
+        user.save(update_fields=["line_user_id", "telegram_chat_id"])
         session = self._session()
 
         fake_resp = MagicMock()
