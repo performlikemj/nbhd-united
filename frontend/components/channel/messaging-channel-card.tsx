@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ChannelGlyph } from "@/components/channel/channel-glyphs";
 import { ChannelPairingPanel } from "@/components/channel/channel-pairing-panel";
@@ -20,6 +20,8 @@ const channelCopy = {
 
 export const LINE_QUOTA_MESSAGE =
   "LINE’s monthly messaging allowance is used up across the platform. You’ll be able to connect LINE again at the start of next month.";
+
+const UNLINK_CONFIRM_TIMEOUT_MS = 10_000;
 
 interface MessagingChannelCardProps {
   channel: MessagingChannel;
@@ -72,6 +74,16 @@ export function MessagingChannelCard({
     ? `${copy.label} connected as ${connectedIdentity}`
     : `${copy.label} connected`;
 
+  useEffect(() => {
+    if (!confirmingUnlink) return;
+
+    const timeout = window.setTimeout(
+      () => setConfirmingUnlink(false),
+      UNLINK_CONFIRM_TIMEOUT_MS,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [confirmingUnlink]);
+
   return (
     <article
       className={`rounded-panel border border-border bg-surface-elevated p-4 transition-colors sm:p-5 ${className}`}
@@ -116,26 +128,39 @@ export function MessagingChannelCard({
 
           {onUnlink ? (
             confirmingUnlink ? (
-              <div className="mt-4 flex flex-wrap items-center gap-2">
-                <span className="text-sm text-ink-muted">Unlink {copy.label}?</span>
-                <button
-                  type="button"
-                  disabled={unlinkPending}
-                  onClick={() => {
-                    onUnlink();
-                    setConfirmingUnlink(false);
-                  }}
-                  className="min-h-[44px] rounded-full border border-rose-border px-4 py-2 text-sm text-rose-text transition hover:bg-rose-bg disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {unlinkPending ? "Unlinking…" : "Confirm unlink"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmingUnlink(false)}
-                  className="min-h-[44px] rounded-full border border-border-strong px-4 py-2 text-sm text-ink-muted transition hover:bg-surface-hover hover:text-ink"
-                >
-                  Cancel
-                </button>
+              <div
+                className="mt-4 rounded-panel border border-rose-border bg-rose-bg p-3"
+                role="alert"
+              >
+                <p className="font-headline text-sm font-semibold text-rose-text">
+                  Ready to unlink {copy.label}?
+                </p>
+                <p className="mt-1 text-sm leading-relaxed text-ink-muted">
+                  Messages through {copy.label} will stop until you connect it again.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={unlinkPending}
+                    onClick={() => {
+                      onUnlink();
+                      setConfirmingUnlink(false);
+                    }}
+                    className="min-h-[44px] rounded-full bg-rose-text/90 px-4 py-2 text-sm font-semibold text-white transition hover:bg-rose-text disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {unlinkPending ? "Unlinking…" : `Yes, unlink ${copy.label}`}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingUnlink(false)}
+                    className="min-h-[44px] rounded-full border border-border-strong px-4 py-2 text-sm text-ink-muted transition hover:bg-surface-hover hover:text-ink"
+                  >
+                    Keep connected
+                  </button>
+                </div>
+                <p className="mt-2 text-xs text-ink-faint">
+                  This confirmation closes automatically after 10 seconds.
+                </p>
               </div>
             ) : (
               <button
