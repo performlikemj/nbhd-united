@@ -1019,10 +1019,13 @@ class ConsumerFuelViewTests(TestCase):
             resp = self.client.get("/api/v1/fuel/calendar/?year=2026&month=4")
         self.assertEqual(resp.status_code, 200)
         plan_queries = [q for q in ctx.captured_queries if "fuel_workout_plans" in q["sql"]]
-        self.assertEqual(
-            plan_queries,
-            [],
-            f"calendar issued {len(plan_queries)} fuel_workout_plans queries (N+1 regressed)",
+        # The per-row N+1 must never return, but the rest-day layer fetches the
+        # tenant's active plans exactly ONCE (a single bulk SELECT) to know which
+        # in-range non-training days to flag — so at most one plan query is OK.
+        self.assertLessEqual(
+            len(plan_queries),
+            1,
+            f"calendar issued {len(plan_queries)} fuel_workout_plans queries (per-row N+1 regressed)",
         )
         # plan_id is still emitted, just sourced from the raw FK column.
         cells = [c for day in resp.data for c in day["workouts"]]
@@ -5815,3 +5818,443 @@ class RuntimePlanSingleActiveTests(TestCase):
         self.assertNotIn("superseded_plans", resp.data)
         self.assertEqual(WorkoutPlan.objects.get(id=b_id).status, "active")  # untouched
         self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, status="active").count(), 2)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Program end date + first-class rest days (read-time)
+# ═════════════════════════════════════════════════════════════════════
+
+
+class ProgramEndDateTests(TestCase):
+    """Track A — WorkoutPlan.end_date property, plan_progress_fields, and the
+    completion-sweep boundary that end_date is defined against."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="EndDate", telegram_chat_id=800501)
+
+    def _plan(self, **kw):
+        defaults = dict(
+            tenant=self.tenant,
+            name="P",
+            start_date=date(2026, 6, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},
+        )
+        defaults.update(kw)
+        return WorkoutPlan.objects.create(**defaults)
+
+    def test_end_date_is_inclusive_last_day(self):
+        # 4 weeks = 28 days; the inclusive last program day is start + 27.
+        self.assertEqual(self._plan(start_date=date(2026, 6, 1), weeks=4).end_date, date(2026, 6, 28))
+
+    def test_end_date_plus_one_equals_completion_boundary(self):
+        # end_date + 1 day == complete_elapsed_plans_task's EXCLUSIVE boundary
+        # (start + weeks*7): the first day the plan counts as over.
+        p = self._plan(start_date=date(2026, 6, 1), weeks=2)
+        self.assertEqual(p.end_date, date(2026, 6, 14))
+        self.assertEqual(p.end_date + timedelta(days=1), p.start_date + timedelta(days=p.weeks * 7))
+
+    @patch("apps.orchestrator.fuel_cron.regenerate_fuel_crons")
+    @patch("apps.common.llm_contracts.today_in_tenant_tz")
+    def test_completion_sweep_boundary_both_sides(self, mock_today, _mock_regen):
+        """Behavioural lock: the sweep leaves the plan active on its inclusive
+        end_date and only completes it the day AFTER — proving the property and
+        the task agree on the boundary (the task is intentionally left untouched;
+        the property cross-references it)."""
+        from apps.orchestrator.tasks import complete_elapsed_plans_task
+
+        p = self._plan(start_date=date(2026, 6, 1), weeks=2)  # end_date 2026-06-14
+        mock_today.return_value = p.end_date  # inclusive last day → still running
+        complete_elapsed_plans_task()
+        p.refresh_from_db()
+        self.assertEqual(p.status, "active")
+
+        mock_today.return_value = p.end_date + timedelta(days=1)  # exclusive boundary → over
+        complete_elapsed_plans_task()
+        p.refresh_from_db()
+        self.assertEqual(p.status, "completed")
+
+    def test_plan_progress_fields(self):
+        from apps.fuel.services import plan_progress_fields
+
+        p = self._plan(start_date=date(2026, 6, 1), weeks=4)  # end 2026-06-28
+        self.assertEqual(
+            plan_progress_fields(p, date(2026, 6, 1)),
+            {"end_date": "2026-06-28", "days_remaining": 27, "current_week": 1},
+        )
+        self.assertEqual(plan_progress_fields(p, date(2026, 6, 10))["current_week"], 2)  # day 9 → week 2
+        self.assertEqual(plan_progress_fields(p, date(2026, 6, 10))["days_remaining"], 18)
+        self.assertEqual(
+            plan_progress_fields(p, date(2026, 6, 28)),  # final day → 0 remaining
+            {"end_date": "2026-06-28", "days_remaining": 0, "current_week": 4},
+        )
+        self.assertEqual(plan_progress_fields(p, date(2026, 5, 20))["current_week"], 1)  # before start → clamp 1
+        after = plan_progress_fields(p, date(2026, 7, 1))  # after end → clamp to weeks, 0 remaining
+        self.assertEqual(after["current_week"], 4)
+        self.assertEqual(after["days_remaining"], 0)
+
+    def test_serialize_plan_helper_exposes_progress(self):
+        from apps.fuel.runtime_views import _serialize_plan
+
+        data = _serialize_plan(self._plan(start_date=date(2026, 6, 1), weeks=4), today=date(2026, 6, 10))
+        self.assertEqual(data["end_date"], "2026-06-28")
+        self.assertEqual(data["current_week"], 2)
+        self.assertEqual(data["days_remaining"], 18)
+
+    def test_workout_plan_serializer_exposes_progress(self):
+        from apps.fuel.serializers import WorkoutPlanSerializer
+
+        data = WorkoutPlanSerializer(
+            self._plan(start_date=date(2026, 6, 1), weeks=4), context={"today": date(2026, 6, 10)}
+        ).data
+        self.assertEqual(data["end_date"], "2026-06-28")
+        self.assertEqual(data["current_week"], 2)
+        self.assertIn("days_remaining", data)
+
+    def test_no_migration_added(self):
+        # end_date is a derived property, never a column — makemigrations must
+        # stay clean (mirrors the guardrail the CI gate enforces).
+        from django.core.management import call_command
+
+        try:
+            call_command("makemigrations", "fuel", check=True, dry_run=True, verbosity=0)
+        except SystemExit as exc:  # check=True exits non-zero on drift
+            self.fail(f"unexpected model↔migration drift (exit {exc.code})")
+
+
+class ProgramLineEnvelopeTests(TestCase):
+    """Track A3 / B2 — the envelope program-progress line and interleaved rest days."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="ProgLine", telegram_chat_id=800502)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+
+    def _active_plan(self):
+        from apps.common.tenant_tz import tenant_today
+
+        today = tenant_today(self.tenant)
+        monday = today - timedelta(days=today.weekday())  # this week's Monday
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Prog",
+            start_date=monday,
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},  # Mon/Wed/Fri
+            status="active",
+        )
+        return today, monday
+
+    def test_program_line_present(self):
+        from apps.fuel.envelope import render_fuel
+
+        self._active_plan()
+        body = render_fuel(self.tenant)
+        self.assertIn("**Program**: Week 1 of 4 — ends", body)
+
+    def test_rest_days_interleaved(self):
+        from apps.fuel.envelope import render_fuel
+
+        _today, monday = self._active_plan()
+        body = render_fuel(self.tenant)
+        self.assertIn("rest day", body)
+        # The nearest Sunday (weekday 6, a rest day) sits inside the window.
+        sunday = monday + timedelta(days=6)
+        self.assertIn(sunday.strftime("%m-%d"), body)
+
+
+class RestDatesServiceTests(TestCase):
+    """Track B1 — the pure rest_dates_for_window helper."""
+
+    def setUp(self):
+        from apps.fuel.services import rest_dates_for_window
+
+        self.fn = rest_dates_for_window
+        self.tenant = create_tenant(display_name="RestSvc", telegram_chat_id=800520)
+
+    def _plan(self, **kw):
+        defaults = dict(
+            tenant=self.tenant,
+            name="P",
+            start_date=date(2026, 6, 1),  # a Monday
+            weeks=2,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},  # Mon/Wed/Fri
+            status="active",
+        )
+        defaults.update(kw)
+        return WorkoutPlan.objects.create(**defaults)
+
+    def test_base_three_day_plan(self):
+        self._plan()
+        rest = self.fn(self.tenant, date(2026, 6, 1), date(2026, 6, 14))
+        self.assertIn(date(2026, 6, 2), rest)  # Tue — rest
+        self.assertIn(date(2026, 6, 7), rest)  # Sun — rest
+        self.assertNotIn(date(2026, 6, 1), rest)  # Mon — trains
+        self.assertNotIn(date(2026, 6, 3), rest)  # Wed — trains
+        self.assertEqual(len(rest), 8)  # 4 rest weekdays × 2 weeks
+
+    def test_week_override_null_day_is_rest(self):
+        self._plan(week_overrides={"1": {"4": None}})  # rest Friday of week 1 (2026-06-12)
+        rest = self.fn(self.tenant, date(2026, 6, 1), date(2026, 6, 14))
+        self.assertIn(date(2026, 6, 12), rest)  # Fri of week 1 now rests
+        self.assertNotIn(date(2026, 6, 5), rest)  # Fri of week 0 still trains
+
+    def test_multi_plan_union_rest_only_if_no_plan_trains(self):
+        self._plan(name="A", schedule_json={"0": {}}, weeks=1)  # trains Mon
+        self._plan(name="B", schedule_json={"1": {}}, weeks=1)  # trains Tue
+        rest = self.fn(self.tenant, date(2026, 6, 1), date(2026, 6, 7))
+        self.assertNotIn(date(2026, 6, 1), rest)  # Mon trained by A
+        self.assertNotIn(date(2026, 6, 2), rest)  # Tue trained by B
+        self.assertIn(date(2026, 6, 3), rest)  # Wed — neither trains
+
+    def test_out_of_range_excluded(self):
+        self._plan(weeks=2)  # covers 2026-06-01 .. 2026-06-14
+        rest = self.fn(self.tenant, date(2026, 5, 30), date(2026, 6, 21))
+        self.assertNotIn(date(2026, 5, 31), rest)  # before start_date
+        self.assertNotIn(date(2026, 6, 15), rest)  # after end_date
+        self.assertNotIn(date(2026, 6, 20), rest)
+
+    def test_paused_and_completed_contribute_nothing(self):
+        self._plan(status="paused")
+        self._plan(name="Done", status="completed")
+        self.assertEqual(self.fn(self.tenant, date(2026, 6, 1), date(2026, 6, 14)), set())
+
+    def test_timezone_boundary_uses_tenant_local_date(self):
+        from datetime import datetime
+
+        from apps.common.tenant_tz import tenant_today
+
+        self.tenant.user.timezone = "Asia/Tokyo"
+        self.tenant.user.save(update_fields=["timezone"])
+        self._plan()  # trains Mon/Wed/Fri from 2026-06-01
+        # 2026-06-01T23:00Z is 2026-06-02 08:00 in Tokyo — a Tuesday (rest),
+        # whereas the UTC date 2026-06-01 is a Monday (a training day). The
+        # tenant-local date must decide, so 2026-06-02 reads as rest.
+        with patch("django.utils.timezone.now", return_value=datetime(2026, 6, 1, 23, 0, tzinfo=UTC)):
+            today = tenant_today(self.tenant)
+            self.assertEqual(today, date(2026, 6, 2))
+            rest = self.fn(self.tenant, today, today)
+        self.assertIn(date(2026, 6, 2), rest)
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class RestDaysRuntimeTests(TestCase):
+    """Track B3 — rest days in the summary (rest_today) and audit payloads."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="RestRuntime", telegram_chat_id=800530)
+        seed_internal_key(self.tenant)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _rest_today_plan(self):
+        # A plan covering today whose single training weekday is NOT today's, so
+        # today is a programmed rest day regardless of the real calendar weekday.
+        today = today_in_tenant_tz(self.tenant)
+        monday = today - timedelta(days=today.weekday())
+        train_wd = (today.weekday() + 2) % 7
+        return WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="RestPlan",
+            start_date=monday,
+            weeks=4,
+            days_per_week=1,
+            schedule_json={str(train_wd): {}},
+            status="active",
+        )
+
+    def _summary(self):
+        return self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/summary/", **self.headers)
+
+    def test_summary_rest_today_true_on_programmed_rest(self):
+        self._rest_today_plan()
+        resp = self._summary()
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertTrue(resp.data["rest_today"])
+
+    def test_summary_rest_today_false_when_today_trained(self):
+        today = today_in_tenant_tz(self.tenant)
+        monday = today - timedelta(days=today.weekday())
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="TrainToday",
+            start_date=monday,
+            weeks=4,
+            days_per_week=1,
+            schedule_json={str(today.weekday()): {}},
+            status="active",
+        )
+        self.assertFalse(self._summary().data["rest_today"])
+
+    def test_summary_rest_today_false_without_plan(self):
+        self.assertFalse(self._summary().data["rest_today"])
+
+    def test_summary_rest_today_false_when_adhoc_row_present(self):
+        self._rest_today_plan()
+        Workout.objects.create(
+            tenant=self.tenant,
+            date=today_in_tenant_tz(self.tenant),
+            status="done",
+            category="cardio",
+            activity="Impromptu run",
+        )
+        self.assertFalse(self._summary().data["rest_today"])  # ad-hoc row wins over rest
+
+    def test_summary_active_plans_carry_progress(self):
+        self._rest_today_plan()
+        ap = self._summary().data["active_plans"][0]
+        for key in ("end_date", "days_remaining", "current_week"):
+            self.assertIn(key, ap)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_injects_rest_days(self, mock_invoke):
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._rest_today_plan()
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        self.assertEqual(resp.status_code, 200, resp.data)
+        rest_entries = [w for w in resp.data["next_14d_workouts"] if w.get("status") == "rest"]
+        self.assertTrue(rest_entries)
+        self.assertEqual(rest_entries[0]["activity"], "Rest day")
+        # today is a programmed rest day → the rest entry flows into today_plan.workouts.
+        self.assertIn("rest", [w.get("status") for w in resp.data["today_plan"]["workouts"]])
+        # active_plans carry the progress fields too.
+        self.assertIn("end_date", resp.data["active_plans"][0])
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_rest_never_on_a_real_row(self, mock_invoke):
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._rest_today_plan()
+        today = today_in_tenant_tz(self.tenant)
+        Workout.objects.create(tenant=self.tenant, date=today, status="done", category="cardio", activity="Real run")
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        today_entries = [w for w in resp.data["next_14d_workouts"] if w["date"] == str(today)]
+        self.assertTrue(today_entries)
+        self.assertNotIn("rest", [w.get("status") for w in today_entries])  # real row wins, no rest dup
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_guidance_rest_day_not_already_on_calendar(self, mock_invoke):
+        """On a pure programmed rest day the guidance must say REST — never the
+        'already on the calendar … deliver the planned session' branch, which
+        would instruct the agent to push a session onto a rest day (the exact
+        product harm this feature exists to prevent)."""
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._rest_today_plan()
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        guidance = resp.data["guidance"]
+        self.assertIn("programmed rest day", guidance)
+        self.assertIn("Do NOT propose or deliver a training session", guidance)
+        self.assertNotIn("already on the calendar", guidance)
+        self.assertNotIn("deliver the planned session", guidance)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_audit_guidance_real_row_keeps_existing_branch(self, mock_invoke):
+        """A real row today (training day) keeps the existing 'already on the
+        calendar' guidance verbatim — the rest branch fires only when EVERY
+        today entry is a rest stub."""
+        mock_invoke.return_value = {"details": {"jobs": []}}
+        self._rest_today_plan()
+        today = today_in_tenant_tz(self.tenant)
+        Workout.objects.create(
+            tenant=self.tenant, date=today, status="planned", category="strength", activity="Leg Day"
+        )
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/audit/", **self.headers)
+        guidance = resp.data["guidance"]
+        self.assertIn("already on the calendar", guidance)
+        self.assertNotIn("programmed rest day —", guidance)
+
+
+class RestDaysCalendarTests(TestCase):
+    """Track B4 — day-level rest flags in the calendar payload."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="RestCal", telegram_chat_id=800540)
+
+    def _plan(self, **kw):
+        defaults = dict(
+            tenant=self.tenant,
+            name="Cal",
+            start_date=date(2026, 6, 1),
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},
+            status="active",
+        )
+        defaults.update(kw)
+        return WorkoutPlan.objects.create(**defaults)
+
+    def test_rest_days_flagged(self):
+        from apps.fuel.views import _calendar_month_payload
+
+        self._plan()
+        by_date = {e["date"]: e for e in _calendar_month_payload(self.tenant, 2026, 6)}
+        self.assertTrue(by_date["2026-06-02"]["rest"])  # Tue — programmed rest
+        self.assertEqual(by_date["2026-06-02"]["workouts"], [])  # day-level flag, no stub
+        self.assertNotIn("2026-06-01", by_date)  # Mon trains but has no real row → absent
+
+    def test_adhoc_row_wins_over_rest(self):
+        from apps.fuel.views import _calendar_month_payload
+
+        self._plan()
+        Workout.objects.create(
+            tenant=self.tenant, date=date(2026, 6, 2), status="done", category="cardio", activity="Surprise run"
+        )
+        entry = {e["date"]: e for e in _calendar_month_payload(self.tenant, 2026, 6)}["2026-06-02"]
+        self.assertNotIn("rest", entry)  # real row wins
+        self.assertEqual(len(entry["workouts"]), 1)
+
+    def test_workout_day_entries_byte_compatible(self):
+        from apps.fuel.views import _calendar_month_payload
+
+        # No active plan → no rest layer; a workout day keeps the exact old shape.
+        Workout.objects.create(tenant=self.tenant, date=date(2026, 6, 3), category="strength", activity="Push")
+        payload = _calendar_month_payload(self.tenant, 2026, 6)
+        self.assertEqual([e["date"] for e in payload], ["2026-06-03"])
+        self.assertEqual(set(payload[0].keys()), {"date", "workouts"})  # no ``rest`` key
+
+
+class RestDayVolumeRegressionTests(TestCase):
+    """Guardrail — rest days are read-time only; they contribute zero volume."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="RestVol", telegram_chat_id=800550)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+
+    def test_weekly_volume_identical_with_and_without_rest_days(self):
+        from apps.common.tenant_tz import tenant_today
+        from apps.fuel.services import weekly_trends
+
+        today = tenant_today(self.tenant)
+        for off in (0, 2, 5):
+            Workout.objects.create(
+                tenant=self.tenant,
+                date=today - timedelta(days=off),
+                status="done",
+                category="strength",
+                activity="Lift",
+                duration_minutes=45,
+            )
+        baseline = weekly_trends(self.tenant)
+
+        # Add an active plan — introduces programmed rest days across the read
+        # paths — and assert the volume aggregates are byte-identical.
+        monday = today - timedelta(days=today.weekday())
+        WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Vol",
+            start_date=monday,
+            weeks=4,
+            days_per_week=3,
+            schedule_json={"0": {}, "2": {}, "4": {}},
+            status="active",
+        )
+        self.assertEqual(weekly_trends(self.tenant), baseline)
+        self.assertEqual(baseline["sessions_28d"], 3)
