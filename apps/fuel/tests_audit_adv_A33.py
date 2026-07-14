@@ -33,7 +33,15 @@ from apps.tenants.services import create_tenant
 
 def _make_valid_schedule():
     return {
-        "0": {"category": "strength", "activity": "Squat", "target_rpe": 8},
+        "0": {
+            "category": "strength",
+            "activity": "Squat",
+            "target_rpe": 8,
+            # Strength days require a real prescription at the create chokepoint.
+            "detail_json": {
+                "exercises": [{"name": "Squat", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 60}]}]
+            },
+        },
         "2": {"category": "cardio", "activity": "Run", "duration_minutes": 30},
     }
 

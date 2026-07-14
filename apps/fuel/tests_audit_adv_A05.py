@@ -18,6 +18,13 @@ from apps.fuel.models import Workout, WorkoutPlan
 from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
+# Strength days require a real prescription at the create/override chokepoint.
+_STRENGTH_DETAIL = {
+    "detail_json": {
+        "exercises": [{"name": "Bench Press", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 60}]}]
+    }
+}
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
 class RuntimePlanPatchWeekOverridesMaterializationTests(TestCase):
@@ -52,8 +59,8 @@ class RuntimePlanPatchWeekOverridesMaterializationTests(TestCase):
                 "days_per_week": 2,
                 "start_date": "2026-06-15",
                 "schedule_json": {
-                    "0": {"category": "strength", "activity": "Heavy Squats", "target_rpe": 9},
-                    "2": {"category": "strength", "activity": "Heavy Bench", "target_rpe": 9},
+                    "0": {"category": "strength", "activity": "Heavy Squats", "target_rpe": 9, **_STRENGTH_DETAIL},
+                    "2": {"category": "strength", "activity": "Heavy Bench", "target_rpe": 9, **_STRENGTH_DETAIL},
                 },
             },
             format="json",
@@ -79,7 +86,7 @@ class RuntimePlanPatchWeekOverridesMaterializationTests(TestCase):
             data={
                 "week_overrides": {
                     "1": {
-                        "0": {"category": "strength", "activity": "Deload Squats", "target_rpe": 5},
+                        "0": {"category": "strength", "activity": "Deload Squats", "target_rpe": 5, **_STRENGTH_DETAIL},
                         "2": None,
                     }
                 }

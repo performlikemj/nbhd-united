@@ -706,7 +706,7 @@ export default function register(api) {
           schedule_json: {
             type: "object",
             description:
-              'Weekly template. Keys are weekday indices ("0"=Mon, "1"=Tue, ..., "6"=Sun). Values are workout definitions with activity, category, optional duration_minutes and detail_json. Only include training days — rest days are implied by absence.',
+              'Weekly template. Keys are weekday indices ("0"=Mon, "1"=Tue, ..., "6"=Sun). Values are workout definitions with activity, category, optional duration_minutes and detail_json. Only include training days — rest days are implied by absence. On strength and calisthenics days detail_json.exercises is REQUIRED: the server rejects an empty prescription (400 with the offending weekday) so an empty strength day never reaches the calendar.',
             additionalProperties: {
               type: "object",
               properties: {
@@ -719,7 +719,7 @@ export default function register(api) {
                 detail_json: {
                   type: "object",
                   description:
-                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: {"exercises": [{"name": "...", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is one of weighted_reps | bodyweight_reps | hold_time; the backend validates strength/calisthenics and rejects malformed sets so you can self-correct). Cardio: {"distance_km": 5, "pace": "5:30"} (or duration-only if pace is left to feel). HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility: {"blocks": ["hip openers", "thoracic rotation"]}. Leaving this empty means the user opens the workout in the UI and sees no plan for the day.',
+                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: REQUIRED — {"exercises": [{"name": "...", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is one of weighted_reps | bodyweight_reps | hold_time). The backend validates strength/calisthenics and rejects both malformed sets AND an empty prescription with a 400 carrying the offending weekday, so design the real programming and self-correct — do not switch the category to dodge the requirement. Cardio: {"distance_km": 5, "pace": "5:30"} (or duration-only if pace is left to feel). HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility: {"blocks": ["hip openers", "thoracic rotation"]}. Leaving a strength/calisthenics day empty is rejected; leaving a cardio/HIIT/mobility day empty just means the user sees only the activity name in the UI.',
                 },
                 target_rpe: {
                   type: "integer",
@@ -782,7 +782,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_update_plan",
       description:
-        "Update an existing workout plan. Can change name, status (active/paused/completed/archived), notes, or schedule. If schedule_json or weeks change, future planned workouts are regenerated from the new template; per-workout customisations (detail_json, duration_minutes, scheduled_at, notes) are preserved across the regen when the (date, activity) pair still matches. To intentionally clear a day's exercises, rename its activity. Use this for swapping exercises, changing frequency, pausing, or completing a plan.",
+        "Update an existing workout plan. Can change name, status (active/paused/completed/archived), notes, or schedule. If schedule_json or weeks change, future planned workouts are regenerated from the new template; per-workout customisations (detail_json, duration_minutes, scheduled_at, notes) are preserved across the regen when the (date, activity) pair still matches. Omit detail_json for a day to leave its existing prescription untouched. If you DO send a strength/calisthenics day's detail_json it must include a non-empty exercises list — the server rejects an explicitly-empty strength/calisthenics prescription with a 400 (design real programming, don't switch category to dodge it). To intentionally clear a day's exercises, rename its activity. Use this for swapping exercises, changing frequency, pausing, or completing a plan.",
       parameters: {
         type: "object",
         additionalProperties: false,

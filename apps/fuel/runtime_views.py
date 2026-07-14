@@ -926,7 +926,26 @@ def _serialize_plan(plan, include_workouts=False):
     return data
 
 
-def _validate_normalize_schedule(schedule_json):
+_EMPTY_PRESCRIPTION_EXAMPLE = {
+    "exercises": [{"name": "Bench Press", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 60}]}]
+}
+
+
+def _has_prescription(detail) -> bool:
+    """True when ``detail`` carries at least one exercise (or calisthenics
+    ``skills``) entry.
+
+    Used to reject strength/calisthenics plan days whose normalized
+    ``detail_json`` would expand into a planned Workout with no exercises at
+    all — the empty-plan bug the iOS Fuel tab surfaces (activity name shown, but
+    zero exercises to do).
+    """
+    if not isinstance(detail, dict):
+        return False
+    return any(isinstance(detail.get(key), list) and detail.get(key) for key in ("exercises", "skills"))
+
+
+def _validate_normalize_schedule(schedule_json, *, require_detail=True):
     """Validate weekday keys + normalize/validate each day's prescription.
 
     Returns ``(normalized_schedule, error_response)``. On any problem
@@ -935,6 +954,15 @@ def _validate_normalize_schedule(schedule_json):
     ``detail_json`` is the culprit, so the agent self-corrects in-loop (the same
     chokepoint the log-workout path uses). Atomic by design: the caller persists
     nothing unless the whole schedule validates.
+
+    ``require_detail`` (default True, the create path) additionally rejects any
+    strength/calisthenics day whose prescription is empty — even when the caller
+    supplied no ``detail_json`` at all — because a fresh plan expands every day
+    into a brand-new Workout, and an empty strength day means the user opens it
+    to no exercises. On the update path pass ``require_detail=False``: there a
+    day that OMITS ``detail_json`` is a "leave the existing prescription alone"
+    signal (the caller strips the injected empty key), so only a day that
+    explicitly supplied an empty ``detail_json`` is rejected.
     """
     from .set_contract import normalize_detail, validate_detail
 
@@ -963,11 +991,48 @@ def _validate_normalize_schedule(schedule_json):
             category = "other"
         activity = str(workout_def.get("activity") or WorkoutCategory(category).label).strip()
 
+        detail_supplied = "detail_json" in workout_def
         detail = workout_def.get("detail_json", {}) or {}
         detail, category = normalize_detail(detail, category, activity=activity)[:2]
         detail, verr = validate_detail(detail, category)
         if verr is not None:
             payload = dict(verr.as_tool_result())
+            payload["weekday"] = day_int
+            return None, Response(payload, status=status.HTTP_400_BAD_REQUEST)
+
+        # A strength/calisthenics day with no exercises passes validate_detail
+        # (it only checks sets that ARE present) but expands into a planned
+        # Workout with nothing to do — the empty-plan the iOS Fuel tab surfaces.
+        # Reject it in the same self-correction envelope the malformed-set path
+        # uses so the agent adds a real prescription and retries in-loop. Skip
+        # days that merely omitted detail_json on the update path
+        # (require_detail=False): those mean "leave the existing plan alone" and
+        # the caller strips the injected empty key — enforcing here would wedge
+        # a status/duration-only edit of a legacy plan.
+        if (
+            category in ("strength", "calisthenics")
+            and (require_detail or detail_supplied)
+            and not _has_prescription(detail)
+        ):
+            from apps.common.llm_contracts import LLMValidationError
+
+            pres_err = LLMValidationError(
+                message=(
+                    "Strength and calisthenics training days require an exercise "
+                    "prescription. Add at least one exercise with sets under "
+                    "detail_json.exercises before retrying — design the real "
+                    "programming for the day, don't drop the category to dodge this."
+                ),
+                details=[
+                    {
+                        "loc": ["schedule_json", str(day_int), "detail_json", "exercises"],
+                        "msg": "strength/calisthenics days require a non-empty exercises list",
+                        "type": "missing_prescription",
+                        "example": _EMPTY_PRESCRIPTION_EXAMPLE,
+                    }
+                ],
+            )
+            payload = dict(pres_err.as_tool_result())
             payload["weekday"] = day_int
             return None, Response(payload, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1490,7 +1555,12 @@ class RuntimeWorkoutPlanDetailView(APIView):
             # rather than landing unvalidated in future Workout.detail_json via
             # reconcile/apply (which does no detail validation).
             raw_schedule = data["schedule_json"]
-            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule)
+            # require_detail=False: a day that omits detail_json here means
+            # "leave the existing prescription alone" (its injected empty key is
+            # stripped below), so only a day that explicitly supplied an empty
+            # strength/calisthenics detail_json is rejected — a status/duration
+            # edit of a legacy plan must not be retro-wedged.
+            normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule, require_detail=False)
             if sched_err is not None:
                 return sched_err
             # _validate_normalize_schedule injects a ``detail_json`` key on every
