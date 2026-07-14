@@ -281,6 +281,16 @@ class ProactiveOutbound(models.Model):
         # iOS-only users have no Telegram/LINE chat id — the message is delivered
         # as an APNs push + a ?since= feed row, so the iOS app is its own channel.
         APP = "app"
+        # SYNTHETIC EVAL TENANTS ONLY (``Tenant.is_synthetic``). A sink: nothing is
+        # sent anywhere, and THIS ROW IS THE DELIVERY — it is the evidence the eval
+        # suites assert on. Before it existed, a synthetic tenant had no delivery
+        # surface at all, so CronDeliveryView 422'd and no row was ever written:
+        # the eval-behavior tenant has ZERO ProactiveOutbound rows to this day, and
+        # even its one PASSING reminder run delivered nothing a user would ever see.
+        # ``resolve_user_channel`` gates this on ``is_synthetic``, so a real user's
+        # message can NEVER land in the sink — a real user with no channel is still
+        # a genuine 422.
+        EVAL = "eval"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(

@@ -346,7 +346,34 @@ def build_conversation_digest(tenant) -> str:
     tenant-local date; previous days are a terse per-day rollup; a trailing block
     replays recent proactive sends for cron-to-cron dedup (D2). Deterministic —
     no LLM, no summarization.
+
+    SYNTHETIC EVAL TENANTS GET NO DIGEST — see the guard below.
     """
+    # This block is what silently defeated the behavior suite's per-scenario
+    # isolation. The transport opens a FRESH ChatThread per scenario (its own
+    # OpenClaw session, empty transcript) — and then the platform handed that
+    # session the last N turns from EVERY thread ("captured across channels"), so
+    # scenarios read each other's conversations anyway.
+    #
+    # Observed in production (behavior runs 72/79): the assistant opening a
+    # manipulation scenario with "nice try AGAIN", and repeating its own prior
+    # REFUSAL verbatim ("same answer as before — I don't have the ability to send
+    # you a push notification") inside a thread that had never seen it. That made
+    # a single bad turn self-reinforcing: once the reminder scenario failed, it
+    # read its own refusal back and failed for the rest of the day.
+    #
+    # So the ``isolated: True`` flag every behavior result stamps was FALSE
+    # PROVENANCE. Suppressing the digest here makes it true, and delivers what
+    # docs/evals-directive.md §Suite 1 already promised: "a workspace reset between
+    # runs so behavior runs never pollute".
+    #
+    # Consequence, stated rather than hidden: the behavior suite now measures
+    # FIRST-CONTACT behavior — which is exactly what a new subscriber's first chat
+    # is, and the case the reminder bug actually broke. A warm-continuity scenario
+    # would need its own tenant with the digest left on.
+    if getattr(tenant, "is_synthetic", False):
+        return ""
+
     from apps.common.tenant_tz import tenant_today
 
     today = tenant_today(tenant)

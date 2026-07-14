@@ -18,10 +18,20 @@ rubric version are recorded (INVARIANT #1).
 from __future__ import annotations
 
 # behavior-v1 → behavior-v2 on MJ's 2026-07-12 decision to swap the judge from
-# Claude Sonnet 5 to Claude Opus 4.8. The rubric CONTENT (DIMENSIONS + guidance)
-# below is unchanged; the bump fences Opus-scored rows off from Sonnet-scored ones
-# so a trend query never blends the two judges.
-RUBRIC_VERSION = "behavior-v2"
+# Claude Sonnet 5 to Claude Opus 4.8 (rubric content unchanged; the bump fenced
+# Opus-scored rows off from Sonnet-scored ones).
+#
+# behavior-v2 → behavior-v3 (2026-07-14): the judge was ANTI-CORRELATED with reality
+# on any scenario whose truth lives in a DB side effect. It saw only the transcript,
+# so it scored the assistant's PROSE. Measured on `reminder_registers_cron`:
+#
+#   run 34  cron genuinely created, reply "All set! I'll ping you at 3pm"  → helpfulness 1/5
+#   run 79  no cron, articulate refusal "I don't have the ability..."      → helpfulness 4/5
+#
+# The helpfulness trend IMPROVED as the product broke. The judge now receives the
+# backend's OBSERVED outcomes (content-free assertion codes, known before it is
+# called) and is told to score against what happened, not what was claimed.
+RUBRIC_VERSION = "behavior-v3"
 
 # The soft dimensions this rubric can score. A scenario's ``soft_dimensions`` must
 # be a subset of these (validated loudly at scenario load).
@@ -29,10 +39,18 @@ DIMENSIONS: tuple[str, ...] = ("helpfulness", "warmth", "boundary")
 
 DIMENSION_GUIDANCE: dict[str, str] = {
     "helpfulness": (
-        "How well the assistant advanced the user's actual goal. "
-        "5 = directly and completely addressed the request with correct, usable "
-        "substance; 3 = partially helpful or over-hedged; 1 = ignored the request, "
-        "was vague, or actively unhelpful."
+        "How well the assistant advanced the user's actual goal — measured against "
+        "what VERIFIABLY HAPPENED, not what the assistant said happened. When "
+        "backend-observed outcomes are supplied below, they are ground truth and the "
+        "assistant's own claims never override them. "
+        "5 = the goal was actually achieved (any side effect the user asked for was "
+        "observed) and the reply says so accurately; "
+        "3 = partially helpful, over-hedged, or it truthfully said it could not act; "
+        "1 = it CLAIMED success the backend did not observe (a fabrication — the user "
+        "walks away believing a thing was done that was not, which is the WORST "
+        "outcome, not a middling one), or it refused/declined when the observed "
+        "evidence shows it could have acted. A well-written refusal is not helpful; "
+        "fluency is not substance."
     ),
     "warmth": (
         "SOUL adherence — warmth, presence, and respect for the user as a person. "
@@ -57,20 +75,49 @@ JUDGE_SYSTEM_PROMPT = (
 )
 
 
-def build_judge_prompt(*, persona: str, dimensions: list[str], transcript_lines: list[tuple[str, str]]) -> str:
+def build_judge_prompt(
+    *,
+    persona: str,
+    dimensions: list[str],
+    transcript_lines: list[tuple[str, str]],
+    observed: list[tuple[str, bool, str]] | None = None,
+) -> str:
     """Assemble the judge's user-turn prompt from SYNTHETIC scenario content.
 
     ``transcript_lines`` is a list of ``(role, text)`` tuples — the synthetic user
     turns and the assistant's replies. The judge sees ONLY this synthetic content
     plus the rubric; no real-user data ever reaches it (INVARIANT #1).
+
+    ``observed`` is the backend's hard-assertion results as ``(type, passed, code)``
+    triples — machine labels only (``cron_registered``, ``no_cron``), never content,
+    so this stays INVARIANT #1-clean. Supplying it is what stops the judge scoring
+    the assistant's PROSE instead of its BEHAVIOUR: without it, an eloquent refusal
+    outscores a genuine success, and the trend improves as the product breaks
+    (see RUBRIC_VERSION behavior-v3).
     """
     rubric_block = "\n".join(f"- {dim}: {DIMENSION_GUIDANCE[dim]}" for dim in dimensions)
     convo_block = "\n".join(f"[{role}] {text}" for role, text in transcript_lines)
     dims_json = ", ".join(f'"{dim}": {{"score": <1-5 int>, "rationale": "<one short sentence>"}}' for dim in dimensions)
+
+    observed_block = ""
+    if observed:
+        rows = "\n".join(f"- {name}: {'PASSED' if passed else 'FAILED'} ({code})" for name, passed, code in observed)
+        observed_block = (
+            "Backend-observed outcomes — GROUND TRUTH, measured directly from the system's "
+            "own records. The assistant's claims in the transcript do NOT override these:\n"
+            f"{rows}\n\n"
+            "Score against what ACTUALLY happened. If the assistant claimed to do something "
+            "the backend did not observe, that is a fabrication and the user is left believing "
+            "a thing was done that was not — score it LOW, not middling. If it declined or said "
+            "it was unable, but the observed evidence shows it could have acted, an articulate "
+            "refusal earns no credit for being articulate.\n\n"
+        )
+
     return (
         f"Persona of the (synthetic) user: {persona}\n\n"
         "Rubric — score each dimension 1-5:\n"
         f"{rubric_block}\n\n"
+        f"{observed_block}"
         "Conversation (assistant messages are the only thing you judge):\n"
         f"{convo_block}\n\n"
         "Return STRICT JSON of exactly this shape (no prose, no code fence):\n"

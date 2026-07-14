@@ -80,6 +80,29 @@ def resolve_user_channel(user) -> str | None:
     if DeviceToken.objects.filter(user=user).exists():
         return "app"
 
+    # SYNTHETIC EVAL TENANTS: a sink channel instead of "no delivery surface".
+    #
+    # A synthetic tenant has no phone and no chat account, so it used to fall
+    # through to None → HTTP 422 no_channel_linked → CronDeliveryView returned
+    # before record_proactive_outbound, and NOTHING was written. The consequence
+    # was green theater: the eval-behavior tenant has zero ProactiveOutbound rows
+    # ever recorded, and even its one PASSING reminder scenario delivered nothing —
+    # the cron fired, 422'd, and no assertion could have caught it.
+    #
+    # The journey probe worked around this by planting a FAKE APNs DeviceToken
+    # before every run so the "app" branch would resolve. That hack is
+    # self-destroying: a successful delivery pushes to the fabricated token, APNs
+    # rejects it as BadDeviceToken, and push_views PRUNES the row — so every pass
+    # destroyed the channel for the next fire (prod runs 8→9 alternated
+    # pass/fail forever). The sink removes the need for it entirely.
+    #
+    # Gated on ``is_synthetic`` — the same standing invariant that keeps synthetic
+    # tenants out of every business aggregate (evals-directive §1.5). A REAL user
+    # with no channel still gets a 422; that is a genuine error and must stay loud.
+    tenant = getattr(user, "tenant", None)
+    if getattr(tenant, "is_synthetic", False):
+        return "eval"
+
     return None
 
 
@@ -222,6 +245,24 @@ class CronDeliveryView(APIView):
             # per-user app identifier.
             channel_user_id = str(tenant.user_id)
             resp = Response({"status": "sent", "channel": "app"})
+        elif channel == "eval":
+            # SYNTHETIC EVAL TENANT — a sink. NOTHING leaves the process: no
+            # Telegram, no LINE, no APNs. The ProactiveOutbound row written below
+            # IS the delivery, and it is the evidence the eval suites assert on.
+            #
+            # This branch MUST sit above the telegram fallback below: that fallback
+            # is an ``else``, so an unrecognised channel would silently attempt a
+            # real Telegram send with an empty chat_id. A sink that leaks is worse
+            # than no sink.
+            channel_user_id = str(tenant.user_id)
+            resp = Response({"status": "sent", "channel": "eval"})
+            # Counts + ids only — never the body (evals-directive INVARIANT #1).
+            logger.info(
+                "eval sink delivery: tenant=%s job=%s chars=%d",
+                str(tenant.id)[:8],
+                (request.headers.get("X-NBHD-Job-Name", "") or "-")[:64],
+                len(message_text),
+            )
         else:
             channel_user_id = str(tenant.user.telegram_chat_id or "")
             resp = self._send_via_telegram(

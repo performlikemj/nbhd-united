@@ -19,21 +19,13 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.cron.models import CronJob
-from apps.evals.journey.targets import (
-    SYNTHETIC_DEVICE_BUNDLE_ID,
-    SYNTHETIC_DEVICE_ENVIRONMENT,
-    SYNTHETIC_DEVICE_TOKEN,
-    JourneyConfigError,
-    ensure_synthetic_delivery_channel,
-)
 from apps.evals.models import EvalResult, EvalRun
 from apps.evals.suites.journey_cron import (
     SUITE,
     _observe_delivery,
     run_cron_fire_suite,
 )
-from apps.router.cron_delivery import resolve_user_channel
-from apps.router.models import DeviceToken, ProactiveOutbound
+from apps.router.models import ProactiveOutbound
 from apps.tenants.models import Tenant, User
 
 _GATEWAY = "apps.cron.gateway_client.invoke_gateway_tool"
@@ -217,9 +209,13 @@ class RunCronFireSuiteTest(TestCase):
             self.assertIsInstance(value, (int, bool), f"details[{key!r}] is not metadata")
         self.assertIn("delivered", details)
         self.assertIn("armed", details)
-        # The delivery-channel precondition is recorded as content-free metadata.
-        self.assertIn("channel_ensured", details)
-        self.assertIn("channel_created", details)
+        # ``channel_ensured`` / ``channel_created`` are GONE (2026-07-14): there is no
+        # delivery precondition to ensure any more. A synthetic tenant resolves to the
+        # ``eval`` sink channel, so the fabricated APNs DeviceToken this probe used to
+        # plant before every arm — and which every SUCCESSFUL fire then destroyed — is
+        # retired. Their absence is the point, not an omission.
+        self.assertNotIn("channel_ensured", details)
+        self.assertNotIn("channel_created", details)
 
     @patch(_GATEWAY)
     def test_poll_deadline_is_anchored_to_suite_start(self, mock_gw):
@@ -273,112 +269,3 @@ class RunCronFireSuiteTest(TestCase):
         run = EvalRun.objects.filter(suite=SUITE).latest("started_at")
         self.assertEqual(run.status, EvalRun.Status.ERROR)
         self.assertEqual(run.results.count(), 0)
-
-    @patch(_GATEWAY)
-    def test_suite_ensures_delivery_channel_before_arming(self, mock_gw):
-        """The self-heal: the run plants the synthetic user's DeviceToken so the
-        delivery view can route to "app" (resolve_user_channel) instead of 422ing.
-        """
-        mock_gw.return_value = {"details": {"id": "job-1"}}
-        self.assertFalse(DeviceToken.objects.filter(user=self.tenant.user).exists())
-
-        run = run_cron_fire_suite(
-            trigger=EvalRun.Trigger.MANUAL,
-            lead_seconds=1,
-            budget_seconds=0,
-            interval_seconds=0,
-            sleep_fn=lambda _s: None,
-        )
-
-        token = DeviceToken.objects.get(user=self.tenant.user)
-        self.assertEqual(token.token, SYNTHETIC_DEVICE_TOKEN)
-        self.assertEqual(token.tenant_id, self.tenant.id)
-        self.assertEqual(token.environment, SYNTHETIC_DEVICE_ENVIRONMENT)
-        self.assertEqual(token.bundle_id, SYNTHETIC_DEVICE_BUNDLE_ID)
-        # First run of this tenant created the row → recorded as metadata.
-        details = run.results.get().details
-        self.assertTrue(details["channel_ensured"])
-        self.assertTrue(details["channel_created"])
-
-    @patch(_GATEWAY)
-    def test_ensure_channel_failure_closes_run_error(self, mock_gw):
-        """A precondition that can't be set up is a broken probe: the run closes
-        ERROR (never pass, never a stranded 'running') and re-raises loudly.
-        """
-        mock_gw.return_value = {"details": {"id": "job-1"}}
-        with (
-            patch(
-                "apps.evals.suites.journey_cron.ensure_synthetic_delivery_channel",
-                side_effect=RuntimeError("boom"),
-            ),
-            self.assertRaises(RuntimeError),
-        ):
-            run_cron_fire_suite(
-                trigger=EvalRun.Trigger.MANUAL,
-                lead_seconds=1,
-                budget_seconds=0,
-                interval_seconds=0,
-                sleep_fn=lambda _s: None,
-            )
-        run = EvalRun.objects.filter(suite=SUITE).latest("started_at")
-        self.assertEqual(run.status, EvalRun.Status.ERROR)
-        self.assertEqual(run.results.count(), 0)  # never armed, never recorded
-
-
-class EnsureSyntheticChannelTest(TestCase):
-    """Unit tests for the ensure-channel helper in isolation."""
-
-    def setUp(self):
-        self.tenant = _synthetic_tenant()
-
-    def test_creates_token_when_absent(self):
-        self.assertFalse(DeviceToken.objects.filter(user=self.tenant.user).exists())
-        created = ensure_synthetic_delivery_channel(self.tenant)
-        self.assertTrue(created)
-        # The row matches exactly what resolve_user_channel keys on (user) and the
-        # synthetic install semantics (fixed token / bundle_id / sandbox env).
-        row = DeviceToken.objects.get(user=self.tenant.user)
-        self.assertEqual(row.token, SYNTHETIC_DEVICE_TOKEN)
-        self.assertEqual(row.tenant_id, self.tenant.id)
-        self.assertEqual(row.environment, SYNTHETIC_DEVICE_ENVIRONMENT)
-        self.assertEqual(row.bundle_id, SYNTHETIC_DEVICE_BUNDLE_ID)
-        # Resolver-drift guard: the REAL production resolver must accept the
-        # ensured channel. If resolve_user_channel ever grows a filter this row
-        # doesn't satisfy (environment, staleness, bundle), this fails in CI
-        # instead of as a prod alarm at the next scheduled fire.
-        self.assertEqual(resolve_user_channel(self.tenant.user), "app")
-
-    def test_idempotent_when_present(self):
-        self.assertTrue(ensure_synthetic_delivery_channel(self.tenant))  # created
-        self.assertFalse(ensure_synthetic_delivery_channel(self.tenant))  # existed
-        # Idempotent: still exactly one row, no unique-constraint collision.
-        self.assertEqual(DeviceToken.objects.filter(user=self.tenant.user).count(), 1)
-        self.assertEqual(resolve_user_channel(self.tenant.user), "app")
-
-    def test_stale_owner_row_is_repointed(self):
-        """uniq_device_token is GLOBAL: a row left pointing at a PRIOR synthetic
-        user (journey tenant re-provisioned, or another synthetic tenant used the
-        helper) must be re-pointed — otherwise ensure reads green (created=False)
-        while resolve_user_channel finds nothing for THIS user → perpetual 422.
-        """
-        stale_owner = _synthetic_tenant()
-        ensure_synthetic_delivery_channel(stale_owner)  # row now owned by stale_owner
-
-        created = ensure_synthetic_delivery_channel(self.tenant)
-
-        self.assertFalse(created)  # existed...
-        row = DeviceToken.objects.get(token=SYNTHETIC_DEVICE_TOKEN)
-        self.assertEqual(row.user_id, self.tenant.user_id)  # ...but re-pointed
-        self.assertEqual(row.tenant_id, self.tenant.id)
-        # And the REAL resolver now routes THIS user to the app channel.
-        self.assertEqual(resolve_user_channel(self.tenant.user), "app")
-        self.assertIsNone(resolve_user_channel(stale_owner.user))
-
-    def test_refuses_non_synthetic_tenant(self):
-        """Defense in depth: never plant a delivery channel on a real subscriber."""
-        email = f"{secrets.token_hex(4)}@e.com"
-        user = User.objects.create_user(username=email, email=email)
-        real = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=False)
-        with self.assertRaises(JourneyConfigError):
-            ensure_synthetic_delivery_channel(real)
-        self.assertFalse(DeviceToken.objects.filter(user=user).exists())

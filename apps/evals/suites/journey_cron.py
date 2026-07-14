@@ -52,7 +52,7 @@ from datetime import timedelta
 
 from django.utils import timezone
 
-from apps.evals.journey.targets import ensure_synthetic_delivery_channel, resolve_journey_tenant
+from apps.evals.journey.targets import resolve_journey_tenant
 from apps.evals.models import EvalResult, EvalRun
 from apps.evals.runner import record, record_run
 
@@ -177,17 +177,12 @@ def run_cron_fire_suite(
     with record_run(SUITE, trigger) as run:
         tenant = resolve_journey_tenant()
 
-        # Ensure the synthetic user has an iOS delivery channel BEFORE arming.
-        # ``resolve_user_channel`` only routes to the "app" channel — and
-        # ``CronDeliveryView`` only writes the ProactiveOutbound this probe
-        # asserts on — when a DeviceToken exists, and a SUCCESSFUL fire prunes the
-        # fabricated token (APNs BadDeviceToken → push_views self-heal), so
-        # without re-ensuring it here every pass 422s the next fire (prod run 8
-        # PASS pruned the token → run 9 no_channel_linked). This call is OUTSIDE
-        # the arm try/except: a get_or_create failure RAISES, record_run closes
-        # the run ERROR, and the owner is alerted — a probe that cannot set up its
-        # own precondition is broken, never a silent skip (INVARIANT #3).
-        channel_created = ensure_synthetic_delivery_channel(tenant)
+        # No delivery precondition to set up any more. A synthetic tenant resolves
+        # to the ``eval`` SINK channel (resolve_user_channel, gated on
+        # ``is_synthetic``), so CronDeliveryView always writes the
+        # ``ProactiveOutbound`` row this probe asserts on. The fabricated APNs
+        # DeviceToken this used to plant before every arm — and which every
+        # successful fire then destroyed, alternating pass/fail forever — is gone.
 
         # Open the observation window BEFORE arming: any ProactiveOutbound created
         # from here on is in-window; anything older is excluded. Combined with the
@@ -210,8 +205,6 @@ def run_cron_fire_suite(
                 details={
                     "armed": False,
                     "delivered": False,
-                    "channel_ensured": True,
-                    "channel_created": channel_created,
                 },
             )
         else:
@@ -235,8 +228,6 @@ def run_cron_fire_suite(
                     "observe_ms": obs.elapsed_ms,
                     "lead_s": int(lead_seconds),
                     "budget_s": int(budget_seconds),
-                    "channel_ensured": True,
-                    "channel_created": channel_created,
                 },
             )
 

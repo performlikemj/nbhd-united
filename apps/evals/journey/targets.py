@@ -54,76 +54,19 @@ def resolve_journey_tenant() -> Tenant:
     return tenant
 
 
-# --- Synthetic iOS delivery channel (journey_cron precondition) --------------
+# --- Delivery channel -------------------------------------------------------
 #
-# ``resolve_user_channel`` (apps/router/cron_delivery.py) routes to the "app"
-# channel — and ``CronDeliveryView`` only writes the ``ProactiveOutbound`` row
-# the cron probe asserts on — when the user has at least one ``DeviceToken``. The
-# synthetic journey user has no Telegram/LINE link, so the cron probe MUST plant
-# an iOS ``DeviceToken`` before it arms, or the delivery view returns
-# ``422 no_channel_linked``.
+# RETIRED 2026-07-14. This module used to plant a FAKE iOS ``DeviceToken`` before
+# every cron arm, because ``resolve_user_channel`` returned None for a channel-less
+# synthetic tenant and ``CronDeliveryView`` then 422'd before writing the
+# ``ProactiveOutbound`` row the probe asserts on.
 #
-# The catch that makes this a per-run STEP, not one-time setup: a SUCCESSFUL fire
-# pushes to this (fabricated) token, APNs rejects it as ``BadDeviceToken``
-# (apps/common/apns.py), and ``_push_to_user_devices`` prunes the row
-# (apps/router/push_views.py) so the table self-heals on reinstall. So every pass
-# destroys the channel for the next fire — a daily schedule alternated pass/fail
-# forever (prod runs 8→9: run 8 PASS pruned the token → run 9 no_channel_linked).
-# Re-ensuring the token before each arm heals it.
+# That hack was self-destroying: a SUCCESSFUL fire pushed to the fabricated token,
+# APNs rejected it as ``BadDeviceToken``, and ``push_views`` pruned the row — so
+# every pass destroyed the channel for the next fire (prod runs 8→9 alternated
+# pass/fail forever), and it fired a real, rejected request at Apple on every run.
 #
-# The token value is a fixed, obviously-synthetic 64-hex string. It never reaches
-# a real device — the only push it could ever receive is the probe's own, which
-# APNs rejects — and carries the same ``bundle_id`` / ``sandbox`` environment an
-# eval-synthetic iOS install would.
-SYNTHETIC_DEVICE_TOKEN = "0" * 64
-SYNTHETIC_DEVICE_BUNDLE_ID = "org.hoodunited.nbhd.eval-synthetic"
-SYNTHETIC_DEVICE_ENVIRONMENT = "sandbox"
-
-
-def ensure_synthetic_delivery_channel(tenant) -> bool:
-    """Get-or-create the synthetic tenant's iOS ``DeviceToken``; return ``created``.
-
-    ``resolve_user_channel`` only routes to the app channel when a ``DeviceToken``
-    exists for the user, and a successful cron fire prunes the fabricated token
-    (see the module comment above), so the cron probe calls this BEFORE every arm.
-
-    Returns ``True`` when a new row was created (the prior fire pruned it, or it
-    never existed) and ``False`` when the row was already present — content-free
-    metadata for the run details, never any user data.
-
-    Raises on failure (does not swallow) so the caller's ``record_run`` closes the
-    run ERROR: a probe that cannot set up its own delivery precondition is broken,
-    never a silent skip (docs/evals-directive.md INVARIANT #3).
-    """
-    from apps.router.models import DeviceToken
-
-    # Defense in depth: never plant a delivery channel on a real subscriber's
-    # user, even if a future caller hands this an unvetted tenant. The target
-    # resolver already refuses non-synthetic tenants; this keeps the helper
-    # safe when called on its own.
-    if not getattr(tenant, "is_synthetic", False):
-        raise JourneyConfigError("refusing to plant a synthetic DeviceToken on a NON-synthetic tenant.")
-
-    # Keyed on ``token`` (its sole unique constraint) so the call is idempotent —
-    # a second run returns the existing row instead of colliding on the constraint.
-    row, created = DeviceToken.objects.get_or_create(
-        token=SYNTHETIC_DEVICE_TOKEN,
-        defaults={
-            "tenant": tenant,
-            "user": tenant.user,
-            "environment": SYNTHETIC_DEVICE_ENVIRONMENT,
-            "bundle_id": SYNTHETIC_DEVICE_BUNDLE_ID,
-        },
-    )
-    if not created and (row.user_id != tenant.user_id or row.tenant_id != tenant.id):
-        # ``uniq_device_token`` is GLOBAL: after a journey-tenant re-provision
-        # (new User row) — or a second synthetic tenant reusing this helper — the
-        # surviving row still points at the OLD user, so ``resolve_user_channel``
-        # finds nothing for the NEW one → perpetual 422 while this helper reads
-        # green (created=False). Mirror the registration upsert semantics
-        # (push_views: a token re-points to the registering user) and re-point
-        # the row at THIS tenant's user.
-        row.user = tenant.user
-        row.tenant = tenant
-        row.save(update_fields=["user", "tenant", "last_seen_at"])
-    return created
+# Synthetic tenants now resolve to the ``eval`` SINK channel instead
+# (``resolve_user_channel``, gated on ``Tenant.is_synthetic``): nothing is sent
+# anywhere, the ProactiveOutbound row IS the delivery, and there is no token to
+# prune. Nothing to ensure, nothing to re-create, no Apple round trip.
