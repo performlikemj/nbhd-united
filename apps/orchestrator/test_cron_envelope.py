@@ -664,16 +664,24 @@ class RenderProfileSectionTest(TestCase):
         self.assertNotIn("Preferred channel", out)
 
     def test_includes_set_fields_only(self):
+        # LINE-ONLY user. This test's channel assertion has always been about the
+        # LINE label; it used to get there via preferred_channel="line", which the
+        # resolver no longer consults (a both-linked user now resolves TELEGRAM),
+        # so the LINE intent would have silently evaporated. Pin it by LINKAGE
+        # instead — no telegram_chat_id, line_user_id set — which is also how the
+        # real line-only cohort reaches this label.
         tenant = create_tenant(display_name="Mike", telegram_chat_id=910101)
         tenant.user.timezone = "Asia/Tokyo"
+        tenant.user.telegram_chat_id = None
+        tenant.user.line_user_id = "U" + "c" * 32
         tenant.user.location_city = "Osaka"
         tenant.user.save()
 
         out = render_profile_section(tenant)
         self.assertIn("Display name: Mike", out)
         self.assertIn("Timezone: Asia/Tokyo", out)
-        # Telegram-linked, no device token → the resolved channel is Telegram.
-        self.assertIn("Delivery channel: Telegram", out)
+        self.assertIn("Delivery channel: LINE", out)
+        self.assertNotIn("Telegram", out)
         self.assertIn("Location: Osaka", out)
         # Default language not included
         self.assertNotIn("Language:", out)
