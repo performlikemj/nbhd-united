@@ -48,20 +48,39 @@ def build_datetime_context(user_timezone: str) -> str:
 # are you" style message. Cron prompts go through `_CRON_CONTEXT_PREAMBLE`
 # in `apps/orchestrator/config_generator.py` which keeps the full
 # load-everything directive — only conversational turns get this marker.
-_CHAT_CONTEXT_MARKER = (
-    "[chat: user is mid-conversation, reply concisely without loading "
-    "workspace docs unless the question explicitly requires it]\n"
-)
+#
+# The marker also NAMES the active channel ("via NBHD app" / "via Telegram" /
+# "via LINE"): the static TOOLS.md / channel-formatting docs are seed-once and
+# go stale, so this per-turn signal is the authoritative source for which
+# surface the user is on THIS turn. Without it the agent falls back to its
+# static prompt and assumes Telegram. An unknown/omitted channel degrades to
+# the neutral "[chat: …]" form — never a wrong channel.
+_CHANNEL_LABELS = {
+    "ios": "NBHD app",
+    "app": "NBHD app",
+    "telegram": "Telegram",
+    "line": "LINE",
+}
 
 
-def build_chat_context_marker() -> str:
+def _channel_via(channel: str | None) -> str:
+    """Return ``" via <Label>"`` for a known channel, else ``""`` (neutral)."""
+    label = _CHANNEL_LABELS.get((channel or "").strip().lower())
+    return f" via {label}" if label else ""
+
+
+def build_chat_context_marker(channel: str | None = None) -> str:
     """Single-line marker injected before ad-hoc user messages.
 
-    Tells the agent the turn is a conversational message (LINE/Telegram chat),
-    not a scheduled-task run, so it can skip the AGENTS.md "Session Start"
-    silent context-load. The agent still has SOUL/USER/MEMORY/IDENTITY/TOOLS
-    in its context window — it just doesn't pre-fetch the daily note, journal
-    history, and formatting docs before every chat.
+    Tells the agent the turn is a conversational message (NBHD app / Telegram /
+    LINE chat), not a scheduled-task run, so it can skip the AGENTS.md "Session
+    Start" silent context-load. The agent still has SOUL/USER/MEMORY/IDENTITY/
+    TOOLS in its context window — it just doesn't pre-fetch the daily note,
+    journal history, and formatting docs before every chat.
+
+    ``channel`` (``"ios"`` / ``"telegram"`` / ``"line"``) stamps the active
+    surface into the marker so the agent replies on the right channel and never
+    assumes Telegram. An unknown/``None`` channel degrades to the neutral form.
 
     Significantly reduces tool-call count on first-message-of-session for
     BYO Claude tenants: observed ~377 raw output lines on cold start
@@ -69,18 +88,13 @@ def build_chat_context_marker() -> str:
     with this marker the agent only fetches context when the user's message
     actually needs it.
     """
-    return _CHAT_CONTEXT_MARKER
+    return (
+        f"[chat{_channel_via(channel)}: user is mid-conversation, reply concisely "
+        "without loading workspace docs unless the question explicitly requires it]\n"
+    )
 
 
-_COALESCED_CHAT_MARKER = (
-    "[chat: user sent these messages in rapid succession while you were "
-    "waking up — treat as one combined request; if any later message "
-    "supersedes an earlier one, follow the later one; do not reply to "
-    "each message separately]\n"
-)
-
-
-def build_coalesced_chat_marker() -> str:
+def build_coalesced_chat_marker(channel: str | None = None) -> str:
     """Marker variant for coalesced multi-message turns.
 
     Replaces the standard ``build_chat_context_marker()`` when N>1 inbound
@@ -88,9 +102,15 @@ def build_coalesced_chat_marker() -> str:
     arrived during a cold-start window and were queued in
     ``BufferedMessage`` / ``PendingMessage``). Tells the agent to treat the
     bundle as one request, prefer later messages over earlier ones when
-    they conflict, and not produce N separate answers.
+    they conflict, and not produce N separate answers. ``channel`` stamps the
+    active surface, exactly like ``build_chat_context_marker``.
     """
-    return _COALESCED_CHAT_MARKER
+    return (
+        f"[chat{_channel_via(channel)}: user sent these messages in rapid succession "
+        "while you were waking up — treat as one combined request; if any later "
+        "message supersedes an earlier one, follow the later one; do not reply to "
+        "each message separately]\n"
+    )
 
 
 def format_coalesced_user_content(
@@ -99,6 +119,7 @@ def format_coalesced_user_content(
     user_timezone: str,
     timestamps: list[datetime] | None = None,
     workspace_prefix: str = "",
+    channel: str | None = None,
 ) -> str:
     """Build the user-message content for a coalesced multi-message turn.
 
@@ -115,7 +136,7 @@ def format_coalesced_user_content(
     if len(raw_texts) < 2:
         raise ValueError("format_coalesced_user_content requires >= 2 entries")
 
-    header = build_datetime_context(user_timezone) + build_coalesced_chat_marker() + (workspace_prefix or "")
+    header = build_datetime_context(user_timezone) + build_coalesced_chat_marker(channel) + (workspace_prefix or "")
 
     lines: list[str] = []
     for idx, raw in enumerate(raw_texts, start=1):

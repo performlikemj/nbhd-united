@@ -1312,6 +1312,7 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                         raw_texts,
                         user_timezone=user_tz,
                         timestamps=timestamps,
+                        channel="line",
                     )
 
                 result = _post_chat_completion_with_backoff(

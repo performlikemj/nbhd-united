@@ -1306,21 +1306,27 @@ def _send_apology_for_dropped_pending_message(tenant: Tenant, msg: PendingMessag
 # ---------------------------------------------------------------------------
 
 
-def _build_batch_chat_content(batch: list[PendingMessage], fallback_user_id: str) -> tuple[str, str, str]:
+def _build_batch_chat_content(
+    batch: list[PendingMessage], fallback_user_id: str, channel: str | None = None
+) -> tuple[str, str, str]:
     """Build the ``content`` string + routing context for a deliverable batch.
 
     Returns ``(content, user_param, user_timezone)``.
 
     Singleton batches (``len(batch) == 1``) preserve the existing per-row
     on-the-wire shape: the row's pre-decorated ``payload.message_text``
-    flows straight through, with markers as baked in at enqueue time.
+    flows straight through, with markers as baked in at enqueue time (the
+    producer already stamped the active channel into that text).
 
     Coalesced batches (``len(batch) > 1``) build a fresh prompt at drain
     time using ``format_coalesced_user_content``: the datetime + coalesced
     chat marker are emitted ONCE (from the latest row's routing context),
     then each row's raw ``user_text`` is appended with an index +
     timestamp. The intent is the agent reads N delineated follow-ups
-    instead of N separate per-turn replies.
+    instead of N separate per-turn replies. ``channel`` (the drain's own
+    channel — ``"telegram"`` / ``"line"`` / ``"ios"``) is stamped into that
+    rebuilt marker so the coalesced path keeps the same per-turn channel
+    signal the singleton (producer-baked) path carries.
     """
     from apps.router.services import format_coalesced_user_content
 
@@ -1347,6 +1353,7 @@ def _build_batch_chat_content(batch: list[PendingMessage], fallback_user_id: str
         raw_texts,
         user_timezone=user_tz,
         timestamps=timestamps,
+        channel=channel,
     )
     return content, user_param, user_tz
 
@@ -1378,7 +1385,7 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     from apps.router.line_webhook import relay_ai_response_to_line
 
     line_user_id = batch[0].channel_user_id
-    content, user_param, user_tz = _build_batch_chat_content(batch, line_user_id)
+    content, user_param, user_tz = _build_batch_chat_content(batch, line_user_id, channel="line")
     # ``reply_token`` is intentionally NOT used: by the time the queue
     # drains, the LINE Reply API window (~1 min) is almost always
     # closed. We always Push.
@@ -1479,7 +1486,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     except (TypeError, ValueError):
         raise ValueError(f"telegram drain: invalid chat_id {chat_id_str!r}")
 
-    content, user_param, user_tz = _build_batch_chat_content(batch, chat_id_str)
+    content, user_param, user_tz = _build_batch_chat_content(batch, chat_id_str, channel="telegram")
 
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     from apps.cron.gateway_client import get_gateway_token_for_tenant
@@ -1542,7 +1549,7 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
         return False
 
     thread_id = batch[0].channel_user_id
-    content, user_param, user_tz = _build_batch_chat_content(batch, thread_id)
+    content, user_param, user_tz = _build_batch_chat_content(batch, thread_id, channel="ios")
 
     # Bridge proactive-message continuity into the iOS turn. Unlike the
     # Telegram/LINE ingress handlers (which prepend this block before enqueue),

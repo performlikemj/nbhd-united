@@ -345,7 +345,10 @@ def telegram_webhook(request):
             # so the agent skips the heavy AGENTS.md "Session Start"
             # auto-context-load. See poller.py for the parallel comment.
             msg["text"] = (
-                proactive_block + build_datetime_context(user_timezone) + build_chat_context_marker() + msg["text"]
+                proactive_block
+                + build_datetime_context(user_timezone)
+                + build_chat_context_marker("telegram")
+                + msg["text"]
             )
 
         # Reasoning models need more time; the agent replies directly via bot

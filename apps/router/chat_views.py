@@ -515,7 +515,7 @@ def enqueue_tenant_turn(
     # "this is a chat turn, don't pre-load workspace docs" marker + any
     # attachment marker, then the user's (redacted) text.
     message_text = (
-        build_datetime_context(user_tz) + build_chat_context_marker() + image_marker + document_marker + llm_text
+        build_datetime_context(user_tz) + build_chat_context_marker("ios") + image_marker + document_marker + llm_text
     )
 
     payload = {

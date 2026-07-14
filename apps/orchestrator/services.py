@@ -823,6 +823,111 @@ def reassert_agents_md(tenant, *, only_if_changed: bool = True) -> bool:
     return True
 
 
+# TOOLS.md is seed-once from the static template (entrypoint.sh copies it if
+# missing) and — unlike AGENTS.md — had NO reassert path, so a template fix
+# never reached existing tenants. The whole seed-once fleet carries the legacy
+# "Telegram is the primary channel" line verbatim. Rather than overwrite the
+# file (its "## Notes" section invites user edits), converge SURGICALLY: swap
+# just the legacy channel line for the channel-agnostic body, preserving
+# everything else. Idempotent — a file that no longer contains the legacy line
+# (already converged, or heavily customized) is left untouched.
+_TOOLS_MD_LEGACY_CHANNEL_LINE = "- **Telegram** is the primary channel. All messages come through Telegram DM."
+
+# The replacement Communication bullets. MUST stay byte-identical to the
+# ``## Communication`` body in ``templates/openclaw/TOOLS.md`` so a converged
+# existing tenant matches a freshly-seeded one. A regression test asserts the
+# template carries this body and no longer claims Telegram is THE channel.
+_TOOLS_MD_CHANNEL_BODY = (
+    "- Messages reach you from the **NBHD app (iOS)**, **Telegram**, or **LINE**. "
+    "The NBHD app is the primary product surface — most users are there.\n"
+    "- Reply on the same surface the message arrived on. Each conversational turn is "
+    "tagged with a `[chat via …]` marker naming the active channel; treat that marker "
+    "as the source of truth for where the user is.\n"
+    "- Telegram and LINE are fully supported. Never assume a message came from Telegram."
+)
+
+
+def converge_tools_md_text(current: str | None) -> str | None:
+    """Return TOOLS.md with the legacy Telegram-primary line swapped for the
+    channel-agnostic body, or ``None`` when no rewrite is needed (empty file,
+    already converged, or the legacy line is absent). Pure string logic — the
+    caller owns the share read/write so every write still routes through the
+    ``_put_share_file`` sanitize chokepoint."""
+    if not current:
+        return None
+    if _TOOLS_MD_LEGACY_CHANNEL_LINE not in current:
+        return None
+    return current.replace(_TOOLS_MD_LEGACY_CHANNEL_LINE, _TOOLS_MD_CHANNEL_BODY)
+
+
+def reassert_tools_md(tenant) -> bool:
+    """Converge ``workspace/TOOLS.md`` on the tenant's file share.
+
+    Mirrors :func:`reassert_agents_md`: share-only write (no revision, no
+    restart — OpenClaw re-reads TOOLS.md per session). Reads the current copy,
+    runs :func:`converge_tools_md_text`, and writes back only when the legacy
+    channel line is present. Fail-closed on read error (never write blind).
+    Returns True iff it wrote a converged copy. Called from the container-started
+    hook (hibernated tenants converge at wake) and the ``converge_tools_md``
+    management command (one-shot fleet convergence for awake/hibernated tenants).
+    """
+    if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+        return False
+
+    from apps.orchestrator.azure_client import download_workspace_file, upload_workspace_file
+
+    try:
+        current = download_workspace_file(str(tenant.id), "workspace/TOOLS.md")
+    except Exception:
+        logger.warning("reassert_tools_md: read of current TOOLS.md failed for %s; skipping", tenant.id)
+        return False
+
+    converged = converge_tools_md_text(current)
+    if converged is None:
+        return False
+
+    upload_workspace_file(str(tenant.id), "workspace/TOOLS.md", converged)
+    logger.info("Re-asserted TOOLS.md channel line to file share for tenant %s", tenant.id)
+    return True
+
+
+def reassert_channel_formatting(tenant, *, only_if_changed: bool = True) -> bool:
+    """Re-assert ``workspace/docs/channel-formatting.md`` from the current
+    (linkage-based) :func:`_resolve_channel_formatting` selection.
+
+    ``update_tenant_config`` already overwrites this doc on every config apply,
+    but a hibernated tenant gets no config apply until wake — so the
+    container-started hook calls this to converge the doc (e.g. an iOS-only
+    tenant flipping off the stale ``telegram-formatting.md`` onto the neutral
+    ``app-formatting.md``). Share-only write, no revision. Returns True iff it
+    wrote a fresh copy."""
+    if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+        return False
+
+    from apps.orchestrator.azure_client import download_workspace_file, upload_workspace_file
+    from apps.orchestrator.personas import _resolve_channel_formatting
+
+    rendered = _resolve_channel_formatting(tenant)
+    if not rendered:
+        return False
+
+    if only_if_changed:
+        try:
+            current = download_workspace_file(str(tenant.id), "workspace/docs/channel-formatting.md")
+        except Exception:
+            logger.warning(
+                "reassert_channel_formatting: read of current doc failed for %s; skipping",
+                tenant.id,
+            )
+            return False
+        if (current or "").strip() == rendered.strip():
+            return False
+
+    upload_workspace_file(str(tenant.id), "workspace/docs/channel-formatting.md", rendered)
+    logger.info("Re-asserted channel-formatting doc to file share for tenant %s", tenant.id)
+    return True
+
+
 def reassert_identity_files(
     tenant,
     *,

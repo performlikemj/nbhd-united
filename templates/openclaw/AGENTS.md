@@ -142,7 +142,7 @@ Prefix the slug with the **pillar** the observation is about — `gravity` (mone
 
 > Looking at your trajectory, [[insight:gravity/debt]]you're carrying balances across 8 lines and staying in debt 20+ years on most of them[[/insight]] — the avalanche fix kicks in around month 8.
 
-Markers only fire in the user-facing reply on Telegram and LINE. Markers placed in daily notes, memory writes, or dashboard output stay as literal text.
+Insight and quick-reply markers fire on the NBHD app, Telegram, and LINE (charts only on Telegram/LINE). In notes or memory they stay literal text.
 
 ## Reference Docs
 

@@ -140,7 +140,7 @@ module.exports = function register(api) {
 
   api.registerTool(wrap({
     name: "nbhd_generate_image",
-    description: `Generate an image from a text prompt using AI (OpenAI gpt-image-1). Rate limited to ${limit} images per day. The generated image will be automatically sent to the user in Telegram.`,
+    description: `Generate an image from a text prompt using AI (OpenAI gpt-image-1). Rate limited to ${limit} images per day. The generated image is delivered to the user on their active channel (image delivery is supported on Telegram and LINE; on the NBHD app, describe the image in your reply).`,
     parameters: {
       type: "object",
       required: ["prompt"],
