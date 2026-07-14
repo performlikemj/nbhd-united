@@ -55,6 +55,11 @@ class FuelProfileSerializer(serializers.ModelSerializer):
 class WorkoutPlanSerializer(serializers.ModelSerializer):
     workout_count = serializers.IntegerField(read_only=True, default=0)
     completed_count = serializers.IntegerField(read_only=True, default=0)
+    # Derived program-progress — end_date (inclusive last day), days_remaining
+    # (0 once over), current_week (1-based). See services.plan_progress_fields.
+    end_date = serializers.SerializerMethodField()
+    days_remaining = serializers.SerializerMethodField()
+    current_week = serializers.SerializerMethodField()
 
     class Meta:
         model = WorkoutPlan
@@ -69,10 +74,48 @@ class WorkoutPlanSerializer(serializers.ModelSerializer):
             "notes",
             "workout_count",
             "completed_count",
+            "end_date",
+            "days_remaining",
+            "current_week",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "workout_count", "completed_count", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "workout_count",
+            "completed_count",
+            "end_date",
+            "days_remaining",
+            "current_week",
+            "created_at",
+            "updated_at",
+        ]
+
+    def _progress(self, obj):
+        """Cached per-instance program-progress dict. ``today`` comes from
+        serializer context when the caller precomputed it once (the plan-list
+        path — avoids an N+1 on ``obj.tenant``), else resolved from the plan's
+        tenant through the tz front door.
+        """
+        cached = getattr(obj, "_progress_cache", None)
+        if cached is None:
+            from apps.common.tenant_tz import tenant_today
+
+            from .services import plan_progress_fields
+
+            today = self.context.get("today") or tenant_today(obj.tenant)
+            cached = plan_progress_fields(obj, today)
+            obj._progress_cache = cached
+        return cached
+
+    def get_end_date(self, obj):
+        return self._progress(obj)["end_date"]
+
+    def get_days_remaining(self, obj):
+        return self._progress(obj)["days_remaining"]
+
+    def get_current_week(self, obj):
+        return self._progress(obj)["current_week"]
 
     def create(self, validated_data):
         validated_data["tenant"] = self.context["tenant"]

@@ -150,6 +150,9 @@ class AssistantInsight(models.Model):
     pillar = models.CharField(max_length=32, choices=Pillar.choices)
     topic = models.ForeignKey(TopicRegistry, on_delete=models.PROTECT, related_name="insights")
     statement = models.TextField()
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.ASSISTANT_INSIGHT_STATEMENT``) — ships DARK.
+    # Shares the journal flag pair (``Tenant.encrypt_journal_writes`` / ``read_encrypted_journal``).
+    statement_enc = models.BinaryField(null=True)
     evidence_refs = models.JSONField(default=dict, blank=True)
     confidence = models.FloatField(default=0.0)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.OPEN)
@@ -157,6 +160,8 @@ class AssistantInsight(models.Model):
     last_confirmed_at = models.DateTimeField(null=True, blank=True)
     last_refuted_at = models.DateTimeField(null=True, blank=True)
     user_responses = models.JSONField(default=list, blank=True)
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.ASSISTANT_INSIGHT_USER_RESPONSES``, JSON) — ships DARK.
+    user_responses_enc = models.BinaryField(null=True)
     author_model_version = models.CharField(max_length=128, blank=True, default="")
 
     class Meta:

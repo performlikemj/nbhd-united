@@ -13,7 +13,15 @@ from __future__ import annotations
 from datetime import timedelta as _timedelta
 
 from apps.common.tenant_tz import tenant_today, tenant_tz
-from apps.fuel.models import BodyWeightLog, RestingHeartRateLog, SleepLog, Workout, WorkoutStatus
+from apps.fuel.models import (
+    BodyWeightLog,
+    PlanStatus,
+    RestingHeartRateLog,
+    SleepLog,
+    Workout,
+    WorkoutPlan,
+    WorkoutStatus,
+)
 from apps.orchestrator.envelope_registry import register_section
 from apps.tenants.models import Tenant
 
@@ -28,7 +36,7 @@ from apps.tenants.models import Tenant
 def render_fuel(tenant: Tenant, *, max_chars: int = 1200) -> str:
     # Local import: services imports back into fuel models, and pulling it
     # at module load would couple envelope registration to that chain.
-    from apps.fuel.services import weekly_trends_digest
+    from apps.fuel.services import plan_progress_fields, rest_dates_for_window, weekly_trends_digest
 
     # Tenant-local day, not server UTC — a JST tenant's "today" section
     # would otherwise flip at 09:00 local.
@@ -42,6 +50,11 @@ def render_fuel(tenant: Tenant, *, max_chars: int = 1200) -> str:
     # showed nothing the moment today's session was logged/skipped or when no
     # PLANNED row sat exactly on today. Past rows give adherence ("you already
     # did legs Tuesday"); future rows answer "what's next" / "anything Friday".
+    # Active plans drive both the program-progress line and the programmed rest
+    # days woven into the window below — fetch ONCE, the section's only extra
+    # active-plans query (rest-date math is pure Python over this list).
+    active_plans = list(WorkoutPlan.objects.filter(tenant=tenant, status=PlanStatus.ACTIVE).order_by("-created_at"))
+
     window_start = today - _timedelta(days=5)
     window_end = today + _timedelta(days=7)
     window_qs = Workout.objects.filter(
@@ -49,12 +62,18 @@ def render_fuel(tenant: Tenant, *, max_chars: int = 1200) -> str:
         date__gte=window_start,
         date__lte=window_end,
     ).order_by("date", "scheduled_at", "created_at")
-    schedule_lines: list[str] = []
-    for w in window_qs[:14]:
+
+    # Build the window as (date, line) items so real rows and programmed rest
+    # days interleave in date order. No date carries both — a rest date with a
+    # real row is dropped from the rest set (the ad-hoc row wins).
+    schedule_items: list[tuple[object, str]] = []
+    real_dates: set = set()
+    for w in window_qs:
+        real_dates.add(w.date)
         flag = " (today)" if w.date == today else ""
         stamp = f"{w.date.strftime('%a')} {w.date.strftime('%m-%d')}{flag}"
         if w.status == WorkoutStatus.REST:
-            schedule_lines.append(f"- {stamp}: rest day")
+            schedule_items.append((w.date, f"- {stamp}: rest day"))
             continue
         # ``get_status_display()`` -> "Planned"/"Done"/"Skipped"/"Rescheduled"/
         # "In Progress"; lowercased it reads naturally inline. A past-dated row
@@ -68,9 +87,29 @@ def render_fuel(tenant: Tenant, *, max_chars: int = 1200) -> str:
                 line += f", {w.duration_minutes} min"
         elif w.status == WorkoutStatus.DONE and w.rpe:
             line += f", RPE {w.rpe}"
-        schedule_lines.append(line)
+        schedule_items.append((w.date, line))
+
+    # Programmed rest days are first-class: a 3-day/wk plan's window must read as
+    # a full week of on-plan days, never blanks. Only dates with NO real row.
+    if active_plans:
+        for rd in rest_dates_for_window(tenant, window_start, window_end, plans=active_plans) - real_dates:
+            flag = " (today)" if rd == today else ""
+            stamp = f"{rd.strftime('%a')} {rd.strftime('%m-%d')}{flag}"
+            schedule_items.append((rd, f"- {stamp}: rest day"))
+
+    # Stable sort by date — no date has both a workout and a rest line, so the
+    # per-day sub-order of real rows (scheduled_at, created_at) is preserved.
+    schedule_items.sort(key=lambda it: it[0])
+    schedule_lines = [line for _, line in schedule_items[:20]]
     if schedule_lines:
         sections.append("**Schedule** (last 5d → next 7d):\n" + "\n".join(schedule_lines))
+
+    # Program progress — one line for the current active plan so every session
+    # knows where in the program the user is and when it ends.
+    if active_plans:
+        plan = active_plans[0]
+        prog = plan_progress_fields(plan, today)
+        sections.append(f"- **Program**: Week {prog['current_week']} of {plan.weeks} — ends {prog['end_date']}")
 
     # Computed 4-week trends — what a coach reasons from. Replaces the old
     # raw "last 3 sessions" dump (the least information-dense rows in the
