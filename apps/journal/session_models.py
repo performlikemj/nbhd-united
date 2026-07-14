@@ -68,6 +68,14 @@ class Session(models.Model):
         blank=True,
         help_text="List of planned next steps",
     )
+    # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
+    # ``apps.journal.enc_columns.SESSION_SUMMARY`` / ``SESSION_ACCOMPLISHMENTS`` /
+    # ``SESSION_BLOCKERS`` / ``SESSION_NEXT_STEPS`` (last three JSON). ``references``
+    # stays plaintext (system/external references, not user content — plan §1.6).
+    summary_enc = models.BinaryField(null=True)
+    accomplishments_enc = models.BinaryField(null=True)
+    blockers_enc = models.BinaryField(null=True)
+    next_steps_enc = models.BinaryField(null=True)
     references = models.JSONField(
         default=dict,
         blank=True,
