@@ -113,7 +113,9 @@ class CronDeliveryViewTest(TestCase):
 
         stored = ProactiveOutbound.objects.get(tenant=self.tenant)
         self.assertIn("Saved the full table (26 rows)", stored.message_text)
-        self.assertNotIn("| Name | Value |", stored.message_text)
+        self.assertIn("| Name | Value |", stored.message_text)
+        self.assertIn("| row 2 | value 2 |", stored.message_text)
+        self.assertNotIn("| row 3 | value 3 |", stored.message_text)
         self.assertEqual(stored.journal_link["kind"], "project")
         self.assertTrue(Document.objects.filter(tenant=self.tenant, slug=stored.journal_link["slug"]).exists())
 

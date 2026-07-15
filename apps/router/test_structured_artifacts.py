@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from apps.journal.models import Document
 from apps.router.structured_artifacts import (
+    ArtifactThresholds,
     find_gfm_tables,
     replace_selected_tables,
     select_large_tables,
@@ -74,24 +75,43 @@ class GfmTableDetectionTests(SimpleTestCase):
         text = "| A | B |\n| -- | nope |\n| 1 | 2 |"
         self.assertEqual(find_gfm_tables(text), [])
 
-    def test_table_only_replacement_is_non_empty(self):
+    def test_table_only_replacement_keeps_header_and_first_three_rows(self):
         text = _table(26)
         selected = select_large_tables(find_gfm_tables(text))
         replaced = replace_selected_tables(text, selected, "Table from chat")
         self.assertEqual(
             replaced,
+            "| Name | Value |\n"
+            "| --- | ---: |\n"
+            "| row 0 | value |\n"
+            "| row 1 | value |\n"
+            "| row 2 | value |\n"
             "Saved the full table (26 rows) to your Journal as “Table from chat”.",
         )
 
-    def test_table_plus_prose_keeps_prose_and_uses_one_multi_table_pointer(self):
-        text = "Before.\n\n" + _table(21) + "\n\nBetween.\n\n" + _table(20) + "\n\nAfter."
+    def test_under_threshold_table_is_untouched(self):
+        text = "Before.\n\n" + _table(25) + "\n\nAfter."
+        selected = select_large_tables(find_gfm_tables(text))
+        self.assertEqual(replace_selected_tables(text, selected, "Table from chat"), text)
+
+    def test_multi_table_replacement_previews_first_table_only(self):
+        text = (
+            "Before.\n\n"
+            + _table(21, cell="first")
+            + "\n\nBetween.\n\n"
+            + _table(20, leading=False, cell="second")
+            + "\n\nAfter."
+        )
         selected = select_large_tables(find_gfm_tables(text))
         replaced = replace_selected_tables(text, selected, "Table — Report")
         self.assertIn("Before.", replaced)
         self.assertIn("Between.", replaced)
         self.assertIn("After.", replaced)
         self.assertEqual(replaced.count("Saved the full tables"), 1)
-        self.assertNotIn("| Name | Value |", replaced)
+        self.assertIn("| Name | Value |", replaced)
+        self.assertIn("| row 2 | first |", replaced)
+        self.assertNotIn("| row 3 | first |", replaced)
+        self.assertNotIn("row 0 | second", replaced)
 
 
 class StructuredArtifactRolloutTests(TestCase):
@@ -100,15 +120,20 @@ class StructuredArtifactRolloutTests(TestCase):
         self.tenant = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
         self.text = "# Quarterly Review\n\n" + _table(26)
 
-    def _externalize(self, *, key="client-1", journal_link=None):
+    def _externalize(self, *, text=None, key="client-1", journal_link=None, defaults=None):
         from apps.router.structured_artifacts import externalize_large_structured_reply
 
+        kwargs = {
+            "tenant": self.tenant,
+            "text": self.text if text is None else text,
+            "source": "ios",
+            "dedup_key": key,
+            "journal_link": journal_link,
+        }
+        if defaults is not None:
+            kwargs["defaults"] = defaults
         return externalize_large_structured_reply(
-            tenant=self.tenant,
-            text=self.text,
-            source="ios",
-            dedup_key=key,
-            journal_link=journal_link,
+            **kwargs,
         )
 
     def test_flag_off_runs_dark_telemetry_without_moving(self):
@@ -123,17 +148,26 @@ class StructuredArtifactRolloutTests(TestCase):
         self.assertIn("flag_state=False", telemetry)
         self.assertNotIn("row 1 |", telemetry)
 
-    def test_flag_on_moves_complete_reply_and_is_idempotent(self):
+    def test_flag_on_moves_complete_reply_and_reprocessing_stored_text_is_noop(self):
         self.tenant.experimental_reply_artifacts_to_journal = True
         self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
 
         first = self._externalize()
-        second = self._externalize()
+        dedup_retry = self._externalize()
+        reprocessed = self._externalize(
+            text=first.stored_text,
+            journal_link=first.journal_link,
+            defaults=ArtifactThresholds(individual_rows=2),
+        )
 
         self.assertTrue(first.moved)
-        self.assertEqual(first.document_id, second.document_id)
+        self.assertEqual(first.document_id, dedup_retry.document_id)
+        self.assertFalse(reprocessed.moved)
+        self.assertEqual(reprocessed.stored_text, first.stored_text)
         self.assertIn("Saved the full table (26 rows)", first.stored_text)
-        self.assertNotIn("| Name | Value |", first.stored_text)
+        self.assertIn("| Name | Value |", first.stored_text)
+        self.assertIn("| row 2 | value |", first.stored_text)
+        self.assertNotIn("| row 3 | value |", first.stored_text)
         docs = Document.objects.filter(tenant=self.tenant, slug__startswith="assistant-table-")
         self.assertEqual(docs.count(), 1)
         doc = docs.get()

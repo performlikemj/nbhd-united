@@ -159,7 +159,9 @@ class RecordProactiveOutboundTest(_TenantFixture):
             )
         assert row is not None
         self.assertIn("Saved the full table (26 rows)", row.message_text)
-        self.assertNotIn("| Name | Value |", row.message_text)
+        self.assertIn("| Name | Value |", row.message_text)
+        self.assertIn("| row 2 | value 2 |", row.message_text)
+        self.assertNotIn("| row 3 | value 3 |", row.message_text)
         self.assertEqual(row.parsed_items, ["keep one", "keep two"])
         parser.assert_called_once_with(row.message_text)
         self.assertEqual(row.journal_link["kind"], "project")

@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 _DELIMITER_CELL_RE = re.compile(r"^\s*:?-{3,}:?\s*$")
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 _HEADING_RE = re.compile(r"^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$")
+_EXTERNALIZED_TABLE_POINTER_RE = re.compile(
+    r"Saved the full table(?: \(\d+ rows\)|s \(\d+ tables, \d+ rows\)) "
+    r"to your Journal as “[^\r\n]*”\.(?:\r?\n|$)"
+)
 
 
 @dataclass(frozen=True)
@@ -192,6 +196,9 @@ def find_gfm_tables(text: str) -> list[TableSpan]:
 
         end = infos[body_end - 1].end
         table_text = text[header.start : end].rstrip("\r\n")
+        if _EXTERNALIZED_TABLE_POINTER_RE.match(text, end):
+            i = body_end
+            continue
         tables.append(
             TableSpan(
                 start=header.start,
@@ -227,8 +234,13 @@ def _pointer(*, table_count: int, row_count: int, document_title: str) -> str:
     return f"Saved the full tables ({table_count} tables, {row_count} rows) to your Journal as “{document_title}”."
 
 
+def _table_preview(span: TableSpan) -> str:
+    """Keep the header, delimiter, and at most three data rows."""
+    return "".join(span.text.splitlines(keepends=True)[:5]).rstrip("\r\n")
+
+
 def replace_selected_tables(text: str, spans: list[TableSpan], document_title: str) -> str:
-    """Replace selected table spans with one deterministic Journal pointer."""
+    """Keep the first table's bounded preview and add one Journal pointer."""
     if not spans:
         return text
     spans = sorted(spans, key=lambda span: span.start)
@@ -242,7 +254,7 @@ def replace_selected_tables(text: str, spans: list[TableSpan], document_title: s
     for index, span in enumerate(spans):
         parts.append(text[cursor : span.start])
         if index == 0:
-            parts.append(pointer)
+            parts.extend((_table_preview(span), "\n", pointer))
             if span.end > span.start and text[span.end - 1 : span.end] in {"\n", "\r"}:
                 parts.append("\n")
         cursor = span.end

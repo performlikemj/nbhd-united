@@ -2652,7 +2652,9 @@ class ReplyArtifactPersistenceTest(TestCase):
         self.assertEqual(representative.status, AppChatMessage.Status.READY)
         self.assertEqual(len(representative.reply_text), 16000)
         self.assertIn("Saved the full table (26 rows)", representative.reply_text)
-        self.assertNotIn("| Name | Value |", representative.reply_text)
+        self.assertIn("| Name | Value |", representative.reply_text)
+        self.assertIn("| row 2 | [PERSON_1] |", representative.reply_text)
+        self.assertNotIn("| row 3 | [PERSON_1] |", representative.reply_text)
         self.assertEqual(representative.journal_link["kind"], "project")
         self.assertEqual(sibling.status, AppChatMessage.Status.READY)
         self.assertEqual(sibling.reply_text, "")
@@ -2733,7 +2735,24 @@ class ReplyArtifactPersistenceTest(TestCase):
         row = AppChatMessage.objects.get(client_msg_id="reuse-link")
         self.assertEqual(row.journal_link["slug"], linked.slug)
         self.assertIn("Saved the full table (26 rows)", row.reply_text)
+        self.assertIn("| row 2 | [PERSON_1] |", row.reply_text)
+        self.assertNotIn("| row 3 | [PERSON_1] |", row.reply_text)
         self.assertEqual(Document.objects.filter(tenant=self.tenant).count(), 1)
+
+    @patch("apps.router.pending_queue._dispatch_push")
+    def test_under_threshold_table_stays_inline_without_journal_link(self, _push):
+        from apps.journal.models import Document
+        from apps.router.pending_queue import _store_ios_turn_reply
+
+        table = self._table(rows=25)
+        batch = self._batch("under-threshold")
+
+        _store_ios_turn_reply(self.tenant, batch, table)
+
+        row = AppChatMessage.objects.get(client_msg_id="under-threshold")
+        self.assertEqual(row.reply_text, table)
+        self.assertIsNone(row.journal_link)
+        self.assertFalse(Document.objects.filter(tenant=self.tenant).exists())
 
     @patch("apps.router.pending_queue._dispatch_push")
     def test_repeat_persistence_with_same_client_id_converges_on_one_document(self, _push):
