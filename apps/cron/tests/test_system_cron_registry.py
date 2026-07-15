@@ -251,6 +251,17 @@ class SystemCronsWellFormednessTests(TestCase):
                 msg=f"SYSTEM_CRONS entry {name!r} has a malformed cron expr {cron_expr!r}",
             )
 
+    def test_stale_app_chat_reaper_is_registered_every_five_minutes(self):
+        from apps.cron.views import TASK_MAP
+
+        entry = next(e for e in reg_cmd.SYSTEM_CRONS if e[0] == "reap-stale-app-chat-messages")
+        self.assertEqual(entry[1], "*/5 * * * *")
+        self.assertEqual(entry[2], "/api/cron/trigger/reap_stale_app_chat_messages/")
+        self.assertEqual(
+            TASK_MAP["reap_stale_app_chat_messages"],
+            "apps.router.pending_queue.reap_stale_app_chat_messages_task",
+        )
+
     def test_wave_b_eval_probes_are_scheduled(self):
         """The five Wave B eval probes (PR-B6) are wired with the planned exprs.
 
