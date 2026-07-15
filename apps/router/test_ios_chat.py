@@ -1133,6 +1133,7 @@ class IOSOnDeviceTurnRecordTest(TestCase):
         self.assertEqual(long_turn.status_code, 201, long_turn.content)
         self.assertEqual(len(long_turn.data["user_text"]), 8000)
         self.assertEqual(len(long_turn.data["reply_text"]), 16000)
+        self.assertTrue(long_turn.data["reply_text"].endswith("… [message truncated]"))
 
         bad_id = self.client.post(
             "/api/v1/chat/turns/",

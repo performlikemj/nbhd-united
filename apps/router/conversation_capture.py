@@ -39,6 +39,8 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone
 
+from apps.router.reply_text import clamp_reply_text
+
 if TYPE_CHECKING:
     from apps.router.models import ConversationTurn
 
@@ -136,7 +138,7 @@ def record_conversation_turn(
             channel_user_id=(channel_user_id or "")[:128],
             local_date=tenant_today(tenant),
             user_text=user_text[:_USER_TEXT_MAX],
-            reply_text=reply_text[:_REPLY_TEXT_MAX],
+            reply_text=clamp_reply_text(reply_text, max_chars=_REPLY_TEXT_MAX),
         )
     except Exception:
         logger.exception(

@@ -56,6 +56,7 @@ from apps.billing.services import (
     resolve_model_for_attribution,
 )
 from apps.router.models import PendingMessage
+from apps.router.reply_text import clamp_reply_text
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -1853,10 +1854,6 @@ def _clean_assistant_text_for_app(
     ai_text, journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="ios")
 
     entity_map = getattr(tenant, "pii_entity_map", None)
-    # Capture BEFORE any rehydration — this is the last moment the reply carries
-    # the [TYPE_N] tokens.
-    reply_redactions = placeholder_redactions(ai_text, entity_map)
-
     # Push / insight copy: rehydrate to real values, record insights (unchanged
     # real-name behaviour), then strip the display markers.
     push_text = rehydrate_text(ai_text, entity_map) if entity_map else ai_text
@@ -1876,7 +1873,11 @@ def _clean_assistant_text_for_app(
     stored_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", stored_text)
     stored_text = re.sub(r"MEDIA:\S+", "", stored_text)
 
-    return stored_text.strip(), push_text.strip(), reply_redactions, quick_replies, journal_link
+    stored_text = clamp_reply_text(stored_text.strip())
+    push_text = clamp_reply_text(push_text.strip())
+    reply_redactions = placeholder_redactions(stored_text, entity_map)
+
+    return stored_text, push_text, reply_redactions, quick_replies, journal_link
 
 
 # ---------------------------------------------------------------------------

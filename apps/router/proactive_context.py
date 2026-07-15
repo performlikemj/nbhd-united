@@ -42,6 +42,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from apps.router.models import ProactiveOutbound
+from apps.router.reply_text import clamp_reply_text
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def record_proactive_outbound(
     """Persist a row describing one successful proactive push.
 
     ``message_text`` is expected in PII-placeholder space (``[PERSON_1]``) — the
-    space the agent authored it in. It is stored verbatim placeholder-space
+    space the agent authored it in. It is clamped and stored placeholder-space
     (pseudonymize-at-rest): ``message_text`` and its derived ``parsed_items``
     never hold real names at rest. Rehydration to real values happens only at
     owner-facing egress — the iOS APNs body below and the ``?since=`` feed
@@ -115,6 +116,7 @@ def record_proactive_outbound(
     has already been delivered to the user; losing the audit row is a
     smaller wrong than 500ing the cron tool call. Errors are logged.
     """
+    message_text = clamp_reply_text(message_text)
     try:
         row = ProactiveOutbound.objects.create(
             tenant=tenant,
