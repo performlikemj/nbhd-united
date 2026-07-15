@@ -27,6 +27,7 @@ from apps.router.conversation_capture import (
     record_conversation_turn,
 )
 from apps.router.models import AppChatMessage, ChatThread, ConversationTurn
+from apps.router.reply_text import REPLY_TEXT_TRUNCATION_SUFFIX
 from apps.tenants.models import Tenant, User
 
 
@@ -86,6 +87,7 @@ class ConversationCaptureTest(TestCase):
         )
         self.assertLessEqual(len(row.user_text), 2000)
         self.assertLessEqual(len(row.reply_text), 800)
+        self.assertTrue(row.reply_text.endswith(REPLY_TEXT_TRUNCATION_SUFFIX))
         self.assertLessEqual(len(row.channel_user_id), 128)
 
     # ── helpers ────────────────────────────────────────────────────────────

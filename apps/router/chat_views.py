@@ -47,6 +47,7 @@ from apps.router.inbound_media import (
 )
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.router.pending_queue import enqueue_message_for_tenant, placeholder_redactions
+from apps.router.reply_text import clamp_reply_text
 from apps.router.services import build_chat_context_marker, build_datetime_context
 from apps.tenants.models import Tenant
 from apps.tenants.throttling import (
@@ -70,11 +71,6 @@ _MAX_CHARS = 8000
 # precise 400 (image_too_large) after decode; this coarse guard is the pre-body
 # OOM defense only.
 _MAX_REQUEST_BODY_BYTES = max(MAX_APP_IMAGE_BYTES, MAX_APP_DOCUMENT_BYTES) * 4 // 3 + 300_000
-
-# Upper bound on a recorded on-device reply. On-device models are small and
-# their replies short; anything longer is truncated rather than rejected so
-# the audit record survives a pathological client.
-_REPLY_MAX_CHARS = 16000
 
 # ``AppChatMessage.client_msg_id`` is CharField(max_length=64); Django doesn't
 # enforce that on save, so an oversized id would surface as a Postgres
@@ -872,7 +868,7 @@ class ChatLocalTurnView(APIView):
         user_text = str(request.data.get("text") or "").strip()[:_MAX_CHARS]
         if not user_text:
             return Response({"error": "empty_message"}, status=status.HTTP_400_BAD_REQUEST)
-        reply_text = str(request.data.get("reply_text") or "").strip()[:_REPLY_MAX_CHARS]
+        reply_text = clamp_reply_text(str(request.data.get("reply_text") or "").strip())
 
         client_msg_id = str(request.data.get("client_msg_id") or "").strip() or uuid.uuid4().hex
         if len(client_msg_id) > _CLIENT_MSG_ID_MAX:
