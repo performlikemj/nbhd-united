@@ -337,6 +337,9 @@ TASK_MAP = {
     # for QStash publish failures, DLQ-bound drain attempts, and worker
     # deaths mid-claim. See pending_queue.reap_stuck_inbound_messages_task.
     "reap_stuck_inbound_messages": "apps.router.pending_queue.reap_stuck_inbound_messages_task",
+    # Five-minute defense-in-depth sweep for iOS/AppChatMessage turns orphaned
+    # in the narrow creation-before-enqueue crash window.
+    "reap_stale_app_chat_messages": "apps.router.pending_queue.reap_stale_app_chat_messages_task",
     # Daily privacy sweep for the per-tenant message queue. Deletes terminal
     # PendingMessage rows (FAILED + residual DELIVERED) older than 14 days so
     # the transient forwarding queue stops accumulating (redacted) user text.

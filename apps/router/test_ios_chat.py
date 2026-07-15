@@ -169,6 +169,59 @@ class IOSChatRoutingTest(TestCase):
             1,
         )
 
+    def test_error_terminalization_is_exposed_and_same_id_repost_does_not_reenqueue(self):
+        turn = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main"),
+            client_msg_id="terminal-retry",
+            user_text="please retry",
+            status=AppChatMessage.Status.PENDING,
+            partial_text="residual partial",
+        )
+        queue_row = PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(turn.thread_id),
+            payload={
+                "message_text": "please retry",
+                "user_param": f"thread:{turn.thread_id}",
+                "user_timezone": "UTC",
+                "client_msg_id": "terminal-retry",
+            },
+            delivery_attempts=3,
+        )
+
+        from apps.router.pending_queue import drain_pending_messages_for_tenant_task
+
+        drain_pending_messages_for_tenant_task(str(self.tenant.id), "ios", str(turn.thread_id))
+
+        detail = self.client.get("/api/v1/chat/messages/terminal-retry/")
+        self.assertEqual(detail.status_code, 200, detail.content)
+        self.assertEqual(detail.data["status"], "error")
+        self.assertEqual(detail.data["error"], "dropped")
+        self.assertEqual(detail.data["partial_text"], "")
+        self.assertEqual(detail.data["partial_seq"], 0)
+
+        history = self.client.get(f"/api/v1/chat/threads/{turn.thread_id}/messages/")
+        self.assertEqual(history.status_code, 200, history.content)
+        terminal = history.data["messages"][0]
+        self.assertEqual(terminal["status"], "error")
+        self.assertEqual(terminal["error"], "dropped")
+        self.assertEqual(terminal["partial_text"], "")
+
+        queue_count = PendingMessage.objects.filter(tenant=self.tenant).count()
+        replay = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "same attachment retry", "client_msg_id": "terminal-retry"},
+            format="json",
+        )
+        self.assertEqual(replay.status_code, 200, replay.content)
+        self.assertEqual(replay.data["status"], "error")
+        self.assertEqual(replay.data["error"], "dropped")
+        self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), queue_count)
+        self.assertTrue(PendingMessage.objects.filter(id=queue_row.id).exists())
+
     @patch("apps.router.pending_queue.httpx.post")
     def test_main_thread_is_default_and_shared(self, mock_post):
         mock_post.return_value = _ok_chat_response("ok")
@@ -1784,7 +1837,10 @@ class IOSDrainDropPushTest(TestCase):
         from apps.router.pending_queue import _send_apology_for_dropped_pending_message
 
         turn, pmsg = self._pending_turn("d1")
-        with patch("apps.router.push_views.notify_app_reply_error") as mock_notify:
+        with (
+            patch("apps.router.push_views.notify_app_reply_error") as mock_notify,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             _send_apology_for_dropped_pending_message(self.tenant, pmsg)
         turn.refresh_from_db()
         self.assertEqual(turn.status, "error")
@@ -1795,7 +1851,10 @@ class IOSDrainDropPushTest(TestCase):
         from apps.router.pending_queue import _send_apology_for_stale_pending_message
 
         turn, pmsg = self._pending_turn("s1")
-        with patch("apps.router.push_views.notify_app_reply_error") as mock_notify:
+        with (
+            patch("apps.router.push_views.notify_app_reply_error") as mock_notify,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             _send_apology_for_stale_pending_message(self.tenant, pmsg, 700.0)
         turn.refresh_from_db()
         self.assertEqual(turn.status, "error")

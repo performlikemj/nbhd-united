@@ -24,6 +24,7 @@ These tests cover the four guarantees in the PR #431 brief:
 from __future__ import annotations
 
 import secrets
+import uuid
 from datetime import timedelta
 from unittest.mock import MagicMock, patch
 
@@ -31,7 +32,7 @@ import httpx
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
-from apps.router.models import PendingMessage
+from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.router.pending_queue import (
     _PROVISION_MAX_WAIT_SECONDS,
     _WAKE_BOOT_GRACE_SECONDS,
@@ -1622,8 +1623,9 @@ class DrainDuringProvisioningTest(TestCase):
         mock_post.assert_not_called()  # never POSTed to a not-yet-built container
 
     @patch("apps.router.pending_queue._reschedule_drain")
+    @patch("apps.router.pending_queue._send_apology_for_dropped_pending_message")
     @patch("apps.router.pending_queue.httpx.post")
-    def test_deprovisioned_tenant_still_fails_fast(self, mock_post, mock_resched):
+    def test_deprovisioned_tenant_still_fails_fast(self, mock_post, mock_apology, mock_resched):
         user = _make_user(line_user_id="Udep")
         tenant = Tenant.objects.create(user=user, status=Tenant.Status.DEPROVISIONING, container_fqdn="")
         msg = self._line_row(tenant, "Udep")
@@ -1634,10 +1636,12 @@ class DrainDuringProvisioningTest(TestCase):
         self.assertEqual(msg.delivery_status, PendingMessage.Status.FAILED)
         mock_resched.assert_not_called()
         mock_post.assert_not_called()
+        mock_apology.assert_called_once()
 
     @patch("apps.router.pending_queue._reschedule_drain")
+    @patch("apps.router.pending_queue._send_apology_for_dropped_pending_message")
     @patch("apps.router.pending_queue.httpx.post")
-    def test_provisioning_past_max_wait_fails(self, mock_post, mock_resched):
+    def test_provisioning_past_max_wait_fails(self, mock_post, mock_apology, mock_resched):
         user = _make_user(line_user_id="Ucap")
         tenant = self._provisioning_tenant(user)
         old = timezone.now() - timedelta(seconds=_PROVISION_MAX_WAIT_SECONDS + 60)
@@ -1648,6 +1652,7 @@ class DrainDuringProvisioningTest(TestCase):
         msg.refresh_from_db()
         self.assertEqual(msg.delivery_status, PendingMessage.Status.FAILED)
         mock_resched.assert_not_called()
+        mock_apology.assert_called_once()
 
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
     @patch("apps.router.pending_queue.httpx.post")
@@ -1669,6 +1674,7 @@ class DrainDuringProvisioningTest(TestCase):
 
         # The next drain delivers the buffered message — the first "Hello" lands.
         drain_pending_messages_for_tenant_task(str(tenant.id), "line", "Udeliver")
+
         # Delivered on the second drain → hard-deleted (PR-3 privacy sweep).
         self.assertFalse(PendingMessage.objects.filter(id=msg.id).exists())
         self.assertEqual(mock_post.call_count, 1)
@@ -1676,8 +1682,6 @@ class DrainDuringProvisioningTest(TestCase):
     @patch("apps.router.pending_queue._reschedule_drain")
     @patch("apps.router.pending_queue.httpx.post")
     def test_provisioning_stamps_waking_at_for_ios_polling_clients(self, mock_post, _mock_resched):
-        from apps.router.models import AppChatMessage, ChatThread
-
         user = _make_user()
         tenant = self._provisioning_tenant(user)
         thread = ChatThread.objects.create(tenant=tenant, user=user, title="", is_main=True)
@@ -1709,6 +1713,333 @@ class DrainDuringProvisioningTest(TestCase):
         self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
         self.assertIsNotNone(turn.waking_at)
         mock_post.assert_not_called()
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    LINE_CHANNEL_ACCESS_TOKEN="test-token",
+    NBHD_DISABLE_BACKGROUND_THREADS=True,
+)
+class PendingTurnTerminalizationTest(TestCase):
+    """Queue-first terminal exits atomically terminalize correlated app turns."""
+
+    def _tenant(self, *, status=Tenant.Status.ACTIVE, fqdn="oc-term.example.com"):
+        user = _make_user()
+        tenant = Tenant.objects.create(user=user, status=status, container_fqdn=fqdn)
+        thread = ChatThread.objects.create(tenant=tenant, user=user, is_main=True, title="Main")
+        return tenant, thread
+
+    def _pair(
+        self,
+        tenant,
+        thread,
+        cid,
+        *,
+        partial="unfinished",
+        app_status=AppChatMessage.Status.PENDING,
+        attempts=0,
+        age_seconds=None,
+        channel=PendingMessage.Channel.IOS,
+        channel_user_id=None,
+    ):
+        turn = AppChatMessage.objects.create(
+            tenant=tenant,
+            user=tenant.user,
+            thread=thread,
+            client_msg_id=cid,
+            user_text=f"question {cid}",
+            status=app_status,
+            partial_text=partial,
+        )
+        queue_row = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=channel,
+            channel_user_id=channel_user_id or str(thread.id),
+            payload={
+                "message_text": f"question {cid}",
+                "user_param": f"thread:{thread.id}",
+                "user_timezone": "UTC",
+                "client_msg_id": cid,
+            },
+            user_text=f"question {cid}",
+            delivery_attempts=attempts,
+        )
+        if age_seconds is not None:
+            PendingMessage.objects.filter(id=queue_row.id).update(
+                created_at=timezone.now() - timedelta(seconds=age_seconds)
+            )
+            queue_row.refresh_from_db()
+        return turn, queue_row
+
+    def _assert_terminal(self, turn, queue_row, error):
+        turn.refresh_from_db()
+        queue_row.refresh_from_db()
+        self.assertEqual(turn.status, AppChatMessage.Status.ERROR)
+        self.assertEqual(turn.error, error)
+        self.assertIsNotNone(turn.replied_at)
+        self.assertEqual(turn.partial_text, "")
+        self.assertEqual(queue_row.delivery_status, PendingMessage.Status.FAILED)
+        self.assertIsNotNone(queue_row.delivered_at)
+        self.assertIsNone(queue_row.delivery_in_flight_until)
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    def test_no_fqdn_terminalizes_both_models_and_pushes_once(self, mock_notify):
+        tenant, thread = self._tenant(status=Tenant.Status.PROVISIONING, fqdn="")
+        turn, queue_row = self._pair(
+            tenant,
+            thread,
+            "no-fqdn",
+            age_seconds=_PROVISION_MAX_WAIT_SECONDS + 60,
+        )
+
+        with self.captureOnCommitCallbacks(execute=True):
+            result = drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        self.assertEqual(result["dropped"], 1)
+        self._assert_terminal(turn, queue_row, "dropped")
+        mock_notify.assert_called_once_with(tenant, ["no-fqdn"])
+
+    def test_suspended_deprovisioning_and_deleted_tenants_terminalize(self):
+        for status in (
+            Tenant.Status.SUSPENDED,
+            Tenant.Status.DEPROVISIONING,
+            Tenant.Status.DELETED,
+        ):
+            with self.subTest(status=status):
+                tenant, thread = self._tenant(status=status, fqdn="")
+                turn, queue_row = self._pair(tenant, thread, f"gone-{status}")
+                drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+                self._assert_terminal(turn, queue_row, "dropped")
+
+    def test_missing_tenant_is_harmless_noop(self):
+        result = drain_pending_messages_for_tenant_task(str(uuid.uuid4()), "ios", "missing-thread")
+        self.assertEqual(result, {"delivered": 0, "failed": 0, "dropped": 0, "skipped_in_flight": 0})
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_fqdn_appears_during_terminal_recheck_and_normal_drain_proceeds(self, mock_post, _mock_send):
+        from apps.router import pending_queue
+
+        mock_post.return_value = _ok_chat_response("delivered after provision")
+        tenant, thread = self._tenant(fqdn="")
+        _turn, queue_row = self._pair(
+            tenant,
+            thread,
+            "fqdn-race",
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U-race",
+        )
+        original = pending_queue._terminalize_failed_queue_rows
+
+        def finish_provisioning(**kwargs):
+            Tenant.objects.filter(id=tenant.id).update(container_fqdn="oc-race.example.com")
+            return original(**kwargs)
+
+        with patch("apps.router.pending_queue._terminalize_failed_queue_rows", side_effect=finish_provisioning):
+            result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U-race")
+
+        self.assertEqual(result["delivered"], 1)
+        self.assertFalse(PendingMessage.objects.filter(id=queue_row.id).exists())
+        mock_post.assert_called_once()
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    def test_attempt_cap_terminalizes_both_models(self, mock_notify):
+        tenant, thread = self._tenant()
+        turn, queue_row = self._pair(tenant, thread, "at-cap", attempts=3)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            result = drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        self.assertEqual(result["dropped"], 1)
+        self._assert_terminal(turn, queue_row, "dropped")
+        mock_notify.assert_called_once_with(tenant, ["at-cap"])
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    def test_stale_path_terminalizes_both_models(self, mock_notify):
+        tenant, thread = self._tenant()
+        turn, queue_row = self._pair(tenant, thread, "stale", age_seconds=15 * 60)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            result = drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        self.assertEqual(result["stale"], 1)
+        self._assert_terminal(turn, queue_row, "stale")
+        mock_notify.assert_called_once_with(tenant, ["stale"])
+
+    def test_app_update_exception_rolls_queue_row_back_to_pending(self):
+        tenant, thread = self._tenant()
+        turn, queue_row = self._pair(tenant, thread, "rollback", attempts=3)
+
+        with (
+            patch.object(AppChatMessage.objects, "filter") as app_filter,
+            self.assertRaisesRegex(RuntimeError, "forced app update failure"),
+        ):
+            app_filter.return_value.update.side_effect = RuntimeError("forced app update failure")
+            drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        queue_row.refresh_from_db()
+        turn.refresh_from_db()
+        self.assertEqual(queue_row.delivery_status, PendingMessage.Status.PENDING)
+        self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    def test_repeat_terminalization_is_idempotent_without_double_push(self, mock_notify):
+        tenant, thread = self._tenant()
+        turn, queue_row = self._pair(tenant, thread, "repeat", attempts=3)
+
+        with self.captureOnCommitCallbacks(execute=True):
+            drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+            drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        self._assert_terminal(turn, queue_row, "dropped")
+        mock_notify.assert_called_once_with(tenant, ["repeat"])
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    def test_ready_turn_is_never_overwritten_or_pushed(self, mock_notify):
+        tenant, thread = self._tenant()
+        turn, queue_row = self._pair(
+            tenant,
+            thread,
+            "already-ready",
+            partial="",
+            app_status=AppChatMessage.Status.READY,
+            attempts=3,
+        )
+        AppChatMessage.objects.filter(id=turn.id).update(reply_text="finished", replied_at=timezone.now())
+
+        with self.captureOnCommitCallbacks(execute=True):
+            drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        turn.refresh_from_db()
+        queue_row.refresh_from_db()
+        self.assertEqual(turn.status, AppChatMessage.Status.READY)
+        self.assertEqual(turn.reply_text, "finished")
+        self.assertEqual(turn.error, "")
+        self.assertEqual(queue_row.delivery_status, PendingMessage.Status.FAILED)
+        mock_notify.assert_not_called()
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    def test_coalesced_key_terminalizes_every_correlated_turn(self, mock_notify):
+        tenant, thread = self._tenant(fqdn="")
+        pairs = [self._pair(tenant, thread, cid) for cid in ("batch-1", "batch-2", "batch-3")]
+
+        with self.captureOnCommitCallbacks(execute=True):
+            drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        for turn, queue_row in pairs:
+            self._assert_terminal(turn, queue_row, "dropped")
+        mock_notify.assert_called_once_with(tenant, ["batch-1", "batch-2", "batch-3"])
+
+    def test_other_channel_key_and_tenant_rows_are_untouched(self):
+        tenant, thread = self._tenant(fqdn="")
+        other_tenant, other_thread = self._tenant(fqdn="")
+        target = self._pair(tenant, thread, "target")
+        other_key = self._pair(tenant, thread, "other-key", channel_user_id="different-thread")
+        other_channel = self._pair(
+            tenant,
+            thread,
+            "other-channel",
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id=str(thread.id),
+        )
+        other_owner = self._pair(other_tenant, other_thread, "other-tenant")
+
+        drain_pending_messages_for_tenant_task(str(tenant.id), "ios", str(thread.id))
+
+        self._assert_terminal(*target, "dropped")
+        for turn, queue_row in (other_key, other_channel, other_owner):
+            turn.refresh_from_db()
+            queue_row.refresh_from_db()
+            self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
+            self.assertEqual(queue_row.delivery_status, PendingMessage.Status.PENDING)
+
+
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
+class StaleAppChatMessageReaperTest(TestCase):
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
+
+    def _turn(self, cid, *, age_minutes=21, status=AppChatMessage.Status.PENDING, source=AppChatMessage.Source.TENANT):
+        turn = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=self.thread,
+            client_msg_id=cid,
+            user_text="question",
+            status=status,
+            source=source,
+            partial_text="residual partial",
+        )
+        AppChatMessage.objects.filter(id=turn.id).update(created_at=timezone.now() - timedelta(minutes=age_minutes))
+        turn.refresh_from_db()
+        return turn
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    def test_stale_orphan_reaped_and_repeat_is_idempotent(self, mock_notify):
+        from apps.router.pending_queue import reap_stale_app_chat_messages_task
+
+        turn = self._turn("orphan")
+        with self.captureOnCommitCallbacks(execute=True):
+            first = reap_stale_app_chat_messages_task()
+            second = reap_stale_app_chat_messages_task()
+
+        self.assertEqual(first["reaped"], 1)
+        self.assertEqual(second["reaped"], 0)
+        turn.refresh_from_db()
+        self.assertEqual(turn.status, AppChatMessage.Status.ERROR)
+        self.assertEqual(turn.error, "stale")
+        self.assertIsNotNone(turn.replied_at)
+        self.assertEqual(turn.partial_text, "")
+        mock_notify.assert_called_once_with(self.tenant, ["orphan"])
+
+    def test_fresh_pending_is_untouched(self):
+        from apps.router.pending_queue import reap_stale_app_chat_messages_task
+
+        turn = self._turn("fresh", age_minutes=19)
+        self.assertEqual(reap_stale_app_chat_messages_task()["reaped"], 0)
+        turn.refresh_from_db()
+        self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
+
+    def test_pending_queue_row_excludes_turn_even_with_expired_lease(self):
+        from apps.router.pending_queue import reap_stale_app_chat_messages_task
+
+        turn = self._turn("owned-by-queue")
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(self.thread.id),
+            payload={"client_msg_id": "owned-by-queue"},
+            delivery_in_flight_until=timezone.now() - timedelta(hours=1),
+        )
+
+        self.assertEqual(reap_stale_app_chat_messages_task()["reaped"], 0)
+        turn.refresh_from_db()
+        self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
+
+    def test_ready_row_is_preserved(self):
+        from apps.router.pending_queue import reap_stale_app_chat_messages_task
+
+        turn = self._turn("ready", status=AppChatMessage.Status.READY)
+        AppChatMessage.objects.filter(id=turn.id).update(reply_text="done", partial_text="")
+
+        self.assertEqual(reap_stale_app_chat_messages_task()["reaped"], 0)
+        turn.refresh_from_db()
+        self.assertEqual(turn.status, AppChatMessage.Status.READY)
+        self.assertEqual(turn.reply_text, "done")
+
+    def test_batch_is_capped_at_200(self):
+        from apps.router.pending_queue import reap_stale_app_chat_messages_task
+
+        turns = [self._turn(f"cap-{i}") for i in range(201)]
+        self.assertEqual(reap_stale_app_chat_messages_task()["reaped"], 200)
+        self.assertEqual(
+            AppChatMessage.objects.filter(
+                id__in=[turn.id for turn in turns], status=AppChatMessage.Status.PENDING
+            ).count(),
+            1,
+        )
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
