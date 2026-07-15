@@ -76,6 +76,47 @@ class CronDeliveryViewTest(TestCase):
         self.assertEqual(resp.json()["status"], "sent")
         self.assertEqual(resp.json()["chunks"], 1)
 
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_large_table_transport_stays_full_while_history_is_shortened(self, mock_client_cls):
+        from apps.journal.models import Document
+        from apps.router.models import ProactiveOutbound
+
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
+        lines = ["| Name | Value |", "| --- | --- |"]
+        lines.extend(f"| row {index} | value {index} |" for index in range(26))
+        full_message = "\n".join(lines)
+
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        response = self.client.post(
+            self.url,
+            {"message": full_message},
+            format="json",
+            **self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        sent_bodies = "\n".join(
+            call.kwargs["json"]["text"]
+            for call in mock_http.post.call_args_list
+            if "text" in call.kwargs.get("json", {})
+        )
+        self.assertIn("row 25", sent_bodies)
+        self.assertNotIn("Saved the full table", sent_bodies)
+
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertIn("Saved the full table (26 rows)", stored.message_text)
+        self.assertNotIn("| Name | Value |", stored.message_text)
+        self.assertEqual(stored.journal_link["kind"], "project")
+        self.assertTrue(Document.objects.filter(tenant=self.tenant, slug=stored.journal_link["slug"]).exists())
+
     def test_rate_limit(self):
         import time
 

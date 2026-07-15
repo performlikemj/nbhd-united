@@ -364,18 +364,16 @@ class DocumentDetailView(APIView):
             )
 
         doc = _get_or_create_document(tenant, kind, slug)
-        if markdown is not None:
+        if markdown is not None or title is not None:
             # Re-redact owner input before persisting. The client round-trips
-            # the rehydrated (real-value) markdown back here on save; without
-            # this pass the real PII would land in Document.markdown and leak
-            # to the agent via RuntimeDailyNotesView. redact_user_message maps
-            # known names back to their existing placeholder and mints new ones;
-            # it is fail-open (returns the original text on any error).
+            # rehydrated (real-value) fields back here on save; without this
+            # pass real PII would land in the agent-visible Document row.
             from apps.pii.redactor import redact_user_message
 
+        if markdown is not None:
             doc.markdown = redact_user_message(markdown, tenant)
         if title is not None:
-            doc.title = title
+            doc.title = redact_user_message(title, tenant)
 
         doc.save()
         return Response(DocumentSerializer(doc, context={"tenant": tenant}).data)

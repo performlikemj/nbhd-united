@@ -2594,3 +2594,178 @@ class ThreadRecapOnWakeTest(TestCase):
         self.assertIn("conversation-recap", content)
         self.assertNotIn("Priya", content)
         self.assertIn("[PERSON_5]", content)
+
+
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
+class ReplyArtifactPersistenceTest(TestCase):
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Sarah"}}
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal", "pii_entity_map"])
+        self.thread = ChatThread.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            title="Artifacts",
+            is_main=True,
+        )
+
+    @staticmethod
+    def _table(rows=26):
+        lines = ["| Name | Value |", "| --- | --- |"]
+        lines.extend(f"| row {index} | [PERSON_1] |" for index in range(rows))
+        return "\n".join(lines)
+
+    def _batch(self, *client_ids):
+        batch = []
+        for client_id in client_ids:
+            AppChatMessage.objects.create(
+                tenant=self.tenant,
+                user=self.user,
+                thread=self.thread,
+                client_msg_id=client_id,
+                user_text=f"question {client_id}",
+            )
+            batch.append(
+                PendingMessage(
+                    tenant=self.tenant,
+                    channel=PendingMessage.Channel.IOS,
+                    channel_user_id=str(self.thread.id),
+                    payload={"client_msg_id": client_id},
+                    user_text=f"question {client_id}",
+                )
+            )
+        return batch
+
+    @patch("apps.router.pending_queue._dispatch_push")
+    def test_move_precedes_clamp_and_generated_chip_lands_on_representative_row(self, _push):
+        from apps.journal.models import Document
+        from apps.router.pending_queue import _store_ios_turn_reply
+
+        batch = self._batch("sibling", "representative")
+        reply = self._table() + "\n\n" + ("afterword " * 2200)
+        _store_ios_turn_reply(self.tenant, batch, reply)
+
+        representative = AppChatMessage.objects.get(client_msg_id="representative")
+        sibling = AppChatMessage.objects.get(client_msg_id="sibling")
+        self.assertEqual(representative.status, AppChatMessage.Status.READY)
+        self.assertEqual(len(representative.reply_text), 16000)
+        self.assertIn("Saved the full table (26 rows)", representative.reply_text)
+        self.assertNotIn("| Name | Value |", representative.reply_text)
+        self.assertEqual(representative.journal_link["kind"], "project")
+        self.assertEqual(sibling.status, AppChatMessage.Status.READY)
+        self.assertEqual(sibling.reply_text, "")
+        doc = Document.objects.get(
+            tenant=self.tenant,
+            kind="project",
+            slug=representative.journal_link["slug"],
+        )
+        self.assertGreater(len(doc.markdown), 16000)
+        self.assertIn("| Name | Value |", doc.markdown)
+
+    @patch("apps.insights.markers.extract_and_record_insights")
+    @patch("apps.router.pending_queue._dispatch_push")
+    def test_quick_replies_and_redactions_survive_while_markers_stay_out_of_artifact(self, _push, mock_insights):
+        from apps.journal.models import Document
+        from apps.router.pending_queue import _store_ios_turn_reply
+
+        mock_insights.side_effect = lambda text, **_kwargs: text
+        batch = self._batch("markers")
+        reply = (
+            "[[insight:mood]]Pattern for [PERSON_1][[/insight]]\n"
+            "[[chart:bar|secret]] MEDIA:https://example.test/file\n"
+            "![remote](https://example.test/beacon.png)\n\n"
+            + self._table()
+            + "\n[[journal-link: project|unrelated|Other]]"
+            + "\n[[quick-replies: Open Journal | Later]]"
+        )
+        _store_ios_turn_reply(self.tenant, batch, reply)
+
+        row = AppChatMessage.objects.get(client_msg_id="markers")
+        self.assertEqual(row.quick_replies, ["Open Journal", "Later"])
+        self.assertEqual(
+            row.reply_redactions,
+            [{"placeholder": "[PERSON_1]", "value": "Sarah"}],
+        )
+        self.assertNotEqual(row.journal_link["slug"], "unrelated")
+        doc = Document.objects.get(tenant=self.tenant, slug=row.journal_link["slug"])
+        for marker in ("[[insight:", "[[chart:", "MEDIA:", "[[journal-link:", "[[quick-replies:"):
+            self.assertNotIn(marker, doc.markdown)
+        self.assertIn("Pattern for [PERSON_1]", doc.markdown)
+        self.assertNotIn("![remote]", doc.markdown)
+        self.assertIn("[remote](https://example.test/beacon.png)", doc.markdown)
+
+    @patch("apps.journal.reply_artifacts.upsert_reply_artifact", side_effect=RuntimeError("db down"))
+    @patch("apps.router.pending_queue._dispatch_push")
+    def test_journal_failure_falls_back_to_clamped_inline_reply(self, _push, _artifact_write):
+        from apps.journal.models import Document
+        from apps.router.pending_queue import _store_ios_turn_reply
+
+        batch = self._batch("fallback")
+        reply = self._table() + ("x" * 17000)
+        _store_ios_turn_reply(self.tenant, batch, reply)
+
+        row = AppChatMessage.objects.get(client_msg_id="fallback")
+        self.assertEqual(len(row.reply_text), 16000)
+        self.assertIn("| Name | Value |", row.reply_text)
+        self.assertIsNone(row.journal_link)
+        self.assertFalse(Document.objects.filter(tenant=self.tenant).exists())
+
+    @patch("apps.router.pending_queue._dispatch_push")
+    def test_existing_link_with_selected_table_is_reused(self, _push):
+        from apps.journal.models import Document
+        from apps.router.pending_queue import _store_ios_turn_reply
+
+        table = self._table()
+        linked = Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.PROJECT,
+            slug="existing-table",
+            title="Existing report",
+            markdown=table,
+        )
+        batch = self._batch("reuse-link")
+        reply = table + "\n[[journal-link: project|existing-table|Existing report]]"
+
+        _store_ios_turn_reply(self.tenant, batch, reply)
+
+        row = AppChatMessage.objects.get(client_msg_id="reuse-link")
+        self.assertEqual(row.journal_link["slug"], linked.slug)
+        self.assertIn("Saved the full table (26 rows)", row.reply_text)
+        self.assertEqual(Document.objects.filter(tenant=self.tenant).count(), 1)
+
+    @patch("apps.router.pending_queue._dispatch_push")
+    def test_repeat_persistence_with_same_client_id_converges_on_one_document(self, _push):
+        from apps.journal.models import Document
+        from apps.router.pending_queue import _store_ios_turn_reply
+
+        batch = self._batch("retry-key")
+        _store_ios_turn_reply(self.tenant, batch, self._table())
+        _store_ios_turn_reply(self.tenant, batch, self._table())
+        self.assertEqual(Document.objects.filter(tenant=self.tenant).count(), 1)
+
+    @patch("apps.router.pending_queue._dispatch_push")
+    def test_final_chat_update_failure_rolls_back_artifact(self, _push):
+        from django.db.models.query import QuerySet
+
+        from apps.journal.models import Document
+        from apps.router.pending_queue import _store_ios_turn_reply
+
+        batch = self._batch("chat-fails")
+        real_update = QuerySet.update
+
+        def fail_app_update(queryset, **kwargs):
+            if queryset.model is AppChatMessage and "reply_text" in kwargs:
+                raise RuntimeError("forced final chat update failure")
+            return real_update(queryset, **kwargs)
+
+        with (
+            patch.object(QuerySet, "update", new=fail_app_update),
+            self.assertRaisesRegex(RuntimeError, "forced final chat update failure"),
+        ):
+            _store_ios_turn_reply(self.tenant, batch, self._table())
+
+        self.assertFalse(Document.objects.filter(tenant=self.tenant).exists())
+        row = AppChatMessage.objects.get(client_msg_id="chat-fails")
+        self.assertEqual(row.status, AppChatMessage.Status.PENDING)

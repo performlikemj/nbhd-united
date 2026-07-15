@@ -21,7 +21,7 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.journal.models import Document, Goal, Task
@@ -82,6 +82,97 @@ class DocumentReadRehydrationTests(_AuthedTenantMixin, TestCase):
 
         doc = Document(kind="project", slug="x", title="x", markdown="Hi [PERSON_1]")
         self.assertEqual(DocumentSerializer(doc).data["markdown"], "Hi [PERSON_1]")
+
+
+class ReplyArtifactOwnerRoundTripTests(_AuthedTenantMixin, TestCase):
+    def test_artifact_stays_placeholder_space_and_owner_round_trip_reredacts(self):
+        from apps.journal.reply_artifacts import upsert_reply_artifact
+
+        doc = upsert_reply_artifact(
+            tenant=self.tenant,
+            source="ios",
+            dedup_key="owner-round-trip",
+            title="Table — [PERSON_1]",
+            markdown="| Person |\n| --- |\n| [PERSON_1] |",
+        )
+        stored = Document.objects.get(id=doc.id)
+        self.assertIn("[PERSON_1]", stored.title)
+        self.assertIn("[PERSON_1]", stored.markdown)
+        self.assertNotIn("Sarah", stored.markdown)
+
+        response = self.client.get(f"/api/v1/journal/documents/project/{doc.slug}/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["title"], "Table — Sarah")
+        self.assertIn("| Sarah |", response.data["markdown"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            edited = self.client.patch(
+                f"/api/v1/journal/documents/project/{doc.slug}/",
+                {"title": "Table — Sarah edited", "markdown": "Sarah updated the table"},
+                format="json",
+            )
+        self.assertEqual(edited.status_code, 200)
+        stored.refresh_from_db()
+        self.assertIn("[PERSON_1]", stored.title)
+        self.assertIn("[PERSON_1]", stored.markdown)
+        self.assertNotIn("Sarah", stored.markdown)
+
+    def test_artifact_helper_works_with_current_journal_encryption_flag_both_ways(self):
+        from apps.journal.reply_artifacts import upsert_reply_artifact
+
+        for enabled in (False, True):
+            with self.subTest(encrypt_journal_writes=enabled):
+                self.tenant.encrypt_journal_writes = enabled
+                self.tenant.save(update_fields=["encrypt_journal_writes"])
+                doc = upsert_reply_artifact(
+                    tenant=self.tenant,
+                    source="ios",
+                    dedup_key=f"encryption-{enabled}",
+                    title="Encrypted rollout compatibility",
+                    markdown="placeholder-space body",
+                )
+                self.assertEqual(Document.objects.get(id=doc.id).markdown.splitlines()[-1], "placeholder-space body")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="artifact-runtime-key")
+class ReplyArtifactRuntimeRetrievalTests(TestCase):
+    def setUp(self):
+        from apps.tenants.test_utils import seed_internal_key
+
+        self.user = User.objects.create_user(username="artifact-runtime", password="x")
+        self.tenant = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
+        seed_internal_key(self.tenant, key="artifact-runtime-key")
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "artifact-runtime-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def test_new_artifact_is_immediately_searchable_and_get_returns_full_content(self):
+        from apps.journal.reply_artifacts import upsert_reply_artifact
+
+        doc = upsert_reply_artifact(
+            tenant=self.tenant,
+            source="ios",
+            dedup_key="runtime-retrieval",
+            title="Table — Nebula inventory",
+            markdown="| Item | Status |\n| --- | --- |\n| zephyrite | ready |",
+        )
+        search = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal/search/",
+            {"q": "zephyrite"},
+            **self.headers,
+        )
+        self.assertEqual(search.status_code, 200)
+        self.assertIn(doc.slug, [result["slug"] for result in search.json()["results"]])
+
+        fetched = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "project", "slug": doc.slug},
+            **self.headers,
+        )
+        self.assertEqual(fetched.status_code, 200)
+        self.assertEqual(fetched.json()["id"], str(doc.id))
+        self.assertIn("| zephyrite | ready |", fetched.json()["markdown"])
 
 
 class DocumentWriteRedactionTests(_AuthedTenantMixin, TestCase):

@@ -32,6 +32,12 @@ from apps.tenants.models import Tenant
 from apps.tenants.test_utils import seed_internal_key
 
 
+def _large_table(rows: int = 26) -> str:
+    lines = ["| Name | Value |", "| --- | --- |"]
+    lines.extend(f"| row {index} | value {index} |" for index in range(rows))
+    return "\n".join(lines)
+
+
 class ParseMarkdownItemsTest(TestCase):
     def test_dash_bullets(self):
         items = parse_markdown_items("- one\n- two\n- three")
@@ -137,6 +143,83 @@ class RecordProactiveOutboundTest(_TenantFixture):
         assert row is not None
         self.assertEqual(len(row.job_name), 64)
 
+    def test_flag_on_stores_summary_chip_and_parses_shortened_text(self):
+        from apps.journal.models import Document
+
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
+        with patch("apps.router.proactive_context.parse_markdown_items", wraps=parse_markdown_items) as parser:
+            row = record_proactive_outbound(
+                tenant=self.tenant,
+                channel="app",
+                channel_user_id="app-user",
+                message_text=_large_table() + "\n\n- keep one\n- keep two",
+                job_name="Morning Briefing",
+                artifact_dedup_key="delivery-123",
+            )
+        assert row is not None
+        self.assertIn("Saved the full table (26 rows)", row.message_text)
+        self.assertNotIn("| Name | Value |", row.message_text)
+        self.assertEqual(row.parsed_items, ["keep one", "keep two"])
+        parser.assert_called_once_with(row.message_text)
+        self.assertEqual(row.journal_link["kind"], "project")
+        doc = Document.objects.get(tenant=self.tenant, slug=row.journal_link["slug"])
+        self.assertIn("| row 25 | value 25 |", doc.markdown)
+
+    def test_stable_key_converges_artifact_across_proactive_retries(self):
+        from apps.journal.models import Document
+
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
+        for _ in range(2):
+            record_proactive_outbound(
+                tenant=self.tenant,
+                channel="telegram",
+                channel_user_id="123",
+                message_text=_large_table(),
+                job_name="Report",
+                artifact_dedup_key="stable-delivery-key",
+            )
+        self.assertEqual(Document.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 2)
+
+    def test_content_date_fallback_converges_identical_proactive_retries(self):
+        from apps.journal.models import Document
+
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
+        for _ in range(2):
+            record_proactive_outbound(
+                tenant=self.tenant,
+                channel="telegram",
+                channel_user_id="123",
+                message_text=_large_table(),
+                job_name="Report without a delivery id",
+            )
+        self.assertEqual(Document.objects.filter(tenant=self.tenant).count(), 1)
+
+    @patch("apps.journal.reply_artifacts.upsert_reply_artifact", side_effect=RuntimeError("db down"))
+    def test_artifact_failure_falls_back_to_inline_clamp(self, _artifact_write):
+        from apps.journal.models import Document
+
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
+        row = record_proactive_outbound(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            message_text=_large_table() + ("x" * 17000),
+            journal_link={"kind": "daily", "slug": "2026-07-15", "title": "Original"},
+        )
+        assert row is not None
+        self.assertEqual(len(row.message_text), 16000)
+        self.assertIn("| Name | Value |", row.message_text)
+        self.assertEqual(
+            row.journal_link,
+            {"kind": "daily", "slug": "2026-07-15", "title": "Original"},
+        )
+        self.assertFalse(Document.objects.filter(tenant=self.tenant).exists())
+
 
 class SurfaceProactiveContextTest(_TenantFixture):
     def test_empty_when_no_rows(self):
@@ -170,6 +253,24 @@ class SurfaceProactiveContextTest(_TenantFixture):
         self.assertIn("[1] alpha", block)
         self.assertIn("[2] beta", block)
         self.assertIn("[3] gamma", block)
+
+    def test_journal_reference_is_model_only_and_stays_placeholder_space(self):
+        record_proactive_outbound(
+            tenant=self.tenant,
+            channel="app",
+            channel_user_id="app-user",
+            message_text="Saved report",
+            journal_link={
+                "kind": "project",
+                "slug": "assistant-table-abc",
+                "title": "Table for [PERSON_1]",
+            },
+        )
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertIn(
+            "[journal-ref: project|assistant-table-abc|Table for [PERSON_1]; retrieve with nbhd_document_get]",
+            block,
+        )
 
     def test_answer_binding_guidance_present_when_any_row_surfaces(self):
         # Always-on binding rule (2026-07-11 canary incident: "energy 1-10?"

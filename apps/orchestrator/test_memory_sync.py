@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest.mock import MagicMock, patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.journal.models import Document
-from apps.orchestrator.memory_sync import render_memory_files
+from apps.orchestrator.memory_sync import render_memory_files, upload_memory_files_to_share
 from apps.tenants.services import create_tenant
 
 
@@ -47,6 +48,54 @@ class RenderMemoryFilesTest(TestCase):
         self.assertIn("memory/journal/goal/fitness.md", files)
         self.assertIn("# Long-Term Memory", files["memory/journal/memory/long-term.md"])
         self.assertIn("Important stuff", files["memory/journal/memory/long-term.md"])
+
+    def test_reply_artifact_projects_to_project_path(self):
+        from apps.journal.reply_artifacts import upsert_reply_artifact
+
+        Document.objects.filter(tenant=self.tenant).delete()
+        doc = upsert_reply_artifact(
+            tenant=self.tenant,
+            source="proactive",
+            dedup_key="memory-sync-artifact",
+            title="Table from chat",
+            markdown="| A |\n| --- |\n| value\x01 |",
+        )
+
+        files = render_memory_files(self.tenant)
+        path = f"memory/journal/project/{doc.slug}.md"
+        self.assertIn(path, files)
+        self.assertIn("| value", files[path])
+
+    @override_settings(AZURE_STORAGE_ACCOUNT_NAME="storage", AZURE_RESOURCE_GROUP="rg")
+    @patch("azure.storage.fileshare.ShareFileClient")
+    @patch("azure.storage.fileshare.ShareDirectoryClient")
+    @patch("azure.storage.fileshare.ShareClient")
+    @patch("apps.orchestrator.azure_client.get_storage_client")
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    def test_reply_artifact_share_upload_sanitizes_controls(
+        self,
+        _mock_mode,
+        get_storage_client,
+        _share_client_cls,
+        _directory_client_cls,
+        file_client_cls,
+    ):
+        from azure.core.exceptions import ResourceNotFoundError
+
+        keys = MagicMock()
+        keys.keys = [MagicMock(value="secret")]
+        get_storage_client.return_value.storage_accounts.list_keys.return_value = keys
+        file_client = file_client_cls.return_value
+        file_client.get_file_properties.side_effect = ResourceNotFoundError("missing")
+
+        written = upload_memory_files_to_share(
+            str(self.tenant.id),
+            {"memory/journal/project/artifact.md": "title\n\t| value\x00\x01 |"},
+        )
+
+        self.assertEqual(written, 1)
+        uploaded = file_client.upload_file.call_args.args[0]
+        self.assertEqual(uploaded, b"title\n\t| value |")
 
     def test_includes_recent_dailies_excludes_old(self):
         today = timezone.now().date()
