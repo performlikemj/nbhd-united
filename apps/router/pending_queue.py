@@ -1841,7 +1841,6 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         return
     now = timezone.now()
     if ai_text:
-        text, push_text, reply_redactions, quick_replies, journal_link = _clean_assistant_text_for_app(tenant, ai_text)
         # A coalesced batch (N>1) yields ONE combined reply. Attach it to a single
         # representative row (the last message in the batch) so the since-feed,
         # thread history, and the USER.md digest each emit exactly one assistant
@@ -1852,33 +1851,39 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         # `_app_rows` / the digest both suppress an assistant row when reply_text
         # is empty, so no duplicate is rendered.
         rep_id = client_ids[-1]
-        # Clear partial_text: the final reply supersedes any pseudo-streamed
-        # text-so-far, and the row is leaving 'pending' where the partial is
-        # meaningful.
-        AppChatMessage.objects.filter(tenant=tenant, client_msg_id=rep_id).update(
-            reply_text=text,
-            status=AppChatMessage.Status.READY,
-            replied_at=now,
-            partial_text="",
-            # Per-turn transparency metadata rides the SAME representative row as
-            # reply_text (siblings stay null — see below); null when the reply
-            # obfuscated nothing.
-            reply_redactions=reply_redactions or None,
-            # Quick-reply button labels ride the same representative row, for
-            # the same reason. null when the reply carried no marker.
-            quick_replies=quick_replies or None,
-            # The "View in Journal" deep-link rides the same representative row,
-            # for the same reason. null when the reply carried no marker.
-            journal_link=journal_link or None,
-        )
-        other_ids = [cid for cid in client_ids if cid != rep_id]
-        if other_ids:
-            AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=other_ids).update(
-                reply_text="",
+        with transaction.atomic():
+            text, push_text, reply_redactions, quick_replies, journal_link = _clean_assistant_text_for_app(
+                tenant,
+                ai_text,
+                artifact_dedup_key=rep_id,
+            )
+            # Clear partial_text: the final reply supersedes any pseudo-streamed
+            # text-so-far, and the row is leaving 'pending' where the partial is
+            # meaningful.
+            AppChatMessage.objects.filter(tenant=tenant, client_msg_id=rep_id).update(
+                reply_text=text,
                 status=AppChatMessage.Status.READY,
                 replied_at=now,
                 partial_text="",
+                # Per-turn transparency metadata rides the SAME representative row as
+                # reply_text (siblings stay null — see below); null when the reply
+                # obfuscated nothing.
+                reply_redactions=reply_redactions or None,
+                # Quick-reply button labels ride the same representative row, for
+                # the same reason. null when the reply carried no marker.
+                quick_replies=quick_replies or None,
+                # The "View in Journal" deep-link rides the same representative row,
+                # for the same reason. null when the reply carried no marker.
+                journal_link=journal_link or None,
             )
+            other_ids = [cid for cid in client_ids if cid != rep_id]
+            if other_ids:
+                AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=other_ids).update(
+                    reply_text="",
+                    status=AppChatMessage.Status.READY,
+                    replied_at=now,
+                    partial_text="",
+                )
         # Notify the device the reply landed (closes the fire-and-forget gap for
         # Siri-escalated / backgrounded turns). No-op unless APNs is configured;
         # fail-open; idempotent (notified_at claim). The app suppresses the alert
@@ -1949,7 +1954,10 @@ def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict]:
 
 
 def _clean_assistant_text_for_app(
-    tenant: Tenant, ai_text: str
+    tenant: Tenant,
+    ai_text: str,
+    *,
+    artifact_dedup_key: str,
 ) -> tuple[str, str, list[dict], list[str] | None, dict | None]:
     """Split one agent reply into its at-rest form, its lock-screen form, its
     PII-transparency metadata, any quick-reply button labels, and any journal
@@ -1996,17 +2004,19 @@ def _clean_assistant_text_for_app(
     ai_text, journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="ios")
 
     entity_map = getattr(tenant, "pii_entity_map", None)
-    # Push / insight copy: rehydrate to real values, record insights (unchanged
-    # real-name behaviour), then strip the display markers.
-    push_text = rehydrate_text(ai_text, entity_map) if entity_map else ai_text
+    # Capture transparency metadata before any table is moved so it describes
+    # the assistant's complete placeholder-space reply, including the artifact.
+    reply_redactions = placeholder_redactions(ai_text, entity_map)
+
+    # Insight copy: rehydrate to real values and record insights with unchanged
+    # real-name behaviour. The stored copy below strips the same wrappers.
+    insight_text = rehydrate_text(ai_text, entity_map) if entity_map else ai_text
     try:
         from apps.insights.markers import extract_and_record_insights
 
-        push_text = extract_and_record_insights(push_text, tenant=tenant)
+        extract_and_record_insights(insight_text, tenant=tenant)
     except Exception:
         logger.exception("insight marker extraction failed (ios drain)")
-    push_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", push_text)
-    push_text = re.sub(r"MEDIA:\S+", "", push_text)
 
     # Stored copy stays placeholder-space: strip the SAME insight markers WITHOUT
     # re-recording (already recorded above) — keeping just the visible statement,
@@ -2015,9 +2025,23 @@ def _clean_assistant_text_for_app(
     stored_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", stored_text)
     stored_text = re.sub(r"MEDIA:\S+", "", stored_text)
 
+    from apps.router.structured_artifacts import externalize_large_structured_reply
+
+    externalized = externalize_large_structured_reply(
+        tenant=tenant,
+        text=stored_text,
+        source="ios",
+        dedup_key=artifact_dedup_key,
+        journal_link=journal_link,
+    )
+    stored_text = externalized.stored_text
+    journal_link = externalized.journal_link
+
+    # Rehydrate only after span-based externalization; placeholder expansion
+    # must never invalidate the detector's offsets.
+    push_text = rehydrate_text(stored_text, entity_map) if entity_map else stored_text
     stored_text = clamp_reply_text(stored_text.strip())
     push_text = clamp_reply_text(push_text.strip())
-    reply_redactions = placeholder_redactions(stored_text, entity_map)
 
     return stored_text, push_text, reply_redactions, quick_replies, journal_link
 

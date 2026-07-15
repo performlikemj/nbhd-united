@@ -224,6 +224,10 @@ class CronDeliveryView(APIView):
         from apps.router.proactive_context import record_proactive_outbound
 
         job_name = request.headers.get("X-NBHD-Job-Name", "")
+        # The current runtime tool call carries job_name but no stable cron
+        # run/delivery identity. Do not add a public header in this persistence
+        # change; record_proactive_outbound uses its documented content fallback.
+        artifact_dedup_key = None
 
         # Route to appropriate channel
         if channel == "line":
@@ -262,6 +266,7 @@ class CronDeliveryView(APIView):
                 # the ?since= feed rehydrates + renders it as a chip. None when
                 # the send carried no marker.
                 journal_link=journal_link,
+                artifact_dedup_key=artifact_dedup_key,
             )
             if row is None:
                 logger.error(
@@ -313,6 +318,7 @@ class CronDeliveryView(APIView):
                 # the ?since= feed rehydrates + renders it as a chip. None when
                 # the send carried no marker.
                 journal_link=journal_link,
+                artifact_dedup_key=artifact_dedup_key,
             )
 
         return resp

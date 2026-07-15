@@ -484,6 +484,14 @@ class Tenant(models.Model):
         ),
     )
 
+    experimental_reply_artifacts_to_journal = models.BooleanField(
+        default=False,
+        help_text=(
+            "Experimental: move oversized GFM tables from persisted assistant "
+            "history into Journal documents. Canary-gated rollout."
+        ),
+    )
+
     # Experimental: typed cron patterns.
     # When True:
     #   - The nbhd-automation-tools plugin is loaded, giving the agent

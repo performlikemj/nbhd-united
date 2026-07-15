@@ -99,6 +99,7 @@ def record_proactive_outbound(
     message_text: str,
     job_name: str = "",
     journal_link: dict | None = None,
+    artifact_dedup_key: str | None = None,
 ) -> ProactiveOutbound | None:
     """Persist a row describing one successful proactive push.
 
@@ -116,20 +117,39 @@ def record_proactive_outbound(
     has already been delivered to the user; losing the audit row is a
     smaller wrong than 500ing the cron tool call. Errors are logged.
     """
-    message_text = clamp_reply_text(message_text)
     try:
-        row = ProactiveOutbound.objects.create(
-            tenant=tenant,
-            channel=channel,
-            channel_user_id=channel_user_id,
-            message_text=message_text,
-            job_name=(job_name or "")[:64],
-            parsed_items=parse_markdown_items(message_text),
-            # Parsed "View in Journal" deep-link (``{kind, slug, title}``, title
-            # in placeholder space) — surfaced + rehydrated by the ?since= feed.
-            # None on sends that carried no marker.
-            journal_link=journal_link,
-        )
+        with transaction.atomic():
+            from apps.router.structured_artifacts import (
+                externalize_large_structured_reply,
+                proactive_artifact_dedup_key,
+            )
+
+            dedup_key = artifact_dedup_key or proactive_artifact_dedup_key(
+                tenant=tenant,
+                job_name=job_name,
+                cleaned_message=message_text,
+            )
+            externalized = externalize_large_structured_reply(
+                tenant=tenant,
+                text=message_text,
+                source="proactive",
+                dedup_key=dedup_key,
+                journal_link=journal_link,
+            )
+            message_text = clamp_reply_text(externalized.stored_text)
+            journal_link = externalized.journal_link
+            row = ProactiveOutbound.objects.create(
+                tenant=tenant,
+                channel=channel,
+                channel_user_id=channel_user_id,
+                message_text=message_text,
+                job_name=(job_name or "")[:64],
+                parsed_items=parse_markdown_items(message_text),
+                # Parsed "View in Journal" deep-link (``{kind, slug, title}``, title
+                # in placeholder space) — surfaced + rehydrated by the ?since= feed.
+                # None on sends that carried no marker.
+                journal_link=journal_link,
+            )
     except Exception:
         logger.exception(
             "Failed to record ProactiveOutbound (tenant=%s channel=%s job=%s)",
@@ -235,6 +255,12 @@ def _format_block(rows: Iterable[ProactiveOutbound]) -> str:
             body = f"{row.message_text}\n\n(numbered items you asked about:\n{anchors}\n)"
         else:
             body = row.message_text
+        if row.journal_link:
+            link = row.journal_link
+            body += (
+                f"\n[journal-ref: {link.get('kind', '')}|{link.get('slug', '')}|"
+                f"{link.get('title', '')}; retrieve with nbhd_document_get]"
+            )
         parts.append(f"[earlier-from-you {when}{job}:\n{body}\n]")
     if not parts:
         return ""
