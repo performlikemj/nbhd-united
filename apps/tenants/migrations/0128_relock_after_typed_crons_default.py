@@ -1,6 +1,6 @@
 """Re-run the public-schema RLS lockdown after this PR's two migrations.
 
-Adding ``tenants.0125_alter_tenant_experimental_typed_crons`` +
+Adding ``tenants.0127_alter_tenant_experimental_typed_crons`` +
 ``cron.0005_remove_cronjob_cron_unique_tenant_name_and_more`` re-sorted Django's
 migration topo graph, so the most recent relock
 (``0122_relock_after_sautai_job``) ran BEFORE ``djstripe.0003_2_11`` created
@@ -62,7 +62,7 @@ class Migration(migrations.Migration):
     # Pinned AFTER both of this PR's migrations (the topo shift) and after every
     # djstripe migration (the tables that escaped). Guarantees this sorts last.
     dependencies = [
-        ("tenants", "0125_alter_tenant_experimental_typed_crons"),
+        ("tenants", "0127_alter_tenant_experimental_typed_crons"),
         ("cron", "0005_remove_cronjob_cron_unique_tenant_name_and_more"),
         ("djstripe", "__latest__"),
     ]

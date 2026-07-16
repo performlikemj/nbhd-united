@@ -6,7 +6,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
     dependencies = [
         ("cron", "0004_alter_cronjob_pattern"),
-        ("tenants", "0125_alter_tenant_experimental_typed_crons"),
+        ("tenants", "0127_alter_tenant_experimental_typed_crons"),
     ]
 
     operations = [

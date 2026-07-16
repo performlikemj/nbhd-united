@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0124_relock_after_enc_p3"),
+        ("tenants", "0126_tenant_experimental_reply_artifacts_to_journal"),
     ]
 
     operations = [
