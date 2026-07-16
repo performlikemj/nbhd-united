@@ -25,6 +25,7 @@ class EvalRun(models.Model):
     class Status(models.TextChoices):
         RUNNING = "running", "Running"
         PASS = "pass", "Pass"
+        DEGRADED = "degraded", "Degraded"
         FAIL = "fail", "Fail"
         ERROR = "error", "Error"
 

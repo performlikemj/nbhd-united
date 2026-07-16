@@ -170,6 +170,10 @@ def close_run(run: EvalRun) -> EvalRun:
         status = EvalRun.Status.ERROR
     elif failed_ids:
         status = EvalRun.Status.FAIL
+    elif run.status == EvalRun.Status.DEGRADED:
+        # A suite may explicitly declare that all cases technically passed but
+        # its evidence was too incomplete to call the run green.
+        status = EvalRun.Status.DEGRADED
     else:
         status = EvalRun.Status.PASS
 
@@ -179,6 +183,8 @@ def close_run(run: EvalRun) -> EvalRun:
 
     if status == EvalRun.Status.PASS:
         logger.info("eval %s: PASS %d/%d", run.suite, passed_n, total)
+    elif status == EvalRun.Status.DEGRADED:
+        logger.warning("eval %s: DEGRADED %d/%d", run.suite, passed_n, total)
     elif status == EvalRun.Status.FAIL:
         logger.error("eval %s: FAIL %d/%d %s", run.suite, passed_n, total, failed_ids)
     else:

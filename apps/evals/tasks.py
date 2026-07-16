@@ -337,7 +337,7 @@ def slo_snapshot_task() -> dict:
     """Fire the ``slo_snapshot`` suite — the nightly production-SLO readout (Suite 4).
 
     Zero-arg by contract (the QStash publish path can't carry a body), registered
-    in apps/cron/views.py TASK_MAP, operator-fired via a no-body publish to
+    in apps/cron/views.py TASK_MAP and fired via a no-body QStash delivery to
     ``/api/cron/trigger/slo_snapshot/``. Computes metadata-only SLO metrics over
     the last 24h (reply/wake latency percentiles, error-status rate,
     proactive-delivery volume — ALL ProactiveOutbound producers, not cron health;
@@ -348,17 +348,26 @@ def slo_snapshot_task() -> dict:
     A threshold breach → the run closes ``fail`` → ``finalize_task_run`` alerts the
     owner + RAISES into the DLQ — that IS the "breach flagged" mechanism (there is
     no separate alarm path). A compute crash closes the run ``error`` inside
-    ``record_run`` and re-raises, so a snapshot that could not run FAILS loudly.
-    Inert until a schedule is added (like the Wave B probes pre-B6); safe to
-    re-fire anytime — each fire is its own run. See apps/evals/suites/slo_snapshot.py.
+    ``record_run``; this wrapper alerts on that error row before re-raising, so a
+    snapshot that could not run is visible through both owner email and QStash.
+    Safe to re-fire anytime — each fire is its own run. See
+    apps/evals/suites/slo_snapshot.py.
     """
     from apps.evals.models import EvalRun
-    from apps.evals.suites.slo_snapshot import run_slo_snapshot_suite
+    from apps.evals.suites.slo_snapshot import SUITE, run_slo_snapshot_suite
 
     # SCHEDULED since #1178 armed the nightly QStash cron (05:55 UTC, 2026-07-13) —
     # this is the "later PR" the old comment promised. It said MANUAL until
     # 2026-07-14, so every nightly snapshot was mislabelled as an operator fire.
-    run = run_slo_snapshot_suite(trigger=EvalRun.Trigger.SCHEDULED)
+    try:
+        run = run_slo_snapshot_suite(trigger=EvalRun.Trigger.SCHEDULED)
+    except Exception:
+        from apps.evals.alerting import send_eval_failure_alert
+
+        errored = EvalRun.objects.filter(suite=SUITE, status=EvalRun.Status.ERROR).order_by("-started_at").first()
+        if errored is not None:
+            send_eval_failure_alert(errored)
+        raise
 
     # Shared contract: a breached (non-pass) run → alert owner + raise into the DLQ.
     finalize_task_run(run)
@@ -374,25 +383,29 @@ def slo_snapshot_task() -> dict:
 def weekly_slo_digest_task() -> dict:
     """Email the platform owner the trailing-7-day SLO digest (Suite 4, Monday).
 
-    Zero-arg by contract, registered in apps/cron/views.py TASK_MAP, operator-fired
-    via a no-body publish to ``/api/cron/trigger/weekly_slo_digest/``. Reads the
+    Zero-arg by contract, registered in apps/cron/views.py TASK_MAP and fired via a
+    no-body delivery to ``/api/cron/trigger/weekly_slo_digest/``. Reads the
     week's ``slo_snapshot`` EvalRun/EvalResult rows, renders a one-page plain-text
     trend (per-metric min/max/latest vs threshold + breach days), and sends it via
-    the gated ``send_slo_digest`` (PLATFORM_OWNER_EMAIL; fail-silently-logged).
+    the gated ``send_slo_digest``.
 
-    Unlike the probe tasks this NEVER raises and does NOT call ``finalize_task_run``:
-    the digest is a weekly readout, not an alarm — breaches were already alerted at
-    snapshot time — so it sends even when every day was green, and a missing owner
-    email is a logged skip, not a DLQ. Inert until scheduled. See
+    Sent and no-owner outcomes return normally; a missing owner is legitimately a
+    quiet skip because there is no configured recipient. An attempted send that
+    fails raises at this task boundary so the cron endpoint returns non-2xx and
+    QStash retries/records the failed delivery. See
     apps/evals/suites/slo_snapshot.py::build_weekly_digest.
     """
     from apps.evals.alerting import send_slo_digest
     from apps.evals.suites.slo_snapshot import build_weekly_digest
 
     subject, body = build_weekly_digest()
-    sent = send_slo_digest(subject, body)
-    logger.info(
-        "slo digest: weekly readout %s",
-        "sent" if sent else "skipped (owner email unset or send failed)",
-    )
-    return {"sent": bool(sent)}
+    outcome = send_slo_digest(subject, body)
+    if outcome == "sent":
+        logger.info("slo digest: weekly readout sent")
+        return {"sent": True}
+    if outcome == "skipped_no_owner":
+        logger.info("slo digest: weekly readout skipped (owner email unset)")
+        return {"sent": False, "reason": "no_owner"}
+    if outcome == "failed":
+        raise RuntimeError("slo digest: weekly readout delivery failed")
+    raise RuntimeError(f"slo digest: unknown delivery outcome {outcome!r}")
