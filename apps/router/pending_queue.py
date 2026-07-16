@@ -56,6 +56,7 @@ from apps.billing.services import (
     record_usage,
     resolve_model_for_attribution,
 )
+from apps.common.eval_sink import suppresses_real_transport
 from apps.router.models import AppChatMessage, PendingMessage
 from apps.router.reply_text import clamp_reply_text
 from apps.tenants.models import Tenant
@@ -1570,7 +1571,7 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     result = resp.json()
 
     ai_text = _extract_ai_response(result)
-    if ai_text and line_user_id:
+    if ai_text and line_user_id and not suppresses_real_transport(tenant):
         try:
             relay_ai_response_to_line(tenant, line_user_id, ai_text)
         except Exception:
@@ -1656,7 +1657,8 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     }
 
     # Send a typing pulse before the slow POST so the user sees activity.
-    _send_telegram_typing_safe(chat_id)
+    if not suppresses_real_transport(tenant):
+        _send_telegram_typing_safe(chat_id)
 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
     if _looks_like_openrouter_credit_limit(resp):
@@ -1666,7 +1668,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     result = resp.json()
 
     ai_text = _extract_ai_response(result)
-    if ai_text:
+    if ai_text and not suppresses_real_transport(tenant):
         relay_ai_response_to_telegram(tenant, chat_id, ai_text)
 
     _capture_conversation_turn(tenant, "telegram", chat_id_str, batch, ai_text)

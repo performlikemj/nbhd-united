@@ -42,6 +42,7 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.router.models import ProactiveOutbound
 from apps.router.reply_text import clamp_reply_text
 
@@ -164,6 +165,12 @@ def record_proactive_outbound(
     # invoke the push dispatcher: this keeps the sink independent of whether a
     # device token is later registered on the tenant.
     if channel == ProactiveOutbound.Channel.EVAL:
+        return row
+
+    # The tenant flag is authoritative.  A caller may have resolved a real
+    # channel before an operator flips the tenant into eval-sink mode; preserve
+    # the evidence row above, but never dispatch APNs from that stale channel.
+    if suppresses_real_transport(tenant):
         return row
 
     # Ping the user's iPhone(s) that a proactive / cron message just landed — the

@@ -21,6 +21,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.router.models import DeviceToken
 from apps.tenants.throttling import PushTestMinuteThrottle
 
@@ -186,6 +187,10 @@ class PushTestView(APIView):
     def post(self, request):
         from apps.common.apns import apns_configured, send_push
 
+        tenant = getattr(request.user, "tenant", None)
+        if suppresses_real_transport(tenant):
+            return Response({"sent": 0, "failed": 0, "skipped": "eval_sink"}, status=status.HTTP_200_OK)
+
         if not apns_configured():
             return Response({"sent": 0, "failed": 0, "skipped": "not_configured"}, status=status.HTTP_200_OK)
 
@@ -349,6 +354,10 @@ def _push_to_user_devices(
     self-healing live in exactly one place.
     """
     from apps.common.apns import send_push
+
+    tenant = getattr(user, "tenant", None)
+    if suppresses_real_transport(tenant):
+        return
 
     rows = list(
         DeviceToken.objects.filter(
