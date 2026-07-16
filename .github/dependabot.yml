@@ -5,6 +5,16 @@ updates:
     schedule:
       interval: "daily"
     open-pull-requests-limit: 10
+    # @tiptap packages MUST bump together — they peer-depend on one shared
+    # version, so individual bumps land a mixed 3.27/3.28 tree that npm ci
+    # ERESOLVEs on, reddening frontend CI and jamming ALL deploys. This bit us
+    # twice (2026-06-04 #788-792, 2026-07-16 #1223-1229, the latter via
+    # auto-merge landing 5 separate bumps). Grouping = one PR that keeps them
+    # consistent.
+    groups:
+      tiptap:
+        patterns:
+          - "@tiptap/*"
     ignore:
       - dependency-name: "next"
         update-types: ["version-update:semver-major"]
