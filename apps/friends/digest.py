@@ -92,7 +92,37 @@ def _deliver_text(tenant, text: str) -> bool:
 
         return _send_line_text(tenant, getattr(user, "line_user_id", "") or "", text)
     if channel == "app":
-        return True  # iOS-only: APNs push + ?since= feed row is the delivery
+        # App-preferred user (iOS device registered): there's no Telegram/LINE
+        # chat to push to, so recording a ProactiveOutbound row IS the delivery —
+        # it fires the APNs wake-push and writes the ?since= feed row the app
+        # drains. The old ``return True`` counted the weekly claim as delivered
+        # while writing nothing, which silently dropped the digest for
+        # token-holders once outbound routing became app-first. The digest text
+        # is platform-authored (handles only, no PII entities), so it stores as-is.
+        from apps.router.proactive_context import record_proactive_outbound
+
+        row = record_proactive_outbound(
+            tenant=tenant,
+            channel="app",
+            channel_user_id=str(getattr(user, "id", "") or ""),
+            message_text=text,
+            job_name="_mission:digest",
+        )
+        return row is not None
+    if channel == "eval":
+        # Eval sink: never a real transport. Record the internal evidence row
+        # (the recorder suppresses APNs for this channel and every operational
+        # reader excludes it) rather than falling through to the Telegram branch.
+        from apps.router.proactive_context import record_proactive_outbound
+
+        row = record_proactive_outbound(
+            tenant=tenant,
+            channel="eval",
+            channel_user_id=str(getattr(user, "id", "") or ""),
+            message_text=text,
+            job_name="_mission:digest",
+        )
+        return row is not None
     from apps.router.services import send_telegram_message
 
     chat_id = getattr(user, "telegram_chat_id", None)

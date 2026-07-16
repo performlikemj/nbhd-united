@@ -56,6 +56,7 @@ import {
   fetchMe,
   fetchPersonas,
   fetchPreferences,
+  fetchPushStatus,
   fetchProvisioningStatus,
   fetchRefreshConfigStatus,
   fetchSidebarTree,
@@ -158,6 +159,9 @@ import {
   fetchPATs,
   mintPAT,
   revokePAT,
+  fetchSautaiLink,
+  connectSautaiLink,
+  disconnectSautaiLink,
   fetchByoCredentials,
   connectByoCredential,
   disconnectByoCredential,
@@ -548,6 +552,8 @@ export function useTelegramStatusQuery(enabled = true, pairingActive = false) {
     queryKey: ["telegram-status"],
     queryFn: fetchTelegramStatus,
     enabled: isLoggedIn() && enabled,
+    staleTime: 0,
+    refetchOnWindowFocus: "always",
     refetchInterval: enabled
       ? (query) => {
           if (query.state.status === "error") return false;
@@ -561,6 +567,7 @@ export function useTelegramStatusQuery(enabled = true, pairingActive = false) {
 export function useGenerateTelegramLinkMutation() {
   return useMutation({
     mutationFn: generateTelegramLink,
+    meta: { skipErrorToast: true },
   });
 }
 
@@ -594,6 +601,8 @@ export function useLineStatusQuery(enabled = true, pairingActive = false) {
     queryKey: ["line-status"],
     queryFn: fetchLineStatus,
     enabled: isLoggedIn() && enabled,
+    staleTime: 0,
+    refetchOnWindowFocus: "always",
     refetchInterval: enabled
       ? (query) => {
           if (query.state.status === "error") return false;
@@ -607,6 +616,19 @@ export function useLineStatusQuery(enabled = true, pairingActive = false) {
 export function useGenerateLineLinkMutation() {
   return useMutation({
     mutationFn: generateLineLink,
+    meta: { skipErrorToast: true },
+  });
+}
+
+export function usePushStatusQuery(enabled = true) {
+  return useQuery({
+    queryKey: ["push-status"],
+    queryFn: fetchPushStatus,
+    enabled: isLoggedIn() && enabled,
+    staleTime: 0,
+    refetchOnWindowFocus: "always",
+    refetchInterval: (query) =>
+      query.state.data?.registered === false ? 15_000 : false,
   });
 }
 
@@ -1822,6 +1844,37 @@ export function useRevokePATMutation() {
     },
     onSettled: () => {
       void qc.invalidateQueries({ queryKey: ["pats"] });
+    },
+  });
+}
+
+// sautai account link (Connected Apps)
+
+export function useSautaiLinkQuery() {
+  return useQuery({
+    queryKey: ["sautai-link"],
+    queryFn: fetchSautaiLink,
+    staleTime: 30_000,
+    enabled: isLoggedIn(),
+  });
+}
+
+export function useConnectSautaiMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (connectKey: string) => connectSautaiLink(connectKey),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["sautai-link"] });
+    },
+  });
+}
+
+export function useDisconnectSautaiMutation() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: disconnectSautaiLink,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ["sautai-link"] });
     },
   });
 }

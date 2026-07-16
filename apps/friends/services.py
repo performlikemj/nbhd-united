@@ -25,6 +25,7 @@ from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.lessons.pillars import infer_pillar_from_tags
 from apps.tenants.models import Tenant
 
@@ -651,6 +652,9 @@ def _share_audience_label(tenant, share) -> str:
 
 
 def _notify_wave_received(friendship: Friendship) -> None:
+    if suppresses_real_transport(friendship.addressee):
+        return
+
     from .notifications import notify_wave_app, notify_wave_received
 
     notify_wave_received(friendship)  # Telegram/LINE inline accept/decline (existing)

@@ -49,13 +49,16 @@ from typing import Any
 import httpx
 from django.conf import settings
 from django.db import models, transaction
+from django.db.models.fields.json import KeyTextTransform
 from django.utils import timezone
 
 from apps.billing.services import (
     record_usage,
     resolve_model_for_attribution,
 )
-from apps.router.models import PendingMessage
+from apps.common.eval_sink import suppresses_real_transport
+from apps.router.models import AppChatMessage, PendingMessage
+from apps.router.reply_text import clamp_reply_text
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -113,6 +116,13 @@ _PROVISION_MAX_WAIT_SECONDS = 300
 # is ~3.3 republished drains/second across the entire fleet, which is
 # well under QStash's free-tier rate limit.
 _REAPER_BATCH_LIMIT = 200
+
+# Defense-in-depth for the creation-time gap between AppChatMessage(PENDING)
+# and its PendingMessage queue row. A worker death in that gap leaves no queue
+# row for the normal reaper to find, so a separate bounded sweep terminalizes
+# tenant-runtime turns that have remained orphaned for 20 minutes.
+_STALE_APP_CHAT_AGE_SECONDS = 20 * 60
+_STALE_APP_CHAT_BATCH_LIMIT = 200
 
 # Stale-message guard. Any pending row claimed by the drain task whose
 # created_at is older than this is dropped without POSTing to OC — the
@@ -592,6 +602,134 @@ def _has_more_pending(tenant: Tenant, channel: str, channel_user_id: str) -> boo
     ).exists()
 
 
+def _terminalize_pending_app_turns(
+    tenant: Tenant,
+    client_msg_ids: list[str],
+    error: str,
+    *,
+    now,
+) -> list[str]:
+    """Compare-and-set correlated app turns from PENDING to ERROR.
+
+    Each id is updated separately so the on-commit notification contains only
+    turns this call actually transitioned. That keeps repeat terminalization
+    idempotent without locking app rows or overwriting a concurrently completed
+    READY turn.
+    """
+    from apps.router.push_views import notify_app_reply_error
+
+    terminalized_ids: list[str] = []
+    for client_msg_id in dict.fromkeys(client_msg_ids):
+        changed = AppChatMessage.objects.filter(
+            tenant=tenant,
+            client_msg_id=client_msg_id,
+            status=AppChatMessage.Status.PENDING,
+        ).update(
+            status=AppChatMessage.Status.ERROR,
+            error=error,
+            replied_at=now,
+            partial_text="",
+        )
+        if changed:
+            terminalized_ids.append(client_msg_id)
+
+    if terminalized_ids:
+        transaction.on_commit(
+            lambda tenant=tenant, ids=list(terminalized_ids): _dispatch_push(
+                notify_app_reply_error,
+                tenant,
+                ids,
+            )
+        )
+    return terminalized_ids
+
+
+def _terminalize_failed_queue_rows(
+    *,
+    tenant: Tenant | None,
+    tenant_id: str,
+    channel: str,
+    channel_user_id: str,
+    error: str,
+    row_ids: list | None = None,
+    require_missing_fqdn: bool = False,
+) -> tuple[Tenant | None, list[PendingMessage], bool]:
+    """Atomically fail pending queue rows and correlated pending app turns.
+
+    Returns ``(tenant, rows, fqdn_appeared)``. The final flag is used by the
+    no-FQDN guard: provisioning may have completed after its initial read, in
+    which case nothing is failed and the caller continues through normal drain.
+    Channel-native apologies run only after the transaction commits; APNs is
+    registered through ``transaction.on_commit`` by the app-turn CAS above.
+    """
+    locked_tenant = tenant
+    terminalized_rows: list[PendingMessage] = []
+    fqdn_appeared = False
+    committed_at = None
+
+    with transaction.atomic():
+        if require_missing_fqdn:
+            locked_tenant = (
+                Tenant.objects.select_for_update(of=("self",)).select_related("user").filter(id=tenant_id).first()
+            )
+            if locked_tenant is None:
+                return None, [], False
+            if locked_tenant.container_fqdn:
+                return locked_tenant, [], True
+
+        if locked_tenant is None:
+            return None, [], False
+
+        queue_rows = PendingMessage.objects.select_for_update().filter(
+            tenant_id=tenant_id,
+            channel=channel,
+            channel_user_id=channel_user_id or "",
+            delivery_status=PendingMessage.Status.PENDING,
+        )
+        if row_ids is not None:
+            queue_rows = queue_rows.filter(id__in=row_ids)
+        terminalized_rows = list(queue_rows.order_by("created_at"))
+        if not terminalized_rows:
+            return locked_tenant, [], False
+
+        committed_at = timezone.now()
+        client_msg_ids = _ios_client_msg_ids(terminalized_rows)
+        if client_msg_ids:
+            _terminalize_pending_app_turns(
+                locked_tenant,
+                client_msg_ids,
+                error,
+                now=committed_at,
+            )
+
+        locked_ids = [row.id for row in terminalized_rows]
+        PendingMessage.objects.filter(
+            id__in=locked_ids,
+            delivery_status=PendingMessage.Status.PENDING,
+        ).update(
+            delivery_status=PendingMessage.Status.FAILED,
+            delivered_at=committed_at,
+            delivery_in_flight_until=None,
+        )
+        for row in terminalized_rows:
+            row.delivery_status = PendingMessage.Status.FAILED
+            row.delivered_at = committed_at
+            row.delivery_in_flight_until = None
+
+    # LINE/Telegram sends are external side effects, so they must not happen
+    # until both model transitions have committed successfully.
+    for row in terminalized_rows:
+        if row.channel == PendingMessage.Channel.IOS:
+            continue
+        if error == "stale":
+            age_seconds = max(0.0, (committed_at - row.created_at).total_seconds())
+            _send_apology_for_stale_pending_message(locked_tenant, row, age_seconds)
+        else:
+            _send_apology_for_dropped_pending_message(locked_tenant, row)
+
+    return locked_tenant, terminalized_rows, fqdn_appeared
+
+
 def drain_pending_messages_for_tenant_task(
     tenant_id: str,
     channel: str,
@@ -682,23 +820,29 @@ def drain_pending_messages_for_tenant_task(
                 _PROVISION_MAX_WAIT_SECONDS,
             )
 
-        logger.warning(
-            "drain_pending: tenant %s not found or no FQDN, dropping queue",
-            tenant_id[:8],
-        )
-        # Defensive cleanup: mark any orphaned rows as failed so we don't
-        # endlessly re-schedule against a tenant that's been deprovisioned.
-        PendingMessage.objects.filter(
+        # Re-lock/re-read the tenant with the queue rows. Provisioning may have
+        # completed after the initial read; if an FQDN appeared, continue into
+        # normal drain instead of terminalizing a now-deliverable turn.
+        locked_tenant, terminalized_rows, fqdn_appeared = _terminalize_failed_queue_rows(
+            tenant=tenant,
             tenant_id=tenant_id,
             channel=channel,
             channel_user_id=channel_user_id or "",
-            delivery_status=PendingMessage.Status.PENDING,
-        ).update(
-            delivery_status=PendingMessage.Status.FAILED,
-            delivered_at=timezone.now(),
-            delivery_in_flight_until=None,
+            error="dropped",
+            require_missing_fqdn=True,
         )
-        return {"delivered": 0, "failed": 0, "dropped": 0, "skipped_in_flight": 0}
+        if not fqdn_appeared:
+            logger.warning(
+                "drain_pending: tenant %s not found or no FQDN, dropping queue",
+                tenant_id[:8],
+            )
+            return {
+                "delivered": 0,
+                "failed": 0,
+                "dropped": len(terminalized_rows),
+                "skipped_in_flight": 0,
+            }
+        tenant = locked_tenant
 
     chat_timeout = _resolve_chat_timeout(tenant)
     batch, info = _claim_pending_batch_for_key(tenant, channel, channel_user_id or "", chat_timeout)
@@ -712,20 +856,22 @@ def drain_pending_messages_for_tenant_task(
             tenant_id[:8],
             past_cap_head.delivery_attempts,
         )
-        past_cap_head.delivery_status = PendingMessage.Status.FAILED
-        past_cap_head.delivered_at = timezone.now()
-        past_cap_head.delivery_in_flight_until = None
-        past_cap_head.save(
-            update_fields=[
-                "delivery_status",
-                "delivered_at",
-                "delivery_in_flight_until",
-            ]
+        _, terminalized_rows, _ = _terminalize_failed_queue_rows(
+            tenant=tenant,
+            tenant_id=tenant_id,
+            channel=channel,
+            channel_user_id=channel_user_id or "",
+            error="dropped",
+            row_ids=[past_cap_head.id],
         )
-        _send_apology_for_dropped_pending_message(tenant, past_cap_head)
         if _has_more_pending(tenant, channel, channel_user_id or ""):
             _reschedule_drain(tenant, channel, channel_user_id or "")
-        return {"delivered": 0, "failed": 0, "dropped": 1, "skipped_in_flight": 0}
+        return {
+            "delivered": 0,
+            "failed": 0,
+            "dropped": len(terminalized_rows),
+            "skipped_in_flight": 0,
+        }
 
     # Stale head — lease IS already taken by the batch claim; flip to
     # FAILED and apologize. The user's conversational frame has moved on
@@ -742,20 +888,23 @@ def drain_pending_messages_for_tenant_task(
             int(msg_age_seconds),
             _STALE_MESSAGE_AGE_SECONDS,
         )
-        stale_head.delivery_status = PendingMessage.Status.FAILED
-        stale_head.delivered_at = timezone.now()
-        stale_head.delivery_in_flight_until = None
-        stale_head.save(
-            update_fields=[
-                "delivery_status",
-                "delivered_at",
-                "delivery_in_flight_until",
-            ]
+        _, terminalized_rows, _ = _terminalize_failed_queue_rows(
+            tenant=tenant,
+            tenant_id=tenant_id,
+            channel=channel,
+            channel_user_id=channel_user_id or "",
+            error="stale",
+            row_ids=[stale_head.id],
         )
-        _send_apology_for_stale_pending_message(tenant, stale_head, msg_age_seconds)
         if _has_more_pending(tenant, channel, channel_user_id or ""):
             _reschedule_drain(tenant, channel, channel_user_id or "")
-        return {"delivered": 0, "failed": 0, "dropped": 1, "skipped_in_flight": 0, "stale": 1}
+        return {
+            "delivered": 0,
+            "failed": 0,
+            "dropped": len(terminalized_rows),
+            "skipped_in_flight": 0,
+            "stale": 1,
+        }
 
     if not batch:
         # Either the key's queue is drained or every remaining row has
@@ -1306,21 +1455,27 @@ def _send_apology_for_dropped_pending_message(tenant: Tenant, msg: PendingMessag
 # ---------------------------------------------------------------------------
 
 
-def _build_batch_chat_content(batch: list[PendingMessage], fallback_user_id: str) -> tuple[str, str, str]:
+def _build_batch_chat_content(
+    batch: list[PendingMessage], fallback_user_id: str, channel: str | None = None
+) -> tuple[str, str, str]:
     """Build the ``content`` string + routing context for a deliverable batch.
 
     Returns ``(content, user_param, user_timezone)``.
 
     Singleton batches (``len(batch) == 1``) preserve the existing per-row
     on-the-wire shape: the row's pre-decorated ``payload.message_text``
-    flows straight through, with markers as baked in at enqueue time.
+    flows straight through, with markers as baked in at enqueue time (the
+    producer already stamped the active channel into that text).
 
     Coalesced batches (``len(batch) > 1``) build a fresh prompt at drain
     time using ``format_coalesced_user_content``: the datetime + coalesced
     chat marker are emitted ONCE (from the latest row's routing context),
     then each row's raw ``user_text`` is appended with an index +
     timestamp. The intent is the agent reads N delineated follow-ups
-    instead of N separate per-turn replies.
+    instead of N separate per-turn replies. ``channel`` (the drain's own
+    channel — ``"telegram"`` / ``"line"`` / ``"ios"``) is stamped into that
+    rebuilt marker so the coalesced path keeps the same per-turn channel
+    signal the singleton (producer-baked) path carries.
     """
     from apps.router.services import format_coalesced_user_content
 
@@ -1347,6 +1502,7 @@ def _build_batch_chat_content(batch: list[PendingMessage], fallback_user_id: str
         raw_texts,
         user_timezone=user_tz,
         timestamps=timestamps,
+        channel=channel,
     )
     return content, user_param, user_tz
 
@@ -1378,7 +1534,7 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     from apps.router.line_webhook import relay_ai_response_to_line
 
     line_user_id = batch[0].channel_user_id
-    content, user_param, user_tz = _build_batch_chat_content(batch, line_user_id)
+    content, user_param, user_tz = _build_batch_chat_content(batch, line_user_id, channel="line")
     # ``reply_token`` is intentionally NOT used: by the time the queue
     # drains, the LINE Reply API window (~1 min) is almost always
     # closed. We always Push.
@@ -1415,7 +1571,7 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     result = resp.json()
 
     ai_text = _extract_ai_response(result)
-    if ai_text and line_user_id:
+    if ai_text and line_user_id and not suppresses_real_transport(tenant):
         try:
             relay_ai_response_to_line(tenant, line_user_id, ai_text)
         except Exception:
@@ -1479,7 +1635,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     except (TypeError, ValueError):
         raise ValueError(f"telegram drain: invalid chat_id {chat_id_str!r}")
 
-    content, user_param, user_tz = _build_batch_chat_content(batch, chat_id_str)
+    content, user_param, user_tz = _build_batch_chat_content(batch, chat_id_str, channel="telegram")
 
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     from apps.cron.gateway_client import get_gateway_token_for_tenant
@@ -1501,7 +1657,8 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     }
 
     # Send a typing pulse before the slow POST so the user sees activity.
-    _send_telegram_typing_safe(chat_id)
+    if not suppresses_real_transport(tenant):
+        _send_telegram_typing_safe(chat_id)
 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
     if _looks_like_openrouter_credit_limit(resp):
@@ -1511,7 +1668,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     result = resp.json()
 
     ai_text = _extract_ai_response(result)
-    if ai_text:
+    if ai_text and not suppresses_real_transport(tenant):
         relay_ai_response_to_telegram(tenant, chat_id, ai_text)
 
     _capture_conversation_turn(tenant, "telegram", chat_id_str, batch, ai_text)
@@ -1542,7 +1699,7 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
         return False
 
     thread_id = batch[0].channel_user_id
-    content, user_param, user_tz = _build_batch_chat_content(batch, thread_id)
+    content, user_param, user_tz = _build_batch_chat_content(batch, thread_id, channel="ios")
 
     # Bridge proactive-message continuity into the iOS turn. Unlike the
     # Telegram/LINE ingress handlers (which prepend this block before enqueue),
@@ -1686,7 +1843,6 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         return
     now = timezone.now()
     if ai_text:
-        text, push_text, reply_redactions, quick_replies, journal_link = _clean_assistant_text_for_app(tenant, ai_text)
         # A coalesced batch (N>1) yields ONE combined reply. Attach it to a single
         # representative row (the last message in the batch) so the since-feed,
         # thread history, and the USER.md digest each emit exactly one assistant
@@ -1697,33 +1853,39 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         # `_app_rows` / the digest both suppress an assistant row when reply_text
         # is empty, so no duplicate is rendered.
         rep_id = client_ids[-1]
-        # Clear partial_text: the final reply supersedes any pseudo-streamed
-        # text-so-far, and the row is leaving 'pending' where the partial is
-        # meaningful.
-        AppChatMessage.objects.filter(tenant=tenant, client_msg_id=rep_id).update(
-            reply_text=text,
-            status=AppChatMessage.Status.READY,
-            replied_at=now,
-            partial_text="",
-            # Per-turn transparency metadata rides the SAME representative row as
-            # reply_text (siblings stay null — see below); null when the reply
-            # obfuscated nothing.
-            reply_redactions=reply_redactions or None,
-            # Quick-reply button labels ride the same representative row, for
-            # the same reason. null when the reply carried no marker.
-            quick_replies=quick_replies or None,
-            # The "View in Journal" deep-link rides the same representative row,
-            # for the same reason. null when the reply carried no marker.
-            journal_link=journal_link or None,
-        )
-        other_ids = [cid for cid in client_ids if cid != rep_id]
-        if other_ids:
-            AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=other_ids).update(
-                reply_text="",
+        with transaction.atomic():
+            text, push_text, reply_redactions, quick_replies, journal_link = _clean_assistant_text_for_app(
+                tenant,
+                ai_text,
+                artifact_dedup_key=rep_id,
+            )
+            # Clear partial_text: the final reply supersedes any pseudo-streamed
+            # text-so-far, and the row is leaving 'pending' where the partial is
+            # meaningful.
+            AppChatMessage.objects.filter(tenant=tenant, client_msg_id=rep_id).update(
+                reply_text=text,
                 status=AppChatMessage.Status.READY,
                 replied_at=now,
                 partial_text="",
+                # Per-turn transparency metadata rides the SAME representative row as
+                # reply_text (siblings stay null — see below); null when the reply
+                # obfuscated nothing.
+                reply_redactions=reply_redactions or None,
+                # Quick-reply button labels ride the same representative row, for
+                # the same reason. null when the reply carried no marker.
+                quick_replies=quick_replies or None,
+                # The "View in Journal" deep-link rides the same representative row,
+                # for the same reason. null when the reply carried no marker.
+                journal_link=journal_link or None,
             )
+            other_ids = [cid for cid in client_ids if cid != rep_id]
+            if other_ids:
+                AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=other_ids).update(
+                    reply_text="",
+                    status=AppChatMessage.Status.READY,
+                    replied_at=now,
+                    partial_text="",
+                )
         # Notify the device the reply landed (closes the fire-and-forget gap for
         # Siri-escalated / backgrounded turns). No-op unless APNs is configured;
         # fail-open; idempotent (notified_at claim). The app suppresses the alert
@@ -1746,21 +1908,16 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
 
 
 def _store_ios_turn_error(tenant: Tenant, batch: list[PendingMessage], reason: str) -> None:
-    from apps.router.models import AppChatMessage
-    from apps.router.push_views import notify_app_reply_error
-
     client_ids = _ios_client_msg_ids(batch)
     if not client_ids:
         return
-    AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
-        status=AppChatMessage.Status.ERROR,
-        error=reason,
-        replied_at=timezone.now(),
-        partial_text="",
-    )
-    # Notify the device the turn ended in error (e.g. budget exhausted on a
-    # Siri-escalated / backgrounded turn). Generic body, idempotent, fail-open.
-    _dispatch_push(notify_app_reply_error, tenant, list(client_ids))
+    with transaction.atomic():
+        _terminalize_pending_app_turns(
+            tenant,
+            client_ids,
+            reason,
+            now=timezone.now(),
+        )
 
 
 def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict]:
@@ -1799,7 +1956,10 @@ def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict]:
 
 
 def _clean_assistant_text_for_app(
-    tenant: Tenant, ai_text: str
+    tenant: Tenant,
+    ai_text: str,
+    *,
+    artifact_dedup_key: str,
 ) -> tuple[str, str, list[dict], list[str] | None, dict | None]:
     """Split one agent reply into its at-rest form, its lock-screen form, its
     PII-transparency metadata, any quick-reply button labels, and any journal
@@ -1846,21 +2006,19 @@ def _clean_assistant_text_for_app(
     ai_text, journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="ios")
 
     entity_map = getattr(tenant, "pii_entity_map", None)
-    # Capture BEFORE any rehydration — this is the last moment the reply carries
-    # the [TYPE_N] tokens.
+    # Capture transparency metadata before any table is moved so it describes
+    # the assistant's complete placeholder-space reply, including the artifact.
     reply_redactions = placeholder_redactions(ai_text, entity_map)
 
-    # Push / insight copy: rehydrate to real values, record insights (unchanged
-    # real-name behaviour), then strip the display markers.
-    push_text = rehydrate_text(ai_text, entity_map) if entity_map else ai_text
+    # Insight copy: rehydrate to real values and record insights with unchanged
+    # real-name behaviour. The stored copy below strips the same wrappers.
+    insight_text = rehydrate_text(ai_text, entity_map) if entity_map else ai_text
     try:
         from apps.insights.markers import extract_and_record_insights
 
-        push_text = extract_and_record_insights(push_text, tenant=tenant)
+        extract_and_record_insights(insight_text, tenant=tenant)
     except Exception:
         logger.exception("insight marker extraction failed (ios drain)")
-    push_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", push_text)
-    push_text = re.sub(r"MEDIA:\S+", "", push_text)
 
     # Stored copy stays placeholder-space: strip the SAME insight markers WITHOUT
     # re-recording (already recorded above) — keeping just the visible statement,
@@ -1869,7 +2027,25 @@ def _clean_assistant_text_for_app(
     stored_text = re.sub(r"\[\[chart:\w+(?:\|.+?)?\]\]", "", stored_text)
     stored_text = re.sub(r"MEDIA:\S+", "", stored_text)
 
-    return stored_text.strip(), push_text.strip(), reply_redactions, quick_replies, journal_link
+    from apps.router.structured_artifacts import externalize_large_structured_reply
+
+    externalized = externalize_large_structured_reply(
+        tenant=tenant,
+        text=stored_text,
+        source="ios",
+        dedup_key=artifact_dedup_key,
+        journal_link=journal_link,
+    )
+    stored_text = externalized.stored_text
+    journal_link = externalized.journal_link
+
+    # Rehydrate only after span-based externalization; placeholder expansion
+    # must never invalidate the detector's offsets.
+    push_text = rehydrate_text(stored_text, entity_map) if entity_map else stored_text
+    stored_text = clamp_reply_text(stored_text.strip())
+    push_text = clamp_reply_text(push_text.strip())
+
+    return stored_text, push_text, reply_redactions, quick_replies, journal_link
 
 
 # ---------------------------------------------------------------------------
@@ -2356,6 +2532,77 @@ def reap_stuck_inbound_messages_task() -> dict:
         "republished": republished,
         "errors": errors,
     }
+
+
+def reap_stale_app_chat_messages_task() -> dict:
+    """Terminalize old tenant-runtime app turns orphaned before enqueue.
+
+    The normal queue drain/reaper retains ownership whenever a correlated
+    PENDING PendingMessage still exists, regardless of its lease. This sweep
+    covers only the creation-time gap where AppChatMessage was committed but
+    its queue row was never created. Work is ordered and capped so a backlog
+    cannot monopolize the five-minute cron tick.
+    """
+    now = timezone.now()
+    cutoff = now - timedelta(seconds=_STALE_APP_CHAT_AGE_SECONDS)
+    active_queue_row = (
+        PendingMessage.objects.annotate(
+            payload_client_msg_id=KeyTextTransform("client_msg_id", "payload"),
+        )
+        .filter(
+            tenant_id=models.OuterRef("tenant_id"),
+            delivery_status=PendingMessage.Status.PENDING,
+            payload_client_msg_id=models.OuterRef("client_msg_id"),
+        )
+        .order_by()
+    )
+
+    with transaction.atomic():
+        stale_rows = list(
+            AppChatMessage.objects.select_for_update(skip_locked=True, of=("self",))
+            .select_related("tenant")
+            .annotate(has_pending_queue=models.Exists(active_queue_row))
+            .filter(
+                status=AppChatMessage.Status.PENDING,
+                source=AppChatMessage.Source.TENANT,
+                created_at__lt=cutoff,
+                has_pending_queue=False,
+            )
+            .order_by("created_at", "id")[:_STALE_APP_CHAT_BATCH_LIMIT]
+        )
+        if not stale_rows:
+            return {"reaped": 0}
+
+        stale_ids = [row.id for row in stale_rows]
+        AppChatMessage.objects.filter(
+            id__in=stale_ids,
+            status=AppChatMessage.Status.PENDING,
+        ).update(
+            status=AppChatMessage.Status.ERROR,
+            error="stale",
+            replied_at=now,
+            partial_text="",
+        )
+
+        by_tenant: dict[str, tuple[Tenant, list[str]]] = {}
+        for row in stale_rows:
+            tenant_key = str(row.tenant_id)
+            if tenant_key not in by_tenant:
+                by_tenant[tenant_key] = (row.tenant, [])
+            by_tenant[tenant_key][1].append(row.client_msg_id)
+
+        from apps.router.push_views import notify_app_reply_error
+
+        for tenant, client_msg_ids in by_tenant.values():
+            transaction.on_commit(
+                lambda tenant=tenant, ids=list(client_msg_ids): _dispatch_push(
+                    notify_app_reply_error,
+                    tenant,
+                    ids,
+                )
+            )
+
+    return {"reaped": len(stale_rows)}
 
 
 # ---------------------------------------------------------------------------

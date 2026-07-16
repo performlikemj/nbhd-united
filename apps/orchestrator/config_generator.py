@@ -1758,9 +1758,18 @@ def _build_tools_section(tier: str, version: str = OPENCLAW_CURRENT_VERSION) -> 
 def _build_channels_config(tenant: Tenant) -> dict[str, Any]:
     """Build channels config based on which messaging channels the tenant has linked.
 
-    Only enables channels the user has actually connected (has a chat/user ID).
-    Falls back to the preferred_channel if nothing is linked yet (pre-connection
-    provisioning), so the assistant still knows which surface to expect.
+    Only enables channels the user has ACTUALLY connected (has a chat/user ID).
+    There is NO ``preferred_channel`` fallback: ``preferred_channel`` defaults to
+    ``"telegram"`` for every signup, so the old fallback activated the Telegram
+    channel plugin for pure iOS-only tenants who never touched Telegram (the same
+    class of bug as the channel-formatting doc). Enabling an unlinked channel is
+    also what the plugin-validation comment at the ``channels`` call site warns
+    against (OpenClaw >= 2026.4.21 rejects an enabled-but-unconfigured channel).
+
+    An unlinked tenant therefore gets an EMPTY channels dict — the container is
+    reached over the gateway ``/v1/chat/completions`` endpoint (used by the app,
+    the Telegram poller, and the LINE drain alike), which does not depend on any
+    ``channels`` entry. The config validator accepts an empty channels dict.
     """
     user = tenant.user
     channels: dict[str, Any] = {}
@@ -1769,12 +1778,6 @@ def _build_channels_config(tenant: Tenant) -> dict[str, Any]:
         channels["telegram"] = {"enabled": True}
     if getattr(user, "line_user_id", None):
         channels["line"] = {"enabled": True}
-
-    # Fallback: if no channel linked yet, enable the preferred channel so the
-    # assistant can format messages for the expected surface during onboarding.
-    if not channels:
-        preferred = getattr(user, "preferred_channel", "telegram") or "telegram"
-        channels[preferred] = {"enabled": True}
 
     return channels
 
@@ -2308,7 +2311,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         # `enum: ["log_only", "enforce"]` with `additionalProperties: false`,
         # and OpenClaw validates each enabled plugin's config against its
         # schema at config LOAD time. So a typo'd DOC_TAINT_GATE_MODE
-        # ("Enforce", "enforced", "true", ...) would make the generated
+        # ("enforced", "true", ...) would make the generated
         # config invalid — a #917-class fleet wedge across every regenerated
         # tenant, not just this plugin misbehaving. Normalize against the
         # allowed set here (Django side) so the generator can never emit
@@ -2316,15 +2319,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         # still useful for `openclaw doctor` to catch a future generator bug).
         doc_taint_guard_id = str(getattr(settings, "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID", "") or "").strip()
         if doc_taint_guard_id and doc_taint_guard_id in plugin_config["entries"]:
-            _doc_taint_gate_raw_mode = str(getattr(settings, "DOC_TAINT_GATE_MODE", "log_only") or "log_only").strip()
-            if _doc_taint_gate_raw_mode in ("log_only", "enforce"):
-                _doc_taint_gate_mode = _doc_taint_gate_raw_mode
-            else:
+            _doc_taint_gate_raw_mode = str(getattr(settings, "DOC_TAINT_GATE_MODE", "") or "")
+            _doc_taint_gate_mode = _doc_taint_gate_raw_mode.strip().casefold()
+            if not _doc_taint_gate_mode:
+                _doc_taint_gate_mode = "log_only"
+            elif _doc_taint_gate_mode not in ("log_only", "enforce"):
                 import logging
 
-                logging.getLogger(__name__).warning(
-                    "DOC_TAINT_GATE_MODE=%r is not a valid nbhd-doc-taint-guard mode "
-                    "(expected 'log_only' or 'enforce') — falling back to 'log_only' "
+                logging.getLogger(__name__).error(
+                    "DOC_TAINT_GATE_MODE rejected value %r: expected 'log_only' or "
+                    "'enforce'; effective fallback is 'log_only' "
                     "so the generated config can't fail the plugin's schema "
                     "(additionalProperties:false + enum) at OpenClaw load time.",
                     _doc_taint_gate_raw_mode,

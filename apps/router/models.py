@@ -244,8 +244,10 @@ class ProcessedInboundEvent(models.Model):
 
 
 class ProactiveOutbound(models.Model):
-    """Records every proactive ``nbhd_send_to_user`` push so the next
-    inbound from that user can surface it as conversation context.
+    """Records proactive delivery events and internal eval evidence.
+
+    User-visible rows can surface as context on the next inbound; ``eval`` rows
+    are deliberately excluded from all user/model readers.
 
     The conversation-state-loss problem this solves: cron-fired sessions
     and main-chat sessions are separate OpenClaw sessions. When a cron
@@ -258,9 +260,9 @@ class ProactiveOutbound(models.Model):
     ``_sync:`` cron that injects a summary into the main session, but
     that path is LLM-mediated and unreliably fired.
 
-    This model is the deterministic replacement: every successful push
-    from ``CronDeliveryView`` writes a row here, and the inbound
-    envelope composer (LINE webhook, Telegram webhook, Telegram poller)
+    This model is the deterministic replacement: every accepted delivery from
+    ``CronDeliveryView`` writes a row here. For user-delivery channels, the
+    inbound envelope composer (LINE webhook, Telegram webhook, Telegram poller)
     pulls unconsumed rows from the last 24h and prepends them as a
     ``[earlier-from-you ...]`` block before the user's text.
 
@@ -281,6 +283,12 @@ class ProactiveOutbound(models.Model):
         # iOS-only users have no Telegram/LINE chat id — the message is delivered
         # as an APNs push + a ?since= feed row, so the iOS app is its own channel.
         APP = "app"
+        # EXPLICIT EVAL-SINK TENANTS ONLY (``Tenant.is_eval_sink``). No user
+        # transport is invoked; this internal evidence row is the delivery the eval
+        # suites assert on. Operational history/model readers exclude these rows.
+        # The dedicated flag prevents ordinary synthetic tenants (including demo
+        # accounts) from being reclassified merely because they are synthetic.
+        EVAL = "eval"
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(
@@ -938,6 +946,8 @@ class DeviceToken(models.Model):
         help_text="Which APNs host the token is valid for (sandbox builds vs App Store / TestFlight).",
     )
     bundle_id = models.CharField(max_length=128, blank=True, default="")
+    installation_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(auto_now=True)
 

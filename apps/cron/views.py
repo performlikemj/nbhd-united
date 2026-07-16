@@ -139,6 +139,19 @@ TASK_MAP = {
     # re-fire after a completed backfill is a no-op; safe to leave registered.
     "encrypt_chat_history": "apps.orchestrator.tasks.encrypt_chat_history_task",
     "encrypt_chat_history_dry_run": "apps.orchestrator.tasks.encrypt_chat_history_dry_run_task",
+    # Encryption-at-rest Phase 2 — MJ-gated convergence of the post-2026-07-11
+    # cohort: tenants provisioned before chat-encryption flags were set at
+    # provision time (and never covered by the one-time fleet UPDATE) still
+    # write+read plaintext chat. Per tenant this flips encrypt_chat_writes ON,
+    # runs the PR-3 backfill, verifies zero plaintext-only rows remain, then
+    # flips read_encrypted_chat ON — the fleet ladder compressed and idempotent.
+    # Fired via a no-body QStash publish to /api/cron/trigger/<name>/ — hence the
+    # zero-arg pair. No-op once the fleet is converged; ships DARK (nothing fires
+    # it until an operator does). Blocks the PR-6 plaintext erase until it has run.
+    "converge_unencrypted_chat_tenants": "apps.orchestrator.tasks.converge_unencrypted_chat_tenants_task",
+    "converge_unencrypted_chat_tenants_dry_run": (
+        "apps.orchestrator.tasks.converge_unencrypted_chat_tenants_dry_run_task"
+    ),
     # Eval system (see docs/evals-directive.md) — chassis proof. Operator-fired via
     # a no-body QStash publish to /api/cron/trigger/eval_smoke/ (zero-arg, because
     # the publish path we use can't carry a body). Writes real EvalRun/EvalResult
@@ -260,6 +273,11 @@ TASK_MAP = {
     # Cron dedup (enqueued by dedup-crons)
     "dedup_cron_jobs": "apps.orchestrator.tasks.dedup_cron_jobs_task",
     "remove_zombie_heartbeats": "apps.orchestrator.tasks.remove_zombie_heartbeats_task",
+    # Retire one-shot ("at") crons whose fire time has passed. The container
+    # deletes its own copy when the job fires but never tells Django, so without
+    # this the row stays enabled=True and squats its (tenant, name) forever —
+    # a user asking for the same reminder twice used to get a 409. Hourly.
+    "expire_finished_at_crons": "apps.cron.tasks.expire_finished_at_crons_task",
     # Daily infra cost refresh from Azure billing
     "refresh_infra_costs": "apps.billing.tasks.refresh_infra_costs_task",
     # Monthly donation ledger — records each paying subscriber's revenue-%
@@ -324,6 +342,9 @@ TASK_MAP = {
     # for QStash publish failures, DLQ-bound drain attempts, and worker
     # deaths mid-claim. See pending_queue.reap_stuck_inbound_messages_task.
     "reap_stuck_inbound_messages": "apps.router.pending_queue.reap_stuck_inbound_messages_task",
+    # Five-minute defense-in-depth sweep for iOS/AppChatMessage turns orphaned
+    # in the narrow creation-before-enqueue crash window.
+    "reap_stale_app_chat_messages": "apps.router.pending_queue.reap_stale_app_chat_messages_task",
     # Daily privacy sweep for the per-tenant message queue. Deletes terminal
     # PendingMessage rows (FAILED + residual DELIVERED) older than 14 days so
     # the transient forwarding queue stops accumulating (redacted) user text.
@@ -997,11 +1018,13 @@ def bump_all_pending_configs(request):
     from django.db.models import F as DbF
     from django.db.models import Q
 
-    has_channel = Q(user__telegram_chat_id__isnull=False) | Q(user__line_user_id__isnull=False)
+    has_channel = (
+        Q(user__telegram_chat_id__isnull=False) | Q(user__line_user_id__isnull=False) | Q(device_tokens__isnull=False)
+    )
     grace_cutoff = timezone.now() - timedelta(days=1)
 
     # Reset no-channel tenants created >1 day ago to version 0
-    # (new tenants get a 24h grace period to link Telegram/LINE)
+    # (new tenants get a 24h grace period to register a channel)
     no_channel_reset = (
         Tenant.objects.filter(
             status=Tenant.Status.ACTIVE,

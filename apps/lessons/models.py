@@ -21,6 +21,13 @@ class Lesson(models.Model):
         blank=True,
         help_text="Where this came from — conversation, article, experience",
     )
+    # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
+    # ``enc_columns.LESSON_TEXT`` / ``LESSON_CONTEXT`` (``LESSON_GALAXY_NOTE`` below).
+    # Nothing reads/writes these yet (PR-2 dual-writes behind
+    # ``Tenant.encrypt_journal_writes``, PR-4 reads behind ``read_encrypted_journal``).
+    # The ``embedding`` vector stays plaintext (disclosed residual, plan §7.4).
+    text_enc = models.BinaryField(null=True)
+    context_enc = models.BinaryField(null=True)
 
     # ── Embedding & clustering ───────────────────────────────
     embedding = VectorField(dimensions=1536, null=True, help_text="OpenAI text-embedding-3-small")
@@ -90,6 +97,8 @@ class Lesson(models.Model):
         blank=True,
         help_text="Player's pinned note visible from the galaxy view",
     )
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.LESSON_GALAXY_NOTE``) — ships DARK.
+    galaxy_note_enc = models.BinaryField(null=True)
 
     # ── Sharing (Phase 2+) ───────────────────────────────────
     shared = models.BooleanField(default=False)
@@ -162,6 +171,9 @@ class TutoringSession(models.Model):
 
     # Full transcript as [{role, content, phase, timestamp}, ...]
     messages = models.JSONField(default=list)
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.TUTORING_SESSION_MESSAGES``, JSON) —
+    # ships DARK. NOTE: TutoringSession has no direct tenant FK — tenant is via star.tenant.
+    messages_enc = models.BinaryField(null=True)
 
     # Outcome
     phases_completed = ArrayField(
@@ -177,6 +189,8 @@ class TutoringSession(models.Model):
     player_restated_accurately = models.BooleanField(null=True)
     player_found_edge_cases = models.BooleanField(null=True)
     connections_made = models.JSONField(default=list)  # [{to_star_id, player_text}]
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.TUTORING_SESSION_CONNECTIONS_MADE``, JSON) — ships DARK.
+    connections_made_enc = models.BinaryField(null=True)
     topic_shifted = models.CharField(max_length=100, blank=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -209,6 +223,8 @@ class StarJournalEntry(models.Model):
     )
 
     text = models.TextField()
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.STAR_JOURNAL_ENTRY_TEXT``) — ships DARK.
+    text_enc = models.BinaryField(null=True)
     entry_type = models.CharField(
         max_length=20,
         choices=[

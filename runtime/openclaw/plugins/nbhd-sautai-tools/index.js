@@ -144,7 +144,7 @@ export default function register(api) {
     wrap({
       name: "nbhd_generate_meal_plan",
       description:
-        "Start generating a personalized weekly meal plan via sautai (the nutrition sibling of Fuel). ASYNC and fire-and-forget: it returns a job acknowledgment, not the plan — generation runs in the background. sautai already stores the user's dietary profile (allergies, preferences), so do not ask for those before calling. Pass user_prompt only for extra guidance the user gives this time (e.g. 'high protein, no pork').",
+        "Start generating a personalized weekly meal plan, powered by sautai (the nutrition sibling of Fuel). ASYNC and fire-and-forget: it returns a job acknowledgment, not the plan — generation runs in the background. sautai already stores the user's dietary profile (allergies, preferences), so do not ask for those before calling. Pass user_prompt only for extra guidance the user gives this time (e.g. 'high protein, no pork'). Set regenerate=true only when the user explicitly wants their EXISTING plan for a week rebuilt (e.g. after giving new guidance) — a normal call keeps an existing plan.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -166,6 +166,11 @@ export default function register(api) {
             maximum: 7,
             description: "Optional number of days to plan, 1-7. Omit for a full 7-day week.",
           },
+          regenerate: {
+            type: "boolean",
+            description:
+              "Set true ONLY to rebuild an existing plan for the week (replacing it, honoring user_prompt). Omit/false for a normal request — that keeps an existing plan instead of overwriting it.",
+          },
         },
       },
       async execute(_id, params) {
@@ -179,6 +184,7 @@ export default function register(api) {
           if (input.number_of_days !== undefined && input.number_of_days !== null && input.number_of_days !== "") {
             body.number_of_days = parseInteger(input.number_of_days, { defaultValue: 7, min: 1, max: 7 });
           }
+          if (input.regenerate === true) body.regenerate = true;
 
           const payload = await callRuntime(api, {
             path: sautaiPath(api, "/sautai/generate-plan/"),
@@ -187,10 +193,25 @@ export default function register(api) {
 
           const week = asTrimmedString(payload.week_start);
           const weekPhrase = week ? ` for the week of ${week}` : "";
+
+          // The proxy coalesced this onto an already-running generation that does
+          // NOT include the new guidance (regenerate / this call's user_prompt).
+          // Be honest: the guidance was NOT applied to what's cooking.
+          if (payload.request_applied === false) {
+            return renderResult(
+              `A meal plan${weekPhrase} is ALREADY being generated, but WITHOUT this new guidance — it was ` +
+                "requested moments ago and is still running. Tell the user their plan is already on the way, and " +
+                "that once it arrives you can regenerate it with their guidance (a fresh request with " +
+                "regenerate=true). Do NOT claim their new guidance was applied, and do NOT say the plan is ready.",
+              payload,
+            );
+          }
+
           return renderResult(
-            `Meal-plan generation started${weekPhrase}. It runs in the background and takes about a minute; ` +
-              "the user will get a push notification when it's ready. Tell them you've started it and it's on the way. " +
-              "Do NOT say the plan is ready, and do NOT list or describe any meals — nothing has been generated yet.",
+            `Meal-plan generation started${weekPhrase}, powered by sautai. It runs in the background and takes ` +
+              "about a minute; the user will get a push notification when it's ready. Tell them you've started it " +
+              "and it's on the way. Do NOT say the plan is ready, and do NOT list or describe any meals — nothing " +
+              "has been generated yet.",
             payload,
           );
         } catch (error) {
@@ -210,7 +231,7 @@ export default function register(api) {
     wrap({
       name: "nbhd_get_meal_plan",
       description:
-        "Read the user's current weekly meal plan from sautai (the nutrition sibling of Fuel). Fast synchronous read you MAY summarize to the user. Returns the plan's days and meals if one exists, or tells you none exists yet (then offer nbhd_generate_meal_plan). Optionally pass week_start (the Monday of a specific week); omit for the current week.",
+        "Read the user's current weekly meal plan, powered by sautai (the nutrition sibling of Fuel). Fast synchronous read you MAY summarize to the user. Returns the plan's days and meals if one exists, or tells you none exists yet (then offer nbhd_generate_meal_plan). Optionally pass week_start (the Monday of a specific week); omit for the current week. If the user says their plans stopped reflecting their sautai account or diet, tell them to reconnect sautai in Settings → Connected apps.",
       parameters: {
         type: "object",
         additionalProperties: false,

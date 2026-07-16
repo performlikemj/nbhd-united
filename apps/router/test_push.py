@@ -54,13 +54,19 @@ class PushRegisterTest(TestCase):
     def test_register_creates_token(self):
         resp = self.client.post(
             "/api/v1/push/register/",
-            {"device_token": _VALID_TOKEN, "environment": "sandbox", "bundle_id": "org.hoodunited.nbhd"},
+            {
+                "device_token": _VALID_TOKEN,
+                "environment": "sandbox",
+                "bundle_id": "org.hoodunited.nbhd",
+                "installation_id": "4df1ddf2-0c01-4dd5-bfd5-54c45515950f",
+            },
             format="json",
         )
         self.assertEqual(resp.status_code, 200, resp.content)
         row = DeviceToken.objects.get(user=self.user, token=_VALID_TOKEN)
         self.assertEqual(row.environment, "sandbox")
         self.assertEqual(row.tenant_id, self.tenant.id)
+        self.assertEqual(row.installation_id, "4df1ddf2-0c01-4dd5-bfd5-54c45515950f")
 
     def test_invalid_token_rejected(self):
         resp = self.client.post("/api/v1/push/register/", {"device_token": "not-hex!"}, format="json")
@@ -78,30 +84,94 @@ class PushRegisterTest(TestCase):
         self.assertEqual(rows.count(), 1)
         self.assertEqual(rows.first().environment, "production")
 
+    def test_reregister_clears_revocation(self):
+        from django.utils import timezone
+
+        DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token=_VALID_TOKEN,
+            installation_id="install-a",
+            revoked_at=timezone.now(),
+        )
+
+        resp = self.client.post(
+            "/api/v1/push/register/",
+            {"device_token": _VALID_TOKEN, "installation_id": "install-a"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertIsNone(DeviceToken.objects.get(token=_VALID_TOKEN).revoked_at)
+
     def test_unknown_environment_defaults_production(self):
         self.client.post(
             "/api/v1/push/register/", {"device_token": _VALID_TOKEN, "environment": "weird"}, format="json"
         )
         self.assertEqual(DeviceToken.objects.get(token=_VALID_TOKEN).environment, "production")
 
-    def test_token_migrates_to_current_user(self):
+    def test_revoked_token_migrates_to_current_user_and_clears_revocation(self):
+        from django.utils import timezone
+
         # Same physical device token previously registered to another user
         # (account switch on one install) re-points to the current user — and the
         # token stays globally unique (exactly one owner), so a push for the old
         # user can never reach the device now used by the new one.
         other = _make_user()
         _make_tenant(other)
-        DeviceToken.objects.create(user=other, tenant=other.tenant, token=_VALID_TOKEN)
+        DeviceToken.objects.create(
+            user=other,
+            tenant=other.tenant,
+            token=_VALID_TOKEN,
+            installation_id="install-a",
+            revoked_at=timezone.now(),
+        )
         self.client.post("/api/v1/push/register/", {"device_token": _VALID_TOKEN}, format="json")
         rows = DeviceToken.objects.filter(token=_VALID_TOKEN)
         self.assertEqual(rows.count(), 1)
         self.assertEqual(rows.first().user_id, self.user.id)
+        self.assertIsNone(rows.first().revoked_at)
 
     def test_unregister(self):
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN)
         resp = self.client.delete("/api/v1/push/register/", {"device_token": _VALID_TOKEN}, format="json")
         self.assertEqual(resp.status_code, 204)
         self.assertEqual(DeviceToken.objects.filter(token=_VALID_TOKEN).count(), 0)
+
+
+class PushStatusTest(TestCase):
+    def setUp(self):
+        self.user = _make_user()
+        self.tenant = _make_tenant(self.user)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_requires_auth(self):
+        resp = APIClient().get("/api/v1/push/status/")
+        self.assertIn(resp.status_code, (401, 403))
+
+    def test_reports_current_tenant_registration_without_token_data(self):
+        resp = self.client.get("/api/v1/push/status/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json(), {"registered": False})
+
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN)
+
+        resp = self.client.get("/api/v1/push/status/")
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json(), {"registered": True})
+
+    def test_ignores_device_row_from_another_tenant(self):
+        other = _make_user()
+        other_tenant = _make_tenant(other)
+        # A mismatched row should not make this tenant appear connected even if
+        # legacy/corrupt data happens to associate it with the caller's user.
+        DeviceToken.objects.create(user=self.user, tenant=other_tenant, token=_VALID_TOKEN)
+
+        resp = self.client.get("/api/v1/push/status/")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.json(), {"registered": False})
 
 
 class ApnsSenderTest(TestCase):
@@ -381,6 +451,35 @@ class NotifyReplyReadyTest(TestCase):
 
         with patch("apps.common.apns.send_push") as mock_send:
             notify_app_reply_ready(self.tenant, ["r1"], "here you go")
+        mock_send.assert_not_called()
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_revoked_row_gets_zero_sends_without_logout_endpoint_call(self):
+        from django.utils import timezone
+
+        DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token=_VALID_TOKEN,
+            revoked_at=timezone.now(),
+        )
+        from apps.router.push_views import notify_app_reply_ready
+
+        with patch("apps.common.apns.send_push") as mock_send:
+            notify_app_reply_ready(self.tenant, ["r1"], "here you go")
+
+        mock_send.assert_not_called()
+        self.assertTrue(DeviceToken.objects.filter(token=_VALID_TOKEN).exists())
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_inactive_user_gets_zero_turn_reply_sends(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN)
+        User.objects.filter(pk=self.user.pk).update(is_active=False)
+        from apps.router.push_views import notify_app_reply_ready
+
+        with patch("apps.common.apns.send_push") as mock_send:
+            notify_app_reply_ready(self.tenant, ["r1"], "here you go")
+
         mock_send.assert_not_called()
 
     @override_settings(**_APNS_SETTINGS)

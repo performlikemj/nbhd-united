@@ -182,7 +182,7 @@ export interface ProvisioningStatus {
   provisioned_at: string | null;
   created_at: string;
   updated_at: string;
-  ready: boolean;
+  ready?: boolean;
 }
 
 export interface Integration {
@@ -193,6 +193,19 @@ export interface Integration {
   scopes: string[];
   connected_at: string;
   updated_at: string;
+}
+
+// sautai account link (Phase 0.5). GET returns status; POST connect returns it
+// with status:"connected". The raw connect key is exchanged server-side and
+// never stored.
+export interface SautaiLinkStatus {
+  linked: boolean;
+  email: string;
+  linked_at: string | null;
+}
+
+export interface SautaiLinkConnectResponse extends SautaiLinkStatus {
+  status: "connected";
 }
 
 export interface AuthUser {

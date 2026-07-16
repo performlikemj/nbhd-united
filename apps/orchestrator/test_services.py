@@ -69,7 +69,13 @@ class OrchestratorServiceTest(TestCase):
         _mock_generate_config,
         _mock_is_mock,
     ):
-        provision_tenant(str(self.tenant.id))
+        # MED-6: a stale Telegram link on an eval tenant must not receive the
+        # otherwise-normal post-provision welcome.
+        self.tenant.is_eval_sink = True
+        self.tenant.save(update_fields=["is_eval_sink"])
+        with patch("apps.router.services.send_telegram_message") as send_welcome:
+            provision_tenant(str(self.tenant.id))
+        send_welcome.assert_not_called()
         self.tenant.refresh_from_db()
 
         self.assertEqual(self.tenant.status, Tenant.Status.ACTIVE)

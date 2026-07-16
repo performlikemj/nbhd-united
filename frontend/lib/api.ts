@@ -613,6 +613,15 @@ export function retryProvisioning(): Promise<{ detail: string; tenant_status: st
   );
 }
 
+// Push registration status (token-free)
+export interface PushStatus {
+  registered: boolean;
+}
+
+export function fetchPushStatus(): Promise<PushStatus> {
+  return apiFetch<PushStatus>("/api/v1/push/status/");
+}
+
 // Telegram linking
 export interface TelegramLinkResponse {
   deep_link: string;
@@ -653,7 +662,7 @@ export interface LineStatus {
   linked: boolean;
   line_display_name?: string;
   // Fleet-wide LINE Push monthly-quota state. Surfaced so the channel
-  // selector can disable the LINE radio when the cap is hit and show
+  // UI can disable the LINE connect action when the cap is hit and show
   // the user why. Backed by apps/router/models.py:LineQuotaState.
   quota?: {
     exhausted: boolean;
@@ -1679,6 +1688,28 @@ export function mintPAT(
 
 export async function revokePAT(id: string): Promise<void> {
   await apiFetch(`/api/v1/auth/tokens/${id}/`, { method: "DELETE" });
+}
+
+// sautai account link (Connected Apps → "powered by sautai" meal planning).
+// The connect key is sent to Django, which exchanges it server-side — the key
+// never persists and the platform secret never reaches the browser.
+export function fetchSautaiLink(): Promise<import("@/lib/types").SautaiLinkStatus> {
+  return apiFetch<import("@/lib/types").SautaiLinkStatus>("/api/v1/integrations/sautai/link/");
+}
+
+export function connectSautaiLink(
+  connectKey: string,
+): Promise<import("@/lib/types").SautaiLinkConnectResponse> {
+  return apiFetch<import("@/lib/types").SautaiLinkConnectResponse>("/api/v1/integrations/sautai/link/", {
+    method: "POST",
+    body: JSON.stringify({ connect_key: connectKey }),
+  });
+}
+
+export function disconnectSautaiLink(): Promise<import("@/lib/types").SautaiLinkStatus> {
+  return apiFetch<import("@/lib/types").SautaiLinkStatus>("/api/v1/integrations/sautai/link/", {
+    method: "DELETE",
+  });
 }
 
 // BYO subscription credentials (bring-your-own Anthropic / OpenAI)

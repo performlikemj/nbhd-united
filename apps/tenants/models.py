@@ -287,6 +287,15 @@ class Tenant(models.Model):
             "never distorts a number. Never set for a real subscriber."
         ),
     )
+    is_eval_sink = models.BooleanField(
+        default=False,
+        help_text=(
+            "Dedicated eval delivery/memory sink. When enabled, outbound messages "
+            "are recorded as eval evidence but are not sent to user transports or "
+            "surfaced in user/model history. Independent of is_synthetic: synthetic "
+            "demo accounts keep normal assistant behavior unless explicitly enabled."
+        ),
+    )
     purchased_credit = models.DecimalField(
         max_digits=10,
         decimal_places=4,
@@ -484,6 +493,14 @@ class Tenant(models.Model):
         ),
     )
 
+    experimental_reply_artifacts_to_journal = models.BooleanField(
+        default=False,
+        help_text=(
+            "Experimental: move oversized GFM tables from persisted assistant "
+            "history into Journal documents. Canary-gated rollout."
+        ),
+    )
+
     # Experimental: typed cron patterns.
     # When True:
     #   - The nbhd-automation-tools plugin is loaded, giving the agent
@@ -501,12 +518,14 @@ class Tenant(models.Model):
     # a cron is the typed wrapper. That cutover is gated on this flag
     # being True fleet-wide.
     experimental_typed_crons = models.BooleanField(
-        default=False,
+        default=True,
         help_text=(
-            "Experimental: typed cron patterns (pure_reminder, "
-            "quote_user_intent, domain_summary, daily_briefing). "
-            "Loads nbhd-automation-tools + nbhd-cron-enforcement plugins. "
-            "Canary-gated rollout."
+            "Typed cron patterns (pure_reminder, quote_user_intent, "
+            "domain_summary, daily_briefing). Loads nbhd-automation-tools + "
+            "nbhd-cron-enforcement plugins. Fleet-wide since 2026-07-13; "
+            "default True so a new tenant gets the cron-create tools the base "
+            "AGENTS.md capability list advertises — a flag-off tenant would "
+            "read that it can set reminders and have no tool to do it."
         ),
     )
 
@@ -712,6 +731,31 @@ class Tenant(models.Model):
     read_encrypted_chat = models.BooleanField(
         default=False,
         help_text="Read chat content back through the *_enc column when present (encryption-at-rest Phase 2).",
+    )
+
+    # Encryption-at-rest Phase 3 (expand/contract) — journal-group + fuel content.
+    # Same two-gate shape as the chat pair, one pair per store-group (plan §3.1):
+    #   encrypt_journal_writes / read_encrypted_journal — the journal group PLUS
+    #     lessons + insights + core (they co-feed the USER.md envelope / memory_sync
+    #     and read as one memory surface, so they flip together).
+    #   encrypt_fuel_writes / read_encrypted_fuel — the fuel free-text surface
+    #     (independent envelope/runtime views; its own rollback lever).
+    # All default False; the sidecar *_enc columns ship DARK until PR-2 dual-writes.
+    encrypt_journal_writes = models.BooleanField(
+        default=False,
+        help_text="Dual-write sealed *_enc envelopes for journal/lessons/insights/core content (encryption-at-rest Phase 3).",
+    )
+    read_encrypted_journal = models.BooleanField(
+        default=False,
+        help_text="Read journal/lessons/insights/core content back through the *_enc column when present (encryption-at-rest Phase 3).",
+    )
+    encrypt_fuel_writes = models.BooleanField(
+        default=False,
+        help_text="Dual-write sealed *_enc envelopes for fuel content (encryption-at-rest Phase 3).",
+    )
+    read_encrypted_fuel = models.BooleanField(
+        default=False,
+        help_text="Read fuel content back through the *_enc column when present (encryption-at-rest Phase 3).",
     )
 
     # Site publishing module — lets the assistant push portfolio images to the

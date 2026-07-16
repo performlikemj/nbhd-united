@@ -1355,7 +1355,9 @@ class LineWebhookView(View):
         # Mark this as a conversational turn (not a scheduled cron run) so the
         # agent skips the heavy AGENTS.md "Session Start" auto-context-load.
         # See poller.py for the parallel comment.
-        message_text = proactive_block + build_datetime_context(user_tz) + build_chat_context_marker() + message_text
+        message_text = (
+            proactive_block + build_datetime_context(user_tz) + build_chat_context_marker("line") + message_text
+        )
 
         # Hand off to the serialization queue. The reply_token is
         # captured but the drain task ignores it — by the time the

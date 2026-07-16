@@ -4,6 +4,12 @@ import { useSearchParams } from "next/navigation";
 import { Suspense, useState } from "react";
 
 import { PendingConfigChip } from "@/components/pending-config-chip";
+import { MessagingChannelCard } from "@/components/channel/messaging-channel-card";
+import type { MessagingChannel } from "@/components/channel/types";
+import {
+  useLineConnection,
+  useTelegramConnection,
+} from "@/components/channel/use-channel-connection";
 import { SectionCard } from "@/components/section-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
@@ -11,7 +17,10 @@ import {
   useDisconnectIntegrationMutation,
   useIntegrationsQuery,
   useOAuthAuthorizeMutation,
+  usePushStatusQuery,
   useTenantQuery,
+  useUnlinkLineMutation,
+  useUnlinkTelegramMutation,
   useUpdateFinanceSettingsMutation,
   useUpdateFuelSettingsMutation,
   useUpdateCoreSettingsMutation,
@@ -35,11 +44,16 @@ const providers: { key: string; label: string; description?: string }[] = [
 ];
 
 function AppCard() {
+  const { data: pushStatus } = usePushStatusQuery();
+
   return (
     <article className="rounded-panel border border-border bg-surface-elevated p-4">
-      <div className="flex items-center gap-2">
-        <span className="text-base" aria-hidden="true">◇</span>
-        <h3 className="text-base font-medium">NBHD for iPhone</h3>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <span className="text-base" aria-hidden="true">◇</span>
+          <h3 className="text-base font-medium">NBHD for iPhone</h3>
+        </div>
+        {pushStatus?.registered ? <StatusPill status="active" /> : null}
       </div>
       <p className="mt-2 text-sm text-ink-muted">
         Talk to your assistant on the go — voice notes, photos, and daily
@@ -48,7 +62,88 @@ function AppCard() {
       <div className="mt-4">
         <AppStoreBadge height={44} />
       </div>
+      {pushStatus?.registered ? (
+        <p className="mt-3 text-sm text-emerald-text" role="status">
+          Connected on iPhone
+        </p>
+      ) : null}
     </article>
+  );
+}
+
+// ── Companion messaging channels ─────────────────────────────────────────────
+// Telegram and LINE stay supported as optional companion surfaces. The iOS app
+// is the primary experience; these let a subscriber also reach their assistant
+// from a chat client they already keep open. Delivery preference is automatic
+// (app-first when installed), so there is deliberately no channel toggle here.
+
+interface SettingsChannelCardProps {
+  pairingOpen: boolean;
+  onPairingOpenChange: (channel: MessagingChannel | null) => void;
+}
+
+function TelegramCard({ pairingOpen, onPairingOpenChange }: SettingsChannelCardProps) {
+  const connection = useTelegramConnection(pairingOpen);
+  const unlinkMutation = useUnlinkTelegramMutation();
+
+  return (
+    <MessagingChannelCard
+      channel="telegram"
+      description="Chat with your assistant in Telegram."
+      panelId="settings-telegram-pairing"
+      linked={connection.status?.linked ?? false}
+      connectedIdentity={
+        connection.status?.telegram_username
+          ? `@${connection.status.telegram_username}`
+          : undefined
+      }
+      statusReady={connection.statusReady}
+      statusError={connection.statusError}
+      pairingOpen={pairingOpen}
+      link={connection.link}
+      isGenerating={connection.isGenerating}
+      generationError={connection.generationError}
+      onConnect={async () => {
+        onPairingOpenChange("telegram");
+        if (!connection.link) await connection.generate();
+      }}
+      onRegenerate={connection.generate}
+      onRetryStatus={connection.retryStatus}
+      onClose={() => onPairingOpenChange(null)}
+      onUnlink={() => unlinkMutation.mutate()}
+      unlinkPending={unlinkMutation.isPending}
+    />
+  );
+}
+
+function LineCard({ pairingOpen, onPairingOpenChange }: SettingsChannelCardProps) {
+  const connection = useLineConnection(pairingOpen);
+  const unlinkMutation = useUnlinkLineMutation();
+
+  return (
+    <MessagingChannelCard
+      channel="line"
+      description="Chat with your assistant in LINE."
+      panelId="settings-line-pairing"
+      linked={connection.status?.linked ?? false}
+      connectedIdentity={connection.status?.line_display_name}
+      statusReady={connection.statusReady}
+      statusError={connection.statusError}
+      quotaExhausted={connection.status?.quota?.exhausted ?? false}
+      pairingOpen={pairingOpen}
+      link={connection.link}
+      isGenerating={connection.isGenerating}
+      generationError={connection.generationError}
+      onConnect={async () => {
+        onPairingOpenChange("line");
+        if (!connection.link) await connection.generate();
+      }}
+      onRegenerate={connection.generate}
+      onRetryStatus={connection.retryStatus}
+      onClose={() => onPairingOpenChange(null)}
+      onUnlink={() => unlinkMutation.mutate()}
+      unlinkPending={unlinkMutation.isPending}
+    />
   );
 }
 
@@ -338,6 +433,8 @@ function IntegrationsContent() {
   const authorize = useOAuthAuthorizeMutation();
   const [connectingProvider, setConnectingProvider] = useState<string | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [activeMessagingChannel, setActiveMessagingChannel] =
+    useState<MessagingChannel | null>(null);
 
   const connectedProvider = searchParams.get("connected");
   const oauthError = searchParams.get("error");
@@ -385,6 +482,26 @@ function IntegrationsContent() {
       )}
 
       <AppCard />
+
+      <p className="mb-3 mt-4 text-xs text-ink-faint">
+        The app is the best way to reach your assistant. You can also connect a
+        companion chat channel below.
+      </p>
+      <div className="space-y-3">
+        <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Telegram settings.</p>}>
+          <TelegramCard
+            pairingOpen={activeMessagingChannel === "telegram"}
+            onPairingOpenChange={setActiveMessagingChannel}
+          />
+        </ErrorBoundary>
+        <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load LINE settings.</p>}>
+          <LineCard
+            pairingOpen={activeMessagingChannel === "line"}
+            onPairingOpenChange={setActiveMessagingChannel}
+          />
+        </ErrorBoundary>
+      </div>
+
       <ErrorBoundary fallback={<p className="rounded-panel border border-rose-border bg-rose-bg p-3 text-sm text-rose-text">Could not load Gravity settings.</p>}>
         <GravityCard />
       </ErrorBoundary>

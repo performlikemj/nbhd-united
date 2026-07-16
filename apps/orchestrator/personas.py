@@ -574,18 +574,41 @@ _WORKSPACE_DOCS = {
 def _resolve_channel_formatting(tenant=None) -> str | None:
     """Load the channel-specific formatting doc for a tenant.
 
-    Uses the user's preferred_channel to pick telegram-formatting.md or
-    line-formatting.md.  Falls back to telegram-formatting.md.
+    Selection is LINKAGE-based (not ``preferred_channel``), with NO telegram
+    fallback — ``preferred_channel`` defaults to ``"telegram"`` and has no
+    ``"app"`` choice, so trusting it shipped ``telegram-formatting.md`` into
+    every iOS-only workspace that never linked Telegram. Instead:
+
+      * an iOS device token registered  → ``app-formatting.md`` (the app is the
+        delivery surface; prefer it even when a channel is also linked, to match
+        the delivery direction);
+      * else Telegram linked (``telegram_chat_id``) → ``telegram-formatting.md``;
+      * else LINE linked (``line_user_id``)         → ``line-formatting.md``;
+      * else nothing linked                         → ``app-formatting.md``
+        (the neutral default — standard Markdown; NEVER telegram).
+
+    The app → telegram → line precedence matches the final resolve_user_channel
+    fallback order (integration-train fix, sha 094e7744; the both-linked-no-token
+    cohort is empty today, so this is consistency, not a behavior change).
     """
-    channel = "telegram"
+    doc = "app"
     if tenant is not None:
         try:
-            channel = tenant.user.preferred_channel or "telegram"
+            user = tenant.user
+            if tenant.device_tokens.exists():
+                doc = "app"
+            elif getattr(user, "telegram_chat_id", None):
+                doc = "telegram"
+            elif getattr(user, "line_user_id", None):
+                doc = "line"
+            else:
+                doc = "app"
         except Exception:
-            pass
-    content = _load_doc_template(f"{channel}-formatting.md")
-    if content is None and channel != "telegram":
-        content = _load_doc_template("telegram-formatting.md")
+            doc = "app"
+    content = _load_doc_template(f"{doc}-formatting.md")
+    if content is None and doc != "app":
+        # Missing per-channel doc degrades to the neutral app doc — never telegram.
+        content = _load_doc_template("app-formatting.md")
     return content
 
 
@@ -829,7 +852,7 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         if content:
             result[key] = content
 
-    # Channel-specific formatting doc (telegram or line)
+    # Channel-specific formatting doc (app / telegram / line — see _resolve_channel_formatting)
     formatting_content = _resolve_channel_formatting(tenant)
     if formatting_content:
         result["NBHD_DOC_CHANNEL_FORMATTING"] = formatting_content
@@ -847,6 +870,27 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
 
     if tenant is not None:
         result["NBHD_SKILL_TEMPLATES_MD"] = render_templates_md(tenant)
+
+    # Bootstrap-cap sentinel. OpenClaw truncates AGENTS.md at ``bootstrapMaxChars``
+    # SILENTLY and mid-rule — there is no error, no log, no signal; the model simply
+    # stops reading. That is how the 2026-07-11 canary lost its tail with CI green
+    # (470e122e), and every per-tenant block (prompt_extras, the Neighborhood /
+    # sautai / doc-keep gates) is appended to the TAIL, i.e. it is always the newest
+    # behavioral rule that dies first. So we check the size we actually rendered, for
+    # THIS tenant, on every write path (config refresh + boot-time reassert) — an
+    # error-level log, which Sentry already forwards, so it becomes an alert with no
+    # extra plumbing. Late import: keeps the orchestrator's module graph acyclic.
+    from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS
+
+    rendered = result.get("NBHD_AGENTS_MD") or ""
+    if len(rendered) > BOOTSTRAP_MAX_CHARS - 1000:
+        logger.error(
+            "AGENTS.md near bootstrap cap: tenant=%s size=%d cap=%d — the tail will be "
+            "silently truncated at injection; trim the template or a per-tenant block",
+            getattr(tenant, "id", None),
+            len(rendered),
+            BOOTSTRAP_MAX_CHARS,
+        )
     return result
 
 

@@ -32,6 +32,12 @@ from apps.tenants.models import Tenant
 from apps.tenants.test_utils import seed_internal_key
 
 
+def _large_table(rows: int = 26) -> str:
+    lines = ["| Name | Value |", "| --- | --- |"]
+    lines.extend(f"| row {index} | value {index} |" for index in range(rows))
+    return "\n".join(lines)
+
+
 class ParseMarkdownItemsTest(TestCase):
     def test_dash_bullets(self):
         items = parse_markdown_items("- one\n- two\n- three")
@@ -137,6 +143,85 @@ class RecordProactiveOutboundTest(_TenantFixture):
         assert row is not None
         self.assertEqual(len(row.job_name), 64)
 
+    def test_flag_on_stores_summary_chip_and_parses_shortened_text(self):
+        from apps.journal.models import Document
+
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
+        with patch("apps.router.proactive_context.parse_markdown_items", wraps=parse_markdown_items) as parser:
+            row = record_proactive_outbound(
+                tenant=self.tenant,
+                channel="app",
+                channel_user_id="app-user",
+                message_text=_large_table() + "\n\n- keep one\n- keep two",
+                job_name="Morning Briefing",
+                artifact_dedup_key="delivery-123",
+            )
+        assert row is not None
+        self.assertIn("Saved the full table (26 rows)", row.message_text)
+        self.assertIn("| Name | Value |", row.message_text)
+        self.assertIn("| row 2 | value 2 |", row.message_text)
+        self.assertNotIn("| row 3 | value 3 |", row.message_text)
+        self.assertEqual(row.parsed_items, ["keep one", "keep two"])
+        parser.assert_called_once_with(row.message_text)
+        self.assertEqual(row.journal_link["kind"], "project")
+        doc = Document.objects.get(tenant=self.tenant, slug=row.journal_link["slug"])
+        self.assertIn("| row 25 | value 25 |", doc.markdown)
+
+    def test_stable_key_converges_artifact_across_proactive_retries(self):
+        from apps.journal.models import Document
+
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
+        for _ in range(2):
+            record_proactive_outbound(
+                tenant=self.tenant,
+                channel="telegram",
+                channel_user_id="123",
+                message_text=_large_table(),
+                job_name="Report",
+                artifact_dedup_key="stable-delivery-key",
+            )
+        self.assertEqual(Document.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 2)
+
+    def test_content_date_fallback_converges_identical_proactive_retries(self):
+        from apps.journal.models import Document
+
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
+        for _ in range(2):
+            record_proactive_outbound(
+                tenant=self.tenant,
+                channel="telegram",
+                channel_user_id="123",
+                message_text=_large_table(),
+                job_name="Report without a delivery id",
+            )
+        self.assertEqual(Document.objects.filter(tenant=self.tenant).count(), 1)
+
+    @patch("apps.journal.reply_artifacts.upsert_reply_artifact", side_effect=RuntimeError("db down"))
+    def test_artifact_failure_falls_back_to_inline_clamp(self, _artifact_write):
+        from apps.journal.models import Document
+
+        self.tenant.experimental_reply_artifacts_to_journal = True
+        self.tenant.save(update_fields=["experimental_reply_artifacts_to_journal"])
+        row = record_proactive_outbound(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            message_text=_large_table() + ("x" * 17000),
+            journal_link={"kind": "daily", "slug": "2026-07-15", "title": "Original"},
+        )
+        assert row is not None
+        self.assertEqual(len(row.message_text), 16000)
+        self.assertIn("| Name | Value |", row.message_text)
+        self.assertEqual(
+            row.journal_link,
+            {"kind": "daily", "slug": "2026-07-15", "title": "Original"},
+        )
+        self.assertFalse(Document.objects.filter(tenant=self.tenant).exists())
+
 
 class SurfaceProactiveContextTest(_TenantFixture):
     def test_empty_when_no_rows(self):
@@ -170,6 +255,24 @@ class SurfaceProactiveContextTest(_TenantFixture):
         self.assertIn("[1] alpha", block)
         self.assertIn("[2] beta", block)
         self.assertIn("[3] gamma", block)
+
+    def test_journal_reference_is_model_only_and_stays_placeholder_space(self):
+        record_proactive_outbound(
+            tenant=self.tenant,
+            channel="app",
+            channel_user_id="app-user",
+            message_text="Saved report",
+            journal_link={
+                "kind": "project",
+                "slug": "assistant-table-abc",
+                "title": "Table for [PERSON_1]",
+            },
+        )
+        block = surface_proactive_context(tenant=self.tenant)
+        self.assertIn(
+            "[journal-ref: project|assistant-table-abc|Table for [PERSON_1]; retrieve with nbhd_document_get]",
+            block,
+        )
 
     def test_answer_binding_guidance_present_when_any_row_surfaces(self):
         # Always-on binding rule (2026-07-11 canary incident: "energy 1-10?"
@@ -458,6 +561,43 @@ class CronDeliveryRecordsProactiveOutboundTest(_TenantFixture):
         self.assertEqual(row.job_name, "Morning Briefing")
         self.assertEqual(row.parsed_items, ["one", "two"])
 
+    @override_settings(LINE_CHANNEL_ACCESS_TOKEN="line-token")
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_line_send_records_outbound_for_line_only_user(self, mock_client_cls):
+        # LINE-ONLY user (fixture links both; drop Telegram here). The resolver is
+        # app → telegram → line, so the cron LINE leg is reached by LINKAGE alone.
+        # Pins _send_via_line end-to-end: without this, a telegram-first fallback
+        # can shadow the LINE send out of coverage entirely and nothing fails.
+        self.user.telegram_chat_id = None
+        self.user.save(update_fields=["telegram_chat_id"])
+
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"sentMessages": [{"id": "1"}]}
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        resp = self.client.post(
+            self.url,
+            {"message": "Evening:\n- one\n- two"},
+            format="json",
+            **self._headers(job_name="Evening Digest"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn("api.line.me", mock_http.post.call_args.args[0])
+
+        rows = list(ProactiveOutbound.objects.filter(tenant=self.tenant))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.channel, "line")
+        self.assertEqual(row.channel_user_id, self.user.line_user_id)
+        self.assertEqual(row.job_name, "Evening Digest")
+        self.assertEqual(row.parsed_items, ["one", "two"])
+
     @patch("apps.router.cron_delivery.httpx.Client")
     def test_failed_send_does_not_record(self, mock_client_cls):
         mock_http = MagicMock()
@@ -472,3 +612,84 @@ class CronDeliveryRecordsProactiveOutboundTest(_TenantFixture):
 
         self.client.post(self.url, {"message": "anything"}, format="json", **self._headers())
         self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 0)
+
+
+@override_settings(
+    NBHD_INTERNAL_API_KEY="test-key",
+    NBHD_DISABLE_BACKGROUND_THREADS=True,
+)
+class CronDeliveryAppChannelIsDurableTest(_TenantFixture):
+    """On the app channel the ProactiveOutbound row IS the delivery (it produces
+    the APNs push and the ``?since=`` feed entry) — not an audit trail of a send
+    that already happened elsewhere.
+
+    ``record_proactive_outbound`` swallows write failures and returns None BY
+    DESIGN ("losing the audit row is a smaller wrong than 500ing the cron tool
+    call"), which is correct for telegram/line. On app that same best-effort
+    write would let the view answer 200 "sent" while delivering NOTHING, and the
+    cron would never retry. So the row is persisted BEFORE the response and the
+    response is gated on it.
+    """
+
+    def setUp(self):
+        super().setUp()
+        from apps.router.models import DeviceToken
+
+        # iOS-only user: drop both messaging links and register a device so
+        # resolve_user_channel (app → telegram → line) picks "app".
+        self.user.telegram_chat_id = None
+        self.user.line_user_id = None
+        self.user.save(update_fields=["telegram_chat_id", "line_user_id"])
+        DeviceToken.objects.create(tenant=self.tenant, user=self.user, token="d" * 64)
+        self.client = APIClient()
+        self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"
+        _rate_counts.clear()
+
+    def _headers(self, job_name: str | None = None):
+        h = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+        if job_name:
+            h["HTTP_X_NBHD_JOB_NAME"] = job_name
+        return h
+
+    @patch("apps.router.proactive_context._dispatch_ios_push")
+    def test_app_send_persists_row_then_returns_200(self, _push):
+        resp = self.client.post(
+            self.url,
+            {"message": "Morning:\n- one\n- two\n[[journal-link: daily|2026-07-14|Morning Report]]"},
+            format="json",
+            **self._headers(job_name="Morning Briefing"),
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["channel"], "app")
+
+        rows = list(ProactiveOutbound.objects.filter(tenant=self.tenant))
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row.channel, "app")
+        self.assertEqual(row.channel_user_id, str(self.user.id))
+        self.assertEqual(row.job_name, "Morning Briefing")
+        self.assertEqual(row.parsed_items, ["one", "two"])
+        # The journal deep-link still rides the app row (the chip the ?since=
+        # feed renders) — it must survive the record-before-respond reorder.
+        self.assertEqual(
+            row.journal_link,
+            {"kind": "daily", "slug": "2026-07-14", "title": "Morning Report"},
+        )
+        self.assertNotIn("journal-link", row.message_text)
+        # Counted against the runaway-cron cap exactly once.
+        self.assertEqual(len(_rate_counts.get(str(self.tenant.id), [])), 1)
+
+    @patch("apps.router.proactive_context.record_proactive_outbound", return_value=None)
+    def test_app_row_write_failure_returns_retryable_5xx_not_200(self, mock_record):
+        # The row write lost, so NOTHING was delivered. The view must not claim
+        # success — it must hand QStash a retryable 5xx so the cron runs again.
+        resp = self.client.post(self.url, {"message": "anything"}, format="json", **self._headers())
+
+        mock_record.assert_called_once()
+        self.assertGreaterEqual(resp.status_code, 500)
+        self.assertEqual(resp.json()["error"], "app_delivery_not_recorded")
+        # A delivery that never happened must not burn the hourly budget.
+        self.assertEqual(_rate_counts.get(str(self.tenant.id), []), [])

@@ -7,9 +7,11 @@ routes through ``_put_share_file`` -> ``sanitize_share_text`` so NUL/control
 junk can never be (re)persisted. See apps/orchestrator/azure_client.py.
 """
 
-from django.test import SimpleTestCase
+from unittest.mock import MagicMock, patch
 
-from apps.orchestrator.azure_client import sanitize_share_text
+from django.test import SimpleTestCase, override_settings
+
+from apps.orchestrator.azure_client import _put_share_file, sanitize_share_text
 
 
 class SanitizeShareTextTest(SimpleTestCase):
@@ -36,3 +38,25 @@ class SanitizeShareTextTest(SimpleTestCase):
 
     def test_empty_string_safe(self):
         self.assertEqual(sanitize_share_text(""), "")
+
+    @override_settings(AZURE_STORAGE_ACCOUNT_NAME="storage", AZURE_RESOURCE_GROUP="rg")
+    @patch("azure.storage.fileshare.ShareDirectoryClient")
+    @patch("azure.storage.fileshare.ShareFileClient")
+    @patch("apps.orchestrator.azure_client.get_storage_client")
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    def test_binary_put_bypasses_text_sanitizer(
+        self,
+        _mock_mode,
+        get_storage_client,
+        file_client_cls,
+        _directory_client_cls,
+    ):
+        keys = MagicMock()
+        keys.keys = [MagicMock(value="secret")]
+        get_storage_client.return_value.storage_accounts.list_keys.return_value = keys
+        file_client = file_client_cls.return_value
+        payload = b"\x00\x01\x02binary"
+
+        _put_share_file("tenant", "memory/blob.bin", data=payload)
+
+        file_client.upload_file.assert_called_once_with(payload, length=len(payload))

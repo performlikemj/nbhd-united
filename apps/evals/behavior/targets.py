@@ -28,12 +28,12 @@ class BehaviorConfigError(RuntimeError):
 
 
 def resolve_behavior_tenant() -> Tenant:
-    """Return the synthetic behavior tenant, or RAISE ``BehaviorConfigError``.
+    """Return the configured eval-sink behavior tenant, or raise.
 
     Raises (loudly) when ``EVAL_BEHAVIOR_TENANT_ID`` is unset, malformed, points at
     a missing tenant, or — defense against a config slip — points at a
-    NON-synthetic tenant: a behavior scenario must never drive traffic through a
-    real subscriber's account.
+    tenant that is not explicitly marked as an eval sink: a behavior scenario
+    must never drive traffic through an ordinary or demo account.
     """
     tenant_id = getattr(settings, "EVAL_BEHAVIOR_TENANT_ID", "") or ""
     if not tenant_id:
@@ -51,10 +51,10 @@ def resolve_behavior_tenant() -> Tenant:
             f"EVAL_BEHAVIOR_TENANT_ID={tenant_id!r} is not a valid tenant id ({type(exc).__name__})."
         ) from exc
 
-    if not tenant.is_synthetic:
+    if not tenant.is_eval_sink:
         raise BehaviorConfigError(
-            f"EVAL_BEHAVIOR_TENANT_ID={tenant_id!r} points at a NON-synthetic tenant — "
-            "refusing to run behavior scenarios against a real subscriber."
+            f"EVAL_BEHAVIOR_TENANT_ID={tenant_id!r} does not point at an eval-sink tenant — "
+            "refusing to run behavior scenarios against an ordinary or demo account."
         )
 
     # The behavior tenant must be DISTINCT from the journey canary. Directive

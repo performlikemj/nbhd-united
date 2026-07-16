@@ -69,6 +69,9 @@ class CoreProfile(models.Model):
         default="",
         help_text="Free-form context the user wants reflected in their meditations.",
     )
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.CORE_PROFILE_ADDITIONAL_CONTEXT``) — ships DARK.
+    # Shares the journal flag pair (``Tenant.encrypt_journal_writes`` / ``read_encrypted_journal``).
+    additional_context_enc = models.BinaryField(null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -96,6 +99,10 @@ class MeditationSession(models.Model):
         default="",
         help_text="The personalized through-line for this sit.",
     )
+    # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
+    # ``enc_columns.MEDITATION_SESSION_TITLE`` / ``MEDITATION_SESSION_THEME``.
+    title_enc = models.BinaryField(null=True)
+    theme_enc = models.BinaryField(null=True)
     voice = models.CharField(max_length=64, blank=True, default="")
     model = models.CharField(
         max_length=64,
@@ -108,11 +115,16 @@ class MeditationSession(models.Model):
         blank=True,
         help_text="The render manifest (phases → segments). Re-renderable; auditable.",
     )
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.MEDITATION_SESSION_MANIFEST``, JSON) — ships DARK.
+    # Sealed alongside ``guidance_text`` — the manifest segments carry the same narration.
+    manifest_enc = models.BinaryField(null=True)
     guidance_text = models.TextField(
         blank=True,
         default="",
         help_text="Flattened narration text, for display/audit.",
     )
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.MEDITATION_SESSION_GUIDANCE_TEXT``) — ships DARK.
+    guidance_text_enc = models.BinaryField(null=True)
     audio_url = models.CharField(max_length=512, blank=True, default="", help_text="Public URL of the rendered mp3.")
     ogg_url = models.CharField(
         max_length=512, blank=True, default="", help_text="Public URL of the ogg/opus (LINE/Telegram voice)."
@@ -135,6 +147,8 @@ class MeditationSession(models.Model):
         default="",
         help_text="Optional free-text the user leaves about this sit (what landed, what didn't).",
     )
+    # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.MEDITATION_SESSION_FEEDBACK_NOTE``) — ships DARK.
+    feedback_note_enc = models.BinaryField(null=True)
     feedback_at = models.DateTimeField(
         null=True,
         blank=True,

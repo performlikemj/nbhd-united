@@ -1,7 +1,8 @@
 """APNs device-token registration + the reply-ready push helper.
 
 ``PushRegisterView`` (JWT-authed) lets the iOS app register/refresh/unregister
-its APNs device token. ``notify_app_reply_ready`` is called from the iOS drain
+its APNs device token, while ``PushStatusView`` gives the web app a token-free
+registration check. ``notify_app_reply_ready`` is called from the iOS drain
 when a turn's reply lands, to push "your answer is ready" — closing the
 fire-and-forget gap (see ``HER_SIRI_ARCHITECTURE.md``). Both are no-ops in
 substance until APNs is provisioned (see ``apps.common.apns``).
@@ -13,12 +14,14 @@ import logging
 import re
 from datetime import timedelta
 
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.router.models import DeviceToken
 from apps.tenants.throttling import PushTestMinuteThrottle
 
@@ -108,6 +111,9 @@ class PushRegisterView(APIView):
         if environment not in DeviceToken.Environment.values:
             environment = DeviceToken.Environment.PRODUCTION
         bundle_id = str(request.data.get("bundle_id") or "").strip()[:128]
+        installation_id = str(request.data.get("installation_id") or "").strip() or None
+        if installation_id and len(installation_id) > 64:
+            return Response({"error": "invalid_installation_id"}, status=status.HTTP_400_BAD_REQUEST)
 
         # ``token`` is globally unique, so a single upsert re-points the device to
         # the registering user (account switch / device handoff on the same
@@ -116,7 +122,14 @@ class PushRegisterView(APIView):
         # constraint (it re-fetches on IntegrityError).
         DeviceToken.objects.update_or_create(
             token=token,
-            defaults={"user": request.user, "tenant": tenant, "environment": environment, "bundle_id": bundle_id},
+            defaults={
+                "user": request.user,
+                "tenant": tenant,
+                "environment": environment,
+                "bundle_id": bundle_id,
+                "installation_id": installation_id,
+                "revoked_at": None,
+            },
         )
         return Response({"registered": True}, status=status.HTTP_200_OK)
 
@@ -128,8 +141,22 @@ class PushRegisterView(APIView):
             token = str(request.data.get("device_token") or "").strip()
         if not token:
             return Response({"error": "invalid_token"}, status=status.HTTP_400_BAD_REQUEST)
-        DeviceToken.objects.filter(user=request.user, token=token).delete()
+        with transaction.atomic():
+            rows = DeviceToken.objects.filter(user=request.user, token=token)
+            rows.update(revoked_at=timezone.now())
+            rows.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class PushStatusView(APIView):
+    """GET: report whether this tenant has a registered iOS device."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        registered = bool(tenant and DeviceToken.objects.filter(user=request.user, tenant=tenant).exists())
+        return Response({"registered": registered}, status=status.HTTP_200_OK)
 
 
 class PushTestView(APIView):
@@ -159,6 +186,10 @@ class PushTestView(APIView):
 
     def post(self, request):
         from apps.common.apns import apns_configured, send_push
+
+        tenant = getattr(request.user, "tenant", None)
+        if suppresses_real_transport(tenant):
+            return Response({"sent": 0, "failed": 0, "skipped": "eval_sink"}, status=status.HTTP_200_OK)
 
         if not apns_configured():
             return Response({"sent": 0, "failed": 0, "skipped": "not_configured"}, status=status.HTTP_200_OK)
@@ -287,13 +318,16 @@ def _compute_unread_count(user) -> int | None:
                 status=AppChatMessage.Status.READY,
                 replied_at__gt=cursor,
             )
-            .exclude(reply_text="")
+            .exclude(reply_text="")  # noqa: encrypted-predicate
             .count()
         )
-        # ``notified_at`` is set only when an APNs push was fired for the row, so
-        # this counts exactly the proactive/cron sends that produced a visible
-        # alert after the read cursor.
-        proactive = ProactiveOutbound.objects.filter(tenant=tenant, notified_at__gt=cursor).count()
+        # ``notified_at`` marks non-eval proactive rows claimed by the APNs path.
+        # Eval evidence is excluded even if an older code path stamped it.
+        proactive = (
+            ProactiveOutbound.objects.filter(tenant=tenant, notified_at__gt=cursor)
+            .exclude(channel=ProactiveOutbound.Channel.EVAL)
+            .count()
+        )
         return replies + proactive
     except Exception:
         logger.warning("push: unread count failed (non-fatal)", exc_info=True)
@@ -321,7 +355,17 @@ def _push_to_user_devices(
     """
     from apps.common.apns import send_push
 
-    rows = list(DeviceToken.objects.filter(user=user).values("token", "environment"))
+    tenant = getattr(user, "tenant", None)
+    if suppresses_real_transport(tenant):
+        return
+
+    rows = list(
+        DeviceToken.objects.filter(
+            user=user,
+            revoked_at__isnull=True,
+            user__is_active=True,
+        ).values("token", "environment")
+    )
     if not rows:
         return
 
@@ -395,8 +439,10 @@ def notify_proactive_ready(tenant, proactive_id, body_source: str | None) -> Non
 
         # Atomic claim: only the first push for this row wins. A re-run for the
         # same row (a future retry / reconcile path) is a no-op (rowcount 0).
-        claimed = ProactiveOutbound.objects.filter(id=proactive_id, notified_at__isnull=True).update(
-            notified_at=timezone.now()
+        claimed = (
+            ProactiveOutbound.objects.filter(id=proactive_id, notified_at__isnull=True)
+            .exclude(channel=ProactiveOutbound.Channel.EVAL)
+            .update(notified_at=timezone.now())
         )
         if not claimed:
             return

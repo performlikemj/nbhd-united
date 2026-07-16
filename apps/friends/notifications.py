@@ -14,6 +14,7 @@ import logging
 
 from django.conf import settings
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.tenants.models import Tenant
 
 from .models import Friendship, NeighborProfile
@@ -37,6 +38,9 @@ def _waver_name(friendship: Friendship) -> str:
 
 
 def _send_telegram_wave(tenant: Tenant, friendship: Friendship) -> bool:
+    if suppresses_real_transport(tenant):
+        return False
+
     import httpx
 
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
@@ -84,6 +88,9 @@ def _send_telegram_wave(tenant: Tenant, friendship: Friendship) -> bool:
 
 
 def _send_line_wave(tenant: Tenant, friendship: Friendship) -> bool:
+    if suppresses_real_transport(tenant):
+        return False
+
     import httpx
 
     channel_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "").strip()

@@ -289,6 +289,46 @@ class DigestTest(TestCase):
         self.assertIn("July Steps", text)
         self.assertIn("crew", text.lower())
 
+    def test_app_channel_member_digest_writes_proactive_outbound(self):
+        """A token-holding member (iOS device, no Telegram/LINE) is delivered via
+        a ProactiveOutbound row — the APNs push + ?since= feed IS the delivery.
+        Regression: the app branch previously ``return True``'d without writing
+        anything, so once outbound routing became app-first the digest silently
+        vanished for token-holders."""
+        from apps.router.models import DeviceToken, ProactiveOutbound
+
+        DeviceToken.objects.create(tenant=self.a, user=self.a.user, token="f" * 64)
+        with mock.patch("apps.router.proactive_context._dispatch_ios_push"):
+            delivered = digest._deliver_text(self.a, "\U0001f331 crew digest")
+
+        self.assertTrue(delivered)
+        row = ProactiveOutbound.objects.get(tenant=self.a)
+        self.assertEqual(row.channel, "app")
+        self.assertEqual(row.message_text, "\U0001f331 crew digest")
+        self.assertEqual(row.channel_user_id, str(self.a.user_id))
+
+    def test_eval_sink_does_not_fall_through_to_telegram(self):
+        """An eval-sink member's digest never touches a real transport — it is
+        recorded as an internal ``eval`` evidence row (no APNs, no Telegram),
+        even with a stale Telegram id still linked."""
+        from apps.router.models import ProactiveOutbound
+
+        self.a.is_synthetic = True
+        self.a.is_eval_sink = True
+        self.a.save(update_fields=["is_synthetic", "is_eval_sink"])
+        self.a.user.telegram_chat_id = 987654
+        self.a.user.save(update_fields=["telegram_chat_id"])
+        with (
+            mock.patch("apps.router.services.send_telegram_message") as send,
+            mock.patch("apps.router.proactive_context._dispatch_ios_push") as push,
+        ):
+            delivered = digest._deliver_text(self.a, "weekly update")
+        self.assertTrue(delivered)
+        send.assert_not_called()
+        push.assert_not_called()
+        row = ProactiveOutbound.objects.get(tenant=self.a)
+        self.assertEqual(row.channel, "eval")
+
 
 class EnvelopeMissionsTest(TestCase):
     def test_renders_active_missions_and_hides_after_leave(self):

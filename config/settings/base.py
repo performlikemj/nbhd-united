@@ -416,6 +416,28 @@ OPENCLAW_DOC_TAINT_GUARD_PLUGIN_PATH = env(
     "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-doc-taint-guard",
 )
+# Automation-tools plugin — the agent's typed cron-create tools
+# (nbhd_cron_create_pure_reminder / _quote_user_intent / _domain_summary), loaded
+# per-tenant on ``experimental_typed_crons``.
+#
+# These lines are load-bearing and were MISSING until 2026-07-14: nothing read
+# these names from the environment, so ``getattr(settings, ...)`` in
+# config_generator always fell back to its hardcoded literal, and
+# ``scripts/openclaw_config_doctor_smoke.sh``'s ``export
+# OPENCLAW_AUTOMATION_PLUGIN_ID=""`` was a SILENT NO-OP. It went unnoticed only
+# because the tenant flag defaulted False, so the plugin never reached a smoke
+# config. Flipping that default surfaced it as a doctor failure ("plugin path not
+# found") — the plugin ships in the image (Dockerfile.openclaw), but CI has no
+# /opt/nbhd/plugins tree. Every sibling plugin ID is env-readable; this one now is
+# too, which is what makes the smoke disable actually disable.
+OPENCLAW_AUTOMATION_PLUGIN_ID = env(
+    "OPENCLAW_AUTOMATION_PLUGIN_ID",
+    default="nbhd-automation-tools",
+)
+OPENCLAW_AUTOMATION_PLUGIN_PATH = env(
+    "OPENCLAW_AUTOMATION_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-automation-tools",
+)
 # Cron enforcement plugin — fire-time typed-cron enforcement, rebuilt in
 # #1117. Ships dark (empty defaults): production enables by setting both env
 # vars on the container app; tests/smoke disable via ID="".

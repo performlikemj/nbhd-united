@@ -109,9 +109,15 @@ def _truncate_on_word(text: str, limit: int) -> str:
     return cut.rstrip() + "…"
 
 
-def _render_exchange(user_text: str, reply_text: str) -> str:
+def _render_exchange(user_text: str, reply_text: str, journal_link: dict | None = None) -> str:
     """One exchange as two labelled lines ('you' == the assistant/reader)."""
-    return f"- user: {user_text}\n  you: {reply_text}"
+    rendered = f"- user: {user_text}\n  you: {reply_text}"
+    if journal_link:
+        rendered += (
+            f"\n  [journal-ref: {journal_link.get('kind', '')}|{journal_link.get('slug', '')}|"
+            f"{journal_link.get('title', '')}; retrieve with nbhd_document_get]"
+        )
+    return rendered
 
 
 def build_thread_recap_block(
@@ -168,13 +174,13 @@ def build_thread_recap_block(
         # When the column flips, this whole module must move to the apps.crypto
         # read path: BOTH this ``exclude(reply_text="")`` (ciphertext never
         # equals "" — the filter would silently stop matching) AND the
-        # ``.values("user_text", "reply_text")`` fetch below it (which would
+        # ``.values("user_text", "reply_text", "journal_link")`` fetch below it (which would
         # otherwise emit raw ciphertext into the recap block). The Phase 2
         # sweep must not skip this file.
         rows = list(
             base_qs.exclude(reply_text="")  # noqa: encrypted-predicate
             .order_by("-created_at", "-replied_at")
-            .values("user_text", "reply_text")[:RECAP_MAX_EXCHANGES]
+            .values("user_text", "reply_text", "journal_link")[:RECAP_MAX_EXCHANGES]
         )
         rows.reverse()
         if not rows:
@@ -194,7 +200,7 @@ def build_thread_recap_block(
             reply_txt = _truncate_on_word(row["reply_text"] or "", RECAP_SIDE_CHAR_CAP)
             if not (user_txt or reply_txt):
                 continue
-            exchanges.append(_render_exchange(user_txt, reply_txt))
+            exchanges.append(_render_exchange(user_txt, reply_txt, row["journal_link"]))
 
         if not exchanges:
             return ""

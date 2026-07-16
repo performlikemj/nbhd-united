@@ -561,10 +561,14 @@ class NotifyMeditationReadyTests(TestCase):
 
     @override_settings(LINE_CHANNEL_ACCESS_TOKEN="line-token")
     def test_line_send_and_record(self):
+        # LINE-ONLY user (no telegram_chat_id, no device token). resolve_user_channel
+        # is app → telegram → line and no longer consults preferred_channel, so the
+        # LINE path is reached by LINKAGE alone — this is the line-only cohort
+        # (e.g. Kiho) whose delivery still runs through _send_line_text.
         user = self.tenant.user
         user.line_user_id = "U" + "a" * 32
-        user.preferred_channel = "line"
-        user.save(update_fields=["line_user_id", "preferred_channel"])
+        user.telegram_chat_id = None
+        user.save(update_fields=["line_user_id", "telegram_chat_id"])
         session = self._session()
 
         fake_resp = MagicMock()
@@ -587,10 +591,12 @@ class NotifyMeditationReadyTests(TestCase):
 
     @override_settings(LINE_CHANNEL_ACCESS_TOKEN="line-token")
     def test_line_failure_trips_quota_and_returns_false(self):
+        # LINE-ONLY user, as above — keeps the monthly-quota trip on a LINE 429
+        # genuinely covered rather than silently routing to Telegram.
         user = self.tenant.user
         user.line_user_id = "U" + "b" * 32
-        user.preferred_channel = "line"
-        user.save(update_fields=["line_user_id", "preferred_channel"])
+        user.telegram_chat_id = None
+        user.save(update_fields=["line_user_id", "telegram_chat_id"])
         session = self._session()
 
         fake_resp = MagicMock()
@@ -659,6 +665,23 @@ class NotifyMeditationReadyTests(TestCase):
         mock_record.assert_called_once()
         self.assertEqual(mock_record.call_args.kwargs["channel"], "app")
         self.assertEqual(mock_record.call_args.kwargs["channel_user_id"], str(user.id))
+
+    def test_eval_sink_records_evidence_without_telegram(self):
+        self.tenant.is_synthetic = True
+        self.tenant.is_eval_sink = True
+        self.tenant.save(update_fields=["is_synthetic", "is_eval_sink"])
+        session = self._session()
+        with (
+            patch("apps.router.services.send_telegram_message") as mock_send,
+            patch("apps.router.proactive_context.record_proactive_outbound") as mock_record,
+        ):
+            delivered = services.notify_meditation_ready(session)
+
+        self.assertTrue(delivered)
+        mock_send.assert_not_called()
+        mock_record.assert_called_once()
+        self.assertEqual(mock_record.call_args.kwargs["channel"], "eval")
+        self.assertEqual(mock_record.call_args.kwargs["channel_user_id"], str(self.tenant.user_id))
 
     def test_inactive_tenant_does_not_send(self):
         self.tenant.status = Tenant.Status.PENDING

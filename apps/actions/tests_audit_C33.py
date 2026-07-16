@@ -93,6 +93,20 @@ class SendGateConfirmationChannelResolutionTests(TestCase):
         action.refresh_from_db()
         self.assertEqual(action.platform_channel, "")
 
+    def test_eval_sink_user_does_not_invoke_any_sender(self):
+        tenant, action = self._make("c33_eval", telegram_chat_id=123456789)
+        tenant.is_synthetic = True
+        tenant.is_eval_sink = True
+        tenant.save(update_fields=["is_synthetic", "is_eval_sink"])
+
+        patcher, tg, line = self._patched_senders()
+        with patcher:
+            delivered = send_gate_confirmation(tenant, action)
+
+        self.assertFalse(delivered)
+        tg.assert_not_called()
+        line.assert_not_called()
+
     def test_telegram_user_still_routed_to_telegram(self):
         """Linked Telegram user is unaffected: sender runs and result stored."""
         tenant, action = self._make("c33_tg", telegram_chat_id=123456789)
@@ -119,3 +133,48 @@ class SendGateConfirmationChannelResolutionTests(TestCase):
         tg.assert_not_called()
         action.refresh_from_db()
         self.assertEqual(action.platform_channel, "line")
+
+    def test_app_token_with_telegram_still_routes_to_telegram(self):
+        """Load-bearing gate exception (MJ's case): a user with BOTH an iOS
+        device token AND a linked Telegram must still get gate buttons on
+        Telegram — NOT hit the app dead-end where the action silently expires.
+
+        Gate resolution is linked-channel-first, unlike the now-app-first
+        ``resolve_user_channel`` used for plain proactive sends: the app has no
+        interactive approve/deny surface, so gates never target it while a
+        messaging channel is linked."""
+        tenant, action = self._make("c33_app_tg", telegram_chat_id=123456789)
+        DeviceToken.objects.create(tenant=tenant, user=tenant.user, token="e" * 64, environment="production")
+
+        patcher, tg, line = self._patched_senders(tg=mock.Mock(return_value="777"))
+        with patcher:
+            result = send_gate_confirmation(tenant, action)
+
+        self.assertIs(result, True)
+        tg.assert_called_once_with(tenant, action)
+        line.assert_not_called()
+        action.refresh_from_db()
+        self.assertEqual(action.platform_channel, "telegram")
+
+    def test_both_channels_linked_routes_to_telegram(self):
+        """A user with BOTH Telegram and LINE linked gets gate buttons on
+        TELEGRAM — pinning the gate resolver's telegram-before-line order.
+
+        This preserves prior behavior exactly: the old resolver honoured
+        ``preferred_channel`` (universally the "telegram" schema default), so
+        both-linked users have always received gates on Telegram. The only
+        both-linked cohort in production actively approves gates there — a
+        line-first order would silently move their approval surface."""
+        tenant, action = self._make("c33_both", telegram_chat_id=987654321, line_user_id="U" + "2" * 32)
+        # An iOS device token must not perturb the gate order either.
+        DeviceToken.objects.create(tenant=tenant, user=tenant.user, token="f" * 64, environment="production")
+
+        patcher, tg, line = self._patched_senders(tg=mock.Mock(return_value="888"))
+        with patcher:
+            result = send_gate_confirmation(tenant, action)
+
+        self.assertIs(result, True)
+        tg.assert_called_once_with(tenant, action)
+        line.assert_not_called()
+        action.refresh_from_db()
+        self.assertEqual(action.platform_channel, "telegram")

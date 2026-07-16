@@ -4,7 +4,8 @@ import { useState } from "react";
 
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 import { PersonaScene } from "@/components/onboarding/persona-scene";
-import { AppScene } from "@/components/onboarding/app-scene";
+import { ChannelScene } from "@/components/onboarding/channel-scene";
+import type { ChannelOutcome } from "@/components/onboarding/channel-outcome";
 import { LaunchSequence } from "@/components/onboarding/launch-sequence";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { useMeQuery } from "@/lib/queries";
@@ -13,10 +14,9 @@ export default function OnboardingPage() {
   const { data: me, isLoading } = useMeQuery();
   const tenant = me?.tenant;
   const hasTenant = Boolean(tenant);
-  // Local-only gate: the "get the app" step no longer requires linking a
-  // messaging channel, so completion is a one-tap Continue rather than a
-  // server-side flag. Reloading simply shows the step again — harmless.
-  const [appStepDone, setAppStepDone] = useState(false);
+  // Local-only outcome: linking is never an onboarding or authentication gate.
+  // Reloading simply presents the channel step again with live server statuses.
+  const [channelOutcome, setChannelOutcome] = useState<ChannelOutcome | null>(null);
 
   if (isLoading) {
     return (
@@ -28,12 +28,12 @@ export default function OnboardingPage() {
     );
   }
 
-  // Determine which scene to show: persona (no tenant) → app download → launch.
-  let scene: "persona" | "app" | "launch";
+  // Determine which scene to show: persona (no tenant) → channel → launch.
+  let scene: "persona" | "channel" | "launch";
   if (!hasTenant) {
     scene = "persona";
-  } else if (!appStepDone) {
-    scene = "app";
+  } else if (!channelOutcome) {
+    scene = "channel";
   } else {
     scene = "launch";
   }
@@ -41,8 +41,10 @@ export default function OnboardingPage() {
   return (
     <OnboardingShell>
       {scene === "persona" && <PersonaScene />}
-      {scene === "app" && <AppScene onContinue={() => setAppStepDone(true)} />}
-      {scene === "launch" && <LaunchSequence />}
+      {scene === "channel" && <ChannelScene onContinue={setChannelOutcome} />}
+      {scene === "launch" && channelOutcome ? (
+        <LaunchSequence outcome={channelOutcome} />
+      ) : null}
     </OnboardingShell>
   );
 }

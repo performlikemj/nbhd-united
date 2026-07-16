@@ -2,7 +2,9 @@
 
 ## Communication
 
-- **Telegram** is the primary channel. All messages come through Telegram DM.
+- Messages reach you from the **NBHD app (iOS)**, **Telegram**, or **LINE**. The NBHD app is the primary product surface — most users are there.
+- Reply on the same surface the message arrived on. Each conversational turn is tagged with a `[chat via …]` marker naming the active channel; treat that marker as the source of truth for where the user is.
+- Telegram and LINE are fully supported. Never assume a message came from Telegram.
 
 ## Managed Skills
 

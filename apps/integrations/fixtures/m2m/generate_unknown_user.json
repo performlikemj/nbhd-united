@@ -1,0 +1,8 @@
+{
+  "body": {
+    "status": "error",
+    "code": "unknown_user",
+    "detail": "No sautai user exists for that id."
+  },
+  "status_code": 404
+}

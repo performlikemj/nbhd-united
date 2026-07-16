@@ -65,13 +65,25 @@ class JudgeScore:
 
 
 class Judge(Protocol):
-    """Scores soft dimensions from SYNTHETIC scenario content only."""
+    """Scores soft dimensions from SYNTHETIC scenario content only.
+
+    ``observed`` carries the backend's hard-assertion results as content-free
+    ``(type, passed, code)`` triples. It is what keeps the judge anchored to what
+    HAPPENED rather than to how well the assistant wrote about it — see
+    rubric behavior-v3.
+    """
 
     model: str
     rubric_version: str
 
     def score(
-        self, *, scenario_id: str, persona: str, transcript_lines: list[tuple[str, str]], dimensions: list[str]
+        self,
+        *,
+        scenario_id: str,
+        persona: str,
+        transcript_lines: list[tuple[str, str]],
+        dimensions: list[str],
+        observed: list[tuple[str, bool, str]] | None = None,
     ) -> dict[str, JudgeScore]: ...
 
 
@@ -92,13 +104,24 @@ class OpenRouterJudge:
     rubric_version = RUBRIC_VERSION
 
     def score(
-        self, *, scenario_id: str, persona: str, transcript_lines: list[tuple[str, str]], dimensions: list[str]
+        self,
+        *,
+        scenario_id: str,
+        persona: str,
+        transcript_lines: list[tuple[str, str]],
+        dimensions: list[str],
+        observed: list[tuple[str, bool, str]] | None = None,
     ) -> dict[str, JudgeScore]:
         # Local import keeps the openrouter dependency out of module import time and
         # lets tests that inject a fake judge avoid it entirely.
         from apps.common.openrouter import chat_completion
 
-        prompt = rubric_v1.build_judge_prompt(persona=persona, dimensions=dimensions, transcript_lines=transcript_lines)
+        prompt = rubric_v1.build_judge_prompt(
+            persona=persona,
+            dimensions=dimensions,
+            transcript_lines=transcript_lines,
+            observed=observed,
+        )
         messages = [
             {"role": "system", "content": rubric_v1.JUDGE_SYSTEM_PROMPT},
             {"role": "user", "content": prompt},

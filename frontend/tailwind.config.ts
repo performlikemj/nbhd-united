@@ -32,6 +32,8 @@ const config: Config = {
         signal: "var(--signal)",
         "signal-text": "var(--signal-text)",
         "signal-faint": "var(--signal-faint)",
+        telegram: "var(--telegram)",
+        line: "var(--line)",
         border: "var(--border)",
         "border-strong": "var(--border-strong)",
         "rose-bg": "var(--rose-bg)",
