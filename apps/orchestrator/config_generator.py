@@ -2311,7 +2311,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         # `enum: ["log_only", "enforce"]` with `additionalProperties: false`,
         # and OpenClaw validates each enabled plugin's config against its
         # schema at config LOAD time. So a typo'd DOC_TAINT_GATE_MODE
-        # ("Enforce", "enforced", "true", ...) would make the generated
+        # ("enforced", "true", ...) would make the generated
         # config invalid — a #917-class fleet wedge across every regenerated
         # tenant, not just this plugin misbehaving. Normalize against the
         # allowed set here (Django side) so the generator can never emit
@@ -2319,15 +2319,16 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         # still useful for `openclaw doctor` to catch a future generator bug).
         doc_taint_guard_id = str(getattr(settings, "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID", "") or "").strip()
         if doc_taint_guard_id and doc_taint_guard_id in plugin_config["entries"]:
-            _doc_taint_gate_raw_mode = str(getattr(settings, "DOC_TAINT_GATE_MODE", "log_only") or "log_only").strip()
-            if _doc_taint_gate_raw_mode in ("log_only", "enforce"):
-                _doc_taint_gate_mode = _doc_taint_gate_raw_mode
-            else:
+            _doc_taint_gate_raw_mode = str(getattr(settings, "DOC_TAINT_GATE_MODE", "") or "")
+            _doc_taint_gate_mode = _doc_taint_gate_raw_mode.strip().casefold()
+            if not _doc_taint_gate_mode:
+                _doc_taint_gate_mode = "log_only"
+            elif _doc_taint_gate_mode not in ("log_only", "enforce"):
                 import logging
 
-                logging.getLogger(__name__).warning(
-                    "DOC_TAINT_GATE_MODE=%r is not a valid nbhd-doc-taint-guard mode "
-                    "(expected 'log_only' or 'enforce') — falling back to 'log_only' "
+                logging.getLogger(__name__).error(
+                    "DOC_TAINT_GATE_MODE rejected value %r: expected 'log_only' or "
+                    "'enforce'; effective fallback is 'log_only' "
                     "so the generated config can't fail the plugin's schema "
                     "(additionalProperties:false + enum) at OpenClaw load time.",
                     _doc_taint_gate_raw_mode,
