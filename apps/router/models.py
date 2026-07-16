@@ -938,6 +938,8 @@ class DeviceToken(models.Model):
         help_text="Which APNs host the token is valid for (sandbox builds vs App Store / TestFlight).",
     )
     bundle_id = models.CharField(max_length=128, blank=True, default="")
+    installation_id = models.CharField(max_length=64, null=True, blank=True, db_index=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     last_seen_at = models.DateTimeField(auto_now=True)
 
