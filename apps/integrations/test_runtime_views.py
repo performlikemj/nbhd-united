@@ -860,6 +860,76 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
         mock_publish.assert_not_called()
 
+    def test_explicitly_complete_ready_plan_returns_exists(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.READY,
+            result={"id": 45, "week_start": "2026-07-13"},
+            funnel={"complete": True, "missing_days": []},
+        )
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "exists")
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
+        mock_publish.assert_not_called()
+
+    def test_incomplete_ready_plan_enqueues_non_regenerate_repair(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        cases = (
+            ("2026-07-13", {"complete": False, "missing_days": []}),
+            ("2026-07-20", {"complete": True, "missing_days": ["2026-07-22"]}),
+        )
+        for week_start, funnel in cases:
+            with self.subTest(funnel=funnel):
+                SautaiMealPlanJob.objects.create(
+                    tenant=self.tenant,
+                    week_start=week_start,
+                    status=SautaiMealPlanJobStatus.READY,
+                    result={"week_start": week_start},
+                    funnel=funnel,
+                )
+
+                with patch("apps.cron.publish.publish_task") as mock_publish:
+                    response = self.client.post(
+                        self._url(),
+                        data={"week_start": week_start},
+                        content_type="application/json",
+                        **self._headers(),
+                    )
+
+                self.assertEqual(response.status_code, 201)
+                payload = response.json()
+                self.assertNotEqual(payload["status"], "exists")
+                self.assertIs(payload["repairing_incomplete_plan"], True)
+                self.assertEqual(payload["repairing_missing_days"], funnel["missing_days"])
+                self.assertIn("missing days", payload["guidance"].lower())
+                self.assertIn("existing meals will be left untouched", payload["guidance"].lower())
+                repair_job = SautaiMealPlanJob.objects.get(id=payload["job_id"])
+                self.assertFalse(repair_job.regenerate)
+                self.assertEqual(
+                    SautaiMealPlanJob.objects.filter(tenant=self.tenant, week_start=week_start).count(),
+                    2,
+                )
+                mock_publish.assert_called_once_with("generate_sautai_meal_plan", str(repair_job.id))
+
     @override_settings(SAUTAI_M2M_BASE_URL="", SAUTAI_PLATFORM_SECRET="")
     def test_unconfigured_bridge_returns_503_and_creates_no_job(self):
         # Fail loud BEFORE creating a job — otherwise the worker could only ever
@@ -1211,6 +1281,8 @@ class SautaiCurrentPlanViewTests(TestCase):
             mock_fetch.return_value = {
                 "outcome": "ok",
                 "plan": {"id": 66, "week_start": "2026-07-13"},
+                "complete": False,
+                "missing_days": ["2026-07-15"],
                 "web_link": "https://sautai.com/x",
             }
             response = self.client.post(
@@ -1225,6 +1297,8 @@ class SautaiCurrentPlanViewTests(TestCase):
         self.assertEqual(body["status"], "ok")
         self.assertFalse(body["cached"])
         self.assertEqual(body["plan"]["id"], 66)
+        self.assertIs(body["complete"], False)
+        self.assertEqual(body["missing_days"], ["2026-07-15"])
         # Called with the tenant owner's email, never the payload's.
         self.assertEqual(mock_fetch.call_args.kwargs["identity"], {"user_email": "diner@example.com"})
 
@@ -1337,6 +1411,7 @@ class SautaiCurrentPlanViewTests(TestCase):
             status=SautaiMealPlanJobStatus.READY,
             result={"id": 42, "week_start": "2026-07-13"},
             web_link="https://sautai.com/cached",
+            funnel={"complete": False, "missing_days": ["2026-07-16"]},
         )
         with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
             mock_fetch.return_value = {"outcome": "error", "detail": "request_failed: timeout"}
@@ -1352,6 +1427,8 @@ class SautaiCurrentPlanViewTests(TestCase):
         self.assertEqual(body["status"], "ok")
         self.assertTrue(body["cached"])
         self.assertEqual(body["plan"]["id"], 42)
+        self.assertIs(body["complete"], False)
+        self.assertEqual(body["missing_days"], ["2026-07-16"])
 
     def test_sautai_error_without_cache_returns_502(self):
         with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:

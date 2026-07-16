@@ -3930,6 +3930,24 @@ def _sautai_existing_plan_payload(status_value: str, job: SautaiMealPlanJob, gui
     }
 
 
+def _sautai_missing_days(funnel: object) -> list:
+    if not isinstance(funnel, dict):
+        return []
+    missing_days = funnel.get("missing_days")
+    return missing_days if isinstance(missing_days, list) else []
+
+
+def _sautai_plan_is_incomplete(job: SautaiMealPlanJob) -> bool:
+    funnel = job.funnel if isinstance(job.funnel, dict) else {}
+    return funnel.get("complete") is False or bool(_sautai_missing_days(funnel))
+
+
+def _sautai_repair_guidance(missing_days: list) -> str:
+    dates = ", ".join(str(day) for day in missing_days)
+    date_detail = f" ({dates})" if dates else ""
+    return f"The missing days{date_detail} are being filled in. Existing meals will be left untouched."
+
+
 class RuntimeSautaiGeneratePlanView(APIView):
     """POST — kick off an async sautai meal-plan generation.
 
@@ -4022,6 +4040,9 @@ class RuntimeSautaiGeneratePlanView(APIView):
         with transaction.atomic():
             Tenant.objects.select_for_update().get(pk=tenant.pk)
 
+            repairing_incomplete_plan = False
+            repair_missing_days: list = []
+
             existing_ready = (
                 SautaiMealPlanJob.objects.filter(
                     tenant=tenant,
@@ -4045,20 +4066,24 @@ class RuntimeSautaiGeneratePlanView(APIView):
                     )
                 )
             elif not regenerate and existing_ready is not None:
-                guidance = (
-                    "Surface the existing plan. The new guidance was not applied; offer regeneration and require "
-                    "explicit confirmation before replacing it."
-                    if user_prompt
-                    else "A plan already exists for this week. Surface the existing plan. Offer regeneration only "
-                    "if the user seems to want a new one, and require explicit confirmation before replacing it."
-                )
-                return Response(
-                    _sautai_existing_plan_payload(
-                        "exists",
-                        existing_ready,
-                        guidance,
+                if _sautai_plan_is_incomplete(existing_ready):
+                    repairing_incomplete_plan = True
+                    repair_missing_days = _sautai_missing_days(existing_ready.funnel)
+                else:
+                    guidance = (
+                        "Surface the existing plan. The new guidance was not applied; offer regeneration and require "
+                        "explicit confirmation before replacing it."
+                        if user_prompt
+                        else "A plan already exists for this week. Surface the existing plan. Offer regeneration only "
+                        "if the user seems to want a new one, and require explicit confirmation before replacing it."
                     )
-                )
+                    return Response(
+                        _sautai_existing_plan_payload(
+                            "exists",
+                            existing_ready,
+                            guidance,
+                        )
+                    )
 
             in_flight = (
                 SautaiMealPlanJob.objects.filter(
@@ -4115,6 +4140,14 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 "status": in_flight.status,
                 "week_start": week_start.isoformat(),
             }
+            if repairing_incomplete_plan:
+                coalesced.update(
+                    {
+                        "repairing_incomplete_plan": True,
+                        "repairing_missing_days": repair_missing_days,
+                        "guidance": _sautai_repair_guidance(repair_missing_days),
+                    }
+                )
             # Honesty guard: this request carried NEW guidance (regenerate, or a
             # user_prompt that DIFFERS from the in-flight job's) but coalesced onto
             # a generation that does NOT include it — the guidance is being dropped.
@@ -4133,10 +4166,16 @@ class RuntimeSautaiGeneratePlanView(APIView):
             # closing the inherited compose_meditation/CoreComposeView gap.
             logger.warning("Failed to enqueue sautai meal-plan generation for job %s", job.id)
 
-        return Response(
-            {"job_id": str(job.id), "status": job.status, "week_start": week_start.isoformat()},
-            status=status.HTTP_201_CREATED,
-        )
+        ack = {"job_id": str(job.id), "status": job.status, "week_start": week_start.isoformat()}
+        if repairing_incomplete_plan:
+            ack.update(
+                {
+                    "repairing_incomplete_plan": True,
+                    "repairing_missing_days": repair_missing_days,
+                    "guidance": _sautai_repair_guidance(repair_missing_days),
+                }
+            )
+        return Response(ack, status=status.HTTP_201_CREATED)
 
 
 class RuntimeSautaiCurrentPlanView(APIView):
@@ -4211,6 +4250,8 @@ class RuntimeSautaiCurrentPlanView(APIView):
                         "cached": False,
                         "week_start": week_start.isoformat(),
                         "plan": result.get("plan"),
+                        "complete": result.get("complete"),
+                        "missing_days": result.get("missing_days"),
                         "web_link": result.get("web_link", ""),
                         "funnel": result.get("funnel", {}),
                     }
@@ -4239,6 +4280,7 @@ class RuntimeSautaiCurrentPlanView(APIView):
             .first()
         )
         if cached_job is not None and cached_job.result:
+            cached_funnel = cached_job.funnel if isinstance(cached_job.funnel, dict) else {}
             return Response(
                 response_payload(
                     {
@@ -4246,8 +4288,10 @@ class RuntimeSautaiCurrentPlanView(APIView):
                         "cached": True,
                         "week_start": week_start.isoformat(),
                         "plan": cached_job.result,
+                        "complete": cached_funnel.get("complete"),
+                        "missing_days": cached_funnel.get("missing_days"),
                         "web_link": cached_job.web_link,
-                        "funnel": cached_job.funnel or {},
+                        "funnel": cached_funnel,
                         "detail": "sautai was unreachable; showing the last plan NBHD cached for this week.",
                     }
                 )

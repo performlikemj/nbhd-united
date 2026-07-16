@@ -226,17 +226,21 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
 
 
 def _funnel_from_response(body: dict) -> dict:
-    """Extract the Phase 0.5 funnel fields from a generate/current 200 body.
+    """Extract persisted metadata from a generate/current 200 body.
 
     ``claim_link`` is present only when ``account_claimed`` is false (contract
     addendum #4); ``already_existed`` drives the "a plan already existed —
-    regenerate?" honesty branch in the notify copy.
+    regenerate?" honesty branch in the notify copy. ``complete`` and
+    ``missing_days`` preserve sautai's top-level plan-integrity result so cached
+    READY jobs can make the same repair and disclosure decisions as live reads.
     """
     return {
         "account_claimed": body.get("account_claimed"),
         "plan_count": body.get("plan_count"),
         "claim_link": str(body.get("claim_link") or "")[:500],
         "already_existed": body.get("already_existed"),
+        "complete": body.get("complete"),
+        "missing_days": body.get("missing_days"),
     }
 
 
@@ -322,11 +326,14 @@ def fetch_sautai_current_plan(*, identity: dict, week_start_iso: str | None) -> 
     if not isinstance(plan, dict):
         return {"outcome": "error", "detail": "invalid_response: missing plan"}
 
+    funnel = _funnel_from_response(body)
     return {
         "outcome": "ok",
         "plan": plan,
         "web_link": str(body.get("web_link") or "")[:500],
-        "funnel": _funnel_from_response(body),
+        "complete": body.get("complete"),
+        "missing_days": body.get("missing_days"),
+        "funnel": funnel,
     }
 
 

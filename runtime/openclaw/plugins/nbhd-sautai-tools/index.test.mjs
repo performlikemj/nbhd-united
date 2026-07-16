@@ -209,6 +209,29 @@ test("generate — promptless exists surfaces the plan without claiming guidance
   assert.equal(result.details.json.plan.id, 44);
 });
 
+test("generate — incomplete-plan repair says missing days are filling without touching meals", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () =>
+    mockResponse({
+      status: 201,
+      payload: {
+        job_id: "job-repair",
+        status: "pending",
+        week_start: "2026-07-13",
+        repairing_incomplete_plan: true,
+        repairing_missing_days: ["2026-07-15"],
+      },
+    });
+
+  register(api);
+  const result = await tools.get("nbhd_generate_meal_plan").execute("repair", {});
+  assert.match(result.content[0].text, /filling in the missing days/i);
+  assert.match(result.content[0].text, /2026-07-15/);
+  assert.match(result.content[0].text, /existing meals will be left untouched/i);
+  assert.match(result.content[0].text, /do NOT say the week is complete yet/i);
+});
+
 test("generate — request_applied omitted uses the normal started copy", async () => {
   setupEnv();
   const { api, tools } = buildApi();
@@ -323,6 +346,29 @@ test("get — posts to the current-plan path and returns a real plan as JSON", a
   const parsed = JSON.parse(result.content[0].text);
   assert.equal(parsed.status, "ok");
   assert.deepEqual(parsed.plan, plan);
+});
+
+test("get — partial plan names missing days and forbids presenting a complete week", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () =>
+    mockResponse({
+      payload: {
+        status: "ok",
+        cached: false,
+        complete: false,
+        missing_days: ["2026-07-15", "2026-07-17"],
+        plan: { id: 13, week_start: "2026-07-13" },
+      },
+    });
+
+  register(api);
+  const result = await tools.get("nbhd_get_meal_plan").execute("partial", {});
+  assert.match(result.content[0].text, /partial/i);
+  assert.match(result.content[0].text, /2026-07-15/);
+  assert.match(result.content[0].text, /2026-07-17/);
+  assert.match(result.content[0].text, /never present this partial week as complete/i);
+  assert.deepEqual(result.details.json.missing_days, ["2026-07-15", "2026-07-17"]);
 });
 
 test("get — no_plan tells the assistant to offer generation", async () => {

@@ -35,6 +35,8 @@ Response 200:
   "status": "ok",
   "user_created": false,          // true if a shell sautai account was auto-created for this email
   "already_existed": false,       // true if a plan already existed for (user, week) — idempotent return
+  "complete": true,               // false when one or more requested days have zero populated meals
+  "missing_days": [],             // ISO dates in the requested span with zero populated meals
   "plan": {
     "id": 123,
     "week_start": "2026-07-13",
@@ -56,7 +58,7 @@ Errors: `400 {"status":"error","code":"validation","detail":"..."}` ·
 ### 2. POST /api/m2m/meal-plan/current/
 Fast read. Request: one of `user_email` / `sautai_user_id`, plus optional
 `{"week_start": "YYYY-MM-DD"}` (default current week).
-- 200: `{"status":"ok", "plan": {<same plan shape>}, "web_link": "..."}`
+- 200: `{"status":"ok", "complete":true, "missing_days":[], "plan": {<same plan shape>}, "web_link": "..."}`
 - 404: `{"status":"not_found"}` (no auto-create on reads — unknown email is also 404)
 
 ### 3. GET /api/m2m/ping/
@@ -70,6 +72,12 @@ Secret-gated smoke: `200 {"status":"ok","service":"sautai-m2m","version":1}`.
 - **Idempotency**: `create_meal_plan_for_user()` is idempotent per (user, week);
   `already_existed: true` signals the plan was already there. NBHD's QStash task must also be
   idempotent per job id (safe on redelivery).
+- **Plan integrity**: generate and current return top-level `complete` and `missing_days`. A date is
+  missing when it is inside the requested span and has zero populated meals. Consumers must never
+  present `complete: false` or a non-empty `missing_days` week as complete.
+- **Scoped repair**: a non-regenerate generate call for an existing partial week fills only missing
+  slots and never changes existing meals. It remains the idempotent path; `regenerate: true` keeps
+  its separate full-replacement meaning.
 - **Replacement**: `regenerate: true` replaces the existing plan for (user, week). NBHD only
   forwards this after its runtime proxy has found a READY plan and the user has explicitly
   confirmed replacement.
@@ -89,8 +97,15 @@ The OpenClaw tools call NBHD's runtime proxy, not these M2M endpoints directly.
   non-destructive generation.
 - `regenerate: true` with a READY job requires `confirm_replace: true`; without confirmation the
   proxy returns `status: "confirm_required"` with the existing plan and link and creates no job.
-- A prompt-bearing normal request for a week with a READY job returns `status: "exists"`, surfaces
-  that plan, and creates no job. The assistant must offer the confirm-gated replacement flow.
+- A normal request for a week with a complete READY job returns `status: "exists"`, surfaces that
+  plan, and creates no job. A prompt-bearing response explains that the new guidance was not
+  applied and offers the confirm-gated replacement flow.
+- If that READY job's captured integrity metadata has `complete: false` or non-empty
+  `missing_days`, a non-regenerate request bypasses `exists` and enqueues scoped repair. Its ack
+  says the missing days are being filled and existing meals will be left untouched. Absent fields
+  on older cached jobs are treated as complete and retain the `exists` behavior.
+- Current-plan proxy responses pass `complete` and `missing_days` through as top-level siblings of
+  `plan`, including values recovered from a cached READY job's funnel metadata.
 - Current-plan responses include `generation_in_progress` for a PENDING/GENERATING job created in
   the last 15 minutes so the assistant can explain the 1–2 minute asynchronous wait.
 - At M2M egress, the worker snapshots `addressed_by` (`linked_id` or `email`) and the nullable linked
@@ -98,7 +113,8 @@ The OpenClaw tools call NBHD's runtime proxy, not these M2M endpoints directly.
 
 ## Fixture handshake (contract test gate)
 
-sautai side dumps golden fixtures from the REAL views into
-`api/tests/fixtures/m2m/` (generate_ok.json, generate_user_created.json, current_ok.json,
-current_not_found.json, error_invalid_secret.json). These exact files are copied to the NBHD
-repo and its proxy/QStash tests must parse them — both sides decode the same bytes.
+sautai side dumps golden fixtures from the REAL views into `api/tests/fixtures/m2m/`. The shared
+success fixtures (`current_ok.json`, `generate_ok.json`, `generate_ok_funnel.json`,
+`generate_regenerated.json`, `generate_user_created.json`) are copied byte-for-byte to NBHD,
+alongside NBHD's preserved error/not-found/link fixtures. Its proxy/QStash tests must parse them —
+both sides decode the same bytes.

@@ -78,6 +78,32 @@ function renderResult(text, payload) {
   return { content: [{ type: "text", text: String(text) }], details: { json: payload } };
 }
 
+function missingPlanDays(payload) {
+  if (!Array.isArray(payload.missing_days)) return [];
+  return payload.missing_days.map(asTrimmedString).filter(Boolean);
+}
+
+function isPartialPlan(payload) {
+  return payload.complete === false || missingPlanDays(payload).length > 0;
+}
+
+function partialPlanGuidance(payload) {
+  const missingDays = missingPlanDays(payload);
+  const missingDetail = missingDays.length
+    ? `These dates are missing: ${missingDays.join(", ")}.`
+    : "sautai reports missing days, but did not provide their dates.";
+  const progressDetail = payload.generation_in_progress
+    ? " A plan update is in progress; do not say the missing days are filled until the updated plan arrives."
+    : "";
+  const cacheDetail = payload.cached
+    ? " This is NBHD's cached copy and may also be slightly out of date."
+    : "";
+  return (
+    `This meal plan is partial. Tell the user which days are missing: ${missingDetail} ` +
+    `Never present this partial week as complete.${progressDetail}${cacheDetail}`
+  );
+}
+
 // The proxy answers a missing SAUTAI_M2M_BASE_URL/SECRET with a 503 whose body
 // carries error:"sautai_not_configured"; callRuntime surfaces both the code and
 // its detail in the thrown message. Detect either so both tools can tell the
@@ -232,6 +258,16 @@ export default function register(api) {
             );
           }
 
+          if (payload.repairing_incomplete_plan === true) {
+            const missingDays = missingPlanDays({ missing_days: payload.repairing_missing_days });
+            const missingDetail = missingDays.length ? ` (${missingDays.join(", ")})` : "";
+            return renderResult(
+              `sautai is filling in the missing days${missingDetail}${weekPhrase}. Tell the user the existing ` +
+                "meals will be left untouched and the repaired plan is on the way. Do NOT say the week is complete yet.",
+              payload,
+            );
+          }
+
           // The proxy coalesced this onto an already-running generation that does
           // NOT include the new guidance (regenerate / this call's user_prompt).
           // Be honest: the guidance was NOT applied to what's cooking.
@@ -301,6 +337,10 @@ export default function register(api) {
             path: sautaiPath(api, "/sautai/current-plan/"),
             body,
           });
+
+          if (isPartialPlan(payload)) {
+            return renderResult(partialPlanGuidance(payload), payload);
+          }
 
           if (payload.generation_in_progress) {
             const week = asTrimmedString(payload.generation_in_progress.week_start);

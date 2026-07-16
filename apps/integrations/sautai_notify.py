@@ -92,13 +92,18 @@ def _ready_message(job: SautaiMealPlanJob) -> str:
     sautai funnel — instead of the plain web link. For a claimed/linked account
     the plain web link stays. If a plan already existed for the week and the user
     had given fresh guidance we didn't regenerate on, add an honest nudge rather
-    than implying the plan is freshly tailored.
+    than implying the plan is freshly tailored. If sautai reports missing days,
+    the push explicitly says the week could not be fully filled.
     """
     plan = job.result if isinstance(job.result, dict) else {}
     funnel = job.funnel if isinstance(job.funnel, dict) else {}
     week_start = plan.get("week_start") or (job.week_start.isoformat() if job.week_start else "")
 
+    missing_days = funnel.get("missing_days")
+    has_missing_days = isinstance(missing_days, list) and bool(missing_days)
     base = f"Your meal plan for the week of {week_start} is ready" if week_start else "Your meal plan is ready"
+    if has_missing_days:
+        base += ", but some days could not be filled"
     text = f"{base} — powered by sautai."
 
     account_claimed = funnel.get("account_claimed")

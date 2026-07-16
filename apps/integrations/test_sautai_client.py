@@ -423,6 +423,10 @@ class FetchSautaiCurrentPlanTests(SimpleTestCase):
         self.assertGreater(result["plan"]["id"], 0)
         self.assertEqual(result["plan"]["week_start"], "2026-08-03")
         self.assertEqual(result["web_link"], "https://sautai.com/meal-plans?week_start=2026-08-03")
+        self.assertIs(result["complete"], fixture["body"]["complete"])
+        self.assertEqual(result["missing_days"], fixture["body"]["missing_days"])
+        self.assertIs(result["funnel"]["complete"], fixture["body"]["complete"])
+        self.assertEqual(result["funnel"]["missing_days"], fixture["body"]["missing_days"])
 
         _, kwargs = mock_post.call_args
         self.assertEqual(kwargs["headers"]["X-NBHD-Platform-Secret"], "test-secret")
@@ -621,6 +625,8 @@ class SautaiPhase05ClientTests(TestCase):
         self.assertIn("/claim?", job.funnel["claim_link"])
         self.assertIn("token=", job.funnel["claim_link"])
         self.assertIs(job.funnel["already_existed"], False)
+        self.assertIs(job.funnel["complete"], fixture["body"]["complete"])
+        self.assertEqual(job.funnel["missing_days"], fixture["body"]["missing_days"])
 
     # ── stale link: unknown_user clears the link and fails terminally ──
     def test_generate_unknown_user_clears_link_and_fails_terminally(self):
@@ -702,3 +708,18 @@ class SautaiReadyMessageTests(TestCase):
         )
         msg = _ready_message(job)
         self.assertNotIn("existing plan", msg.lower())
+
+    def test_missing_days_warns_that_some_days_could_not_be_filled(self):
+        from .sautai_notify import _ready_message
+
+        job = self._job(
+            web_link="https://sautai.com/plan",
+            funnel={
+                "account_claimed": True,
+                "complete": False,
+                "missing_days": ["2026-07-15", "2026-07-16"],
+            },
+        )
+        msg = _ready_message(job)
+        self.assertIn("some days could not be filled", msg.lower())
+        self.assertNotIn("is ready —", msg.lower())
