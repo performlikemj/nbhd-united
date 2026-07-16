@@ -287,6 +287,15 @@ class Tenant(models.Model):
             "never distorts a number. Never set for a real subscriber."
         ),
     )
+    is_eval_sink = models.BooleanField(
+        default=False,
+        help_text=(
+            "Dedicated eval delivery/memory sink. When enabled, outbound messages "
+            "are recorded as eval evidence but are not sent to user transports or "
+            "surfaced in user/model history. Independent of is_synthetic: synthetic "
+            "demo accounts keep normal assistant behavior unless explicitly enabled."
+        ),
+    )
     purchased_credit = models.DecimalField(
         max_digits=10,
         decimal_places=4,

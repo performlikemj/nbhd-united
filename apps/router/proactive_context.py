@@ -9,17 +9,18 @@ replies to the original question and conflates them.
 This module is the deterministic fix:
 
 * ``record_proactive_outbound`` is called from ``CronDeliveryView``
-  after a successful Telegram/LINE/app push and persists a
-  ``ProactiveOutbound`` row, keyed by the OUTBOUND transport that was
-  used (telegram/line/app) for audit.
+  after a successful Telegram/LINE/app delivery or eval-sink acceptance and
+  persists a ``ProactiveOutbound`` row, keyed by the outbound transport or
+  internal sink channel (telegram/line/app/eval) for audit.
 * ``surface_proactive_context`` is called from each inbound path (LINE
   webhook, Telegram webhook, Telegram poller, and the iOS/app drain)
   and returns a marker block to prepend to the user's text so the agent
   sees the prior outbound(s) as conversation context.
 
-Surfacing is TENANT-scoped and transport-agnostic: one tenant is one
-human user on this platform, so a reply is threaded back to the prior
-outbound(s) regardless of which channel each was recorded under. This is
+Surfacing is TENANT-scoped and transport-agnostic across user-delivery
+channels (Telegram, LINE, app); the internal eval channel is excluded. One
+tenant is one human user on this platform, so a reply is threaded back to the
+prior user-visible outbound(s) regardless of which transport recorded it. This is
 deliberate — a cron delivered over Telegram while the user has since gone
 iOS-only (Telegram still linked, so ``resolve_user_channel`` recorded the
 row ``channel='telegram'``) must still surface when they reply from the
@@ -101,7 +102,7 @@ def record_proactive_outbound(
     journal_link: dict | None = None,
     artifact_dedup_key: str | None = None,
 ) -> ProactiveOutbound | None:
-    """Persist a row describing one successful proactive push.
+    """Persist a row describing one proactive delivery or eval evidence event.
 
     ``message_text`` is expected in PII-placeholder space (``[PERSON_1]``) — the
     space the agent authored it in. It is clamped and stored placeholder-space
@@ -159,12 +160,19 @@ def record_proactive_outbound(
         )
         return None
 
+    # An eval row is internal evidence, not a user-visible delivery. Do not even
+    # invoke the push dispatcher: this keeps the sink independent of whether a
+    # device token is later registered on the tenant.
+    if channel == ProactiveOutbound.Channel.EVAL:
+        return row
+
     # Ping the user's iPhone(s) that a proactive / cron message just landed — the
     # missing leg that left crons silent on iOS (Telegram/LINE delivered, but the
     # APNs push only ever fired for app-originated turns). The push is a
     # wake-and-sync trigger; the app pulls the text from the ?since= feed. This is
-    # the SINGLE chokepoint every ProactiveOutbound funnels through, so it covers
-    # both CronDeliveryView and core.services.notify_meditation_ready. Dispatched
+    # the single chokepoint every user-visible ProactiveOutbound funnels through,
+    # so it covers both CronDeliveryView and core.services.notify_meditation_ready.
+    # Eval evidence returned above never reaches this block. Dispatched
     # off the request path + fail-soft so an APNs send never delays or loses the
     # already-delivered cron message. The push body is OWNER-facing (lock screen)
     # so it rehydrates the placeholders — the stored ``message_text`` stays
@@ -277,11 +285,12 @@ def surface_proactive_context(
 ) -> str:
     """Look up recent proactive outbounds for ``tenant`` and return a prepend block.
 
-    TENANT-scoped, transport-agnostic (see module docstring): the query
-    matches the tenant's recent rows regardless of which ``channel`` /
-    ``channel_user_id`` they were recorded under, so a reply on ANY inbound
-    path (iOS/app, Telegram, LINE) threads back to a proactive send that may
-    have gone out over a different transport.
+    EVAL-SINK TENANTS GET NOTHING — see the gate below.
+
+    TENANT-scoped and transport-agnostic among user-delivery channels (see
+    module docstring): a reply on ANY inbound path (iOS/app, Telegram, LINE)
+    threads back to a user-visible proactive send that may have gone out over a
+    different transport. Internal ``eval`` evidence rows are always excluded.
 
     The recency window is split by consumption state:
 
@@ -307,6 +316,32 @@ def surface_proactive_context(
 
     Returns the empty string when there's nothing to surface.
     """
+    # EVAL-SINK TENANTS: never surface anything into the model's context.
+    #
+    # This is the SECOND model-facing consumer of ProactiveOutbound (the USER.md
+    # "Conversation so far" digest is the first, gated the same way in
+    # conversation_capture.build_conversation_digest). It prepends
+    # "[earlier-from-you]: <text>" onto inbound turns on EVERY ingress path,
+    # including ``_drain_ios_batch`` — which is exactly the path the behavior
+    # transport drives.
+    #
+    # It was harmless right up until the ``eval`` sink landed, because a synthetic
+    # tenant had no ProactiveOutbound rows at all (everything 422'd). The sink
+    # creates them: the eval tenant's daily system crons (Morning Briefing, Evening
+    # Check-in) call nbhd_send_to_user and now record rows every single day. Without
+    # this gate, the FIRST scenario turn of every nightly behavior run would drain
+    # yesterday's briefing text into its prompt — and the reminder scenario could read
+    # back its OWN previous water-nudge — while the run stamped ``isolated: True``.
+    #
+    # That is the same cross-turn contamination this PR exists to kill, walking back
+    # in through the door the PR itself opened. Gate it at the function, so all four
+    # ingress paths are covered at once.
+    #
+    # Sink rows remain unconsumed evidence. Operational readers exclude them;
+    # eval probes and direct administrative inspection may still query them.
+    if getattr(tenant, "is_eval_sink", False):
+        return ""
+
     now = timezone.now()
     # Consumed rows keep the tight recency window; unconsumed rows get the
     # long one so a never-answered question stays surfaceable for days.
@@ -317,11 +352,11 @@ def surface_proactive_context(
     # surfacing a stale message forever.
     follow_up_cutoff = now - timedelta(minutes=5)
 
-    # Tenant-scoped only — the (tenant, created_at) index (proactive_tenant_
-    # created_idx) backs both walks below. channel/channel_user_id are NOT
-    # filtered: one tenant = one human, and the outbound transport a row was
-    # recorded under must not gate whether the reply threads back to it.
-    base = ProactiveOutbound.objects.filter(tenant=tenant)
+    # Tenant-scoped — the (tenant, created_at) index (proactive_tenant_created_idx)
+    # backs both walks below. User-delivery channels are not distinguished: one
+    # tenant = one human, and switching transports must not break continuity.
+    # The internal eval evidence channel is the sole exclusion.
+    base = ProactiveOutbound.objects.filter(tenant=tenant).exclude(channel=ProactiveOutbound.Channel.EVAL)
 
     # UNCONSUMED (never threaded) rows claim the limit first, newest-first,
     # within the long window.

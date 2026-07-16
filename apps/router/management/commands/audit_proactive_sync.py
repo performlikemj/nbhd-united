@@ -51,7 +51,9 @@ class Command(BaseCommand):
         tenant_filter = (opts.get("tenant") or "").strip()
         cutoff = timezone.now() - timedelta(days=days)
 
-        qs = ProactiveOutbound.objects.filter(created_at__gte=cutoff)
+        # Sink rows were never sent to a user and cannot be consumed; including
+        # them would make the operational thread-continuity audit meaningless.
+        qs = ProactiveOutbound.objects.filter(created_at__gte=cutoff).exclude(channel=ProactiveOutbound.Channel.EVAL)
         if tenant_filter:
             qs = qs.filter(tenant_id=tenant_filter)
 

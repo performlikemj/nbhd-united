@@ -51,6 +51,10 @@ def resolve_user_channel(user) -> str | None:
     Order (MJ direction — keep Telegram/LINE, but push toward the app when it's
     installed):
 
+    0. explicit eval-sink tenant (``Tenant.is_eval_sink``) → ``"eval"``,
+       regardless of every other linked surface. No real transport — the
+       ``ProactiveOutbound`` evidence row IS the delivery (see
+       ``CronDeliveryView``).
     1. iOS device token registered → ``"app"``. Proactive content lands in the
        app feed as the PRIMARY surface: the APNs push + the ``?since=`` feed row
        (both produced by ``record_proactive_outbound``) ARE the delivery, so the
@@ -80,6 +84,15 @@ def resolve_user_channel(user) -> str | None:
     Module-level so backend proactive senders (e.g. Core notify-on-ready) route
     identically to ``CronDeliveryView`` without duplicating the logic.
     """
+    # 0. Explicit eval-sink tenants FIRST — before the DeviceToken check, so a
+    # stale or accidentally registered real transport (an APNs token, a linked
+    # Telegram/LINE id) can never make an eval target emit. Eval-sink is an
+    # explicit operational mode, independent of the broader ``is_synthetic``
+    # business-aggregate flag.
+    tenant = getattr(user, "tenant", None)
+    if getattr(tenant, "is_eval_sink", False):
+        return "eval"
+
     # 1. Prefer the app whenever an iOS device is registered.
     from apps.router.models import DeviceToken
 
@@ -97,6 +110,22 @@ def resolve_user_channel(user) -> str | None:
     if line_user_id:
         return "line"
 
+    # No linked surface and not an explicitly configured eval sink.
+    #
+    # A synthetic tenant has no phone and no chat account, so it used to fall
+    # through to None → HTTP 422 no_channel_linked → CronDeliveryView returned
+    # before record_proactive_outbound, and NOTHING was written. The consequence
+    # was green theater: the eval-behavior tenant has zero ProactiveOutbound rows
+    # ever recorded, and even its one PASSING reminder scenario delivered nothing —
+    # the cron fired, 422'd, and no assertion could have caught it.
+    #
+    # The journey probe worked around this by planting a FAKE APNs DeviceToken
+    # before every run so the "app" branch would resolve. That hack is
+    # self-destroying: a successful delivery pushes to the fabricated token, APNs
+    # rejects it as BadDeviceToken, and push_views PRUNES the row — so every pass
+    # destroyed the channel for the next fire (prod runs 8→9 alternated
+    # pass/fail forever). The sink removes the need for it entirely.
+    #
     return None
 
 
@@ -283,6 +312,55 @@ class CronDeliveryView(APIView):
                 )
             _record_send(tid)
             return Response({"status": "sent", "channel": "app"})
+        elif channel == "eval":
+            # EXPLICIT EVAL-SINK TENANT: no Telegram, LINE, or APNs call is made
+            # (record_proactive_outbound returns before the push dispatcher for
+            # this channel). The ProactiveOutbound row is internal evidence for
+            # eval assertions and is excluded from operational history readers.
+            #
+            # This branch MUST sit above the telegram fallback below: that fallback
+            # is an ``else``, so an unrecognised channel would silently attempt a
+            # real Telegram send with an empty chat_id. A sink that leaks is worse
+            # than no sink.
+            #
+            # Persist-first, like the app branch above: the evidence row is the
+            # ONLY artifact of an eval delivery, so answering 200 "sent" on a lost
+            # write would be green theater — the exact failure the sink exists to
+            # kill. A lost write returns a retryable 5xx instead.
+            channel_user_id = str(tenant.user_id)
+            row = record_proactive_outbound(
+                tenant=tenant,
+                channel=channel,
+                channel_user_id=channel_user_id,
+                # Placeholder-space at rest; eval rows are never rehydrated or
+                # pushed anywhere.
+                message_text=placeholder_message_text,
+                job_name=job_name,
+                journal_link=journal_link,
+                artifact_dedup_key=artifact_dedup_key,
+            )
+            if row is None:
+                logger.error(
+                    "Cron delivery (eval): ProactiveOutbound write failed for tenant %s — "
+                    "no evidence was recorded; returning 503 so the cron retries",
+                    tid,
+                )
+                return Response(
+                    {
+                        "error": "eval_delivery_not_recorded",
+                        "detail": "Could not persist the eval evidence row; nothing was recorded.",
+                    },
+                    status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            _record_send(tid)
+            # Counts + ids only — never the body (evals-directive INVARIANT #1).
+            logger.info(
+                "eval sink delivery: tenant=%s job=%s chars=%d",
+                str(tenant.id)[:8],
+                (job_name or "-")[:64],
+                len(message_text),
+            )
+            return Response({"status": "sent", "channel": "eval"})
         else:
             channel_user_id = str(tenant.user.telegram_chat_id or "")
             resp = self._send_via_telegram(
@@ -292,8 +370,9 @@ class CronDeliveryView(APIView):
                 parse_mode=parse_mode,
             )
 
-        # Telegram/LINE only from here — the app channel recorded, counted and
-        # returned above (its row IS the delivery, so it can't be best-effort).
+        # Telegram/LINE only from here — the app and eval channels recorded,
+        # counted and returned above (their row IS the delivery/evidence, so it
+        # can't be best-effort).
 
         # Count every successful send against the per-tenant hourly cap, so the
         # runaway-loop throttle covers all channels uniformly.

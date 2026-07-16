@@ -307,6 +307,28 @@ class DigestTest(TestCase):
         self.assertEqual(row.message_text, "\U0001f331 crew digest")
         self.assertEqual(row.channel_user_id, str(self.a.user_id))
 
+    def test_eval_sink_does_not_fall_through_to_telegram(self):
+        """An eval-sink member's digest never touches a real transport — it is
+        recorded as an internal ``eval`` evidence row (no APNs, no Telegram),
+        even with a stale Telegram id still linked."""
+        from apps.router.models import ProactiveOutbound
+
+        self.a.is_synthetic = True
+        self.a.is_eval_sink = True
+        self.a.save(update_fields=["is_synthetic", "is_eval_sink"])
+        self.a.user.telegram_chat_id = 987654
+        self.a.user.save(update_fields=["telegram_chat_id"])
+        with (
+            mock.patch("apps.router.services.send_telegram_message") as send,
+            mock.patch("apps.router.proactive_context._dispatch_ios_push") as push,
+        ):
+            delivered = digest._deliver_text(self.a, "weekly update")
+        self.assertTrue(delivered)
+        send.assert_not_called()
+        push.assert_not_called()
+        row = ProactiveOutbound.objects.get(tenant=self.a)
+        self.assertEqual(row.channel, "eval")
+
 
 class EnvelopeMissionsTest(TestCase):
     def test_renders_active_missions_and_hides_after_leave(self):

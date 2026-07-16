@@ -177,7 +177,7 @@ class RepoStateTests(SimpleTestCase):
         predicate + test sites; each carries the ladder PR that resolves it."""
         expected = {
             # Phase 2 / 4 (guard-introducing PR)
-            ("apps/router/management/commands/audit_proactive_sync.py", 63, "parsed_items"),
+            ("apps/router/management/commands/audit_proactive_sync.py", 65, "parsed_items"),
             ("apps/lessons/agent_context.py", 91, "galaxy_note"),
             ("apps/journal/extraction.py", 235, "text"),
             ("apps/orchestrator/grounding_probe.py", 85, "markdown"),

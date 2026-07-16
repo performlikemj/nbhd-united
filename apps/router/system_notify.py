@@ -35,6 +35,8 @@ def send_system_notification(tenant: Tenant, message: str) -> bool:
     channel = _resolve_channel(tenant.user)
     if channel == "app":
         return _send_app(tenant, message)
+    if channel == "eval":
+        return _send_eval(tenant, message)
     if channel == "telegram":
         return _send_telegram(tenant, message)
     if channel == "line":
@@ -70,6 +72,27 @@ def _send_app(tenant: Tenant, message: str) -> bool:
     row = record_proactive_outbound(
         tenant=tenant,
         channel="app",
+        channel_user_id=str(getattr(user, "id", "") or ""),
+        message_text=message,
+        job_name="_system_notify",
+    )
+    return row is not None
+
+
+def _send_eval(tenant: Tenant, message: str) -> bool:
+    """Eval-sink tenant: never a real transport. Record the internal ``eval``
+    evidence row instead — the recorder suppresses the APNs dispatch for this
+    channel and every operational reader excludes the row. This branch keeps a
+    platform notice from silently vanishing into the "no linked channel" log
+    while honoring the sink contract (recorded, not sent)."""
+    from apps.router.proactive_context import record_proactive_outbound
+
+    user = getattr(tenant, "user", None)
+    if user is None:
+        return False
+    row = record_proactive_outbound(
+        tenant=tenant,
+        channel="eval",
         channel_user_id=str(getattr(user, "id", "") or ""),
         message_text=message,
         job_name="_system_notify",

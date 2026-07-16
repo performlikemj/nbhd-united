@@ -359,6 +359,14 @@ def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
     confirmation. Rather than fail silently, log a clear, explicit warning so the
     no-surface case is visible and diagnosable.
     """
+    if getattr(tenant, "is_eval_sink", False):
+        # Confirmation gates require a human approve/deny surface. An eval sink
+        # has none, and must never reach a transport sender. Checked on the
+        # tenant flag directly because ``_resolve_gate_channel`` reads linked
+        # Telegram/LINE ids without consulting ``resolve_user_channel`` — a
+        # stale linked id on an eval tenant would otherwise send real buttons.
+        logger.info("Gate confirmation suppressed for eval-sink tenant %s", tenant.id)
+        return False
     channel = _resolve_gate_channel(tenant.user)
     sender, _ = _SENDERS.get(channel, (None, None))
 

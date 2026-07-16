@@ -47,9 +47,10 @@ missed) — each needs infra Django cannot reach from a task:
   * **CryptoError count** — a ``box.py`` decrypt/tamper exception surfaces as a
     Sentry event / stdout log line, not a counted DB row; it belongs to the same
     Log-Analytics follow-up.
-  * **cron success RATE** — ``ProactiveOutbound`` only records deliveries that
-    HAPPENED, and it records every proactive producer (cron fires, meditation-ready,
-    nightly_extraction), so the DB holds neither a cron-only numerator nor an
+  * **cron success RATE** — ``ProactiveOutbound`` records accepted delivery events
+    (plus excluded eval evidence) from every proactive producer: cron fires,
+    meditation-ready, and nightly_extraction. The DB therefore holds neither a
+    cron-only numerator nor an
     attempted-fires denominator. Filtering by ``job_name`` doesn't help — the
     non-cron writers set one too. A true success rate needs the fire-attempt log
     (Log Analytics), so it rides the same follow-up batch. Until then the
@@ -291,11 +292,15 @@ def compute_proactive_deliveries(now) -> int:
     journey-cron probe's own deliveries never inflate it.
     """
     since, until = _window(now)
-    return ProactiveOutbound.objects.filter(
-        tenant__is_synthetic=False,
-        created_at__gte=since,
-        created_at__lte=until,
-    ).count()
+    return (
+        ProactiveOutbound.objects.filter(
+            tenant__is_synthetic=False,
+            created_at__gte=since,
+            created_at__lte=until,
+        )
+        .exclude(channel=ProactiveOutbound.Channel.EVAL)
+        .count()
+    )
 
 
 def compute_eval_run_errors(now) -> dict:
