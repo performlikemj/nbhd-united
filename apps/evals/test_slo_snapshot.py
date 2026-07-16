@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import secrets
 from datetime import timedelta
+from unittest.mock import patch
 
 from django.core import mail
 from django.test import TestCase, override_settings
@@ -289,6 +290,10 @@ class InsufficientSampleIsSkippedNotScoredTest(_ChatFixtureMixin, TestCase):
             self.assertEqual(r.details.get("n"), 0)
             self.assertEqual(r.details.get("n_woken"), 3)
 
+        # #1205's fix: the reply metrics explain why they skipped, while the
+        # measured wake/error metrics keep this from being an all-skipped window.
+        self.assertEqual(run.status, EvalRun.Status.PASS)
+
     def test_the_median_survives_a_window_the_p95_cannot(self):
         """The floors are per-metric on purpose: a median is far more forgiving than a
         tail, so a thin window must not drag the p50 down with the p95."""
@@ -449,9 +454,8 @@ class EmptyWindowSkippedNotGreenTest(TestCase):
         self.assertFalse(deliveries.details.get("skipped"))
         self.assertTrue(deliveries.passed)
 
-        # With only count-metrics measured (all healthy) and the rest skipped, the
-        # run is a pass — an empty window is not, on its own, a failure.
-        self.assertEqual(run.status, EvalRun.Status.PASS)
+        # Healthy count zeros cannot turn a wholly unmeasurable health window green.
+        self.assertEqual(run.status, EvalRun.Status.DEGRADED)
 
 
 class ProactiveDeliverySyntheticExclusionTest(TestCase):
@@ -673,7 +677,7 @@ class WeeklyDigestTaskGateTest(TestCase):
 
         mail.outbox = []
         result = weekly_slo_digest_task()
-        self.assertTrue(result["sent"])
+        self.assertEqual(result, {"sent": True})
         self.assertEqual(len(mail.outbox), 1)
         self.assertIn("SLO", mail.outbox[0].subject)
 
@@ -683,5 +687,54 @@ class WeeklyDigestTaskGateTest(TestCase):
 
         mail.outbox = []
         result = weekly_slo_digest_task()
-        self.assertFalse(result["sent"])
+        self.assertEqual(result, {"sent": False, "reason": "no_owner"})
         self.assertEqual(len(mail.outbox), 0)  # gated — no send, and never raises
+
+    @override_settings(PLATFORM_OWNER_EMAIL="owner@example.com")
+    def test_send_helper_distinguishes_delivery_failure_from_no_owner_skip(self):
+        from apps.evals.alerting import send_slo_digest
+
+        with patch("apps.evals.alerting.send_mail", side_effect=RuntimeError("mailgun down")):
+            self.assertEqual(send_slo_digest("subject", "body"), "failed")
+
+        with override_settings(PLATFORM_OWNER_EMAIL=""):
+            self.assertEqual(send_slo_digest("subject", "body"), "skipped_no_owner")
+
+    def test_failed_send_raises_at_task_boundary(self):
+        from apps.evals.tasks import weekly_slo_digest_task
+
+        with (
+            patch("apps.evals.alerting.send_slo_digest", return_value="failed"),
+            self.assertRaises(RuntimeError),
+        ):
+            weekly_slo_digest_task()
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_failed_send_returns_non_200_from_cron_trigger(self, _mock_verify):
+        with patch("apps.evals.alerting.send_slo_digest", return_value="failed"):
+            response = self.client.post(
+                "/api/v1/cron/trigger/weekly_slo_digest/",
+                data=b"",
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["status"], "error")
+
+
+class SloSnapshotTaskComputeFailureTest(TestCase):
+    @override_settings(PLATFORM_OWNER_EMAIL="owner@example.com")
+    def test_compute_exception_alerts_owner_before_reraising(self):
+        from apps.evals.tasks import slo_snapshot_task
+
+        mail.outbox = []
+        with (
+            patch("apps.evals.suites.slo_snapshot.compute_reply_latency", side_effect=KeyError("compute died")),
+            self.assertRaises(KeyError),
+        ):
+            slo_snapshot_task()
+
+        run = EvalRun.objects.filter(suite="slo_snapshot").latest("started_at")
+        self.assertEqual(run.status, EvalRun.Status.ERROR)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("slo_snapshot", mail.outbox[0].subject)

@@ -29,7 +29,9 @@ Missing data is NOT healthy. An empty window for a latency/rate metric (zero
 qualifying turns in 24h) is recorded **skipped-with-reason** — ``score=None`` +
 ``details.skipped=True`` — never a passing ``score=0`` that reads as "perfect
 latency". An empty table may mean a broken writer, so a skip is a visible
-finding, not a silent green (it just does not, on its own, breach the run).
+finding, not a silent green. If every skippable health metric is unmeasurable,
+the run closes ``degraded`` rather than allowing healthy count zeros to make the
+whole snapshot look like a genuine pass.
 
 Deferred by design (named here so a reviewer sees they were considered, not
 missed) — each needs infra Django cannot reach from a task:
@@ -169,6 +171,11 @@ METRIC_IDS = (
     M_EVAL_RUN_ERRORS,
     M_JOURNEY_BUDGET_CAPPED,
 )
+
+# These metrics need real traffic or probe runs to say anything. Count metrics
+# remain measurable at zero, but their zeros cannot turn a window green when every
+# traffic/probe-health metric below had to skip.
+_SKIPPABLE_HEALTH_METRICS = frozenset({M_REPLY_P50, M_REPLY_P95, M_WAKE_P95, M_ERROR_RATE, M_JOURNEY_BUDGET_CAPPED})
 
 # Sane in-code defaults; ``settings.EVAL_SLO_THRESHOLDS`` (env JSON) overrides any
 # subset. Latencies in milliseconds. Breach direction is per-metric (see below).
@@ -570,6 +577,8 @@ def run_slo_snapshot_suite(*, trigger: str = EvalRun.Trigger.MANUAL, now=None) -
     Returns the CLOSED run. ``image_tag=None`` — this suite touches no container.
     A metric breach → ``passed=False`` → the run closes ``fail`` (close_run), and
     the task wrapper's ``finalize_task_run`` turns that into an owner alert + DLQ.
+    If every traffic/probe-health metric skips, the otherwise-passing run is
+    relabelled ``degraded`` so measured count zeros cannot create a phantom green.
     A crash mid-compute closes the run ``error`` via ``record_run`` and re-raises,
     so a snapshot that could not run FAILS loudly (INVARIANT #3), never green.
     """
@@ -665,6 +674,18 @@ def run_slo_snapshot_suite(*, trigger: str = EvalRun.Trigger.MANUAL, now=None) -
                 },
             )
 
+        health_rows = {
+            row["case_id"]: row["details"]
+            for row in run.results.filter(case_id__in=_SKIPPABLE_HEALTH_METRICS).values("case_id", "details")
+        }
+        if set(health_rows) == _SKIPPABLE_HEALTH_METRICS and all(
+            details.get("skipped") for details in health_rows.values()
+        ):
+            # ``close_run`` preserves an explicit degraded declaration when no
+            # metric failed. Set it before the context exits so it emits one honest
+            # DEGRADED summary rather than briefly logging a phantom PASS.
+            run.status = EvalRun.Status.DEGRADED
+
     return run
 
 
@@ -693,7 +714,7 @@ def _metric_series(now):
             started_at__lte=now,
         ).order_by("started_at")
     )
-    status_counts = {"pass": 0, "fail": 0, "error": 0, "running": 0}
+    status_counts = {"pass": 0, "degraded": 0, "fail": 0, "error": 0, "running": 0}
     for r in runs:
         status_counts[r.status] = status_counts.get(r.status, 0) + 1
 
@@ -752,7 +773,8 @@ def build_weekly_digest(now=None) -> tuple[str, str]:
         f"NBHD SLO weekly digest — 7 days ending {ending} UTC",
         "",
         f"Snapshots recorded: {snapshot_count} "
-        f"(pass={status_counts['pass']} fail={status_counts['fail']} error={status_counts['error']})",
+        f"(pass={status_counts['pass']} degraded={status_counts['degraded']} "
+        f"fail={status_counts['fail']} error={status_counts['error']})",
         "",
     ]
 

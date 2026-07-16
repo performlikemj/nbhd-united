@@ -288,19 +288,16 @@ class SystemCronsWellFormednessTests(TestCase):
         (Wave E) are wired with the planned exprs — the exact-tuple lock that mirrors
         test_wave_b_eval_probes_are_scheduled and closes out the eval program.
 
-        Each carries an explicit ``retries=0`` (the 4th tuple element), same policy as
-        the Wave B probes: ``eval_behavior`` + ``slo_snapshot`` RAISE on a non-pass /
-        threshold breach → owner alert + DLQ on the FIRST failing run, so QStash's
-        default 3 retries would only re-run the whole (up-to-285s) suite and multiply
-        owner emails. ``weekly_slo_digest`` is a readout that NEVER raises/DLQs, so
-        retries are inert for it — 0 keeps the convention and guards a double-email on
-        any unexpected raise.
+        The behavior and snapshot suites retain ``retries=0`` because rerunning their
+        full probes multiplies failure alerts. The digest uses ``retries=2`` because a
+        failed mail delivery now raises and two bounded retries can heal a transient
+        provider blip without falling back to QStash's larger default.
         """
         by_name = {name: (cron_expr, path, retries) for name, cron_expr, path, retries in reg_cmd.iter_system_crons()}
         expected = {
             "eval-behavior": ("40 5 * * *", "/api/cron/trigger/eval_behavior/", 0),
             "slo-snapshot": ("55 5 * * *", "/api/cron/trigger/slo_snapshot/", 0),
-            "weekly-slo-digest": ("15 6 * * 1", "/api/cron/trigger/weekly_slo_digest/", 0),
+            "weekly-slo-digest": ("15 6 * * 1", "/api/cron/trigger/weekly_slo_digest/", 2),
         }
         for name, expected_tuple in expected.items():
             self.assertIn(name, by_name, msg=f"{name} not scheduled in SYSTEM_CRONS")

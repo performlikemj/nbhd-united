@@ -1,9 +1,11 @@
 """Eval-failure alerting — a content-free email to the platform owner (Wave B).
 
-Modeled EXACTLY on ``apps/router/line_quota_handlers.handle_pre_warn``: gate on
+The eval-failure alert is modeled on
+``apps/router/line_quota_handlers.handle_pre_warn``: gate on
 ``PLATFORM_OWNER_EMAIL``, render templates, ``send_mail(fail_silently=False)``,
-catch + log, return a bool, and NEVER raise into the caller — a failed alert must
-not mask the underlying eval failure or crash the task boundary.
+catch + log, and return a bool so an alert hiccup cannot mask the underlying eval
+failure. The SLO digest helper also catches internally but returns an explicit
+three-state outcome; its task boundary decides whether QStash should see failure.
 
 The body carries ONLY content-safe metadata: suite, run id, git_sha, image_tag,
 trigger, passed/total counts, failed case_ids, timestamps. Those are content-safe
@@ -16,6 +18,7 @@ PII ever reaches this email.
 from __future__ import annotations
 
 import logging
+from typing import Literal
 
 from django.conf import settings
 from django.core.mail import send_mail
@@ -24,6 +27,8 @@ from django.template.loader import render_to_string
 from apps.evals.models import EvalRun
 
 logger = logging.getLogger(__name__)
+
+SloDigestOutcome = Literal["sent", "skipped_no_owner", "failed"]
 
 
 def send_eval_failure_alert(run: EvalRun) -> bool:
@@ -73,20 +78,20 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
     return True
 
 
-def send_slo_digest(subject: str, body: str) -> bool:
-    """Email the platform owner the weekly SLO digest. Returns True iff sent.
+def send_slo_digest(subject: str, body: str) -> SloDigestOutcome:
+    """Email the platform owner the weekly SLO digest; return its delivery outcome.
 
-    Same gated, best-effort contract as ``send_eval_failure_alert`` (Suite 4,
-    docs/evals-directive.md): gate on ``PLATFORM_OWNER_EMAIL``, ``send_mail``
-    with ``fail_silently=False``, catch + log, and NEVER raise — the digest is a
-    weekly readout, not a delivery whose failure should DLQ the task. ``subject``
-    and ``body`` are pre-rendered by ``build_weekly_digest`` and carry only metric
-    ids, thresholds, and counts — content-free by construction (INVARIANT #1).
+    The helper remains non-raising so callers receive one of three explicit states:
+    ``sent``, ``skipped_no_owner`` (benign configuration gate), or ``failed``
+    (attempted delivery did not complete). The task boundary turns only ``failed``
+    into a cron failure. ``subject`` and ``body`` are pre-rendered by
+    ``build_weekly_digest`` and carry only metric ids, thresholds, and counts —
+    content-free by construction (INVARIANT #1).
     """
     owner_email = getattr(settings, "PLATFORM_OWNER_EMAIL", "")
     if not owner_email:
         logger.warning("slo digest: PLATFORM_OWNER_EMAIL not set — weekly digest skipped")
-        return False
+        return "skipped_no_owner"
 
     try:
         send_mail(
@@ -98,5 +103,5 @@ def send_slo_digest(subject: str, body: str) -> bool:
         )
     except Exception:
         logger.exception("slo digest: weekly digest email send failed")
-        return False
-    return True
+        return "failed"
+    return "sent"

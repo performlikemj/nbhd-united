@@ -216,13 +216,11 @@ SYSTEM_CRONS = [
     ("reap-stuck-eval-runs", "50 * * * *", "/api/cron/trigger/reap_stuck_eval_runs/", 0),
     # --- Eval Wave D behavior suite + Wave E SLO readout (close the eval program;
     # docs/evals-directive.md §Suite 2 / §Suite 4). ---
-    # Like the Wave B probes above, each carries an explicit retries=0 (the 4th
-    # tuple element). eval_behavior + slo_snapshot RAISE on a non-pass / threshold
-    # breach → owner alert + DLQ on the FIRST failing run (finalize_task_run
-    # contract), so QStash's default 3 retries only re-runs the whole (up-to-285s)
-    # suite and multiplies owner emails. weekly_slo_digest is a READOUT that NEVER
-    # raises/DLQs, so retries are inert for it — 0 keeps the convention and guards
-    # against a double-email on any unexpected raise.
+    # eval_behavior + slo_snapshot retain retries=0: they alert on the first
+    # non-pass run, and rerunning a whole probe only multiplies alerts. The weekly
+    # digest is different: its task raises only when the mail provider was actually
+    # attempted and failed, so retries=2 gives a transient provider blip two bounded
+    # chances to heal without using QStash's larger default retry budget.
     #
     # Stagger: both nightly fires sit in the 05:xx block but OFF the :00/:30
     # chat-probe fires and clear of the 05:05/05:12/05:20 journey probes and the
@@ -243,11 +241,12 @@ SYSTEM_CRONS = [
     ("slo-snapshot", "55 5 * * *", "/api/cron/trigger/slo_snapshot/", 0),
     # Weekly Monday 06:15 UTC — SLO trend digest (Wave E). Reads the trailing 7 days
     # of slo_snapshot runs and emails the owner a one-page plain-text readout. Sends
-    # even when all-green and NEVER raises/DLQs — a readout, not an alarm. Fires
-    # AFTER Monday's 05:55 snapshot (so that morning is in the window) and off the
-    # :00/:30 chat fires + the 06:00/06:30 fires. Monday == cron day-of-week 1. See
+    # even when all-green. A missing owner skips quietly; an attempted mail failure
+    # raises so QStash records it and applies the two retries above. Fires AFTER
+    # Monday's 05:55 snapshot (so that morning is in the window) and off the :00/:30
+    # chat fires + the 06:00/06:30 fires. Monday == cron day-of-week 1. See
     # apps/evals/tasks.py:weekly_slo_digest_task.
-    ("weekly-slo-digest", "15 6 * * 1", "/api/cron/trigger/weekly_slo_digest/", 0),
+    ("weekly-slo-digest", "15 6 * * 1", "/api/cron/trigger/weekly_slo_digest/", 2),
 ]
 
 # Destinations for crons that have been RETIRED. The register loop above only
