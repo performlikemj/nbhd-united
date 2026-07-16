@@ -870,6 +870,27 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
 
     if tenant is not None:
         result["NBHD_SKILL_TEMPLATES_MD"] = render_templates_md(tenant)
+
+    # Bootstrap-cap sentinel. OpenClaw truncates AGENTS.md at ``bootstrapMaxChars``
+    # SILENTLY and mid-rule — there is no error, no log, no signal; the model simply
+    # stops reading. That is how the 2026-07-11 canary lost its tail with CI green
+    # (470e122e), and every per-tenant block (prompt_extras, the Neighborhood /
+    # sautai / doc-keep gates) is appended to the TAIL, i.e. it is always the newest
+    # behavioral rule that dies first. So we check the size we actually rendered, for
+    # THIS tenant, on every write path (config refresh + boot-time reassert) — an
+    # error-level log, which Sentry already forwards, so it becomes an alert with no
+    # extra plumbing. Late import: keeps the orchestrator's module graph acyclic.
+    from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS
+
+    rendered = result.get("NBHD_AGENTS_MD") or ""
+    if len(rendered) > BOOTSTRAP_MAX_CHARS - 1000:
+        logger.error(
+            "AGENTS.md near bootstrap cap: tenant=%s size=%d cap=%d — the tail will be "
+            "silently truncated at injection; trim the template or a per-tenant block",
+            getattr(tenant, "id", None),
+            len(rendered),
+            BOOTSTRAP_MAX_CHARS,
+        )
     return result
 
 
