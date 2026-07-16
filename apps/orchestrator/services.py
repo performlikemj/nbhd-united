@@ -10,6 +10,7 @@ from django.conf import settings
 from django.db import models
 from django.utils import timezone
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.cron.gateway_client import (
     GatewayError,
     invoke_gateway_tool,
@@ -490,7 +491,7 @@ def provision_tenant(tenant_id: str) -> None:
 
     # 4b. Send proactive welcome message via Telegram
     chat_id = tenant.user.telegram_chat_id
-    if chat_id:
+    if chat_id and not suppresses_real_transport(tenant):
         try:
             from apps.router.onboarding import WELCOME_MESSAGE
             from apps.router.services import send_telegram_message

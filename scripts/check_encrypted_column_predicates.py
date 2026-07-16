@@ -181,7 +181,7 @@ _JSON_COLUMNS: set[tuple[str, str]] = {
 _ALLOWLISTED_SITES: set[tuple[str, int, str]] = {
     # ProactiveOutbound.parsed_items — ops report: count rows with structured
     # extraction vs raw text only.
-    ("apps/router/management/commands/audit_proactive_sync.py", 63, "parsed_items"),
+    ("apps/router/management/commands/audit_proactive_sync.py", 65, "parsed_items"),
     # Lesson.galaxy_note — "active star" query: has a pinned galaxy note.
     ("apps/lessons/agent_context.py", 91, "galaxy_note"),
     # Lesson.text — duplicate-lesson guard before approving a new one.

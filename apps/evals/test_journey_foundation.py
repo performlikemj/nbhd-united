@@ -18,7 +18,12 @@ from apps.tenants.models import Tenant, User
 def _tenant(*, synthetic: bool) -> Tenant:
     email = f"{secrets.token_hex(4)}@e.com"
     user = User.objects.create_user(username=email, email=email)
-    return Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=synthetic)
+    return Tenant.objects.create(
+        user=user,
+        status=Tenant.Status.ACTIVE,
+        is_synthetic=synthetic,
+        is_eval_sink=synthetic,
+    )
 
 
 class ResolveJourneyTenantTest(TestCase):
@@ -35,12 +40,19 @@ class ResolveJourneyTenantTest(TestCase):
         with override_settings(EVAL_JOURNEY_TENANT_ID=missing), self.assertRaises(JourneyConfigError):
             resolve_journey_tenant()
 
-    def test_non_synthetic_tenant_raises(self):
+    def test_non_eval_sink_tenant_raises(self):
         real = _tenant(synthetic=False)
         with override_settings(EVAL_JOURNEY_TENANT_ID=str(real.id)), self.assertRaises(JourneyConfigError):
             resolve_journey_tenant()
 
-    def test_synthetic_tenant_resolves(self):
+    def test_synthetic_demo_tenant_raises(self):
+        demo = _tenant(synthetic=True)
+        demo.is_eval_sink = False
+        demo.save(update_fields=["is_eval_sink"])
+        with override_settings(EVAL_JOURNEY_TENANT_ID=str(demo.id)), self.assertRaises(JourneyConfigError):
+            resolve_journey_tenant()
+
+    def test_eval_sink_tenant_resolves(self):
         synth = _tenant(synthetic=True)
         with override_settings(EVAL_JOURNEY_TENANT_ID=str(synth.id)):
             self.assertEqual(resolve_journey_tenant().id, synth.id)

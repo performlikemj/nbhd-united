@@ -52,9 +52,9 @@ def notify_sautai_plan_ready(job: SautaiMealPlanJob) -> bool:
     if channel == "line":
         channel_user_id = getattr(user, "line_user_id", "") or ""
         delivered = _send_line_text(channel_user_id, message)
-    elif channel == "app":
-        # iOS-only user: the APNs push + ?since= feed row below ARE the
-        # delivery — no Telegram/LINE send to make.
+    elif channel in ("app", "eval"):
+        # App records a user-visible feed row and APNs push. Eval records only
+        # internal evidence; the recorder suppresses APNs for that channel.
         channel_user_id = str(user.id)
         delivered = True
     else:

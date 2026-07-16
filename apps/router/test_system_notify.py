@@ -37,6 +37,28 @@ class SystemNotifyAppBranchTest(TestCase):
         self.assertEqual(row.channel_user_id, str(tenant.user_id))
         push.assert_called_once()
 
+    def test_eval_sink_notice_records_evidence_without_any_transport(self):
+        # An eval-sink tenant with a stale device token AND a linked Telegram id
+        # still resolves to the sink: the notice is recorded as an ``eval``
+        # evidence row, and no Telegram/LINE/APNs call is made.
+        tenant = self._tenant("sysnotify_eval", telegram_chat_id=556)
+        tenant.is_eval_sink = True
+        tenant.save(update_fields=["is_eval_sink"])
+        DeviceToken.objects.create(tenant=tenant, user=tenant.user, token="b" * 64)
+        with (
+            mock.patch("apps.router.proactive_context._dispatch_ios_push") as push,
+            mock.patch("apps.router.system_notify._send_telegram") as tg,
+            mock.patch("apps.router.system_notify._send_line") as line,
+        ):
+            ok = send_system_notification(tenant, "Your assistant switched models.")
+
+        self.assertTrue(ok)
+        row = ProactiveOutbound.objects.get(tenant=tenant)
+        self.assertEqual(row.channel, "eval")
+        push.assert_not_called()
+        tg.assert_not_called()
+        line.assert_not_called()
+
     def test_no_channel_notice_skipped(self):
         tenant = self._tenant("sysnotify_none")
         ok = send_system_notification(tenant, "nobody home")

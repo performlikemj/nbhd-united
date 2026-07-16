@@ -23,7 +23,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone as dj_timezone
 
 from apps.cron.models import CronJob
-from apps.evals.behavior.judge import JudgeScore
+from apps.evals.behavior.judge import RUBRIC_VERSION, JudgeScore
 from apps.evals.behavior.schema import (
     HardAssertion,
     Scenario,
@@ -51,7 +51,12 @@ from apps.tenants.pat_models import PersonalAccessToken, generate_pat
 def _synthetic_tenant() -> Tenant:
     email = f"{secrets.token_hex(4)}@e.com"
     user = User.objects.create_user(username=email, email=email)
-    return Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=True)
+    return Tenant.objects.create(
+        user=user,
+        status=Tenant.Status.ACTIVE,
+        is_synthetic=True,
+        is_eval_sink=True,
+    )
 
 
 def _mint_pat(user, *, revoked: bool = False) -> str:
@@ -203,8 +208,12 @@ class FakeJudge:
         self._score = score
         self.calls: list[str] = []
 
-    def score(self, *, scenario_id, persona, transcript_lines, dimensions):
+    def score(self, *, scenario_id, persona, transcript_lines, dimensions, observed=None):
         self.calls.append(scenario_id)
+        # Captured so a test can pin that the backend's hard-assertion outcomes
+        # actually REACH the judge. Without them it scores the assistant's prose,
+        # which inverted it: an articulate refusal outscored a genuine success.
+        self.observed = observed
         return {d: JudgeScore(d, self._score, ok=True) for d in dimensions}
 
 
@@ -212,7 +221,7 @@ class RaisingJudge:
     model = "fake/judge-err"
     rubric_version = "behavior-v2"
 
-    def score(self, *, scenario_id, persona, transcript_lines, dimensions):
+    def score(self, *, scenario_id, persona, transcript_lines, dimensions, observed=None):
         raise RuntimeError("judge exploded")
 
 
@@ -360,14 +369,21 @@ class ResolveBehaviorTenantTest(TestCase):
         with override_settings(EVAL_BEHAVIOR_TENANT_ID=missing), self.assertRaises(BehaviorConfigError):
             resolve_behavior_tenant()
 
-    def test_non_synthetic_raises(self):
+    def test_non_eval_sink_raises(self):
         email = f"{secrets.token_hex(4)}@e.com"
         user = User.objects.create_user(username=email, email=email)
         real = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=False)
         with override_settings(EVAL_BEHAVIOR_TENANT_ID=str(real.id)), self.assertRaises(BehaviorConfigError):
             resolve_behavior_tenant()
 
-    def test_synthetic_resolves(self):
+    def test_synthetic_demo_account_also_raises(self):
+        email = f"{secrets.token_hex(4)}@e.com"
+        user = User.objects.create_user(username=email, email=email)
+        demo = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=True)
+        with override_settings(EVAL_BEHAVIOR_TENANT_ID=str(demo.id)), self.assertRaises(BehaviorConfigError):
+            resolve_behavior_tenant()
+
+    def test_eval_sink_resolves(self):
         synth = _synthetic_tenant()
         with override_settings(EVAL_BEHAVIOR_TENANT_ID=str(synth.id)):
             self.assertEqual(resolve_behavior_tenant().id, synth.id)
@@ -496,8 +512,41 @@ class RunBehaviorSuiteTest(TestCase):
         self.assertTrue(soft.passed)
         self.assertEqual(int(soft.score), 1)
         self.assertEqual(soft.judge_model, "fake/judge-1")
-        self.assertEqual(soft.rubric_version, "behavior-v2")
+        # IMPORTED, not re-pinned as a literal: the stamp must track the rubric, and a
+        # stale local literal is how a version bump silently stops fencing scores apart.
+        self.assertEqual(soft.rubric_version, RUBRIC_VERSION)
         self.assertEqual(soft.details["judge"], "scored")
+
+    def test_the_judge_is_told_what_ACTUALLY_happened(self):
+        """The fix for the judge inversion.
+
+        With only the transcript, the judge scores PROSE. Measured in production on
+        ``reminder_registers_cron``:
+
+            run 34  cron genuinely created, reply "All set!"      → helpfulness 1/5
+            run 79  no cron, articulate refusal                   → helpfulness 4/5
+
+        The helpfulness trend IMPROVED as the product broke. Hard assertions already run
+        before the judge; this pins that their results actually REACH it, as content-free
+        (type, passed, code) triples.
+        """
+        scenario = _scenario(scenario_id="warm", hard=(HardAssertion("reply_nonempty"),), soft=("warmth",))
+        judge = FakeJudge()
+        run_behavior_suite(scenarios=[scenario], transport=BenignTransport(), judge=judge)
+        self.assertEqual(judge.observed, [("reply_nonempty", True, "reply_present")])
+
+    def test_a_FAILED_assertion_reaches_the_judge_too(self):
+        """The inverting case, and the one that matters. The assistant replies fluently,
+        the backend observed NO cron — the judge must be told, or it keeps rewarding a
+        confident claim that nothing backs."""
+        scenario = _scenario(
+            scenario_id="cron",
+            hard=(HardAssertion("cron_registered"),),
+            soft=("helpfulness",),
+        )
+        judge = FakeJudge()
+        run_behavior_suite(scenarios=[scenario], transport=BenignTransport(), judge=judge)
+        self.assertEqual(judge.observed, [("cron_registered", False, "no_cron")])
 
     def test_judge_cap_skips_with_reason(self):
         scenario = _scenario(scenario_id="warm", hard=(HardAssertion("reply_nonempty"),), soft=("warmth",))

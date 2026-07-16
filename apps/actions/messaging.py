@@ -10,6 +10,7 @@ import logging
 
 from django.conf import settings
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.tenants.models import Tenant
 
 from .models import ActionStatus, PendingAction
@@ -27,6 +28,9 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | 
 
     Returns the Telegram message_id (str) on success, None on failure.
     """
+    if suppresses_real_transport(tenant):
+        return None
+
     import httpx
 
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
@@ -103,6 +107,9 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | 
 
 def _edit_telegram_message(tenant: Tenant, action: PendingAction) -> None:
     """Edit the Telegram confirmation message to show result and remove buttons."""
+    if suppresses_real_transport(tenant):
+        return
+
     import httpx
 
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
@@ -151,6 +158,9 @@ def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> str | None
 
     Returns a placeholder message ID on success, None on failure.
     """
+    if suppresses_real_transport(tenant):
+        return None
+
     import httpx
 
     channel_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "").strip()
@@ -261,6 +271,9 @@ def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> str | None
 
 def _edit_line_message(tenant: Tenant, action: PendingAction) -> None:
     """LINE doesn't support message editing. Send a follow-up instead."""
+    if suppresses_real_transport(tenant):
+        return
+
     import httpx
 
     channel_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "").strip()
@@ -359,6 +372,14 @@ def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
     confirmation. Rather than fail silently, log a clear, explicit warning so the
     no-surface case is visible and diagnosable.
     """
+    if suppresses_real_transport(tenant):
+        # Confirmation gates require a human approve/deny surface. An eval sink
+        # has none, and must never reach a transport sender. Checked on the
+        # tenant flag directly because ``_resolve_gate_channel`` reads linked
+        # Telegram/LINE ids without consulting ``resolve_user_channel`` — a
+        # stale linked id on an eval tenant would otherwise send real buttons.
+        logger.info("Gate confirmation suppressed for eval-sink tenant %s", tenant.id)
+        return False
     channel = _resolve_gate_channel(tenant.user)
     sender, _ = _SENDERS.get(channel, (None, None))
 
@@ -387,6 +408,10 @@ def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
 
 def update_gate_message(action: PendingAction) -> None:
     """Edit/follow-up the confirmation message to show the result."""
+    # Re-check at result time: the action may predate an eval-sink backfill or
+    # the flag may have changed after the original confirmation was sent.
+    if suppresses_real_transport(action.tenant):
+        return
     if not action.platform_channel:
         return
 

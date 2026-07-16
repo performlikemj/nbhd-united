@@ -448,7 +448,8 @@ def build_since_page(tenant, main_thread_id: str, *, cursor: str | None, limit: 
     for t in _page_slice(conv_qs, after_dt, fetch):
         candidates.extend(_conv_rows(t, main_thread_id, entity_map))
 
-    pro_qs = ProactiveOutbound.objects.filter(tenant=tenant)
+    # Eval rows are internal probe evidence, never owner-facing feed messages.
+    pro_qs = ProactiveOutbound.objects.filter(tenant=tenant).exclude(channel=ProactiveOutbound.Channel.EVAL)
     for p in _page_slice(pro_qs, after_dt, fetch):
         candidates.extend(_proactive_rows(p, main_thread_id, entity_map))
 

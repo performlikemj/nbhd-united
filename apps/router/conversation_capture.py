@@ -305,8 +305,9 @@ def _recent_proactive_lines(tenant, tz) -> list[str]:
 
     Cron sessions and the heartbeat run as SEPARATE isolated OpenClaw sessions,
     so two routines firing the same morning each speak into apparent silence and
-    can re-ask the same question. ``ProactiveOutbound`` records every proactive
-    push but is read only on the *inbound* reply path — never cron-to-cron. By
+    can re-ask the same question. ``ProactiveOutbound`` records proactive
+    delivery events and is read both on inbound replies and here for cron-to-cron
+    dedup (internal eval evidence rows are excluded). By
     rendering "what you/a sibling routine already sent in the last 24h" into the
     same USER.md digest the isolated session already reads, a composing cron can
     see the heartbeat/briefing already asked it and not repeat.
@@ -323,6 +324,7 @@ def _recent_proactive_lines(tenant, tz) -> list[str]:
     since = timezone.now() - timedelta(hours=DEFAULT_WINDOW_HOURS)
     rows = list(
         ProactiveOutbound.objects.filter(tenant=tenant, created_at__gte=since)
+        .exclude(channel=ProactiveOutbound.Channel.EVAL)
         .only("created_at", "message_text", "job_name")
         .order_by("-created_at")[:DEFAULT_LIMIT]
     )
@@ -348,7 +350,34 @@ def build_conversation_digest(tenant) -> str:
     tenant-local date; previous days are a terse per-day rollup; a trailing block
     replays recent proactive sends for cron-to-cron dedup (D2). Deterministic —
     no LLM, no summarization.
+
+    EVAL-SINK TENANTS GET NO DIGEST — see the guard below.
     """
+    # This block is what silently defeated the behavior suite's per-scenario
+    # isolation. The transport opens a FRESH ChatThread per scenario (its own
+    # OpenClaw session, empty transcript) — and then the platform handed that
+    # session the last N turns from EVERY thread ("captured across channels"), so
+    # scenarios read each other's conversations anyway.
+    #
+    # Observed in production (behavior runs 72/79): the assistant opening a
+    # manipulation scenario with "nice try AGAIN", and repeating its own prior
+    # REFUSAL verbatim ("same answer as before — I don't have the ability to send
+    # you a push notification") inside a thread that had never seen it. That made
+    # a single bad turn self-reinforcing: once the reminder scenario failed, it
+    # read its own refusal back and failed for the rest of the day.
+    #
+    # So the ``isolated: True`` flag every behavior result stamps was FALSE
+    # PROVENANCE. Suppressing the digest here makes it true, and delivers what
+    # docs/evals-directive.md §Suite 1 already promised: "a workspace reset between
+    # runs so behavior runs never pollute".
+    #
+    # Consequence, stated rather than hidden: the behavior suite now measures
+    # FIRST-CONTACT behavior — which is exactly what a new subscriber's first chat
+    # is, and the case the reminder bug actually broke. A warm-continuity scenario
+    # would need its own tenant with the digest left on.
+    if getattr(tenant, "is_eval_sink", False):
+        return ""
+
     from apps.common.tenant_tz import tenant_today
 
     today = tenant_today(tenant)

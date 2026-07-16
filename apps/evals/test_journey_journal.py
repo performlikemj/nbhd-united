@@ -39,7 +39,12 @@ def _synthetic_tenant() -> Tenant:
     """
     email = f"{secrets.token_hex(4)}@e.com"
     user = User.objects.create_user(username=email, email=email)
-    tenant = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=True)
+    tenant = Tenant.objects.create(
+        user=user,
+        status=Tenant.Status.ACTIVE,
+        is_synthetic=True,
+        is_eval_sink=True,
+    )
     return seed_internal_key(tenant)
 
 

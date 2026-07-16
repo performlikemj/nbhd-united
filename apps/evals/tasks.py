@@ -228,7 +228,11 @@ def eval_behavior_task(transport=None, judge=None) -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.behavior import SUITE, run_behavior_suite
 
-    kwargs: dict = {"transport": transport, "trigger": EvalRun.Trigger.MANUAL}
+    # SCHEDULED since #1178 armed the nightly QStash cron (05:40 UTC, 2026-07-13).
+    # This said MANUAL until 2026-07-14, so every scheduled run was mislabelled in the
+    # DB and an operator fire was indistinguishable from a nightly one — which matters
+    # the moment anyone trends pass-rate by trigger.
+    kwargs: dict = {"transport": transport, "trigger": EvalRun.Trigger.SCHEDULED}
     # judge is tri-state in the suite (unset → default judge). The task can't carry a
     # judge over QStash, so pass it through only when a test injects one; otherwise
     # let the suite build the default (or record skipped-with-reason if unconfigured).
@@ -351,9 +355,10 @@ def slo_snapshot_task() -> dict:
     from apps.evals.models import EvalRun
     from apps.evals.suites.slo_snapshot import run_slo_snapshot_suite
 
-    # Operator-fired today (no schedule exists yet — lands INERT); a later PR flips
-    # this to SCHEDULED when a real nightly QStash cron drives it.
-    run = run_slo_snapshot_suite(trigger=EvalRun.Trigger.MANUAL)
+    # SCHEDULED since #1178 armed the nightly QStash cron (05:55 UTC, 2026-07-13) —
+    # this is the "later PR" the old comment promised. It said MANUAL until
+    # 2026-07-14, so every nightly snapshot was mislabelled as an operator fire.
+    run = run_slo_snapshot_suite(trigger=EvalRun.Trigger.SCHEDULED)
 
     # Shared contract: a breached (non-pass) run → alert owner + raise into the DLQ.
     finalize_task_run(run)

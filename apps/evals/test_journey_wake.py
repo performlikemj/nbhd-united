@@ -253,7 +253,12 @@ class ForceHibernateAndConfirmTest(TestCase):
 def _synthetic_tenant_with_pat() -> tuple[Tenant, str]:
     email = f"{secrets.token_hex(4)}@e.com"
     user = User.objects.create_user(username=email, email=email)
-    tenant = Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE, is_synthetic=True)
+    tenant = Tenant.objects.create(
+        user=user,
+        status=Tenant.Status.ACTIVE,
+        is_synthetic=True,
+        is_eval_sink=True,
+    )
     raw, prefix, token_hash = generate_pat()
     PersonalAccessToken.objects.create(user=user, name="eval-journey", token_prefix=prefix, token_hash=token_hash)
     return tenant, raw

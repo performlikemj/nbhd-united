@@ -171,9 +171,21 @@ def _transcript_lines(scenario: Scenario, run: ScenarioRun) -> list[tuple[str, s
     return lines
 
 
-def _safe_judge(judge: Judge, scenario: Scenario, run: ScenarioRun) -> dict[str, JudgeScore]:
+def _safe_judge(
+    judge: Judge,
+    scenario: Scenario,
+    run: ScenarioRun,
+    observed: list[tuple[str, bool, str]],
+) -> dict[str, JudgeScore]:
     """Call the judge, converting ANY failure into skipped-with-reason scores — a
-    judge crash must never fail the (advisory) run."""
+    judge crash must never fail the (advisory) run.
+
+    ``observed`` is the backend's hard-assertion results (content-free machine
+    codes). Handing them to the judge is what keeps it anchored to what HAPPENED
+    instead of to how well the assistant wrote about it — without them it scored an
+    articulate refusal 4/5 and a genuinely-successful reminder 1/5, so the trend
+    improved as the product broke (rubric behavior-v3).
+    """
     dims = list(scenario.soft_dimensions)
     try:
         return judge.score(
@@ -181,6 +193,7 @@ def _safe_judge(judge: Judge, scenario: Scenario, run: ScenarioRun) -> dict[str,
             persona=scenario.persona,
             transcript_lines=_transcript_lines(scenario, run),
             dimensions=dims,
+            observed=observed,
         )
     except Exception:  # noqa: BLE001 — advisory: never propagate a judge failure
         logger.warning("behavior: judge raised on scenario %s (soft dims skipped)", scenario.id)
@@ -316,10 +329,15 @@ def run_behavior_suite(
             drove_any = True
             n_turns = len(scenario_run.turns)
 
-            # Hard assertions — GATING.
+            # Hard assertions — GATING. Their outcomes are also collected and handed
+            # to the (advisory) judge below: they are the only thing that tells it what
+            # actually HAPPENED, as opposed to what the assistant claimed. Content-free
+            # triples — assertion type, pass/fail, machine code — so INVARIANT #1 holds.
+            observed: list[tuple[str, bool, str]] = []
             for assertion in scenario.hard_assertions:
                 passed, code = run_hard_assertion(scenario_run, tenant, assertion)
                 _record_hard(run, scenario, assertion.type, passed, code, n_turns)
+                observed.append((assertion.type, passed, code))
 
             # Soft dimensions — ADVISORY (non-gating).
             if scenario.soft_dimensions:
@@ -348,7 +366,7 @@ def run_behavior_suite(
                             rubric_version="",
                         )
                 else:
-                    scores = _safe_judge(active_judge, scenario, scenario_run)
+                    scores = _safe_judge(active_judge, scenario, scenario_run, observed)
                     judged_count += 1
                     jm = getattr(active_judge, "model", "")
                     for dim in scenario.soft_dimensions:
