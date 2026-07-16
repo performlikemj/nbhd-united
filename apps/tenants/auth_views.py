@@ -9,7 +9,9 @@ from django.contrib.auth.tokens import default_token_generator
 from django.core.cache import cache
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.mail import send_mail
+from django.db import transaction
 from django.template.loader import render_to_string
+from django.utils import timezone
 from django.utils.encoding import force_bytes, force_str
 from django.utils.http import urlsafe_base64_decode, urlsafe_base64_encode
 from rest_framework import status
@@ -269,8 +271,20 @@ class LogoutView(APIView):
             )
 
         try:
-            token = RefreshToken(refresh_token)
-            token.blacklist()
+            with transaction.atomic():
+                token = RefreshToken(refresh_token)
+                token.blacklist()
+
+                from apps.router.models import DeviceToken
+
+                device_tokens = DeviceToken.objects.filter(user=request.user)
+                installation_id = str(request.data.get("installation_id") or "").strip()
+                device_token = str(request.data.get("device_token") or "").strip()
+                if installation_id:
+                    device_tokens = device_tokens.filter(installation_id=installation_id)
+                elif device_token:
+                    device_tokens = device_tokens.filter(token=device_token)
+                device_tokens.filter(revoked_at__isnull=True).update(revoked_at=timezone.now())
         except TokenError:
             return Response(
                 {"detail": "Invalid refresh token."},

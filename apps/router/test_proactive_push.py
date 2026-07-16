@@ -129,6 +129,36 @@ class NotifyProactiveReadyTest(TestCase):
         mock_send.assert_not_called()
 
     @override_settings(**_APNS_SETTINGS)
+    def test_revoked_token_gets_zero_proactive_sends(self):
+        from django.utils import timezone
+
+        DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token=_VALID_TOKEN,
+            revoked_at=timezone.now(),
+        )
+        from apps.router.push_views import notify_proactive_ready
+
+        row = self._row()
+        with patch("apps.common.apns.send_push") as mock_send:
+            notify_proactive_ready(self.tenant, str(row.id), row.message_text)
+
+        mock_send.assert_not_called()
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_inactive_user_gets_zero_proactive_sends(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN)
+        User.objects.filter(pk=self.user.pk).update(is_active=False)
+        from apps.router.push_views import notify_proactive_ready
+
+        row = self._row()
+        with patch("apps.common.apns.send_push") as mock_send:
+            notify_proactive_ready(self.tenant, str(row.id), row.message_text)
+
+        mock_send.assert_not_called()
+
+    @override_settings(**_APNS_SETTINGS)
     def test_routes_each_environment_to_its_host(self):
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN_2, environment="production")

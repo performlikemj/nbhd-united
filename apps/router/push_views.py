@@ -14,6 +14,7 @@ import logging
 import re
 from datetime import timedelta
 
+from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
@@ -109,6 +110,9 @@ class PushRegisterView(APIView):
         if environment not in DeviceToken.Environment.values:
             environment = DeviceToken.Environment.PRODUCTION
         bundle_id = str(request.data.get("bundle_id") or "").strip()[:128]
+        installation_id = str(request.data.get("installation_id") or "").strip() or None
+        if installation_id and len(installation_id) > 64:
+            return Response({"error": "invalid_installation_id"}, status=status.HTTP_400_BAD_REQUEST)
 
         # ``token`` is globally unique, so a single upsert re-points the device to
         # the registering user (account switch / device handoff on the same
@@ -117,7 +121,14 @@ class PushRegisterView(APIView):
         # constraint (it re-fetches on IntegrityError).
         DeviceToken.objects.update_or_create(
             token=token,
-            defaults={"user": request.user, "tenant": tenant, "environment": environment, "bundle_id": bundle_id},
+            defaults={
+                "user": request.user,
+                "tenant": tenant,
+                "environment": environment,
+                "bundle_id": bundle_id,
+                "installation_id": installation_id,
+                "revoked_at": None,
+            },
         )
         return Response({"registered": True}, status=status.HTTP_200_OK)
 
@@ -129,7 +140,10 @@ class PushRegisterView(APIView):
             token = str(request.data.get("device_token") or "").strip()
         if not token:
             return Response({"error": "invalid_token"}, status=status.HTTP_400_BAD_REQUEST)
-        DeviceToken.objects.filter(user=request.user, token=token).delete()
+        with transaction.atomic():
+            rows = DeviceToken.objects.filter(user=request.user, token=token)
+            rows.update(revoked_at=timezone.now())
+            rows.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -333,7 +347,13 @@ def _push_to_user_devices(
     """
     from apps.common.apns import send_push
 
-    rows = list(DeviceToken.objects.filter(user=user).values("token", "environment"))
+    rows = list(
+        DeviceToken.objects.filter(
+            user=user,
+            revoked_at__isnull=True,
+            user__is_active=True,
+        ).values("token", "environment")
+    )
     if not rows:
         return
 

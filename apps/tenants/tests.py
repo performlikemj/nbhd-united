@@ -9,6 +9,8 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.router.models import DeviceToken
+
 from .models import Tenant, User
 from .serializers import TenantSerializer
 from .services import create_tenant
@@ -181,6 +183,7 @@ class AuthLogoutTest(TestCase):
         self.refresh = str(refresh)
         self.access = str(refresh.access_token)
         self.auth_header = f"Bearer {self.access}"
+        self.tenant = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
 
     def test_logout_blacklists_refresh_token(self):
         response = self.client.post(
@@ -215,6 +218,95 @@ class AuthLogoutTest(TestCase):
             HTTP_AUTHORIZATION=self.auth_header,
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_logout_without_identifiers_revokes_all_tokens(self):
+        first = DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token="a" * 64,
+            installation_id="install-a",
+        )
+        second = DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token="b" * 64,
+            installation_id="install-b",
+        )
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": self.refresh},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self.auth_header,
+        )
+
+        self.assertEqual(response.status_code, 204)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertIsNotNone(first.revoked_at)
+        self.assertIsNotNone(second.revoked_at)
+
+    def test_logout_with_installation_revokes_only_that_installation(self):
+        selected = DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token="a" * 64,
+            installation_id="install-a",
+        )
+        other = DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token="b" * 64,
+            installation_id="install-b",
+        )
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": self.refresh, "installation_id": "install-a"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self.auth_header,
+        )
+
+        self.assertEqual(response.status_code, 204)
+        selected.refresh_from_db()
+        other.refresh_from_db()
+        self.assertIsNotNone(selected.revoked_at)
+        self.assertIsNone(other.revoked_at)
+
+        from apps.router.push_views import _push_to_user_devices
+
+        with patch(
+            "apps.common.apns.send_push",
+            return_value={"sent": 1, "failed": 0, "unregistered": [], "skipped": None},
+        ) as send_push:
+            _push_to_user_devices(
+                self.user,
+                body="safe test body",
+                thread_id=None,
+                collapse_id=None,
+                content_available=True,
+                extra={},
+            )
+
+        send_push.assert_called_once()
+        self.assertEqual(send_push.call_args.args[0], [other.token])
+
+    def test_logout_with_device_token_revokes_only_that_token(self):
+        selected = DeviceToken.objects.create(user=self.user, tenant=self.tenant, token="a" * 64)
+        other = DeviceToken.objects.create(user=self.user, tenant=self.tenant, token="b" * 64)
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": self.refresh, "device_token": selected.token},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self.auth_header,
+        )
+
+        self.assertEqual(response.status_code, 204)
+        selected.refresh_from_db()
+        other.refresh_from_db()
+        self.assertIsNotNone(selected.revoked_at)
+        self.assertIsNone(other.revoked_at)
 
 
 class AuthSignupTest(TestCase):

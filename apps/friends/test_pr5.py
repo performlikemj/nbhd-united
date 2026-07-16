@@ -10,8 +10,10 @@ from __future__ import annotations
 from unittest import mock
 
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.router.models import DeviceToken
 from apps.tenants.models import Tenant, User
 
 from . import access, envelope, feed, services
@@ -205,6 +207,42 @@ class PushTest(TestCase):
         ):
             _deliver_friend_push(message)
         push.assert_called_once()
+
+    def test_revoked_token_gets_zero_friend_sends(self):
+        from apps.friends.notifications import _deliver_friend_push
+
+        with mock.patch("apps.friends.services._notify_friend_message"):
+            message, _ = services.send_friend_message(self.a, self.a.user, str(self.thread.id), "c1", "hi")
+        DeviceToken.objects.create(
+            user=self.b.user,
+            tenant=self.b,
+            token="a" * 64,
+            revoked_at=timezone.now(),
+        )
+
+        with (
+            mock.patch("apps.common.apns.apns_configured", return_value=True),
+            mock.patch("apps.common.apns.send_push") as send_push,
+        ):
+            _deliver_friend_push(message)
+
+        send_push.assert_not_called()
+
+    def test_inactive_user_gets_zero_friend_sends(self):
+        from apps.friends.notifications import _deliver_friend_push
+
+        with mock.patch("apps.friends.services._notify_friend_message"):
+            message, _ = services.send_friend_message(self.a, self.a.user, str(self.thread.id), "c1", "hi")
+        DeviceToken.objects.create(user=self.b.user, tenant=self.b, token="a" * 64)
+        User.objects.filter(pk=self.b.user_id).update(is_active=False)
+
+        with (
+            mock.patch("apps.common.apns.apns_configured", return_value=True),
+            mock.patch("apps.common.apns.send_push") as send_push,
+        ):
+            _deliver_friend_push(message)
+
+        send_push.assert_not_called()
 
 
 class AbsorbTest(TestCase):
