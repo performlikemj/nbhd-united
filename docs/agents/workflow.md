@@ -5,6 +5,7 @@ The `/deploy` skill walks the full commit→push→verify sequence. This doc is 
 ## Branching
 
 - `main` is protected — everything goes through a PR branch (`feat/`, `fix/`, `refactor/`, `docs/`).
+- **Every branch gets a draft PR at its first commit.** Work that stops at a branch is invisible — `gh pr list` must be the complete inventory of in-flight work. (Campaign 0.4 lesson, 2026-07-16: two shipped-quality fixes sat unmerged for weeks because they never got PRs; the owner concluded features were lost.)
 - **Cross-branch work always uses a worktree**: `git worktree add .claude/worktrees/<name> -b <branch> origin/main` (that dir is gitignored). Never `git checkout` away from a dirty working tree; never stash-juggle.
 - Stage specific files only. `git add -A` / `git add .` are blocked by a hook — they risk committing `.env`, models, build artifacts.
 - Never `--no-verify` (only exception: pre-commit scanner false positive in scanner code itself — ask first). Never force-push main.
