@@ -827,9 +827,7 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertNotEqual(first.json()["job_id"], second.json()["job_id"])
         self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 2)
 
-    def test_repeat_call_after_ready_creates_new_job(self):
-        # A completed job is not "in flight" — a fresh request for the same
-        # week (e.g. the user asking to regenerate) must create a new one.
+    def test_promptless_duplicate_returns_existing_plan(self):
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
 
@@ -839,9 +837,11 @@ class SautaiGeneratePlanViewTests(TestCase):
             tenant=self.tenant,
             week_start="2026-07-13",
             status=SautaiMealPlanJobStatus.READY,
+            result={"id": 41, "week_start": "2026-07-13"},
+            web_link="https://sautai.com/existing",
         )
 
-        with patch("apps.cron.publish.publish_task"):
+        with patch("apps.cron.publish.publish_task") as mock_publish:
             response = self.client.post(
                 self._url(),
                 data={"week_start": "2026-07-13"},
@@ -849,8 +849,16 @@ class SautaiGeneratePlanViewTests(TestCase):
                 **self._headers(),
             )
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 2)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "exists")
+        self.assertEqual(payload["plan"]["id"], 41)
+        self.assertIn("already exists", payload["guidance"].lower())
+        self.assertIn("surface the existing plan", payload["guidance"].lower())
+        self.assertIn("only if the user seems to want a new one", payload["guidance"].lower())
+        self.assertNotIn("not applied", payload["guidance"].lower())
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
+        mock_publish.assert_not_called()
 
     @override_settings(SAUTAI_M2M_BASE_URL="", SAUTAI_PLATFORM_SECRET="")
     def test_unconfigured_bridge_returns_503_and_creates_no_job(self):
@@ -888,6 +896,31 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(job.week_start.weekday(), 0)  # Monday
         self.assertEqual(response.json()["week_start"], job.week_start.isoformat())
 
+    def test_next_week_resolves_in_tenant_timezone_across_utc_boundary(self):
+        from datetime import UTC, datetime
+
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+        self.tenant.user.timezone = "Asia/Tokyo"
+        self.tenant.user.save(update_fields=["timezone"])
+
+        # Sunday in UTC is already Monday in Tokyo. Current is 2026-07-20,
+        # therefore symbolic next week must resolve to 2026-07-27.
+        now = datetime(2026, 7, 19, 23, 30, tzinfo=UTC)
+        with (
+            patch("apps.integrations.runtime_views.tz.now", return_value=now),
+            patch("apps.cron.publish.publish_task"),
+        ):
+            response = self.client.post(
+                self._url(),
+                data={"week": "next"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["week_start"], "2026-07-27")
+
     def test_non_monday_week_start_is_snapped_back_to_its_monday(self):
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
@@ -895,7 +928,8 @@ class SautaiGeneratePlanViewTests(TestCase):
         with patch("apps.cron.publish.publish_task"):
             response = self.client.post(
                 self._url(),
-                data={"week_start": "2026-07-15"},  # a Wednesday
+                # Explicit date wins over symbolic next week, then snaps back.
+                data={"week": "next", "week_start": "2026-07-15"},  # a Wednesday
                 content_type="application/json",
                 **self._headers(),
             )
@@ -958,46 +992,115 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(response.json()["job_id"], str(job.id))
         mock_publish.assert_not_called()
 
-    def test_regenerate_flag_is_stored_on_the_job(self):
+    def test_confirmed_regenerate_is_stored_on_the_job(self):
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.READY,
+            result={"week_start": "2026-07-13"},
+        )
 
         with patch("apps.cron.publish.publish_task"):
             response = self.client.post(
                 self._url(),
-                data={"week_start": "2026-07-13", "regenerate": True},
+                data={"week_start": "2026-07-13", "regenerate": True, "confirm_replace": True},
                 content_type="application/json",
                 **self._headers(),
             )
 
         self.assertEqual(response.status_code, 201)
 
-        from .models import SautaiMealPlanJob
-
         job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
         self.assertTrue(job.regenerate)
 
-    def test_coalesce_with_regenerate_flags_request_not_applied(self):
-        # A regenerate that lands mid-generation coalesces onto the in-flight
-        # job — the guidance is dropped, so the response must say so honestly.
+    def test_regenerate_is_stripped_when_no_ready_plan_exists(self):
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
 
         with patch("apps.cron.publish.publish_task"):
-            first = self.client.post(
-                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
-            )
-            second = self.client.post(
+            response = self.client.post(
                 self._url(),
-                data={"week_start": "2026-07-13", "regenerate": True},
+                data={
+                    "week_start": "2026-07-13",
+                    "user_prompt": "Jamaican/Japanese fusion",
+                    "regenerate": True,
+                    "confirm_replace": True,
+                },
                 content_type="application/json",
                 **self._headers(),
             )
 
-        self.assertEqual(first.status_code, 201)
-        self.assertEqual(second.status_code, 200)
-        self.assertEqual(first.json()["job_id"], second.json()["job_id"])  # coalesced
-        self.assertIs(second.json()["request_applied"], False)
+        from .models import SautaiMealPlanJob
+
+        self.assertEqual(response.status_code, 201)
+        job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
+        self.assertFalse(job.regenerate)
+
+    def test_existing_plan_requires_confirmation_when_regenerating(self):
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+        existing = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.READY,
+            result={"id": 42, "week_start": "2026-07-13"},
+            web_link="https://sautai.com/existing",
+        )
+
+        for body in (
+            {"week_start": "2026-07-13", "regenerate": True},
+            {"week_start": "2026-07-13", "regenerate": True, "confirm_replace": False},
+        ):
+            with self.subTest(body=body), patch("apps.cron.publish.publish_task") as mock_publish:
+                response = self.client.post(self._url(), data=body, content_type="application/json", **self._headers())
+
+            self.assertEqual(response.status_code, 200)
+            payload = response.json()
+            self.assertEqual(payload["status"], "confirm_required")
+            self.assertEqual(payload["week_start"], "2026-07-13")
+            self.assertEqual(payload["plan"]["id"], 42)
+            self.assertEqual(payload["web_link"], "https://sautai.com/existing")
+            self.assertIn("confirm", payload["guidance"].lower())
+            mock_publish.assert_not_called()
+
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(existing.status, SautaiMealPlanJobStatus.READY)
+
+    def test_prompt_bearing_duplicate_returns_existing_plan(self):
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+        SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.READY,
+            result={"id": 43, "week_start": "2026-07-13"},
+            web_link="https://sautai.com/existing",
+        )
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13", "user_prompt": "more vegetables"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "exists")
+        self.assertEqual(payload["plan"]["id"], 43)
+        self.assertIn("not applied", payload["guidance"].lower())
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
+        mock_publish.assert_not_called()
 
     def test_coalesce_with_fresh_prompt_flags_request_not_applied(self):
         self.tenant.sautai_enabled = True
@@ -1131,6 +1234,99 @@ class SautaiCurrentPlanViewTests(TestCase):
             response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "no_plan")
+
+    def test_next_week_resolves_in_tenant_timezone(self):
+        from datetime import UTC, datetime
+
+        self.tenant.user.timezone = "Asia/Tokyo"
+        self.tenant.user.save(update_fields=["timezone"])
+        now = datetime(2026, 7, 19, 23, 30, tzinfo=UTC)
+
+        with (
+            patch("apps.integrations.runtime_views.tz.now", return_value=now),
+            patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch,
+        ):
+            mock_fetch.return_value = {"outcome": "not_found"}
+            response = self.client.post(
+                self._url(),
+                data={"week": "next"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["week_start"], "2026-07-27")
+        self.assertEqual(mock_fetch.call_args.kwargs["week_start_iso"], "2026-07-27")
+
+    def test_explicit_week_start_takes_precedence_over_week(self):
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            mock_fetch.return_value = {"outcome": "not_found"}
+            response = self.client.post(
+                self._url(),
+                data={"week": "next", "week_start": "2026-07-15"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["week_start"], "2026-07-13")
+        self.assertEqual(mock_fetch.call_args.kwargs["week_start_iso"], "2026-07-13")
+
+    def test_recent_generation_is_surfaced_on_current_plan_response(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        job = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.GENERATING,
+        )
+        SautaiMealPlanJob.objects.filter(id=job.id).update(created_at=timezone.now() - timedelta(seconds=45))
+
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            # Even a transient current-plan read failure must not hide the
+            # active job behind a generic 502.
+            mock_fetch.return_value = {"outcome": "error", "detail": "request_failed: timeout"}
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200)
+        progress = response.json()["generation_in_progress"]
+        self.assertEqual(progress["week_start"], "2026-07-13")
+        self.assertGreaterEqual(progress["seconds_since_started"], 44)
+        self.assertLess(progress["seconds_since_started"], 60)
+
+    def test_generation_older_than_fifteen_minutes_is_not_surfaced(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+
+        job = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.PENDING,
+        )
+        SautaiMealPlanJob.objects.filter(id=job.id).update(created_at=timezone.now() - timedelta(minutes=16))
+
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            mock_fetch.return_value = {"outcome": "not_found"}
+            response = self.client.post(
+                self._url(),
+                data={"week_start": "2026-07-13"},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertNotIn("generation_in_progress", response.json())
 
     def test_sautai_error_falls_back_to_cached_ready_job(self):
         from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus

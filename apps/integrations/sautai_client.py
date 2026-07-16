@@ -14,7 +14,12 @@ import logging
 import httpx
 from django.conf import settings
 
-from .models import Integration, SautaiMealPlanJob, SautaiMealPlanJobStatus
+from .models import (
+    Integration,
+    SautaiMealPlanAddressedBy,
+    SautaiMealPlanJob,
+    SautaiMealPlanJobStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +143,16 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
     if not base_url or not secret:
         _fail(job, "not_configured: SAUTAI_M2M_BASE_URL / SAUTAI_PLATFORM_SECRET missing")
         return
+
+    # Persist only the identity route and linked numeric id used for this egress.
+    # Never duplicate the raw email onto the job row.
+    if "sautai_user_id" in identity:
+        job.addressed_by = SautaiMealPlanAddressedBy.LINKED_ID
+        job.sautai_user_id = identity["sautai_user_id"]
+    else:
+        job.addressed_by = SautaiMealPlanAddressedBy.EMAIL
+        job.sautai_user_id = None
+    job.save(update_fields=["addressed_by", "sautai_user_id", "updated_at"])
 
     url = f"{base_url}/api/m2m/meal-plan/generate/"
     try:

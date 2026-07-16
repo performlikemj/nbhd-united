@@ -204,6 +204,42 @@ def _tenant_week_start_monday(tenant: Tenant) -> date:
     return today - timedelta(days=today.weekday())
 
 
+def _resolve_sautai_week_start(data, tenant: Tenant) -> date:
+    """Resolve an explicit date or symbolic current/next week for sautai."""
+    explicit = _parse_iso_date(data.get("week_start"), field_name="week_start")
+    if explicit is not None:
+        # Explicit calendar dates retain the existing backward-to-Monday rule.
+        return explicit - timedelta(days=explicit.weekday())
+
+    week = str(data.get("week") or "current").strip()
+    if week not in {"current", "next"}:
+        raise ValueError('week must be "current" or "next"')
+
+    current = _tenant_week_start_monday(tenant)
+    return current + timedelta(days=7) if week == "next" else current
+
+
+def _sautai_generation_in_progress(tenant: Tenant, week_start: date) -> dict | None:
+    """Describe a recent generation for the target week, if one is active."""
+    now = tz.now()
+    job = (
+        SautaiMealPlanJob.objects.filter(
+            tenant=tenant,
+            week_start=week_start,
+            status__in=[SautaiMealPlanJobStatus.PENDING, SautaiMealPlanJobStatus.GENERATING],
+            created_at__gte=now - timedelta(minutes=15),
+        )
+        .order_by("-created_at")
+        .first()
+    )
+    if job is None:
+        return None
+    return {
+        "week_start": week_start.isoformat(),
+        "seconds_since_started": max(0, int((now - job.created_at).total_seconds())),
+    }
+
+
 def _resolve_calendar_window(request, tenant: Tenant) -> tuple[str | None, str | None] | Response:
     """Resolve query-string window params to RFC3339 ``time_min``/``time_max``.
 
@@ -3884,6 +3920,16 @@ class RedditToolView(APIView):
 _SAUTAI_MAX_PROMPT_CHARS = 2000
 
 
+def _sautai_existing_plan_payload(status_value: str, job: SautaiMealPlanJob, guidance: str) -> dict:
+    return {
+        "status": status_value,
+        "week_start": job.week_start.isoformat() if job.week_start else "",
+        "plan": job.result or {},
+        "web_link": job.web_link,
+        "guidance": guidance,
+    }
+
+
 class RuntimeSautaiGeneratePlanView(APIView):
     """POST — kick off an async sautai meal-plan generation.
 
@@ -3933,21 +3979,12 @@ class RuntimeSautaiGeneratePlanView(APIView):
             )
 
         try:
-            week_start = _parse_iso_date(request.data.get("week_start"), field_name="week_start")
+            week_start = _resolve_sautai_week_start(request.data, tenant)
         except ValueError as exc:
             return Response(
                 {"error": "invalid_request", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # Always resolve to an explicit Monday: sautai's server defaults an
-        # omitted week to ITS OWN tz and 400s a non-Monday (contract #1). When
-        # omitted, use the tenant-tz current Monday; when the agent passes any
-        # date, snap it back to that week's Monday. The stored value is what the
-        # (tenant, week_start) in-flight coalesce below keys on.
-        if week_start is None:
-            week_start = _tenant_week_start_monday(tenant)
-        else:
-            week_start = week_start - timedelta(days=week_start.weekday())
 
         try:
             number_of_days = _parse_positive_int(
@@ -3966,9 +4003,10 @@ class RuntimeSautaiGeneratePlanView(APIView):
             # (user, week) plan honoring user_prompt instead of the idempotent
             # stale return. Carried on the job → sent by the worker.
             regenerate = _parse_bool(request.data.get("regenerate"), default=False)
+            confirm_replace = _parse_bool(request.data.get("confirm_replace"), default=False)
         except ValueError as exc:
             return Response(
-                {"error": "invalid_request", "detail": f"regenerate {exc}"},
+                {"error": "invalid_request", "detail": f"regenerate/confirm_replace {exc}"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -3983,6 +4021,44 @@ class RuntimeSautaiGeneratePlanView(APIView):
         # a different week is a genuinely different ask.
         with transaction.atomic():
             Tenant.objects.select_for_update().get(pk=tenant.pk)
+
+            existing_ready = (
+                SautaiMealPlanJob.objects.filter(
+                    tenant=tenant,
+                    week_start=week_start,
+                    status=SautaiMealPlanJobStatus.READY,
+                )
+                .order_by("-updated_at")
+                .first()
+            )
+
+            if regenerate and existing_ready is None:
+                # Rebuilding a nonexistent plan is just ordinary generation.
+                # Strip the destructive flag even if the caller supplied it.
+                regenerate = False
+            elif regenerate and not confirm_replace:
+                return Response(
+                    _sautai_existing_plan_payload(
+                        "confirm_required",
+                        existing_ready,
+                        "Show the current plan and ask the user to explicitly confirm replacing it before regenerating.",
+                    )
+                )
+            elif not regenerate and existing_ready is not None:
+                guidance = (
+                    "Surface the existing plan. The new guidance was not applied; offer regeneration and require "
+                    "explicit confirmation before replacing it."
+                    if user_prompt
+                    else "A plan already exists for this week. Surface the existing plan. Offer regeneration only "
+                    "if the user seems to want a new one, and require explicit confirmation before replacing it."
+                )
+                return Response(
+                    _sautai_existing_plan_payload(
+                        "exists",
+                        existing_ready,
+                        guidance,
+                    )
+                )
 
             in_flight = (
                 SautaiMealPlanJob.objects.filter(
@@ -4103,44 +4179,46 @@ class RuntimeSautaiCurrentPlanView(APIView):
             )
 
         try:
-            week_start = _parse_iso_date(request.data.get("week_start"), field_name="week_start")
+            week_start = _resolve_sautai_week_start(request.data, tenant)
         except ValueError as exc:
             return Response(
                 {"error": "invalid_request", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # Resolve the same way generate does so the cached-job fallback can match
-        # on (tenant, week_start): tenant-tz current Monday when omitted, else
-        # snap the provided date back to that week's Monday.
-        if week_start is None:
-            week_start = _tenant_week_start_monday(tenant)
-        else:
-            week_start = week_start - timedelta(days=week_start.weekday())
+
+        generation_in_progress = _sautai_generation_in_progress(tenant, week_start)
+
+        def response_payload(payload: dict) -> dict:
+            if generation_in_progress is not None:
+                payload["generation_in_progress"] = generation_in_progress
+            return payload
 
         # Identity is derived SERVER-SIDE (linked sautai_user_id, else the tenant
         # owner's verified email) — NEVER from the plugin payload (an agent-supplied
         # id/email would be an injection vector).
         identity, _integration = sautai_identity(tenant)
         if not identity:
-            return Response({"status": "no_plan", "week_start": week_start.isoformat()})
+            return Response(response_payload({"status": "no_plan", "week_start": week_start.isoformat()}))
 
         result = fetch_sautai_current_plan(identity=identity, week_start_iso=week_start.isoformat())
         outcome = result.get("outcome")
 
         if outcome == "ok":
             return Response(
-                {
-                    "status": "ok",
-                    "cached": False,
-                    "week_start": week_start.isoformat(),
-                    "plan": result.get("plan"),
-                    "web_link": result.get("web_link", ""),
-                    "funnel": result.get("funnel", {}),
-                }
+                response_payload(
+                    {
+                        "status": "ok",
+                        "cached": False,
+                        "week_start": week_start.isoformat(),
+                        "plan": result.get("plan"),
+                        "web_link": result.get("web_link", ""),
+                        "funnel": result.get("funnel", {}),
+                    }
+                )
             )
 
         if outcome == "not_found":
-            return Response({"status": "no_plan", "week_start": week_start.isoformat()})
+            return Response(response_payload({"status": "no_plan", "week_start": week_start.isoformat()}))
 
         if outcome == "not_configured":
             # Belt-and-suspenders (we checked above; env could race a reload).
@@ -4162,15 +4240,31 @@ class RuntimeSautaiCurrentPlanView(APIView):
         )
         if cached_job is not None and cached_job.result:
             return Response(
-                {
-                    "status": "ok",
-                    "cached": True,
-                    "week_start": week_start.isoformat(),
-                    "plan": cached_job.result,
-                    "web_link": cached_job.web_link,
-                    "funnel": cached_job.funnel or {},
-                    "detail": "sautai was unreachable; showing the last plan NBHD cached for this week.",
-                }
+                response_payload(
+                    {
+                        "status": "ok",
+                        "cached": True,
+                        "week_start": week_start.isoformat(),
+                        "plan": cached_job.result,
+                        "web_link": cached_job.web_link,
+                        "funnel": cached_job.funnel or {},
+                        "detail": "sautai was unreachable; showing the last plan NBHD cached for this week.",
+                    }
+                )
+            )
+
+        if generation_in_progress is not None:
+            # The active job is the most useful truth even if sautai's fast read
+            # briefly failed. Keep this a successful tool response so the plugin
+            # can explain the async wait instead of reducing it to a 502.
+            return Response(
+                response_payload(
+                    {
+                        "status": "no_plan",
+                        "week_start": week_start.isoformat(),
+                        "detail": "Meal-plan generation is still in progress.",
+                    }
+                )
             )
 
         return Response(

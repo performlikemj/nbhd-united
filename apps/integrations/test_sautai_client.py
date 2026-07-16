@@ -21,7 +21,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
-from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+from .models import SautaiMealPlanAddressedBy, SautaiMealPlanJob, SautaiMealPlanJobStatus
 from .sautai_client import call_sautai_generate_plan, fetch_sautai_current_plan
 from .tasks import generate_sautai_meal_plan_task
 
@@ -74,6 +74,8 @@ class CallSautaiGeneratePlanTests(TestCase):
         self.assertEqual(len(job.result["days"]), 7)
         self.assertEqual(job.web_link, "https://sautai.com/meal-plans?week_start=2026-08-03")
         self.assertEqual(job.error, "")
+        self.assertEqual(job.addressed_by, SautaiMealPlanAddressedBy.EMAIL)
+        self.assertIsNone(job.sautai_user_id)
 
         mock_post.assert_called_once()
         _, kwargs = mock_post.call_args
@@ -587,6 +589,8 @@ class SautaiPhase05ClientTests(TestCase):
         self.assertNotIn("user_email", kwargs["json"])
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.READY)
+        self.assertEqual(job.addressed_by, SautaiMealPlanAddressedBy.LINKED_ID)
+        self.assertEqual(job.sautai_user_id, 501)
         self.assertIs(job.funnel.get("account_claimed"), fixture["body"]["account_claimed"])
         self.assertEqual(job.funnel.get("plan_count"), fixture["body"]["plan_count"])
 

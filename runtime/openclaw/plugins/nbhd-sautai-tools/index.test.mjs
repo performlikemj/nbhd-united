@@ -39,6 +39,21 @@ test("registers both sautai tools", () => {
   assert.ok(tools.has("nbhd_get_meal_plan"));
 });
 
+test("schemas expose server-resolved current/next week targeting", () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  register(api);
+
+  for (const name of ["nbhd_generate_meal_plan", "nbhd_get_meal_plan"]) {
+    const week = tools.get(name).parameters.properties.week;
+    assert.deepEqual(week.enum, ["current", "next"]);
+    assert.equal(week.default, "current");
+    assert.match(week.description, /NEVER compute next week/i);
+    assert.match(tools.get(name).parameters.properties.week_start.description, /explicitly names a date/i);
+  }
+  assert.ok(tools.get("nbhd_generate_meal_plan").parameters.properties.confirm_replace);
+});
+
 // ── nbhd_generate_meal_plan ────────────────────────────────────────────
 
 test("generate — posts to the sautai generate path with headers and honest text", async () => {
@@ -66,10 +81,12 @@ test("generate — posts to the sautai generate path with headers and honest tex
   const text = result.content[0].text;
   assert.match(text, /week of 2026-07-13/);
   assert.match(text, /notification when it's ready/i);
+  assert.match(text, /1–2 minutes/i);
+  assert.match(text, /nbhd_get_meal_plan later/i);
   assert.match(text, /do NOT say the plan is ready/i);
 });
 
-test("generate — passes through user_prompt, week_start and number_of_days", async () => {
+test("generate — passes through guidance, week targeting, confirmation and day count", async () => {
   setupEnv();
   const { api, tools } = buildApi();
   const calls = [];
@@ -81,12 +98,22 @@ test("generate — passes through user_prompt, week_start and number_of_days", a
   register(api);
   await tools
     .get("nbhd_generate_meal_plan")
-    .execute("2", { user_prompt: "high protein, no pork", week_start: "2026-07-13", number_of_days: 5 });
+    .execute("2", {
+      user_prompt: "high protein, no pork",
+      week: "next",
+      week_start: "2026-07-13",
+      number_of_days: 5,
+      regenerate: true,
+      confirm_replace: true,
+    });
 
   const body = JSON.parse(calls[0].options.body);
   assert.equal(body.user_prompt, "high protein, no pork");
+  assert.equal(body.week, "next");
   assert.equal(body.week_start, "2026-07-13");
   assert.equal(body.number_of_days, 5);
+  assert.equal(body.regenerate, true);
+  assert.equal(body.confirm_replace, true);
 });
 
 test("generate — passes regenerate=true through, omits it otherwise", async () => {
@@ -122,8 +149,64 @@ test("generate — coalesced request_applied:false yields an honest 'not applied
   register(api);
   const result = await tools.get("nbhd_generate_meal_plan").execute("2c", { regenerate: true });
   assert.match(result.content[0].text, /ALREADY being generated/i);
-  assert.match(result.content[0].text, /regenerate=true/);
+  assert.match(result.content[0].text, /ask whether they want it replaced/i);
   assert.match(result.content[0].text, /do NOT claim their new guidance was applied/i);
+});
+
+test("generate — confirm_required tells the assistant to ask before replacement", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () =>
+    mockResponse({
+      payload: {
+        status: "confirm_required",
+        week_start: "2026-07-13",
+        plan: { id: 42 },
+        web_link: "https://sautai.test/existing",
+      },
+    });
+
+  register(api);
+  const result = await tools.get("nbhd_generate_meal_plan").execute("confirm", { regenerate: true });
+  assert.match(result.content[0].text, /explicitly confirm/i);
+  assert.match(result.content[0].text, /Do NOT regenerate yet/i);
+  assert.match(result.content[0].text, /confirm_replace=true/i);
+  assert.equal(result.details.json.plan.id, 42);
+});
+
+test("generate — exists says prompt guidance was not applied and offers regeneration", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () =>
+    mockResponse({ payload: { status: "exists", week_start: "2026-07-13", plan: { id: 43 } } });
+
+  register(api);
+  const result = await tools.get("nbhd_generate_meal_plan").execute("exists", { user_prompt: "more veg" });
+  assert.match(result.content[0].text, /guidance was NOT applied/i);
+  assert.match(result.content[0].text, /offer to regenerate/i);
+  assert.match(result.content[0].text, /explicit user confirmation/i);
+});
+
+test("generate — promptless exists surfaces the plan without claiming guidance was dropped", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () =>
+    mockResponse({
+      payload: {
+        status: "exists",
+        week_start: "2026-07-13",
+        plan: { id: 44 },
+        guidance: "A plan already exists for this week. Surface the existing plan.",
+      },
+    });
+
+  register(api);
+  const result = await tools.get("nbhd_generate_meal_plan").execute("exists-promptless", {});
+  assert.match(result.content[0].text, /meal plan already exists/i);
+  assert.match(result.content[0].text, /surface the existing plan/i);
+  assert.match(result.content[0].text, /only offer to regenerate it if the user seems to want a new plan/i);
+  assert.doesNotMatch(result.content[0].text, /guidance was NOT applied/i);
+  assert.equal(result.details.json.plan.id, 44);
 });
 
 test("generate — request_applied omitted uses the normal started copy", async () => {
@@ -230,10 +313,12 @@ test("get — posts to the current-plan path and returns a real plan as JSON", a
   };
 
   register(api);
-  const result = await tools.get("nbhd_get_meal_plan").execute("7", { week_start: "2026-07-13" });
+  const result = await tools
+    .get("nbhd_get_meal_plan")
+    .execute("7", { week: "next", week_start: "2026-07-13" });
 
   assert.match(calls[0].url, /\/runtime\/tenant-test\/sautai\/current-plan\/$/);
-  assert.equal(JSON.parse(calls[0].options.body).week_start, "2026-07-13");
+  assert.deepEqual(JSON.parse(calls[0].options.body), { week: "next", week_start: "2026-07-13" });
   // A current plan is returned verbatim as JSON so the assistant can summarize it.
   const parsed = JSON.parse(result.content[0].text);
   assert.equal(parsed.status, "ok");
@@ -250,6 +335,26 @@ test("get — no_plan tells the assistant to offer generation", async () => {
   assert.match(result.content[0].text, /No meal plan exists yet/i);
   assert.match(result.content[0].text, /nbhd_generate_meal_plan/);
   assert.equal(result.details.json.status, "no_plan");
+});
+
+test("get — generation_in_progress explains the async wait and later fetch", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () =>
+    mockResponse({
+      payload: {
+        status: "no_plan",
+        week_start: "2026-07-20",
+        generation_in_progress: { week_start: "2026-07-20", seconds_since_started: 35 },
+      },
+    });
+
+  register(api);
+  const result = await tools.get("nbhd_get_meal_plan").execute("progress", { week: "next" });
+  assert.match(result.content[0].text, /still running/i);
+  assert.match(result.content[0].text, /1–2 minutes/i);
+  assert.match(result.content[0].text, /notification/i);
+  assert.match(result.content[0].text, /nbhd_get_meal_plan later/i);
 });
 
 test("get — cached fallback is flagged as possibly stale", async () => {

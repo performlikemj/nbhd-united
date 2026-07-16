@@ -20,10 +20,12 @@ Blocking (30–60s — the caller is NBHD's QStash worker; client timeout must b
 Request:
 ```json
 {
-  "user_email": "person@example.com",   // required, the NBHD-verified email
+  "user_email": "person@example.com",   // one of user_email / sautai_user_id
+  "sautai_user_id": 501,                 // preferred when an account is linked
   "week_start": "2026-07-13",           // optional ISO date, a Monday; default = current week's Monday
   "user_prompt": "high protein, no pork", // optional free text
-  "number_of_days": 7                    // optional 1-7, default 7
+  "number_of_days": 7,                   // optional 1-7, default 7
+  "regenerate": false                    // true replaces an existing plan for this user/week
 }
 ```
 
@@ -52,7 +54,8 @@ Errors: `400 {"status":"error","code":"validation","detail":"..."}` ·
 (never internal tracebacks).
 
 ### 2. POST /api/m2m/meal-plan/current/
-Fast read. Request: `{"user_email": "...", "week_start": "YYYY-MM-DD"?}` (default current week).
+Fast read. Request: one of `user_email` / `sautai_user_id`, plus optional
+`{"week_start": "YYYY-MM-DD"}` (default current week).
 - 200: `{"status":"ok", "plan": {<same plan shape>}, "web_link": "..."}`
 - 404: `{"status":"not_found"}` (no auto-create on reads — unknown email is also 404)
 
@@ -67,10 +70,31 @@ Secret-gated smoke: `200 {"status":"ok","service":"sautai-m2m","version":1}`.
 - **Idempotency**: `create_meal_plan_for_user()` is idempotent per (user, week);
   `already_existed: true` signals the plan was already there. NBHD's QStash task must also be
   idempotent per job id (safe on redelivery).
+- **Replacement**: `regenerate: true` replaces the existing plan for (user, week). NBHD only
+  forwards this after its runtime proxy has found a READY plan and the user has explicitly
+  confirmed replacement.
 - **PII posture**: NBHD proxy REHYDRATES the real email before calling sautai and sends only
   this minimal structured payload — never raw conversation.
 - **Provider invariant (sautai)**: generation stays on its existing Groq path with the OpenAI
   allergen check — no new LLM calls, no provider crossing.
+
+## NBHD runtime tool contract
+
+The OpenClaw tools call NBHD's runtime proxy, not these M2M endpoints directly.
+
+- Both generate and current-plan accept `week: "current" | "next"` (default `"current"`).
+  NBHD resolves it to a Monday in the tenant's timezone. `week_start` is only for a user-named
+  calendar date, takes precedence over `week`, and snaps backward to Monday.
+- `regenerate: true` with no READY job for the target week is stripped and becomes a normal,
+  non-destructive generation.
+- `regenerate: true` with a READY job requires `confirm_replace: true`; without confirmation the
+  proxy returns `status: "confirm_required"` with the existing plan and link and creates no job.
+- A prompt-bearing normal request for a week with a READY job returns `status: "exists"`, surfaces
+  that plan, and creates no job. The assistant must offer the confirm-gated replacement flow.
+- Current-plan responses include `generation_in_progress` for a PENDING/GENERATING job created in
+  the last 15 minutes so the assistant can explain the 1–2 minute asynchronous wait.
+- At M2M egress, the worker snapshots `addressed_by` (`linked_id` or `email`) and the nullable linked
+  `sautai_user_id` onto the job. It never stores the raw addressed email on the job.
 
 ## Fixture handshake (contract test gate)
 
