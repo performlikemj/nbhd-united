@@ -54,7 +54,26 @@ class DocTaintGuardPluginGatingTest(TestCase):
         self.assertNotIn(PLUGIN_ID, plugins.get("allow", []))
 
     @override_settings(DOC_TAINT_GATE_MODE="Enforce")
-    def test_garbage_mode_falls_back_to_log_only(self):
+    def test_mixed_case_mode_normalizes_to_enforce(self):
+        config = generate_openclaw_config(self.tenant)
+        entry = config["plugins"]["entries"][PLUGIN_ID]
+        self.assertEqual(entry.get("config"), {"mode": "enforce"})
+
+    @override_settings(DOC_TAINT_GATE_MODE=" enforce ")
+    def test_whitespace_padded_mode_normalizes_to_enforce(self):
+        config = generate_openclaw_config(self.tenant)
+        entry = config["plugins"]["entries"][PLUGIN_ID]
+        self.assertEqual(entry.get("config"), {"mode": "enforce"})
+
+    @override_settings(DOC_TAINT_GATE_MODE="")
+    def test_empty_mode_defaults_to_log_only_quietly(self):
+        with self.assertNoLogs("apps.orchestrator.config_generator", level="WARNING"):
+            config = generate_openclaw_config(self.tenant)
+        entry = config["plugins"]["entries"][PLUGIN_ID]
+        self.assertEqual(entry.get("config"), {"mode": "log_only"})
+
+    @override_settings(DOC_TAINT_GATE_MODE="banana")
+    def test_invalid_mode_falls_back_to_log_only_and_logs_error(self):
         # The plugin's manifest declares mode as enum:["log_only","enforce"]
         # with additionalProperties:false — OpenClaw validates each enabled
         # plugin's config against its schema at config LOAD time, so a
@@ -62,12 +81,10 @@ class DocTaintGuardPluginGatingTest(TestCase):
         # config invalid fleet-wide (a #917-class wedge), not just this one
         # plugin misbehaving. The generator must normalize instead of
         # emitting the raw value verbatim.
-        config = generate_openclaw_config(self.tenant)
+        with self.assertLogs("apps.orchestrator.config_generator", level="ERROR") as logs:
+            config = generate_openclaw_config(self.tenant)
         entry = config["plugins"]["entries"][PLUGIN_ID]
         self.assertEqual(entry.get("config"), {"mode": "log_only"})
-
-    @override_settings(DOC_TAINT_GATE_MODE="")
-    def test_empty_mode_falls_back_to_log_only(self):
-        config = generate_openclaw_config(self.tenant)
-        entry = config["plugins"]["entries"][PLUGIN_ID]
-        self.assertEqual(entry.get("config"), {"mode": "log_only"})
+        self.assertIn("DOC_TAINT_GATE_MODE", logs.output[0])
+        self.assertIn("banana", logs.output[0])
+        self.assertIn("effective fallback is 'log_only'", logs.output[0])
