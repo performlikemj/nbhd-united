@@ -47,9 +47,19 @@ missed) — each needs infra Django cannot reach from a task:
   * **CryptoError count** — a ``box.py`` decrypt/tamper exception surfaces as a
     Sentry event / stdout log line, not a counted DB row; it belongs to the same
     Log-Analytics follow-up.
-  * **cron success RATE** — ``ProactiveOutbound`` records accepted delivery events
-    (plus excluded eval evidence) from every proactive producer: cron fires,
-    meditation-ready, and nightly_extraction. The DB therefore holds neither a
+  * **full cold-path user-perceived latency** — ``created_at → replied_at`` for turns
+    that woke a container. Since 2026-07-14 ``compute_reply_latency`` excludes woken
+    turns (they were being judged twice, and losing to the warm ceiling), and
+    ``compute_wake_latency_p95`` measures only the WAKE PORTION
+    (``waking_at → replied_at``). So the number a user actually experiences on a cold
+    start — the full wait, wake plus turn — is deliberately not a metric here. It is
+    NOT unmeasured: the journey-wake canary (Probe 4) drives that path end-to-end
+    against its own SLO, and ``n_woken`` in the reply-latency details says how many
+    real turns took it. Naming it so a future reader sees the seam was chosen, not
+    missed.
+  * **cron success RATE** — ``ProactiveOutbound`` only records deliveries that
+    HAPPENED (plus excluded eval evidence), and it records every proactive producer
+    (cron fires, meditation-ready, nightly_extraction), so the DB holds neither a
     cron-only numerator nor an
     attempted-fires denominator. Filtering by ``job_name`` doesn't help — the
     non-cron writers set one too. A true success rate needs the fire-attempt log
@@ -80,6 +90,46 @@ SUITE = "slo_snapshot"
 WINDOW_HOURS = 24
 # The trailing span the weekly digest trends over.
 DIGEST_WINDOW_DAYS = 7
+
+# Minimum sample sizes below which a percentile is NOT a percentile.
+#
+# Prod, 2026-07-13: the whole 24h window held **16 real turns across the entire
+# fleet** — 14 of them one user's. At n=16 the type-7 "p95" is an interpolation
+# between the 15th and 16th sorted values: roughly the second-slowest turn of the day
+# wearing a statistical costume. One slow turn moves it enormously, so the metric
+# breaches on any day somebody waits — and a metric that always breaches gets ignored,
+# which is strictly worse than not having it.
+#
+# Why the p95 floor is 40 and not 20. n>=20 is the EXISTENCE bar (1/0.05), not the
+# honesty bar: at exactly n=20 the type-7 rank is 0.95*(20-1) = 18.05, so the estimate
+# STILL interpolates between the second-largest and the largest observation — the same
+# near-max-in-a-costume described above, merely legal. The top 5% does not contain two
+# distinct observations until n=40, which is where the estimator stops being dominated
+# by a single slow turn. A single-slow-turn alarm is the ignored-alarm disease this
+# floor exists to cure, so the floor has to be past it.
+#
+# It costs nothing today: at ~16 turns/day BOTH floors skip forever. The number only
+# decides the DATE the metric un-skips as the fleet grows (~13 MJ-usage subscribers at
+# 40, ~7 at 20) — and at 40, the day it un-skips, it will mean something.
+#
+# A median is far more forgiving and is not dragged down with the tail.
+#
+# Below the floor the metric is recorded SKIPPED-WITH-REASON (score=None,
+# details.skipped=True, details.n=<actual>, details.floor=<floor>) — the suite's
+# standing rule that missing data is SURFACED, never passed off as a green zero,
+# applies just as much to *insufficient* data as to none. A persistently-skipped p95 is
+# itself the finding: the fleet does not yet produce enough turns in 24h to have a
+# measurable tail. That is a true statement about the business, and it belongs in the
+# open rather than papered over with a number that means nothing.
+#
+# NAMED FOLLOW-UP (not this PR): a 7-DAY rolling p95 (~112 samples today) computed
+# nightly is the structurally right way to actually HAVE a tail — daily p50 as the fast
+# robust alarm, 7-day p95 as the slow tail alarm. It must get its OWN case_id
+# (``reply_latency_p95_7d_ms``), never this one: a trend query must never blend 24h and
+# 7d window semantics under a single name. This daily p95 then stays as the tombstone,
+# self-activating if the fleet ever earns a daily tail.
+MIN_SAMPLE_P50 = 10
+MIN_SAMPLE_P95 = 40
 
 # The flagship journey canaries that treat a synthetic-tenant personal
 # budget-cap trip as a SOFT pass (journey_chat.py / journey_wake.py). That design
@@ -198,14 +248,32 @@ def _window(now):
 
 
 def compute_reply_latency(now) -> dict | None:
-    """(p50, p95, n) of REAL-tenant, tenant-produced, ready-turn reply latency (ms).
+    """(p50, p95, n) of REAL-tenant, tenant-produced, WARM ready-turn latency (ms).
 
     METADATA ONLY: selects ``created_at`` / ``replied_at`` — never a body column.
     Filters to ``status=ready`` + ``source=tenant`` so a fabricated on-device
     reply (instant, source=on_device) and a still-pending turn cannot flatter the
     number, and excludes synthetic tenants. Returns ``None`` on an empty window.
+
+    WOKEN TURNS ARE EXCLUDED (``waking_at__isnull=True``). A turn that had to spin
+    up a hibernated container carries the cold start ON TOP of the turn, and
+    ``compute_wake_latency_p95`` already measures exactly those turns against a
+    deliberately higher ceiling (90s vs 45s) *because* the wake path is the slow one.
+    Counting them here too meant the SAME turn was judged twice by two standards that
+    disagree — and the reply SLO lost. Prod, 2026-07-13: a 95.4s turn PASSED the wake
+    SLO (80.5s of it was the wake, under the 90s ceiling) while simultaneously
+    breaching the 45s reply ceiling, and the p50 breach (16,198ms vs a 15,000ms
+    threshold) was entirely an artifact of the two cold starts in that window —
+    warm-only it was 14,812ms, i.e. green.
+
+    What survives the exclusion is the honest signal, and it is not comfortable: two
+    turns took 70.4s and 61.9s on ALREADY-WARM containers that day. Those are real.
     """
     since, until = _window(now)
+    # ONE scan, split in Python. Two queries (warm rows, then a COUNT of woken ones)
+    # would read the table at two instants, so a turn landing between them would make
+    # ``n`` and ``n_woken`` describe different windows. Cosmetic — it could never affect
+    # gating — but the single scan closes it for free.
     rows = AppChatMessage.objects.filter(
         tenant__is_synthetic=False,
         status=AppChatMessage.Status.READY,
@@ -213,16 +281,45 @@ def compute_reply_latency(now) -> dict | None:
         replied_at__isnull=False,
         created_at__gte=since,
         created_at__lte=until,
-    ).values_list("created_at", "replied_at")
+    ).values_list("created_at", "replied_at", "waking_at")
 
-    latencies = [
-        (replied - created).total_seconds() * 1000.0
-        for created, replied in rows.iterator()
-        if created is not None and replied is not None and replied >= created
-    ]
+    latencies: list[float] = []
+    n_woken = 0
+    for created, replied, waking in rows.iterator():
+        if created is None or replied is None or replied < created:
+            continue
+        if waking is not None:
+            # EXCLUDED, not dropped. Counted so a reader can never mistake a thin warm
+            # sample for a quiet fleet: "n=14, n_woken=2" says plainly that two real
+            # users waited on a cold start, and that ``wake_latency_p95`` is where they
+            # are accounted for.
+            n_woken += 1
+            continue
+        latencies.append((replied - created).total_seconds() * 1000.0)
+
     if not latencies:
-        return None
-    return {"p50": percentile(latencies, 50), "p95": percentile(latencies, 95), "n": len(latencies)}
+        # No WARM turns — but that covers two situations which read as OPPOSITES, and
+        # collapsing them into one "no data" skip would report the reverse of the truth:
+        #
+        #   n_woken == 0  → the fleet genuinely was quiet. An absence.
+        #   n_woken  > 0  → the fleet was NOT quiet. EVERY turn was a cold start. That
+        #                   is a finding, and a loud one — reporting it as "no turns"
+        #                   would tell the reader nothing happened when in fact every
+        #                   user who showed up waited on a container spin-up.
+        #
+        # Entirely plausible at this fleet size: three turns, three wakes. The caller
+        # records the second case with its own reason and carries n_woken, so the day
+        # is legible from a single row instead of by cross-reading the wake metric.
+        if n_woken == 0:
+            return None
+        return {"p50": None, "p95": None, "n": 0, "n_woken": n_woken}
+
+    return {
+        "p50": percentile(latencies, 50),
+        "p95": percentile(latencies, 95),
+        "n": len(latencies),
+        "n_woken": n_woken,
+    }
 
 
 def compute_wake_latency_p95(now) -> dict | None:
@@ -231,6 +328,21 @@ def compute_wake_latency_p95(now) -> dict | None:
     Only turns that actually woke a hibernated container have ``waking_at`` set,
     so this is the derivable wake SLO. METADATA ONLY; synthetic excluded; empty
     window → ``None`` (skipped, not a zero — no wakes is common on a warm fleet).
+
+    THE p95 LABEL HERE IS ASPIRATIONAL, and deliberately so. Prod runs this at n=1-3 a
+    day (n=2 on 2026-07-13), where the type-7 estimate interpolates between the only two
+    observations — the very "percentile in a costume" that ``MIN_SAMPLE_P95`` exists to
+    refuse for the reply metric. It gets NO floor anyway, and that is a choice, not an
+    oversight:
+
+      * wakes are structurally rare and you cannot grow wake volume without hurting
+        users, so a floor of 40 would skip this metric permanently and delete the
+        suite's ONLY real-user cold-start signal;
+      * at tiny n it degenerates to "max wake vs the 90s ceiling" — which is exactly the
+        question worth asking ("did any real user wait too long on a cold start?"). A
+        one-slow-wake alarm is an alarm you WANT, unlike percentile noise.
+
+    So: read this as a max-wake alarm, not a percentile, until the fleet is far larger.
     """
     since, until = _window(now)
     rows = AppChatMessage.objects.filter(
@@ -261,6 +373,15 @@ def compute_error_rate(now) -> dict | None:
     rate. METADATA ONLY (statuses + counts). Empty window (no finished turns) →
     ``None``: a rate is undefined with no denominator, and zero traffic may itself
     mean a broken writer, so it is surfaced as a skip, not a passing 0.0.
+
+    DELIBERATELY UNFLOORED, unlike the reply percentiles. At this fleet's volume the
+    ceiling is effectively an any-error alarm: 1 error in 16 finished turns is 6.25%,
+    over the 5% threshold, so a single failure breaches and emails. That is kept on
+    purpose — errors are rare and DISCRETE, and at this size every one of them is a
+    genuine finding, so a one-error alarm is an alarm you want. (Percentile noise is
+    the opposite: it manufactures alarms from ordinary variance, which is why the reply
+    metrics get sample floors and this does not.) The 5% ceiling starts to mean what it
+    says as volume grows.
     """
     since, until = _window(now)
     terminal = AppChatMessage.objects.filter(
@@ -420,13 +541,17 @@ def _record_measured(run, case_id, value, threshold, details) -> None:
     )
 
 
-def _record_skipped(run, case_id, threshold, reason) -> None:
-    """Record a metric with no data as skipped-with-reason (never a passing zero).
+def _record_skipped(run, case_id, threshold, reason, **extra) -> None:
+    """Record a metric we could not honestly measure as skipped-with-reason.
 
     ``passed=True`` (missing data is not, by itself, a threshold breach) but
     ``score=None`` and ``details.skipped=True`` make it unmistakably distinct from
     a real measured value — so the digest and any reader can tell "we couldn't
     measure this" from "this was 0 and fine".
+
+    Covers BOTH no data and NOT ENOUGH data. ``extra`` carries the diagnostic that
+    makes the skip actionable (e.g. ``n=16`` against a floor of 20) — counts only,
+    so it rides the ``record()`` details chokepoint unchanged.
     """
     record(
         run,
@@ -435,7 +560,7 @@ def _record_skipped(run, case_id, threshold, reason) -> None:
         passed=True,
         score=None,
         threshold=threshold,
-        details={"skipped": True, "reason": reason[:60], "window_h": WINDOW_HOURS},
+        details={"skipped": True, "reason": reason[:60], "window_h": WINDOW_HOURS, **extra},
     )
 
 
@@ -452,16 +577,40 @@ def run_slo_snapshot_suite(*, trigger: str = EvalRun.Trigger.MANUAL, now=None) -
     thr = thresholds()
 
     with record_run(SUITE, trigger, image_tag=None) as run:
-        # --- reply latency p50 / p95 (one query, two metrics) ---
+        # --- WARM reply latency p50 / p95 (one query, two metrics, two sample floors) ---
+        # Each percentile is gated on its own minimum sample: a median survives a thin
+        # window, a 95th percentile does not. Below the floor we say so (skipped, with
+        # the actual n) rather than publish a number that is really "the second-slowest
+        # turn of the day" and let it breach a threshold it was never able to measure.
         latency = compute_reply_latency(now)
         if latency is None:
+            # Genuinely no traffic at all.
             _record_skipped(run, M_REPLY_P50, thr[M_REPLY_P50], "no_ready_turns_24h")
             _record_skipped(run, M_REPLY_P95, thr[M_REPLY_P95], "no_ready_turns_24h")
+        elif latency["n"] == 0:
+            # Traffic existed and EVERY turn of it was a cold start. The opposite of a
+            # quiet day, and it must not be reported as one.
+            for cid in (M_REPLY_P50, M_REPLY_P95):
+                _record_skipped(run, cid, thr[cid], "all_turns_were_cold_starts", n=0, n_woken=latency["n_woken"])
         else:
-            p50 = round(latency["p50"], 3)
-            p95 = round(latency["p95"], 3)
-            _record_measured(run, M_REPLY_P50, p50, thr[M_REPLY_P50], {"n": latency["n"], "pctl": 50})
-            _record_measured(run, M_REPLY_P95, p95, thr[M_REPLY_P95], {"n": latency["n"], "pctl": 95})
+            n, woken = latency["n"], latency["n_woken"]
+            if n < MIN_SAMPLE_P50:
+                _record_skipped(
+                    run, M_REPLY_P50, thr[M_REPLY_P50], "insufficient_sample", n=n, floor=MIN_SAMPLE_P50, n_woken=woken
+                )
+            else:
+                _record_measured(
+                    run, M_REPLY_P50, round(latency["p50"], 3), thr[M_REPLY_P50], {"n": n, "pctl": 50, "n_woken": woken}
+                )
+
+            if n < MIN_SAMPLE_P95:
+                _record_skipped(
+                    run, M_REPLY_P95, thr[M_REPLY_P95], "insufficient_sample", n=n, floor=MIN_SAMPLE_P95, n_woken=woken
+                )
+            else:
+                _record_measured(
+                    run, M_REPLY_P95, round(latency["p95"], 3), thr[M_REPLY_P95], {"n": n, "pctl": 95, "n_woken": woken}
+                )
 
         # --- wake-path latency p95 ---
         wake = compute_wake_latency_p95(now)
@@ -642,7 +791,7 @@ def build_weekly_digest(now=None) -> tuple[str, str]:
         "-" * len(header),
         "",
         f"Total breach-metric-days in the last 7: {total_breach_days}.",
-        "'skip' = no qualifying data in that day's window (surfaced, not a pass-as-zero).",
+        "'skip' = no data, OR not enough of it to measure honestly (reason + n in details).",
         "'meas' = snapshots that actually measured the metric; 0/N means it was never measurable all week.",
         "Thresholds are settings.EVAL_SLO_THRESHOLDS (code defaults otherwise); latencies in ms.",
         "Detail: EvalRun/EvalResult rows for suite 'slo_snapshot'. Metadata only — no message content.",

@@ -40,6 +40,8 @@ from apps.evals.suites.slo_snapshot import (
     M_REPLY_P50,
     M_REPLY_P95,
     M_WAKE_P95,
+    MIN_SAMPLE_P50,
+    MIN_SAMPLE_P95,
     build_weekly_digest,
     compute_error_rate,
     compute_reply_latency,
@@ -179,6 +181,135 @@ class ReplyLatencySyntheticExclusionTest(_ChatFixtureMixin, TestCase):
         self.assertLess(result["p95"], 2000)
 
 
+class WarmOnlyReplyLatencyTest(_ChatFixtureMixin, TestCase):
+    """A woken turn was being judged TWICE, by two ceilings that disagree.
+
+    ``compute_wake_latency_p95`` already measures cold starts against a deliberately
+    higher ceiling (90s) *because* the wake path is the slow one. Counting them in the
+    warm reply SLO too meant the same turn passed one metric and breached the other.
+    Prod 2026-07-13: a 95.4s turn passed the wake SLO (80.5s of it was wake, under 90s)
+    while breaching the 45s reply ceiling, and the p50 "breach" (16,198ms vs 15,000)
+    was ENTIRELY the two cold starts — warm-only it was 14,812ms. Green.
+    """
+
+    def test_woken_turns_are_excluded_from_the_warm_reply_slo(self):
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        created = now - timedelta(hours=1)
+
+        # Ten warm turns, all ~1s.
+        for _ in range(10):
+            self._msg(real, created=created, replied=created + timedelta(milliseconds=1000))
+        # One cold start: a 90s wait, the overwhelming majority of it spent waking a
+        # hibernated container. It would dominate the warm p95 if it were counted.
+        self._msg(
+            real,
+            created=created,
+            waking=created + timedelta(milliseconds=2_000),
+            replied=created + timedelta(milliseconds=90_000),
+        )
+
+        result = compute_reply_latency(now)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["n"], 10, "the woken turn leaked into the warm sample")
+        self.assertLess(result["p95"], 2000, "the cold start is dominating a WARM latency metric")
+        # …but it is NOT dropped on the floor. The count is carried so a reader can
+        # never mistake a thin warm sample for a quiet fleet.
+        self.assertEqual(result["n_woken"], 1)
+
+
+class InsufficientSampleIsSkippedNotScoredTest(_ChatFixtureMixin, TestCase):
+    """A "95th percentile" of a handful of turns is not a percentile.
+
+    Prod 2026-07-13: the entire 24h window held 16 real turns across the whole fleet.
+    At n=16 the type-7 p95 interpolates between the 15th and 16th sorted values — the
+    second-slowest turn of the day wearing a statistical costume. It breaches whenever
+    anyone waits, and a metric that always breaches gets ignored, which is worse than
+    not having it. Below the floor we say so, with the actual n, rather than publish a
+    number we cannot stand behind.
+    """
+
+    def test_a_thin_sample_cannot_manufacture_a_p95_breach(self):
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        created = now - timedelta(hours=1)
+        n = MIN_SAMPLE_P95 - 1  # enough for a median, one short of a tail
+        for _ in range(n):
+            self._msg(real, created=created, replied=created + timedelta(milliseconds=60_000))
+
+        run = run_slo_snapshot_suite(now=now)
+        run.refresh_from_db()
+
+        # THE POINT: 60s turns on a sample this thin must not produce a "p95 breach".
+        # A skip never gates, so whatever the run does, it does not do it because of p95.
+        p95 = run.results.get(case_id=M_REPLY_P95)
+        self.assertTrue(p95.details.get("skipped"))
+        self.assertIsNone(p95.score)
+        self.assertEqual(p95.details.get("reason"), "insufficient_sample")
+        self.assertEqual(p95.details.get("n"), n)
+        self.assertEqual(p95.details.get("floor"), MIN_SAMPLE_P95)
+        self.assertTrue(p95.passed)
+
+        # The MEDIAN, however, is honestly measurable at this n — and 60s turns really
+        # do breach a 15s median SLO. The run fails on p50, which is a true finding.
+        # Suppressing that too would be the opposite mistake.
+        p50 = run.results.get(case_id=M_REPLY_P50)
+        self.assertFalse(p50.details.get("skipped"))
+        self.assertFalse(p50.passed)
+        self.assertEqual(run.status, EvalRun.Status.FAIL)
+
+    def test_an_all_cold_start_day_is_NOT_reported_as_a_quiet_one(self):
+        """These two read as opposites and must never collapse into one message.
+
+        At this fleet size an all-cold day is entirely plausible — a handful of users
+        who chat once, whose containers hibernate in between, so every turn they send
+        wakes one. Reporting that as "no ready turns" would tell the reader nothing
+        happened, when in fact every single user who showed up waited on a spin-up.
+        """
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        created = now - timedelta(hours=1)
+        for _ in range(3):
+            self._msg(
+                real,
+                created=created,
+                waking=created + timedelta(milliseconds=1_000),
+                replied=created + timedelta(milliseconds=80_000),
+            )
+
+        run = run_slo_snapshot_suite(now=now)
+        run.refresh_from_db()
+
+        for cid in (M_REPLY_P50, M_REPLY_P95):
+            r = run.results.get(case_id=cid)
+            self.assertTrue(r.details.get("skipped"))
+            self.assertIsNone(r.score)
+            self.assertEqual(r.details.get("reason"), "all_turns_were_cold_starts")
+            # The day is legible from THIS row — no cross-referencing the wake metric.
+            self.assertEqual(r.details.get("n"), 0)
+            self.assertEqual(r.details.get("n_woken"), 3)
+
+    def test_the_median_survives_a_window_the_p95_cannot(self):
+        """The floors are per-metric on purpose: a median is far more forgiving than a
+        tail, so a thin window must not drag the p50 down with the p95."""
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        created = now - timedelta(hours=1)
+        n = MIN_SAMPLE_P50  # enough for a median, NOT enough for a 95th percentile
+        self.assertLess(n, MIN_SAMPLE_P95)
+        for _ in range(n):
+            self._msg(real, created=created, replied=created + timedelta(milliseconds=1000))
+
+        run = run_slo_snapshot_suite(now=now)
+        run.refresh_from_db()
+
+        p50 = run.results.get(case_id=M_REPLY_P50)
+        p95 = run.results.get(case_id=M_REPLY_P95)
+        self.assertFalse(p50.details.get("skipped"), "the median was thrown away with the tail")
+        self.assertIsNotNone(p50.score)
+        self.assertTrue(p95.details.get("skipped"))
+
+
 class WakeLatencyTest(_ChatFixtureMixin, TestCase):
     def test_wake_latency_measured_from_waking_to_replied(self):
         from apps.evals.suites.slo_snapshot import compute_wake_latency_p95
@@ -271,8 +402,13 @@ class BreachClosesRunFailTest(_ChatFixtureMixin, TestCase):
         now = timezone.now()
         real = _make_tenant(synthetic=False)
         created = now - timedelta(hours=1)
-        # Five real turns each ~60s — well over the 45s p95 SLO → breach.
-        for _ in range(5):
+        # ``MIN_SAMPLE_P95`` warm turns, each ~60s — over the 45s p95 SLO → breach.
+        #
+        # This used to seed FIVE turns and assert a p95 breach, which is the very bug
+        # the sample floor exists to stop: a "95th percentile" of five observations is
+        # not a percentile. The floor is IMPORTED, not re-pinned as a literal, so this
+        # test tracks it instead of silently going vacuous the next time it moves.
+        for _ in range(MIN_SAMPLE_P95):
             self._msg(real, created=created, replied=created + timedelta(milliseconds=60_000))
 
         run = run_slo_snapshot_suite(now=now)
