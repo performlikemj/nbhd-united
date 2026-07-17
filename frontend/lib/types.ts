@@ -69,6 +69,7 @@ export interface Tenant {
   pending_deletion: boolean;
   deletion_scheduled_at: string | null;
   platform_budget_exceeded: boolean;
+  constellation_enabled: boolean;
   finance_enabled: boolean;
   // Platform-level availability of Gravity (finance). False when paused for
   // privacy (GRAVITY_ENABLED off server-side) — hides the tab + enable toggle.

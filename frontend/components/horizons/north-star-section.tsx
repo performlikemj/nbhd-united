@@ -22,7 +22,9 @@ function ConfirmedStar({ item }: { item: HorizonsNorthStar }) {
           {"✧"}
         </span>
         <div className="min-w-0 flex-1">
-          <p className="text-base font-medium leading-relaxed text-ink">{item.statement}</p>
+          <p className="font-serif text-2xl font-normal italic leading-relaxed text-ink sm:text-3xl">
+            {item.statement}
+          </p>
           {item.pillars.length > 0 ? (
             <p className="mt-2 font-mono text-[10px] uppercase tracking-wider text-ink-faint">
               {item.pillars.join(" · ")}

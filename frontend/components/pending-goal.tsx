@@ -35,7 +35,7 @@ export function PendingGoal({
   const busy = approveMutation.isPending || dismissMutation.isPending;
   const isGoal = extraction.kind === "goal";
   const borderColor = isGoal ? "border-l-accent" : "border-l-signal";
-  const badgeLabel = isGoal ? "AI Extraction" : "Pattern Found";
+  const badgeLabel = isGoal ? "Suggested goal" : "Suggested task";
   const badgeClasses = isGoal
     ? "text-accent bg-accent/10"
     : "text-signal bg-signal/10";
@@ -53,12 +53,11 @@ export function PendingGoal({
           &ldquo;{extraction.text}&rdquo;
         </p>
 
-        <div className="flex flex-wrap items-center gap-2 text-xs text-ink-faint">
-          <span>{extraction.confidence} confidence</span>
-          {extraction.source_date ? (
-            <span className="font-mono">from {formatDate(extraction.source_date)}</span>
-          ) : null}
-        </div>
+        {extraction.source_date ? (
+          <p className="font-mono text-xs text-ink-faint">
+            From {formatDate(extraction.source_date)}
+          </p>
+        ) : null}
       </div>
 
       <div className="mt-4 flex items-center gap-2">
@@ -73,7 +72,7 @@ export function PendingGoal({
           className={`w-full rounded-lg py-2 text-xs font-mono uppercase tracking-widest transition-all disabled:opacity-50 ${
             isGoal
               ? "bg-accent/10 text-accent hover:bg-accent hover:text-white"
-              : "bg-signal/10 text-signal hover:bg-signal hover:text-[#0b0f13]"
+              : "bg-signal/10 text-signal hover:bg-signal hover:text-bg"
           }`}
         >
           {approveMutation.isPending ? "Saving..." : `Accept ${extraction.kind === "goal" ? "Goal" : "Task"}`}
