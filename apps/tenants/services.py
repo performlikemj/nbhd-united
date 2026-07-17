@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -16,6 +16,9 @@ from apps.journal.services import (
 from .models import Tenant, User
 
 logger = logging.getLogger(__name__)
+
+# Two weeks gives users time to build a working relationship with the assistant.
+TRIAL_DAYS = 14
 
 
 def ensure_tenant_provisioned(user: User) -> tuple[Tenant, bool, bool]:
@@ -45,16 +48,14 @@ def ensure_tenant_provisioned(user: User) -> tuple[Tenant, bool, bool]:
         return existing, False, True
 
     now = timezone.now()
-    # Kept in lockstep with OnboardTenantView so both paths mint identical trials.
-    # TODO: revert to ``now + timedelta(days=7)`` after the March 2026 promo ends.
-    trial_end = datetime(2026, 3, 31, 23, 59, 59, tzinfo=UTC)
+    # OnboardTenantView and the iOS handoff both use this shared trial grant.
     try:
         with transaction.atomic():
             tenant = Tenant.objects.create(
                 user=user,
                 is_trial=True,
                 trial_started_at=now,
-                trial_ends_at=max(now + timedelta(days=7), trial_end),
+                trial_ends_at=now + timedelta(days=TRIAL_DAYS),
                 model_tier=Tenant.ModelTier.STARTER,
                 status=Tenant.Status.PROVISIONING,
             )
