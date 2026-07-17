@@ -490,6 +490,30 @@ class ThresholdOverrideTest(TestCase):
         self.assertEqual(thr[M_REPLY_P95], DEFAULT_SLO_THRESHOLDS[M_REPLY_P95])
         self.assertTrue(any("reply_latency_p95_msec" in m for m in log.output))
 
+    @override_settings(EVAL_SLO_THRESHOLDS=[])
+    def test_list_shape_is_logged_and_defaults_do_not_block_snapshot(self):
+        with self.assertLogs("apps.evals.suites.slo_snapshot", level="ERROR") as log:
+            run = run_slo_snapshot_suite(now=timezone.now())
+        metric = run.results.get(case_id=M_PROACTIVE_DELIVERIES)
+        self.assertEqual(float(metric.threshold), DEFAULT_SLO_THRESHOLDS[M_PROACTIVE_DELIVERIES])
+        self.assertTrue(any("invalid EVAL_SLO_THRESHOLDS shape (list)" in m for m in log.output))
+
+    @override_settings(EVAL_SLO_THRESHOLDS="invalid")
+    def test_string_shape_is_logged_and_defaults_do_not_block_snapshot(self):
+        with self.assertLogs("apps.evals.suites.slo_snapshot", level="ERROR") as log:
+            run = run_slo_snapshot_suite(now=timezone.now())
+        metric = run.results.get(case_id=M_PROACTIVE_DELIVERIES)
+        self.assertEqual(float(metric.threshold), DEFAULT_SLO_THRESHOLDS[M_PROACTIVE_DELIVERIES])
+        self.assertTrue(any("invalid EVAL_SLO_THRESHOLDS shape (str)" in m for m in log.output))
+
+    @override_settings(EVAL_SLO_THRESHOLDS={M_REPLY_P50: 12000, M_REPLY_P95: "fast"})
+    def test_non_numeric_entry_is_logged_and_ignored(self):
+        with self.assertLogs("apps.evals.suites.slo_snapshot", level="ERROR") as log:
+            thr = thresholds()
+        self.assertEqual(thr[M_REPLY_P50], 12000)
+        self.assertEqual(thr[M_REPLY_P95], DEFAULT_SLO_THRESHOLDS[M_REPLY_P95])
+        self.assertTrue(any(M_REPLY_P95 in m and "non-numeric" in m for m in log.output))
+
     @override_settings(EVAL_SLO_THRESHOLDS={M_PROACTIVE_DELIVERIES: 5})
     def test_floor_direction_breaches_below_floor(self):
         """3 deliveries under a floor of 5 MUST breach — pins the floor branch.

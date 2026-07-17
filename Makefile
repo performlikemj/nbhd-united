@@ -53,10 +53,12 @@ harness:
 # migration-drift, the backend suite, and the frontend lint+build only.
 # See docs/agents/workflow.md "Parallel work & deploy serialization".
 integrate-gate:
-	ruff check .
-	ruff format --check .
-	python manage.py makemigrations --check --dry-run
-	DJANGO_TEST_DB_NAME=test_nbhd_united_train python manage.py test apps/ --noinput
+	@set -e; \
+	if [ -x ./.venv/bin/python ]; then PYTHON=./.venv/bin/python; else common_dir="$$(git rev-parse --git-common-dir)"; if [ -x "$$common_dir/../.venv/bin/python" ]; then PYTHON="$$common_dir/../.venv/bin/python"; else PYTHON=python3; fi; fi; \
+	ruff check .; \
+	ruff format --check .; \
+	"$$PYTHON" manage.py makemigrations --check --dry-run; \
+	DJANGO_TEST_DB_NAME=test_nbhd_united_train "$$PYTHON" manage.py test apps/ --noinput; \
 	cd frontend && npm ci && npm run lint && npm run build
 
 compile-deps:
