@@ -174,13 +174,17 @@ class PasswordResetConfirmView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        user.set_password(new_password)
-        # Persist the password_last_changed_at stamp that the custom
-        # ``set_password`` override bumps in memory. Omitting it from
-        # update_fields silently drops the bump, which (a) defeats
-        # force-logout-on-rotation (old JWTs survive the reset) and
-        # (b) leaves a stale stamp that would reject the token we mint below.
-        user.save(update_fields=["password", "password_last_changed_at"])
+        from apps.router.models import DeviceToken
+
+        with transaction.atomic():
+            user.set_password(new_password)
+            # Persist the password_last_changed_at stamp that the custom
+            # ``set_password`` override bumps in memory. Omitting it from
+            # update_fields silently drops the bump, which (a) defeats
+            # force-logout-on-rotation (old JWTs survive the reset) and
+            # (b) leaves a stale stamp that would reject the token we mint below.
+            user.save(update_fields=["password", "password_last_changed_at"])
+            DeviceToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
 
         # Sign the user back in so they land on the dashboard without a
         # second login step. Mint via the serializer's ``get_token`` so the
@@ -278,13 +282,21 @@ class LogoutView(APIView):
                 from apps.router.models import DeviceToken
 
                 device_tokens = DeviceToken.objects.filter(user=request.user)
+                unrevoked_tokens = device_tokens.filter(revoked_at__isnull=True)
                 installation_id = str(request.data.get("installation_id") or "").strip()
                 device_token = str(request.data.get("device_token") or "").strip()
                 if installation_id:
-                    device_tokens = device_tokens.filter(installation_id=installation_id)
+                    matched_tokens = device_tokens.filter(installation_id=installation_id)
                 elif device_token:
-                    device_tokens = device_tokens.filter(token=device_token)
-                device_tokens.filter(revoked_at__isnull=True).update(revoked_at=timezone.now())
+                    matched_tokens = device_tokens.filter(token=device_token)
+                else:
+                    matched_tokens = unrevoked_tokens
+
+                if (installation_id or device_token) and not matched_tokens.exists():
+                    # A stale client identifier must not leave another live
+                    # session push-capable; the active install re-registers.
+                    matched_tokens = unrevoked_tokens
+                matched_tokens.filter(revoked_at__isnull=True).update(revoked_at=timezone.now())
         except TokenError:
             return Response(
                 {"detail": "Invalid refresh token."},

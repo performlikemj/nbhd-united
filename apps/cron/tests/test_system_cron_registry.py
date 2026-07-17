@@ -262,6 +262,20 @@ class SystemCronsWellFormednessTests(TestCase):
             "apps.router.pending_queue.reap_stale_app_chat_messages_task",
         )
 
+    def test_finished_at_cron_retirement_is_scheduled_hourly(self):
+        from apps.cron.views import TASK_MAP
+
+        by_name = {name: (cron_expr, path, retries) for name, cron_expr, path, retries in reg_cmd.iter_system_crons()}
+        self.assertIn("expire-finished-at-crons", by_name)
+        self.assertEqual(
+            by_name["expire-finished-at-crons"],
+            ("0 * * * *", "/api/cron/trigger/expire_finished_at_crons/", None),
+        )
+        self.assertEqual(
+            TASK_MAP["expire_finished_at_crons"],
+            "apps.cron.tasks.expire_finished_at_crons_task",
+        )
+
     def test_wave_b_eval_probes_are_scheduled(self):
         """The five Wave B eval probes (PR-B6) are wired with the planned exprs.
 

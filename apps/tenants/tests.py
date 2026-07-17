@@ -308,6 +308,59 @@ class AuthLogoutTest(TestCase):
         self.assertIsNotNone(selected.revoked_at)
         self.assertIsNone(other.revoked_at)
 
+    def test_logout_with_unknown_installation_revokes_all_tokens(self):
+        first = DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token="a" * 64,
+            installation_id="install-a",
+        )
+        second = DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token="b" * 64,
+            installation_id="install-b",
+        )
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": self.refresh, "installation_id": "stale-install"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self.auth_header,
+        )
+
+        self.assertEqual(response.status_code, 204)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertIsNotNone(first.revoked_at)
+        self.assertIsNotNone(second.revoked_at)
+
+    def test_logout_with_already_revoked_installation_leaves_other_tokens_active(self):
+        revoked = DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token="a" * 64,
+            installation_id="install-a",
+            revoked_at=timezone.now(),
+        )
+        other = DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token="b" * 64,
+            installation_id="install-b",
+        )
+
+        response = self.client.post(
+            "/api/v1/auth/logout/",
+            {"refresh": self.refresh, "installation_id": revoked.installation_id},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=self.auth_header,
+        )
+
+        self.assertEqual(response.status_code, 204)
+        other.refresh_from_db()
+        self.assertIsNone(other.revoked_at)
+
 
 class AuthSignupTest(TestCase):
     @override_settings(PREVIEW_ACCESS_KEY="test-invite-code")

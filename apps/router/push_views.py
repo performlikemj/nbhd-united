@@ -23,6 +23,7 @@ from rest_framework.views import APIView
 
 from apps.common.eval_sink import suppresses_real_transport
 from apps.router.models import DeviceToken
+from apps.tenants.models import Tenant
 from apps.tenants.throttling import PushTestMinuteThrottle
 
 logger = logging.getLogger(__name__)
@@ -194,7 +195,16 @@ class PushTestView(APIView):
         if not apns_configured():
             return Response({"sent": 0, "failed": 0, "skipped": "not_configured"}, status=status.HTTP_200_OK)
 
-        rows = list(DeviceToken.objects.filter(user=request.user).values("token", "environment"))
+        # Test delivery obeys the same session + tenant entitlement gate as all
+        # user-visible push fan-out.
+        rows = list(
+            DeviceToken.objects.filter(
+                user=request.user,
+                revoked_at__isnull=True,
+                user__is_active=True,
+                tenant__status=Tenant.Status.ACTIVE,
+            ).values("token", "environment")
+        )
         if not rows:
             return Response({"sent": 0, "failed": 0, "skipped": "no_tokens"}, status=status.HTTP_200_OK)
 
@@ -364,6 +374,8 @@ def _push_to_user_devices(
             user=user,
             revoked_at__isnull=True,
             user__is_active=True,
+            # Only ACTIVE tenants can produce entitled user-visible replies.
+            tenant__status=Tenant.Status.ACTIVE,
         ).values("token", "environment")
     )
     if not rows:

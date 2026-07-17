@@ -23,6 +23,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.router.models import DeviceToken
 from apps.tenants.models import Tenant, User
 from apps.tenants.promo_models import PromoCampaign, PromoRedemption
 from apps.tenants.promo_signing import make_promo_token, verify_promo_token
@@ -193,6 +194,17 @@ class RotateAllPasswordsTest(TestCase):
         self.assertEqual(len(mail.outbox), 2)
         recipients = {m.to[0] for m in mail.outbox}
         self.assertEqual(recipients, {"alice@test.com", "bob@test.com"})
+
+    def test_rotation_revokes_live_device_tokens_but_not_owner_tokens(self):
+        alice_token = DeviceToken.objects.create(user=self.alice, tenant=self.alice.tenant, token="a" * 64)
+        owner_token = DeviceToken.objects.create(user=self.owner, tenant=self.owner.tenant, token="b" * 64)
+
+        call_command("rotate_all_passwords", reason="test")
+
+        alice_token.refresh_from_db()
+        owner_token.refresh_from_db()
+        self.assertIsNotNone(alice_token.revoked_at)
+        self.assertIsNone(owner_token.revoked_at)
 
     def test_idempotent_on_rerun(self):
         cutoff = timezone.now()
