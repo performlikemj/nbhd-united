@@ -519,6 +519,7 @@ class OnboardTenantViewTest(TestCase):
     @patch("apps.cron.publish.publish_task")
     @patch("apps.tenants.services.seed_default_templates_for_tenant")
     def test_onboard_creates_trial_and_triggers_provisioning(self, mock_seed, mock_publish):
+        before_signup = timezone.now()
         response = self.client.post(
             "/api/v1/tenants/onboard/",
             {
@@ -528,6 +529,7 @@ class OnboardTenantViewTest(TestCase):
             },
             format="json",
         )
+        after_signup = timezone.now()
 
         self.assertEqual(response.status_code, 201)
         self.user.refresh_from_db()
@@ -538,10 +540,13 @@ class OnboardTenantViewTest(TestCase):
         self.assertIsNotNone(tenant.trial_ends_at)
         self.assertEqual(tenant.model_tier, Tenant.ModelTier.STARTER)
         self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
-        # Trial extends to March 31 promo or 7 days, whichever is later
         self.assertGreaterEqual(
-            tenant.trial_ends_at - tenant.trial_started_at,
-            timedelta(days=7),
+            tenant.trial_ends_at,
+            before_signup + timedelta(days=14),
+        )
+        self.assertLessEqual(
+            tenant.trial_ends_at,
+            after_signup + timedelta(days=14),
         )
         mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
         mock_seed.assert_called_once_with(tenant=tenant)
