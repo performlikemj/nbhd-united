@@ -328,7 +328,7 @@ def _compute_unread_count(user) -> int | None:
                 status=AppChatMessage.Status.READY,
                 replied_at__gt=cursor,
             )
-            .exclude(reply_text="")  # noqa: encrypted-predicate
+            .exclude(reply_text="")  # guard: encrypted-predicate
             .count()
         )
         # ``notified_at`` marks non-eval proactive rows claimed by the APNs path.

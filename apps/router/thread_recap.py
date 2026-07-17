@@ -178,7 +178,7 @@ def build_thread_recap_block(
         # otherwise emit raw ciphertext into the recap block). The Phase 2
         # sweep must not skip this file.
         rows = list(
-            base_qs.exclude(reply_text="")  # noqa: encrypted-predicate
+            base_qs.exclude(reply_text="")  # guard: encrypted-predicate
             .order_by("-created_at", "-replied_at")
             .values("user_text", "reply_text", "journal_link")[:RECAP_MAX_EXCHANGES]
         )

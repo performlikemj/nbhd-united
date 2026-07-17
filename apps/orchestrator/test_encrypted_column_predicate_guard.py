@@ -9,7 +9,7 @@ content once that column becomes ciphertext.
 These tests pin: (1) a synthetic violation against a registered
 ``(model, column)`` pair is caught by name/line/model, (2) the real repo's
 known pre-existing sites are allowlisted and the guard is green on `main`,
-(3) an inline ``# noqa: encrypted-predicate`` suppresses a hit, and (4) two
+(3) an inline ``# guard: encrypted-predicate`` suppresses a hit, and (4) two
 non-hits the guard must NOT flag: a same-named column on an unregistered
 model (model-scoping), and a Python-side (non-queryset) read of the column.
 """
@@ -74,13 +74,13 @@ class SyntheticViolationTests(SimpleTestCase):
         self.assertIn("apps/testapp/probe.py:4", joined)
         self.assertIn("Lesson.text", joined)
 
-    def test_noqa_line_passes(self):
+    def test_guard_line_passes(self):
         content = _VIOLATION_TEMPLATE.format(model="Lesson", call="filter", col="text")
-        content = content.replace("needle)\n", "needle)  " + guard._NOQA_MARKER + "\n")
+        content = content.replace("needle)\n", "needle)  " + guard._GUARD_MARKER + "\n")
         with tempfile.TemporaryDirectory() as tmp:
             _write_fixture(tmp, "apps/testapp/probe.py", content)
             errors = guard.find_predicate_violations(Path(tmp))
-        self.assertEqual(errors, [], f"a noqa'd line must not be flagged: {errors}")
+        self.assertEqual(errors, [], f"a guarded line must not be flagged: {errors}")
 
     def test_allowlisted_site_passes(self):
         """The in-script allowlist is load-bearing: adding a (path, line,
