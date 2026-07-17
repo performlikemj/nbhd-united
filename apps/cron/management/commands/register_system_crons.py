@@ -91,6 +91,9 @@ SYSTEM_CRONS = [
     # QStash wake task queued (idempotency-keyed on fire_time so duplicates
     # collapse), so an out-of-band container restart can't cause a missed fire.
     ("ensure-at-cron-wakes", "*/5 * * * *", "/api/cron/trigger/ensure_at_cron_wakes/"),
+    # Every hour — retire spent kind:"at" rows after their late-fire grace so
+    # their names can be reused. Uses QStash's default maintenance retries.
+    ("expire-finished-at-crons", "0 * * * *", "/api/cron/trigger/expire_finished_at_crons/"),
     # Daily at 01:30 UTC — watchdog for orphaned Fuel/Gravity welcome crons.
     # Re-invokes the self-healing schedulers so a tenant whose welcome was
     # missed (gateway hiccup, agent crash mid-turn) gets retried within 24h.

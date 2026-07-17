@@ -697,6 +697,9 @@ class WeeklyDigestTaskGateTest(TestCase):
         with patch("apps.evals.alerting.send_mail", side_effect=RuntimeError("mailgun down")):
             self.assertEqual(send_slo_digest("subject", "body"), "failed")
 
+        with patch("apps.evals.alerting.send_mail", return_value=0):
+            self.assertEqual(send_slo_digest("subject", "body"), "failed")
+
         with override_settings(PLATFORM_OWNER_EMAIL=""):
             self.assertEqual(send_slo_digest("subject", "body"), "skipped_no_owner")
 

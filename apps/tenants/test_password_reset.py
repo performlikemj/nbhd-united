@@ -13,7 +13,9 @@ from rest_framework import exceptions
 from rest_framework.test import APIRequestFactory
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.router.models import DeviceToken
 from apps.tenants.authentication import JWTAuthenticationWithRLS
+from apps.tenants.models import Tenant
 
 User = get_user_model()
 
@@ -207,6 +209,24 @@ class PasswordResetFlowTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.user.refresh_from_db()
         self.assertIsNotNone(self.user.password_last_changed_at)
+
+    def test_confirm_revokes_all_live_device_tokens(self):
+        tenant = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
+        first = DeviceToken.objects.create(user=self.user, tenant=tenant, token="a" * 64)
+        second = DeviceToken.objects.create(user=self.user, tenant=tenant, token="b" * 64)
+        uid, token = self._make_uid_token(self.user)
+
+        response = self.client.post(
+            CONFIRM_URL,
+            {"uid": uid, "token": token, "new_password": "revoking-pass-123!"},
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        first.refresh_from_db()
+        second.refresh_from_db()
+        self.assertIsNotNone(first.revoked_at)
+        self.assertIsNotNone(second.revoked_at)
 
     def test_confirm_jwt_is_accepted_and_old_tokens_revoked(self):
         # The token returned by confirm must authenticate (it previously carried

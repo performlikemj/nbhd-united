@@ -483,6 +483,17 @@ class NotifyReplyReadyTest(TestCase):
         mock_send.assert_not_called()
 
     @override_settings(**_APNS_SETTINGS)
+    def test_suspended_tenant_gets_zero_turn_reply_sends(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN)
+        Tenant.objects.filter(pk=self.tenant.pk).update(status=Tenant.Status.SUSPENDED)
+        from apps.router.push_views import notify_app_reply_ready
+
+        with patch("apps.common.apns.send_push") as mock_send:
+            notify_app_reply_ready(self.tenant, ["r1"], "here you go")
+
+        mock_send.assert_not_called()
+
+    @override_settings(**_APNS_SETTINGS)
     def test_routes_each_environment_to_its_host(self):
         # A sandbox (Debug) device and a production (App Store) device for the same
         # user → one send per environment, each with the matching sandbox flag.
@@ -704,6 +715,22 @@ class PushTestEndpointTest(TestCase):
     def test_noop_when_no_tokens(self):
         with patch("apps.common.apns.send_push") as mock_send:
             resp = self.client.post("/api/v1/push/test/", {}, format="json")
+        self.assertEqual(resp.json()["skipped"], "no_tokens")
+        mock_send.assert_not_called()
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_revoked_token_gets_no_test_push(self):
+        from django.utils import timezone
+
+        DeviceToken.objects.create(
+            user=self.user,
+            tenant=self.tenant,
+            token=_VALID_TOKEN,
+            revoked_at=timezone.now(),
+        )
+        with patch("apps.common.apns.send_push") as mock_send:
+            resp = self.client.post("/api/v1/push/test/", {}, format="json")
+
         self.assertEqual(resp.json()["skipped"], "no_tokens")
         mock_send.assert_not_called()
 

@@ -35,12 +35,14 @@ from django.conf import settings
 from django.contrib.auth.tokens import default_token_generator
 from django.core.mail import send_mail
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 from django.template.loader import render_to_string
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from django.utils.encoding import force_bytes
 from django.utils.http import urlsafe_base64_encode
 
+from apps.router.models import DeviceToken
 from apps.tenants.models import User
 
 logger = logging.getLogger(__name__)
@@ -129,10 +131,13 @@ class Command(BaseCommand):
                 self.stdout.write(f"  [dry-run] would rotate {user.email}")
                 continue
 
-            # 1. Rotate the password. set_unusable_password bumps
-            #    password_last_changed_at via the model override.
-            user.set_unusable_password()
-            user.save(update_fields=["password", "password_last_changed_at"])
+            # 1. Rotate the password and revoke every live device session in one
+            #    transaction. set_unusable_password bumps password_last_changed_at
+            #    via the model override.
+            with transaction.atomic():
+                user.set_unusable_password()
+                user.save(update_fields=["password", "password_last_changed_at"])
+                DeviceToken.objects.filter(user=user, revoked_at__isnull=True).update(revoked_at=timezone.now())
 
             # 2. Generate a reset token against the new (unusable) hash.
             #    Django's default_token_generator HMACs the hash + last_login,

@@ -94,7 +94,7 @@ def send_slo_digest(subject: str, body: str) -> SloDigestOutcome:
         return "skipped_no_owner"
 
     try:
-        send_mail(
+        sent = send_mail(
             subject=subject,
             message=body,
             from_email=None,
@@ -103,5 +103,8 @@ def send_slo_digest(subject: str, body: str) -> SloDigestOutcome:
         )
     except Exception:
         logger.exception("slo digest: weekly digest email send failed")
+        return "failed"
+    if sent == 0:
+        logger.error("slo digest: weekly digest email backend reported zero deliveries")
         return "failed"
     return "sent"
