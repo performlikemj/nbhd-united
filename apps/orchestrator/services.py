@@ -720,6 +720,14 @@ def update_tenant_config(tenant_id: str) -> None:
         guide_key = "NBHD_DOC_PLATFORM_GUIDE" if tenant.feature_tips_enabled else "NBHD_DOC_PLATFORM_GUIDE_SILENT"
         file_map_overwrite[guide_key] = "workspace/docs/platform-guide.md"
 
+        if getattr(tenant, "tour_guide_enabled", False):
+            tour_guide_key = (
+                "NBHD_DOC_TOUR_GUIDE_CARDS"
+                if getattr(tenant, "tour_guide_mode", Tenant.TourGuideMode.LINKS) == Tenant.TourGuideMode.CARDS
+                else "NBHD_DOC_TOUR_GUIDE_LINKS"
+            )
+            file_map_overwrite[tour_guide_key] = "workspace/docs/tour-guide.md"
+
         for env_key, file_path in file_map_overwrite.items():
             content = workspace_files.get(env_key, "")
             if content:
