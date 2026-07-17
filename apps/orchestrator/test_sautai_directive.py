@@ -8,8 +8,8 @@ does not spend always-loaded bootstrap budget.
 
 Budget is the load-bearing test: the sautai gate is appended to the same
 always-loaded AGENTS.md that #1175/#1177 dieted down. The worst-case render —
-every flag-gated gate (friends + doc + email + **sautai** + Gravity) plus BOTH
-``agents_md`` extras blocks — must still fit under the IMPORTED
+every flag-gated gate (friends + doc + email + **sautai** + tour guide +
+Gravity) plus BOTH ``agents_md`` extras blocks — must still fit under the IMPORTED
 ``BOOTSTRAP_MAX_CHARS`` (never a re-hardcoded literal), or a tail gate is
 silently truncated at injection and becomes invisible in production.
 """
@@ -38,7 +38,8 @@ _GATE_PATH = os.path.join(
 _TASK_DISCIPLINE_BLOCK_CHARS = 1582
 
 _SAUTAI_GATE_MARKER = "## Meal plans (sautai)"
-_SAUTAI_GATE_TAIL = "follow the tool's response."
+_TOUR_GUIDE_GATE_MARKER = "## Tour guide"
+_TOUR_GUIDE_GATE_TAIL = "recent 📍 message exists."
 
 
 def _task_discipline_stand_in() -> str:
@@ -100,11 +101,11 @@ class SautaiBudgetTest(TestCase):
     email-provenance budget test already established:
 
     - the "everything but Gravity" worst case (friends + doc + email + **sautai**
-      + both ``agents_md`` extras), where the sautai gate itself is the tail —
-      the same envelope ``test_email_provenance_directive`` pins, now including
-      sautai. (Adding the ~6 KB Gravity block on TOP of this synthetic extras
-      pile overflows for reasons unrelated to this gate, so — like the email
-      test — it is out of the must-fit envelope.)
+      + tour guide + both ``agents_md`` extras), where the tour-guide gate is
+      the tail — the same envelope ``test_email_provenance_directive`` pins,
+      now including sautai and tour guide. (Adding the ~6 KB Gravity block on
+      TOP of this synthetic extras pile overflows for reasons unrelated to this
+      gate, so — like the email test — it is out of the must-fit envelope.)
     - a realistic Gravity power-tenant (finance + doc + **sautai**, no synthetic
       extras) where the ~6 KB Gravity block is the tail — proof that turning
       sautai on for a real Gravity user stays comfortably under the cap.
@@ -117,6 +118,7 @@ class SautaiBudgetTest(TestCase):
         tenant.document_ingestion_enabled = True
         tenant.email_provenance_enabled = True
         tenant.sautai_enabled = True
+        tenant.tour_guide_enabled = True
         tenant.save(
             update_fields=[
                 "friends_enabled",
@@ -124,6 +126,7 @@ class SautaiBudgetTest(TestCase):
                 "document_ingestion_enabled",
                 "email_provenance_enabled",
                 "sautai_enabled",
+                "tour_guide_enabled",
             ]
         )
         combined = _task_discipline_stand_in() + "\n\n" + _read_gate_text()
@@ -141,16 +144,17 @@ class SautaiBudgetTest(TestCase):
         self.assertIn("nbhd_document_keep", agents_md)  # doc-keep gate
         self.assertIn("Saving what you learn from an email", agents_md)  # email gate
         self.assertIn(_SAUTAI_GATE_MARKER, agents_md)  # sautai gate
+        self.assertIn(_TOUR_GUIDE_GATE_MARKER, agents_md)  # tour-guide gate
 
-        # The sautai gate is the tail here — its END must be under the (imported)
+        # The tour-guide gate is the tail here — its END must be under the (imported)
         # cap, or it is silently invisible at injection.
-        gate_end = agents_md.find(_SAUTAI_GATE_TAIL)
+        gate_end = agents_md.find(_TOUR_GUIDE_GATE_TAIL)
         self.assertNotEqual(gate_end, -1)
-        gate_end += len(_SAUTAI_GATE_TAIL)
+        gate_end += len(_TOUR_GUIDE_GATE_TAIL)
         self.assertLess(
             gate_end,
             BOOTSTRAP_MAX_CHARS,
-            f"sautai gate ends at {gate_end} — past the {BOOTSTRAP_MAX_CHARS} injection cap",
+            f"tour-guide gate ends at {gate_end} — past the {BOOTSTRAP_MAX_CHARS} injection cap",
         )
         self.assertLess(
             len(agents_md),

@@ -163,6 +163,10 @@ class Tenant(models.Model):
     class ModelTier(models.TextChoices):
         STARTER = "starter", "Standard"
 
+    class TourGuideMode(models.TextChoices):
+        CARDS = "cards", "Cards"
+        LINKS = "links", "Links"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name="tenant")
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
@@ -540,6 +544,23 @@ class Tenant(models.Model):
     feature_tips_enabled = models.BooleanField(
         default=True,
         help_text="Whether the assistant proactively suggests platform features",
+    )
+
+    # Tour-guide capability — the AGENTS.md gate points enabled tenants at one
+    # mode-specific guide doc. Cards are for the dev/TestFlight client that
+    # renders nbhd-guide itinerary cards; links are safe for the App Store app.
+    tour_guide_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable server-side tour-guide instructions for this tenant",
+    )
+    tour_guide_mode = models.CharField(
+        choices=TourGuideMode.choices,
+        default=TourGuideMode.LINKS,
+        max_length=8,
+        help_text=(
+            "Cards: the dev/TestFlight client renders nbhd-guide itinerary cards. "
+            "Links: the standard App Store client receives plain maps links only."
+        ),
     )
 
     # Donation preferences

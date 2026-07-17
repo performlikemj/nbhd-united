@@ -568,6 +568,8 @@ _WORKSPACE_DOCS = {
     "NBHD_DOC_ERROR_HANDLING": "error-handling.md",
     "NBHD_DOC_PLATFORM_GUIDE": "platform-guide.md",
     "NBHD_DOC_PLATFORM_GUIDE_SILENT": "platform-guide-silent.md",
+    "NBHD_DOC_TOUR_GUIDE_CARDS": "tour-guide-cards.md",
+    "NBHD_DOC_TOUR_GUIDE_LINKS": "tour-guide-links.md",
 }
 
 
@@ -831,6 +833,19 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
             "tool result; follow the tool's response."
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + sautai_gate
+
+    # Tour-guide gate — a lean, imperative per-tenant cue. The detailed reply
+    # contract lives in docs/tour-guide.md, outside the bootstrap budget. Keep
+    # this BEFORE the larger Gravity block so it cannot become a truncated tail.
+    if tenant is not None and getattr(tenant, "tour_guide_enabled", False):
+        tour_guide_gate = (
+            "## Tour guide\n\n"
+            "When the user asks what to do, where to eat, or how to spend time around a place — "
+            'or any message contains a "📍 Current location" line — read `docs/tour-guide.md` '
+            "THIS TURN, before answering, and follow its reply format exactly. Never ask where "
+            "the user is when a recent 📍 message exists."
+        )
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + tour_guide_gate
 
     # Gravity observation-mode rules — behavioral, belongs in AGENTS.md
     # (not USER.md). The rules block is ~6 KB of static text; until
