@@ -51,7 +51,7 @@ Three escape hatches, by design:
      encrypts."
   2. **Admin-search allowlist** (``_ALLOWLISTED_ADMIN_SEARCH_FIELDS``) — same,
      for ``search_fields`` entries.
-  3. **Inline** ``# noqa: encrypted-predicate`` on the offending line — for
+  3. **Inline** ``# guard: encrypted-predicate`` on the offending line — for
      a new PR that has a deliberate, reviewed reason to touch a registered
      column before its phase lands.
 
@@ -275,7 +275,7 @@ _ALLOWLISTED_ADMIN_SEARCH_FIELDS: set[tuple[str, int, str]] = {
 # and allowlist, never silently miss.
 _ALL_REGISTERED_COLUMN_NAMES: frozenset[str] = frozenset(col for _model, col in ENCRYPTED_COLUMNS)
 
-_NOQA_MARKER = "# noqa: encrypted-predicate"
+_GUARD_MARKER = "# guard: encrypted-predicate"
 
 # ``@admin.register(Model, ...)`` and the ``search_fields = (/[`` opener.
 _ADMIN_REGISTER_RE = re.compile(r"@admin\.register\(([^)]*)\)")
@@ -401,7 +401,7 @@ def _scan_file(text: str, relpath: str) -> list[tuple[str, int, str, str]]:
             for m in col_re.finditer(span_text):
                 abs_pos = args_start + m.start()
                 line_no = _line_number(text, abs_pos)
-                if _NOQA_MARKER in _line_text(text, abs_pos):
+                if _GUARD_MARKER in _line_text(text, abs_pos):
                     continue
                 key = (line_no, model, column)
                 if key in seen:
@@ -473,7 +473,7 @@ def _scan_admin_search_fields(text: str, relpath: str) -> list[tuple[str, int, s
 def find_predicate_violations(repo_root: Path = REPO_ROOT) -> list[str]:
     """Pure core — scans ``<repo_root>/apps/**/*.py`` and returns a list of
     human-readable violation strings (empty when clean). Allowlist and
-    ``# noqa: encrypted-predicate`` are applied here."""
+    ``# guard: encrypted-predicate`` annotations are applied here."""
     repo_root = Path(repo_root)
     apps_dir = repo_root / "apps"
     errors: list[str] = []
@@ -499,7 +499,7 @@ def find_predicate_violations(repo_root: Path = REPO_ROOT) -> list[str]:
                 "as AES-GCM ciphertext this predicate will silently stop "
                 "matching real content instead of erroring. Route through "
                 "apps.crypto once the column flips, or if this predicate is "
-                "pre-existing/intentional today, add `# noqa: encrypted-predicate` "
+                "pre-existing/intentional today, add `# guard: encrypted-predicate` "
                 "on this line."
             )
 
