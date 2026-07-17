@@ -135,6 +135,57 @@ class DeliverBufferedLineFormattingTest(TestCase):
         mock_send.assert_not_called()
 
 
+class DeliverBufferedEvalSinkIsolationTest(TestCase):
+    @patch("apps.router.line_webhook.relay_ai_response_to_line")
+    @patch("apps.router.pending_queue.relay_ai_response_to_telegram")
+    @patch("httpx.post")
+    def test_eval_sink_telegram_and_line_rows_are_terminal_without_transport(
+        self,
+        mock_post,
+        telegram_relay,
+        line_relay,
+    ):
+        from apps.orchestrator.hibernation import deliver_buffered_messages_task
+
+        user = User.objects.create_user(
+            username=f"hib_eval_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=778811,
+            line_user_id="U_hib_eval",
+        )
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            container_fqdn="oc-eval.example.com",
+            is_eval_sink=True,
+        )
+        telegram_row = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.TELEGRAM,
+            payload={"update_id": 1},
+            user_text="telegram question",
+        )
+        line_row = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={"events": []},
+            user_text="line question",
+        )
+
+        result = deliver_buffered_messages_task(str(tenant.id))
+
+        self.assertEqual(result, {"delivered": 0, "failed": 0, "dropped": 2, "skipped_in_flight": 0})
+        mock_post.assert_not_called()
+        telegram_relay.assert_not_called()
+        line_relay.assert_not_called()
+        for row in (telegram_row, line_row):
+            row.refresh_from_db()
+            self.assertTrue(row.delivered)
+            self.assertIsNotNone(row.delivered_at)
+            self.assertEqual(row.delivery_status, BufferedMessage.Status.FAILED)
+            self.assertIsNone(row.delivery_in_flight_until)
+
+
 def _ok_chat_response(text: str = "ok"):
     resp = MagicMock()
     resp.status_code = 200
@@ -293,6 +344,25 @@ class DeliverBufferedResilienceTest(TestCase):
 
 
 class ApologyHelperTest(TestCase):
+    @patch("apps.router.line_webhook._send_line_text", return_value=True)
+    def test_eval_sink_dropped_buffer_apology_is_suppressed(self, mock_send_text):
+        from apps.orchestrator.hibernation import _send_apology_for_dropped_message
+
+        user = _make_user(line_user_id="U_eval_buffer_apology")
+        tenant = _make_tenant(user)
+        tenant.is_eval_sink = True
+        tenant.save(update_fields=["is_eval_sink", "updated_at"])
+        msg = BufferedMessage.objects.create(
+            tenant=tenant,
+            channel=BufferedMessage.Channel.LINE,
+            payload={},
+            user_text="failed question",
+        )
+
+        _send_apology_for_dropped_message(tenant, msg)
+
+        mock_send_text.assert_not_called()
+
     @patch("apps.router.line_webhook._send_line_text", return_value=True)
     def test_apology_quotes_user_message_excerpt(self, mock_send_text):
         from apps.orchestrator.hibernation import _send_apology_for_dropped_message

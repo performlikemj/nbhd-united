@@ -130,6 +130,10 @@ def _send_telegram_text(chat_id: int, text: str) -> bool:
 
 
 def _send_line_text(line_user_id: str, text: str) -> bool:
+    from apps.common.eval_sink import blocks_real_transport_for_identifier
+
+    if blocks_real_transport_for_identifier("line", line_user_id):
+        return False
     if not line_user_id:
         return False
     access_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "")

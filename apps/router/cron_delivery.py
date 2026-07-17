@@ -15,6 +15,7 @@ from rest_framework import status as http_status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.tenants.models import Tenant
 
@@ -419,6 +420,10 @@ class CronDeliveryView(APIView):
         parse_mode: str,
     ) -> Response:
         """Send via Telegram Bot API."""
+        tenant_obj = Tenant.objects.filter(id=tenant_id).first()
+        if tenant_obj is not None and suppresses_real_transport(tenant_obj):
+            logger.error("eval-sink transport block: tenant=%s transport=telegram", tenant_obj.id)
+            return Response({"status": "blocked", "reason": "eval_sink"})
         bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "")
         if not bot_token:
             logger.error("TELEGRAM_BOT_TOKEN not configured for cron delivery")
@@ -504,6 +509,10 @@ class CronDeliveryView(APIView):
         the quote-reply excerpt (so ``LineOutboundMessage.text_excerpt`` holds no
         real names).
         """
+        tenant_obj = Tenant.objects.filter(id=tenant_id).first()
+        if tenant_obj is not None and suppresses_real_transport(tenant_obj):
+            logger.error("eval-sink transport block: tenant=%s transport=line", tenant_obj.id)
+            return Response({"status": "blocked", "reason": "eval_sink"})
         access_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "")
         if not access_token:
             logger.error("LINE_CHANNEL_ACCESS_TOKEN not configured for cron delivery")
@@ -543,9 +552,6 @@ class CronDeliveryView(APIView):
             messages = [{"type": "text", "text": c} for c in chunks[:5]]
 
         from apps.router.line_webhook import _record_line_outbound
-        from apps.tenants.models import Tenant
-
-        tenant_obj = Tenant.objects.filter(id=tenant_id).first()
 
         sent_count = 0
         try:

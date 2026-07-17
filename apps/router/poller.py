@@ -22,6 +22,7 @@ from apps.billing.services import (
     record_usage,
     resolve_model_for_attribution,
 )
+from apps.common.eval_sink import blocks_real_transport_for_identifier, suppresses_real_transport
 from apps.tenants.models import Tenant
 
 from .error_messages import error_msg
@@ -204,6 +205,8 @@ class TelegramPoller:
     def _send_message(self, chat_id: int, text: str, **kwargs: Any) -> None:
         """Send a message via Telegram Bot API."""
         assert self._http is not None
+        if blocks_real_transport_for_identifier("telegram", chat_id):
+            return
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text, **kwargs}
         try:
             resp = self._http.post(
@@ -260,6 +263,8 @@ class TelegramPoller:
         HTML rejection, that chunk degrades to tag-free text (no markdown).
         """
         assert self._http is not None
+        if blocks_real_transport_for_identifier("telegram", chat_id):
+            return
         from apps.router.telegram_format import render_telegram_html, strip_telegram_html
 
         for i, chunk in enumerate(render_telegram_html(text)):
@@ -290,6 +295,12 @@ class TelegramPoller:
         Returns True if sent successfully.
         """
         assert self._http is not None
+        if suppresses_real_transport(tenant):
+            logger.error(
+                "eval-sink transport block: tenant=%s transport=telegram",
+                tenant.id,
+            )
+            return False
         try:
             # Map container path back to file share path
             # Container: /home/node/.openclaw/workspace/X → File share: workspace/X
@@ -489,6 +500,8 @@ class TelegramPoller:
     def _send_typing(self, chat_id: int) -> None:
         """Send 'typing' chat action to Telegram."""
         assert self._http is not None
+        if blocks_real_transport_for_identifier("telegram", chat_id):
+            return
         try:
             self._http.post(
                 f"{self._api_base}/sendChatAction",
@@ -514,6 +527,12 @@ class TelegramPoller:
         Returns transcribed text, or None on failure.
         """
         assert self._http is not None
+        if tenant is not None and suppresses_real_transport(tenant):
+            logger.error(
+                "eval-sink transport block: tenant=%s transport=telegram",
+                tenant.id,
+            )
+            return None
         openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
         if not openai_key:
             logger.warning("Cannot transcribe voice: no OPENAI_API_KEY configured")
@@ -642,6 +661,12 @@ class TelegramPoller:
         Returns the container-mounted file path (for the agent's image tool),
         or None on failure.
         """
+        if suppresses_real_transport(tenant):
+            logger.error(
+                "eval-sink transport block: tenant=%s transport=telegram",
+                tenant.id,
+            )
+            return None
         photo_data_url = self._download_photo(message)
         if not photo_data_url:
             return None
@@ -687,6 +712,8 @@ class TelegramPoller:
     def _edit_message_reply_markup(self, chat_id: int, message_id: int, reply_markup: dict | None) -> None:
         """Edit a message's inline keyboard (or remove it)."""
         assert self._http is not None
+        if blocks_real_transport_for_identifier("telegram", chat_id):
+            return
         payload: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id}
         if reply_markup:
             payload["reply_markup"] = reply_markup
@@ -705,6 +732,9 @@ class TelegramPoller:
         """Execute a Telegram API method from a response dict (same format as webhook returns)."""
         method = response_data.get("method")
         if not method:
+            return
+        chat_id = response_data.get("chat_id")
+        if chat_id is not None and blocks_real_transport_for_identifier("telegram", chat_id):
             return
         assert self._http is not None
         try:
@@ -789,6 +819,13 @@ class TelegramPoller:
             return
 
         tenant = resolve_tenant_by_chat_id(chat_id)
+
+        if tenant is not None and suppresses_real_transport(tenant):
+            logger.warning(
+                "Telegram poller: dropping eval-sink update tenant=%s",
+                tenant.id,
+            )
+            return
 
         # Handle callback queries (button presses)
         if "callback_query" in update and tenant is not None:

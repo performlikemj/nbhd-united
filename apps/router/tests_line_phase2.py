@@ -572,7 +572,7 @@ class ReplyAPITest(TestCase):
         mock_resp = MagicMock()
         mock_resp.is_success = True
         mock_post.return_value = mock_resp
-        result = _send_line_reply("valid_token", [{"type": "text", "text": "hi"}])
+        result = _send_line_reply("valid_token", [{"type": "text", "text": "hi"}], "U123")
         self.assertTrue(result)
         call_url = mock_post.call_args[0][0]
         self.assertIn("message/reply", call_url)
@@ -586,7 +586,7 @@ class ReplyAPITest(TestCase):
         mock_resp.status_code = 400
         mock_resp.text = "Invalid reply token"
         mock_post.return_value = mock_resp
-        result = _send_line_reply("expired_token", [{"type": "text", "text": "hi"}])
+        result = _send_line_reply("expired_token", [{"type": "text", "text": "hi"}], "U123")
         self.assertFalse(result)
 
     @patch("apps.router.line_webhook.httpx.post")
@@ -630,6 +630,13 @@ class ReplyAPITest(TestCase):
 
         self.assertFalse(_send_line_reply("", [{"type": "text", "text": "hi"}]))
         self.assertFalse(_send_line_reply(None, [{"type": "text", "text": "hi"}]))
+
+    @patch("apps.router.line_webhook.httpx.post")
+    def test_reply_api_refuses_unscoped_target(self, mock_post):
+        from apps.router.line_webhook import _send_line_reply
+
+        self.assertFalse(_send_line_reply("valid_token", [{"type": "text", "text": "hi"}]))
+        mock_post.assert_not_called()
 
 
 # ────────────────────────────────────────────────────────────────────────────

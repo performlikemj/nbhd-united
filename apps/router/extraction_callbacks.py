@@ -23,6 +23,7 @@ from django.conf import settings
 from django.http import JsonResponse
 from django.utils import timezone
 
+from apps.common.eval_sink import blocks_real_transport_for_identifier
 from apps.journal.models import Document, PendingExtraction
 from apps.lessons.models import Lesson
 from apps.lessons.services import process_approved_lesson
@@ -42,6 +43,8 @@ def _answer_callback(callback_id: str, text: str) -> JsonResponse:
 
 
 def _edit_message(chat_id: int, message_id: int, text: str) -> None:
+    if blocks_real_transport_for_identifier("telegram", chat_id):
+        return
     token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         return

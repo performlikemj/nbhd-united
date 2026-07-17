@@ -178,6 +178,41 @@ class LineWebhookEventTest(TestCase):
         call_args = mock_push.call_args[0]
         self.assertEqual(call_args[0], "U_unknown_direct")
 
+    @patch("apps.router.line_webhook.httpx.post")
+    def test_eval_sink_event_drops_while_real_tenant_still_sends(self, mock_post):
+        from apps.router.line_webhook import LineWebhookView
+
+        eval_user = _make_user(line_user_id="U_eval_ingress")
+        eval_tenant = _make_tenant(
+            eval_user,
+            status=Tenant.Status.PROVISIONING,
+            is_eval_sink=True,
+        )
+        real_user = _make_user(line_user_id="U_real_ingress")
+        _make_tenant(real_user, status=Tenant.Status.PROVISIONING)
+        response = MagicMock(is_success=True, status_code=200)
+        response.json.return_value = {}
+        mock_post.return_value = response
+        view = LineWebhookView()
+
+        view._handle_message(
+            {
+                "type": "message",
+                "source": {"userId": eval_tenant.user.line_user_id},
+                "message": {"type": "text", "text": "hello"},
+            }
+        )
+        mock_post.assert_not_called()
+
+        view._handle_message(
+            {
+                "type": "message",
+                "source": {"userId": real_user.line_user_id},
+                "message": {"type": "text", "text": "hello"},
+            }
+        )
+        self.assertTrue(any("api.line.me" in call.args[0] for call in mock_post.call_args_list))
+
     @patch("httpx.post")
     def test_message_from_linked_user_forwards(self, mock_httpx_post):
         """Linked user's message triggers container forward — called directly."""

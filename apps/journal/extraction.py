@@ -269,6 +269,10 @@ def _send_telegram_with_buttons(
     buttons: list[list[dict]],
 ) -> int | None:
     """Send a Telegram message with inline keyboard. Returns message_id."""
+    from apps.common.eval_sink import blocks_real_transport_for_identifier
+
+    if blocks_real_transport_for_identifier("telegram", chat_id):
+        return None
     from apps.router.telegram_format import markdown_to_plaintext, render_telegram_html
 
     url = f"{TELEGRAM_API_BASE}{bot_token}/sendMessage"
@@ -413,6 +417,10 @@ def _deliver_summary_line(
     same carousel with their own ``task_action:undo:<id>`` postback prefix.
     Returns True if delivery succeeded, False otherwise.
     """
+    from apps.common.eval_sink import blocks_real_transport_for_identifier
+
+    if blocks_real_transport_for_identifier("line", line_user_id):
+        return False
 
     task_actions = task_actions or []
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}

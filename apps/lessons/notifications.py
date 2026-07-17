@@ -11,6 +11,7 @@ import logging
 
 from django.conf import settings
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.tenants.models import Tenant
 
 from .models import Lesson
@@ -28,6 +29,9 @@ LINE_PUSH_URL = "https://api.line.me/v2/bot/message/push"
 
 def _send_telegram_lesson(tenant: Tenant, lesson: Lesson) -> bool:
     """Send a Telegram message with approve/dismiss inline buttons."""
+    if suppresses_real_transport(tenant):
+        logger.error("eval-sink transport block: tenant=%s transport=telegram", tenant.id)
+        return False
     import httpx
 
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
@@ -92,6 +96,9 @@ def _send_telegram_lesson(tenant: Tenant, lesson: Lesson) -> bool:
 
 def _send_line_lesson(tenant: Tenant, lesson: Lesson) -> bool:
     """Send a LINE Flex Message with approve/dismiss postback buttons."""
+    if suppresses_real_transport(tenant):
+        logger.error("eval-sink transport block: tenant=%s transport=line", tenant.id)
+        return False
     import httpx
 
     channel_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "").strip()

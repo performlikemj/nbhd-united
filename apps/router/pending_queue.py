@@ -56,7 +56,7 @@ from apps.billing.services import (
     record_usage,
     resolve_model_for_attribution,
 )
-from apps.common.eval_sink import suppresses_real_transport
+from apps.common.eval_sink import blocks_real_transport_for_identifier, suppresses_real_transport
 from apps.router.models import AppChatMessage, PendingMessage
 from apps.router.reply_text import clamp_reply_text
 from apps.tenants.models import Tenant
@@ -1261,6 +1261,12 @@ def _notify_waking(tenant: Tenant, channel: str, channel_user_id: str) -> None:
     """
     if channel != PendingMessage.Channel.TELEGRAM or not channel_user_id:
         return
+    if suppresses_real_transport(tenant):
+        logger.error(
+            "eval-sink transport block: tenant=%s transport=telegram",
+            tenant.id,
+        )
+        return
     try:
         chat_id = int(channel_user_id)
     except (TypeError, ValueError):
@@ -1308,6 +1314,14 @@ def _send_apology_for_stale_pending_message(
     # 'couldn't finish' APNs push (idempotent) — otherwise it spins forever.
     if msg.channel == PendingMessage.Channel.IOS:
         _store_ios_turn_error(tenant, [msg], "stale")
+        return
+
+    if suppresses_real_transport(tenant):
+        logger.error(
+            "eval-sink transport block: tenant=%s transport=%s",
+            tenant.id,
+            msg.channel,
+        )
         return
 
     from apps.pii.redactor import rehydrate_for_tenant
@@ -1389,6 +1403,14 @@ def _send_apology_for_dropped_pending_message(tenant: Tenant, msg: PendingMessag
     # 'couldn't finish' APNs push (idempotent) — otherwise it spins forever.
     if msg.channel == PendingMessage.Channel.IOS:
         _store_ios_turn_error(tenant, [msg], "dropped")
+        return
+
+    if suppresses_real_transport(tenant):
+        logger.error(
+            "eval-sink transport block: tenant=%s transport=%s",
+            tenant.id,
+            msg.channel,
+        )
         return
 
     from apps.pii.redactor import rehydrate_for_tenant
@@ -2072,6 +2094,12 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
     """
     if not ai_text or not chat_id:
         return False
+    if suppresses_real_transport(tenant):
+        logger.error(
+            "eval-sink transport block: tenant=%s transport=telegram",
+            tenant.id,
+        )
+        return False
 
     # Quick-reply buttons and the journal deep-link chip are iOS-only for now —
     # Telegram has no transport for either here, so just strip the markers
@@ -2200,6 +2228,8 @@ def _telegram_api_base() -> str | None:
 
 def _send_telegram_typing_safe(chat_id: int) -> None:
     """Best-effort typing indicator. Never raises."""
+    if blocks_real_transport_for_identifier("telegram", chat_id):
+        return
     base = _telegram_api_base()
     if not base:
         return
@@ -2254,6 +2284,8 @@ def _send_telegram_markdown(chat_id: int, text: str, reply_markup: dict | None =
     ``reply_markup`` (e.g. an ``inline_keyboard`` of agent buttons) is attached
     to the LAST chunk only, mirroring ``TelegramPoller._send_rich_response``.
     """
+    if blocks_real_transport_for_identifier("telegram", chat_id):
+        return False
     base = _telegram_api_base()
     if not base:
         logger.warning("drain_pending: cannot send telegram message — no bot token")
@@ -2312,6 +2344,12 @@ def _send_telegram_photo(chat_id: int, photo_path: str, tenant: Tenant) -> bool:
     Mirrors ``TelegramPoller._send_photo`` — kept here so the drain task
     doesn't need to reach into the poller process.
     """
+    if suppresses_real_transport(tenant):
+        logger.error(
+            "eval-sink transport block: tenant=%s transport=telegram",
+            tenant.id,
+        )
+        return False
     base = _telegram_api_base()
     if not base:
         return False

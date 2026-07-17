@@ -166,6 +166,48 @@ class TelegramPollerDispatchTest(TestCase):
         # Rate-limited: no Telegram API calls
         self.poller._http.post.assert_not_called()
 
+    @patch("apps.router.poller.resolve_tenant_by_chat_id")
+    @patch("apps.router.poller.is_rate_limited", return_value=False)
+    @patch("apps.router.poller.handle_start_command", return_value=None)
+    def test_eval_sink_update_is_dropped_while_real_tenant_still_sends(
+        self,
+        _start,
+        _rate,
+        mock_resolve,
+    ):
+        import secrets
+
+        from apps.tenants.models import User
+
+        eval_user = User.objects.create_user(
+            username=f"poller_eval_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=881001,
+        )
+        eval_tenant = Tenant.objects.create(
+            user=eval_user,
+            status=Tenant.Status.PROVISIONING,
+            is_eval_sink=True,
+        )
+        real_user = User.objects.create_user(
+            username=f"poller_real_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+            telegram_chat_id=881002,
+        )
+        real_tenant = Tenant.objects.create(
+            user=real_user,
+            status=Tenant.Status.PROVISIONING,
+        )
+
+        mock_resolve.return_value = eval_tenant
+        self.poller._handle_update({"message": {"text": "hello", "chat": {"id": 881001}}})
+        self.poller._http.post.assert_not_called()
+
+        mock_resolve.return_value = real_tenant
+        self.poller._handle_update({"message": {"text": "hello", "chat": {"id": 881002}}})
+        self.poller._http.post.assert_called_once()
+        self.assertIn("sendMessage", self.poller._http.post.call_args.args[0])
+
     @patch("apps.router.poller.check_budget", return_value="personal")
     @patch("apps.router.poller.resolve_tenant_by_chat_id")
     @patch("apps.router.poller.is_rate_limited", return_value=False)

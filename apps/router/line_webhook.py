@@ -33,6 +33,7 @@ from apps.billing.services import (
     record_usage,
     resolve_model_for_attribution,
 )
+from apps.common.eval_sink import blocks_real_transport_for_identifier, suppresses_real_transport
 from apps.router.error_messages import error_msg
 from apps.router.line_flex import (
     attach_quick_reply,
@@ -79,6 +80,8 @@ def _verify_signature(body: bytes, signature: str) -> bool:
 
 def _show_loading(line_user_id: str) -> None:
     """Show typing/loading animation in LINE chat. Fire-and-forget."""
+    if blocks_real_transport_for_identifier("line", line_user_id):
+        return
     access_token = _get_access_token()
     if not access_token:
         return
@@ -110,6 +113,12 @@ def _transcribe_line_audio(message_id: str, tenant: Tenant | None = None) -> str
 
     Returns transcribed text, or None on failure.
     """
+    if tenant is not None and suppresses_real_transport(tenant):
+        logger.error(
+            "eval-sink transport block: tenant=%s transport=line",
+            tenant.id,
+        )
+        return None
     openai_key = getattr(settings, "OPENAI_API_KEY", "") or os.environ.get("OPENAI_API_KEY", "")
     if not openai_key:
         logger.warning("Cannot transcribe LINE audio: no OPENAI_API_KEY configured")
@@ -194,10 +203,18 @@ def _transcribe_line_audio(message_id: str, tenant: Tenant | None = None) -> str
         return None
 
 
-def _post_line_reply(reply_token: str, messages: list[dict]) -> dict | None:
+def _post_line_reply(
+    reply_token: str,
+    messages: list[dict],
+    *,
+    _target_checked: bool = False,
+) -> dict | None:
     """POST to LINE Reply API. Returns parsed response body on success
     (which contains ``sentMessages``), else ``None``.
     """
+    if not _target_checked:
+        logger.error("eval-sink transport block: unscoped reply transport=line")
+        return None
     access_token = _get_access_token()
     if not access_token or not reply_token:
         return None
@@ -223,12 +240,18 @@ def _post_line_reply(reply_token: str, messages: list[dict]) -> dict | None:
         return None
 
 
-def _send_line_reply(reply_token: str, messages: list[dict]) -> bool:
+def _send_line_reply(
+    reply_token: str,
+    messages: list[dict],
+    line_user_id: str | None = None,
+) -> bool:
     """Send messages via LINE Reply Message API (free, unlimited).
 
     Returns True on success, False if token expired or other failure.
     """
-    return _post_line_reply(reply_token, messages) is not None
+    if not line_user_id or blocks_real_transport_for_identifier("line", line_user_id):
+        return False
+    return _post_line_reply(reply_token, messages, _target_checked=True) is not None
 
 
 def _send_line_messages(
@@ -249,6 +272,12 @@ def _send_line_messages(
     placeholder-space reply) is forwarded so the stored excerpt holds no real
     names.
     """
+    if tenant is not None and suppresses_real_transport(tenant):
+        logger.error(
+            "eval-sink transport block: tenant=%s transport=line",
+            tenant.id,
+        )
+        return False
     data = _post_line_messages(line_user_id, messages, reply_token=reply_token)
     if data is None:
         return False
@@ -269,17 +298,26 @@ def _post_line_messages(
 
     Returns ``None`` only when both paths fail.
     """
+    if blocks_real_transport_for_identifier("line", line_user_id):
+        return None
     if reply_token:
-        data = _post_line_reply(reply_token, messages)
+        data = _post_line_reply(reply_token, messages, _target_checked=True)
         if data is not None:
             return data
-    return _post_line_push(line_user_id, messages)
+    return _post_line_push(line_user_id, messages, _target_checked=True)
 
 
-def _post_line_push(line_user_id: str, messages: list[dict]) -> dict | None:
+def _post_line_push(
+    line_user_id: str,
+    messages: list[dict],
+    *,
+    _target_checked: bool = False,
+) -> dict | None:
     """POST to LINE Push API. Returns parsed response body on success
     (which contains ``sentMessages``), else ``None``.
     """
+    if not _target_checked and blocks_real_transport_for_identifier("line", line_user_id):
+        return None
     access_token = _get_access_token()
     if not access_token:
         logger.error("LINE_CHANNEL_ACCESS_TOKEN not configured")
@@ -692,6 +730,12 @@ def relay_ai_response_to_line(
     """
     if not ai_text or not line_user_id:
         return False
+    if suppresses_real_transport(tenant):
+        logger.error(
+            "eval-sink transport block: tenant=%s transport=line",
+            tenant.id,
+        )
+        return False
 
     # Quick-reply buttons are iOS-only for now — LINE has its own
     # [[button:label|data]] marker (extract_quick_reply_buttons below) for
@@ -930,6 +974,12 @@ class LineWebhookView(View):
         # Check if already linked
         tenant = _resolve_tenant_by_line_user_id(line_user_id)
         if tenant:
+            if suppresses_real_transport(tenant):
+                logger.warning(
+                    "LINE webhook: dropping eval-sink follow event tenant=%s",
+                    tenant.id,
+                )
+                return
             _send_line_flex(
                 line_user_id,
                 build_short_bubble(
@@ -1002,6 +1052,12 @@ class LineWebhookView(View):
             # needs_reintroduction gate so that backfilled/default-profile users are
             # also caught here rather than after paying for a Whisper call.
             _audio_tenant = _resolve_tenant_by_line_user_id(line_user_id)
+            if _audio_tenant is not None and suppresses_real_transport(_audio_tenant):
+                logger.warning(
+                    "LINE webhook: dropping eval-sink message event tenant=%s",
+                    _audio_tenant.id,
+                )
+                return
             from apps.router.onboarding import needs_reintroduction as _needs_reintroduction
 
             if _audio_tenant is not None and (
@@ -1104,6 +1160,13 @@ class LineWebhookView(View):
                     "from your Settings page to get started!",
                     tone="warning",
                 ),
+            )
+            return
+
+        if suppresses_real_transport(tenant):
+            logger.warning(
+                "LINE webhook: dropping eval-sink message event tenant=%s",
+                tenant.id,
             )
             return
 
@@ -1258,6 +1321,8 @@ class LineWebhookView(View):
 
     def _get_line_profile_name(self, line_user_id: str) -> str | None:
         """Fetch user's display name from LINE Profile API."""
+        if blocks_real_transport_for_identifier("line", line_user_id):
+            return None
         access_token = _get_access_token()
         if not access_token:
             return None
@@ -1391,6 +1456,13 @@ class LineWebhookView(View):
 
         tenant = _resolve_tenant_by_line_user_id(line_user_id)
         if not tenant:
+            return
+
+        if suppresses_real_transport(tenant):
+            logger.warning(
+                "LINE webhook: dropping eval-sink postback event tenant=%s",
+                tenant.id,
+            )
             return
 
         # Onboarding callbacks (country/timezone buttons)
