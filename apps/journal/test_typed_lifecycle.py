@@ -18,6 +18,7 @@ from .envelope import (
     render_open_tasks_summary,
 )
 from .models import Document, Goal, Task
+from .templates_md import GOALS_TEMPLATE
 
 # Sentinel reference — keeps the lint hook from stripping the *_summary
 # imports if a future edit ever removes a call site. (The hook autofixes
@@ -149,6 +150,18 @@ class EnvelopeDualReadTest(TestCase):
         out = render_goals(self.tenant)
         self.assertIn("Legacy goals", out)
         self.assertIn("Read books", out)
+
+    def test_templates_md_pristine_goals_scaffold_is_filtered(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.GOAL,
+            slug="goals",
+            title="Goals",
+            markdown=GOALS_TEMPLATE,
+        )
+
+        self.assertEqual(render_goals(self.tenant), "")
+        self.assertEqual(render_goals_summary(self.tenant), "")
 
     def test_render_open_tasks_full_returns_typed_titles_inline(self):
         Task.objects.create(tenant=self.tenant, title="Pay May loan payment", due_date=date(2026, 5, 5))

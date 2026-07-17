@@ -17,6 +17,7 @@ from apps.common.cache import tenant_cache
 from apps.insights.models import AssistantInsight
 from apps.integrations.models import Integration
 from apps.journal.models import Document, JournalEntry, PendingExtraction, WeeklyReview
+from apps.journal.services import is_pristine_goals_scaffold
 from apps.tenants.models import Tenant
 
 _WEEKLY_SLUG_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
@@ -265,6 +266,7 @@ class HorizonsView(APIView):
                 "updated_at",
             )
         )
+        legacy_goals = [goal for goal in legacy_goals if not is_pristine_goals_scaffold(goal["markdown"] or "")]
         # Collapse title-colliding legacy docs the typed-Goal migration left
         # un-pruned (see _dedupe_legacy_goal_docs) so the same goal renders once.
         legacy_goals = _dedupe_legacy_goal_docs(legacy_goals)

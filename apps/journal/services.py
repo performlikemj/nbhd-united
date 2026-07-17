@@ -10,6 +10,7 @@ from django.core.exceptions import ValidationError
 from django.utils import timezone as tz
 
 from .models import DailyNote, Document, NoteTemplate
+from .templates_md import GOALS_TEMPLATE
 
 
 def _get_persona_name(tenant) -> str:
@@ -166,6 +167,20 @@ STARTER_DOCUMENT_TEMPLATES = [
         "markdown": """# Memory\n\nThis document is your long-term memory about you.\nUse it to record preferences, recurring details, and lessons for your helper to remember.\n\n- What makes you feel supported\n- Things you care about\n- Decisions and context you'd like to keep forever\n""",
     },
 ]
+
+# Any new goals template variant must be added here; untracked template drift
+# is what allowed pristine scaffold content to leak into user-facing contexts.
+_PRISTINE_GOALS_SCAFFOLDS = frozenset(
+    {
+        next(spec["markdown"] for spec in STARTER_DOCUMENT_TEMPLATES if spec["slug"] == "goals").strip(),
+        GOALS_TEMPLATE.strip(),
+    }
+)
+
+
+def is_pristine_goals_scaffold(markdown: str) -> bool:
+    """Return whether markdown exactly matches a known goals scaffold."""
+    return markdown.strip() in _PRISTINE_GOALS_SCAFFOLDS
 
 
 def seed_default_documents_for_tenant(*, tenant, dry_run: bool = False):

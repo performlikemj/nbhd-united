@@ -88,8 +88,9 @@ def render_goals(tenant: Tenant, *, max_chars: int = 1500) -> str:
     md = (doc.markdown or "").strip()
     if not md:
         return ""
-    starter = _starter_markdown("goals").strip()
-    if starter and md == starter:
+    from apps.journal.services import is_pristine_goals_scaffold
+
+    if is_pristine_goals_scaffold(md):
         return ""
     if len(md) > max_chars:
         return md[:max_chars].rstrip() + "\n_(truncated — see goals doc for full text)_"
@@ -187,7 +188,9 @@ def render_goals_summary(tenant: Tenant) -> str:
 
     # Legacy Document fallback — surface a pointer, not the doc body.
     doc = Document.objects.filter(tenant=tenant, kind=Document.Kind.GOAL, slug="goals").first()
-    if doc and (doc.markdown or "").strip() and (doc.markdown or "").strip() != _starter_markdown("goals").strip():
+    from apps.journal.services import is_pristine_goals_scaffold
+
+    if doc and (doc.markdown or "").strip() and not is_pristine_goals_scaffold(doc.markdown or ""):
         return (
             "_Legacy goals document present. "
             "Call `nbhd_document_get({kind: 'goal', slug: 'goals'})` to read; "
