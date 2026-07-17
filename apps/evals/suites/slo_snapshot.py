@@ -217,15 +217,31 @@ def thresholds() -> dict[str, float]:
     key can never introduce a phantom metric — it is dropped (with a warning log
     line naming the key, so the misconfiguration is visible), not recorded.
     """
-    override = getattr(settings, "EVAL_SLO_THRESHOLDS", None) or {}
+    override = getattr(settings, "EVAL_SLO_THRESHOLDS", None)
+    if override is None:
+        override = {}
+    elif not isinstance(override, dict):
+        logger.error(
+            "invalid EVAL_SLO_THRESHOLDS shape (%s) — ignoring override, using defaults",
+            type(override).__name__,
+        )
+        override = {}
+
     merged = dict(DEFAULT_SLO_THRESHOLDS)
     for key, value in override.items():
-        if key in DEFAULT_SLO_THRESHOLDS:
-            merged[key] = value
-        else:
+        if not isinstance(key, str):
+            logger.error("slo thresholds: invalid non-string key %r in EVAL_SLO_THRESHOLDS ignored", key)
+        elif key not in DEFAULT_SLO_THRESHOLDS:
             # A typo'd override silently reverting to the default is exactly the
             # kind of quiet misconfiguration this suite exists to surface.
             logger.warning("slo thresholds: unknown key %r in EVAL_SLO_THRESHOLDS ignored", key)
+        elif isinstance(value, bool) or not isinstance(value, (int, float)):
+            logger.error(
+                "slo thresholds: invalid non-numeric value for %r in EVAL_SLO_THRESHOLDS ignored",
+                key,
+            )
+        else:
+            merged[key] = value
     return merged
 
 

@@ -11,10 +11,30 @@ updates:
     # twice (2026-06-04 #788-792, 2026-07-16 #1223-1229, the latter via
     # auto-merge landing 5 separate bumps). Grouping = one PR that keeps them
     # consistent.
+    # Security updates need a mirror group because Dependabot separates them.
     groups:
       tiptap:
+        applies-to: version-updates
         patterns:
           - "@tiptap/*"
+      tiptap-security:
+        applies-to: security-updates
+        patterns:
+          - "@tiptap/*"
+      react:
+        applies-to: version-updates
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      react-security:
+        applies-to: security-updates
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
     ignore:
       - dependency-name: "next"
         update-types: ["version-update:semver-major"]
