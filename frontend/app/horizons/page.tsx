@@ -67,10 +67,6 @@ export default function HorizonsPage() {
 
   if (!data) return null;
 
-  const realGoals = data.goals.filter(
-    (g) => !g.preview.includes("[Goal Name]") && !g.preview.includes("[Specific, measurable outcome]"),
-  );
-
   return (
     <div className="space-y-8 sm:space-y-12">
       {/* Hero Header */}
@@ -101,9 +97,9 @@ export default function HorizonsPage() {
 
         <div className="lg:col-span-2">
           <HorizonsSection title="Active Goals" delay={350}>
-            {realGoals.length > 0 ? (
+            {data.goals.length > 0 ? (
               <div className="grid grid-cols-1 gap-4 md:grid-cols-2 md:gap-6">
-                {realGoals.map((goal) => (
+                {data.goals.map((goal) => (
                   <GoalCard key={goal.id} goal={goal} />
                 ))}
               </div>

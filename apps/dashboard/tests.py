@@ -12,6 +12,8 @@ from apps.dashboard.views import _clean_markdown_preview, _derive_week_bounds
 from apps.insights.models import AssistantInsight, TopicRegistry
 from apps.insights.pillars import Pillar
 from apps.journal.models import Document, Goal
+from apps.journal.services import STARTER_DOCUMENT_TEMPLATES
+from apps.journal.templates_md import GOALS_TEMPLATE
 from apps.tenants.services import create_tenant
 
 
@@ -199,6 +201,28 @@ class HorizonsViewGoalsDualReadTests(TestCase):
             markdown="some content",
         )
         self.assertIn("Legacy doc goal", self._titles())
+
+    def test_services_pristine_goals_scaffold_is_excluded(self):
+        scaffold = next(spec["markdown"] for spec in STARTER_DOCUMENT_TEMPLATES if spec["slug"] == "goals")
+        doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals")
+        doc.markdown = scaffold
+        doc.save(update_fields=["markdown"])
+
+        self.assertNotIn("Goals", self._titles())
+
+    def test_templates_md_pristine_goals_scaffold_is_excluded(self):
+        doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals")
+        doc.markdown = GOALS_TEMPLATE
+        doc.save(update_fields=["markdown"])
+
+        self.assertNotIn("Goals", self._titles())
+
+    def test_one_character_edit_to_goals_scaffold_is_included(self):
+        doc = Document.objects.get(tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals")
+        doc.markdown = GOALS_TEMPLATE + "x"
+        doc.save(update_fields=["markdown"])
+
+        self.assertIn("Goals", self._titles())
 
     def test_migrated_document_is_deduped(self):
         legacy = Document.objects.create(
