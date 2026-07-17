@@ -15,6 +15,7 @@ from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.http import JsonResponse
 
+from apps.common.eval_sink import blocks_real_transport_for_identifier
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,8 @@ def _answer_callback(callback_id: str, text: str) -> JsonResponse:
 
 
 def _edit_message_text(chat_id: int, message_id: int, text: str) -> None:
+    if blocks_real_transport_for_identifier("telegram", chat_id):
+        return
     token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         return

@@ -560,6 +560,11 @@ def _send_telegram_text(chat_id: int, text: str) -> bool:
 
 
 def _send_line_text(tenant: Tenant, line_user_id: str, text: str, *, excerpt_override: str | None = None) -> bool:
+    from apps.common.eval_sink import suppresses_real_transport
+
+    if suppresses_real_transport(tenant):
+        logger.error("eval-sink transport block: tenant=%s transport=line", tenant.id)
+        return False
     if not line_user_id:
         return False
     access_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "")

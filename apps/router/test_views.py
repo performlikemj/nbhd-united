@@ -42,6 +42,21 @@ class TelegramWebhookViewTest(TestCase):
         self.assertEqual(body["chat_id"], 999000111)
         self.assertIn("Sign up at", body["text"])
 
+    @patch("apps.router.views.forward_to_openclaw", new_callable=AsyncMock)
+    def test_eval_sink_chat_is_empty_200_without_send_message_payload(self, mock_forward):
+        tenant = create_tenant(display_name="Eval Sink", telegram_chat_id=999000112)
+        tenant.status = Tenant.Status.ACTIVE
+        tenant.container_fqdn = "oc-eval.internal.azurecontainerapps.io"
+        tenant.is_eval_sink = True
+        tenant.save(update_fields=["status", "container_fqdn", "is_eval_sink", "updated_at"])
+
+        response = self._post_update({"message": {"text": "hello", "chat": {"id": 999000112}}})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"")
+        self.assertNotIn(b"sendMessage", response.content)
+        mock_forward.assert_not_called()
+
     @override_settings(FRONTEND_URL="https://console.example.com")
     def test_unknown_chat_message_uses_frontend_url_setting(self):
         response = self._post_update({"message": {"chat": {"id": 101010}}})

@@ -37,7 +37,8 @@ class SendTelegramMarkdownButtonsOnlyTest(SimpleTestCase):
     """_send_telegram_markdown must deliver reply_markup even with minimal text."""
 
     @patch("apps.router.pending_queue._telegram_api_base", return_value=None)
-    def test_no_token_returns_false(self, _mock_base):
+    @patch("apps.router.pending_queue.blocks_real_transport_for_identifier", return_value=False)
+    def test_no_token_returns_false(self, _target_guard, _mock_base):
         """Without a bot token the helper returns False (unchanged)."""
         from apps.router.pending_queue import _send_telegram_markdown
 
@@ -48,7 +49,8 @@ class SendTelegramMarkdownButtonsOnlyTest(SimpleTestCase):
 
     @patch("httpx.post")
     @patch("apps.router.pending_queue._telegram_api_base", return_value="https://api.telegram.org/botTOKEN")
-    def test_middle_dot_placeholder_delivers_keyboard(self, _mock_base, mock_post):
+    @patch("apps.router.pending_queue.blocks_real_transport_for_identifier", return_value=False)
+    def test_middle_dot_placeholder_delivers_keyboard(self, _target_guard, _mock_base, mock_post):
         """A middle-dot text + reply_markup should result in a sendMessage POST
         that includes the inline_keyboard — the core fix for FA-1036."""
         from apps.router.pending_queue import _send_telegram_markdown

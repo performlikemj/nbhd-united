@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from django.db import models
 from django.utils import timezone
 
+from apps.common.eval_sink import suppresses_real_transport
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -950,6 +951,14 @@ def _send_apology_for_dropped_message(tenant: Tenant, msg) -> None:
     from apps.router.error_messages import error_msg, strip_internal_framing
     from apps.router.models import BufferedMessage
 
+    if suppresses_real_transport(tenant):
+        logger.error(
+            "eval-sink transport block: tenant=%s transport=%s",
+            tenant.id,
+            msg.channel,
+        )
+        return
+
     # ``user_text`` now rests REDACTED (placeholder-space). Rehydrate before
     # quoting it back so the user sees the real words they typed, not
     # ``[PERSON_5]`` \u2014 mirrors the PendingMessage apology seam
@@ -1229,7 +1238,26 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
     from apps.router.models import BufferedMessage
 
     tenant = Tenant.objects.select_related("user").filter(id=tenant_id).first()
-    if not tenant or not tenant.container_fqdn:
+    if not tenant:
+        logger.warning("deliver_buffered: tenant %s not found", tenant_id[:8])
+        return {"delivered": 0, "failed": 0, "dropped": 0, "skipped_in_flight": 0}
+
+    if suppresses_real_transport(tenant):
+        now = timezone.now()
+        dropped = BufferedMessage.objects.filter(tenant=tenant, delivered=False).update(
+            delivered=True,
+            delivered_at=now,
+            delivery_status=BufferedMessage.Status.FAILED,
+            delivery_in_flight_until=None,
+        )
+        logger.warning(
+            "deliver_buffered: dropped %d eval-sink row(s) tenant=%s without transport",
+            dropped,
+            tenant.id,
+        )
+        return {"delivered": 0, "failed": 0, "dropped": dropped, "skipped_in_flight": 0}
+
+    if not tenant.container_fqdn:
         logger.warning("deliver_buffered: tenant %s not found or no FQDN", tenant_id[:8])
         return {"delivered": 0, "failed": 0, "dropped": 0, "skipped_in_flight": 0}
 

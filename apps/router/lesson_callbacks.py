@@ -9,6 +9,7 @@ from django.conf import settings
 from django.http import JsonResponse
 from django.utils import timezone
 
+from apps.common.eval_sink import blocks_real_transport_for_identifier
 from apps.lessons.models import Lesson
 from apps.lessons.services import process_approved_lesson
 from apps.tenants.models import Tenant
@@ -33,6 +34,8 @@ def _answer_callback(callback_id: str, text: str) -> JsonResponse:
 
 def _edit_message_text(chat_id: int, message_id: int, text: str) -> None:
     """Call Telegram editMessageText API to update a callback source message."""
+    if blocks_real_transport_for_identifier("telegram", chat_id):
+        return
     token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
     if not token:
         logger.warning("TELEGRAM_BOT_TOKEN is not configured; cannot edit message")

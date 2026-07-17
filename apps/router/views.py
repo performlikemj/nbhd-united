@@ -16,6 +16,7 @@ from apps.billing.services import (
     record_usage,
     resolve_model_for_attribution,
 )
+from apps.common.eval_sink import suppresses_real_transport
 from apps.tenants.models import Tenant
 
 from .error_messages import error_msg
@@ -210,6 +211,14 @@ def telegram_webhook(request):
     # Handle /start TOKEN for account linking (before routing)
     link_response = handle_start_command(update)
     if link_response:
+        link_chat_id = extract_chat_id(update)
+        linked_tenant = resolve_tenant_by_chat_id(link_chat_id) if link_chat_id else None
+        if linked_tenant is not None and suppresses_real_transport(linked_tenant):
+            logger.warning(
+                "Telegram webhook: dropping eval-sink update tenant=%s",
+                linked_tenant.id,
+            )
+            return HttpResponse(status=200)
         return JsonResponse(link_response)
 
     chat_id = extract_chat_id(update)
@@ -221,6 +230,13 @@ def telegram_webhook(request):
         return HttpResponse("Too many requests", status=429)
 
     tenant = resolve_tenant_by_chat_id(chat_id)
+
+    if tenant is not None and suppresses_real_transport(tenant):
+        logger.warning(
+            "Telegram webhook: dropping eval-sink update tenant=%s",
+            tenant.id,
+        )
+        return HttpResponse(status=200)
 
     # Handle inline button callbacks (lessons, extraction)
     if "callback_query" in update and tenant is not None:

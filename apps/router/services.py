@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 from django.conf import settings
 
+from apps.common.eval_sink import blocks_real_transport_for_identifier
 from apps.tenants.models import Tenant, User
 
 logger = logging.getLogger(__name__)
@@ -367,6 +368,9 @@ def send_telegram_message(chat_id: int, text: str, **kwargs: Any) -> bool:
 
     Supports extra Telegram API params via kwargs (e.g. reply_markup).
     """
+    if blocks_real_transport_for_identifier("telegram", chat_id):
+        return False
+
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
     if not bot_token:
         logger.warning("Cannot send Telegram message: no bot token configured")

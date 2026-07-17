@@ -164,7 +164,11 @@ class ExtractionSummaryRehydrationTests(SimpleTestCase):
         from apps.journal import extraction
 
         item = SimpleNamespace(kind="lesson", text="Lunch with [PERSON_1]", id=11)
-        with patch("apps.journal.extraction.requests.post", return_value=_FakeResp()) as post:
+        # SimpleTestCase forbids the guard's owner lookup, and the guard deliberately fails closed.
+        with (
+            patch("apps.common.eval_sink.blocks_real_transport_for_identifier", return_value=False),
+            patch("apps.journal.extraction.requests.post", return_value=_FakeResp()) as post,
+        ):
             ok = extraction._deliver_summary_line("tok", "Uline", [item], entity_map=ENTITY_MAP)
         self.assertTrue(ok)
         blob = str(post.call_args.kwargs["json"])
