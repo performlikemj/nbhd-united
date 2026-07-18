@@ -1,0 +1,31 @@
+{
+  "id": "nbhd-journal-shaping",
+  "name": "NBHD Journal Shaping",
+  "description": "Read and replace the enabled tenant's default daily-note template sections.",
+  "contracts": {
+    "tools": [
+      "nbhd_journal_template_get",
+      "nbhd_journal_template_update"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 60000,
+        "description": "HTTP timeout for NBHD runtime endpoint requests."
+      },
+      "journalShapingEnabled": {
+        "type": "boolean",
+        "description": "Register the default journal template read/update tools. Fail-closed: anything but true registers no tools."
+      }
+    }
+  }
+}

@@ -65,6 +65,8 @@ class Command(BaseCommand):
                 tenant.experimental_typed_crons = True
                 tenant.fuel_enabled = True
                 tenant.site_publishing_enabled = True
+                tenant.journal_shaping_enabled = True
+                tenant.document_ingestion_enabled = True
                 tenant.save()
 
             config_json = config_to_json(generate_openclaw_config(tenant))

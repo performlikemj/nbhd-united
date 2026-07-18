@@ -36,6 +36,8 @@ from .runtime_views import (
     RuntimeJournalContextView,
     RuntimeJournalEntriesView,
     RuntimeJournalSearchView,
+    RuntimeJournalTemplateUpdateView,
+    RuntimeJournalTemplateView,
     RuntimeLessonCreateView,
     RuntimeLessonPendingView,
     RuntimeLessonSearchView,
@@ -268,6 +270,16 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/documents/<uuid:ingestion_id>/forget/",
         RuntimeDocumentForgetView.as_view(),
         name="runtime-document-forget",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/journal/template/",
+        RuntimeJournalTemplateView.as_view(),
+        name="runtime-journal-template",
+    ),
+    path(
+        "runtime/<uuid:tenant_id>/journal/template/update/",
+        RuntimeJournalTemplateUpdateView.as_view(),
+        name="runtime-journal-template-update",
     ),
     # Memory sync — bulk export documents as workspace files
     path(

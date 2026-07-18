@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -11,6 +12,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone as tz
 from pydantic import ValidationError as PydanticValidationError
@@ -30,8 +32,11 @@ from apps.journal.serializers import (
     WeeklyReviewRuntimeSerializer,
 )
 from apps.journal.services import (
+    _validate_template_sections,
+    get_default_template,
     get_or_seed_note_template,
     parse_daily_sections,
+    seed_default_templates_for_tenant,
 )
 from apps.journal.session_models import Session
 from apps.lessons.models import Lesson
@@ -4584,3 +4589,121 @@ class RuntimeDocumentForgetView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
         return Response({"tenant_id": str(tenant.id), **result}, status=status.HTTP_200_OK)
+
+
+# ── Journal shaping (default daily-note template only) ──────────────────────
+
+
+def _journal_shaping_forbidden(tenant) -> Response | None:
+    if getattr(tenant, "journal_shaping_enabled", False):
+        return None
+    return Response(
+        {"error": "journal_shaping_disabled"},
+        status=status.HTTP_403_FORBIDDEN,
+    )
+
+
+def _journal_template_payload(template) -> dict:
+    return {
+        "name": template.name,
+        "sections": template.sections,
+    }
+
+
+def _journal_sections_validation_error(detail: str) -> Response:
+    return Response(
+        {"error": "validation_error", "detail": detail},
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
+def _validate_journal_shaping_sections(sections) -> list[dict[str, str]]:
+    if not isinstance(sections, list):
+        raise DjangoValidationError("sections must be an array.")
+    if len(sections) > 12:
+        raise DjangoValidationError("sections must contain at most 12 items.")
+
+    serialized = json.dumps(sections, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(serialized) > 20 * 1024:
+        raise DjangoValidationError("sections payload must be at most 20KB.")
+
+    for index, section in enumerate(sections):
+        if not isinstance(section, dict):
+            continue
+        slug = str(section.get("slug") or "")
+        title = str(section.get("title") or "")
+        content = str(section.get("content") or "")
+        if len(slug) > 64:
+            raise DjangoValidationError(f"section index={index} slug must be at most 64 characters.")
+        if len(title) > 120:
+            raise DjangoValidationError(f"section index={index} title must be at most 120 characters.")
+        if len(content) > 4000:
+            raise DjangoValidationError(f"section index={index} content must be at most 4000 characters.")
+
+    return _validate_template_sections(sections)
+
+
+class RuntimeJournalTemplateView(APIView):
+    """GET — return the tenant's default daily-note template."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        flag_failure = _journal_shaping_forbidden(tenant)
+        if flag_failure is not None:
+            return flag_failure
+
+        template = get_default_template(tenant=tenant)
+        if template is None:
+            template = seed_default_templates_for_tenant(tenant=tenant)["template"]
+        return Response(_journal_template_payload(template), status=status.HTTP_200_OK)
+
+
+class RuntimeJournalTemplateUpdateView(APIView):
+    """POST — replace the sections on the tenant's default daily-note template."""
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        flag_failure = _journal_shaping_forbidden(tenant)
+        if flag_failure is not None:
+            return flag_failure
+
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            sections = _validate_journal_shaping_sections(data.get("sections"))
+        except DjangoValidationError as exc:
+            return _journal_sections_validation_error(" ".join(exc.messages))
+
+        template = get_default_template(tenant=tenant)
+        if template is None:
+            template = seed_default_templates_for_tenant(tenant=tenant)["template"]
+        template.sections = sections
+        template.save()
+
+        try:
+            from apps.cron.publish import publish_task
+
+            publish_task("update_tenant_config", str(tenant.id))
+        except Exception:
+            pass
+
+        return Response(_journal_template_payload(template), status=status.HTTP_200_OK)

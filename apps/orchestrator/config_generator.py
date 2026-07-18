@@ -2011,6 +2011,24 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
         )
 
+    # Journal-shaping plugin — default-template read/update tools, gated on
+    # journal_shaping_enabled. The plugin also fail-closes registration on the
+    # injected journalShapingEnabled flag below.
+    if getattr(tenant, "journal_shaping_enabled", False):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_JOURNAL_SHAPING_PLUGIN_ID", "nbhd-journal-shaping") or "").strip(),
+                str(
+                    getattr(
+                        settings,
+                        "OPENCLAW_JOURNAL_SHAPING_PLUGIN_PATH",
+                        "/opt/nbhd/plugins/nbhd-journal-shaping",
+                    )
+                    or ""
+                ).strip(),
+            )
+        )
+
     # Insights plugin — trajectory tools (history/drill/compare) over pillar
     # snapshots. Phase 1 only emits Gravity snapshots, so we gate on
     # finance_active (which folds in the GRAVITY_ENABLED platform pause).
@@ -2286,6 +2304,14 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         if dockeep_id and dockeep_id in plugin_config["entries"]:
             plugin_config["entries"][dockeep_id]["config"] = {
                 "documentIngestionEnabled": True,
+            }
+
+        journal_shaping_id = str(
+            getattr(settings, "OPENCLAW_JOURNAL_SHAPING_PLUGIN_ID", "nbhd-journal-shaping") or ""
+        ).strip()
+        if journal_shaping_id and journal_shaping_id in plugin_config["entries"]:
+            plugin_config["entries"][journal_shaping_id]["config"] = {
+                "journalShapingEnabled": True,
             }
 
         # Neighborhood plugin — gate the PROPOSE tools (nbhd_propose_lesson_share
