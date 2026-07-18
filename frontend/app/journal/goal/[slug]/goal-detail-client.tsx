@@ -21,7 +21,7 @@ function extractDisplayTitle(goal: HorizonsGoal): string {
   if (goal.title && goal.title.toLowerCase() !== "goals") {
     return goal.title;
   }
-  const match = goal.preview.match(/###\s+(.+)/);
+  const match = goal.markdown?.match(/###\s+(.+)/);
   if (match) {
     return match[1].replace(/\*\*/g, "").trim();
   }

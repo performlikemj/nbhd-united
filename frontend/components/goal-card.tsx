@@ -17,8 +17,9 @@ function extractDisplayTitle(goal: HorizonsGoal): string {
   if (goal.title && goal.title.toLowerCase() !== "goals") {
     return goal.title;
   }
-  // Look for the first ### heading in the preview
-  const match = goal.preview.match(/###\s+(.+)/);
+  // The API strips headings from preview, so legacy goal titles must come
+  // from the full markdown payload.
+  const match = goal.markdown?.match(/###\s+(.+)/);
   if (match) {
     return match[1].replace(/\*\*/g, "").trim();
   }
@@ -49,32 +50,46 @@ function extractGoalPreview(preview: string): string {
 export function GoalCard({ goal }: { goal: HorizonsGoal }) {
   const displayTitle = extractDisplayTitle(goal);
   const cleanPreview = extractGoalPreview(goal.preview);
+  const isTypedGoal = goal.slug.startsWith("typed:");
+
+  const cardContent = (
+    <article>
+      <h3 className="font-headline font-semibold text-lg leading-tight text-ink">
+        {displayTitle}
+      </h3>
+
+      {cleanPreview ? (
+        <p className="mt-2 line-clamp-3 text-xs text-ink-muted leading-relaxed">
+          {cleanPreview}
+        </p>
+      ) : null}
+
+      <div className="mt-4 flex items-center justify-between">
+        <span className="font-mono text-[10px] uppercase tracking-wider text-ink-faint">
+          {formatDate(goal.updated_at)}
+        </span>
+        {!isTypedGoal ? (
+          <span className="text-xs text-accent opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:group-focus-visible:opacity-100">
+            View in Journal &rarr;
+          </span>
+        ) : null}
+      </div>
+    </article>
+  );
+
+  const cardClasses =
+    "group block glass-card-horizons border-l-2 border-l-accent p-5 md:p-6";
+
+  if (isTypedGoal) {
+    return <div className={cardClasses}>{cardContent}</div>;
+  }
 
   return (
     <Link
       href={`/journal/goal/${goal.slug}`}
-      className="group block glass-card-horizons border-l-2 border-l-accent p-5 transition-all hover:border-l-accent-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2 md:p-6"
+      className={`${cardClasses} transition-all hover:border-l-accent-hover focus-visible:outline-2 focus-visible:outline-accent focus-visible:outline-offset-2`}
     >
-      <article>
-        <h3 className="font-headline font-semibold text-lg leading-tight text-ink">
-          {displayTitle}
-        </h3>
-
-        {cleanPreview ? (
-          <p className="mt-2 line-clamp-3 text-xs text-ink-muted leading-relaxed">
-            {cleanPreview}
-          </p>
-        ) : null}
-
-        <div className="mt-4 flex items-center justify-between">
-          <span className="font-mono text-[10px] uppercase tracking-wider text-ink-faint">
-            {formatDate(goal.updated_at)}
-          </span>
-          <span className="text-xs text-accent opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:group-focus-visible:opacity-100">
-            View in Journal &rarr;
-          </span>
-        </div>
-      </article>
+      {cardContent}
     </Link>
   );
 }

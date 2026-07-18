@@ -46,6 +46,7 @@ interface NavItem {
 
 function useNavItems(
   tenant?: {
+    constellation_enabled?: boolean;
     finance_enabled?: boolean;
     gravity_available?: boolean;
     fuel_enabled?: boolean;
@@ -55,9 +56,11 @@ function useNavItems(
 ): NavItem[] {
   const items: NavItem[] = [
     { href: "/journal", label: "Journal", icon: IconJournal },
-    { href: "/constellation", label: "Constellation", icon: IconConstellation },
-    { href: "/horizons", label: "Horizons", icon: IconHorizons },
   ];
+  if (tenant?.constellation_enabled) {
+    items.push({ href: "/constellation", label: "Constellation", icon: IconConstellation });
+  }
+  items.push({ href: "/horizons", label: "Horizons", icon: IconHorizons });
   // Gravity is paused platform-wide for privacy unless gravity_available is
   // true; hide the tab even for tenants who previously enabled it.
   if (tenant?.finance_enabled && tenant?.gravity_available) {
