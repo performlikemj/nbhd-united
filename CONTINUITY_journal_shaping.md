@@ -221,6 +221,11 @@ harness):
 - Owner: `/root`
 - Done: all directive files implemented; focused 15-test suite and full 2,247-test gate pass.
 - Done: ruff format/check pass for all 11 touched Python files; migration drift check reports no changes.
-- Now: final commit and clean-tree audit.
-- Next: handoff summary.
+- Done: maximal smoke config now enables journal-shaping and document-keep, with config
+  assertions covering both plugin paths, entries, and enabled flags.
+- Done: requested focused suite passed 27 tests; Ruff format left both files unchanged and
+  Ruff check passed.
+- Done: stale task-ledger lock removed; fix round complete.
+- Now: handoff.
+- Next: none.
 - Open questions: none.

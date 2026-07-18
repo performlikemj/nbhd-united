@@ -144,6 +144,8 @@ class GeneratedConfigStrictTests(TestCase):
         tenant.experimental_dreaming_enabled = True
         tenant.experimental_typed_crons = True
         tenant.fuel_enabled = True
+        tenant.journal_shaping_enabled = True
+        tenant.document_ingestion_enabled = True
         tenant.save()
 
         config = generate_openclaw_config(tenant)
@@ -215,3 +217,10 @@ class GenerateSmokeConfigCommandTests(TestCase):
         self.assertIn("params", config["agents"]["defaults"])
         paths = config.get("plugins", {}).get("load", {}).get("paths", [])
         self.assertTrue(any("nbhd-friends-tools" in p for p in paths))
+        self.assertIn("/opt/nbhd/plugins/nbhd-journal-shaping", paths)
+        self.assertIn("/opt/nbhd/plugins/nbhd-document-keep", paths)
+        entries = config.get("plugins", {}).get("entries", {})
+        self.assertIn("nbhd-journal-shaping", entries)
+        self.assertTrue(entries["nbhd-journal-shaping"]["config"]["journalShapingEnabled"])
+        self.assertIn("nbhd-document-keep", entries)
+        self.assertTrue(entries["nbhd-document-keep"]["config"]["documentIngestionEnabled"])
