@@ -112,12 +112,14 @@ class FinanceTenantBudgetTest(TestCase):
         tenant.friends_enabled = True
         tenant.friends_agent_propose_enabled = True
         tenant.document_ingestion_enabled = True
+        tenant.journal_shaping_enabled = True
         tenant.save(
             update_fields=[
                 "finance_enabled",
                 "friends_enabled",
                 "friends_agent_propose_enabled",
                 "document_ingestion_enabled",
+                "journal_shaping_enabled",
             ]
         )
         md = _agents_md(tenant)

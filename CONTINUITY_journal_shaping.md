@@ -219,7 +219,8 @@ harness):
 - Root: `CONTINUITY.md`
 - Related: document-keep runtime/plugin precedents; tour-guide gate/doc/command precedents
 - Owner: `/root`
-- Done: directive reconciled against branch `feat/journal-shaping` at `9090d529`.
-- Now: implementing the five specified logical commit slices.
-- Next: run every enumerated gate and record final outcomes.
+- Done: all directive files implemented; focused 15-test suite and full 2,247-test gate pass.
+- Done: ruff format/check pass for all 11 touched Python files; migration drift check reports no changes.
+- Now: final commit and clean-tree audit.
+- Next: handoff summary.
 - Open questions: none.
