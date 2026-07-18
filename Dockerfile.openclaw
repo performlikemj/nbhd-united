@@ -64,6 +64,7 @@ COPY runtime/openclaw/plugins/nbhd-site-publishing /opt/nbhd/plugins/nbhd-site-p
 # ("plugin path not found") exactly like the 2026-07-05 friends incident.
 # Node-built-ins-only (no npm install).
 COPY runtime/openclaw/plugins/nbhd-document-keep /opt/nbhd/plugins/nbhd-document-keep
+COPY runtime/openclaw/plugins/nbhd-journal-shaping /opt/nbhd/plugins/nbhd-journal-shaping
 # nbhd-friends-tools is emitted into plugins.load.paths by config_generator
 # whenever friends_enabled — omitting this COPY made OpenClaw hard-fail boot
 # with "plugin path not found: /opt/nbhd/plugins/nbhd-friends-tools", bricking
@@ -136,4 +137,3 @@ ENV OPENCLAW_CRON_ENFORCEMENT_PLUGIN_PATH=/opt/nbhd/plugins/nbhd-cron-enforcemen
 EXPOSE 8080
 
 ENTRYPOINT ["/usr/local/bin/nbhd-openclaw-entrypoint"]
-
