@@ -728,6 +728,9 @@ def update_tenant_config(tenant_id: str) -> None:
             )
             file_map_overwrite[tour_guide_key] = "workspace/docs/tour-guide.md"
 
+        if getattr(tenant, "journal_shaping_enabled", False):
+            file_map_overwrite["NBHD_DOC_JOURNAL_SHAPING"] = "workspace/docs/journal-shaping.md"
+
         for env_key, file_path in file_map_overwrite.items():
             content = workspace_files.get(env_key, "")
             if content:

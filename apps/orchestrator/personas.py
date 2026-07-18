@@ -570,6 +570,7 @@ _WORKSPACE_DOCS = {
     "NBHD_DOC_PLATFORM_GUIDE_SILENT": "platform-guide-silent.md",
     "NBHD_DOC_TOUR_GUIDE_CARDS": "tour-guide-cards.md",
     "NBHD_DOC_TOUR_GUIDE_LINKS": "tour-guide-links.md",
+    "NBHD_DOC_JOURNAL_SHAPING": "journal-shaping.md",
 }
 
 
@@ -846,6 +847,20 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
             "the user is when a recent 📍 message exists."
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + tour_guide_gate
+
+    if tenant is not None and getattr(tenant, "journal_shaping_enabled", False):
+        journal_shaping_gate = (
+            "## Journal shaping\n\n"
+            "This user can reshape their journal template through you.\n"
+            "- `nbhd_journal_template_get` — read the current daily-note sections.\n"
+            "- `nbhd_journal_template_update` — replace the sections list.\n"
+            "- Before ANY reshape: read `docs/journal-shaping.md`, then propose the exact sections and get "
+            "explicit agreement. Never reshape silently.\n"
+            "- Template = future structure only; existing notes are never modified by a template change.\n"
+            "- Pair every section change with its check-in schedule: prefer folding into an existing check-in "
+            "over creating new ones."
+        )
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + journal_shaping_gate
 
     # Gravity observation-mode rules — behavioral, belongs in AGENTS.md
     # (not USER.md). The rules block is ~6 KB of static text; until
