@@ -6,6 +6,8 @@ import logging
 import os
 from typing import Any
 
+from apps.orchestrator.tour_guide import tour_guide_tool_supported
+
 logger = logging.getLogger(__name__)
 
 
@@ -835,17 +837,27 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + sautai_gate
 
-    # Tour-guide gate — a lean, imperative per-tenant cue. The detailed reply
-    # contract lives in docs/tour-guide.md, outside the bootstrap budget. Keep
-    # this BEFORE the larger Gravity block so it cannot become a truncated tail.
+    # Tour-guide gate — old images keep the doc-read contract byte-for-byte;
+    # only images whose settings-tools manifest knows the new config keys get
+    # the tool-response gate. Keep this BEFORE the larger Gravity block so it
+    # cannot become a truncated tail.
     if tenant is not None and getattr(tenant, "tour_guide_enabled", False):
-        tour_guide_gate = (
-            "## Tour guide\n\n"
-            "When the user asks what to do, where to eat, or how to spend time around a place — "
-            'or any message contains a "📍 Current location" line — read `docs/tour-guide.md` '
-            "THIS TURN, before answering, and follow its reply format exactly. Never ask where "
-            "the user is when a recent 📍 message exists."
-        )
+        if tour_guide_tool_supported(getattr(tenant, "openclaw_version", None)):
+            tour_guide_gate = (
+                "## Tour guide\n\n"
+                "For what-to-do / where-to-eat / stops / itinerary / guide-card asks around a place — "
+                "or any message with a 📍 Current location line — call `nbhd_tour_guide` FIRST this turn "
+                "and follow the contract in its response exactly. Never ask where the user is when a "
+                "recent 📍 message exists."
+            )
+        else:
+            tour_guide_gate = (
+                "## Tour guide\n\n"
+                "When the user asks what to do, where to eat, or how to spend time around a place — "
+                'or any message contains a "📍 Current location" line — read `docs/tour-guide.md` '
+                "THIS TURN, before answering, and follow its reply format exactly. Never ask where "
+                "the user is when a recent 📍 message exists."
+            )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + tour_guide_gate
 
     if tenant is not None and getattr(tenant, "journal_shaping_enabled", False):

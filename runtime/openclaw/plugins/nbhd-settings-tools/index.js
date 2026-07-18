@@ -124,6 +124,34 @@ function preferredModelPath(api) {
 }
 
 export default function register(api) {
+  // The manifest keys and this tool ship together. Fail closed unless the
+  // version-gated Django config explicitly enables tour-guide delivery.
+  if (asObject(api.pluginConfig).tourGuideEnabled === true) {
+    api.registerTool(
+      wrap({
+        name: "nbhd_tour_guide",
+        description:
+          "Returns the exact reply contract for travel/place recommendations. " +
+          "Call before answering what-to-do / where-to-eat / itinerary asks or any message " +
+          "with a 📍 Current location line.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {},
+        },
+        async execute(_id, _params) {
+          const pluginConfig = asObject(api.pluginConfig);
+          const payload = {
+            tour_guide_contract: pluginConfig.tourGuideContract,
+            mode: pluginConfig.tourGuideMode,
+          };
+          return renderPayload(payload);
+        },
+      }),
+      { optional: true },
+    );
+  }
+
   // ── Read state ──────────────────────────────────────────────────────
   api.registerTool(
     wrap({

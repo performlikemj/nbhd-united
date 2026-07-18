@@ -30,6 +30,7 @@ from django.test.utils import override_settings
 from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS, generate_openclaw_config
 from apps.orchestrator.config_validator import assert_config_writable
 from apps.orchestrator.personas import render_workspace_files, render_workspace_rules
+from apps.orchestrator.tour_guide import TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
 from apps.tenants.services import create_tenant
 
 _TOOL_NAMES = ("nbhd_document_keep", "nbhd_document_forget", "nbhd_document_list_ingestions")
@@ -112,14 +113,18 @@ class FinanceTenantBudgetTest(TestCase):
         tenant.friends_enabled = True
         tenant.friends_agent_propose_enabled = True
         tenant.document_ingestion_enabled = True
+        tenant.tour_guide_enabled = True
         tenant.journal_shaping_enabled = True
+        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
         tenant.save(
             update_fields=[
                 "finance_enabled",
                 "friends_enabled",
                 "friends_agent_propose_enabled",
                 "document_ingestion_enabled",
+                "tour_guide_enabled",
                 "journal_shaping_enabled",
+                "openclaw_version",
             ]
         )
         md = _agents_md(tenant)
@@ -127,16 +132,22 @@ class FinanceTenantBudgetTest(TestCase):
 
         gate_at = md.find("about a day")
         tool_at = md.find("nbhd_document_keep")
+        tour_guide_at = md.find("## Tour guide")
+        journal_shaping_at = md.find("## Journal shaping")
         gravity_at = md.find("Gravity Observation Mode")
         tool_end = md.find("If you can't tell which document they mean")  # end of tool block
         self.assertNotEqual(gate_at, -1)
         self.assertNotEqual(tool_at, -1)
+        self.assertNotEqual(tour_guide_at, -1)
+        self.assertNotEqual(journal_shaping_at, -1)
         self.assertNotEqual(gravity_at, -1)
         self.assertNotEqual(tool_end, -1)
 
         # Ordering invariant preserved: the Gravity block is the tail, after the
         # doc-keep tool block.
         self.assertLess(tool_at, gravity_at)
+        self.assertLess(tour_guide_at, journal_shaping_at)
+        self.assertLess(journal_shaping_at, gravity_at)
         # The register rules moved onto the signals tool response — their old
         # always-loaded signature is gone from the bootstrap.
         self.assertNotIn("Voice Register Selection", md)
