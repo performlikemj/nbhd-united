@@ -553,6 +553,7 @@ class Tenant(models.Model):
         default=False,
         help_text="Enable server-side tour-guide instructions for this tenant",
     )
+    journal_shaping_enabled = models.BooleanField(default=False)
     tour_guide_mode = models.CharField(
         choices=TourGuideMode.choices,
         default=TourGuideMode.LINKS,
