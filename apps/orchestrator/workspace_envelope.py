@@ -28,6 +28,7 @@ History:
 from __future__ import annotations
 
 import logging
+import threading
 import zoneinfo
 from datetime import UTC, datetime
 
@@ -359,6 +360,10 @@ _DEFAULT_DEBOUNCE_SECONDS = 60
 
 _DEBOUNCE_CACHE_PREFIX = "nbhd:user_md_pushed:"
 
+_PUSH_STATE_LOCK = threading.Lock()
+_PUSHES_IN_FLIGHT: set[str] = set()
+_PUSHES_DIRTY: set[str] = set()
+
 
 def push_user_md(
     tenant: Tenant | str,
@@ -366,17 +371,94 @@ def push_user_md(
     debounce_seconds: int | None = None,
     force: bool = False,
 ) -> bool:
-    """Render USER.md for the tenant, merge into existing file, write back.
+    """Single-flight render and write of USER.md for one tenant.
 
-    Returns True if the push happened, False if it was debounced.
+    Returns True if this call's worker ultimately pushed, False if it was
+    debounced or coalesced into an already-running worker.
+
+    Concurrent calls for the same tenant mark its worker dirty instead of
+    racing the read/merge/write sequence. The worker consumes that dirty bit
+    with one fresh, non-debounced follow-up. Calls for other tenants remain
+    independent.
+    """
+    tenant_id = str(tenant.id) if isinstance(tenant, Tenant) else str(tenant)
+
+    with _PUSH_STATE_LOCK:
+        if tenant_id in _PUSHES_IN_FLIGHT:
+            _PUSHES_DIRTY.add(tenant_id)
+            return False
+        _PUSHES_IN_FLIGHT.add(tenant_id)
+
+    owns_slot = True
+    current_tenant: Tenant | str = tenant
+    current_debounce_seconds = debounce_seconds
+    current_force = force
+
+    try:
+        while True:
+            attempt_error: Exception | None = None
+            try:
+                result = _push_user_md_once(
+                    current_tenant,
+                    debounce_seconds=current_debounce_seconds,
+                    force=current_force,
+                )
+            except Exception as exc:
+                attempt_error = exc
+                result = False
+
+            with _PUSH_STATE_LOCK:
+                if tenant_id in _PUSHES_DIRTY:
+                    _PUSHES_DIRTY.remove(tenant_id)
+                    run_follow_up = True
+                else:
+                    _PUSHES_IN_FLIGHT.remove(tenant_id)
+                    owns_slot = False
+                    run_follow_up = False
+
+            if run_follow_up:
+                if attempt_error is not None:
+                    logger.warning(
+                        "USER.md push attempt failed for tenant %s with %s; running coalesced follow-up",
+                        tenant_id,
+                        type(attempt_error).__name__,
+                    )
+                # Re-query by id and bypass debounce: the dirty follow-up must
+                # render state newer than the trigger that arrived in flight.
+                current_tenant = tenant_id
+                current_debounce_seconds = 0
+                current_force = True
+                continue
+
+            if attempt_error is not None:
+                raise attempt_error
+            return result
+    finally:
+        if owns_slot:
+            # Fail open even if an unexpected exception escapes coordination.
+            with _PUSH_STATE_LOCK:
+                _PUSHES_DIRTY.discard(tenant_id)
+                _PUSHES_IN_FLIGHT.discard(tenant_id)
+
+
+def _push_user_md_once(
+    tenant: Tenant | str,
+    *,
+    debounce_seconds: int | None = None,
+    force: bool = False,
+) -> bool:
+    """Render, merge, and write one USER.md snapshot.
+
+    Callers must enter through :func:`push_user_md` so this read/merge/write
+    sequence stays serialized per tenant.
 
     ``debounce_seconds`` (default 60) is a leading-edge debounce: the first
     call within a window writes; subsequent calls return False until the
     window expires. Pass ``force=True`` to bypass (used by post-deploy
     refresh sweeps and the ``update_system_cron_prompts`` integration).
 
-    Read failures fall through to "no existing content" — the merge will
-    write fresh managed content, which is safer than refusing to refresh.
+    A clean not-found read returns ``None`` and takes the first-render path.
+    Any other read failure aborts the write to protect unmanaged content.
     """
     if isinstance(tenant, Tenant):
         tenant_obj: Tenant | None = tenant
@@ -405,13 +487,14 @@ def push_user_md(
         try:
             existing = download_workspace_file(tenant_id, "workspace/USER.md")
         except Exception as exc:
-            # Read failures shouldn't block writes — write fresh managed content.
+            if window > 0:
+                cache.delete(cache_key)
             logger.warning(
-                "Failed to read existing USER.md for tenant %s, writing fresh managed content: %s",
+                "Aborted USER.md push for tenant %s after existing-file read failed with %s",
                 tenant_id,
-                exc,
+                type(exc).__name__,
             )
-            existing = None
+            return False
 
         merged = merge_into_user_md(existing, managed)
         upload_workspace_file(tenant_id, "workspace/USER.md", merged)
@@ -431,8 +514,6 @@ def push_user_md_in_background(tenant: Tenant | str) -> None:
     so post_save signals don't block the request thread on a file-share write.
     Failures are logged and swallowed; the next signal attempt will retry.
     """
-    import threading
-
     tenant_id = str(tenant.id) if isinstance(tenant, Tenant) else str(tenant)
 
     def _run() -> None:
