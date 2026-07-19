@@ -234,11 +234,12 @@ def _one_line(text: str, limit: int) -> str:
 
 
 def _normalize_user_location_lines(text: str) -> str:
-    """Remove decimal coordinates from recognized pin-bearing user lines."""
+    """Remove decimal coordinates from recognized pin- or maps-bearing lines."""
     normalized = []
     for line in (text or "").splitlines():
-        if "📍" in line and _LOCATION_COORDINATE_PAIR_RE.search(line):
-            normalized.append("📍 shared location")
+        lower_line = line.lower()
+        if "📍" in line or any(host in lower_line for host in ("maps.apple.com", "maps.google.com", "google.com/maps")):
+            normalized.append(_LOCATION_COORDINATE_PAIR_RE.sub("…", line))
         else:
             normalized.append(line)
     return "\n".join(normalized)
