@@ -316,9 +316,12 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "not 'Man United sacked their manager yesterday.' "
     "Stale news presented as current is worse than no news.\n\n"
     "Steps:\n"
-    '1. Get today\'s weather with `web_search` for "{location} weather forecast today" '
-    '(a follow-up search — e.g. "{location} weather tomorrow" — is fine if the first '
-    "result doesn't cover tomorrow). Do NOT use web_fetch, curl, or exec — none of those "
+    "1. Weather city: check `## Right now` in USER.md — if it shows a fresh Current location, "
+    "get today's weather with `web_search` for that city. The value below is a SNAPSHOT of "
+    "the home base taken when this job was created and may be stale; use it only if "
+    "`## Right now` shows nothing fresher. SNAPSHOT home base: {location}. Get the weather "
+    'with `web_search` for "<city> weather forecast today" (a follow-up search for tomorrow '
+    "is fine). Do NOT use web_fetch, curl, or exec — none of those "
     "are available; web_search is the only weather tool you have.\n"
     "   Search results vary in structure: some include an hour-by-hour breakdown (time, "
     "condition, temperature, precipitation chance, wind), others only a daily summary. "
@@ -639,7 +642,8 @@ _WEEK_AHEAD_REVIEW_PROMPT = (
     "does this week move the user toward it? Let that frame the highlights, one line at most.\n"
     "4. List all active cron jobs (`cron list`)\n"
     "5. For each cron job, check: does this make sense given the user's week?\n"
-    "   - If the user is traveling, skip or redirect location-based crons\n"
+    "   - If `## Right now` in USER.md shows the user away from their home base, treat "
+    "them as traveling — skip or redirect location-based suggestions accordingly.\n"
     "   - If the user has a packed schedule, consider adjusting timing\n"
     "   - If everything looks fine, note 'no changes needed'\n"
     "6. Review the tasks document for stale items:\n"

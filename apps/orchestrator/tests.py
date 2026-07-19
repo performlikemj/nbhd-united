@@ -607,18 +607,17 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("Use the web_fetch tool", prompt)
         self.assertNotIn("api.open-meteo.com", prompt)
 
-    def test_morning_briefing_prompt_resolves_location_for_search_query(self):
-        """No location_city set on this tenant → falls back to a
-        timezone-derived place label rather than raw lat/lon (web_search
-        takes a place name, not coordinates)."""
+    def test_morning_briefing_prompt_has_right_now_and_home_base_fallback(self):
         prompt = self._morning_briefing_prompt()
-        self.assertIn("weather forecast today", prompt)
+        self.assertIn("## Right now", prompt)
+        self.assertIn("SNAPSHOT home base:", prompt)
+        self.assertIn('"<city> weather forecast today"', prompt)
 
-    def test_morning_briefing_prompt_uses_profile_city_when_set(self):
+    def test_morning_briefing_prompt_uses_profile_city_for_home_base_snapshot(self):
         self.tenant.user.location_city = "Osaka"
         self.tenant.user.save()
         prompt = self._morning_briefing_prompt()
-        self.assertIn("Osaka weather forecast today", prompt)
+        self.assertIn("SNAPSHOT home base: Osaka", prompt)
 
     def test_morning_briefing_prompt_degrades_gracefully_on_search_failure(self):
         prompt = self._morning_briefing_prompt()
@@ -641,6 +640,11 @@ class ConfigGeneratorTest(TestCase):
         # Stable-day example preserved
         self.assertIn("**Today:**", prompt)
         self.assertIn("**Tomorrow:**", prompt)
+
+    def test_week_ahead_prompt_uses_right_now_for_travel_evidence(self):
+        jobs = build_cron_seed_jobs(self.tenant)
+        week_ahead = next(j for j in jobs if j["name"] == "Week Ahead Review")
+        self.assertIn("## Right now", week_ahead["payload"]["message"])
 
     # ── GWS skills ──────────────────────────────────────────────────
 
