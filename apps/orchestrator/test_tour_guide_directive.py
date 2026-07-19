@@ -188,6 +188,12 @@ class TourGuideToolContractTest(TestCase):
                 self.assertIn("lone 📍 message away from home", contract)
                 self.assertIn("lone 📍 near home", contract)
 
+    def test_contracts_carry_grounding_rules(self):
+        for contract in (TOUR_GUIDE_CONTRACT_CARDS, TOUR_GUIDE_CONTRACT_LINKS):
+            with self.subTest(contract=contract):
+                self.assertIn("never abbreviate", contract)
+                self.assertIn("verify with a quick web search", contract)
+
     def test_links_contract_carries_plain_maps_link_rules(self):
         self.assertNotIn("```", TOUR_GUIDE_CONTRACT_LINKS)
         self.assertIn("Never emit fenced code blocks", TOUR_GUIDE_CONTRACT_LINKS)
