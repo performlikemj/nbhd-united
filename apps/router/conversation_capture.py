@@ -222,6 +222,11 @@ _TODAY_MAX_LINES = 6
 _TODAY_LINE_CHARS = 130
 _PREV_DAYS = 3
 _PREV_LINE_CHARS = 80
+_OTHER_CHAT_TITLE_CHARS = 24
+_OTHER_CHAT_INSTRUCTION = (
+    "Lines tagged [other chat: …] are from the user's OTHER conversations — background context only; "
+    "never present them as part of the current conversation, and attribute the source chat when referencing them."
+)
 # Per-line cap for the recent-proactive-sends dedup block (D2).
 _PROACTIVE_LINE_CHARS = 130
 
@@ -245,10 +250,16 @@ def _normalize_user_location_lines(text: str) -> str:
     return "\n".join(normalized)
 
 
+def digest_thread_attribution_enabled(tenant: object | None) -> bool:
+    """Return whether the shared digest should identify non-main iOS threads."""
+    return tenant is not None and getattr(tenant, "digest_thread_attribution_enabled", False) is True
+
+
 def _collect_turns(tenant, *, since):
     """Unified, time-ordered turns from both sources within the window.
 
-    Each item: ``{"dt": datetime, "date": local date, "user": str, "reply": str}``.
+    Each item: ``{"dt": datetime, "date": local date, "user": str, "reply": str,
+    "other_chat_title": str}``.
     """
     from apps.common.tenant_tz import tenant_tz
     from apps.pii.redactor import redact_known_entities
@@ -261,16 +272,35 @@ def _collect_turns(tenant, *, since):
     for t in ConversationTurn.objects.filter(tenant=tenant, created_at__gte=since).only(
         "created_at", "local_date", "user_text", "reply_text"
     ):
-        turns.append({"dt": t.created_at, "date": t.local_date, "user": t.user_text, "reply": t.reply_text})
+        turns.append(
+            {
+                "dt": t.created_at,
+                "date": t.local_date,
+                "user": t.user_text,
+                "reply": t.reply_text,
+                "other_chat_title": "",
+            }
+        )
 
     # user_text_enc MUST be in .only() (plan risk #7): decrypting a deferred
     # field would trigger a per-row reload. build_since_page needs no such change
     # (it deliberately avoids .only()).
-    app_msgs = list(
-        AppChatMessage.objects.filter(tenant=tenant, created_at__gte=since).only(
-            "created_at", "user_text", "user_text_enc", "reply_text"
+    attribution_enabled = digest_thread_attribution_enabled(tenant)
+    app_msgs_qs = AppChatMessage.objects.filter(tenant=tenant, created_at__gte=since)
+    if attribution_enabled:
+        app_msgs_qs = app_msgs_qs.select_related("thread").only(
+            "created_at",
+            "user_text",
+            "user_text_enc",
+            "reply_text",
+            "thread_id",
+            "thread__is_main",
+            "thread__title",
+            "thread__title_enc",
         )
-    )
+    else:
+        app_msgs_qs = app_msgs_qs.only("created_at", "user_text", "user_text_enc", "reply_text")
+    app_msgs = list(app_msgs_qs)
     # System-facing builder (feeds the USER.md digest AND the on-device
     # ChatContextView): decrypt user_text as SYSTEM — SILENT — even when an
     # owner_request is ambient, because this is a shared builder, not the owner
@@ -281,6 +311,25 @@ def _collect_turns(tenant, *, since):
         [(m.user_text_enc, m.user_text) for m in app_msgs],
         principal="system",
     )
+
+    other_chat_titles = {}
+    if attribution_enabled:
+        other_threads = {}
+        for message in app_msgs:
+            if not message.thread.is_main:
+                other_threads.setdefault(message.thread_id, message.thread)
+        threads = list(other_threads.values())
+        if threads:
+            thread_titles = enc_read.read_values_bulk(
+                tenant,
+                enc_columns.CHAT_THREAD_TITLE,
+                [(thread.title_enc, thread.title) for thread in threads],
+                principal="system",
+            )
+            for thread, title in zip(threads, thread_titles):
+                redacted_title = redact_known_entities(tenant, title.reveal())
+                other_chat_titles[thread.id] = _one_line(redacted_title, _OTHER_CHAT_TITLE_CHARS) or "Untitled"
+
     for m, ut in zip(app_msgs, app_user_texts):
         turns.append(
             {
@@ -306,6 +355,7 @@ def _collect_turns(tenant, *, since):
                 # values would need scrubbing here too; today the store path is
                 # always placeholder-space, so no re-processing is required.
                 "reply": m.reply_text,
+                "other_chat_title": other_chat_titles.get(m.thread_id, ""),
             }
         )
 
@@ -415,6 +465,7 @@ def build_conversation_digest(tenant) -> str:
         return ""
 
     lines: list[str] = []
+    has_labeled_line = False
 
     if turns:
         today_turns = [t for t in turns if t["date"] == today]
@@ -430,12 +481,16 @@ def build_conversation_digest(tenant) -> str:
             lines.append(f"\n**Today ({today.isoformat()}) · {len(today_turns)} message(s):**")
             for t in today_turns[-_TODAY_MAX_LINES:]:
                 hhmm = t["dt"].astimezone(tz).strftime("%H:%M")
+                other_chat_title = t["other_chat_title"]
+                origin = f'[other chat: "{other_chat_title}"] ' if other_chat_title else ""
                 user = _one_line(_normalize_user_location_lines(t["user"]), _TODAY_LINE_CHARS)
                 if user:
-                    lines.append(f"- {hhmm} — user: {user}")
+                    lines.append(f"- {hhmm} — {origin}user: {user}")
+                    has_labeled_line = has_labeled_line or bool(origin)
                 reply = _one_line(t["reply"], _TODAY_LINE_CHARS)
                 if reply:
-                    lines.append(f"    ↳ you: {reply}")
+                    lines.append(f"    ↳ {origin}you: {reply}")
+                    has_labeled_line = has_labeled_line or bool(origin)
         else:
             lines.append(f"\n**Today ({today.isoformat()}):** no messages yet.")
 
@@ -446,18 +501,27 @@ def build_conversation_digest(tenant) -> str:
             lines.append("\n**Earlier this week:**")
             for day in sorted(by_day, reverse=True):
                 day_turns = by_day[day]
-                first_user = next(
-                    (
-                        _one_line(_normalize_user_location_lines(t["user"]), _PREV_LINE_CHARS)
-                        for t in day_turns
-                        if (t["user"] or "").strip()
-                    ),
-                    "",
+                first_user_turn = next(
+                    (t for t in day_turns if (t["user"] or "").strip()),
+                    None,
                 )
+                first_user = (
+                    _one_line(_normalize_user_location_lines(first_user_turn["user"]), _PREV_LINE_CHARS)
+                    if first_user_turn
+                    else ""
+                )
+                other_chat_title = first_user_turn["other_chat_title"] if first_user_turn else ""
+                origin = f'[other chat: "{other_chat_title}"] ' if other_chat_title else ""
                 tail = f' — "{first_user}…"' if first_user else ""
+                if origin:
+                    tail = f' — {origin}"{first_user}…"'
+                    has_labeled_line = True
                 lines.append(f"- {day} · {len(day_turns)} message(s){tail}")
 
     lines.extend(proactive_lines)
+
+    if has_labeled_line:
+        lines.insert(0, _OTHER_CHAT_INSTRUCTION)
 
     digest = "\n".join(lines)
 

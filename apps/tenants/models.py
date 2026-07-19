@@ -562,6 +562,10 @@ class Tenant(models.Model):
         ),
     )
     journal_shaping_enabled = models.BooleanField(default=False)
+    digest_thread_attribution_enabled = models.BooleanField(
+        default=False,
+        help_text="Label non-main iOS chat content in the shared conversation digest with its source thread",
+    )
     situational_context_enabled = models.BooleanField(
         default=False,
         help_text="Capture and render structured current-situation signals for this tenant",
