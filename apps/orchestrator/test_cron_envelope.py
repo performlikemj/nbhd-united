@@ -20,10 +20,12 @@ Coverage here:
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 
 from django.core.cache import cache
-from django.test import TestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.finance.envelope import render_finance as envelope_finance_state
 from apps.fuel.envelope import render_fuel as envelope_fuel_state
@@ -1020,6 +1022,121 @@ class PushUserMdTest(TestCase):
         body = args[2]
         self.assertIn("fondly remembers fishing trip", body)
         self.assertIn(BEGIN_MARKER, body)
+
+    @mock.patch("apps.orchestrator.workspace_envelope.upload_workspace_file")
+    @mock.patch("apps.orchestrator.workspace_envelope.download_workspace_file")
+    def test_read_error_aborts_without_writing_and_logs_error_class(
+        self,
+        mock_download,
+        mock_upload,
+    ):
+        mock_download.side_effect = TimeoutError("simulated share timeout")
+
+        with self.assertLogs("apps.orchestrator.workspace_envelope", level="WARNING") as logs:
+            result = push_user_md(self.tenant, force=True)
+
+        self.assertFalse(result)
+        mock_upload.assert_not_called()
+        message = " ".join(logs.output)
+        self.assertIn(str(self.tenant.id), message)
+        self.assertIn("TimeoutError", message)
+
+
+class PushUserMdSingleFlightTest(SimpleTestCase):
+    def test_same_tenant_pushes_are_serial_and_dirty_trigger_runs_follow_up(self):
+        tenant_id = "tenant-race"
+        first_started = threading.Event()
+        release_first = threading.Event()
+        observations_lock = threading.Lock()
+        active = 0
+        max_active = 0
+        call_count = 0
+
+        def push_once(*args, **kwargs):
+            nonlocal active, call_count, max_active
+            with observations_lock:
+                active += 1
+                max_active = max(max_active, active)
+                call_count += 1
+                this_call = call_count
+            try:
+                if this_call == 1:
+                    first_started.set()
+                    if not release_first.wait(timeout=5):
+                        raise AssertionError("timed out waiting to release first push")
+                return True
+            finally:
+                with observations_lock:
+                    active -= 1
+
+        trigger_count = 8
+        trigger_barrier = threading.Barrier(trigger_count)
+
+        def trigger():
+            trigger_barrier.wait(timeout=5)
+            return push_user_md(tenant_id, debounce_seconds=0)
+
+        with (
+            mock.patch(
+                "apps.orchestrator.workspace_envelope._push_user_md_once",
+                side_effect=push_once,
+            ),
+            ThreadPoolExecutor(max_workers=trigger_count + 1) as pool,
+        ):
+            leader = pool.submit(push_user_md, tenant_id, debounce_seconds=0)
+            self.assertTrue(first_started.wait(timeout=5))
+            triggers = [pool.submit(trigger) for _ in range(trigger_count)]
+            self.assertEqual([future.result(timeout=5) for future in triggers], [False] * trigger_count)
+            release_first.set()
+            self.assertTrue(leader.result(timeout=5))
+
+        self.assertEqual(call_count, 2)
+        self.assertEqual(max_active, 1)
+
+    def test_exception_does_not_wedge_subsequent_push(self):
+        tenant_id = "tenant-retry"
+
+        with mock.patch(
+            "apps.orchestrator.workspace_envelope._push_user_md_once",
+            side_effect=[RuntimeError("simulated failure"), True],
+        ) as push_once:
+            with self.assertRaises(RuntimeError):
+                push_user_md(tenant_id, debounce_seconds=0)
+            self.assertTrue(push_user_md(tenant_id, debounce_seconds=0))
+
+        self.assertEqual(push_once.call_count, 2)
+
+    def test_different_tenants_may_push_concurrently(self):
+        both_active = threading.Barrier(2)
+        observations_lock = threading.Lock()
+        active = 0
+        max_active = 0
+
+        def push_once(*args, **kwargs):
+            nonlocal active, max_active
+            with observations_lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                both_active.wait(timeout=5)
+                return True
+            finally:
+                with observations_lock:
+                    active -= 1
+
+        with (
+            mock.patch(
+                "apps.orchestrator.workspace_envelope._push_user_md_once",
+                side_effect=push_once,
+            ),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            first = pool.submit(push_user_md, "tenant-a", debounce_seconds=0)
+            second = pool.submit(push_user_md, "tenant-b", debounce_seconds=0)
+            self.assertTrue(first.result(timeout=5))
+            self.assertTrue(second.result(timeout=5))
+
+        self.assertEqual(max_active, 2)
 
 
 # ─── Cron prompt builder — envelope is GONE ────────────────────────────────

@@ -947,6 +947,8 @@ def refresh_user_md_fleet_task() -> dict:
     failed = 0
     for tenant in tenants:
         try:
+            # Keep the sweep on the public single-flight seam so it coalesces
+            # safely with signal-driven pushes for the same tenant.
             push_user_md(tenant, force=True, debounce_seconds=0)
             pushed += 1
         except Exception:
