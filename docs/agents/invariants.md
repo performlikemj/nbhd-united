@@ -51,3 +51,23 @@ All scheduling goes through QStash (`apps/cron/publish.py`). Never add `django_c
 ## 11. Secrets discipline
 
 Never print secrets or dump env vars into the conversation. Rotation flows through the `/rotate-keys` skill (reads via `read -s`, writes to `kv-nbhd-prod`). OpenRouter platform key lives at KV secret `openrouter-api-key`.
+
+## 12. Tenant share artifacts are renders, not write surfaces
+
+`workspace/AGENTS.md`, `openclaw.json`, and workspace docs on tenant shares are RENDERED from source (`personas.py`, `config_generator.py`, tenant DB fields, `users.preferences.prompt_extras`) and fully overwritten by every apply sweep, container boot reassert (`RuntimeContainerStartedView`), and hibernation wake. Hand-edits to the share silently vanish at the next render. The write path is always: change the source → `bump_pending_config()` → apply. The sweep is idle-only and skips hibernated tenants — they converge at wake; don't force-wake to hurry it.
+
+## 13. Never gate a capability on `openclaw_version`
+
+That field tracks the RUNNING BINARY and is actively reconciled: the hibernation wake path (`apps/orchestrator/hibernation.py` ~502) rewrites it from the image tag, so any future-version you stamp is fiction the platform corrects — and your gate silently closes on the next re-render. This erased the tour-guide plugin config + AGENTS.md gate on both canaries overnight (2026-07-20, fixed in #1255). Capability gates use a dedicated field nothing reconciles (precedent: `Tenant.tour_guide_manifest_ok`, migration 0135), read through ONE shared helper (`tour_guide_delivery_ready`) at every call site so delivery surfaces can't diverge.
+
+## 14. New plugin-config keys need a manifest-ready gate
+
+Plugin manifests (`openclaw.plugin.json`) declare `configSchema` with `additionalProperties: false`, validated at container LOAD — a config carrying keys the tenant's image doesn't declare hard-rejects the WHOLE config at boot (2026-07-06 image-boot-smoke failure; #917-class wedge). Emit new keys only for tenants whose image verifiably carries the new manifest, gated per invariant 13 (per-tenant flag flipped after image verification; fleet backfill at the fleet image pass). The maximal-config boot smoke renders at the fleet default, so it does NOT exercise gated keys — the first real coverage is the canary.
+
+## 15. `set_prompt_extras` replaces the whole section
+
+`users.preferences.prompt_extras.<section>` carries live per-tenant content (both canaries: MJ's canary extras; Kiho's assistant identity block). The management command REPLACES the section wholesale. To append: jsonb string-concat in SQL (`jsonb_set(... coalesce(existing,'') || $$new$$ ...)`), keep the exact appended text for revert, and verify the render on the share afterwards.
+
+## 16. AGENTS.md budget is chars-on-the-share; chat agents cannot read docs
+
+The bootstrap cap is 24,000 CHARS (not bytes; `BOOTSTRAP_MAX_CHARS`), the sentinel warns at 23k, and truncation is silent from the tail — always measure the rendered share file, never the template. Chat-context tool policy strips fs `read` (`tools.allow` = group:openclaw/group:plugins/pdf), so "read `docs/X.md` THIS TURN" gates can never fire in chat — that pattern is cron-only. Behavioral contracts for chat ride a TOOL RESPONSE (the Gravity `nbhd_insights_signals` pattern; tour-guide's `nbhd_tour_guide`): zero bootstrap budget, deterministic, verbatim.
