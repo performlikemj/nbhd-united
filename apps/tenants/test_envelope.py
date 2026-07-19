@@ -7,10 +7,155 @@ being non-empty. The Profile section is exercised indirectly via
 
 from __future__ import annotations
 
-from django.test import TestCase
+from datetime import timedelta
 
-from apps.tenants.envelope import render_privacy_placeholders
+from django.test import TestCase
+from django.utils import timezone
+
+from apps.tenants.envelope import render_privacy_placeholders, render_situation
+from apps.tenants.models import UserSituation
 from apps.tenants.services import create_tenant
+
+
+class RightNowSectionTests(TestCase):
+    _next_chat_id = 7900_0000
+
+    def _tenant(self, *, enabled=True, home="Tokyo", profile_tz="Asia/Tokyo"):
+        type(self)._next_chat_id += 1
+        tenant = create_tenant(
+            display_name="Situation Test",
+            telegram_chat_id=type(self)._next_chat_id,
+        )
+        tenant.situational_context_enabled = enabled
+        tenant.save(update_fields=["situational_context_enabled"])
+        tenant.user.location_city = home
+        tenant.user.timezone = profile_tz
+        tenant.user.save(update_fields=["location_city", "timezone"])
+        return tenant
+
+    def _situation(self, tenant, **overrides):
+        now = timezone.now().replace(microsecond=0)
+        defaults = {
+            "current_place_label": "Fukuoka",
+            "current_place_since": now,
+            "current_place_last_observed_at": now,
+            "current_place_source": "ios_chat",
+        }
+        defaults.update(overrides)
+        return UserSituation.objects.create(tenant=tenant, **defaults)
+
+    def test_fresh_place_renders_with_local_as_of_and_home_base(self):
+        tenant = self._tenant()
+        self._situation(tenant)
+        with self.assertLogs("apps.tenants.envelope", level="INFO") as logs:
+            body = render_situation(tenant)
+        self.assertIn("Current location: Fukuoka", body)
+        self.assertIn("today; home base Tokyo", body)
+        self.assertIn("situation_rendered", "\n".join(logs.output))
+        self.assertIn("fresh=1 traveling=1", "\n".join(logs.output))
+
+    def test_place_older_than_48_hours_is_omitted_and_logged(self):
+        tenant = self._tenant()
+        old = timezone.now() - timedelta(hours=49)
+        self._situation(tenant, current_place_since=old, current_place_last_observed_at=old)
+        with self.assertLogs("apps.tenants.envelope", level="INFO") as logs:
+            body = render_situation(tenant)
+        self.assertEqual(body, "")
+        self.assertIn("situation_decayed", "\n".join(logs.output))
+
+    def test_fresh_differing_device_timezone_renders(self):
+        tenant = self._tenant(profile_tz="Asia/Tokyo")
+        now = timezone.now()
+        self._situation(
+            tenant,
+            current_place_label="",
+            current_place_since=None,
+            current_place_last_observed_at=None,
+            device_tz="America/New_York",
+            device_tz_since=now,
+            device_tz_last_observed_at=now,
+            device_tz_source_device="healthkit",
+        )
+        self.assertEqual(
+            render_situation(tenant),
+            "Device timezone: America/New_York (profile: Asia/Tokyo).",
+        )
+
+    def test_same_or_stale_device_timezone_is_omitted(self):
+        tenant = self._tenant(profile_tz="Asia/Tokyo")
+        now = timezone.now()
+        situation = self._situation(
+            tenant,
+            current_place_label="",
+            current_place_since=None,
+            current_place_last_observed_at=None,
+            device_tz="Asia/Tokyo",
+            device_tz_since=now,
+            device_tz_last_observed_at=now,
+        )
+        self.assertEqual(render_situation(tenant), "")
+        situation.device_tz = "America/New_York"
+        situation.device_tz_last_observed_at = now - timedelta(days=8)
+        situation.save(update_fields=["device_tz", "device_tz_last_observed_at", "updated_at"])
+        self.assertEqual(render_situation(tenant), "")
+
+    def test_away_nudge_appears_at_five_days_when_place_is_fresh(self):
+        tenant = self._tenant()
+        self._situation(
+            tenant,
+            current_place_since=timezone.now() - timedelta(days=5, minutes=1),
+            current_place_last_observed_at=timezone.now(),
+        )
+        self.assertIn("(Away 5+ days", render_situation(tenant))
+
+    def test_away_nudge_is_omitted_when_fresh_place_is_home(self):
+        tenant = self._tenant()
+        self._situation(
+            tenant,
+            current_place_label="Tokyo",
+            current_place_since=timezone.now() - timedelta(days=5, minutes=1),
+            current_place_last_observed_at=timezone.now(),
+        )
+        self.assertNotIn("Away 5+ days", render_situation(tenant))
+
+    def test_hard_cap_drops_nudge_then_timezone_before_truncating(self):
+        tenant = self._tenant(home="H" * 255, profile_tz="America/Argentina/Buenos_Aires")
+        now = timezone.now()
+        self._situation(
+            tenant,
+            current_place_label="P" * 64,
+            current_place_since=now - timedelta(days=6),
+            current_place_last_observed_at=now,
+            device_tz="America/Indiana/Indianapolis",
+            device_tz_since=now,
+            device_tz_last_observed_at=now,
+        )
+        body = render_situation(tenant)
+        self.assertLessEqual(len(body), 400)
+        self.assertNotIn("Away 5+ days", body)
+        self.assertNotIn("Device timezone", body)
+        self.assertIn("Current location", body)
+
+    def test_flag_off_and_eval_sink_omit_registered_section(self):
+        from apps.orchestrator.workspace_envelope import render_managed_region
+
+        tenant = self._tenant(enabled=False)
+        self._situation(tenant)
+        self.assertNotIn("## Right now", render_managed_region(tenant))
+
+        tenant.situational_context_enabled = True
+        tenant.is_eval_sink = True
+        self.assertNotIn("## Right now", render_managed_region(tenant))
+
+    def test_section_registration_uses_unique_order_and_refresh_model(self):
+        from apps.orchestrator.envelope_registry import all_sections
+
+        sections = all_sections()
+        section = next(section for section in sections if section.key == "right_now")
+        self.assertEqual(section.heading, "## Right now")
+        self.assertEqual(section.order, 13)
+        self.assertEqual(section.refresh_on, (UserSituation,))
+        self.assertEqual(sum(1 for other in sections if other.order == 13), 1)
 
 
 class PrivacyPlaceholdersSectionTests(TestCase):
