@@ -4,6 +4,7 @@
   "description": "Tenant settings tools for the assistant. Phase 1: primary-model read + switch, with the same tier gate as the consumer dashboard so the assistant cannot upgrade past its tier ceiling.",
   "contracts": {
     "tools": [
+      "nbhd_tour_guide",
       "nbhd_get_preferred_model_state",
       "nbhd_set_preferred_model"
     ]
@@ -21,6 +22,16 @@
         "minimum": 1000,
         "maximum": 60000,
         "description": "HTTP timeout for NBHD runtime endpoint requests."
+      },
+      "tourGuideEnabled": {
+        "type": "boolean"
+      },
+      "tourGuideMode": {
+        "type": "string",
+        "enum": ["cards", "links"]
+      },
+      "tourGuideContract": {
+        "type": "string"
       }
     }
   }

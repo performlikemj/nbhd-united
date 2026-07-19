@@ -19,6 +19,11 @@ from apps.billing.constants import (
     GEMMA_MODEL,
 )
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
+from apps.orchestrator.tour_guide import (
+    TOUR_GUIDE_CONTRACT_CARDS,
+    TOUR_GUIDE_CONTRACT_LINKS,
+    tour_guide_tool_supported,
+)
 from apps.tenants.models import Tenant
 
 # Per-file workspace bootstrap budget (chars). OpenClaw silently truncates each
@@ -2295,6 +2300,29 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "blobPathPrefix",
             )
             plugin_config["entries"][sitepub_id]["config"] = {k: _sc[k] for k in _sc_keys if _sc.get(k)}
+
+        # Tour-guide contract delivery ships in the settings-tools image whose
+        # manifest first declares these keys. Older images hard-reject unknown
+        # plugin config at LOAD (additionalProperties:false), so this entire
+        # config block must stay absent until the tenant's image version crosses
+        # the same gate used by personas.py.
+        settings_tools_id = str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_ID", "nbhd-settings-tools") or "").strip()
+        if (
+            settings_tools_id
+            and settings_tools_id in plugin_config["entries"]
+            and tour_guide_tool_supported(oc_version)
+        ):
+            tour_guide_mode = getattr(tenant, "tour_guide_mode", Tenant.TourGuideMode.LINKS)
+            tour_guide_contract = (
+                TOUR_GUIDE_CONTRACT_CARDS
+                if tour_guide_mode == Tenant.TourGuideMode.CARDS
+                else TOUR_GUIDE_CONTRACT_LINKS
+            )
+            plugin_config["entries"][settings_tools_id]["config"] = {
+                "tourGuideEnabled": bool(getattr(tenant, "tour_guide_enabled", False)),
+                "tourGuideMode": tour_guide_mode,
+                "tourGuideContract": tour_guide_contract,
+            }
 
         # Document information-keeping plugin — flip the record/list/forget tools
         # on. The plugin fail-closes when documentIngestionEnabled isn't strictly

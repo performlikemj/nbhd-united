@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -12,11 +13,26 @@ from django.test import TestCase
 from apps.orchestrator.config_generator import generate_openclaw_config
 from apps.orchestrator.config_validator import assert_config_writable
 from apps.orchestrator.personas import render_workspace_files
+from apps.orchestrator.tour_guide import (
+    TOUR_GUIDE_CONTRACT_CARDS,
+    TOUR_GUIDE_CONTRACT_LINKS,
+    TOUR_GUIDE_CONTRACT_MAX_CHARS,
+    TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION,
+)
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
 _TOUR_GUIDE_MARKER = "## Tour guide"
 _TOUR_GUIDE_DOC_CUE = "read `docs/tour-guide.md` THIS TURN"
+_TOUR_GUIDE_TOOL_CUE = "call `nbhd_tour_guide` FIRST this turn"
+_JOURNAL_SHAPING_MARKER = "## Journal shaping"
+_LEGACY_TOUR_GUIDE_GATE = (
+    "## Tour guide\n\n"
+    "When the user asks what to do, where to eat, or how to spend time around a place — "
+    'or any message contains a "📍 Current location" line — read `docs/tour-guide.md` '
+    "THIS TURN, before answering, and follow its reply format exactly. Never ask where "
+    "the user is when a recent 📍 message exists."
+)
 
 
 def _agents_md(tenant) -> str:
@@ -42,6 +58,62 @@ class TourGuideGateTest(TestCase):
         agents_md = _agents_md(tenant)
         self.assertNotIn(_TOUR_GUIDE_MARKER, agents_md)
         self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+
+    def test_new_version_enabled_tenant_gets_tool_response_gate(self):
+        tenant = create_tenant(display_name="Tour Guide Tool Gate", telegram_chat_id=943006)
+        tenant.tour_guide_enabled = True
+        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
+        tenant.save(update_fields=["tour_guide_enabled", "openclaw_version"])
+
+        agents_md = _agents_md(tenant)
+
+        self.assertIn(_TOUR_GUIDE_TOOL_CUE, agents_md)
+        self.assertIn("follow the contract in its response exactly", agents_md)
+        self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+
+    def test_new_version_disabled_tenant_gets_no_tour_guide_gate(self):
+        tenant = create_tenant(display_name="Tour Guide Tool Off", telegram_chat_id=943007)
+        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
+        tenant.save(update_fields=["openclaw_version"])
+
+        agents_md = _agents_md(tenant)
+
+        self.assertNotIn(_TOUR_GUIDE_MARKER, agents_md)
+        self.assertNotIn("nbhd_tour_guide", agents_md)
+
+    def test_old_version_agents_md_is_byte_identical_to_pre_tool_output(self):
+        tenant = create_tenant(display_name="Tour Guide Old Image", telegram_chat_id=943008)
+        self.assertLess(tenant.openclaw_version, TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION)
+        tenant.journal_shaping_enabled = True
+        tenant.save(update_fields=["journal_shaping_enabled"])
+        post_1247_without_tour_guide = _agents_md(tenant)
+
+        journal_boundary = "\n\n" + _JOURNAL_SHAPING_MARKER
+        self.assertIn(journal_boundary, post_1247_without_tour_guide)
+        expected_current_main = post_1247_without_tour_guide.replace(
+            journal_boundary,
+            "\n\n" + _LEGACY_TOUR_GUIDE_GATE + journal_boundary,
+            1,
+        )
+
+        tenant.tour_guide_enabled = True
+        tenant.save(update_fields=["tour_guide_enabled"])
+
+        rendered = _agents_md(tenant)
+        self.assertLess(rendered.index(_TOUR_GUIDE_MARKER), rendered.index(_JOURNAL_SHAPING_MARKER))
+        self.assertEqual(rendered.encode(), expected_current_main.encode())
+
+    def test_tool_gate_is_shorter_than_legacy_doc_read_gate(self):
+        tenant = create_tenant(display_name="Tour Guide Gate Diet", telegram_chat_id=943009)
+        tenant.tour_guide_enabled = True
+        tenant.save(update_fields=["tour_guide_enabled"])
+        legacy_gate = _agents_md(tenant).split(_TOUR_GUIDE_MARKER, 1)[1]
+
+        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
+        tenant.save(update_fields=["openclaw_version"])
+        tool_gate = _agents_md(tenant).split(_TOUR_GUIDE_MARKER, 1)[1]
+
+        self.assertLess(len(tool_gate), len(legacy_gate))
 
     def test_same_gate_is_used_for_both_modes(self):
         tenant = create_tenant(display_name="Tour Guide Modes", telegram_chat_id=943003)
@@ -93,6 +165,105 @@ class TourGuideDocTest(TestCase):
         self.assertIn("**bold place name**", links)
         self.assertIn("maps link on its own line", links)
         self.assertNotIn("```", links)
+
+
+class TourGuideToolContractTest(TestCase):
+    def test_contracts_are_present_and_bounded(self):
+        for contract in (TOUR_GUIDE_CONTRACT_CARDS, TOUR_GUIDE_CONTRACT_LINKS):
+            self.assertTrue(contract)
+            self.assertLess(len(contract), TOUR_GUIDE_CONTRACT_MAX_CHARS)
+
+    def test_cards_contract_carries_load_bearing_rules(self):
+        self.assertIn("nbhd-guide", TOUR_GUIDE_CONTRACT_CARDS)
+        self.assertIn("NEVER draw", TOUR_GUIDE_CONTRACT_CARDS)
+        self.assertIn("walking order", TOUR_GUIDE_CONTRACT_CARDS)
+
+    def test_contracts_carry_offering_rules(self):
+        for contract in (TOUR_GUIDE_CONTRACT_CARDS, TOUR_GUIDE_CONTRACT_LINKS):
+            with self.subTest(contract=contract):
+                self.assertIn("OFFERING", contract)
+                self.assertIn("offer once", contract)
+                self.assertIn("do not offer again", contract)
+                self.assertIn("Never offer at home", contract)
+                self.assertIn("lone 📍 message away from home", contract)
+                self.assertIn("lone 📍 near home", contract)
+
+    def test_links_contract_carries_plain_maps_link_rules(self):
+        self.assertNotIn("```", TOUR_GUIDE_CONTRACT_LINKS)
+        self.assertIn("Never emit fenced code blocks", TOUR_GUIDE_CONTRACT_LINKS)
+        self.assertIn("maps.apple.com", TOUR_GUIDE_CONTRACT_LINKS)
+
+
+class TourGuideToolConfigTest(TestCase):
+    @staticmethod
+    def _settings_tools_entry(tenant) -> dict:
+        return generate_openclaw_config(tenant)["plugins"]["entries"]["nbhd-settings-tools"]
+
+    @staticmethod
+    def _compact_bytes(value: dict) -> bytes:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
+
+    def test_new_version_emits_enabled_mode_and_per_mode_contract(self):
+        tenant = create_tenant(display_name="Tour Guide Tool Config", telegram_chat_id=943011)
+        tenant.tour_guide_enabled = True
+        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
+
+        expected_contracts = {
+            Tenant.TourGuideMode.CARDS: TOUR_GUIDE_CONTRACT_CARDS,
+            Tenant.TourGuideMode.LINKS: TOUR_GUIDE_CONTRACT_LINKS,
+        }
+        for mode, expected_contract in expected_contracts.items():
+            with self.subTest(mode=mode):
+                tenant.tour_guide_mode = mode
+                entry = self._settings_tools_entry(tenant)
+                self.assertEqual(
+                    entry["config"],
+                    {
+                        "tourGuideEnabled": True,
+                        "tourGuideMode": mode,
+                        "tourGuideContract": expected_contract,
+                    },
+                )
+
+    def test_new_version_emits_disabled_flag_but_persona_gate_stays_absent(self):
+        tenant = create_tenant(display_name="Tour Guide Tool Disabled", telegram_chat_id=943012)
+        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
+
+        entry = self._settings_tools_entry(tenant)
+
+        self.assertFalse(entry["config"]["tourGuideEnabled"])
+        self.assertNotIn(_TOUR_GUIDE_MARKER, _agents_md(tenant))
+
+    def test_old_version_settings_tools_config_is_byte_identical_to_today(self):
+        tenant = create_tenant(display_name="Tour Guide Config Old Image", telegram_chat_id=943013)
+        self.assertLess(tenant.openclaw_version, TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION)
+        tenant.journal_shaping_enabled = True
+        tenant.save(update_fields=["journal_shaping_enabled"])
+
+        before_config = generate_openclaw_config(tenant)
+        before = self._compact_bytes(before_config["plugins"])
+        self.assertEqual(
+            before_config["plugins"]["entries"]["nbhd-journal-shaping"]["config"],
+            {"journalShapingEnabled": True},
+        )
+        self.assertEqual(self._settings_tools_entry(tenant), {"enabled": True})
+        self.assertNotIn(b"tourGuide", before)
+
+        tenant.tour_guide_enabled = True
+        tenant.tour_guide_mode = Tenant.TourGuideMode.CARDS
+        after_config = generate_openclaw_config(tenant)
+        after = self._compact_bytes(after_config["plugins"])
+
+        self.assertEqual(after, before)
+        self.assertNotIn(b"tourGuide", after)
+
+    def test_new_version_enabled_config_is_writable(self):
+        tenant = create_tenant(display_name="Tour Guide Tool Writable", telegram_chat_id=943014)
+        tenant.tour_guide_enabled = True
+        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
+        tenant.tour_guide_mode = Tenant.TourGuideMode.CARDS
+
+        assert_config_writable(generate_openclaw_config(tenant))
 
 
 class TourGuideServiceSelectionTest(TestCase):

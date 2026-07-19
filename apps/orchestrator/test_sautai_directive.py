@@ -25,6 +25,7 @@ from django.test import TestCase
 from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS, generate_openclaw_config
 from apps.orchestrator.config_validator import assert_config_writable
 from apps.orchestrator.personas import render_workspace_files
+from apps.orchestrator.tour_guide import TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
 from apps.tenants.services import create_tenant
 
 # Reuse the SAME canary extras fixture the Phase 2 / email-provenance budget
@@ -119,6 +120,7 @@ class SautaiBudgetTest(TestCase):
         tenant.email_provenance_enabled = True
         tenant.sautai_enabled = True
         tenant.tour_guide_enabled = True
+        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
         tenant.save(
             update_fields=[
                 "friends_enabled",
@@ -127,6 +129,7 @@ class SautaiBudgetTest(TestCase):
                 "email_provenance_enabled",
                 "sautai_enabled",
                 "tour_guide_enabled",
+                "openclaw_version",
             ]
         )
         combined = _task_discipline_stand_in() + "\n\n" + _read_gate_text()
