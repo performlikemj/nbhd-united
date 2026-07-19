@@ -22,7 +22,7 @@ from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_too
 from apps.orchestrator.tour_guide import (
     TOUR_GUIDE_CONTRACT_CARDS,
     TOUR_GUIDE_CONTRACT_LINKS,
-    tour_guide_tool_supported,
+    tour_guide_delivery_ready,
 )
 from apps.tenants.models import Tenant
 
@@ -2337,17 +2337,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             )
             plugin_config["entries"][sitepub_id]["config"] = {k: _sc[k] for k in _sc_keys if _sc.get(k)}
 
-        # Tour-guide contract delivery ships in the settings-tools image whose
-        # manifest first declares these keys. Older images hard-reject unknown
-        # plugin config at LOAD (additionalProperties:false), so this entire
-        # config block must stay absent until the tenant's image version crosses
-        # the same gate used by personas.py.
+        # Older settings-tools manifests hard-reject unknown plugin config at
+        # LOAD (additionalProperties:false), so this block stays absent until
+        # that tenant's image manifest has been verified. personas.py uses this
+        # same helper so config delivery and its call-first instructions cannot
+        # diverge.
         settings_tools_id = str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_ID", "nbhd-settings-tools") or "").strip()
-        if (
-            settings_tools_id
-            and settings_tools_id in plugin_config["entries"]
-            and tour_guide_tool_supported(oc_version)
-        ):
+        if settings_tools_id and settings_tools_id in plugin_config["entries"] and tour_guide_delivery_ready(tenant):
             tour_guide_mode = getattr(tenant, "tour_guide_mode", Tenant.TourGuideMode.LINKS)
             tour_guide_contract = (
                 TOUR_GUIDE_CONTRACT_CARDS

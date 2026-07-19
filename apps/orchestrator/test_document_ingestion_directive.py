@@ -30,7 +30,6 @@ from django.test.utils import override_settings
 from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS, generate_openclaw_config
 from apps.orchestrator.config_validator import assert_config_writable
 from apps.orchestrator.personas import render_workspace_files, render_workspace_rules
-from apps.orchestrator.tour_guide import TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
 from apps.tenants.services import create_tenant
 
 _TOOL_NAMES = ("nbhd_document_keep", "nbhd_document_forget", "nbhd_document_list_ingestions")
@@ -114,8 +113,8 @@ class FinanceTenantBudgetTest(TestCase):
         tenant.friends_agent_propose_enabled = True
         tenant.document_ingestion_enabled = True
         tenant.tour_guide_enabled = True
+        tenant.tour_guide_manifest_ok = True
         tenant.journal_shaping_enabled = True
-        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
         tenant.save(
             update_fields=[
                 "finance_enabled",
@@ -123,8 +122,8 @@ class FinanceTenantBudgetTest(TestCase):
                 "friends_agent_propose_enabled",
                 "document_ingestion_enabled",
                 "tour_guide_enabled",
+                "tour_guide_manifest_ok",
                 "journal_shaping_enabled",
-                "openclaw_version",
             ]
         )
         md = _agents_md(tenant)

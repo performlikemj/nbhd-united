@@ -17,7 +17,6 @@ from apps.orchestrator.tour_guide import (
     TOUR_GUIDE_CONTRACT_CARDS,
     TOUR_GUIDE_CONTRACT_LINKS,
     TOUR_GUIDE_CONTRACT_MAX_CHARS,
-    TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION,
 )
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -26,6 +25,8 @@ _TOUR_GUIDE_MARKER = "## Tour guide"
 _TOUR_GUIDE_DOC_CUE = "read `docs/tour-guide.md` THIS TURN"
 _TOUR_GUIDE_TOOL_CUE = "call `nbhd_tour_guide` FIRST this turn"
 _JOURNAL_SHAPING_MARKER = "## Journal shaping"
+_RECONCILED_OPENCLAW_VERSION = "2026.5.28"
+_FORMER_GATE_OPENCLAW_VERSION = "2026.5.29"
 _LEGACY_TOUR_GUIDE_GATE = (
     "## Tour guide\n\n"
     "When the user asks what to do, where to eat, or how to spend time around a place — "
@@ -59,11 +60,12 @@ class TourGuideGateTest(TestCase):
         self.assertNotIn(_TOUR_GUIDE_MARKER, agents_md)
         self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
 
-    def test_new_version_enabled_tenant_gets_tool_response_gate(self):
+    def test_manifest_ok_with_reconciled_version_gets_tool_response_gate(self):
         tenant = create_tenant(display_name="Tour Guide Tool Gate", telegram_chat_id=943006)
         tenant.tour_guide_enabled = True
-        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
-        tenant.save(update_fields=["tour_guide_enabled", "openclaw_version"])
+        tenant.tour_guide_manifest_ok = True
+        tenant.openclaw_version = _RECONCILED_OPENCLAW_VERSION
+        tenant.save(update_fields=["tour_guide_enabled", "tour_guide_manifest_ok", "openclaw_version"])
 
         agents_md = _agents_md(tenant)
 
@@ -71,21 +73,23 @@ class TourGuideGateTest(TestCase):
         self.assertIn("follow the contract in its response exactly", agents_md)
         self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
 
-    def test_new_version_disabled_tenant_gets_no_tour_guide_gate(self):
+    def test_manifest_ok_disabled_tenant_gets_no_tour_guide_gate(self):
         tenant = create_tenant(display_name="Tour Guide Tool Off", telegram_chat_id=943007)
-        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
-        tenant.save(update_fields=["openclaw_version"])
+        tenant.tour_guide_manifest_ok = True
+        tenant.openclaw_version = _RECONCILED_OPENCLAW_VERSION
+        tenant.save(update_fields=["tour_guide_manifest_ok", "openclaw_version"])
 
         agents_md = _agents_md(tenant)
 
         self.assertNotIn(_TOUR_GUIDE_MARKER, agents_md)
         self.assertNotIn("nbhd_tour_guide", agents_md)
 
-    def test_old_version_agents_md_is_byte_identical_to_pre_tool_output(self):
-        tenant = create_tenant(display_name="Tour Guide Old Image", telegram_chat_id=943008)
-        self.assertLess(tenant.openclaw_version, TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION)
+    def test_manifest_not_ok_agents_md_is_byte_identical_to_pre_tool_output(self):
+        tenant = create_tenant(display_name="Tour Guide Unverified Manifest", telegram_chat_id=943008)
+        tenant.openclaw_version = _FORMER_GATE_OPENCLAW_VERSION
+        self.assertFalse(tenant.tour_guide_manifest_ok)
         tenant.journal_shaping_enabled = True
-        tenant.save(update_fields=["journal_shaping_enabled"])
+        tenant.save(update_fields=["openclaw_version", "journal_shaping_enabled"])
         post_1247_without_tour_guide = _agents_md(tenant)
 
         journal_boundary = "\n\n" + _JOURNAL_SHAPING_MARKER
@@ -101,6 +105,8 @@ class TourGuideGateTest(TestCase):
 
         rendered = _agents_md(tenant)
         self.assertLess(rendered.index(_TOUR_GUIDE_MARKER), rendered.index(_JOURNAL_SHAPING_MARKER))
+        self.assertIn(_TOUR_GUIDE_DOC_CUE, rendered)
+        self.assertNotIn(_TOUR_GUIDE_TOOL_CUE, rendered)
         self.assertEqual(rendered.encode(), expected_current_main.encode())
 
     def test_tool_gate_is_shorter_than_legacy_doc_read_gate(self):
@@ -109,8 +115,8 @@ class TourGuideGateTest(TestCase):
         tenant.save(update_fields=["tour_guide_enabled"])
         legacy_gate = _agents_md(tenant).split(_TOUR_GUIDE_MARKER, 1)[1]
 
-        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
-        tenant.save(update_fields=["openclaw_version"])
+        tenant.tour_guide_manifest_ok = True
+        tenant.save(update_fields=["tour_guide_manifest_ok"])
         tool_gate = _agents_md(tenant).split(_TOUR_GUIDE_MARKER, 1)[1]
 
         self.assertLess(len(tool_gate), len(legacy_gate))
@@ -209,10 +215,11 @@ class TourGuideToolConfigTest(TestCase):
     def _compact_bytes(value: dict) -> bytes:
         return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
 
-    def test_new_version_emits_enabled_mode_and_per_mode_contract(self):
+    def test_manifest_ok_with_reconciled_version_emits_contract_and_slim_gate(self):
         tenant = create_tenant(display_name="Tour Guide Tool Config", telegram_chat_id=943011)
         tenant.tour_guide_enabled = True
-        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
+        tenant.tour_guide_manifest_ok = True
+        tenant.openclaw_version = _RECONCILED_OPENCLAW_VERSION
 
         expected_contracts = {
             Tenant.TourGuideMode.CARDS: TOUR_GUIDE_CONTRACT_CARDS,
@@ -230,21 +237,26 @@ class TourGuideToolConfigTest(TestCase):
                         "tourGuideContract": expected_contract,
                     },
                 )
+                agents_md = _agents_md(tenant)
+                self.assertIn(_TOUR_GUIDE_TOOL_CUE, agents_md)
+                self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
 
-    def test_new_version_emits_disabled_flag_but_persona_gate_stays_absent(self):
+    def test_manifest_ok_emits_disabled_flag_but_persona_gate_stays_absent(self):
         tenant = create_tenant(display_name="Tour Guide Tool Disabled", telegram_chat_id=943012)
-        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
+        tenant.tour_guide_manifest_ok = True
+        tenant.openclaw_version = _RECONCILED_OPENCLAW_VERSION
 
         entry = self._settings_tools_entry(tenant)
 
         self.assertFalse(entry["config"]["tourGuideEnabled"])
         self.assertNotIn(_TOUR_GUIDE_MARKER, _agents_md(tenant))
 
-    def test_old_version_settings_tools_config_is_byte_identical_to_today(self):
-        tenant = create_tenant(display_name="Tour Guide Config Old Image", telegram_chat_id=943013)
-        self.assertLess(tenant.openclaw_version, TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION)
+    def test_manifest_not_ok_settings_tools_config_is_byte_identical_to_today(self):
+        tenant = create_tenant(display_name="Tour Guide Config Unverified", telegram_chat_id=943013)
+        tenant.openclaw_version = _FORMER_GATE_OPENCLAW_VERSION
+        self.assertFalse(tenant.tour_guide_manifest_ok)
         tenant.journal_shaping_enabled = True
-        tenant.save(update_fields=["journal_shaping_enabled"])
+        tenant.save(update_fields=["openclaw_version", "journal_shaping_enabled"])
 
         before_config = generate_openclaw_config(tenant)
         before = self._compact_bytes(before_config["plugins"])
@@ -263,10 +275,11 @@ class TourGuideToolConfigTest(TestCase):
         self.assertEqual(after, before)
         self.assertNotIn(b"tourGuide", after)
 
-    def test_new_version_enabled_config_is_writable(self):
+    def test_manifest_ok_enabled_config_is_writable(self):
         tenant = create_tenant(display_name="Tour Guide Tool Writable", telegram_chat_id=943014)
         tenant.tour_guide_enabled = True
-        tenant.openclaw_version = TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION
+        tenant.tour_guide_manifest_ok = True
+        tenant.openclaw_version = _RECONCILED_OPENCLAW_VERSION
         tenant.tour_guide_mode = Tenant.TourGuideMode.CARDS
 
         assert_config_writable(generate_openclaw_config(tenant))
@@ -367,6 +380,30 @@ class SetTourGuideCommandTest(TestCase):
         self.tenant.refresh_from_db()
         self.assertFalse(self.tenant.tour_guide_enabled)
         self.assertEqual(self.tenant.tour_guide_mode, Tenant.TourGuideMode.LINKS)
+
+    def test_manifest_flags_update_readiness_and_bump_pending_config(self):
+        initial_version = self.tenant.pending_config_version
+
+        output = self._call(
+            "--tenant-id",
+            str(self.tenant.id),
+            "--manifest-ok",
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertTrue(self.tenant.tour_guide_manifest_ok)
+        self.assertEqual(self.tenant.pending_config_version, initial_version + 1)
+        self.assertIn("tour_guide_manifest_ok=True", output)
+
+        self._call(
+            "--tenant-id",
+            str(self.tenant.id),
+            "--manifest-not-ok",
+        )
+
+        self.tenant.refresh_from_db()
+        self.assertFalse(self.tenant.tour_guide_manifest_ok)
+        self.assertEqual(self.tenant.pending_config_version, initial_version + 2)
 
     def test_unknown_tenant_errors(self):
         with self.assertRaises(CommandError):

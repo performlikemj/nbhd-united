@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Any
 
-from apps.orchestrator.tour_guide import tour_guide_tool_supported
+from apps.orchestrator.tour_guide import tour_guide_delivery_ready
 
 logger = logging.getLogger(__name__)
 
@@ -837,12 +837,12 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + sautai_gate
 
-    # Tour-guide gate — old images keep the doc-read contract byte-for-byte;
-    # only images whose settings-tools manifest knows the new config keys get
+    # Tour-guide gate — unverified manifests keep the doc-read contract
+    # byte-for-byte; only tenants whose settings-tools manifest is verified get
     # the tool-response gate. Keep this BEFORE the larger Gravity block so it
     # cannot become a truncated tail.
     if tenant is not None and getattr(tenant, "tour_guide_enabled", False):
-        if tour_guide_tool_supported(getattr(tenant, "openclaw_version", None)):
+        if tour_guide_delivery_ready(tenant):
             tour_guide_gate = (
                 "## Tour guide\n\n"
                 "For what-to-do / where-to-eat / stops / itinerary / guide-card asks around a place — "

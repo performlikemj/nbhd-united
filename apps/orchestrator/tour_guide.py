@@ -1,10 +1,7 @@
-"""Tour-guide response contracts and their runtime-image gate."""
+"""Tour-guide response contracts and their manifest capability gate."""
 
 from __future__ import annotations
 
-from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, _parse_version
-
-TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION = "2026.5.29"
 TOUR_GUIDE_CONTRACT_MAX_CHARS = 2200
 
 TOUR_GUIDE_CONTRACT_CARDS = """Use this contract when the user asks what to do, where to eat, or how to spend time somewhere, or when a message contains a 📍 Current location line.
@@ -49,7 +46,6 @@ JOURNAL RITUAL
 When the user says the day is done or asks to log it, write a journal entry titled with the date and city: the route actually taken, one line per stop with its maps link, and anything they said they loved or skipped. Write it to be reread in a year."""
 
 
-def tour_guide_tool_supported(version: str | None) -> bool:
-    """Return whether the tenant image contains the tour-guide tool schema."""
-    resolved = version or OPENCLAW_CURRENT_VERSION
-    return _parse_version(resolved) >= _parse_version(TOUR_GUIDE_TOOL_MIN_OPENCLAW_VERSION)
+def tour_guide_delivery_ready(tenant: object | None) -> bool:
+    """Return whether the tenant's verified manifest supports tour-guide config."""
+    return tenant is not None and getattr(tenant, "tour_guide_manifest_ok", False) is True
