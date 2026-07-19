@@ -21,6 +21,7 @@ from django.utils import timezone
 
 from apps.common.tenant_tz import tenant_today
 from apps.router.conversation_capture import (
+    _LOCATION_COORDINATE_PAIR_RE,
     build_conversation_digest,
     clean_reply_for_capture,
     join_user_texts,
@@ -143,9 +144,13 @@ class ConversationCaptureTest(TestCase):
         digest = build_conversation_digest(self.tenant)
         self.assertIn("ios question about my taxes", digest)
 
-    def test_digest_normalizes_ios_coordinate_pin_without_mutating_stored_text(self):
+    def test_digest_normalizes_multiline_ios_pin_and_preserves_trailing_words(self):
         thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True)
-        raw = "📍 Current location: 33.59, 130.40 (±20m)"
+        raw = (
+            "📍 Current location: 33.59211, 130.39594 (±20m)\n"
+            "https://maps.apple.com/?ll=33.59211,130.39594&q=My+Location\n"
+            "going to the beach today?"
+        )
         message = AppChatMessage.objects.create(
             tenant=self.tenant,
             user=self.user,
@@ -156,12 +161,27 @@ class ConversationCaptureTest(TestCase):
             status=AppChatMessage.Status.READY,
         )
         digest = build_conversation_digest(self.tenant)
-        self.assertIn("📍 shared location", digest)
-        self.assertNotIn("33.59", digest)
+        self.assertIsNone(_LOCATION_COORDINATE_PAIR_RE.search(digest))
+        self.assertIn("https://maps.apple.com/?ll=…&q=My+Location", digest)
+        self.assertIn("going to the beach today?", digest)
         message.refresh_from_db()
         self.assertEqual(message.user_text, raw)
 
-    def test_digest_normalizes_telegram_coordinate_pin_and_drops_url_line_tail(self):
+    def test_digest_normalizes_single_line_mixed_pin_and_preserves_user_words(self):
+        raw = "📍 Current location: 33.59, 130.40 (±20m) meeting friends after lunch"
+        ConversationTurn.objects.create(
+            tenant=self.tenant,
+            channel="line",
+            channel_user_id="1",
+            local_date=tenant_today(self.tenant),
+            user_text=raw,
+            reply_text="",
+        )
+        digest = build_conversation_digest(self.tenant)
+        self.assertIsNone(_LOCATION_COORDINATE_PAIR_RE.search(digest))
+        self.assertIn("📍 Current location: … (±20m) meeting friends after lunch", digest)
+
+    def test_digest_normalizes_telegram_coordinate_pin_without_dropping_url(self):
         raw = "📍 User shared their location: 33.59,130.40 https://maps.example/secret"
         turn = ConversationTurn.objects.create(
             tenant=self.tenant,
@@ -172,14 +192,13 @@ class ConversationCaptureTest(TestCase):
             reply_text="",
         )
         digest = build_conversation_digest(self.tenant)
-        self.assertIn("📍 shared location", digest)
-        self.assertNotIn("33.59", digest)
-        self.assertNotIn("maps.example", digest)
+        self.assertIsNone(_LOCATION_COORDINATE_PAIR_RE.search(digest))
+        self.assertIn("📍 User shared their location: … https://maps.example/secret", digest)
         turn.refresh_from_db()
         self.assertEqual(turn.user_text, raw)
 
     def test_digest_leaves_non_pin_numeric_line_untouched(self):
-        raw = "Budget readings were 33.59, 130.40 this week"
+        raw = "the odds were 33.5, 130.4 against us"
         ConversationTurn.objects.create(
             tenant=self.tenant,
             channel="line",
@@ -190,7 +209,6 @@ class ConversationCaptureTest(TestCase):
         )
         digest = build_conversation_digest(self.tenant)
         self.assertIn(raw, digest)
-        self.assertNotIn("📍 shared location", digest)
 
     def test_digest_previous_days_rollup(self):
         yesterday = tenant_today(self.tenant) - timedelta(days=1)
