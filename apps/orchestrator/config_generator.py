@@ -304,6 +304,23 @@ def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
     return _apply_typed_lifecycle_swaps(date_line + _CRON_CONTEXT_PREAMBLE + prompt, tenant)
 
 
+_MORNING_BRIEFING_WEATHER_STEP = (
+    "1. Weather city: check `## Right now` in USER.md — if it shows a fresh Current location, "
+    "get today's weather with `web_search` for that city. The value below is a SNAPSHOT of "
+    "the home base taken when this job was created and may be stale; use it only if "
+    "`## Right now` shows nothing fresher. SNAPSHOT home base: {location}. Get the weather "
+    'with `web_search` for "<city> weather forecast today" (a follow-up search for tomorrow '
+    "is fine). Do NOT use web_fetch, curl, or exec — none of those "
+    "are available; web_search is the only weather tool you have.\n"
+)
+
+_MORNING_BRIEFING_LEGACY_WEATHER_STEP = (
+    '1. Get today\'s weather with `web_search` for "{location} weather forecast today" '
+    '(a follow-up search — e.g. "{location} weather tomorrow" — is fine if the first '
+    "result doesn't cover tomorrow). Do NOT use web_fetch, curl, or exec — none of those "
+    "are available; web_search is the only weather tool you have.\n"
+)
+
 _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "Good morning! Create today's morning briefing. This runs as a scheduled task. "
     "Execute every step below in order. The journal-writing steps (step 10) are MANDATORY "
@@ -316,13 +333,7 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "not 'Man United sacked their manager yesterday.' "
     "Stale news presented as current is worse than no news.\n\n"
     "Steps:\n"
-    "1. Weather city: check `## Right now` in USER.md — if it shows a fresh Current location, "
-    "get today's weather with `web_search` for that city. The value below is a SNAPSHOT of "
-    "the home base taken when this job was created and may be stale; use it only if "
-    "`## Right now` shows nothing fresher. SNAPSHOT home base: {location}. Get the weather "
-    'with `web_search` for "<city> weather forecast today" (a follow-up search for tomorrow '
-    "is fine). Do NOT use web_fetch, curl, or exec — none of those "
-    "are available; web_search is the only weather tool you have.\n"
+    "{weather_step}"
     "   Search results vary in structure: some include an hour-by-hour breakdown (time, "
     "condition, temperature, precipitation chance, wind), others only a daily summary. "
     "Use whatever level of detail the results actually contain — do not invent hourly "
@@ -465,7 +476,13 @@ def _build_morning_briefing_prompt(tenant) -> str:
     location_city = str(getattr(user, "location_city", "") or "")
     location = resolve_weather_search_location(location_city, user_tz)
 
-    return _MORNING_BRIEFING_PROMPT_TEMPLATE.format(location=location)
+    if tenant.situational_context_enabled:
+        weather_step_template = _MORNING_BRIEFING_WEATHER_STEP
+    else:
+        weather_step_template = _MORNING_BRIEFING_LEGACY_WEATHER_STEP
+    weather_step = weather_step_template.format(location=location)
+
+    return _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_step=weather_step)
 
 
 _EVENING_CHECKIN_PROMPT = (
@@ -630,7 +647,14 @@ _PERSONAL_QUESTION_PROMPT = (
     "skipped), proceed to the FINAL STEP described below.**\n"
 )
 
-_WEEK_AHEAD_REVIEW_PROMPT = (
+_WEEK_AHEAD_REVIEW_TRAVEL_LINE = (
+    "   - If `## Right now` in USER.md shows the user away from their home base, treat "
+    "them as traveling — skip or redirect location-based suggestions accordingly.\n"
+)
+
+_WEEK_AHEAD_REVIEW_LEGACY_TRAVEL_LINE = "   - If the user is traveling, skip or redirect location-based crons\n"
+
+_WEEK_AHEAD_REVIEW_PROMPT_TEMPLATE = (
     "It's Monday morning. Run the Week Ahead Review. This runs as a scheduled task — "
     "execute every step below in order. Complete all the analysis and memory writes "
     "before sending the user message in step 10.\n\n"
@@ -642,8 +666,7 @@ _WEEK_AHEAD_REVIEW_PROMPT = (
     "does this week move the user toward it? Let that frame the highlights, one line at most.\n"
     "4. List all active cron jobs (`cron list`)\n"
     "5. For each cron job, check: does this make sense given the user's week?\n"
-    "   - If `## Right now` in USER.md shows the user away from their home base, treat "
-    "them as traveling — skip or redirect location-based suggestions accordingly.\n"
+    "{travel_line}"
     "   - If the user has a packed schedule, consider adjusting timing\n"
     "   - If everything looks fine, note 'no changes needed'\n"
     "6. Review the tasks document for stale items:\n"
@@ -670,6 +693,15 @@ _WEEK_AHEAD_REVIEW_PROMPT = (
     "**IMPORTANT: Send exactly ONE user-facing message via `nbhd_send_to_user`. "
     "After that message is sent, proceed to the FINAL STEP described below.**\n"
 )
+
+
+def _build_week_ahead_review_prompt(tenant) -> str:
+    if tenant.situational_context_enabled:
+        travel_line = _WEEK_AHEAD_REVIEW_TRAVEL_LINE
+    else:
+        travel_line = _WEEK_AHEAD_REVIEW_LEGACY_TRAVEL_LINE
+    return _WEEK_AHEAD_REVIEW_PROMPT_TEMPLATE.format(travel_line=travel_line)
+
 
 _HEARTBEAT_CHECKIN_PROMPT = (
     "You received a scheduled check-in. This is a cron (isolated) session — "
@@ -1559,7 +1591,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "payload": {
                 "kind": "agentTurn",
                 "message": _build_cron_message(
-                    _WEEK_AHEAD_REVIEW_PROMPT,
+                    _build_week_ahead_review_prompt(tenant),
                     "Week Ahead Review",
                     foreground=True,
                     tenant=tenant,

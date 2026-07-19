@@ -608,16 +608,33 @@ class ConfigGeneratorTest(TestCase):
         self.assertNotIn("api.open-meteo.com", prompt)
 
     def test_morning_briefing_prompt_has_right_now_and_home_base_fallback(self):
+        self.tenant.situational_context_enabled = True
+        self.tenant.save(update_fields=["situational_context_enabled"])
         prompt = self._morning_briefing_prompt()
         self.assertIn("## Right now", prompt)
         self.assertIn("SNAPSHOT home base:", prompt)
         self.assertIn('"<city> weather forecast today"', prompt)
 
     def test_morning_briefing_prompt_uses_profile_city_for_home_base_snapshot(self):
+        self.tenant.situational_context_enabled = True
+        self.tenant.save(update_fields=["situational_context_enabled"])
         self.tenant.user.location_city = "Osaka"
         self.tenant.user.save()
         prompt = self._morning_briefing_prompt()
         self.assertIn("SNAPSHOT home base: Osaka", prompt)
+
+    def test_morning_briefing_prompt_flag_off_uses_legacy_weather_step(self):
+        from .config_generator import _build_morning_briefing_prompt
+
+        self.tenant.situational_context_enabled = False
+        self.tenant.save(update_fields=["situational_context_enabled"])
+        self.tenant.user.location_city = "Osaka"
+        self.tenant.user.save()
+
+        prompt = self._morning_briefing_prompt()
+        self.assertIn('"Osaka weather forecast today"', prompt)
+        self.assertNotIn("## Right now", prompt)
+        self.assertNotIn("SNAPSHOT", _build_morning_briefing_prompt(self.tenant))
 
     def test_morning_briefing_prompt_degrades_gracefully_on_search_failure(self):
         prompt = self._morning_briefing_prompt()
@@ -642,9 +659,31 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("**Tomorrow:**", prompt)
 
     def test_week_ahead_prompt_uses_right_now_for_travel_evidence(self):
+        self.tenant.situational_context_enabled = True
+        self.tenant.save(update_fields=["situational_context_enabled"])
         jobs = build_cron_seed_jobs(self.tenant)
         week_ahead = next(j for j in jobs if j["name"] == "Week Ahead Review")
-        self.assertIn("## Right now", week_ahead["payload"]["message"])
+        prompt = week_ahead["payload"]["message"]
+        self.assertIn(
+            "If `## Right now` in USER.md shows the user away from their home base",
+            prompt,
+        )
+        self.assertNotIn(
+            "If the user is traveling, skip or redirect location-based crons",
+            prompt,
+        )
+
+    def test_week_ahead_prompt_flag_off_uses_legacy_travel_line(self):
+        self.tenant.situational_context_enabled = False
+        self.tenant.save(update_fields=["situational_context_enabled"])
+        jobs = build_cron_seed_jobs(self.tenant)
+        week_ahead = next(j for j in jobs if j["name"] == "Week Ahead Review")
+        prompt = week_ahead["payload"]["message"]
+        self.assertIn(
+            "If the user is traveling, skip or redirect location-based crons",
+            prompt,
+        )
+        self.assertNotIn("## Right now", prompt)
 
     # ── GWS skills ──────────────────────────────────────────────────
 
