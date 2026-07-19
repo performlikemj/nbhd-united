@@ -73,6 +73,7 @@ _REFRESH_DEBOUNCE_SECONDS = 120
 # ``MEDIA:`` lines (workspace file paths the digest can't render).
 _MARKER_RE = re.compile(r"\[\[[^\]]*\]\]")
 _MEDIA_LINE_RE = re.compile(r"^\s*MEDIA:.*$", re.MULTILINE)
+_LOCATION_COORDINATE_PAIR_RE = re.compile(r"(?<![\d.])[+-]?\d{1,3}\.\d+\s*,\s*[+-]?\d{1,3}\.\d+(?![\d.])")
 
 
 def clean_reply_for_capture(tenant, ai_text: str | None) -> str:
@@ -230,6 +231,17 @@ def _one_line(text: str, limit: int) -> str:
     if len(flat) > limit:
         flat = flat[: limit - 1].rstrip() + "…"
     return flat
+
+
+def _normalize_user_location_lines(text: str) -> str:
+    """Remove decimal coordinates from recognized pin-bearing user lines."""
+    normalized = []
+    for line in (text or "").splitlines():
+        if "📍" in line and _LOCATION_COORDINATE_PAIR_RE.search(line):
+            normalized.append("📍 shared location")
+        else:
+            normalized.append(line)
+    return "\n".join(normalized)
 
 
 def _collect_turns(tenant, *, since):
@@ -417,7 +429,7 @@ def build_conversation_digest(tenant) -> str:
             lines.append(f"\n**Today ({today.isoformat()}) · {len(today_turns)} message(s):**")
             for t in today_turns[-_TODAY_MAX_LINES:]:
                 hhmm = t["dt"].astimezone(tz).strftime("%H:%M")
-                user = _one_line(t["user"], _TODAY_LINE_CHARS)
+                user = _one_line(_normalize_user_location_lines(t["user"]), _TODAY_LINE_CHARS)
                 if user:
                     lines.append(f"- {hhmm} — user: {user}")
                 reply = _one_line(t["reply"], _TODAY_LINE_CHARS)
@@ -434,7 +446,12 @@ def build_conversation_digest(tenant) -> str:
             for day in sorted(by_day, reverse=True):
                 day_turns = by_day[day]
                 first_user = next(
-                    (_one_line(t["user"], _PREV_LINE_CHARS) for t in day_turns if (t["user"] or "").strip()), ""
+                    (
+                        _one_line(_normalize_user_location_lines(t["user"]), _PREV_LINE_CHARS)
+                        for t in day_turns
+                        if (t["user"] or "").strip()
+                    ),
+                    "",
                 )
                 tail = f' — "{first_user}…"' if first_user else ""
                 lines.append(f"- {day} · {len(day_turns)} message(s){tail}")

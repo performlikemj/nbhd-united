@@ -177,3 +177,18 @@ class PublicSchemaLockdownRuntimeGuard(TestCase):
             "public tables; if you genuinely need RLS off for a new table, "
             "document why and update this test. Offenders: " + repr(offenders),
         )
+
+    def test_user_situations_table_is_rls_locked(self):
+        """Pin the Phase 1 public table to the migration-time lockdown."""
+        with connection.cursor() as cur:
+            cur.execute(
+                """
+                SELECT c.relrowsecurity
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+                  AND c.relname = 'user_situations'
+                """
+            )
+            row = cur.fetchone()
+        self.assertEqual(row, (True,))

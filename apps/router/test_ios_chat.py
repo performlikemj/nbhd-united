@@ -28,7 +28,7 @@ from rest_framework.test import APIClient
 
 from apps.router.inbound_media import MAX_APP_DOCUMENT_BYTES, MAX_APP_IMAGE_BYTES, attachment_marker
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
-from apps.tenants.models import Tenant, User
+from apps.tenants.models import Tenant, User, UserSituation
 from apps.tenants.throttling import ChatMessageSendHourThrottle
 
 # Magic-valid but tiny image payloads for the ingress tests.
@@ -168,6 +168,97 @@ class IOSChatRoutingTest(TestCase):
             AppChatMessage.objects.filter(tenant=self.tenant, client_msg_id="dup").count(),
             1,
         )
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_structured_location_is_captured_and_coordinate_keys_are_ignored(self, mock_post, push_user_md):
+        mock_post.return_value = _ok_chat_response("hi")
+        self.tenant.situational_context_enabled = True
+        self.tenant.save(update_fields=["situational_context_enabled"])
+
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {
+                "text": "hello from here",
+                "client_msg_id": "location-1",
+                "location": {
+                    "place_label": "Fukuoka",
+                    "lat": 33.59,
+                    "lon": 130.40,
+                    "accuracy": 20,
+                },
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        situation = UserSituation.objects.get(tenant=self.tenant)
+        self.assertEqual(situation.current_place_label, "Fukuoka")
+        self.assertEqual(situation.current_place_source, "ios_chat")
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.location_lat)
+        self.assertIsNone(self.user.location_lon)
+        push_user_md.assert_called_once()
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_duplicate_client_msg_id_does_not_capture_location_twice(self, mock_post, push_user_md):
+        mock_post.return_value = _ok_chat_response("hi")
+        self.tenant.situational_context_enabled = True
+        self.tenant.save(update_fields=["situational_context_enabled"])
+
+        first = self.client.post(
+            "/api/v1/chat/messages/",
+            {
+                "text": "first",
+                "client_msg_id": "location-duplicate",
+                "location": {"place_label": "Fukuoka"},
+            },
+            format="json",
+        )
+        second = self.client.post(
+            "/api/v1/chat/messages/",
+            {
+                "text": "retry",
+                "client_msg_id": "location-duplicate",
+                "location": {"place_label": "Osaka"},
+            },
+            format="json",
+        )
+
+        self.assertEqual(first.status_code, 201, first.content)
+        self.assertEqual(second.status_code, 200, second.content)
+        self.assertEqual(UserSituation.objects.get(tenant=self.tenant).current_place_label, "Fukuoka")
+        push_user_md.assert_called_once()
+
+    @patch("apps.tenants.situation.record_place_observation")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_no_location_object_leaves_existing_chat_behavior_unchanged(self, mock_post, record_place):
+        mock_post.return_value = _ok_chat_response("hi")
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {"text": "ordinary message", "client_msg_id": "no-location"},
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        record_place.assert_not_called()
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_location_is_ignored_when_situational_context_flag_is_off(self, mock_post, push_user_md):
+        mock_post.return_value = _ok_chat_response("hi")
+        resp = self.client.post(
+            "/api/v1/chat/messages/",
+            {
+                "text": "ordinary message",
+                "client_msg_id": "location-flag-off",
+                "location": {"place_label": "Fukuoka"},
+            },
+            format="json",
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        self.assertFalse(UserSituation.objects.filter(tenant=self.tenant).exists())
+        push_user_md.assert_not_called()
 
     def test_error_terminalization_is_exposed_and_same_id_repost_does_not_reenqueue(self):
         turn = AppChatMessage.objects.create(

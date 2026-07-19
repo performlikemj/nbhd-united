@@ -554,6 +554,10 @@ class Tenant(models.Model):
         help_text="Enable server-side tour-guide instructions for this tenant",
     )
     journal_shaping_enabled = models.BooleanField(default=False)
+    situational_context_enabled = models.BooleanField(
+        default=False,
+        help_text="Capture and render structured current-situation signals for this tenant",
+    )
     tour_guide_mode = models.CharField(
         choices=TourGuideMode.choices,
         default=TourGuideMode.LINKS,
@@ -1069,6 +1073,34 @@ class Tenant(models.Model):
         """Signal that agent config needs refreshing."""
         self.pending_config_version = (self.pending_config_version or 0) + 1
         self.save(update_fields=["pending_config_version"])
+
+
+class UserSituation(models.Model):
+    """Structured, short-lived observations about a tenant's current situation.
+
+    Writes must go through :mod:`apps.tenants.situation`; capture callers never
+    update this row directly. The timestamps distinguish when a value first
+    changed from when the same value was most recently observed so renderers can
+    decay stale context without erasing its history.
+    """
+
+    tenant = models.OneToOneField(Tenant, on_delete=models.CASCADE, related_name="situation")
+    current_place_label = models.CharField(max_length=64, blank=True, default="")
+    current_place_since = models.DateTimeField(null=True)
+    current_place_last_observed_at = models.DateTimeField(null=True)
+    current_place_source = models.CharField(max_length=16, blank=True, default="")
+    device_tz = models.CharField(max_length=64, blank=True, default="")
+    device_tz_since = models.DateTimeField(null=True)
+    device_tz_last_observed_at = models.DateTimeField(null=True)
+    device_tz_source_device = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "user_situations"
+
+    def __str__(self) -> str:
+        return str(self.tenant_id)
 
 
 class TenantDek(models.Model):

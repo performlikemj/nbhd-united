@@ -6,8 +6,21 @@ because it grounds every later section in who the user actually is.
 
 from __future__ import annotations
 
+import logging
+from datetime import timedelta
+
+from django.utils import timezone
+
+from apps.common.tenant_tz import tenant_tz
 from apps.orchestrator.envelope_registry import register_section
-from apps.tenants.models import Tenant, User
+from apps.tenants.models import Tenant, User, UserSituation
+
+logger = logging.getLogger(__name__)
+
+PLACE_DECAY = timedelta(hours=48)
+DEVICE_TZ_TTL = timedelta(days=7)
+AWAY_NUDGE_AFTER = timedelta(days=5)
+SITUATION_MAX_CHARS = 400
 
 # Agent-facing labels for the resolved delivery channel. Mirrors the marker
 # labels in apps/router/services.py (_CHANNEL_LABELS) so the Profile block and
@@ -88,11 +101,114 @@ def render_profile(tenant: Tenant) -> str:
 
     city = (getattr(user, "location_city", "") or "").strip()
     if city:
-        lines.append(f"- Location: {city}")
+        lines.append(f"- Home location: {city}")
 
     if not lines:
         return ""
     return "\n".join(lines)
+
+
+def _situation_enabled(tenant: Tenant) -> bool:
+    return bool(getattr(tenant, "situational_context_enabled", False)) and not getattr(tenant, "is_eval_sink", False)
+
+
+def _observation_age_seconds(now, observed_at) -> int:
+    if observed_at is None:
+        return 0
+    return max(0, int((now - observed_at).total_seconds()))
+
+
+def _format_place_observed_at(tenant: Tenant, observed_at, now) -> str:
+    tz = tenant_tz(tenant)
+    local_observed = observed_at.astimezone(tz)
+    local_now = now.astimezone(tz)
+    if local_observed.date() == local_now.date():
+        return f"{local_observed:%H:%M} today"
+    return local_observed.strftime("%b %d").replace(" 0", " ")
+
+
+def _cap_situation_lines(place_line: str, tz_line: str, nudge_line: str) -> str:
+    lines = [line for line in (place_line, tz_line, nudge_line) if line]
+    body = "\n".join(lines)
+    if len(body) <= SITUATION_MAX_CHARS:
+        return body
+
+    if nudge_line and nudge_line in lines:
+        lines.remove(nudge_line)
+        body = "\n".join(lines)
+    if len(body) > SITUATION_MAX_CHARS and tz_line and tz_line in lines:
+        lines.remove(tz_line)
+        body = "\n".join(lines)
+    if len(body) > SITUATION_MAX_CHARS:
+        body = body[: SITUATION_MAX_CHARS - 1].rstrip() + "…"
+    return body
+
+
+@register_section(
+    key="right_now",
+    heading="## Right now",
+    enabled=_situation_enabled,
+    refresh_on=(UserSituation,),
+    order=13,
+)
+def render_situation(tenant: Tenant) -> str:
+    """Render fresh place/timezone signals and omit decayed observations."""
+    try:
+        situation = tenant.situation
+    except UserSituation.DoesNotExist:
+        return ""
+
+    now = timezone.now()
+    user = getattr(tenant, "user", None)
+    home = str(getattr(user, "location_city", "") or "").strip()
+    profile_tz = str(getattr(user, "timezone", "") or "UTC").strip() or "UTC"
+
+    place_label = (situation.current_place_label or "").strip()
+    place_age_s = _observation_age_seconds(now, situation.current_place_last_observed_at)
+    place_fresh = bool(
+        place_label
+        and situation.current_place_last_observed_at
+        and now - situation.current_place_last_observed_at <= PLACE_DECAY
+    )
+    traveling = bool(place_fresh and place_label.casefold() != home.casefold())
+
+    if place_label and not place_fresh:
+        logger.info(
+            "situation_decayed tenant=%s age_s=%d",
+            tenant.id,
+            place_age_s,
+        )
+
+    place_line = ""
+    if place_fresh:
+        as_of = _format_place_observed_at(tenant, situation.current_place_last_observed_at, now)
+        home_clause = f"; home base {home or 'not set'}" if traveling else ""
+        place_line = f"Current location: {place_label} (as of {as_of}{home_clause})."
+
+    device_tz = (situation.device_tz or "").strip()
+    device_tz_fresh = bool(
+        device_tz
+        and situation.device_tz_last_observed_at
+        and now - situation.device_tz_last_observed_at <= DEVICE_TZ_TTL
+    )
+    tz_line = ""
+    if device_tz_fresh and device_tz != profile_tz:
+        tz_line = f"Device timezone: {device_tz} (profile: {profile_tz})."
+
+    nudge_line = ""
+    if traveling and situation.current_place_since and now - situation.current_place_since >= AWAY_NUDGE_AFTER:
+        nudge_line = "(Away 5+ days — consider asking whether to update the home base or shift the schedule.)"
+
+    body = _cap_situation_lines(place_line, tz_line, nudge_line)
+    if body:
+        logger.info(
+            "situation_rendered tenant=%s fresh=%d traveling=%d age_s=%d",
+            tenant.id,
+            int(place_fresh),
+            int(traveling),
+            place_age_s,
+        )
+    return body
 
 
 _PRIVACY_PLACEHOLDERS_BODY = (

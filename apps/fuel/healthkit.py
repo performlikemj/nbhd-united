@@ -608,7 +608,17 @@ def _maybe_self_heal_timezone(tenant, device_tz: str) -> None:
 def ingest_healthkit_payload(tenant, payload: dict) -> dict:
     """Process one sync request. The view enforces caps/auth/gates and the
     signal-suppression contexts; this function owns the data work."""
-    _maybe_self_heal_timezone(tenant, str(payload.get("device_tz") or "").strip())
+    device_tz = str(payload.get("device_tz") or "").strip()
+    _maybe_self_heal_timezone(tenant, device_tz)
+
+    from apps.tenants.situation import record_device_tz
+
+    situation_changed = record_device_tz(
+        tenant,
+        device_tz,
+        "healthkit",
+        observed_at=dj_timezone.now(),
+    )
     tz = tenant_tz(tenant)
 
     profile = FuelProfile.objects.filter(tenant=tenant).first()
@@ -697,6 +707,7 @@ def ingest_healthkit_payload(tenant, payload: dict) -> dict:
         "wrote_any": bool(
             counts["created"] or counts["matched_planned"] or counts["matched_log"] or deleted_count or daily_upserted
         ),
+        "situation_changed": situation_changed,
         "regen_needed": bool(counts["matched_planned"] and profile is not None and profile.use_session_scheduling),
     }
 

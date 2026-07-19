@@ -748,6 +748,29 @@ class ChatMessageView(APIView):
         if thread is None:
             return Response({"error": "thread_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+        # Optional structured situation signal. Read only the label key: any
+        # coordinate/accuracy-shaped siblings are deliberately ignored. The
+        # idempotent replay return above runs before this seam, so a retried
+        # client_msg_id cannot re-capture or re-push the observation.
+        location = request.data.get("location")
+        if isinstance(location, dict):
+            from apps.orchestrator.envelope_registry import suppress_refresh
+            from apps.tenants.situation import record_place_observation
+
+            # UserSituation is registry-wired for out-of-band writes, but this
+            # request owns the explicit background push below. Suppress the
+            # model signal here so one accepted label change produces one push.
+            with suppress_refresh():
+                situation_changed = record_place_observation(
+                    tenant,
+                    location.get("place_label"),
+                    "ios_chat",
+                )
+            if situation_changed:
+                from apps.orchestrator.workspace_envelope import push_user_md_in_background
+
+                push_user_md_in_background(tenant)
+
         turn, created = enqueue_tenant_turn(
             tenant=tenant,
             user=request.user,

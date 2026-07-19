@@ -639,7 +639,7 @@ class RenderProfileSectionTest(TestCase):
         self.assertNotIn("Display name: Friend", out)
         self.assertNotIn("Timezone: UTC", out)
         self.assertNotIn("Language: en", out)
-        self.assertNotIn("Location:", out)
+        self.assertNotIn("Home location:", out)
 
     def test_device_token_tenant_reads_as_the_app_not_telegram(self):
         # The case the raw column got wrong: an iOS tenant resolves "app".
@@ -684,7 +684,7 @@ class RenderProfileSectionTest(TestCase):
         self.assertIn("Timezone: Asia/Tokyo", out)
         self.assertIn("Delivery channel: LINE", out)
         self.assertNotIn("Telegram", out)
-        self.assertIn("Location: Osaka", out)
+        self.assertIn("Home location: Osaka", out)
         # Default language not included
         self.assertNotIn("Language:", out)
 

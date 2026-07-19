@@ -4896,6 +4896,49 @@ class HealthKitSyncTests(TestCase):
         self.user.refresh_from_db()
         self.assertEqual(self.user.timezone, "UTC")
 
+    def test_tz_only_change_sets_situation_and_triggers_one_post_batch_push(self):
+        from apps.tenants.models import UserSituation
+
+        self.tenant.situational_context_enabled = True
+        self.tenant.save(update_fields=["situational_context_enabled"])
+        with patch("apps.orchestrator.workspace_envelope.push_user_md") as push:
+            resp = self._post({"device_tz": "America/New_York"})
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(set(resp.data), {"results", "daily_results", "summary"})
+        self.assertEqual(resp.data["results"], [])
+        self.assertEqual(resp.data["daily_results"], [])
+        situation = UserSituation.objects.get(tenant=self.tenant)
+        self.assertEqual(situation.device_tz, "America/New_York")
+        self.assertEqual(situation.device_tz_source_device, "healthkit")
+        self.assertEqual(push.call_count, 1)
+        self.assertEqual(push.call_args.kwargs.get("debounce_seconds"), 0)
+
+    def test_unchanged_tz_only_observation_does_not_push(self):
+        self.tenant.situational_context_enabled = True
+        self.tenant.save(update_fields=["situational_context_enabled"])
+        with patch("apps.orchestrator.workspace_envelope.push_user_md") as push:
+            first = self._post({"device_tz": "America/New_York"})
+            self.assertEqual(first.status_code, 200, first.data)
+            push.reset_mock()
+            second = self._post({"device_tz": "America/New_York"})
+        self.assertEqual(second.status_code, 200, second.data)
+        push.assert_not_called()
+
+    def test_ingestion_outcome_adds_situation_changed_without_changing_api_shape(self):
+        from apps.orchestrator.envelope_registry import suppress_refresh
+
+        from .healthkit import ingest_healthkit_payload
+
+        self.tenant.situational_context_enabled = True
+        self.tenant.save(update_fields=["situational_context_enabled"])
+        with suppress_refresh():
+            outcome = ingest_healthkit_payload(self.tenant, {"device_tz": "America/New_York"})
+        self.assertTrue(outcome["situation_changed"])
+        self.assertFalse(outcome["wrote_any"])
+        self.assertEqual(outcome["results"], [])
+        self.assertEqual(outcome["daily_results"], [])
+
     # ── visibility contract ────────────────────────────────────────────
 
     def test_single_user_md_push_per_batch(self):

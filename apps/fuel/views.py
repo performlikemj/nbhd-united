@@ -1525,19 +1525,20 @@ class HealthKitSyncView(APIView):
         workouts = data.get("workouts") or []
         daily = data.get("daily_metrics") or []
         deleted = data.get("deleted_external_ids") or []
+        device_tz = str(data.get("device_tz") or "").strip()
         if not isinstance(workouts, list) or len(workouts) > healthkit.MAX_WORKOUTS:
             return Response({"error": "too_many_workouts"}, status=status.HTTP_400_BAD_REQUEST)
         if not isinstance(daily, list) or len(daily) > healthkit.MAX_DAILY:
             return Response({"error": "too_many_daily_metrics"}, status=status.HTTP_400_BAD_REQUEST)
         if not isinstance(deleted, list) or len(deleted) > healthkit.MAX_DELETED:
             return Response({"error": "too_many_deleted_ids"}, status=status.HTTP_400_BAD_REQUEST)
-        if not workouts and not daily and not deleted:
+        if not workouts and not daily and not deleted and not device_tz:
             return Response({"error": "empty_payload"}, status=status.HTTP_400_BAD_REQUEST)
 
         with suppress_refresh(), suppress_cron_regen():
             outcome = healthkit.ingest_healthkit_payload(tenant, data)
 
-        if outcome["wrote_any"]:
+        if outcome["wrote_any"] or outcome["situation_changed"]:
             healthkit.push_visibility_refresh(str(tenant.id))
         if outcome["regen_needed"]:
             _enqueue_regen(str(tenant.id))

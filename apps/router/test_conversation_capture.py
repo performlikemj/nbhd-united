@@ -143,6 +143,55 @@ class ConversationCaptureTest(TestCase):
         digest = build_conversation_digest(self.tenant)
         self.assertIn("ios question about my taxes", digest)
 
+    def test_digest_normalizes_ios_coordinate_pin_without_mutating_stored_text(self):
+        thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True)
+        raw = "📍 Current location: 33.59, 130.40 (±20m)"
+        message = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=thread,
+            client_msg_id="ios-location-pin",
+            user_text=raw,
+            reply_text="got it",
+            status=AppChatMessage.Status.READY,
+        )
+        digest = build_conversation_digest(self.tenant)
+        self.assertIn("📍 shared location", digest)
+        self.assertNotIn("33.59", digest)
+        message.refresh_from_db()
+        self.assertEqual(message.user_text, raw)
+
+    def test_digest_normalizes_telegram_coordinate_pin_and_drops_url_line_tail(self):
+        raw = "📍 User shared their location: 33.59,130.40 https://maps.example/secret"
+        turn = ConversationTurn.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="1",
+            local_date=tenant_today(self.tenant),
+            user_text=raw,
+            reply_text="",
+        )
+        digest = build_conversation_digest(self.tenant)
+        self.assertIn("📍 shared location", digest)
+        self.assertNotIn("33.59", digest)
+        self.assertNotIn("maps.example", digest)
+        turn.refresh_from_db()
+        self.assertEqual(turn.user_text, raw)
+
+    def test_digest_leaves_non_pin_numeric_line_untouched(self):
+        raw = "Budget readings were 33.59, 130.40 this week"
+        ConversationTurn.objects.create(
+            tenant=self.tenant,
+            channel="line",
+            channel_user_id="1",
+            local_date=tenant_today(self.tenant),
+            user_text=raw,
+            reply_text="",
+        )
+        digest = build_conversation_digest(self.tenant)
+        self.assertIn(raw, digest)
+        self.assertNotIn("📍 shared location", digest)
+
     def test_digest_previous_days_rollup(self):
         yesterday = tenant_today(self.tenant) - timedelta(days=1)
         row = ConversationTurn.objects.create(
