@@ -553,6 +553,14 @@ class Tenant(models.Model):
         default=False,
         help_text="Enable server-side tour-guide instructions for this tenant",
     )
+    tour_guide_manifest_ok = models.BooleanField(
+        default=False,
+        help_text=(
+            "Runtime image's settings-tools manifest declares tourGuide config keys; "
+            "set per-tenant after image verification, fleet-wide at fleet image rollout. "
+            "Nothing reconciles this field."
+        ),
+    )
     journal_shaping_enabled = models.BooleanField(default=False)
     situational_context_enabled = models.BooleanField(
         default=False,
