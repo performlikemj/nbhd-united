@@ -320,3 +320,34 @@ class CreditLedger(models.Model):
 
     def __str__(self) -> str:
         return f"{self.kind} {self.amount} ({self.tenant_id})"
+
+
+class YardTalkLicense(models.Model):
+    """A YardTalk license record — minted by a $20 one-time Stripe purchase.
+
+    Platform-level (no tenant FK): a YardTalk buyer need not be an nbhd
+    subscriber, so the license is keyed by the license key + purchaser email,
+    not by tenant. Device seats (cap 3) track which machines have activated the
+    key. ``stripe_session_id`` is the idempotency key for the webhook mint.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Canonical form ``YT-XXXX-XXXX-XXXX`` (17 chars); width left at 19 for headroom.
+    key = models.CharField(max_length=19, unique=True)
+    email = models.EmailField(db_index=True)
+    # Checkout Session id — the idempotency lock for the webhook mint.
+    stripe_session_id = models.CharField(max_length=255, unique=True)
+    stripe_payment_intent_id = models.CharField(max_length=255, blank=True, default="")
+    # Registered device seats (opaque device ids); cap enforced at validate time.
+    device_ids = models.JSONField(default=list, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    key_email_sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "yardtalk_licenses"
+        ordering = ["-created_at"]
+
+    def __str__(self) -> str:
+        return f"{self.key} ({self.email})"

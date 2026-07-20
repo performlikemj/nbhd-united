@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from rest_framework import permissions
 
-ALLOWED_PAT_SCOPES: frozenset[str] = frozenset({"sessions:write", "sessions:read"})
+ALLOWED_PAT_SCOPES: frozenset[str] = frozenset({"sessions:write", "sessions:read", "yardtalk:read"})
 
 
 class HasPATScope(permissions.IsAuthenticated):
@@ -37,3 +37,7 @@ class HasSessionsWriteScope(HasPATScope):
 
 class HasSessionsReadScope(HasPATScope):
     required_scope = "sessions:read"
+
+
+class HasYardTalkReadScope(HasPATScope):
+    required_scope = "yardtalk:read"

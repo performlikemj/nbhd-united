@@ -1,0 +1,15 @@
+Thanks for buying YardTalk!
+
+Your license key is:
+
+    {{ license_key }}
+
+To activate: open YardTalk, then go to Settings and choose "Enter License Key".
+Paste the key above.
+
+Your key works on up to {{ seat_limit }} devices. Activate it on a new machine
+any time until you reach that limit.
+
+Keep this email — it's your record of the key.
+
+If you have any trouble activating, just reply to this email and we'll help.

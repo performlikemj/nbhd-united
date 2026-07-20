@@ -22,6 +22,7 @@ from .services import (
     handle_invoice_payment_failed,
     handle_subscription_deleted,
 )
+from .yardtalk_licensing import handle_yardtalk_license_completed
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,10 @@ def stripe_webhook(request):
             meta = data.get("metadata") or {}
             if data.get("mode") == "payment" and meta.get("kind") == "credit_topup":
                 handle_credit_topup_completed(event_id, data)
+            elif data.get("mode") == "payment" and meta.get("kind") == "yardtalk_license":
+                # One-time $20 YardTalk license purchase — mint a license record
+                # and email the key. Idempotent on the Checkout Session id.
+                handle_yardtalk_license_completed(event_id, data)
             else:
                 # Route both checkout.session.completed AND
                 # checkout.session.async_payment_succeeded for subscription

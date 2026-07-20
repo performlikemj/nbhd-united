@@ -25,6 +25,7 @@ urlpatterns = [
     path("api/v1/tenants/byo-credentials/", include("apps.byo_models.urls")),
     path("api/v1/tenants/", include("apps.tenants.urls")),
     path("api/v1/billing/", include("apps.billing.urls")),
+    path("api/v1/yardtalk/", include("apps.billing.yardtalk_urls")),
     path("api/v1/integrations/", include("apps.integrations.urls")),
     path("api/v1/automations/", include("apps.automations.urls")),
     path("api/v1/journal/", include("apps.journal.urls")),
