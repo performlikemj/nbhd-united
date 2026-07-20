@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 from unittest.mock import patch
@@ -17,6 +18,9 @@ from apps.orchestrator.tour_guide import (
     TOUR_GUIDE_CONTRACT_CARDS,
     TOUR_GUIDE_CONTRACT_LINKS,
     TOUR_GUIDE_CONTRACT_MAX_CHARS,
+    TOUR_GUIDE_GROUNDED_CONTRACT_CARDS,
+    TOUR_GUIDE_GROUNDED_CONTRACT_LINKS,
+    places_search_delivery_ready,
 )
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -24,6 +28,7 @@ from apps.tenants.services import create_tenant
 _TOUR_GUIDE_MARKER = "## Tour guide"
 _TOUR_GUIDE_DOC_CUE = "read `docs/tour-guide.md` THIS TURN"
 _TOUR_GUIDE_TOOL_CUE = "call `nbhd_tour_guide` FIRST this turn"
+_PLACES_SEARCH_TOOL_CUE = "then call `nbhd_places_search` before composing"
 _JOURNAL_SHAPING_MARKER = "## Journal shaping"
 _RECONCILED_OPENCLAW_VERSION = "2026.5.28"
 _FORMER_GATE_OPENCLAW_VERSION = "2026.5.29"
@@ -71,6 +76,19 @@ class TourGuideGateTest(TestCase):
 
         self.assertIn(_TOUR_GUIDE_TOOL_CUE, agents_md)
         self.assertIn("follow the contract in its response exactly", agents_md)
+        self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+
+    def test_places_ready_gate_loads_format_then_searches_before_composing(self):
+        tenant = create_tenant(display_name="Grounded Tool Gate", telegram_chat_id=943015)
+        tenant.tour_guide_enabled = True
+        tenant.places_search_manifest_ok = True
+        tenant.save(update_fields=["tour_guide_enabled", "places_search_manifest_ok"])
+
+        agents_md = _agents_md(tenant)
+
+        self.assertIn(_TOUR_GUIDE_TOOL_CUE, agents_md)
+        self.assertIn(_PLACES_SEARCH_TOOL_CUE, agents_md)
+        self.assertLess(agents_md.index("nbhd_tour_guide"), agents_md.index("nbhd_places_search"))
         self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
 
     def test_manifest_ok_disabled_tenant_gets_no_tour_guide_gate(self):
@@ -174,10 +192,52 @@ class TourGuideDocTest(TestCase):
 
 
 class TourGuideToolContractTest(TestCase):
+    def test_legacy_contract_bytes_match_origin_main_snapshot(self):
+        self.assertEqual(
+            hashlib.sha256(TOUR_GUIDE_CONTRACT_CARDS.encode()).hexdigest(),
+            "0594f6e421958955eb07bc01f611f201da8dba149d4c83a7cd3b6a2f56fe4e60",
+        )
+        self.assertEqual(
+            hashlib.sha256(TOUR_GUIDE_CONTRACT_LINKS.encode()).hexdigest(),
+            "e9c0e18e04870288dc4b7dee969e64d8cf55027d2dad97d99039a3d6bb15b7b2",
+        )
+
     def test_contracts_are_present_and_bounded(self):
-        for contract in (TOUR_GUIDE_CONTRACT_CARDS, TOUR_GUIDE_CONTRACT_LINKS):
+        for contract in (
+            TOUR_GUIDE_CONTRACT_CARDS,
+            TOUR_GUIDE_CONTRACT_LINKS,
+            TOUR_GUIDE_GROUNDED_CONTRACT_CARDS,
+            TOUR_GUIDE_GROUNDED_CONTRACT_LINKS,
+        ):
             self.assertTrue(contract)
             self.assertLess(len(contract), TOUR_GUIDE_CONTRACT_MAX_CHARS)
+
+    def test_grounded_contracts_require_apple_results_and_copy_exact_coordinates(self):
+        for contract in (TOUR_GUIDE_GROUNDED_CONTRACT_CARDS, TOUR_GUIDE_GROUNDED_CONTRACT_LINKS):
+            with self.subTest(contract=contract):
+                self.assertIn("nbhd_places_search", contract)
+                self.assertIn("copy name/lat/lon exactly", contract)
+                self.assertIn("fresh:false", contract)
+                self.assertIn("With no results, recommend nothing", contract)
+                self.assertNotIn("opening hours", contract)
+                self.assertNotIn("real coordinates you're confident in", contract)
+
+    def test_grounded_contracts_keep_all_offering_rules(self):
+        for contract in (TOUR_GUIDE_GROUNDED_CONTRACT_CARDS, TOUR_GUIDE_GROUNDED_CONTRACT_LINKS):
+            with self.subTest(contract=contract):
+                self.assertIn("offer once", contract)
+                self.assertIn("don't offer again that day", contract)
+                self.assertIn("Never offer at home, late at night, or mid-task", contract)
+                self.assertIn("lone 📍 away from home invites the offer", contract)
+                self.assertIn("lone 📍 near home gets a one-line acknowledgment", contract)
+
+    def test_places_search_readiness_uses_only_separate_manifest_bit(self):
+        tenant = create_tenant(display_name="Places Readiness", telegram_chat_id=943016)
+        tenant.tour_guide_manifest_ok = True
+        self.assertFalse(places_search_delivery_ready(tenant))
+        tenant.places_search_manifest_ok = True
+        tenant.tour_guide_manifest_ok = False
+        self.assertTrue(places_search_delivery_ready(tenant))
 
     def test_cards_contract_carries_load_bearing_rules(self):
         self.assertIn("nbhd-guide", TOUR_GUIDE_CONTRACT_CARDS)
@@ -283,6 +343,31 @@ class TourGuideToolConfigTest(TestCase):
         tenant.tour_guide_mode = Tenant.TourGuideMode.CARDS
 
         assert_config_writable(generate_openclaw_config(tenant))
+
+    def test_places_ready_emits_grounded_contract_under_separate_gate(self):
+        tenant = create_tenant(display_name="Grounded Config", telegram_chat_id=943017)
+        tenant.tour_guide_enabled = True
+        tenant.tour_guide_manifest_ok = False
+        tenant.places_search_manifest_ok = True
+        tenant.tour_guide_mode = Tenant.TourGuideMode.CARDS
+
+        entry = self._settings_tools_entry(tenant)
+
+        self.assertEqual(entry["config"]["tourGuideContract"], TOUR_GUIDE_GROUNDED_CONTRACT_CARDS)
+        self.assertIn("nbhd_places_search", entry["config"]["tourGuideContract"])
+        self.assertIn(_PLACES_SEARCH_TOOL_CUE, _agents_md(tenant))
+
+    def test_places_not_ready_keeps_today_legacy_contract_byte_identical(self):
+        tenant = create_tenant(display_name="Legacy Config", telegram_chat_id=943018)
+        tenant.tour_guide_enabled = True
+        tenant.tour_guide_manifest_ok = True
+        tenant.places_search_manifest_ok = False
+        tenant.tour_guide_mode = Tenant.TourGuideMode.CARDS
+
+        emitted = self._settings_tools_entry(tenant)["config"]["tourGuideContract"]
+
+        self.assertEqual(emitted.encode(), TOUR_GUIDE_CONTRACT_CARDS.encode())
+        self.assertNotIn("nbhd_places_search", emitted)
 
 
 class TourGuideServiceSelectionTest(TestCase):
@@ -403,6 +488,22 @@ class SetTourGuideCommandTest(TestCase):
 
         self.tenant.refresh_from_db()
         self.assertFalse(self.tenant.tour_guide_manifest_ok)
+        self.assertEqual(self.tenant.pending_config_version, initial_version + 2)
+
+    def test_places_manifest_flags_update_separate_readiness_bit(self):
+        initial_version = self.tenant.pending_config_version
+
+        output = self._call("--tenant-id", str(self.tenant.id), "--places-manifest-ok")
+
+        self.tenant.refresh_from_db()
+        self.assertTrue(self.tenant.places_search_manifest_ok)
+        self.assertEqual(self.tenant.pending_config_version, initial_version + 1)
+        self.assertIn("places_search_manifest_ok=True", output)
+
+        self._call("--tenant-id", str(self.tenant.id), "--places-manifest-not-ok")
+
+        self.tenant.refresh_from_db()
+        self.assertFalse(self.tenant.places_search_manifest_ok)
         self.assertEqual(self.tenant.pending_config_version, initial_version + 2)
 
     def test_unknown_tenant_errors(self):

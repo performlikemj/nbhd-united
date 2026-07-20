@@ -46,6 +46,7 @@ from apps.orchestrator.personas import get_persona
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn
 from apps.tenants.models import Tenant
 
+from .apple_maps import search_places
 from .google_api import (
     get_calendar_freebusy,
     get_gmail_message_detail,
@@ -162,6 +163,113 @@ def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
 
     set_rls_context(tenant_id=tenant_id, service_role=True)
     return None
+
+
+_APPLE_MAPS_QUERY_MAX_CHARS = 200
+_APPLE_MAPS_LANGUAGE_MAX_CHARS = 35
+_APPLE_MAPS_COUNTRY_MAX_ITEMS = 5
+_APPLE_MAPS_CATEGORY_MAX_ITEMS = 10
+_APPLE_MAPS_CATEGORY_MAX_CHARS = 64
+_APPLE_MAPS_DEFAULT_RESULT_LIMIT = 10
+_APPLE_MAPS_MAX_RESULT_LIMIT = 20
+_APPLE_MAPS_LANGUAGE_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")
+_APPLE_MAPS_COUNTRY_RE = re.compile(r"^[A-Za-z]{2}$")
+_APPLE_MAPS_CATEGORY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*$")
+
+
+def _comma_separated_query_values(request, singular: str, plural: str) -> list[str]:
+    raw_values = request.query_params.getlist(singular)
+    raw_values.extend(request.query_params.getlist(plural))
+    values: list[str] = []
+    for raw in raw_values:
+        values.extend(part.strip() for part in str(raw).split(",") if part.strip())
+    return values
+
+
+def _places_search_params(request) -> dict:
+    query = (request.query_params.get("q") or "").strip()
+    if not query:
+        raise ValueError("q is required and must not be blank")
+    if len(query) > _APPLE_MAPS_QUERY_MAX_CHARS:
+        raise ValueError(f"q must be at most {_APPLE_MAPS_QUERY_MAX_CHARS} characters")
+
+    raw_latitude = request.query_params.get("lat")
+    raw_longitude = request.query_params.get("lon")
+    if (raw_latitude is None) != (raw_longitude is None):
+        raise ValueError("lat and lon must be provided together")
+    latitude = longitude = None
+    if raw_latitude is not None:
+        try:
+            latitude = float(raw_latitude)
+            longitude = float(raw_longitude)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("lat and lon must be numbers") from exc
+        if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            raise ValueError("lat or lon is out of range")
+
+    language = (request.query_params.get("lang") or "").strip()
+    if len(language) > _APPLE_MAPS_LANGUAGE_MAX_CHARS or (language and not _APPLE_MAPS_LANGUAGE_RE.fullmatch(language)):
+        raise ValueError("lang must be a bounded BCP 47 language tag")
+
+    countries = _comma_separated_query_values(request, "country", "countries")
+    if len(countries) > _APPLE_MAPS_COUNTRY_MAX_ITEMS:
+        raise ValueError(f"country accepts at most {_APPLE_MAPS_COUNTRY_MAX_ITEMS} values")
+    if any(not _APPLE_MAPS_COUNTRY_RE.fullmatch(country) for country in countries):
+        raise ValueError("country values must be two-letter codes")
+    countries = [country.upper() for country in countries]
+
+    categories = _comma_separated_query_values(request, "category", "categories")
+    if len(categories) > _APPLE_MAPS_CATEGORY_MAX_ITEMS:
+        raise ValueError(f"categories accepts at most {_APPLE_MAPS_CATEGORY_MAX_ITEMS} values")
+    if any(
+        len(category) > _APPLE_MAPS_CATEGORY_MAX_CHARS or not _APPLE_MAPS_CATEGORY_RE.fullmatch(category)
+        for category in categories
+    ):
+        raise ValueError("category values must be bounded Apple POI category names")
+
+    raw_limit = request.query_params.get("limit")
+    if raw_limit in (None, ""):
+        limit = _APPLE_MAPS_DEFAULT_RESULT_LIMIT
+    else:
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("limit must be an integer") from exc
+        if not 1 <= limit <= _APPLE_MAPS_MAX_RESULT_LIMIT:
+            raise ValueError(f"limit must be between 1 and {_APPLE_MAPS_MAX_RESULT_LIMIT}")
+
+    return {
+        "query": query,
+        "latitude": latitude,
+        "longitude": longitude,
+        "language": language,
+        "countries": countries,
+        "categories": categories,
+        "limit": limit,
+    }
+
+
+class RuntimePlacesSearchView(APIView):
+    """Internal-auth Apple Maps search that exposes normalized places only."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tenant_id):
+        if _internal_auth_or_401(request, tenant_id):
+            return Response({"error": "internal_auth_failed"}, status=status.HTTP_401_UNAUTHORIZED)
+        try:
+            params = _places_search_params(request)
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        envelope = search_places(tenant_id=str(tenant_id), **params)
+        response = Response(dict(envelope), status=envelope.http_status)
+        if envelope.retry_after:
+            response["Retry-After"] = envelope.retry_after
+        return response
 
 
 def _parse_bool(raw_value: str | None, *, default: bool = False) -> bool:

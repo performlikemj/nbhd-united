@@ -353,6 +353,7 @@ jobs:
         run: |
           node --test runtime/openclaw/tool-logger.test.js
           node --test runtime/openclaw/plugins/nbhd-journal-tools/schema.test.mjs
+          node --test runtime/openclaw/plugins/nbhd-settings-tools/schema.test.mjs
           node --test runtime/openclaw/plugins/nbhd-usage-reporter/register.test.mjs
           node --test runtime/openclaw/plugins/nbhd-friends-tools/index.test.mjs
           node --test runtime/openclaw/external-content-wrap.test.js
