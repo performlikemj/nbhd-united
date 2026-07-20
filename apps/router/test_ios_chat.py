@@ -1146,11 +1146,16 @@ class IOSChatContextTest(TestCase):
                 order=order,
             )
 
+        attributed_digest = (
+            "Lines tagged [other chat: …] are from the user's OTHER conversations — background context only; "
+            "never present them as part of the current conversation, and attribute the source chat when referencing them.\n"
+            '- 23:43 — [other chat: "A long side conversation…"] user: today: real talk'
+        )
         fakes = [
             section("bulky_one", 10, "z" * 600),
             section("bulky_two", 20, "z" * 600),
             section("bulky_three", 30, "z" * 600),
-            section("conversation_digest", 65, "today: real talk", heading="## Conversation so far"),
+            section("conversation_digest", 65, attributed_digest, heading="## Conversation so far"),
         ]
         with patch("apps.orchestrator.workspace_envelope.all_sections", return_value=fakes):
             resp = self.client.get("/api/v1/chat/context/?max_chars=1000")
@@ -1162,6 +1167,7 @@ class IOSChatContextTest(TestCase):
         # context for a client-side model — bulky early sections must not
         # starve it out of the budget.
         self.assertIn("today: real talk", md)
+        self.assertIn('[other chat: "A long side conversation…"]', md)
         self.assertNotIn("bulky_three", md)
 
     def test_max_chars_is_clamped_and_respected(self):

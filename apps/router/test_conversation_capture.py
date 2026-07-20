@@ -144,6 +144,132 @@ class ConversationCaptureTest(TestCase):
         digest = build_conversation_digest(self.tenant)
         self.assertIn("ios question about my taxes", digest)
 
+    def test_digest_flag_off_non_main_thread_is_byte_identical(self):
+        """The dark-launch default preserves the pre-attribution body exactly."""
+        thread = ChatThread.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            title="Private side thread",
+            is_main=False,
+        )
+        message = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=thread,
+            client_msg_id="flag-off-byte-pin",
+            user_text="what did I ask in this isolated chat?",
+            reply_text="the isolated reply",
+            status=AppChatMessage.Status.READY,
+        )
+
+        from apps.common.tenant_tz import tenant_tz
+
+        hhmm = message.created_at.astimezone(tenant_tz(self.tenant)).strftime("%H:%M")
+        expected = (
+            "_Recent chat with the user, captured across channels. Ground proactive "
+            "turns in it — if turns appear here, the day was NOT quiet._\n"
+            f"\n**Today ({tenant_today(self.tenant).isoformat()}) · 1 message(s):**\n"
+            f"- {hhmm} — user: what did I ask in this isolated chat?\n"
+            "    ↳ you: the isolated reply"
+        )
+
+        self.assertFalse(self.tenant.digest_thread_attribution_enabled)
+        self.assertEqual(build_conversation_digest(self.tenant), expected)
+
+    def test_digest_flag_on_labels_only_non_main_ios_rows(self):
+        self.tenant.digest_thread_attribution_enabled = True
+        self.tenant.save(update_fields=["digest_thread_attribution_enabled"])
+        main = ChatThread.objects.create(tenant=self.tenant, user=self.user, title="Main", is_main=True)
+        other = ChatThread.objects.create(tenant=self.tenant, user=self.user, title="Side quest", is_main=False)
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=main,
+            client_msg_id="attribution-main",
+            user_text="main thread question",
+            reply_text="main thread reply",
+            status=AppChatMessage.Status.READY,
+        )
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=other,
+            client_msg_id="attribution-other",
+            user_text="other thread question",
+            reply_text="other thread reply",
+            status=AppChatMessage.Status.READY,
+        )
+        ConversationTurn.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="1",
+            local_date=tenant_today(self.tenant),
+            user_text="telegram question",
+            reply_text="telegram reply",
+        )
+
+        digest = build_conversation_digest(self.tenant)
+        lines = digest.splitlines()
+        instruction = (
+            "Lines tagged [other chat: …] are from the user's OTHER conversations — background context only; "
+            "never present them as part of the current conversation, and attribute the source chat when referencing them."
+        )
+        self.assertEqual(lines[0], instruction)
+        self.assertEqual(digest.count(instruction), 1)
+        self.assertNotIn("[other chat:", next(line for line in lines if "main thread question" in line))
+        self.assertNotIn("[other chat:", next(line for line in lines if "main thread reply" in line))
+        self.assertNotIn("[other chat:", next(line for line in lines if "telegram question" in line))
+        self.assertNotIn("[other chat:", next(line for line in lines if "telegram reply" in line))
+        self.assertIn('[other chat: "Side quest"] user: other thread question', digest)
+        self.assertIn('↳ [other chat: "Side quest"] you: other thread reply', digest)
+
+        from apps.orchestrator.workspace_envelope import render_managed_region
+
+        managed = render_managed_region(self.tenant)
+        self.assertIn(f"## Conversation so far\n{instruction}\n", managed)
+
+    def test_digest_flag_on_omits_instruction_without_labeled_rows(self):
+        self.tenant.digest_thread_attribution_enabled = True
+        self.tenant.save(update_fields=["digest_thread_attribution_enabled"])
+        main = ChatThread.objects.create(tenant=self.tenant, user=self.user, title="Main", is_main=True)
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=main,
+            client_msg_id="attribution-main-only",
+            user_text="only the main thread",
+            status=AppChatMessage.Status.READY,
+        )
+
+        digest = build_conversation_digest(self.tenant)
+
+        self.assertNotIn("Lines tagged [other chat: …]", digest)
+        self.assertNotIn("[other chat:", digest)
+
+    def test_digest_other_thread_title_is_redacted_then_truncated(self):
+        self.tenant.digest_thread_attribution_enabled = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice Smith"}
+        self.tenant.save(update_fields=["digest_thread_attribution_enabled", "pii_entity_map"])
+        other = ChatThread.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            title="Alice Smith 12345678901234567890",
+            is_main=False,
+        )
+        AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=other,
+            client_msg_id="attribution-redacted-title",
+            user_text="source title test",
+            status=AppChatMessage.Status.READY,
+        )
+
+        digest = build_conversation_digest(self.tenant)
+
+        self.assertIn('[other chat: "[PERSON_1] 123456789012…"]', digest)
+        self.assertNotIn("Alice Smith", digest)
+
     def test_digest_normalizes_multiline_ios_pin_and_preserves_trailing_words(self):
         thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True)
         raw = (
