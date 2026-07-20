@@ -5,7 +5,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("tenants", "0135_tenant_tour_guide_manifest_ok"),
+        ("tenants", "0136_tenant_places_search_manifest_ok"),
     ]
 
     operations = [
