@@ -492,6 +492,14 @@ AZURE_KV_SECRET_BRAVE_API_KEY = env(
     "AZURE_KV_SECRET_BRAVE_API_KEY",
     default="brave-api-key",
 )
+# Apple Maps Server API. The private `.p8` stays in Key Vault; Django holds
+# only its secret name plus the non-secret key/team identifiers.
+AZURE_KV_SECRET_APPLE_MAPS_AUTHKEY = env(
+    "AZURE_KV_SECRET_APPLE_MAPS_AUTHKEY",
+    default="apple-maps-server-authkey",
+)
+NBHD_APPLE_MAPS_KEY_ID = env("NBHD_APPLE_MAPS_KEY_ID", default="")
+NBHD_APPLE_MAPS_TEAM_ID = env("NBHD_APPLE_MAPS_TEAM_ID", default="")
 OPENROUTER_API_KEY = env("OPENROUTER_API_KEY", default="")
 AZURE_KV_SECRET_OPENROUTER_API_KEY = env(
     "AZURE_KV_SECRET_OPENROUTER_API_KEY",

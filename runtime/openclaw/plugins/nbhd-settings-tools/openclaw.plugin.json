@@ -5,6 +5,7 @@
   "contracts": {
     "tools": [
       "nbhd_tour_guide",
+      "nbhd_places_search",
       "nbhd_get_preferred_model_state",
       "nbhd_set_preferred_model"
     ]

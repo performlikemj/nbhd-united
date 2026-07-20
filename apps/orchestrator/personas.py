@@ -6,7 +6,7 @@ import logging
 import os
 from typing import Any
 
-from apps.orchestrator.tour_guide import tour_guide_delivery_ready
+from apps.orchestrator.tour_guide import places_search_delivery_ready, tour_guide_delivery_ready
 
 logger = logging.getLogger(__name__)
 
@@ -842,7 +842,15 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     # the tool-response gate. Keep this BEFORE the larger Gravity block so it
     # cannot become a truncated tail.
     if tenant is not None and getattr(tenant, "tour_guide_enabled", False):
-        if tour_guide_delivery_ready(tenant):
+        if places_search_delivery_ready(tenant):
+            tour_guide_gate = (
+                "## Tour guide\n\n"
+                "For what-to-do / where-to-eat / stops / itinerary / guide-card asks around a place — "
+                "or any message with a 📍 Current location line — call `nbhd_tour_guide` FIRST this turn "
+                "to load the format, then call `nbhd_places_search` before composing and follow both tool "
+                "responses exactly. Never ask where the user is when a recent 📍 message exists."
+            )
+        elif tour_guide_delivery_ready(tenant):
             tour_guide_gate = (
                 "## Tour guide\n\n"
                 "For what-to-do / where-to-eat / stops / itinerary / guide-card asks around a place — "

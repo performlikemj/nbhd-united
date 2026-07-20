@@ -32,6 +32,21 @@ class Command(BaseCommand):
             dest="manifest_ok",
             help="Mark the tenant image's settings-tools manifest as not tour-guide capable",
         )
+        places_manifest = parser.add_mutually_exclusive_group()
+        places_manifest.add_argument(
+            "--places-manifest-ok",
+            action="store_const",
+            const=True,
+            dest="places_manifest_ok",
+            help="Mark the tenant image's settings-tools manifest as places-search capable",
+        )
+        places_manifest.add_argument(
+            "--places-manifest-not-ok",
+            action="store_const",
+            const=False,
+            dest="places_manifest_ok",
+            help="Mark the tenant image's settings-tools manifest as not places-search capable",
+        )
         parser.add_argument(
             "--mode",
             choices=[choice.value for choice in Tenant.TourGuideMode],
@@ -39,7 +54,13 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        if not (options["enable"] or options["disable"] or options["mode"] or options["manifest_ok"] is not None):
+        if not (
+            options["enable"]
+            or options["disable"]
+            or options["mode"]
+            or options["manifest_ok"] is not None
+            or options["places_manifest_ok"] is not None
+        ):
             raise CommandError("Specify at least one tour-guide setting to update")
 
         tenant_id = options["tenant_id"]
@@ -58,6 +79,9 @@ class Command(BaseCommand):
         if options["manifest_ok"] is not None:
             tenant.tour_guide_manifest_ok = options["manifest_ok"]
             update_fields.append("tour_guide_manifest_ok")
+        if options["places_manifest_ok"] is not None:
+            tenant.places_search_manifest_ok = options["places_manifest_ok"]
+            update_fields.append("places_search_manifest_ok")
         tenant.save(update_fields=update_fields)
         tenant.bump_pending_config()
 
@@ -65,7 +89,8 @@ class Command(BaseCommand):
             self.style.SUCCESS(
                 f"tenant={tenant.id}: tour_guide_enabled={tenant.tour_guide_enabled} "
                 f"tour_guide_mode={tenant.tour_guide_mode} "
-                f"tour_guide_manifest_ok={tenant.tour_guide_manifest_ok}"
+                f"tour_guide_manifest_ok={tenant.tour_guide_manifest_ok} "
+                f"places_search_manifest_ok={tenant.places_search_manifest_ok}"
             )
         )
         self.stdout.write(

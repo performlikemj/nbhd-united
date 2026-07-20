@@ -22,6 +22,9 @@ from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_too
 from apps.orchestrator.tour_guide import (
     TOUR_GUIDE_CONTRACT_CARDS,
     TOUR_GUIDE_CONTRACT_LINKS,
+    TOUR_GUIDE_GROUNDED_CONTRACT_CARDS,
+    TOUR_GUIDE_GROUNDED_CONTRACT_LINKS,
+    places_search_delivery_ready,
     tour_guide_delivery_ready,
 )
 from apps.tenants.models import Tenant
@@ -2343,13 +2346,24 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         # same helper so config delivery and its call-first instructions cannot
         # diverge.
         settings_tools_id = str(getattr(settings, "OPENCLAW_SETTINGS_PLUGIN_ID", "nbhd-settings-tools") or "").strip()
-        if settings_tools_id and settings_tools_id in plugin_config["entries"] and tour_guide_delivery_ready(tenant):
+        if (
+            settings_tools_id
+            and settings_tools_id in plugin_config["entries"]
+            and (tour_guide_delivery_ready(tenant) or places_search_delivery_ready(tenant))
+        ):
             tour_guide_mode = getattr(tenant, "tour_guide_mode", Tenant.TourGuideMode.LINKS)
-            tour_guide_contract = (
-                TOUR_GUIDE_CONTRACT_CARDS
-                if tour_guide_mode == Tenant.TourGuideMode.CARDS
-                else TOUR_GUIDE_CONTRACT_LINKS
-            )
+            if places_search_delivery_ready(tenant):
+                tour_guide_contract = (
+                    TOUR_GUIDE_GROUNDED_CONTRACT_CARDS
+                    if tour_guide_mode == Tenant.TourGuideMode.CARDS
+                    else TOUR_GUIDE_GROUNDED_CONTRACT_LINKS
+                )
+            else:
+                tour_guide_contract = (
+                    TOUR_GUIDE_CONTRACT_CARDS
+                    if tour_guide_mode == Tenant.TourGuideMode.CARDS
+                    else TOUR_GUIDE_CONTRACT_LINKS
+                )
             plugin_config["entries"][settings_tools_id]["config"] = {
                 "tourGuideEnabled": bool(getattr(tenant, "tour_guide_enabled", False)),
                 "tourGuideMode": tour_guide_mode,
