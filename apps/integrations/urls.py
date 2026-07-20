@@ -44,6 +44,7 @@ from .runtime_views import (
     RuntimeMemorySyncView,
     RuntimeMissionsView,
     RuntimeNeighborhoodContextView,
+    RuntimePlacesSearchView,
     RuntimeProfileUpdateView,
     RuntimeProposeMissionTaskView,
     RuntimeProposeShareView,
@@ -70,6 +71,11 @@ router = DefaultRouter()
 router.register("", IntegrationViewSet, basename="integration")
 
 urlpatterns = [
+    path(
+        "runtime/<uuid:tenant_id>/places/search/",
+        RuntimePlacesSearchView.as_view(),
+        name="runtime-places-search",
+    ),
     # Typed Goal/Task lifecycle (feat/journal-typed-lifecycle)
     path(
         "runtime/<uuid:tenant_id>/goals/",

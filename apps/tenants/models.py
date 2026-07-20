@@ -561,6 +561,13 @@ class Tenant(models.Model):
             "Nothing reconciles this field."
         ),
     )
+    places_search_manifest_ok = models.BooleanField(
+        default=False,
+        help_text=(
+            "Runtime image's settings-tools manifest declares/registers nbhd_places_search; "
+            "set per-tenant after image verification, nothing reconciles this."
+        ),
+    )
     journal_shaping_enabled = models.BooleanField(default=False)
     situational_context_enabled = models.BooleanField(
         default=False,

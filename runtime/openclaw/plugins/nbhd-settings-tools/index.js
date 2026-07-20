@@ -57,9 +57,21 @@ function renderPayload(payload) {
   };
 }
 
-async function callRuntime(api, { path, method = "GET", body }) {
+function buildUrl(baseUrl, path, query) {
+  const url = new URL(`${baseUrl}${path}`);
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value === undefined || value === null || value === "") continue;
+    url.searchParams.set(key, String(value));
+  }
+  return url;
+}
+
+async function callRuntime(
+  api,
+  { path, method = "GET", query, body, allowResponseStatuses = [] },
+) {
   const runtime = getRuntimeConfig(api);
-  const url = new URL(`${runtime.apiBaseUrl}${path}`);
+  const url = buildUrl(runtime.apiBaseUrl, path, query);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), runtime.requestTimeoutMs);
 
@@ -99,7 +111,7 @@ async function callRuntime(api, { path, method = "GET", body }) {
       return asObject(payload);
     }
 
-    if (!response.ok) {
+    if (!response.ok && !allowResponseStatuses.includes(response.status)) {
       const normalized = asObject(payload);
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
       const detail = asTrimmedString(normalized.detail);
@@ -121,6 +133,40 @@ async function callRuntime(api, { path, method = "GET", body }) {
 function preferredModelPath(api) {
   const runtime = getRuntimeConfig(api);
   return `/api/v1/tenants/runtime/${encodeURIComponent(runtime.tenantId)}/preferred-model/`;
+}
+
+function placesSearchPath(api) {
+  const runtime = getRuntimeConfig(api);
+  return `/api/v1/integrations/runtime/${encodeURIComponent(runtime.tenantId)}/places/search/`;
+}
+
+function normalizePlace(value) {
+  const place = asObject(value);
+  return {
+    id: asTrimmedString(place.id),
+    name: asTrimmedString(place.name),
+    latitude: Number(place.latitude),
+    longitude: Number(place.longitude),
+    formatted_address_lines: Array.isArray(place.formatted_address_lines)
+      ? place.formatted_address_lines.filter((line) => typeof line === "string")
+      : [],
+    country: asTrimmedString(place.country),
+    country_code: asTrimmedString(place.country_code),
+    poi_category: asTrimmedString(place.poi_category),
+  };
+}
+
+function normalizePlacesPayload(value) {
+  const payload = asObject(value);
+  const normalized = {
+    verified: payload.verified === true,
+    fresh: payload.fresh === true,
+    source: asTrimmedString(payload.source),
+    results: Array.isArray(payload.results) ? payload.results.map(normalizePlace) : [],
+  };
+  const reason = asTrimmedString(payload.reason);
+  if (reason) normalized.reason = reason;
+  return normalized;
 }
 
 export default function register(api) {
@@ -146,6 +192,82 @@ export default function register(api) {
             mode: pluginConfig.tourGuideMode,
           };
           return renderPayload(payload);
+        },
+      }),
+      { optional: true },
+    );
+
+    api.registerTool(
+      wrap({
+        name: "nbhd_places_search",
+        description:
+          "Search Apple Maps structured place data for tour recommendations. Call this before " +
+          "recommending any place and use only the returned names and coordinates. A degraded " +
+          "verified=false response means hedge or recommend nothing as the tour-guide contract directs.",
+        parameters: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            query: {
+              type: "string",
+              minLength: 1,
+              maxLength: 200,
+              description: "Place or category to search for.",
+            },
+            latitude: { type: "number", minimum: -90, maximum: 90 },
+            longitude: { type: "number", minimum: -180, maximum: 180 },
+            language: {
+              type: "string",
+              maxLength: 35,
+              pattern: "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$",
+            },
+            country: {
+              type: "string",
+              pattern: "^[A-Za-z]{2}$",
+            },
+            categories: {
+              type: "array",
+              maxItems: 10,
+              uniqueItems: true,
+              items: {
+                type: "string",
+                maxLength: 64,
+                pattern: "^[A-Za-z][A-Za-z0-9]*$",
+              },
+            },
+            limit: { type: "integer", minimum: 1, maximum: 20 },
+          },
+          required: ["query"],
+        },
+        async execute(_id, params) {
+          const input = asObject(params);
+          const hasLatitude = typeof input.latitude === "number";
+          const hasLongitude = typeof input.longitude === "number";
+          if (hasLatitude !== hasLongitude) {
+            throw new Error("latitude and longitude must be provided together");
+          }
+
+          const query = { q: asTrimmedString(input.query) };
+          if (hasLatitude) {
+            query.lat = input.latitude;
+            query.lon = input.longitude;
+          }
+          const language = asTrimmedString(input.language);
+          if (language) query.lang = language;
+          const country = asTrimmedString(input.country);
+          if (country) query.country = country;
+          if (Array.isArray(input.categories) && input.categories.length) {
+            query.categories = input.categories.map(asTrimmedString).filter(Boolean).join(",");
+          }
+          if (Number.isInteger(input.limit)) query.limit = input.limit;
+
+          const payload = await callRuntime(api, {
+            path: placesSearchPath(api),
+            method: "GET",
+            query,
+            allowResponseStatuses: [429, 503],
+          });
+          return renderPayload(normalizePlacesPayload(payload));
         },
       }),
       { optional: true },
