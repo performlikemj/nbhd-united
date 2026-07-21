@@ -6,6 +6,7 @@
 // omission-prone tools leading with REQUIRED in their description.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import register from "./index.js";
 
 // Mirror of apps/journal/models.py Document.Kind — the server's source of truth.
@@ -76,5 +77,88 @@ test("omission-prone tools name their required params in the description", () =>
   for (const [name, re] of Object.entries(expect)) {
     assert.match(tools[name].description, /REQUIRED/, `${name} flags REQUIRED`);
     assert.match(tools[name].description, re, `${name} names its required param`);
+  }
+});
+
+test("situation tool is registered with the city-label policy and manifest contract", () => {
+  const tools = collectTools();
+  const tool = tools["nbhd_update_situation"];
+  assert.ok(tool, "nbhd_update_situation should be registered");
+  assert.deepEqual(tool.parameters.required, ["place_label"]);
+  assert.equal(tool.parameters.properties.place_label.type, "string");
+  assert.equal(tool.parameters.additionalProperties, false);
+  assert.match(tool.description, /user STATES where they currently are/);
+  assert.match(tool.description, /CURRENT city/);
+  assert.match(tool.description, /auto-expires after about 48 hours/);
+  assert.match(tool.description, /NEVER use this for permanent home\/base changes/);
+  assert.match(tool.description, /nbhd_update_profile/);
+  assert.match(tool.description, /future plan, ask before calling/);
+
+  const manifest = JSON.parse(
+    readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
+  );
+  assert.ok(manifest.contracts.tools.includes("nbhd_update_situation"));
+});
+
+test("situation tool posts only place_label and reports rejected labels gracefully", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalTenantId = process.env.NBHD_TENANT_ID;
+  const originalInternalKey = process.env.NBHD_INTERNAL_API_KEY;
+  const tools = {};
+  const api = {
+    pluginConfig: { apiBaseUrl: "https://nbhd.test" },
+    registerTool(def) { tools[def.name] = def; },
+    registerHook() {},
+    on() {},
+    logger: { info() {}, warn() {}, error() {}, debug() {} },
+  };
+  process.env.NBHD_TENANT_ID = "tenant-123";
+  process.env.NBHD_INTERNAL_API_KEY = "internal-key";
+
+  try {
+    register(api);
+    const tool = tools["nbhd_update_situation"];
+    let request;
+    globalThis.fetch = async (url, options) => {
+      request = { url: String(url), options };
+      return {
+        ok: true,
+        status: 200,
+        async text() { return JSON.stringify({ ok: true, changed: true }); },
+      };
+    };
+
+    const accepted = await tool.execute("call-1", { place_label: "  Osaka  ", latitude: 34.7 });
+    assert.equal(request.url, "https://nbhd.test/api/v1/integrations/runtime/tenant-123/situation/");
+    assert.equal(request.options.method, "POST");
+    assert.equal(request.options.headers["X-NBHD-Internal-Key"], "internal-key");
+    assert.equal(request.options.headers["X-NBHD-Tenant-Id"], "tenant-123");
+    assert.deepEqual(JSON.parse(request.options.body), { place_label: "Osaka" });
+    assert.deepEqual(accepted.details.json, { ok: true, changed: true });
+
+    globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      async text() { return JSON.stringify({ ok: false, reason: "invalid_label" }); },
+    });
+    const rejected = await tool.execute("call-2", { place_label: "# Osaka" });
+    assert.equal(rejected.details.json.ok, false);
+    assert.match(rejected.details.json.message, /not accepted/);
+
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 503,
+      async text() { return JSON.stringify({ error: "unavailable" }); },
+    });
+    const failed = await tool.execute("call-3", { place_label: "Osaka" });
+    assert.equal(failed.details.json.ok, false);
+    assert.equal(failed.details.json.reason, "runtime_request_failed");
+    assert.match(failed.details.json.message, /not accepted/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalTenantId === undefined) delete process.env.NBHD_TENANT_ID;
+    else process.env.NBHD_TENANT_ID = originalTenantId;
+    if (originalInternalKey === undefined) delete process.env.NBHD_INTERNAL_API_KEY;
+    else process.env.NBHD_INTERNAL_API_KEY = originalInternalKey;
   }
 });

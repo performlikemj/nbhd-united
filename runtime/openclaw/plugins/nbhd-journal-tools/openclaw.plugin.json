@@ -26,6 +26,7 @@
       "nbhd_send_to_user",
       "nbhd_cron_phase2_summary",
       "nbhd_update_profile",
+      "nbhd_update_situation",
       "nbhd_workspace_list",
       "nbhd_workspace_create",
       "nbhd_workspace_update",

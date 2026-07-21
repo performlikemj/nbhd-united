@@ -10,6 +10,7 @@ from django.test.utils import override_settings
 
 from apps.journal.models import JournalEntry, WeeklyReview
 from apps.lessons.models import Lesson, StarJournalEntry, TutoringSession
+from apps.tenants.models import UserSituation
 from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
@@ -78,6 +79,142 @@ class RuntimeCurrentStatusViewTest(TestCase):
         )
         self.assertEqual(len(body["obligations"]), 1)
         self.assertEqual(body["obligations"][0]["nickname"], "Loan AC")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="shared-key")
+class RuntimeSituationUpdateViewTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Situation", telegram_chat_id=828282)
+        seed_internal_key(self.tenant)
+        self.tenant.situational_context_enabled = True
+        self.tenant.save(update_fields=["situational_context_enabled"])
+
+    def _headers(self) -> dict[str, str]:
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "shared-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+
+    def _url(self) -> str:
+        return f"/api/v1/integrations/runtime/{self.tenant.id}/situation/"
+
+    def test_requires_internal_auth(self):
+        response = self.client.post(self._url(), {"place_label": "Osaka"}, content_type="application/json")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "internal_auth_failed")
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_changed_label_records_observation_and_schedules_one_push(self, mock_push):
+        response = self.client.post(
+            self._url(),
+            {"place_label": "  Osaka  "},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "changed": True})
+        situation = UserSituation.objects.get(tenant=self.tenant)
+        self.assertEqual(situation.current_place_label, "Osaka")
+        self.assertEqual(situation.current_place_source, "assistant")
+        mock_push.assert_called_once_with(self.tenant)
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_same_label_repeat_is_unchanged_and_does_not_push(self, mock_push):
+        first = self.client.post(
+            self._url(),
+            {"place_label": "Osaka"},
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(first.json(), {"ok": True, "changed": True})
+        mock_push.reset_mock()
+
+        response = self.client.post(
+            self._url(),
+            {"place_label": "Osaka"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "changed": False})
+        mock_push.assert_not_called()
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_invalid_label_is_rejected_without_write_or_push(self, mock_push):
+        response = self.client.post(
+            self._url(),
+            {"place_label": "# Osaka"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": False, "reason": "invalid_label"})
+        self.assertFalse(UserSituation.objects.filter(tenant=self.tenant).exists())
+        mock_push.assert_not_called()
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_flag_off_is_noop_without_write(self, mock_push):
+        self.tenant.situational_context_enabled = False
+        self.tenant.save(update_fields=["situational_context_enabled"])
+
+        response = self.client.post(
+            self._url(),
+            {"place_label": "Osaka"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "changed": False})
+        self.assertFalse(UserSituation.objects.filter(tenant=self.tenant).exists())
+        mock_push.assert_not_called()
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_eval_sink_is_noop_without_write(self, mock_push):
+        self.tenant.is_eval_sink = True
+        self.tenant.save(update_fields=["is_eval_sink"])
+
+        response = self.client.post(
+            self._url(),
+            {"place_label": "Osaka"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "changed": False})
+        self.assertFalse(UserSituation.objects.filter(tenant=self.tenant).exists())
+        mock_push.assert_not_called()
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_coordinate_shaped_extra_keys_are_ignored(self, mock_push):
+        original_lat = self.tenant.user.location_lat
+        original_lon = self.tenant.user.location_lon
+        response = self.client.post(
+            self._url(),
+            {
+                "place_label": "Kyoto",
+                "location_lat": "not-a-coordinate",
+                "location_lon": {"nested": "value"},
+                "latitude": 91,
+                "longitude": 181,
+                "accuracy": -1,
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"ok": True, "changed": True})
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(self.tenant.user.location_lat, original_lat)
+        self.assertEqual(self.tenant.user.location_lon, original_lon)
+        self.assertEqual(UserSituation.objects.get(tenant=self.tenant).current_place_label, "Kyoto")
+        mock_push.assert_called_once_with(self.tenant)
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")

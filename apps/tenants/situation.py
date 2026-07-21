@@ -22,7 +22,7 @@ def _capture_enabled(tenant: Tenant) -> bool:
     return bool(getattr(tenant, "situational_context_enabled", False)) and not getattr(tenant, "is_eval_sink", False)
 
 
-def _clean_place_label(label: object) -> str:
+def clean_place_label(label: object) -> str:
     if not isinstance(label, str):
         return ""
     clean = label.strip()
@@ -49,7 +49,7 @@ def record_place_observation(
     if not _capture_enabled(tenant):
         return False
 
-    clean_label = _clean_place_label(label)
+    clean_label = clean_place_label(label)
     if not clean_label:
         return False
 
