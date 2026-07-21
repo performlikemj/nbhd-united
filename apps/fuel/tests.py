@@ -4263,6 +4263,54 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
         self.assertEqual([str(w.date) for w in workouts[:3]], ["2026-06-15", "2026-06-17", "2026-06-19"])
         # Weekday labels match the real calendar (the bug the user reported).
         self.assertEqual([w.date.weekday() for w in workouts[:3]], [0, 2, 4])
+        self.assertEqual(resp.data["first_workout_date"], "2026-06-15")
+        self.assertIsNone(resp.data["start_date_note"])
+
+    def test_off_cadence_start_reports_first_materialized_workout(self):
+        resp = self._post(
+            {
+                "name": "Thursday Start",
+                "weeks": 1,
+                "days_per_week": 1,
+                "start_date": "2026-07-22",
+                "schedule_json": {"3": {"category": "strength", "activity": "Full Body", **_STRENGTH_DETAIL}},
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["first_workout_date"], "2026-07-23")
+        self.assertIn("2026-07-22", resp.data["start_date_note"])
+        self.assertIn("2026-07-23", resp.data["start_date_note"])
+
+    def test_dedup_retry_returns_the_same_start_metadata(self):
+        body = {
+            "name": "Thursday Retry",
+            "weeks": 1,
+            "days_per_week": 1,
+            "start_date": "2026-07-22",
+            "schedule_json": {"3": {"category": "strength", "activity": "Full Body", **_STRENGTH_DETAIL}},
+        }
+        created = self._post(body)
+        retried = self._post(body)
+        self.assertEqual(created.status_code, 201, created.data)
+        self.assertEqual(retried.status_code, 200, retried.data)
+        self.assertTrue(retried.data["deduped"])
+        self.assertEqual(retried.data["first_workout_date"], created.data["first_workout_date"])
+        self.assertEqual(retried.data["start_date_note"], created.data["start_date_note"])
+
+    def test_zero_materialized_workouts_reports_null_first_date(self):
+        resp = self._post(
+            {
+                "name": "Past Weekday Only",
+                "weeks": 1,
+                "days_per_week": 1,
+                "start_date": "2026-06-21",
+                "schedule_json": {"0": {"category": "strength", "activity": "Full Body", **_STRENGTH_DETAIL}},
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["workouts_created"], 0)
+        self.assertIsNone(resp.data["first_workout_date"])
+        self.assertIn("no sessions were materialized", resp.data["start_date_note"])
 
     @patch("apps.fuel.runtime_views.today_in_tenant_tz")
     def test_default_start_date_uses_tenant_tz_next_monday(self, mock_today):

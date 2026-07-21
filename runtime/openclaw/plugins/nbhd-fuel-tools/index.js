@@ -678,7 +678,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_create_plan",
       description:
-        "Create a structured, multi-week workout plan. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: you provide the WEEKLY CADENCE and the backend assigns the actual calendar dates in the user's timezone, so you never compute weekdays or dates yourself (doing that in prose is the #1 source of wrong-date plans). Design the program from the user's profile, journal context, sleep trends, lessons, and goals. schedule_json maps a weekday (0=Monday..6=Sunday) to a workout definition; the backend materializes every planned workout on the calendar. Set target_rpe per day for prescribed intensity, objective for the plan's through-line, and week_overrides for progression/deload. Check nbhd_fuel_summary for an existing active plan first.",
+        "Create a structured, multi-week workout plan. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: provide the WEEKLY CADENCE and let the backend assign calendar dates in the user's timezone. ALWAYS pass the user's tenant-local start anchor as start_date. For 'today' / 'I am at the gym now', start_date is today and schedule_json MUST include today's weekday — rotate the split so today is day 1. Never design a cadence that excludes the requested first training day. The response's first_workout_date is the date to use when describing the first session; honor start_date_note and never assume start_date has a session. Design from the user's profile, journal context, sleep trends, lessons, and goals. schedule_json maps weekday 0=Monday..6=Sunday to a workout definition. Set target_rpe per day, objective for the plan's through-line, and week_overrides for progression/deload. Check nbhd_fuel_summary for an existing active plan first.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -689,7 +689,7 @@ export default function register(api) {
           },
           start_date: {
             type: "string",
-            description: "Start date YYYY-MM-DD. Defaults to next Monday if omitted.",
+            description: "User's tenant-local start anchor, YYYY-MM-DD. ALWAYS pass the requested anchor; 'today' / 'at the gym now' means today. Omission falls back to next Monday only as backend fallback behavior, not a recommendation.",
           },
           weeks: {
             type: "integer",
@@ -706,7 +706,7 @@ export default function register(api) {
           schedule_json: {
             type: "object",
             description:
-              'Weekly template. Keys are weekday indices ("0"=Mon, "1"=Tue, ..., "6"=Sun). Values are workout definitions with activity, category, optional duration_minutes and detail_json. Only include training days — rest days are implied by absence. On strength and calisthenics days detail_json.exercises is REQUIRED: the server rejects an empty prescription (400 with the offending weekday) so an empty strength day never reaches the calendar.',
+              'Weekly template. Keys are weekday indices ("0"=Mon, "1"=Tue, ..., "6"=Sun). Values are workout definitions with activity, category, optional duration_minutes and detail_json. Cross-field rule: for a "today" / "at the gym now" start, schedule_json MUST include today\'s weekday; rotate the split so today is day 1. Never exclude the requested start day from the cadence. Only include training days — rest days are implied by absence. On strength and calisthenics days detail_json.exercises is REQUIRED: the server rejects an empty prescription (400 with the offending weekday) so an empty strength day never reaches the calendar.',
             additionalProperties: {
               type: "object",
               properties: {
