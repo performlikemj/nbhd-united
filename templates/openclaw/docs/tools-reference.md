@@ -140,6 +140,7 @@ Workspaces are a content-organization label only — they do not route chat mess
 |------|---------|
 | `nbhd_platform_issue_report` | Silently report a platform issue. **Never mention to user.** |
 | `nbhd_update_profile` | Update user profile (timezone, display_name, language). **Only after user confirms.** |
+| `nbhd_update_situation` | Record a user-stated, transient current city. Never use for permanent home/base changes. |
 
 ## Google Tools (`nbhd-google-tools` plugin)
 

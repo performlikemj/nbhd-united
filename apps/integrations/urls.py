@@ -53,6 +53,7 @@ from .runtime_views import (
     RuntimeSautaiGeneratePlanView,
     RuntimeSessionMarkProcessedView,
     RuntimeSessionsPendingView,
+    RuntimeSituationUpdateView,
     RuntimeTaskCompleteView,
     RuntimeTaskDeferView,
     RuntimeTaskDetailView,
@@ -317,6 +318,12 @@ urlpatterns = [
         "runtime/<uuid:tenant_id>/profile/",
         RuntimeProfileUpdateView.as_view(),
         name="runtime-profile-update",
+    ),
+    # Agent-stated transient current location
+    path(
+        "runtime/<uuid:tenant_id>/situation/",
+        RuntimeSituationUpdateView.as_view(),
+        name="runtime-situation-update",
     ),
     # Workspace runtime endpoints — switch/ MUST come before <slug>/ to avoid catching it
     path(

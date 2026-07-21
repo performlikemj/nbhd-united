@@ -2870,6 +2870,50 @@ class RuntimeProfileUpdateView(APIView):
         )
 
 
+class RuntimeSituationUpdateView(APIView):
+    """POST /api/v1/integrations/runtime/<tenant_id>/situation/
+
+    Allows the agent to record a city-level place stated by the user.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def post(self, request, tenant_id):
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        from apps.tenants.situation import clean_place_label
+
+        place_label = clean_place_label(request.data.get("place_label"))
+        if not place_label:
+            return Response({"ok": False, "reason": "invalid_label"})
+
+        from apps.orchestrator.envelope_registry import suppress_refresh
+        from apps.tenants.situation import record_place_observation
+
+        # UserSituation is registry-wired for out-of-band writes, but this
+        # request owns the explicit background push below. Suppress the model
+        # signal so one accepted label change produces one push.
+        with suppress_refresh():
+            changed = record_place_observation(
+                tenant,
+                place_label,
+                source="assistant",
+            )
+        if changed:
+            from apps.orchestrator.workspace_envelope import push_user_md_in_background
+
+            push_user_md_in_background(tenant)
+
+        return Response({"ok": True, "changed": changed})
+
+
 _RECONCILE_STOPWORDS = frozenset(
     {
         "the",

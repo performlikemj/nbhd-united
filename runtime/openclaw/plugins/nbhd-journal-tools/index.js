@@ -1146,6 +1146,61 @@ export default function register(api) {
     },
   }));
 
+  // ── Update transient current situation ──────────────────────────────
+  api.registerTool(wrap({
+    name: "nbhd_update_situation",
+    description:
+      "Use when the user STATES where they currently are — for example, \"I'm back home\", \"just landed in Tokyo\", or \"in Kyoto this weekend\" — to record their CURRENT city. " +
+      "Pass a city-level label only. This context is transient and auto-expires after about 48 hours. " +
+      "After recording, acknowledge naturally (for example, \"Got it — marking you in Osaka\"). " +
+      "NEVER use this for permanent home/base changes; use nbhd_update_profile instead, with explicit user confirmation. " +
+      "If unsure whether the statement describes the user's current location or a future plan, ask before calling.",
+    parameters: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        place_label: {
+          type: "string",
+          description: "The user's current city-level label, e.g. 'Osaka', 'Tokyo', or 'Kyoto'.",
+        },
+      },
+      required: ["place_label"],
+    },
+    async execute(_id, params) {
+      const input = asObject(params);
+      const placeLabel = asTrimmedString(input.place_label);
+      if (!placeLabel) {
+        return renderPayload({
+          ok: false,
+          reason: "invalid_label",
+          message: "The current-location label was not accepted. Ask the user for a city-level label and try again.",
+        });
+      }
+
+      try {
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/situation/"),
+          method: "POST",
+          body: { place_label: placeLabel },
+        });
+        if (payload.ok === false) {
+          return renderPayload({
+            ...payload,
+            message: "The current-location label was not accepted. Ask the user for a city-level label and try again.",
+          });
+        }
+        return renderPayload(payload);
+      } catch (error) {
+        return renderPayload({
+          ok: false,
+          reason: "runtime_request_failed",
+          message: "The current-location label was not accepted. Ask the user for a city-level label and try again.",
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
+  }));
+
   // ── Workspace: List ──────────────────────────────────────────────────
   api.registerTool(wrap({
       name: "nbhd_workspace_list",
