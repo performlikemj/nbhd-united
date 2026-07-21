@@ -19,6 +19,12 @@
   --signal: #4ECDC4;
   --signal-text: #4ECDC4;
   --signal-faint: rgba(78, 205, 196, 0.15);
+  /* Engagement prototype action accents */
+  --engagement-show-up: #79A7FF;
+  --engagement-move: #4ECDC4;
+  --engagement-sit: #73D6A0;
+  --engagement-reflect: #A882FF;
+  --engagement-rest: #F2C66D;
   --telegram: #229ED9;
   --line: #06C755;
   --border: rgba(226, 232, 240, 0.12);
@@ -260,6 +266,11 @@ a {
     --bg: Canvas;
     --surface: Canvas;
     --border: CanvasText;
+    --engagement-show-up: Highlight;
+    --engagement-move: Highlight;
+    --engagement-sit: Highlight;
+    --engagement-reflect: Highlight;
+    --engagement-rest: CanvasText;
   }
 }
 
