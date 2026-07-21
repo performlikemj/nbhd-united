@@ -36,6 +36,7 @@ const publicPages = [
   "/legal/terms",
   "/legal/privacy",
   "/legal/refund",
+  "/yardtalk",
 ];
 
 interface NavItem {
@@ -313,6 +314,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     "/promo/redeem",
     "/promo/redeemed",
     "/onboarding",
+    "/yardtalk",
   ];
   if (fullBleedPages.includes(pathname) || pathname === "/constellation/play") {
     return (
