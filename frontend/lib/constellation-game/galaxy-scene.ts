@@ -430,7 +430,7 @@ export class GalaxyScene extends Phaser.Scene {
   private meteorTimer?: Phaser.Time.TimerEvent;
   private rmQuery: MediaQueryList | null = null; // cached prefers-reduced-motion (read per frame)
   // ── Visual quality + screen-space overlays (Phase 3) ──
-  private lowQuality = false; // weak-device heuristic; gates the per-object ship glow
+  private lowQuality = false; // weak-device heuristic; gates GPU filters, overlays, and dense ambience
   private shipGlow: any; // the ship's lit-from-within engine glow (a Phaser Glow filter controller)
   private vignette?: Phaser.GameObjects.Image; // depth-layered edge darkening (NOT a camera filter → HUD stays crisp)
   private spill?: Phaser.GameObjects.Image; // ambient cluster-colour wash around the ship
@@ -572,7 +572,7 @@ export class GalaxyScene extends Phaser.Scene {
     // NOT a camera filter, so it darkens the void without dimming the HUD/minimap
     // (which render at a higher depth). Radial gradients aren't drawable with
     // Phaser Graphics, hence the canvas.
-    if (this.textures.exists("vignette")) return;
+    if (this.lowQuality || this.textures.exists("vignette")) return;
     try {
       const VS = 256;
       const vc = document.createElement("canvas");
@@ -598,7 +598,7 @@ export class GalaxyScene extends Phaser.Scene {
   // "#0b0f13 + coloured dots" toward a deliberate deep-space palette. WebGL-only;
   // skipped on the (rare) Canvas fallback. Not animated, so it always applies.
   private applyColorGrade() {
-    if (this.game.renderer.type !== Phaser.WEBGL) return;
+    if (this.lowQuality || this.game.renderer.type !== Phaser.WEBGL) return;
     const cm = this.cameras.main.filters?.internal.addColorMatrix();
     if (!cm) return;
     cm.colorMatrix.saturate(0.12);
@@ -612,7 +612,7 @@ export class GalaxyScene extends Phaser.Scene {
 
   // Conservative weak-device heuristic (defaults to high quality — iOS reports no
   // deviceMemory and a healthy core count, so iPhones stay on). Only the clearest
-  // low-end signals drop it. Gates the per-object ship glow (and future passes).
+  // low-end signals drop it. Gates the costliest new GPU/ambient work.
   private detectLowQuality(): boolean {
     try {
       const nav = navigator as Navigator & { deviceMemory?: number };
@@ -630,6 +630,7 @@ export class GalaxyScene extends Phaser.Scene {
   // depth) stay crisp. Vignette sits above the world (depth 16) but below the HUD
   // (19–20); the spill sits low (depth 1) so stars/ship draw over it.
   private buildOverlays() {
+    if (this.lowQuality) return;
     this.spill = this.add
       .image(0, 0, "glow")
       .setScrollFactor(0)
@@ -704,7 +705,7 @@ export class GalaxyScene extends Phaser.Scene {
     const len = Math.hypot(W, H) * 0.75;
     const halfW = Math.min(W, H) * 0.16;
     const g = this.add.graphics().setScrollFactor(0.1).setDepth(0);
-    const N = Math.round(420 * density);
+    const N = Math.round((this.lowQuality ? 80 : 420) * density);
     for (let i = 0; i < N; i++) {
       const t = (Math.random() - 0.5) * len; // along the band
       // Bias toward the spine (sum-of-uniforms ≈ gaussian) so the band has a core.

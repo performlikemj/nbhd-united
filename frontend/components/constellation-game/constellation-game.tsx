@@ -30,6 +30,7 @@ export function ConstellationGame({
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const pendingInitialWarpRef = useRef(initialWarp);
 
   useEffect(() => {
     const host = canvasRef.current;
@@ -39,6 +40,7 @@ export function ConstellationGame({
     let game: ReturnType<typeof mountGalaxyGame> | null = null;
     let disposed = false;
     let remounting = false;
+    let restoredWhileHidden = false;
 
     // iOS Safari / WKWebView routinely DROPS the WebGL context on backgrounding,
     // device lock, or memory pressure (a documented iOS 16.7–17+ regression).
@@ -58,7 +60,16 @@ export function ConstellationGame({
       }, 0);
     };
 
-    const onRestored = () => scheduleRemount();
+    const onRestored = () => {
+      if (document.hidden) {
+        // Timers may be suspended in the background. Remember the completed
+        // restore explicitly because Phaser clears renderer.contextLost before
+        // emitting restorewebgl, then rebuild as soon as the tab is visible.
+        restoredWhileHidden = true;
+        return;
+      }
+      scheduleRemount();
+    };
 
     const onVisibility = () => {
       if (!game || disposed) return;
@@ -68,23 +79,32 @@ export function ConstellationGame({
         game.loop.sleep();
       } else {
         game.loop.wake();
-        // If the context was lost while we were away and never recovered, rebuild.
+        // Rebuild after either a completed hidden restore or a loss that is still
+        // outstanding. The latter preserves the fallback when no restore arrived.
         const r = game.renderer;
-        if ("contextLost" in r && r.contextLost) scheduleRemount();
+        const needsRecovery = restoredWhileHidden || ("contextLost" in r && r.contextLost);
+        restoredWhileHidden = false;
+        if (needsRecovery) scheduleRemount();
       }
     };
 
     const mount = () => {
       if (game) {
-        game.events.off("contextrestored", onRestored);
+        game.renderer.off("restorewebgl", onRestored);
         try {
           game.destroy(true);
         } catch {
           // The old canvas/context may already be gone — destroy is best-effort.
         }
       }
-      game = mountGalaxyGame(host, root, galaxy, { wormholes, initialWarp });
-      game.events.on("contextrestored", onRestored);
+      game = mountGalaxyGame(host, root, galaxy, {
+        wormholes,
+        initialWarp: pendingInitialWarpRef.current,
+      });
+      // The deep link belongs to the user's first arrival, not context-recovery
+      // remounts (or later galaxy refreshes within this component instance).
+      pendingInitialWarpRef.current = undefined;
+      game.renderer.on("restorewebgl", onRestored);
     };
 
     mount();
@@ -94,7 +114,7 @@ export function ConstellationGame({
       disposed = true;
       document.removeEventListener("visibilitychange", onVisibility);
       if (game) {
-        game.events.off("contextrestored", onRestored);
+        game.renderer.off("restorewebgl", onRestored);
         game.destroy(true);
         game = null;
       }
