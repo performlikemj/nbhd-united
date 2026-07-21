@@ -25,7 +25,7 @@ import uuid
 from datetime import timedelta
 
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
@@ -158,13 +158,13 @@ def _get_or_create_main_thread(tenant, user) -> ChatThread:
     return thread
 
 
-# A tenant's main-thread id is effectively immutable, so the read-heavy ?since=
-# feed caches it rather than paying a get_or_create round trip to Sydney on every
-# ~30s poll. The feed only needs the id (a label for non-app rows), not the
-# object. Cache-aside: a miss (or any cache hiccup) falls straight through to the
-# DB, and on the very first call still creates the thread. The cache is busted on
-# is_main thread deletion via apps/router/signals.py, so a (rare) delete+recreate
-# can't serve a dangling id past the next poll; the TTL is only a last-ditch bound.
+# A tenant's main-thread id changes only through an explicit admin action, so the
+# read-heavy ?since= feed caches it rather than paying a get_or_create round trip
+# to Sydney on every ~30s poll. The feed only needs the id (a label for non-app
+# rows), not the object. Cache-aside: a miss (or any cache hiccup) falls straight
+# through to the DB, and on the very first call still creates the thread. The
+# cache is replaced on a main-thread swap here and busted on is_main thread
+# deletion via apps/router/signals.py; the TTL is only a last-ditch bound.
 _MAIN_THREAD_ID_TTL = 60 * 60
 
 
@@ -183,16 +183,22 @@ def _main_thread_id_cached(tenant, user) -> str:
     if cached:
         return cached
     tid = str(_get_or_create_main_thread(tenant, user).id)
-    try:
-        cache.set(key, tid, _MAIN_THREAD_ID_TTL)
-    except Exception:  # noqa: BLE001
-        pass
+    cache_main_thread_id(tenant.id, tid)
     return tid
 
 
+def cache_main_thread_id(tenant_id, thread_id) -> None:
+    """Cache the committed main-thread id for flat-feed attribution."""
+    from django.core.cache import cache
+
+    try:
+        cache.set(_main_thread_cache_key(tenant_id), str(thread_id), _MAIN_THREAD_ID_TTL)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def invalidate_main_thread_cache(tenant_id) -> None:
-    """Drop the cached main-thread id for a tenant. Called on is_main thread
-    deletion so a delete+recreate never serves the old, dangling id."""
+    """Drop the cached main-thread id after deletion."""
     from django.core.cache import cache
 
     try:
@@ -582,6 +588,65 @@ class ChatThreadListView(APIView):
             is_main=False,
         )
         return Response(_serialize_thread(thread, tenant=tenant), status=status.HTTP_201_CREATED)
+
+
+class ChatThreadDetailView(APIView):
+    """DELETE: remove a non-main thread and its app-message history."""
+
+    permission_classes = [IsAuthenticated]
+
+    def delete(self, request, thread_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            thread = ChatThread.objects.select_for_update().filter(tenant=tenant, id=thread_id).first()
+            if not thread:
+                return Response({"error": "thread_not_found"}, status=status.HTTP_404_NOT_FOUND)
+            if thread.is_main:
+                return Response({"error": "cannot_delete_main"}, status=status.HTTP_409_CONFLICT)
+            # AppChatMessage.thread is CASCADE, so this removes exactly this
+            # thread's app-message rows in the same database transaction.
+            thread.delete()
+
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class ChatThreadSetMainView(APIView):
+    """POST: atomically make an existing tenant thread the main/Home thread."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, thread_id):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        with transaction.atomic():
+            # Lock every existing thread in a stable order. Every swap contends
+            # on the current main row, serializing concurrent swaps without a
+            # tenant-wide advisory lock or a schema change.
+            threads = list(ChatThread.objects.select_for_update().filter(tenant=tenant).order_by("id"))
+            thread = next((candidate for candidate in threads if candidate.id == thread_id), None)
+            if thread is None:
+                return Response({"error": "thread_not_found"}, status=status.HTTP_404_NOT_FOUND)
+            changed = not thread.is_main
+            if changed:
+                current_main = next((candidate for candidate in threads if candidate.is_main), None)
+                # The conditional unique index is immediate/non-deferrable.
+                # Clear the old row first so setting the target can never
+                # briefly create two is_main=True rows in this transaction.
+                if current_main is not None:
+                    ChatThread.objects.filter(pk=current_main.pk).update(is_main=False)
+                ChatThread.objects.filter(pk=thread.pk).update(is_main=True)
+                thread.is_main = True
+
+        if changed:
+            # Cache access stays outside the transaction (platform invariant 8).
+            # Replace the old id only after the new main is committed.
+            cache_main_thread_id(tenant.id, thread.id)
+        return Response(_serialize_thread(thread, tenant=tenant), status=status.HTTP_200_OK)
 
 
 class ChatThreadMessagesView(APIView):

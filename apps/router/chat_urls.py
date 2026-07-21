@@ -11,8 +11,10 @@ from apps.router.chat_views import (
     ChatMessageDetailView,
     ChatMessageView,
     ChatReadView,
+    ChatThreadDetailView,
     ChatThreadListView,
     ChatThreadMessagesView,
+    ChatThreadSetMainView,
     TranscriptionVocabView,
 )
 
@@ -32,6 +34,16 @@ urlpatterns = [
         name="chat-message-detail",
     ),
     path("threads/", ChatThreadListView.as_view(), name="chat-thread-list"),
+    path(
+        "threads/<uuid:thread_id>/",
+        ChatThreadDetailView.as_view(),
+        name="chat-thread-detail",
+    ),
+    path(
+        "threads/<uuid:thread_id>/set-main/",
+        ChatThreadSetMainView.as_view(),
+        name="chat-thread-set-main",
+    ),
     path(
         "threads/<uuid:thread_id>/messages/",
         ChatThreadMessagesView.as_view(),
