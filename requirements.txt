@@ -180,9 +180,9 @@ fsspec==2026.2.0
     # via
     #   huggingface-hub
     #   torch
-google-auth[requests]==2.53.0
+google-auth[requests]==2.56.1
     # via google-genai
-google-genai==2.12.1
+google-genai==2.13.0
     # via -r requirements.in
 gunicorn==26.0.0
     # via -r requirements.in
