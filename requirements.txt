@@ -361,7 +361,7 @@ preshed==3.0.13
     # via
     #   spacy
     #   thinc
-presidio-analyzer==2.2.363
+presidio-analyzer==2.2.364
     # via -r requirements.in
 propcache==0.4.1
     # via
