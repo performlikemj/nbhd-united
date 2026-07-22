@@ -1256,6 +1256,66 @@ class DocumentAPITest(TestCase):
         daily_node = next(n for n in resp.data if n["kind"] == "daily")
         self.assertEqual(len(daily_node["items"]), 1)
 
+    @patch("apps.common.llm_contracts.dj_tz.now")
+    def test_tenant_local_today_is_in_sidebar_and_today_endpoint(self, mock_now):
+        self.user.timezone = "Asia/Tokyo"
+        self.user.save(update_fields=["timezone"])
+        mock_now.return_value = datetime(2026, 7, 22, 16, 30, tzinfo=ZoneInfo("UTC"))
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-07-23",
+            title="Jul 23",
+            markdown="# Tenant-local today",
+        )
+
+        sidebar_resp = self.client.get("/api/v1/journal/tree/")
+        self.assertEqual(sidebar_resp.status_code, 200)
+        daily_items = next(node["items"] for node in sidebar_resp.data if node["kind"] == "daily")
+        self.assertIn("2026-07-23", [item["slug"] for item in daily_items])
+
+        today_resp = self.client.get("/api/v1/journal/today/")
+        self.assertEqual(today_resp.status_code, 200)
+        self.assertEqual(today_resp.data["slug"], "2026-07-23")
+
+    @patch("apps.common.llm_contracts.dj_tz.now")
+    def test_sidebar_still_hides_tenant_local_tomorrow(self, mock_now):
+        self.user.timezone = "Asia/Tokyo"
+        self.user.save(update_fields=["timezone"])
+        mock_now.return_value = datetime(2026, 7, 22, 16, 30, tzinfo=ZoneInfo("UTC"))
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-07-24",
+            title="Jul 24",
+            markdown="# Tenant-local tomorrow",
+        )
+
+        resp = self.client.get("/api/v1/journal/tree/")
+        self.assertEqual(resp.status_code, 200)
+        daily_items = next(node["items"] for node in resp.data if node["kind"] == "daily")
+        self.assertNotIn("2026-07-24", [item["slug"] for item in daily_items])
+
+    @patch("apps.common.llm_contracts.dj_tz.now")
+    def test_utc_tenant_today_matches_utc_date(self, mock_now):
+        mock_now.return_value = datetime(2026, 7, 22, 16, 30, tzinfo=ZoneInfo("UTC"))
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-07-22",
+            title="Jul 22",
+            markdown="# UTC today",
+        )
+
+        sidebar_resp = self.client.get("/api/v1/journal/tree/")
+        self.assertEqual(sidebar_resp.status_code, 200)
+        daily_items = next(node["items"] for node in sidebar_resp.data if node["kind"] == "daily")
+        self.assertIn("2026-07-22", [item["slug"] for item in daily_items])
+
+        today_resp = self.client.get("/api/v1/journal/today/")
+        self.assertEqual(today_resp.status_code, 200)
+        self.assertEqual(today_resp.data["slug"], "2026-07-22")
+
     def test_auth_required(self):
         client = APIClient()  # unauthenticated
         resp = client.get("/api/v1/journal/documents/")
