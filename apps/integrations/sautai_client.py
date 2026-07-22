@@ -256,7 +256,12 @@ def _response_code(response: httpx.Response) -> str:
     return str(body.get("code") or "") if isinstance(body, dict) else ""
 
 
-def fetch_sautai_current_plan(*, identity: dict, week_start_iso: str | None) -> dict:
+def fetch_sautai_current_plan(
+    *,
+    identity: dict,
+    week_start_iso: str | None,
+    timeout_seconds: float = CURRENT_PLAN_TIMEOUT_SECONDS,
+) -> dict:
     """Synchronously read a user's current plan from sautai's ``/current/`` endpoint.
 
     ``identity`` is a payload fragment from :func:`sautai_identity` — either
@@ -287,7 +292,7 @@ def fetch_sautai_current_plan(*, identity: dict, week_start_iso: str | None) -> 
             url,
             json=payload,
             headers={"X-NBHD-Platform-Secret": secret},
-            timeout=CURRENT_PLAN_TIMEOUT_SECONDS,
+            timeout=timeout_seconds,
         )
     except httpx.HTTPError as exc:
         logger.warning("fetch_sautai_current_plan: request failed: %s", exc)

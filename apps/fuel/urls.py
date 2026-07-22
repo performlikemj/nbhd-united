@@ -19,6 +19,7 @@ from .views import (
     BodyWeightListView,
     FuelGoalDetailView,
     FuelGoalListView,
+    FuelMealsTodayView,
     FuelOverviewView,
     FuelProfileView,
     FuelRestartView,  # noqa: F401
@@ -83,6 +84,7 @@ urlpatterns = [
     path("workouts/swap/", WorkoutSwapView.as_view(), name="fuel-workout-swap"),
     path("calendar/", WorkoutCalendarView.as_view(), name="fuel-calendar"),
     path("overview/", FuelOverviewView.as_view(), name="fuel-overview"),
+    path("meals/today/", FuelMealsTodayView.as_view(), name="fuel-meals-today"),
     path("version/", FuelVersionView.as_view(), name="fuel-version"),
     path("progress/", WorkoutProgressView.as_view(), name="fuel-progress"),
     path("weekly-summary/", WeeklyVolumeSummaryView.as_view(), name="fuel-weekly-summary"),
