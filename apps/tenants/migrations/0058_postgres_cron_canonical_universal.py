@@ -38,13 +38,10 @@ def flip_and_refresh(apps, schema_editor):
     # real Tenant model (not the historical one) so build_cron_seed_jobs can
     # access related models / properties as it would at runtime.
     #
-    # The whole block is wrapped because querying ``LiveTenant.objects`` emits
-    # ``SELECT * FROM tenants`` keyed off the CURRENT model — so when this
-    # migration is replayed during a fresh test-DB build that includes later
-    # migrations that add Tenant columns, the SELECT references columns not
-    # yet present on disk and raises ProgrammingError. The refresh is a
-    # nice-to-have (the next apply_pending_configs sweep covers it), so we
-    # treat the failure as benign instead of blocking the migration run.
+    # Pin the live-model query to the fields this refresh used when 0058 was
+    # written. Otherwise Django emits ``SELECT *`` keyed off the CURRENT model,
+    # which references columns added by later migrations during a fresh DB
+    # replay. Keep the related User selection pinned for the same reason.
     from apps.orchestrator.services import refresh_system_cron_rows_from_seed
     from apps.tenants.models import Tenant as LiveTenant
 
@@ -54,7 +51,29 @@ def flip_and_refresh(apps, schema_editor):
     # flag flip above).
     try:
         with transaction.atomic():
-            active = list(LiveTenant.objects.filter(status="active").exclude(container_id=""))
+            active = list(
+                LiveTenant.objects.filter(status="active")
+                .exclude(container_id="")
+                .select_related("user")
+                .only(
+                    "id",
+                    "user_id",
+                    "user__id",
+                    "user__timezone",
+                    "user__location_city",
+                    "user__location_lat",
+                    "user__location_lon",
+                    "user__preferred_channel",
+                    "model_tier",
+                    "heartbeat_enabled",
+                    "heartbeat_start_hour",
+                    "heartbeat_window_hours",
+                    "finance_enabled",
+                    "fuel_enabled",
+                    "task_model_preferences",
+                    "byo_models_enabled",
+                )
+            )
     except Exception:
         logger.warning(
             "0058 migration refresh: skipping live-model refresh — "
