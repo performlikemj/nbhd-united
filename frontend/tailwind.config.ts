@@ -28,6 +28,7 @@ const config: Config = {
         "surface-hover": "var(--surface-hover)",
         card: "var(--card)",
         accent: "var(--accent)",
+        "accent-hi": "var(--accent-hi)",
         "accent-hover": "var(--accent-hover)",
         signal: "var(--signal)",
         "signal-text": "var(--signal-text)",

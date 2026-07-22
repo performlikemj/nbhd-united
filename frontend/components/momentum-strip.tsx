@@ -1,110 +1,94 @@
 import { HorizonsMomentumDay } from "@/lib/types";
 
-function formatCellDate(dateStr: string): string {
-  const d = new Date(dateStr + "T00:00:00");
-  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
 export function MomentumStrip({
   days,
   streak,
 }: {
-  days: HorizonsMomentumDay[];
-  streak: number;
+  days?: HorizonsMomentumDay[] | null;
+  streak?: number | null;
 }) {
-  const hasActivity = days.some((d) => d.message_count > 0 || d.has_journal);
-
-  // Mark which days are in the current streak (rightmost N consecutive active days)
-  const streakDays = new Set<string>();
-  for (let i = days.length - 1; i >= 0; i--) {
-    const day = days[i];
-    if (day.message_count > 0 || day.has_journal) {
-      streakDays.add(day.date);
-    } else {
-      break;
-    }
-  }
+  const momentumDays = days ?? [];
+  const activeDays = momentumDays.filter(
+    (day) => day.message_count > 0 || day.has_journal,
+  ).length;
+  const hasStreak = streak !== null && streak !== undefined;
+  const hasActiveDays = momentumDays.length > 0;
 
   return (
-    <div
-      role="img"
-      aria-label={`Activity over the last 30 days. Current streak: ${streak} day${streak === 1 ? "" : "s"}.`}
-    >
-      {/* Streak badge */}
-      <div className="mb-4">
-        {hasActivity ? (
-          streak > 0 ? (
-            <div className="inline-flex items-center gap-2 rounded-full border border-signal/20 bg-signal/10 px-4 py-2">
-              <span className="text-signal text-sm" aria-hidden="true">{"\u26A1"}</span>
-              <span className="text-sm font-bold tracking-tight text-signal">
-                {streak} DAY STREAK
-              </span>
-            </div>
-          ) : (
-            <span className="text-sm text-ink-muted">No active streak</span>
-          )
-        ) : (
-          <span className="text-sm text-ink-faint">
-            Start a conversation to build momentum
-          </span>
-        )}
-      </div>
-
-      {/* Activity grid */}
-      <div className="grid grid-cols-10 md:grid-cols-15 lg:grid-cols-30 gap-2">
-        {days.map((day) => {
-          const isActive = day.message_count > 0 || day.has_journal;
-          const inStreak = streakDays.has(day.date);
-          const label = `${formatCellDate(day.date)}: ${day.message_count} message${day.message_count === 1 ? "" : "s"}${day.has_journal ? ", journal entry" : ""}${inStreak ? " (in streak)" : ""}`;
-
-          return (
-            <div
-              key={day.date}
-              title={label}
-              aria-label={label}
-              className={`aspect-square rounded-sm transition-opacity duration-150 ${
-                inStreak
-                  ? "bg-signal glow-signal"
-                  : isActive
-                    ? "bg-signal opacity-45"
-                    : "bg-surface-elevated opacity-40"
-              }`}
-            >
-              {day.has_journal && isActive ? (
-                <span
-                  className="flex h-full w-full items-center justify-center"
+    <div className="flex flex-col gap-3.5">
+      {hasStreak || hasActiveDays ? (
+        <div className="flex items-center">
+          {hasStreak ? (
+            <div className="min-w-0 flex-1 text-center">
+              <div className="flex items-baseline justify-center gap-1.5 text-signal">
+                <svg
                   aria-hidden="true"
+                  className="h-3 w-3 shrink-0"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
                 >
-                  <span
-                    className="block h-[4px] w-[4px] rounded-full"
-                    style={{ backgroundColor: "var(--accent)", opacity: 0.8 }}
-                  />
-                </span>
-              ) : null}
+                  <path d="M13.5 2.2c.4 3.1-.7 4.7-2.1 6.3-1.2 1.4-2.4 2.8-2.1 5 .6-1.2 1.5-2.1 2.7-2.8-.2 2.1.8 3.1 2 4.2 1 1 1.8 2.1 1.7 3.8 1.7-1.2 2.8-3.2 2.8-5.5 0-4.3-2.4-8.1-5-11ZM9 7.5c-2.2 1.9-3.5 4.5-3.5 7.3A6.5 6.5 0 0 0 12 21.3c.8 0 1.6-.1 2.3-.4-2.8-1.1-6.7-3.5-5.3-13.4Z" />
+                </svg>
+                <p className="font-headline text-[30px] font-bold tabular-nums leading-none">
+                  {streak}
+                </p>
+              </div>
+              <p className="mt-1 text-xs text-ink-faint">day streak</p>
             </div>
-          );
-        })}
-      </div>
+          ) : null}
 
-      {/* Legend */}
-      <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-ink-faint">
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-signal glow-signal" />
-          In streak
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-signal opacity-45" />
-          Active
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-surface-elevated opacity-40" />
-          No activity
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="inline-block h-1 w-1 rounded-full" style={{ backgroundColor: "var(--accent)" }} />
-          Journal entry
-        </span>
-      </div>
+          {hasStreak && hasActiveDays ? (
+            <span
+              aria-hidden="true"
+              className="h-[34px] w-px shrink-0 bg-border"
+            />
+          ) : null}
+
+          {hasActiveDays ? (
+            <div className="min-w-0 flex-1 text-center">
+              <div className="flex items-baseline justify-center gap-1.5 text-accent-hi">
+                <svg
+                  aria-hidden="true"
+                  className="h-3 w-3 shrink-0"
+                  viewBox="0 0 24 24"
+                  fill="currentColor"
+                >
+                  <path d="M4 20V10h4v10H4Zm6 0V4h4v16h-4Zm6 0v-7h4v7h-4Z" />
+                </svg>
+                <p className="font-headline text-[30px] font-bold tabular-nums leading-none">
+                  {activeDays}
+                </p>
+              </div>
+              <p className="mt-1 text-xs text-ink-faint">
+                active days · 30
+              </p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <p className="sr-only">
+        Active {activeDays} of the last 30 days, current streak {streak ?? 0} days
+      </p>
+      {momentumDays.length > 0 ? (
+        <div
+          aria-hidden="true"
+          className="flex items-center justify-center gap-[3px]"
+        >
+          {momentumDays.map((day) => {
+            const isActive = day.message_count > 0 || day.has_journal;
+
+            return (
+              <span
+                key={day.date}
+                className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                  isActive ? "bg-accent-hi" : "bg-border"
+                }`}
+              />
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }

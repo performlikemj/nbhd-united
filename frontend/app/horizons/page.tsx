@@ -3,7 +3,6 @@
 import { useState, type ReactNode } from "react";
 
 import { GoalCard } from "@/components/goal-card";
-import { HorizonsSection } from "@/components/horizons/horizons-section";
 import { MoodTrendSparkline } from "@/components/horizons/mood-trend-sparkline";
 import { NorthStarSection } from "@/components/horizons/north-star-section";
 import { TopicSignalsSection } from "@/components/horizons/topic-signals-section";
@@ -116,9 +115,12 @@ export default function HorizonsPage() {
 
       <NorthStarSection items={data.north_star ?? []} delay={80} />
 
-      <HorizonsSection title="Momentum" subtitle="Last 30 days" delay={140}>
+      <section
+        className="glass-card-horizons min-w-0 animate-reveal p-5 motion-reduce:animate-none sm:p-6"
+        style={{ animationDelay: "140ms" }}
+      >
         <MomentumStrip days={data.momentum} streak={data.current_streak} />
-      </HorizonsSection>
+      </section>
 
       <QuietSection title="Active Goals" delay={220}>
         {data.goals.length > 0 ? (
