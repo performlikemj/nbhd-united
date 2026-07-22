@@ -82,7 +82,8 @@ class WorkoutCongratsPayload(PatternPayload):
         max_length=200,
         description=(
             "Optional one-line summary of a personal record set in this session, "
-            "e.g. 'New PR: Bench 100kg (prev 95kg)'. Empty when no PR."
+            "e.g. 'New PR: Bench — est. 1RM 116.7 kg (from 100 kg × 5)'. "
+            "An est_1rm is an estimate derived from the named rep set, never weight lifted. Empty when no PR."
         ),
     )
 
@@ -122,7 +123,9 @@ class WorkoutCongratsHandler(PatternHandler):
             f"{_facts_line(payload)}.\n\n"
             "Send ONE short, warm, personal congratulations via "
             "`nbhd_send_to_user` — reference something specific about the "
-            "workout, 1-2 sentences, no follow-up questions. Do not create "
+            "workout, 1-2 sentences, no follow-up questions. If the facts include "
+            "an est. 1RM PR, call it estimated and congratulate the actual source "
+            "set (weight × reps); never present the estimate as weight lifted. Do not create "
             "tasks, goals, or crons. After the tool call completes, stop."
         )
 

@@ -159,7 +159,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_summary",
       description:
-        "Get the user's fitness context: recent workouts, planned workouts, latest body weight, and fitness profile (including onboarding status). Call this at the start of fitness conversations to understand what the user has been doing and whether they've completed their fitness profile setup. NOTE: for any question about *today's* workout or scheduling, prefer `nbhd_fuel_audit` — it includes everything this returns plus cron state and conflict detection.",
+        "Get the user's fitness context: recent/planned workouts, body weight, profile, trends, and all-time PRs. PR rows include metric and a server-authored display. est_1rm is an estimate derived from a rep set, never weight actually lifted: use display, say estimated 1RM, and congratulate the actual weight × reps source set. Call this at the start of fitness conversations. NOTE: for any question about *today's* workout or scheduling, prefer `nbhd_fuel_audit` — it includes cron state and conflict detection.",
       parameters: {
         type: "object",
         additionalProperties: false,

@@ -866,6 +866,7 @@ export interface PersonalRecord {
   value: string;
   previous_value: string | null;
   metric: string;
+  display: string;
   date: string;
   created_at: string;
 }

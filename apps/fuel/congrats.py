@@ -54,6 +54,8 @@ from .models import PersonalRecord, Workout
 
 logger = logging.getLogger(__name__)
 
+_PR_UNITS = {"distance": " km", "hold_s": " s", "reps": " reps"}
+
 # Fire the congrats cron shortly after completion — long enough that the workout
 # save + any follow-on writes have settled, short enough to feel immediate.
 CONGRATS_FIRE_DELAY_SECONDS = 15
@@ -65,10 +67,6 @@ CONGRATS_COOLDOWN_MINUTES = 45
 # Only celebrate sessions dated within this many days of the tenant's local today,
 # so a backfilled old workout (imported / backdated) doesn't trigger a stale congrats.
 CONGRATS_RECENCY_DAYS = 2
-
-# Units for the optional PR summary line. Local (not imported from services) to keep
-# this cosmetic best-effort path decoupled from the trends internals.
-_PR_UNITS = {"est_1rm": " kg", "distance": " km", "hold_s": " s", "reps": " reps"}
 
 
 def maybe_congratulate_workout(tenant, workout, transitioned_to_done: bool) -> None:
@@ -165,17 +163,20 @@ def _build_payload(workout) -> dict:
 
 def _pr_summary_for(workout) -> str:
     """One-line summary of any PR set in this session (detect_prs ran before us)."""
-    prs = list(PersonalRecord.objects.filter(workout=workout).order_by("-value")[:2])
+    from .services import format_pr_display
+
+    prs = list(PersonalRecord.objects.filter(workout=workout).select_related("workout").order_by("-value")[:2])
     if not prs:
         return ""
     parts: list[str] = []
     for pr in prs:
-        unit = _PR_UNITS.get(pr.metric, "")
-        cur = _fmt_num(pr.value)
+        cur = format_pr_display(pr)
         if pr.previous_value is not None:
-            parts.append(f"{pr.exercise_name} {cur}{unit} (prev {_fmt_num(pr.previous_value)}{unit})")
+            previous_label = "previous est. 1RM" if pr.metric == "est_1rm" else "previous"
+            previous_unit = " kg" if pr.metric == "est_1rm" else _PR_UNITS.get(pr.metric, "")
+            parts.append(f"{pr.exercise_name} — {cur} ({previous_label} {_fmt_num(pr.previous_value)}{previous_unit})")
         else:
-            parts.append(f"{pr.exercise_name} {cur}{unit}")
+            parts.append(f"{pr.exercise_name} — {cur}")
     return ("New PR: " + "; ".join(parts))[:200]
 
 

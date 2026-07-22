@@ -3678,6 +3678,36 @@ class RuntimeNormalizeTests(TestCase):
         self.assertEqual(w.category, "calisthenics")
         self.assertEqual(w.detail_json["exercises"][0]["sets"][0]["type"], "hold_time")
 
+    def test_runtime_date_patch_cascades_to_linked_prs(self):
+        from .models import PersonalRecord
+
+        w = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 7, 23),
+            category="strength",
+            activity="Pull",
+        )
+        pr = PersonalRecord.objects.create(
+            tenant=self.tenant,
+            workout=w,
+            exercise_name="Close-Grip Lat Pulldowns",
+            category="strength",
+            value=Decimal("80.8"),
+            metric="est_1rm",
+            date=w.date,
+        )
+
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{w.id}/",
+            {"date": "2026-07-22"},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        pr.refresh_from_db()
+        self.assertEqual(pr.date, date(2026, 7, 22))
+
 
 # ═════════════════════════════════════════════════════════════════════
 # Phase 2 — typed discriminated-union contract + self-correct (#593)
@@ -5116,6 +5146,32 @@ class FuelTrendsDigestTests(TestCase):
         self.assertIn("By activity", body)
         self.assertIn("Last session", body)
 
+    def test_render_fuel_labels_estimated_1rm_and_source_set(self):
+        from apps.common.tenant_tz import tenant_today
+
+        from .envelope import render_fuel
+        from .models import PersonalRecord
+
+        workout = self._done(
+            0,
+            "strength",
+            60,
+            detail_json={"exercises": [{"name": "Lat Pulldown", "sets": [{"weight": 60.6, "reps": 10}]}]},
+        )
+        PersonalRecord.objects.create(
+            tenant=self.tenant,
+            workout=workout,
+            exercise_name="Lat Pulldown",
+            category="strength",
+            value=Decimal("80.8"),
+            metric="est_1rm",
+            date=tenant_today(self.tenant),
+        )
+
+        body = render_fuel(self.tenant)
+
+        self.assertIn("Lat Pulldown — est. 1RM 80.8 kg (from 60.6 kg × 10)", body)
+
     def test_render_fuel_flags_healthkit_provenance(self):
         from .envelope import render_fuel
 
@@ -5262,6 +5318,53 @@ class FuelDepthServiceTests(TestCase):
         self.assertIn("open_goals", body)
         self.assertEqual(len(body["monthly_volume_12mo"]), 12)
         self.assertEqual(body["open_goals"][0]["exercise"], "Squat")
+
+    @override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+    def test_summary_prs_include_metric_and_honest_display(self):
+        from apps.common.tenant_tz import tenant_today
+
+        from .models import PersonalRecord
+
+        seed_internal_key(self.tenant)
+        workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant),
+            status="done",
+            category="strength",
+            activity="Pull",
+            duration_minutes=60,
+            detail_json={
+                "exercises": [
+                    {
+                        "name": "Close-Grip Lat Pulldowns",
+                        "sets": [{"weight": 47.5, "reps": 10}, {"weight": 60.6, "reps": 10}],
+                    }
+                ]
+            },
+        )
+        PersonalRecord.objects.create(
+            tenant=self.tenant,
+            workout=workout,
+            exercise_name="Close-Grip Lat Pulldowns",
+            category="strength",
+            value=Decimal("80.8"),
+            metric="est_1rm",
+            date=tenant_today(self.tenant),
+        )
+        client = APIClient()
+
+        resp = client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/summary/",
+            HTTP_X_NBHD_INTERNAL_KEY="test-internal-key",
+            HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        expected = "est. 1RM 80.8 kg (from 60.6 kg × 10)"
+        self.assertEqual(resp.json()["all_time_prs"][0]["metric"], "est_1rm")
+        self.assertEqual(resp.json()["all_time_prs"][0]["display"], expected)
+        self.assertEqual(resp.json()["trends"]["recent_prs"][0]["metric"], "est_1rm")
+        self.assertEqual(resp.json()["trends"]["recent_prs"][0]["display"], expected)
 
 
 class FuelScheduleWindowTests(TestCase):
@@ -6358,3 +6461,67 @@ class RestDayVolumeRegressionTests(TestCase):
         )
         self.assertEqual(weekly_trends(self.tenant), baseline)
         self.assertEqual(baseline["sessions_28d"], 3)
+
+
+class WorkoutDateCascadeTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Cascade", telegram_chat_id=800551)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.tenant.user)
+
+    def test_consumer_date_patch_cascades_to_linked_prs(self):
+        from .models import PersonalRecord
+
+        workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 7, 23),
+            category="strength",
+            activity="Pull",
+        )
+        pr = PersonalRecord.objects.create(
+            tenant=self.tenant,
+            workout=workout,
+            exercise_name="Close-Grip Lat Pulldowns",
+            category="strength",
+            value=Decimal("80.8"),
+            metric="est_1rm",
+            date=workout.date,
+        )
+
+        response = self.client.patch(
+            f"/api/v1/fuel/workouts/{workout.id}/",
+            {"date": "2026-07-22"},
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        pr.refresh_from_db()
+        self.assertEqual(pr.date, date(2026, 7, 22))
+
+    def test_pr_feed_includes_metric_and_honest_display(self):
+        from .models import PersonalRecord
+
+        workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 7, 22),
+            category="strength",
+            activity="Pull",
+            detail_json={"exercises": [{"name": "Lat Pulldown", "sets": [{"weight": 80, "reps": 8}]}]},
+        )
+        PersonalRecord.objects.create(
+            tenant=self.tenant,
+            workout=workout,
+            exercise_name="Lat Pulldown",
+            category="strength",
+            value=Decimal("101.3"),
+            metric="est_1rm",
+            date=workout.date,
+        )
+
+        response = self.client.get("/api/v1/fuel/prs/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data[0]["metric"], "est_1rm")
+        self.assertEqual(response.data[0]["display"], "est. 1RM 101.3 kg (from 80 kg × 8)")
