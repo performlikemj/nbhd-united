@@ -85,3 +85,13 @@ the #1220 line, separate).
 Implementation note from recon: main already has Provider.SAUTAI with the Phase-0.5
 account-id link (apps/integrations/models.py) and apps/integrations/sautai_client.py —
 build on both; do not invent new link plumbing.
+
+## Amendment (MJ, 2026-07-22): the discovery invitation
+
+Story 2 evolves: unlinked users with Fuel active see ONE quiet, dismissible invitation at
+the BOTTOM of the Fuel tab (never the next-up slot — that slot is earned content):
+small sautai mark + "Plan meals around your training — connect sautai" + chevron.
+Dismiss (✕) persists per-account forever — no re-nag, no badge, no counter. Tap → the
+existing console linking flow (integrations page); card disappears when a link exists.
+Show ⇔ Fuel active ∧ unlinked ∧ not dismissed. Chat-guided linking = v2.
+This is the portfolio's first cross-sell surface — the calm register IS the strategy.
