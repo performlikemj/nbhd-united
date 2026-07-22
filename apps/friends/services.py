@@ -692,13 +692,18 @@ def assert_shareable_pillar(lesson) -> None:
         )
 
 
-def _enqueue_scrub(shared_lesson, pending_share_id=None) -> None:
+def _enqueue_scrub(shared_lesson, content_hash, pending_share_id=None) -> None:
     from apps.cron.publish import publish_task
 
     kwargs = {}
     if pending_share_id is not None:
         kwargs["pending_share_id"] = str(pending_share_id)
-    publish_task("scrub_shared_lesson", str(shared_lesson.id), **kwargs)
+    publish_task(
+        "scrub_shared_lesson",
+        str(shared_lesson.id),
+        idempotency_key=f"scrub-{shared_lesson.id}-{content_hash[:8]}",
+        **kwargs,
+    )
 
 
 def _scrub_needed(shared_lesson, current_hash) -> bool:
@@ -725,17 +730,20 @@ def share_lesson(owner_tenant, owner_user, lesson, friendship_id=None, circle_id
     current_hash = _content_hash(lesson.text or "", lesson.context or "")
     if created or _scrub_needed(shared_lesson, current_hash):
         access.mark_scrub_pending(shared_lesson)
-        _enqueue_scrub(shared_lesson)  # first scrub or content_hash drift → (re)scrub
+        _enqueue_scrub(shared_lesson, current_hash)  # first scrub or content_hash drift → (re)scrub
 
-    return PendingShare.objects.create(
+    pending, _pending_created = PendingShare.objects.get_or_create(
         tenant=owner_tenant,
         source_lesson=lesson,
-        proposed_by="user",
         target_friendship=edge,
         target_circle=circle,
         status=PendingShare.Status.PENDING,
-        expires_at=timezone.now() + timedelta(days=7),
+        defaults={
+            "proposed_by": "user",
+            "expires_at": timezone.now() + timedelta(days=7),
+        },
     )
+    return pending
 
 
 def _resolve_share_audience(tenant, friendship_id, circle_id):
@@ -858,7 +866,8 @@ def approve_share(tenant, pending_share_id, final_text=None) -> tuple[dict, int]
         pending.final_text = edited
         pending.save(update_fields=["final_text"])
         access.mark_scrub_pending(shared_lesson)
-        _enqueue_scrub(shared_lesson, pending_share_id=pending.id)
+        content_hash = _content_hash(edited, pending.source_lesson.context or "")
+        _enqueue_scrub(shared_lesson, content_hash, pending_share_id=pending.id)
         return {
             "pending_share_id": str(pending.id),
             "status": "rescrubbing",
@@ -1176,22 +1185,26 @@ def propose_share(
     current_hash = _content_hash(lesson.text or "", lesson.context or "")
     if created or _scrub_needed(shared_lesson, current_hash):
         access.mark_scrub_pending(shared_lesson)
-        _enqueue_scrub(shared_lesson)
+        _enqueue_scrub(shared_lesson, current_hash)
 
-    pending = PendingShare.objects.create(
+    pending, pending_created = PendingShare.objects.get_or_create(
         tenant=tenant,
         source_lesson=lesson,
-        proposed_by="agent",
-        source_context=(source_context or "")[:2000],
         target_friendship=friendship,
         target_circle=circle,
         status=PendingShare.Status.PENDING,
-        expires_at=timezone.now() + timedelta(days=7),
+        defaults={
+            "proposed_by": "agent",
+            "source_context": (source_context or "")[:2000],
+            "expires_at": timezone.now() + timedelta(days=7),
+        },
     )
+    if not pending_created:
+        return pending, False
     from .notifications import notify_share_proposal
 
     notify_share_proposal(pending)  # typed APNs wake so the human sees the approval moment
-    return pending, True
+    return pending, pending_created
 
 
 def resolve_member_circle(tenant, circle_id):

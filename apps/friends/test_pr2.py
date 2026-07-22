@@ -11,8 +11,9 @@ from __future__ import annotations
 from datetime import timedelta
 from unittest import mock
 
-from django.db import IntegrityError, transaction
-from django.test import TestCase
+from django.db import IntegrityError, connection, transaction
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient
@@ -273,6 +274,62 @@ class Belt2PrecisionTest(TestCase):
         self.assertNotIn("[PERSON_61]", sl.redacted_context)
 
 
+class ScrubTerminalWriteRaceTest(TestCase):
+    def setUp(self):
+        self.owner = _tenant("scrub_write_owner")
+        self.lesson = _lesson(self.owner)
+        self.sl, _ = access.ensure_shared_lesson(self.lesson, self.owner)
+
+    def test_ready_zero_row_reasserts_guc_and_retries_update(self):
+        first_miss = mock.Mock()
+        first_miss.update.return_value = 0
+        real_retry = SharedLesson.objects.filter(id=self.sl.id)
+        with (
+            mock.patch.object(SharedLesson.objects, "filter", side_effect=[first_miss, real_retry]),
+            mock.patch("apps.tenants.middleware.set_rls_context") as set_context,
+        ):
+            access.save_scrub_ready(self.sl, redacted_text="someone cooks", content_hash="hash-ready")
+
+        self.sl.refresh_from_db()
+        self.assertEqual(self.sl.scrub_status, SharedLesson.ScrubStatus.READY)
+        self.assertEqual(self.sl.redacted_text, "someone cooks")
+        self.assertEqual(set_context.call_count, 2)
+        set_context.assert_has_calls([mock.call(service_role=True), mock.call(service_role=True)])
+
+    def test_ready_retry_exhausted_raises_without_insert_fallback(self):
+        invisible = mock.Mock()
+        invisible.update.return_value = 0
+        with (
+            mock.patch.object(SharedLesson.objects, "filter", return_value=invisible),
+            mock.patch("apps.tenants.middleware.set_rls_context") as set_context,
+            mock.patch.object(SharedLesson, "save") as instance_save,
+            mock.patch.object(SharedLesson.objects, "create") as manager_create,
+            self.assertRaisesRegex(access.ScrubTerminalWriteError, str(self.sl.id)),
+        ):
+            access.save_scrub_ready(self.sl, redacted_text="someone cooks", content_hash="hash-ready")
+
+        self.assertEqual(invisible.update.call_count, 2)
+        self.assertEqual(set_context.call_count, 2)
+        instance_save.assert_not_called()
+        manager_create.assert_not_called()
+
+    def test_failed_zero_row_reasserts_guc_and_retries_update(self):
+        first_miss = mock.Mock()
+        first_miss.update.return_value = 0
+        real_retry = SharedLesson.objects.filter(id=self.sl.id)
+        with (
+            mock.patch.object(SharedLesson.objects, "filter", side_effect=[first_miss, real_retry]),
+            mock.patch("apps.tenants.middleware.set_rls_context") as set_context,
+        ):
+            access.save_scrub_failed(self.sl, "NER unavailable")
+
+        self.sl.refresh_from_db()
+        self.assertEqual(self.sl.scrub_status, SharedLesson.ScrubStatus.FAILED)
+        self.assertEqual(self.sl.scrub_error, "NER unavailable")
+        self.assertIsNone(self.sl.scrubbed_at)
+        self.assertEqual(set_context.call_count, 2)
+
+
 # ── Share intent → PendingShare + snapshot (no grant yet) ─────────────────────
 
 
@@ -333,16 +390,7 @@ class ShareIntentTest(TestCase):
         enqueue.assert_called_once()
 
     def test_double_submit_share_returns_existing_not_500(self):
-        """A rapid double-POST of the same lesson share (prod 2026-07-11: the
-        user's first real spark) must not 500. The winner inserts the
-        ``shared_lessons`` OneToOne snapshot; the loser's get-or-create of that
-        snapshot hits the ``source_lesson`` unique violation. It must return a
-        share (never re-raise) and must NOT re-enqueue the winner's scrub.
-
-        FAILS on main's logic: there ``ensure_shared_lesson`` calls
-        ``get_or_create``, whose losing INSERT surfaces the ``IntegrityError``
-        here (its own re-get rode a request connection that fail-closed in
-        prod), so the second POST 500s instead of returning the winner's row."""
+        """A rapid double-POST returns the same unresolved intent, not a dupe."""
         client = _client(self.a.user)
         with mock.patch("apps.friends.services._enqueue_scrub") as enqueue:
             first = client.post(
@@ -351,22 +399,30 @@ class ShareIntentTest(TestCase):
                 format="json",
             )
             self.assertEqual(first.status_code, 201, first.content)
-            # The loser: its get-or-create of the OneToOne snapshot collides on
-            # the source_lesson unique constraint (the winner just inserted it).
-            with mock.patch.object(
-                SharedLesson.objects, "get_or_create", side_effect=IntegrityError("dup source_lesson")
-            ):
-                loser = client.post(
-                    f"/api/v1/lessons/{self.lesson.id}/share/",
-                    {"friendship_id": str(self.edge.id)},
-                    format="json",
-                )
-        self.assertEqual(loser.status_code, 201, loser.content)
-        self.assertTrue(loser.json().get("pending_share_id"))
-        # One snapshot, one PendingShare per POST, one scrub — no double-enqueue.
+            second = client.post(
+                f"/api/v1/lessons/{self.lesson.id}/share/",
+                {"friendship_id": str(self.edge.id)},
+                format="json",
+            )
+        self.assertEqual(second.status_code, 201, second.content)
+        self.assertEqual(second.json()["pending_share_id"], first.json()["pending_share_id"])
+        # One snapshot, one PendingShare, one scrub — no double-enqueue.
         self.assertEqual(access.get_shared_lesson_for_lesson(self.lesson).scrub_status, "pending")
-        self.assertEqual(PendingShare.objects.filter(source_lesson=self.lesson).count(), 2)
+        self.assertEqual(PendingShare.objects.filter(source_lesson=self.lesson).count(), 1)
         enqueue.assert_called_once()
+
+    def test_enqueue_scrub_dedup_id_uses_content_hash_without_colon(self):
+        shared_lesson, _ = access.ensure_shared_lesson(self.lesson, self.a)
+        content_hash = "abcdef12" + "0" * 56
+        with mock.patch("apps.cron.publish.publish_task") as publish:
+            services._enqueue_scrub(shared_lesson, content_hash)
+
+        publish.assert_called_once_with(
+            "scrub_shared_lesson",
+            str(shared_lesson.id),
+            idempotency_key=f"scrub-{shared_lesson.id}-abcdef12",
+        )
+        self.assertNotIn(":", publish.call_args.kwargs["idempotency_key"])
 
     def test_ensure_shared_lesson_returns_winner_on_insert_collision(self):
         """Unit cover for the recovery seam: when the existence check misses (the
@@ -612,3 +668,63 @@ class SharePreviewContract404Test(TestCase):
             snap = access.get_shared_lesson_by_lesson_id(str(self.lesson.id), self.owner)
         self.assertTrue(spy.called)
         self.assertIsNotNone(snap)
+
+
+class PendingShareDedupeMigrationTest(TransactionTestCase):
+    migrate_from = ("friends", "0011_sky_rls_backstop")
+    migrate_to = ("friends", "0012_dedupe_pending_shares")
+
+    def setUp(self):
+        super().setUp()
+        MigrationExecutor(connection).migrate([self.migrate_from])
+
+    def tearDown(self):
+        MigrationExecutor(connection).migrate([self.migrate_to])
+        super().tearDown()
+
+    def test_migration_keeps_newest_pending_share(self):
+        owner = _tenant("dedupe_migration_owner")
+        neighbor = _tenant("dedupe_migration_neighbor")
+        edge = _accepted_edge(owner, neighbor)
+        lesson = _lesson(owner)
+        expires_at = timezone.now() + timedelta(days=7)
+        older = PendingShare.objects.create(
+            tenant=owner,
+            source_lesson=lesson,
+            target_friendship=edge,
+            status=PendingShare.Status.PENDING,
+            expires_at=expires_at,
+        )
+        newer = PendingShare.objects.create(
+            tenant=owner,
+            source_lesson=lesson,
+            target_friendship=edge,
+            status=PendingShare.Status.PENDING,
+            expires_at=expires_at,
+        )
+        PendingShare.objects.filter(id=older.id).update(created_at=timezone.now() - timedelta(hours=1))
+
+        MigrationExecutor(connection).migrate([self.migrate_to])
+
+        older.refresh_from_db()
+        newer.refresh_from_db()
+        self.assertEqual(newer.status, PendingShare.Status.PENDING)
+        self.assertEqual(older.status, PendingShare.Status.REJECTED)
+        self.assertIsNotNone(older.resolved_at)
+        self.assertEqual(
+            PendingShare.objects.filter(
+                tenant=owner,
+                source_lesson=lesson,
+                target_friendship=edge,
+                status=PendingShare.Status.PENDING,
+            ).count(),
+            1,
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PendingShare.objects.create(
+                tenant=owner,
+                source_lesson=lesson,
+                target_friendship=edge,
+                status=PendingShare.Status.PENDING,
+                expires_at=expires_at,
+            )

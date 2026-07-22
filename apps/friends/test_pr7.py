@@ -10,8 +10,12 @@ the cross-tenant model access lives here; it stays in apps.friends.access.
 
 from __future__ import annotations
 
+from datetime import timedelta
+from unittest import mock
+
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.utils import timezone
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
 
 from apps.lessons.models import Lesson
@@ -81,6 +85,22 @@ class GrantAudienceConstraintTest(TestCase):
         LessonShareGrant.objects.create(shared_lesson=self.sl, circle=self.circle)
         with self.assertRaises(IntegrityError), transaction.atomic():
             LessonShareGrant.objects.create(shared_lesson=self.sl, circle=self.circle)
+
+    def test_pending_circle_partial_unique(self):
+        expires_at = timezone.now() + timedelta(days=7)
+        PendingShare.objects.create(
+            tenant=self.owner,
+            source_lesson=self.sl.source_lesson,
+            target_circle=self.circle,
+            expires_at=expires_at,
+        )
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            PendingShare.objects.create(
+                tenant=self.owner,
+                source_lesson=self.sl.source_lesson,
+                target_circle=self.circle,
+                expires_at=expires_at,
+            )
 
 
 # ── Create / join / add / cap ────────────────────────────────────────────────
@@ -345,6 +365,24 @@ class ProposeCircleShareTest(TestCase):
         self.assertEqual(code, 200)
         # 2 members (owner + member) → "your 1 Nishi-ku neighbor".
         self.assertIn("Nishi-ku", payload["audience"])
+
+    def test_double_submit_circle_share_returns_existing(self):
+        lesson = _lesson(self.owner)
+        with mock.patch("apps.friends.services._enqueue_scrub") as enqueue:
+            first = services.share_lesson(self.owner, self.owner.user, lesson, circle_id=str(self.circle.id))
+            second = services.share_lesson(self.owner, self.owner.user, lesson, circle_id=str(self.circle.id))
+
+        self.assertEqual(second.id, first.id)
+        self.assertEqual(
+            PendingShare.objects.filter(
+                tenant=self.owner,
+                source_lesson=lesson,
+                target_circle=self.circle,
+                status=PendingShare.Status.PENDING,
+            ).count(),
+            1,
+        )
+        enqueue.assert_called_once()
 
     def test_pending_queue_surfaces_circle_audience(self):
         # The Approvals queue must carry circle_id + a circle audience label so the

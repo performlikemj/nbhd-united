@@ -30,7 +30,7 @@ import contextlib
 
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
-from django.db import connection
+from django.db import connection, transaction
 from django.db.models import Count, Exists, OuterRef, Q
 from django.utils import timezone
 
@@ -377,22 +377,58 @@ def mark_scrub_pending(shared_lesson) -> None:
     )
 
 
+class ScrubTerminalWriteError(RuntimeError):
+    """A scrub terminal state could not be persisted to its existing row."""
+
+
+def _update_scrub_terminal(shared_lesson_id, **fields) -> None:
+    """UPDATE an existing scrub row under a transaction-bound service GUC.
+
+    Supavisor transaction pooling can hand a long-running scrub a backend that
+    does not carry the session-scoped service GUC set at task entry. Re-assert
+    it inside the same transaction as the UPDATE so FORCE RLS cannot turn an
+    existing row into a false miss. A false miss is retried once, then raised
+    loudly; queryset UPDATE never falls back to INSERT with the existing UUID.
+    """
+    from apps.tenants.middleware import set_rls_context
+
+    with transaction.atomic():
+        for _attempt in range(2):
+            set_rls_context(service_role=True)
+            updated = SharedLesson.objects.filter(id=shared_lesson_id).update(**fields)
+            if updated == 1:
+                return
+    raise ScrubTerminalWriteError(
+        f"Scrub terminal write matched no SharedLesson row after RLS re-assertion and retry: "
+        f"shared_lesson_id={shared_lesson_id}"
+    )
+
+
 def save_scrub_ready(shared_lesson, **fields) -> None:
     """Persist a successful, verified scrub → status=ready."""
-    for key, value in fields.items():
+    values = {
+        **fields,
+        "scrub_status": SharedLesson.ScrubStatus.READY,
+        "scrub_error": "",
+        "scrubbed_at": timezone.now(),
+        "updated_at": timezone.now(),
+    }
+    _update_scrub_terminal(shared_lesson.id, **values)
+    for key, value in values.items():
         setattr(shared_lesson, key, value)
-    shared_lesson.scrub_status = SharedLesson.ScrubStatus.READY
-    shared_lesson.scrub_error = ""
-    shared_lesson.scrubbed_at = timezone.now()
-    shared_lesson.save()
 
 
 def save_scrub_failed(shared_lesson, error: str) -> None:
     """Fail-closed: never publishable, records why."""
-    shared_lesson.scrub_status = SharedLesson.ScrubStatus.FAILED
-    shared_lesson.scrub_error = (error or "")[:2000]
-    shared_lesson.scrubbed_at = None
-    shared_lesson.save(update_fields=["scrub_status", "scrub_error", "scrubbed_at", "updated_at"])
+    values = {
+        "scrub_status": SharedLesson.ScrubStatus.FAILED,
+        "scrub_error": (error or "")[:2000],
+        "scrubbed_at": None,
+        "updated_at": timezone.now(),
+    }
+    _update_scrub_terminal(shared_lesson.id, **values)
+    for key, value in values.items():
+        setattr(shared_lesson, key, value)
 
 
 def create_grant(shared_lesson, friendship=None, circle=None, granted_by=None) -> LessonShareGrant:
