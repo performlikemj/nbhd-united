@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import dynamic from "next/dynamic";
+import { useEffect, useState, type ReactNode } from "react";
 
 import { GoalCard } from "@/components/goal-card";
 import { MoodTrendSparkline } from "@/components/horizons/mood-trend-sparkline";
@@ -10,6 +11,11 @@ import { InsightCard } from "@/components/insight-card";
 import { MomentumStrip } from "@/components/momentum-strip";
 import { PendingGoal } from "@/components/pending-goal";
 import { WeeklyPulse } from "@/components/weekly-pulse";
+import {
+  enableEngagementDemoFromUrl,
+  isEngagementDemoEnabled,
+  subscribeToEngagementDemoFlag,
+} from "@/lib/engagement/flag";
 import { useHorizonsQuery } from "@/lib/queries";
 
 function QuietSection({
@@ -40,6 +46,14 @@ function QuietSection({
     </section>
   );
 }
+
+const PillarsTodayCard = dynamic(
+  () =>
+    import("@/components/engagement/pillars-today-card").then(
+      (module) => module.PillarsTodayCard,
+    ),
+  { ssr: false },
+);
 
 function HorizonsSkeleton() {
   return (
@@ -74,8 +88,19 @@ function HorizonsSkeleton() {
 }
 
 export default function HorizonsPage() {
+  const [engagementDemoEnabled, setEngagementDemoEnabled] = useState(false);
   const { data, isLoading, error } = useHorizonsQuery();
   const [showAllInsights, setShowAllInsights] = useState(false);
+
+  useEffect(() => {
+    enableEngagementDemoFromUrl();
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- hydration-safe client-only flag resolution
+    setEngagementDemoEnabled(isEngagementDemoEnabled());
+
+    return subscribeToEngagementDemoFlag(() => {
+      setEngagementDemoEnabled(isEngagementDemoEnabled());
+    });
+  }, []);
 
   if (isLoading) {
     return <HorizonsSkeleton />;
@@ -113,14 +138,18 @@ export default function HorizonsPage() {
         </p>
       </div>
 
+      {engagementDemoEnabled ? <PillarsTodayCard delay={80} /> : null}
+
       <NorthStarSection items={data.north_star ?? []} delay={80} />
 
-      <section
-        className="glass-card-horizons min-w-0 animate-reveal p-5 motion-reduce:animate-none sm:p-6"
-        style={{ animationDelay: "140ms" }}
-      >
-        <MomentumStrip days={data.momentum} streak={data.current_streak} />
-      </section>
+      {engagementDemoEnabled ? null : (
+        <section
+          className="glass-card-horizons min-w-0 animate-reveal p-5 motion-reduce:animate-none sm:p-6"
+          style={{ animationDelay: "140ms" }}
+        >
+          <MomentumStrip days={data.momentum} streak={data.current_streak} />
+        </section>
+      )}
 
       <QuietSection title="Active Goals" delay={220}>
         {data.goals.length > 0 ? (
