@@ -342,10 +342,27 @@ class WorkoutTemplateSerializer(serializers.ModelSerializer):
 
 
 class PersonalRecordSerializer(serializers.ModelSerializer):
+    display = serializers.SerializerMethodField()
+
     class Meta:
         model = PersonalRecord
-        fields = ["id", "exercise_name", "category", "value", "previous_value", "metric", "date", "created_at"]
+        fields = [
+            "id",
+            "exercise_name",
+            "category",
+            "value",
+            "previous_value",
+            "metric",
+            "display",
+            "date",
+            "created_at",
+        ]
         read_only_fields = fields
+
+    def get_display(self, obj):
+        from .services import format_pr_display
+
+        return format_pr_display(obj)
 
 
 class FuelGoalSerializer(serializers.ModelSerializer):

@@ -396,6 +396,7 @@ class WorkoutDetailView(APIView):
         return Response(WorkoutSerializer(workout).data)
 
     def patch(self, request, workout_id):
+        from django.db import transaction
         from django.utils import timezone
 
         workout, err = self._get_workout(request, workout_id)
@@ -409,7 +410,11 @@ class WorkoutDetailView(APIView):
             context={"tenant": workout.tenant},
         )
         serializer.is_valid(raise_exception=True)
-        updated = serializer.save()
+        original_date = workout.date
+        with transaction.atomic():
+            updated = serializer.save()
+            if updated.date != original_date:
+                PersonalRecord.objects.filter(workout_id=updated.id).update(date=updated.date)
         detect_prs(workout.tenant, updated)
         # Phase 7 — stamp last_edited_by_user_at when a user PATCH lands on
         # a `done` workout more than 24h after creation, so the drawer can
@@ -1047,6 +1052,8 @@ class WorkoutSwapView(APIView):
             a.date, b.date = b.date, a.date
             a.save(update_fields=["scheduled_at", "window_start_at", "window_end_at", "date", "updated_at"])
             b.save(update_fields=["scheduled_at", "window_start_at", "window_end_at", "date", "updated_at"])
+            PersonalRecord.objects.filter(workout_id=a.id).update(date=a.date)
+            PersonalRecord.objects.filter(workout_id=b.id).update(date=b.date)
 
         return Response(
             {"a": WorkoutSerializer(a).data, "b": WorkoutSerializer(b).data},
@@ -1124,7 +1131,11 @@ class PRFeedView(APIView):
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         limit = min(_safe_int(request.query_params.get("limit"), 20), 100)
-        prs = PersonalRecord.objects.filter(tenant=tenant).order_by("-date", "-created_at")[:limit]
+        prs = (
+            PersonalRecord.objects.filter(tenant=tenant)
+            .select_related("workout")
+            .order_by("-date", "-created_at")[:limit]
+        )
         return Response(PersonalRecordSerializer(prs, many=True).data)
 
 

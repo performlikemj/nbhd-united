@@ -344,7 +344,7 @@ class WorkoutCongratsTests(SimpleTestCase):
                 "category": "strength",
                 "duration_minutes": 52,
                 "rpe": 8,
-                "pr_summary": "New PR: Bench 100 kg (prev 95 kg)",
+                "pr_summary": "New PR: Bench — est. 1RM 116.7 kg (from 100 kg × 5)",
             }
         )
         data = self.handler.build_oc_data(
@@ -363,7 +363,9 @@ class WorkoutCongratsTests(SimpleTestCase):
         message = data["payload"]["message"]
         self.assertIn("Push — Chest & Shoulders", message)
         self.assertIn("RPE 8", message)
-        self.assertIn("New PR: Bench 100 kg", message)
+        self.assertIn("call it estimated", message)
+        self.assertIn("actual source set", message)
+        self.assertIn("New PR: Bench — est. 1RM 116.7 kg (from 100 kg × 5)", message)
         self.assertIn("nbhd_send_to_user", message)
 
     def test_tools_allow_has_no_mutations(self):

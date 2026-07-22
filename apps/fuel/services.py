@@ -647,6 +647,52 @@ def est_1rm(weight, reps) -> float:
     return round(w * (1 + r / 30), 1)
 
 
+def _fmt_pr_num(value) -> str:
+    """Render a PR/set number without trailing zeroes."""
+    return f"{float(value):g}"
+
+
+def _est_1rm_source_set(pr) -> dict | None:
+    """Return the workout set that produced an estimated-1RM PR, if retained."""
+    workout = getattr(pr, "workout", None)
+    detail = getattr(workout, "detail_json", None)
+    if not isinstance(detail, dict):
+        return None
+
+    candidates = []
+    for exercise in detail.get("exercises", []):
+        if not isinstance(exercise, dict) or exercise.get("name", "").strip() != pr.exercise_name:
+            continue
+        for workout_set in exercise.get("sets", []):
+            if not isinstance(workout_set, dict):
+                continue
+            weight = _safe_num(workout_set.get("weight"))
+            reps = _safe_num(workout_set.get("reps"))
+            estimate = est_1rm(weight, reps)
+            if estimate > 0:
+                candidates.append((estimate, weight, reps))
+
+    if not candidates:
+        return None
+    estimate, weight, reps = max(candidates, key=lambda item: item[0])
+    if abs(estimate - float(pr.value)) > 0.05:
+        return None
+    return {"weight_kg": _fmt_pr_num(weight), "reps": int(reps) if reps.is_integer() else reps}
+
+
+def format_pr_display(pr) -> str:
+    """Human-honest PR rendering for every assistant/user-facing surface."""
+    value = _fmt_pr_num(pr.value)
+    if pr.metric == "est_1rm":
+        display = f"est. 1RM {value} kg"
+        source_set = _est_1rm_source_set(pr)
+        if source_set:
+            display += f" (from {source_set['weight_kg']} kg × {source_set['reps']:g})"
+        return display
+    unit = _PR_UNIT.get(pr.metric, "")
+    return f"{value}{unit}"
+
+
 def enrich_strength_detail(detail: dict) -> dict:
     """Add est_1rm to each set in a strength detail_json."""
     for exercise in detail.get("exercises", []):
@@ -782,7 +828,13 @@ def detect_prs(tenant, workout) -> list[dict]:
                     date=workout.date,
                 )
                 new_prs.append(
-                    {"exercise": name, "value": float(pr.value), "previous": float(prev_value) if prev_value else None}
+                    {
+                        "exercise": name,
+                        "value": float(pr.value),
+                        "previous": float(prev_value) if prev_value else None,
+                        "metric": pr.metric,
+                        "display": format_pr_display(pr),
+                    }
                 )
 
     return new_prs
@@ -852,11 +904,21 @@ def weekly_trends(tenant) -> dict:
         row["category"]: (today - row["last"]).days for row in done.values("category").annotate(last=Max("date"))
     }
 
-    recent_prs = list(
+    recent_pr_rows = list(
         PersonalRecord.objects.filter(tenant=tenant, date__gte=start_28)
+        .select_related("workout")
         .order_by("-date", "-value")[:3]
-        .values("exercise_name", "value", "metric", "date")
     )
+    recent_prs = [
+        {
+            "exercise_name": pr.exercise_name,
+            "value": pr.value,
+            "metric": pr.metric,
+            "date": pr.date,
+            "display": format_pr_display(pr),
+        }
+        for pr in recent_pr_rows
+    ]
 
     if minutes_prior_7 == 0:
         trend = "up" if minutes_7 > 0 else "flat"
@@ -905,10 +967,7 @@ def weekly_trends_digest(tenant) -> str:
     if t["recent_prs"]:
 
         def _fmt_pr(pr: dict) -> str:
-            val = pr["value"]
-            shown = f"{val:.0f}" if val == val.to_integral_value() else f"{val}"
-            unit = _PR_UNIT.get(pr["metric"], "")
-            return f"{pr['exercise_name']} {shown}{unit} ({pr['date'].strftime('%b %d')})"
+            return f"{pr['exercise_name']} — {pr['display']} ({pr['date'].strftime('%b %d')})"
 
         lines.append("- PRs: " + ", ".join(_fmt_pr(pr) for pr in t["recent_prs"]))
     return "\n".join(lines)
@@ -929,12 +988,15 @@ def all_time_prs(tenant, limit: int = 20) -> list[dict]:
     """
     from .models import PersonalRecord
 
-    rows = PersonalRecord.objects.filter(tenant=tenant).order_by("-date", "-created_at")[:limit]
+    rows = (
+        PersonalRecord.objects.filter(tenant=tenant).select_related("workout").order_by("-date", "-created_at")[:limit]
+    )
     return [
         {
             "exercise": pr.exercise_name,
             "value": _fmt_decimal(pr.value),
             "metric": pr.metric,
+            "display": format_pr_display(pr),
             "date": str(pr.date),
         }
         for pr in rows

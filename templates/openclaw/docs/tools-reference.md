@@ -182,7 +182,7 @@ Rules:
 ### Read / context
 | Tool | Required params | Purpose |
 |------|----------------|---------|
-| `nbhd_fuel_summary` | none | Fitness context in one call: recent workouts, planned workouts, latest body weight, fitness profile, **all-time PRs, 12-month monthly volume, and the user's open Fuel goals**. Call at the start of fitness conversations. **Trigger:** any general "how's my training going", goal, or PR question. |
+| `nbhd_fuel_summary` | none | Fitness context in one call: recent workouts, planned workouts, latest body weight, fitness profile, **all-time PRs, 12-month monthly volume, and the user's open Fuel goals**. PR rows include `metric` and a server-authored `display`. `est_1rm` is an **estimate derived from a rep set**, never weight actually lifted: use `display`, say "estimated 1RM", and congratulate the actual `weight × reps` source set. Call at the start of fitness conversations. **Trigger:** any general "how's my training going", goal, or PR question. |
 | `nbhd_fuel_audit` | none | **Prefer over `nbhd_fuel_summary`** when the user asks for a workout, asks what's planned, wants to schedule, or signals they're training right now ("I'm at the gym", "about to lift", "between sets"). Adds today's plan, next-14-day workouts, live cron state, and duplicate/orphan conflict detection. If `conflicts.duplicate_fires` is non-empty, surface and STOP. |
 
 ### Logging

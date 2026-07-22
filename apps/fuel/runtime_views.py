@@ -23,6 +23,7 @@ from .models import (
     BodyWeightLog,
     FuelProfile,
     OnboardingStatus,
+    PersonalRecord,
     PlanStatus,
     Workout,
     WorkoutCategory,
@@ -237,6 +238,8 @@ class RuntimeWorkoutDetailView(APIView):
         return tenant, workout, None
 
     def patch(self, request, tenant_id, workout_id):
+        from django.db import transaction
+
         tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
         if err:
             return err
@@ -246,6 +249,7 @@ class RuntimeWorkoutDetailView(APIView):
             return lock_resp
 
         data = request.data
+        original_date = workout.date
         updated_fields = []
 
         if "activity" in data:
@@ -266,8 +270,7 @@ class RuntimeWorkoutDetailView(APIView):
 
         if "date" in data:
             try:
-                date.fromisoformat(str(data["date"]))
-                workout.date = str(data["date"])
+                workout.date = date.fromisoformat(str(data["date"]))
                 updated_fields.append("date")
             except (ValueError, TypeError):
                 pass
@@ -315,7 +318,10 @@ class RuntimeWorkoutDetailView(APIView):
         if updated_fields:
             updated_fields.append("updated_at")
             try:
-                workout.save(update_fields=updated_fields)
+                with transaction.atomic():
+                    workout.save(update_fields=updated_fields)
+                    if workout.date != original_date:
+                        PersonalRecord.objects.filter(workout_id=workout.id).update(date=workout.date)
             except Exception as exc:
                 logger.exception("RuntimeWorkoutDetailView PATCH failed for %s", workout_id)
                 return Response(
@@ -490,6 +496,8 @@ class RuntimeWorkoutSwapView(APIView):
             a.date, b.date = b.date, a.date
             a.save(update_fields=["scheduled_at", "window_start_at", "window_end_at", "date", "updated_at"])
             b.save(update_fields=["scheduled_at", "window_start_at", "window_end_at", "date", "updated_at"])
+            PersonalRecord.objects.filter(workout_id=a.id).update(date=a.date)
+            PersonalRecord.objects.filter(workout_id=b.id).update(date=b.date)
         return Response(
             {
                 "a": {

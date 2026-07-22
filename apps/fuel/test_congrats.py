@@ -122,7 +122,7 @@ class WorkoutCongratsTriggerTests(TestCase):
         self.assertEqual(mock_create.call_count, 1)
         payload = mock_create.call_args.kwargs["typed_payload"]
         self.assertIn("pr_summary", payload)
-        self.assertIn("Bench Press", payload["pr_summary"])
+        self.assertEqual(payload["pr_summary"], "New PR: Bench Press — est. 1RM 116.7 kg (from 100 kg × 5)")
 
     # ── layer 1: durable per-workout stamp ───────────────────────────────
     @patch(_SCHEDULE_TARGET)
