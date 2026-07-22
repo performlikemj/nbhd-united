@@ -1479,7 +1479,10 @@ class RuntimeWorkoutPlanListCreateView(APIView):
         # OTHER active plans — otherwise the multi-active legacy tenants this
         # exists to clean up keep their stragglers when a plan is re-created.
         existing = WorkoutPlan.objects.filter(
-            tenant=tenant, name=name, start_date=plan_start, status=PlanStatus.ACTIVE
+            tenant=tenant,
+            name=name,  # guard: encrypted-predicate
+            start_date=plan_start,
+            status=PlanStatus.ACTIVE,
         ).first()
         if existing is not None:
             superseded = [] if concurrent else _supersede_other_active_plans(tenant, existing)

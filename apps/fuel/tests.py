@@ -4364,7 +4364,10 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
             }
         )
         self.assertEqual(resp.status_code, 400, resp.data)
-        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, name="Bad Detail").count(), 0)
+        self.assertEqual(
+            WorkoutPlan.objects.filter(tenant=self.tenant, name="Bad Detail").count(),  # guard: encrypted-predicate
+            0,
+        )
         self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 0)
 
     def test_invalid_weekday_key_rejected(self):
@@ -4378,7 +4381,10 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
             }
         )
         self.assertEqual(resp.status_code, 400)
-        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, name="Bad Day").count(), 0)
+        self.assertEqual(
+            WorkoutPlan.objects.filter(tenant=self.tenant, name="Bad Day").count(),  # guard: encrypted-predicate
+            0,
+        )
 
     def test_idempotent_double_create_returns_200_no_duplicate(self):
         body = {
@@ -4393,7 +4399,10 @@ class RuntimeWorkoutPlanCreateTests(TestCase):
         r2 = self._post(body)
         self.assertEqual(r2.status_code, 200, r2.data)
         self.assertTrue(r2.data.get("deduped"))
-        self.assertEqual(WorkoutPlan.objects.filter(tenant=self.tenant, name="Dedup Plan").count(), 1)
+        self.assertEqual(
+            WorkoutPlan.objects.filter(tenant=self.tenant, name="Dedup Plan").count(),  # guard: encrypted-predicate
+            1,
+        )
         self.assertEqual(Workout.objects.filter(plan_id=r1.data["id"]).count(), 1)
 
     def test_week_overrides_progression_and_rest(self):
