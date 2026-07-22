@@ -30,14 +30,94 @@ export function ConstellationGame({
 }) {
   const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
+  const pendingInitialWarpRef = useRef(initialWarp);
 
   useEffect(() => {
     const host = canvasRef.current;
     const root = rootRef.current;
     if (!host || !root) return;
-    const game = mountGalaxyGame(host, root, galaxy, { wormholes, initialWarp });
+
+    let game: ReturnType<typeof mountGalaxyGame> | null = null;
+    let disposed = false;
+    let remounting = false;
+    let restoredWhileHidden = false;
+
+    // iOS Safari / WKWebView routinely DROPS the WebGL context on backgrounding,
+    // device lock, or memory pressure (a documented iOS 16.7–17+ regression).
+    // Phaser preventDefaults the loss and tries to restore — but our textures are
+    // generated on the GPU at runtime (makeTextures → generateTexture) with no
+    // CPU-side source, so Phaser physically cannot re-upload them and the scene
+    // comes back BLACK. A clean remount re-runs create()/makeTextures() and is the
+    // only reliable recovery. (Losing the ship's position is fine after a
+    // backgrounding-induced loss.)
+    const scheduleRemount = () => {
+      if (disposed || remounting) return;
+      remounting = true;
+      // Defer so Phaser's own (synchronous) restore handler finishes first.
+      setTimeout(() => {
+        remounting = false;
+        if (!disposed) mount();
+      }, 0);
+    };
+
+    const onRestored = () => {
+      if (document.hidden) {
+        // Timers may be suspended in the background. Remember the completed
+        // restore explicitly because Phaser clears renderer.contextLost before
+        // emitting restorewebgl, then rebuild as soon as the tab is visible.
+        restoredWhileHidden = true;
+        return;
+      }
+      scheduleRemount();
+    };
+
+    const onVisibility = () => {
+      if (!game || disposed) return;
+      if (document.hidden) {
+        // Backgrounded: stop the render loop (battery, and shrinks the window in
+        // which iOS reaps the GL context).
+        game.loop.sleep();
+      } else {
+        game.loop.wake();
+        // Rebuild after either a completed hidden restore or a loss that is still
+        // outstanding. The latter preserves the fallback when no restore arrived.
+        const r = game.renderer;
+        const needsRecovery = restoredWhileHidden || ("contextLost" in r && r.contextLost);
+        restoredWhileHidden = false;
+        if (needsRecovery) scheduleRemount();
+      }
+    };
+
+    const mount = () => {
+      if (game) {
+        game.renderer.off("restorewebgl", onRestored);
+        try {
+          game.destroy(true);
+        } catch {
+          // The old canvas/context may already be gone — destroy is best-effort.
+        }
+      }
+      game = mountGalaxyGame(host, root, galaxy, {
+        wormholes,
+        initialWarp: pendingInitialWarpRef.current,
+      });
+      // The deep link belongs to the user's first arrival, not context-recovery
+      // remounts (or later galaxy refreshes within this component instance).
+      pendingInitialWarpRef.current = undefined;
+      game.renderer.on("restorewebgl", onRestored);
+    };
+
+    mount();
+    document.addEventListener("visibilitychange", onVisibility);
+
     return () => {
-      game.destroy(true);
+      disposed = true;
+      document.removeEventListener("visibilitychange", onVisibility);
+      if (game) {
+        game.renderer.off("restorewebgl", onRestored);
+        game.destroy(true);
+        game = null;
+      }
     };
     // wormholes/initialWarp are read once at mount; remounting the whole game on
     // every wormholes refetch would tear down flight state, so they're
