@@ -26,6 +26,7 @@ ON_DEMAND_REFRESH_LEEWAY_SECONDS = 120
 # ---------------------------------------------------------------------------
 
 COMPOSIO_MANAGED_PROVIDERS: set[str] = {"reddit"}
+M2M_PROVIDERS: set[str] = {Integration.Provider.SAUTAI}
 
 _composio_client = None
 

@@ -66,6 +66,28 @@ class RefreshExpiringIntegrationsTaskTest(TestCase):
         self.assertEqual(result["errored"], 1)
         self.assertEqual(self.integration.status, Integration.Status.ERROR)
 
+    @patch("apps.integrations.tasks.get_provider_client_credentials", return_value=("", ""))
+    def test_skips_m2m_provider_without_oauth_credentials(self, mock_get_credentials):
+        self.integration.token_expires_at = timezone.now() + timedelta(hours=1)
+        self.integration.save(update_fields=["token_expires_at", "updated_at"])
+        sautai = Integration.objects.create(
+            tenant=self.integration.tenant,
+            provider=Integration.Provider.SAUTAI,
+            status=Integration.Status.ACTIVE,
+        )
+        original_updated_at = sautai.updated_at
+
+        result = refresh_expiring_integrations_task()
+        sautai.refresh_from_db()
+
+        self.assertEqual(
+            result,
+            {"checked": 0, "refreshed": 0, "expired": 0, "errored": 0},
+        )
+        self.assertEqual(sautai.status, Integration.Status.ACTIVE)
+        self.assertEqual(sautai.updated_at, original_updated_at)
+        mock_get_credentials.assert_not_called()
+
     @patch("apps.integrations.tasks.refresh_integration_tokens")
     @patch("apps.integrations.tasks.load_tokens_from_key_vault")
     def test_marks_expired_on_http_400(self, mock_load_tokens, mock_refresh):
