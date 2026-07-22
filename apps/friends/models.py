@@ -293,6 +293,18 @@ class PendingShare(models.Model):
 
     class Meta:
         db_table = "pending_shares"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "source_lesson", "target_friendship"],
+                condition=models.Q(status="pending", target_friendship__isnull=False),
+                name="uq_pending_share_friendship",
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "source_lesson", "target_circle"],
+                condition=models.Q(status="pending", target_circle__isnull=False),
+                name="uq_pending_share_circle",
+            ),
+        ]
         indexes = [
             models.Index(fields=["tenant", "status"]),
             models.Index(fields=["target_friendship", "status"]),
