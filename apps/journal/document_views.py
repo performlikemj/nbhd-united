@@ -14,6 +14,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.common.cache import tenant_cache
+from apps.common.llm_contracts import today_in_tenant_tz
 from apps.tenants.models import Tenant
 
 from .document_serializers import (
@@ -457,7 +458,7 @@ class TodayView(APIView):
 
     def get(self, request):
         tenant = _get_tenant(request.user)
-        today = timezone.now().date()
+        today = today_in_tenant_tz(tenant)
         doc = _get_or_create_document(tenant, "daily", str(today))
         return Response(DocumentSerializer(doc, context={"tenant": tenant}).data)
 
@@ -475,7 +476,7 @@ class SidebarTreeView(APIView):
         from apps.pii.redactor import rehydrate_for_tenant
 
         tenant = _get_tenant(request.user)
-        today = str(timezone.now().date())
+        today = str(today_in_tenant_tz(tenant))
         documents = Document.objects.filter(tenant=tenant).values("kind", "slug", "title", "updated_at")
 
         # Group by kind

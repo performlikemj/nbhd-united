@@ -69,6 +69,11 @@ class SautaiMealPlanJobStatus(models.TextChoices):
     FAILED = "failed", "Failed"
 
 
+class SautaiMealPlanAddressedBy(models.TextChoices):
+    LINKED_ID = "linked_id", "Linked sautai user id"
+    EMAIL = "email", "Tenant email"
+
+
 class SautaiMealPlanJob(models.Model):
     """One meal-plan generation requested against sautai's M2M API (Phase 0).
 
@@ -105,6 +110,16 @@ class SautaiMealPlanJob(models.Model):
     # Phase 0.5: when true, ask sautai to REPLACE an existing (user, week) plan
     # honoring user_prompt instead of returning the idempotent stale one.
     regenerate = models.BooleanField(default=False)
+    # Snapshot the identity path used at egress so later Integration link changes
+    # do not make the job's execution history unreconstructable. Raw email is
+    # deliberately not copied onto the job.
+    sautai_user_id = models.IntegerField(null=True, blank=True)
+    addressed_by = models.CharField(
+        max_length=20,
+        choices=SautaiMealPlanAddressedBy.choices,
+        blank=True,
+        default="",
+    )
     result = models.JSONField(default=dict, blank=True, help_text="sautai's plan payload, once READY")
     # Phase 0.5 funnel data captured from the generate response:
     # {account_claimed: bool, plan_count: int, claim_link: str, already_existed: bool}.
