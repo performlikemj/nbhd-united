@@ -60,3 +60,28 @@ logic (meal present/absent/with-without note), snapshot decode, fallback intact.
 Meal CRUD from NBHD · nutrition data · breakfast/lunch slots on the card (data may include
 them; card shows dinner in v1) · linking UX changes · assistant-side sautai tools (that's
 the #1220 line, separate).
+
+## User stories (direction check, 2026-07-22 — build against THESE)
+
+1. **The evening glance.** Linked user opens Fuel after work → tonight's dinner is just
+   *there*, next to what's left of the training week. One glance answers "what's tonight."
+   The value is the PAIRING (meal × session), not the recipe.
+2. **The invisible default.** Unlinked user sees nothing new — no upsell card, no empty
+   state. Fuel today = Fuel yesterday.
+3. **The resilient tab.** sautai slow or down → Fuel loads at full speed, card simply
+   absent. A partner outage must never be visible as OUR outage.
+4. **The honest clock.** JST user at 23:30 → "today" is still their today. Day boundary =
+   tenant tz, tested at the boundary.
+5. **One truth, two mouths.** The card and the assistant's chat answer to "what's for
+   dinner?" must come from the SAME source (sautai's plan via the live client) — never a
+   cached duplicate that can disagree. Consistency is the trust story; add a test asserting
+   the endpoint reads through the client, not a local copy table.
+6. **The showroom promise kept.** A new user sees Yuki's TONIGHT card in the demo; when
+   they create a space and link sautai, the identical surface fills with THEIR plan.
+7. **Stories we are explicitly NOT serving in v1** (so codex doesn't drift): tapping for
+   the recipe · editing meals from NBHD · nutrition numbers · breakfast/lunch cards ·
+   link-sautai onboarding prompts.
+
+Implementation note from recon: main already has Provider.SAUTAI with the Phase-0.5
+account-id link (apps/integrations/models.py) and apps/integrations/sautai_client.py —
+build on both; do not invent new link plumbing.
