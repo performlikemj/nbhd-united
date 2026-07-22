@@ -134,13 +134,15 @@ class FinanceTenantBudgetTest(TestCase):
         tour_guide_at = md.find("## Tour guide")
         journal_shaping_at = md.find("## Journal shaping")
         gravity_at = md.find("Gravity Observation Mode")
-        tool_end = md.find("If you can't tell which document they mean")  # end of tool block
+        tool_tail = "If the document is ambiguous, ask — never guess or delete by hand."
+        tool_end = md.find(tool_tail)
         self.assertNotEqual(gate_at, -1)
         self.assertNotEqual(tool_at, -1)
         self.assertNotEqual(tour_guide_at, -1)
         self.assertNotEqual(journal_shaping_at, -1)
         self.assertNotEqual(gravity_at, -1)
         self.assertNotEqual(tool_end, -1)
+        tool_end += len(tool_tail)
 
         # Ordering invariant preserved: the Gravity block is the tail, after the
         # doc-keep tool block.

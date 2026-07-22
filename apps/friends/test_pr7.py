@@ -266,13 +266,13 @@ class AgentsMdLeakGuardTest(TestCase):
         tenant = _tenant("md_on", friends_enabled=True)
         files = personas.render_workspace_files("neighbor", tenant=tenant)
         agents_md = files["NBHD_AGENTS_MD"]
-        self.assertIn("as if it belongs to another Circle", agents_md)
-        self.assertIn("does not travel to another", agents_md)
+        self.assertIn("NEVER surface one Circle's learning as another Circle's", agents_md)
+        self.assertIn("confidences do not travel between groups", agents_md)
 
     def test_gate_absent_when_disabled(self):
         tenant = _tenant("md_off", friends_enabled=False)
         files = personas.render_workspace_files("neighbor", tenant=tenant)
-        self.assertNotIn("one Circle into another", files["NBHD_AGENTS_MD"])
+        self.assertNotIn("confidences do not travel between groups", files["NBHD_AGENTS_MD"])
 
 
 # ── Report → reporter-side hide (shares + chat) ──────────────────────────────
