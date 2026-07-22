@@ -214,6 +214,7 @@ class DailyNoteEntryListView(APIView):
             mood=data.get("mood") or None,
             energy=data.get("energy"),
             date_str=str(d),
+            author_label=request.user.display_name,
         )
         note.save()
 

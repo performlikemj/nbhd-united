@@ -23,6 +23,7 @@ from .document_serializers import (
     DocumentListSerializer,
     DocumentSerializer,
 )
+from .md_utils import format_author_suffix
 from .models import Document
 from .services import (
     get_default_template as get_tenant_template,
@@ -444,7 +445,7 @@ class DocumentAppendView(APIView):
             # prevent a lost-update when two writers hit the same document.
             doc = Document.objects.select_for_update().get(pk=doc.pk)
             time_str = data.get("time") or timezone.now().strftime("%H:%M")
-            entry_block = f"\n\n### {time_str} — MJ\n{content}\n"
+            entry_block = f"\n\n### {time_str}{format_author_suffix(request.user.display_name)}\n{content}\n"
             doc.markdown = (doc.markdown or "").rstrip() + entry_block
             doc.save(update_fields=["markdown", "updated_at"])
 

@@ -102,6 +102,7 @@ Today I woke up early.
         entries = parse_daily_note(SAMPLE_MARKDOWN)
         output = serialise_daily_note("2026-02-15", entries)
         re_entries = parse_daily_note(output)
+        self.assertIn("## 09:30 — MJ", output)
         self.assertEqual(len(re_entries), len(entries))
         for orig, reparsed in zip(entries, re_entries):
             self.assertEqual(orig["time"], reparsed["time"])
@@ -117,7 +118,9 @@ Today I woke up early.
             mood="😊",
             energy=8,
             date_str="2026-02-15",
+            author_label="Alex Rivera",
         )
+        self.assertIn("## 10:00 — Alex Rivera", result)
         entries = parse_daily_note(result)
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0]["time"], "10:00")
@@ -257,7 +260,7 @@ class SetSectionTest(TestCase):
 
 class AppendLogTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="loguser", password="pass")
+        self.user = User.objects.create_user(username="loguser", password="pass", display_name="Alex Rivera")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
 
     def test_append_log_without_log_section(self):
@@ -275,7 +278,8 @@ class AppendLogTest(TestCase):
         )
         self.assertIn("14:00", note.markdown)
         self.assertIn("Quick note", note.markdown)
-        self.assertIn("MJ", note.markdown)
+        self.assertIn("### 14:00 — Alex Rivera", note.markdown)
+        self.assertNotIn("MJ", note.markdown)
 
     def test_append_log_with_log_section(self):
         """When a log section exists, append within it."""
@@ -336,7 +340,7 @@ class UserMemoryModelTest(TestCase):
 )
 class DailyNoteAPITest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="testuser", password="testpass")
+        self.user = User.objects.create_user(username="testuser", password="testpass", display_name="Taylor Reed")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
@@ -361,6 +365,8 @@ class DailyNoteAPITest(TestCase):
         # Verify persisted
         note = DailyNote.objects.get(tenant=self.tenant, date=date(2026, 2, 15))
         self.assertIn("Hello world", note.markdown)
+        self.assertIn("— Taylor Reed", note.markdown)
+        self.assertNotIn("— MJ", note.markdown)
 
     def test_patch_entry(self):
         self.client.post(
@@ -1085,7 +1091,7 @@ class DocumentModelTest(TestCase):
 )
 class DocumentAPITest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username="docapiuser", password="pass")
+        self.user = User.objects.create_user(username="docapiuser", password="pass", display_name="Casey Park")
         self.tenant = Tenant.objects.create(user=self.user, status="active")
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
@@ -1179,15 +1185,38 @@ class DocumentAPITest(TestCase):
             kind="daily",
             slug="2026-02-16",
             title="Feb 16",
-            markdown="# 2026-02-16",
+            markdown="# 2026-02-16\n\n### 08:00 — MJ\nHistorical entry\n",
         )
         resp = self.client.post(
             "/api/v1/journal/documents/daily/2026-02-16/append/",
-            {"content": "Appended entry"},
+            {"content": "Appended entry", "time": "09:45"},
             format="json",
         )
         self.assertEqual(resp.status_code, 201)
         self.assertIn("Appended entry", resp.data["markdown"])
+        self.assertIn("### 09:45 — Casey Park", resp.data["markdown"])
+        self.assertIn("### 08:00 — MJ\nHistorical entry", resp.data["markdown"])
+
+    def test_append_to_document_without_display_name_uses_neutral_heading(self):
+        self.user.display_name = ""
+        self.user.save(update_fields=["display_name"])
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-17",
+            title="Feb 17",
+            markdown="# 2026-02-17",
+        )
+
+        resp = self.client.post(
+            "/api/v1/journal/documents/daily/2026-02-17/append/",
+            {"content": "Neutral entry", "time": "10:15"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertIn("### 10:15\nNeutral entry", resp.data["markdown"])
+        self.assertNotIn("### 10:15 —", resp.data["markdown"])
 
     def test_post_rejects_nan_daily_slug(self):
         """POST is the create path that historically skipped slug validation.

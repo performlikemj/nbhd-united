@@ -9,6 +9,7 @@ from datetime import date
 from django.core.exceptions import ValidationError
 from django.utils import timezone as tz
 
+from .md_utils import format_author_suffix
 from .models import DailyNote, Document, NoteTemplate
 from .templates_md import GOALS_TEMPLATE
 
@@ -426,8 +427,8 @@ def append_log_to_note(
     if not time_str:
         time_str = tz.now().strftime("%H:%M")
 
-    author_label = _get_persona_name(note.tenant) if author == "agent" else "MJ"
-    entry_block = f"\n\n### {time_str} \u2014 {author_label}\n{content.strip()}\n"
+    author_label = _get_persona_name(note.tenant) if author == "agent" else note.tenant.user.display_name
+    entry_block = f"\n\n### {time_str}{format_author_suffix(author_label)}\n{content.strip()}\n"
 
     # Check if there is a log section we can append within.
     _, sections = get_or_seed_note_template(
