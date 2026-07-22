@@ -678,7 +678,7 @@ class FuelMealsTodayView(APIView):
         # auto-create or reveal a meal surface for an unlinked console user.
         identity, integration = sautai_client.sautai_identity(tenant)
         if integration is None or not integration.sautai_user_id:
-            return Response({"meals": []})
+            return Response({"meals": [], "linked": False})
 
         today = tenant_today(tenant)
         week_start = today - timedelta(days=today.weekday())
@@ -692,11 +692,11 @@ class FuelMealsTodayView(APIView):
             # Partner failures are expected degradation. Do not include the
             # exception or response content: either may contain user content.
             _logger.warning("fuel meals: Sautai read failed for tenant %s", str(tenant.id)[:8])
-            return Response({"meals": []})
+            return Response({"meals": [], "linked": True})
 
         if not isinstance(result, dict) or result.get("outcome") != "ok":
-            return Response({"meals": []})
-        return Response({"meals": _today_meals_from_sautai_plan(result.get("plan"), today)})
+            return Response({"meals": [], "linked": True})
+        return Response({"meals": _today_meals_from_sautai_plan(result.get("plan"), today), "linked": True})
 
 
 class WorkoutProgressView(APIView):

@@ -85,7 +85,8 @@ class FuelMealsTodayViewTests(TestCase):
                         "note": "Light before tomorrow's intervals",
                         "date": "2026-07-22",
                     },
-                ]
+                ],
+                "linked": True,
             },
         )
         mock_fetch.assert_called_once_with(
@@ -98,7 +99,17 @@ class FuelMealsTodayViewTests(TestCase):
     def test_unlinked_tenant_returns_empty_without_calling_sautai(self, mock_fetch):
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": []})
+        self.assertEqual(response.json(), {"meals": [], "linked": False})
+        mock_fetch.assert_not_called()
+
+    @patch("apps.integrations.sautai_client.fetch_sautai_current_plan")
+    def test_sautai_integration_without_account_id_returns_unlinked_flag(self, mock_fetch):
+        self._link(sautai_user_id=None)
+
+        response = self.client.get(self.url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"meals": [], "linked": False})
         mock_fetch.assert_not_called()
 
     @patch("apps.integrations.sautai_client.fetch_sautai_current_plan", return_value={"outcome": "not_found"})
@@ -106,7 +117,7 @@ class FuelMealsTodayViewTests(TestCase):
         self._link()
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": []})
+        self.assertEqual(response.json(), {"meals": [], "linked": True})
         mock_fetch.assert_called_once()
 
     @patch(
@@ -117,7 +128,7 @@ class FuelMealsTodayViewTests(TestCase):
         self._link()
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": []})
+        self.assertEqual(response.json(), {"meals": [], "linked": True})
         mock_fetch.assert_called_once()
 
     @patch(
@@ -130,7 +141,7 @@ class FuelMealsTodayViewTests(TestCase):
         response = self.client.get(self.url)
         elapsed = monotonic() - started
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": []})
+        self.assertEqual(response.json(), {"meals": [], "linked": True})
         self.assertLess(elapsed, 1.0)
         self.assertEqual(mock_fetch.call_args.kwargs["timeout_seconds"], 3.0)
 
@@ -151,6 +162,7 @@ class FuelMealsTodayViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["meals"][0]["date"], "2026-07-22")
+        self.assertIs(response.json()["linked"], True)
         self.assertEqual(mock_fetch.call_args.kwargs["week_start_iso"], "2026-07-20")
 
     @patch("apps.integrations.sautai_client.fetch_sautai_current_plan")
@@ -171,6 +183,8 @@ class FuelMealsTodayViewTests(TestCase):
         self.assertEqual(first["X-Cache"], "MISS")
         self.assertEqual(second["X-Cache"], "HIT")
         self.assertEqual(first.json(), second.json())
+        self.assertIs(first.json()["linked"], True)
+        self.assertIs(second.json()["linked"], True)
         mock_fetch.assert_called_once()
 
     @patch(
@@ -183,7 +197,7 @@ class FuelMealsTodayViewTests(TestCase):
             response = self.client.get(self.url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": []})
+        self.assertEqual(response.json(), {"meals": [], "linked": True})
         self.assertNotIn("Miso-glazed salmon", "\n".join(captured.output))
         mock_fetch.assert_called_once()
 
@@ -211,6 +225,7 @@ class FuelMealsTodayViewTests(TestCase):
         response = self.client.get(self.url)
 
         self.assertEqual(response.json()["meals"][0]["name"], "Live Sautai dinner")
+        self.assertIs(response.json()["linked"], True)
         mock_fetch.assert_called_once()
 
     @patch("apps.integrations.sautai_client.fetch_sautai_current_plan")
@@ -221,5 +236,5 @@ class FuelMealsTodayViewTests(TestCase):
         response = self.client.get(self.url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"meals": []})
+        self.assertEqual(response.json(), {"meals": [], "linked": False})
         mock_fetch.assert_not_called()
