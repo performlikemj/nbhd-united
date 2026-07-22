@@ -1434,7 +1434,10 @@ class WorkoutPlanListView(APIView):
         name = serializer.validated_data.get("name", "")
         if start_date and name:
             existing = WorkoutPlan.objects.filter(
-                tenant=tenant, name=name, start_date=start_date, status=PlanStatus.ACTIVE
+                tenant=tenant,
+                name=name,  # guard: encrypted-predicate
+                start_date=start_date,
+                status=PlanStatus.ACTIVE,
             ).first()
             if existing is not None:
                 data = WorkoutPlanSerializer(existing, context={"today": today_in_tenant_tz(tenant)}).data
