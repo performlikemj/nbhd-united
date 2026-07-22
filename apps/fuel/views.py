@@ -15,6 +15,8 @@ from rest_framework.views import APIView
 
 from apps.common.cache import tenant_cache
 from apps.common.llm_contracts import today_in_tenant_tz
+from apps.common.tenant_tz import tenant_today
+from apps.integrations import sautai_client
 
 
 def _safe_int(value, default):
@@ -87,6 +89,55 @@ _FUEL_WELCOME_PROMPT_TEMPLATE = (
 _FUEL_WELCOME_PROMPT = _FUEL_WELCOME_PROMPT_TEMPLATE
 
 _logger = logging.getLogger(__name__)
+
+_SAUTAI_MEALS_CACHE_SECONDS = 15 * 60
+_SAUTAI_MEALS_TIMEOUT_SECONDS = 3.0
+
+
+def _today_meals_from_sautai_plan(plan, today):
+    """Return the public meal shape for ``today`` from a Sautai weekly plan."""
+    if not isinstance(plan, dict):
+        return []
+
+    expected_week_start = today - timedelta(days=today.weekday())
+    try:
+        plan_week_start = date_cls.fromisoformat(str(plan.get("week_start", "")))
+    except ValueError:
+        return []
+    if plan_week_start != expected_week_start:
+        return []
+
+    days = plan.get("days")
+    if not isinstance(days, list):
+        return []
+
+    today_name = today.strftime("%A").casefold()
+    for day in days:
+        if not isinstance(day, dict) or str(day.get("day", "")).casefold() != today_name:
+            continue
+        meals = day.get("meals")
+        if not isinstance(meals, list):
+            return []
+
+        payload = []
+        for meal in meals:
+            if not isinstance(meal, dict):
+                continue
+            slot = meal.get("meal_type")
+            name = meal.get("name")
+            if not isinstance(slot, str) or not slot.strip() or not isinstance(name, str) or not name.strip():
+                continue
+            note = meal.get("note", "")
+            payload.append(
+                {
+                    "slot": slot.strip().lower(),
+                    "name": name,
+                    "note": note if isinstance(note, str) else "",
+                    "date": today.isoformat(),
+                }
+            )
+        return payload
+    return []
 
 
 def _schedule_fuel_welcome(tenant):
@@ -609,6 +660,43 @@ class FuelOverviewView(APIView):
                 "calendar": _calendar_month_payload(tenant, year, month),
             }
         )
+
+
+class FuelMealsTodayView(APIView):
+    """GET: today's linked Sautai meals, degraded to an empty list on failure."""
+
+    permission_classes = [IsAuthenticated]
+
+    @tenant_cache(ttl=_SAUTAI_MEALS_CACHE_SECONDS, tag="fuel-meals")
+    def get(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if not tenant:
+            return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
+
+        # The Fuel surface is linked-account only. sautai_identity's email
+        # fallback remains valid for assistant plan generation, but must not
+        # auto-create or reveal a meal surface for an unlinked console user.
+        identity, integration = sautai_client.sautai_identity(tenant)
+        if integration is None or not integration.sautai_user_id:
+            return Response({"meals": []})
+
+        today = tenant_today(tenant)
+        week_start = today - timedelta(days=today.weekday())
+        try:
+            result = sautai_client.fetch_sautai_current_plan(
+                identity=identity,
+                week_start_iso=week_start.isoformat(),
+                timeout_seconds=_SAUTAI_MEALS_TIMEOUT_SECONDS,
+            )
+        except Exception:
+            # Partner failures are expected degradation. Do not include the
+            # exception or response content: either may contain user content.
+            _logger.warning("fuel meals: Sautai read failed for tenant %s", str(tenant.id)[:8])
+            return Response({"meals": []})
+
+        if not isinstance(result, dict) or result.get("outcome") != "ok":
+            return Response({"meals": []})
+        return Response({"meals": _today_meals_from_sautai_plan(result.get("plan"), today)})
 
 
 class WorkoutProgressView(APIView):
