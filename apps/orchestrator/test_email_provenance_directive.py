@@ -37,11 +37,12 @@ _GATE_PATH = os.path.join(
     "canary",
     "person-context-capture-phase2.agents-extras.md",
 )
+# Re-measured 2026-07-22: the ops-block stand-in remains exactly 1,582 chars.
 _TASK_DISCIPLINE_BLOCK_CHARS = 1582
 
 # A distinctive phrase from the email-provenance gate (personas.py).
 _EMAIL_GATE_MARKER = "Saving what you learn from an email"
-_EMAIL_GATE_TAIL = "don't say it clears out in a day."
+_EMAIL_GATE_TAIL = "Nothing expires here — don't claim it clears in a day."
 
 
 def _task_discipline_stand_in() -> str:

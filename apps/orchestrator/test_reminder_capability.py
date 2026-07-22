@@ -41,21 +41,19 @@ from apps.tenants.services import create_tenant
 _REMINDER_TOOL = "nbhd_cron_create_pure_reminder"
 _CANT_DO_HEADING = "## What You Can't Do"
 
-# Budget, measured 2026-07-14 against the real fleet and the six AGENTS.md tenant gates
-# in personas.py (site_publishing :660, friends :685, document_ingestion :743,
-# email_provenance :776, sautai :801, finance_active :819):
+# Budget, measured against the real fleet and every AGENTS.md tenant gate
+# in personas.py (site publishing, friends, document keep, email provenance,
+# sautai, tour guide, journal shaping, and Gravity):
 #
 #   cap                                   24,000
-#   template alone                        15,843
-#   MJ (four gates + ~1,459 extras)       22,948   <- shipping today, 1,052 from the cap
-#   ALL SIX gates, no extras              23,720   <- only 280 from the cap
-#   ALL SIX gates + MJ-weight extras      25,222   <- OVER THE CAP. Silently truncated.
+#   template alone                        16,003
+#   MJ-shaped gates + 1,500 extras        22,324
+#   ALL gates, no extras                  23,480   <- 520 from the cap
+#   ALL gates + 1,500 extras              24,982   <- OVER THE CAP. Silently truncated.
 #
-# That last line is a live, PRE-EXISTING platform bug. This PR did not cause it; it
-# exposed it. No such tenant exists yet — MJ has four gates — but he is two flag flips
-# away, and the truncation is silent and eats the NEWEST rule first. It is pinned as a
-# KNOWN_GAP sentinel below rather than hidden behind an undercounting fixture, and the
-# render-time sentinel in personas.py alarms on it in production.
+# The code-controlled maximal render now fits with deliberate headroom. Arbitrary
+# tenant prompt extras can still overflow the cap, so that known gap remains pinned
+# below and the render-time sentinel in personas.py continues to alarm on it.
 #
 # The ceiling here is therefore the strongest TRUE statement available, not the one we
 # wish were true. Do not "fix" a red test by widening it — that is deleting the alarm.
@@ -123,12 +121,25 @@ class MaximalTenantBudgetTest(TestCase):
             "experimental_typed_crons",
         ]
         if all_gates:
-            # The three MJ does NOT have. Omitting these is how a budget fixture
-            # silently undercounts by ~2,270 chars and passes while production burns.
+            # Enable every conditional AGENTS.md section. Omitting tour-guide or
+            # journal-shaping is enough to make a supposedly maximal fixture pass
+            # while a real maximal render breaches the bootstrap cap.
             tenant.site_publishing_enabled = True
             tenant.email_provenance_enabled = True
             tenant.sautai_enabled = True
-            fields += ["site_publishing_enabled", "email_provenance_enabled", "sautai_enabled"]
+            tenant.tour_guide_enabled = True
+            tenant.tour_guide_manifest_ok = True
+            tenant.places_search_manifest_ok = True
+            tenant.journal_shaping_enabled = True
+            fields += [
+                "site_publishing_enabled",
+                "email_provenance_enabled",
+                "sautai_enabled",
+                "tour_guide_enabled",
+                "tour_guide_manifest_ok",
+                "places_search_manifest_ok",
+                "journal_shaping_enabled",
+            ]
         tenant.save(update_fields=fields)
 
         if extras:
@@ -139,15 +150,16 @@ class MaximalTenantBudgetTest(TestCase):
             tenant.user.refresh_from_db()
         return tenant
 
-    def test_all_six_gates_render_stays_under_the_cap(self):
-        """Every AGENTS.md tenant gate on, no extras — the whole of what CODE controls.
-
-        Measured 23,720 on 2026-07-14: only 280 chars clear of the cap. The ceiling is
-        set just above that on purpose, so the very next gate — or any unfunded growth
-        in one — turns this red, which is precisely when the diet is due.
-        """
+    def test_maximal_render_stays_under_the_cap(self):
+        """Every AGENTS.md tenant gate on, no extras — all code-controlled prose."""
         md = _agents_md(self._tenant(all_gates=True))
-        self.assertLess(
+        self.assertLessEqual(
+            len(md),
+            BOOTSTRAP_MAX_CHARS,
+            f"the maximal AGENTS.md render is {len(md)} chars, over the "
+            f"{BOOTSTRAP_MAX_CHARS} deterministic-delivery cap",
+        )
+        self.assertLessEqual(
             len(md),
             _ALL_GATES_CEILING,
             f"the all-gates AGENTS.md render is {len(md)} chars, over the "
@@ -167,22 +179,18 @@ class MaximalTenantBudgetTest(TestCase):
         )
 
     def test_KNOWN_GAP_all_gates_plus_extras_exceeds_the_cap(self):
-        """KNOWN_GAP — a live platform bug this PR EXPOSED, and did not cause.
+        """KNOWN_GAP — arbitrary tenant extras can still overflow the fixed cap.
 
-        A tenant with all six gates AND MJ-weight prompt_extras renders ~25,222 chars
-        against a 24,000 cap: silently truncated, newest rule first. No such tenant
-        exists yet (MJ has four gates), but he is two flag flips from it, and the
-        failure mode is invisible by construction.
+        A tenant with every gate AND 1,500 chars of prompt_extras renders 24,982
+        chars against a 24,000 cap: silently truncated, newest rule first.
 
         Pinned green here so the gap is COUNTED rather than hidden behind an
         undercounting fixture. The render-time sentinel in personas.py alarms on it in
         production in the meantime.
 
-        FLIPS WHEN: the site-publishing (~1,005 chars) and email-provenance (~820) gate
-        prose are dieted — ~1,400 chars. That is its own reviewed PR, because that prose
-        encodes anti-confabulation incidents and must not be trimmed casually. When it
-        lands, this assertion goes RED: delete the sentinel and assert the render fits
-        under the cap with real margin.
+        FLIPS WHEN: another reviewed diet or prompt-extras budget lands. When it does,
+        this assertion goes RED: delete the sentinel and assert that shape fits with
+        real margin.
         """
         md = _agents_md(self._tenant(all_gates=True, extras=1500))
         self.assertGreater(

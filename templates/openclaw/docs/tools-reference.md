@@ -203,7 +203,7 @@ Rules:
 ### Plans (multi-week programs)
 | Tool | Required params | Purpose |
 |------|----------------|---------|
-| `nbhd_fuel_create_plan` | `name`, `weeks`, `days_per_week`, `schedule_json` | **Use whenever the user asks to make / build / design / lay out / fill out a plan, program, routine, or schedule.** You supply the WEEKLY CADENCE (`schedule_json`, weekday 0=Mon..6=Sun); the backend assigns calendar dates in the user's timezone — never compute weekdays yourself. Check `nbhd_fuel_summary` for an existing active plan first. |
+| `nbhd_fuel_create_plan` | `name`, `weeks`, `days_per_week`, `schedule_json` | **Use whenever the user asks to make / build / design / lay out / fill out a plan, program, routine, or schedule.** Always pass the user's tenant-local start anchor as `start_date`. For "today" / "I'm at the gym now", use today and `schedule_json` MUST include today's weekday — rotate the split so today is day 1. Omitting `start_date` falls back to next Monday only as backend fallback behavior, not a recommendation. Check `nbhd_fuel_summary` for an existing active plan first. |
 | `nbhd_fuel_update_plan` | `plan_id` | Change a plan's name, status (active/paused/completed/archived), notes, or schedule. Schedule/weeks changes regenerate future planned workouts; per-workout customizations are preserved when (date, activity) still matches. |
 | `nbhd_fuel_delete_plan` | `plan_id` | Delete a plan and all future planned workouts (completed workouts are preserved, unlinked). **Always confirm first.** |
 
@@ -211,7 +211,7 @@ Rules:
 - When logging from natural language, infer as much as possible — don't interrogate
 - "deadlift 75kg 3x5" → single call with `category=strength`, `detail_json` with exercises/sets
 - Always confirm what was logged with a brief message
-- Never present a dated plan as prose — always use `nbhd_fuel_create_plan` so the backend owns the dates
+- Never present a dated plan as prose. Use `nbhd_fuel_create_plan`, then use its `first_workout_date` (and heed `start_date_note`) for the first session; never assume `start_date` has a session
 - `nbhd_fuel_summary` now carries a **full year** of history (all-time PRs, 12-month volume) plus the user's **typed goals** — reference them instead of asking the user to restate; see `rules/fuel.md`
 - See `rules/fuel.md` for onboarding flow and profile-aware recommendations
 

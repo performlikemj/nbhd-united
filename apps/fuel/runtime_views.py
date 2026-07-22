@@ -1346,6 +1346,28 @@ def _supersede_other_active_plans(tenant, keep_plan) -> list[str]:
     return archived
 
 
+def _plan_start_metadata(plan: WorkoutPlan) -> dict[str, str | None]:
+    """Describe where a plan's materialized calendar actually starts."""
+    workouts = Workout.objects.filter(plan=plan)
+    first_workout_date = workouts.order_by("date").values_list("date", flat=True).first()
+    start_date_note = None
+    if not workouts.filter(date=plan.start_date).exists():
+        if first_workout_date is None:
+            start_date_note = (
+                f"start_date {plan.start_date.isoformat()} is not a training day in the cadence; "
+                "no sessions were materialized"
+            )
+        else:
+            start_date_note = (
+                f"start_date {plan.start_date.isoformat()} is not a training day in the cadence; "
+                f"first session is {first_workout_date.isoformat()}"
+            )
+    return {
+        "first_workout_date": first_workout_date.isoformat() if first_workout_date else None,
+        "start_date_note": start_date_note,
+    }
+
+
 class RuntimeWorkoutPlanListCreateView(APIView):
     """GET: list plans. POST: create plan + expand into planned workouts."""
 
@@ -1457,13 +1479,17 @@ class RuntimeWorkoutPlanListCreateView(APIView):
         # OTHER active plans — otherwise the multi-active legacy tenants this
         # exists to clean up keep their stragglers when a plan is re-created.
         existing = WorkoutPlan.objects.filter(
-            tenant=tenant, name=name, start_date=plan_start, status=PlanStatus.ACTIVE
+            tenant=tenant,
+            name=name,  # guard: encrypted-predicate
+            start_date=plan_start,
+            status=PlanStatus.ACTIVE,
         ).first()
         if existing is not None:
             superseded = [] if concurrent else _supersede_other_active_plans(tenant, existing)
             if superseded:
                 _manage_fuel_cron(tenant, existing, action="update")
             result = _serialize_plan(existing, today=today_in_tenant_tz(tenant))
+            result.update(_plan_start_metadata(existing))
             result["deduped"] = True
             if superseded:
                 result["superseded_plans"] = superseded
@@ -1506,6 +1532,7 @@ class RuntimeWorkoutPlanListCreateView(APIView):
         _manage_fuel_cron(tenant, plan, action="create")
 
         result = _serialize_plan(plan, today=today_in_tenant_tz(tenant))
+        result.update(_plan_start_metadata(plan))
         result["workouts_created"] = workouts_created
         if superseded:
             result["superseded_plans"] = superseded

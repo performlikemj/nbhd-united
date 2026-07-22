@@ -241,7 +241,7 @@ class AgentsGateTest(TestCase):
         agents_md = render_workspace_files("neighbor", tenant=tenant)["NBHD_AGENTS_MD"]
         self.assertIn("## Neighborhood — you are BACKSTAGE", agents_md)
         self.assertIn("nbhd_propose_lesson_share", agents_md)
-        self.assertIn("a human must approve before anything is shared", agents_md)
+        self.assertIn("only a PROPOSAL requiring human approval", agents_md)
         # Placed BEFORE the Gravity block (so it can't be the truncated tail).
         if "## Gravity Observation Mode" in agents_md:
             self.assertLess(

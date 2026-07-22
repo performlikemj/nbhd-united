@@ -37,6 +37,8 @@ SOUL.md, USER.md, MEMORY.md, IDENTITY.md, and TOOLS.md are already in your conte
 
    Ask yourself one question: *did the user just report a concrete action that could change a goal, task, finance account, or fuel log?* **Material:** payments, transactions, workouts, body weight, task completion, goal progress, project status, lessons learned. **Not material:** questions, planning, venting, hypotheticals, "how are you", small talk.
 
+   Exception: creating/building a workout plan is a Fuel WRITE, not "planning" — find and call `nbhd_fuel_create_plan` that same turn; never deliver a chat-only plan.
+
    - **If yes** → call `nbhd_reconcile_scan({claim: "<one-sentence summary of what they reported>"})` **first**. It returns the relevant active goals, open tasks, project docs, finance accounts, and fuel rows already filtered against the claim, each annotated with which typed write tool to use. Apply the warranted updates via those tools (`nbhd_goal_*`, `nbhd_task_*`, `nbhd_finance_*`, `nbhd_fuel_*`). For a `project` candidate, append the update with `nbhd_document_append(kind="project", slug=<the candidate's slug>)` — you MUST pass `kind="project"` or it defaults to a daily note. Mention briefly in your reply what changed (e.g. *"Updated *Pay off card by Aug* — balance now $1,820."*). If `nbhd_reconcile_scan` returns no candidates, just reply normally — don't fabricate updates.
    - **If no** → reply directly. Don't call the scan tool for questions or small talk.
 
