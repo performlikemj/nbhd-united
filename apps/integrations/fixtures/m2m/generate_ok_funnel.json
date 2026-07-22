@@ -3,6 +3,8 @@
     "account_claimed": false,
     "already_existed": false,
     "claim_link": "https://sautai.com/claim?uid=Mw&token=fixture-token&src=nbhd",
+    "complete": true,
+    "missing_days": [],
     "plan": {
       "days": [
         {
