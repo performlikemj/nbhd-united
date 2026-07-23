@@ -57,10 +57,11 @@ class RenderWorkspaceFilesObservationModeTest(TestCase):
         self.assertNotIn("Voice Register Selection", agents_md)
 
     def test_tenant_prompt_extras_still_compose_with_observation_rules(self):
-        """Existing prompt_extras append path must not be broken by the new append.
+        """Prompt extras remain present as the deliberate sacrificial tail.
 
         Both prompt_extras (per-tenant override) and the observation-mode
-        rules (gated on finance_enabled) should be present, in that order.
+        rules (gated on finance_enabled) are present, with fleet rules first so
+        over-cap truncation sacrifices tenant extras before fleet behavior.
         """
         tenant = create_tenant(display_name="Extras User", telegram_chat_id=900003)
         tenant.finance_enabled = True
@@ -74,13 +75,11 @@ class RenderWorkspaceFilesObservationModeTest(TestCase):
         files = render_workspace_files("neighbor", tenant=tenant)
         agents_md = files["NBHD_AGENTS_MD"]
 
-        # Both blocks land. prompt_extras appended before observation rules
-        # so the per-tenant overrides come first (closer to the base
-        # template), observation rules at the tail.
+        # Both blocks land, with prompt_extras at the sacrificial tail.
         extras_pos = agents_md.find("Per-tenant rule")
         observation_pos = agents_md.find("Gravity Observation Mode")
-        self.assertGreater(extras_pos, 0)
-        self.assertGreater(observation_pos, extras_pos)
+        self.assertGreater(observation_pos, 0)
+        self.assertGreater(extras_pos, observation_pos)
 
 
 class ObservationModeUserMdCountsTest(TestCase):

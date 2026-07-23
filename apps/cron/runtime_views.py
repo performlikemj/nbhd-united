@@ -104,6 +104,7 @@ class RuntimeContainerStartedView(APIView):
         # re-picked by the linkage-based selection (an iOS-only tenant sheds the
         # stale telegram doc). Both are share-only, fail-open, never fatal.
         tools_md_refreshed = False
+        tools_md_extras_refreshed = False
         channel_formatting_refreshed = False
         try:
             from apps.orchestrator.services import reassert_tools_md
@@ -111,6 +112,15 @@ class RuntimeContainerStartedView(APIView):
             tools_md_refreshed = reassert_tools_md(tenant)
         except Exception:
             logger.exception("RuntimeContainerStartedView: TOOLS.md re-assert failed for tenant %s", tenant_id)
+        try:
+            from apps.orchestrator.services import reassert_tools_md_extras
+
+            tools_md_extras_refreshed = reassert_tools_md_extras(tenant)
+        except Exception:
+            logger.exception(
+                "RuntimeContainerStartedView: TOOLS.md extras re-assert failed for tenant %s",
+                tenant_id,
+            )
         try:
             from apps.orchestrator.services import reassert_channel_formatting
 
@@ -129,6 +139,7 @@ class RuntimeContainerStartedView(APIView):
                     "agents_md_refreshed": agents_md_refreshed,
                     "identity_files_refreshed": identity_files_refreshed,
                     "tools_md_refreshed": tools_md_refreshed,
+                    "tools_md_extras_refreshed": tools_md_extras_refreshed,
                     "channel_formatting_refreshed": channel_formatting_refreshed,
                 },
                 status=status.HTTP_200_OK,
@@ -147,6 +158,7 @@ class RuntimeContainerStartedView(APIView):
                     "agents_md_refreshed": agents_md_refreshed,
                     "identity_files_refreshed": identity_files_refreshed,
                     "tools_md_refreshed": tools_md_refreshed,
+                    "tools_md_extras_refreshed": tools_md_extras_refreshed,
                     "channel_formatting_refreshed": channel_formatting_refreshed,
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -157,6 +169,7 @@ class RuntimeContainerStartedView(APIView):
                 "agents_md_refreshed": agents_md_refreshed,
                 "identity_files_refreshed": identity_files_refreshed,
                 "tools_md_refreshed": tools_md_refreshed,
+                "tools_md_extras_refreshed": tools_md_extras_refreshed,
                 "channel_formatting_refreshed": channel_formatting_refreshed,
                 **summary,
             },

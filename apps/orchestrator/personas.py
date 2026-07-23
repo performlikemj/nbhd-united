@@ -624,8 +624,9 @@ def _get_tenant_prompt_extras(tenant, section: str) -> str:
 
     This is the hook for canary-style per-tenant prompt overrides without a
     schema migration. Populate via the ``set_prompt_extras`` management
-    command. Known sections: ``agents_md``, ``soul_md``, ``identity_md`` (the
-    latter two are spliced INSIDE the managed SOUL/IDENTITY region),
+    command. Known sections: ``agents_md``, ``tools_md`` (spliced by the
+    share-only TOOLS.md reassert path), ``soul_md``, ``identity_md`` (the latter
+    two are spliced INSIDE the managed SOUL/IDENTITY region), and
     ``quick_replies_md`` (its own block, appended separately so it composes
     alongside ``agents_md`` extras without either clobbering the other).
 
@@ -664,18 +665,6 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         "NBHD_SOUL_MD": render_soul_managed(persona_key, tenant),
         "NBHD_IDENTITY_MD": render_identity_managed(persona_key, tenant),
     }
-    agents_extras = _get_tenant_prompt_extras(tenant, "agents_md")
-    if agents_extras:
-        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + agents_extras
-
-    # Quick-reply buttons — canary-only for now (see set_prompt_extras
-    # --section quick_replies_md). A SEPARATE block from agents_extras above
-    # so the two compose instead of one clobbering the other in the same
-    # tenant.user.preferences['prompt_extras'] map.
-    quick_replies_extras = _get_tenant_prompt_extras(tenant, "quick_replies_md")
-    if quick_replies_extras:
-        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + quick_replies_extras
-
     # Site publishing gate — behavioral, per-tenant. Only tenants with their own
     # website connected (site_publishing_enabled) load the publish_portfolio_image
     # tool, so the imperative cue that makes the agent actually CALL it — rather
@@ -875,6 +864,20 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
             result["NBHD_AGENTS_MD"] + "\n\n## Gravity Observation Mode\n\n" + render_observation_mode_rules(tenant)
         )
 
+    # Per-tenant extras are deliberately the sacrificial tail: OpenClaw silently
+    # truncates past the bootstrap cap, so fleet-wide feature gates must survive
+    # ahead of canary/hotfix prose. Keep the two blocks separate and in this
+    # order so they compose without clobbering each other.
+    agents_extras = _get_tenant_prompt_extras(tenant, "agents_md")
+    if agents_extras:
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + agents_extras
+
+    # Quick-reply buttons — canary-only for now (see set_prompt_extras
+    # --section quick_replies_md).
+    quick_replies_extras = _get_tenant_prompt_extras(tenant, "quick_replies_md")
+    if quick_replies_extras:
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + quick_replies_extras
+
     # Load static reference docs
     for key, filename in _WORKSPACE_DOCS.items():
         content = _load_doc_template(filename)
@@ -903,12 +906,12 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     # Bootstrap-cap sentinel. OpenClaw truncates AGENTS.md at ``bootstrapMaxChars``
     # SILENTLY and mid-rule — there is no error, no log, no signal; the model simply
     # stops reading. That is how the 2026-07-11 canary lost its tail with CI green
-    # (470e122e), and every per-tenant block (prompt_extras, the Neighborhood /
-    # sautai / doc-keep gates) is appended to the TAIL, i.e. it is always the newest
-    # behavioral rule that dies first. So we check the size we actually rendered, for
-    # THIS tenant, on every write path (config refresh + boot-time reassert) — an
-    # error-level log, which Sentry already forwards, so it becomes an alert with no
-    # extra plumbing. Late import: keeps the orchestrator's module graph acyclic.
+    # (470e122e). Conditional fleet gates now precede the per-tenant ``agents_md``
+    # and ``quick_replies_md`` extras, making those extras the deliberate
+    # sacrificial tail. We check the size we actually rendered, for THIS tenant,
+    # on every write path (config refresh + boot-time reassert) — an error-level
+    # log, which Sentry already forwards, so it becomes an alert with no extra
+    # plumbing. Late import: keeps the orchestrator's module graph acyclic.
     from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS
 
     rendered = result.get("NBHD_AGENTS_MD") or ""

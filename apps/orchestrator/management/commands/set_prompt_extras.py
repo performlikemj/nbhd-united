@@ -5,7 +5,8 @@ Prompt extras are canary-scoped additions to the base workspace files (e.g.,
 ``User.preferences['prompt_extras'][<section>]``. They are concatenated to
 the base content by ``apps.orchestrator.personas.render_workspace_files``.
 
-Known sections: ``agents_md``, ``soul_md``, ``identity_md``, ``quick_replies_md``.
+Known sections: ``agents_md``, ``tools_md``, ``soul_md``, ``identity_md``,
+``quick_replies_md``.
 
 Usage:
 
@@ -35,7 +36,7 @@ from django.core.management.base import BaseCommand, CommandError
 
 from apps.tenants.models import Tenant
 
-_KNOWN_SECTIONS = {"agents_md", "soul_md", "identity_md", "quick_replies_md"}
+_KNOWN_SECTIONS = {"agents_md", "tools_md", "soul_md", "identity_md", "quick_replies_md"}
 
 
 class Command(BaseCommand):
@@ -109,7 +110,13 @@ class Command(BaseCommand):
         user.save(update_fields=["preferences"])
 
         self.stdout.write(self.style.SUCCESS(f"tenant={tenant_id}: {action}"))
-        self.stdout.write(
-            "Next: run `python manage.py force_apply_configs --tenant-id "
-            f"{tenant_id}` to push the updated workspace files."
-        )
+        if section == "tools_md":
+            self.stdout.write(
+                "Next: run `python manage.py reassert_tools_md_extras --tenant "
+                f"{tenant_id}` to push the updated TOOLS.md region."
+            )
+        else:
+            self.stdout.write(
+                "Next: run `python manage.py force_apply_configs --tenant-id "
+                f"{tenant_id}` to push the updated workspace files."
+            )

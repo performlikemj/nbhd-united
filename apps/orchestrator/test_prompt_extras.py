@@ -120,6 +120,7 @@ class RenderWorkspaceFilesExtrasTest(TestCase):
         agents_md = render_workspace_files("neighbor", tenant=tenant)["NBHD_AGENTS_MD"]
         self.assertIn("AGENTS_MD_TOKEN", agents_md)
         self.assertIn("QUICK_REPLY_RULE_TOKEN", agents_md)
+        self.assertLess(agents_md.find("AGENTS_MD_TOKEN"), agents_md.find("QUICK_REPLY_RULE_TOKEN"))
 
 
 class SetPromptExtrasCommandTest(TestCase):
@@ -192,6 +193,28 @@ class SetPromptExtrasCommandTest(TestCase):
         self.assertEqual(
             self.tenant.user.preferences["prompt_extras"]["quick_replies_md"],
             "quick reply rule text",
+        )
+
+    def test_set_tools_md_section(self):
+        import sys
+
+        original_stdin = sys.stdin
+        sys.stdin = io.StringIO("TOOLS.md managed rule")
+        try:
+            self._call(
+                "--tenant-id",
+                str(self.tenant.id),
+                "--section",
+                "tools_md",
+                "--stdin",
+            )
+        finally:
+            sys.stdin = original_stdin
+
+        self.tenant.user.refresh_from_db()
+        self.assertEqual(
+            self.tenant.user.preferences["prompt_extras"]["tools_md"],
+            "TOOLS.md managed rule",
         )
 
     def test_unknown_tenant_raises(self):
