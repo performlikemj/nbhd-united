@@ -207,9 +207,8 @@ class ContinuityCaptureBudgetTest(TestCase):
         removed the ~3.4 KB voice-register block from the always-loaded bootstrap
         (it now rides the nbhd_insights_signals tool response) and trimmed the
         observation gate, so the WHOLE file now fits: there is no cut. Assert
-        both the ordering invariant (reflex above the Gravity tail) AND — the
-        flip from the old "survives the cut" test — that the entire render,
-        Gravity tail included, sits under the cap."""
+        the new ordering invariant (extras are the sacrificial tail after fleet
+        gates) AND the real protection: the entire render fits under the cap."""
         tenant = create_tenant(display_name="Finance Continuity", telegram_chat_id=912007)
         tenant.finance_enabled = True
         tenant.friends_enabled = True
@@ -229,8 +228,11 @@ class ContinuityCaptureBudgetTest(TestCase):
         gravity_at = agents_md.find("Gravity Observation Mode")
         self.assertNotEqual(reflex_at, -1)
         self.assertNotEqual(gravity_at, -1)
-        # Ordering invariant preserved: the reflex still sits above the Gravity tail.
-        self.assertLess(reflex_at, gravity_at)
+        self.assertLess(
+            gravity_at,
+            reflex_at,
+            "per-tenant extras deliberately render after fleet gates as the sacrificial tail under the cap",
+        )
         # The register rules moved to the signals tool response — their old
         # always-loaded signature must be gone from the bootstrap.
         self.assertNotIn("Voice Register Selection", agents_md)
