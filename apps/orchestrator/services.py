@@ -908,6 +908,22 @@ _TOOLS_MD_CHANNEL_BODY = (
     "- Telegram and LINE are fully supported. Never assume a message came from Telegram."
 )
 
+TOOLS_MD_EXTRAS_BEGIN_MARKER = (
+    "<!-- BEGIN: NBHD-managed rules — do not edit between these markers; "
+    "this region is re-asserted by the platform. -->"
+)
+TOOLS_MD_EXTRAS_END_MARKER = "<!-- END: NBHD-managed rules -->"
+
+
+def _tools_md_extras_markers_malformed(current: str) -> bool:
+    begin_count = current.count(TOOLS_MD_EXTRAS_BEGIN_MARKER)
+    end_count = current.count(TOOLS_MD_EXTRAS_END_MARKER)
+    if begin_count != end_count or begin_count > 1:
+        return True
+    if begin_count == 0:
+        return False
+    return current.find(TOOLS_MD_EXTRAS_BEGIN_MARKER) > current.find(TOOLS_MD_EXTRAS_END_MARKER)
+
 
 def converge_tools_md_text(current: str | None) -> str | None:
     """Return TOOLS.md with the legacy Telegram-primary line swapped for the
@@ -920,6 +936,51 @@ def converge_tools_md_text(current: str | None) -> str | None:
     if _TOOLS_MD_LEGACY_CHANNEL_LINE not in current:
         return None
     return current.replace(_TOOLS_MD_LEGACY_CHANNEL_LINE, _TOOLS_MD_CHANNEL_BODY)
+
+
+def splice_tools_md_extras(current: str | None, extras: str | None) -> str | None:
+    """Splice per-tenant rules into the managed region of ``TOOLS.md``.
+
+    Content outside the markers is preserved byte-for-byte. Empty files and
+    malformed marker states fail closed, and ``None`` signals that the caller
+    should skip the share write.
+    """
+    if not current or not current.strip():
+        return None
+    if _tools_md_extras_markers_malformed(current):
+        return None
+
+    extras_clean = extras.strip() if extras else ""
+    begin_idx = current.find(TOOLS_MD_EXTRAS_BEGIN_MARKER)
+    if begin_idx < 0:
+        if not extras_clean:
+            return None
+        result = (
+            current
+            + "\n\n"
+            + TOOLS_MD_EXTRAS_BEGIN_MARKER
+            + "\n"
+            + extras_clean
+            + "\n"
+            + TOOLS_MD_EXTRAS_END_MARKER
+            + "\n"
+        )
+    else:
+        end_idx = current.find(TOOLS_MD_EXTRAS_END_MARKER, begin_idx)
+        region_end = end_idx + len(TOOLS_MD_EXTRAS_END_MARKER)
+        if extras_clean:
+            managed_region = TOOLS_MD_EXTRAS_BEGIN_MARKER + "\n" + extras_clean + "\n" + TOOLS_MD_EXTRAS_END_MARKER
+            result = current[:begin_idx] + managed_region + current[region_end:]
+        else:
+            prefix = current[:begin_idx]
+            suffix = current[region_end:]
+            if prefix.endswith("\n\n"):
+                prefix = prefix[:-2]
+            if suffix.startswith("\n"):
+                suffix = suffix[1:]
+            result = prefix + suffix
+
+    return None if result == current else result
 
 
 def reassert_tools_md(tenant) -> bool:
@@ -950,6 +1011,44 @@ def reassert_tools_md(tenant) -> bool:
 
     upload_workspace_file(str(tenant.id), "workspace/TOOLS.md", converged)
     logger.info("Re-asserted TOOLS.md channel line to file share for tenant %s", tenant.id)
+    return True
+
+
+def reassert_tools_md_extras(tenant) -> bool:
+    """Re-assert the per-tenant managed rules region in ``workspace/TOOLS.md``."""
+    if tenant.status != Tenant.Status.ACTIVE or not tenant.container_id:
+        return False
+
+    from apps.orchestrator.azure_client import download_workspace_file, upload_workspace_file
+    from apps.orchestrator.config_generator import BOOTSTRAP_MAX_CHARS
+    from apps.orchestrator.personas import _get_tenant_prompt_extras
+
+    extras = _get_tenant_prompt_extras(tenant, "tools_md")
+    try:
+        current = download_workspace_file(str(tenant.id), "workspace/TOOLS.md")
+    except Exception:
+        logger.warning("reassert_tools_md_extras: read of current TOOLS.md failed for %s; skipping", tenant.id)
+        return False
+
+    if current and _tools_md_extras_markers_malformed(current):
+        logger.warning("reassert_tools_md_extras: malformed managed markers for tenant %s; skipping", tenant.id)
+        return False
+
+    spliced = splice_tools_md_extras(current, extras)
+    if spliced is None:
+        return False
+
+    if len(spliced) > BOOTSTRAP_MAX_CHARS - 1000:
+        logger.error(
+            "TOOLS.md near bootstrap cap: tenant=%s size=%d cap=%d — the tail will be "
+            "silently truncated at injection; trim the tools_md extras",
+            tenant.id,
+            len(spliced),
+            BOOTSTRAP_MAX_CHARS,
+        )
+
+    upload_workspace_file(str(tenant.id), "workspace/TOOLS.md", spliced)
+    logger.info("Re-asserted TOOLS.md managed extras to file share for tenant %s", tenant.id)
     return True
 
 
