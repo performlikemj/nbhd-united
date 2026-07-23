@@ -342,13 +342,21 @@ def fetch_sautai_current_plan(
     }
 
 
-def resolve_sautai_link_key(link_key: str, *, nbhd_tenant_id: str) -> dict:
+def resolve_sautai_link_key(
+    link_key: str,
+    *,
+    nbhd_tenant_id: str,
+    account_email: str | None = None,
+    display_name: str | None = None,
+) -> dict:
     """Exchange a one-time connect key for a sautai user id + email via ``/link/resolve/``.
 
     Called SERVER-SIDE from the console connect endpoint (the raw key is never
     stored — one-time exchange, burn after resolve). Contract addendum #1: 200
     echoes the required opaque ``nbhd_tenant_id`` alongside ``sautai_user_id``
     and ``email``; unknown/expired/used key → 404 ``{"code":"invalid_key"}``.
+    Optional account labels are display-only request metadata and are omitted
+    unless supplied as non-empty strings.
     Outcomes:
 
     - ``{"outcome": "ok", ..., "nbhd_tenant_id": str}``
@@ -361,11 +369,17 @@ def resolve_sautai_link_key(link_key: str, *, nbhd_tenant_id: str) -> dict:
     if not base_url or not secret:
         return {"outcome": "not_configured"}
 
+    payload: dict = {"link_key": link_key, "nbhd_tenant_id": nbhd_tenant_id}
+    if isinstance(account_email, str) and account_email:
+        payload["nbhd_account_email"] = account_email[:255]
+    if isinstance(display_name, str) and display_name:
+        payload["nbhd_display_name"] = display_name[:255]
+
     url = f"{base_url}/api/m2m/link/resolve/"
     try:
         response = httpx.post(
             url,
-            json={"link_key": link_key, "nbhd_tenant_id": nbhd_tenant_id},
+            json=payload,
             headers={"X-NBHD-Platform-Secret": secret},
             timeout=LINK_RESOLVE_TIMEOUT_SECONDS,
         )

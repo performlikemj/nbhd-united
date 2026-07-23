@@ -51,7 +51,12 @@ class SautaiLinkViewTests(TestCase):
             }
             resp = self.client.post(self.URL, {"connect_key": "SECRET-KEY-XYZ"}, format="json")
 
-        mock_resolve.assert_called_once_with("SECRET-KEY-XYZ", nbhd_tenant_id=str(self.tenant.id))
+        mock_resolve.assert_called_once_with(
+            "SECRET-KEY-XYZ",
+            nbhd_tenant_id=str(self.tenant.id),
+            account_email=self.tenant.user.email,
+            display_name=self.tenant.user.display_name,
+        )
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(body["status"], "connected")

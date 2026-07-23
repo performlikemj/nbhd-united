@@ -503,7 +503,12 @@ class ResolveSautaiLinkKeyTests(SimpleTestCase):
 
         fixture = _load_fixture("link_resolve_ok.json")
         with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post:
-            result = resolve_sautai_link_key("KEY123", nbhd_tenant_id="nbhd-tenant-fixture")
+            result = resolve_sautai_link_key(
+                "KEY123",
+                nbhd_tenant_id="nbhd-tenant-fixture",
+                account_email="diner@example.com",
+                display_name="Dinner Friend",
+            )
         self.assertEqual(result["outcome"], "ok")
         self.assertEqual(result["sautai_user_id"], fixture["body"]["sautai_user_id"])
         self.assertEqual(result["email"], fixture["body"]["email"])
@@ -511,9 +516,48 @@ class ResolveSautaiLinkKeyTests(SimpleTestCase):
         _, kwargs = mock_post.call_args
         self.assertEqual(
             kwargs["json"],
-            {"link_key": "KEY123", "nbhd_tenant_id": "nbhd-tenant-fixture"},
+            {
+                "link_key": "KEY123",
+                "nbhd_tenant_id": "nbhd-tenant-fixture",
+                "nbhd_account_email": "diner@example.com",
+                "nbhd_display_name": "Dinner Friend",
+            },
         )
         self.assertEqual(kwargs["headers"]["X-NBHD-Platform-Secret"], "test-secret")
+
+    def test_resolve_link_omits_empty_identity_fields(self):
+        from .sautai_client import resolve_sautai_link_key
+
+        fixture = _load_fixture("link_resolve_ok.json")
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post:
+            resolve_sautai_link_key(
+                "KEY123",
+                nbhd_tenant_id="nbhd-tenant-fixture",
+                account_email="",
+                display_name=None,
+            )
+        _, kwargs = mock_post.call_args
+        self.assertEqual(
+            kwargs["json"],
+            {"link_key": "KEY123", "nbhd_tenant_id": "nbhd-tenant-fixture"},
+        )
+
+    def test_resolve_link_trims_identity_fields_to_255_characters(self):
+        from .sautai_client import resolve_sautai_link_key
+
+        fixture = _load_fixture("link_resolve_ok.json")
+        account_email = "e" * 256
+        display_name = "n" * 300
+        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post:
+            resolve_sautai_link_key(
+                "KEY123",
+                nbhd_tenant_id="nbhd-tenant-fixture",
+                account_email=account_email,
+                display_name=display_name,
+            )
+        _, kwargs = mock_post.call_args
+        self.assertEqual(kwargs["json"]["nbhd_account_email"], account_email[:255])
+        self.assertEqual(kwargs["json"]["nbhd_display_name"], display_name[:255])
 
     def test_resolve_link_invalid_key(self):
         from .sautai_client import resolve_sautai_link_key

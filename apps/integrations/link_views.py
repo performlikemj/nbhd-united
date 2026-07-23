@@ -65,7 +65,12 @@ class SautaiLinkView(APIView):
 
         # Server-side exchange with the platform secret; the raw key never leaves
         # Django and is never persisted.
-        result = resolve_sautai_link_key(connect_key, nbhd_tenant_id=str(tenant.id))
+        result = resolve_sautai_link_key(
+            connect_key,
+            nbhd_tenant_id=str(tenant.id),
+            account_email=tenant.user.email,
+            display_name=tenant.user.display_name,
+        )
         outcome = result.get("outcome")
 
         if outcome == "invalid_key":

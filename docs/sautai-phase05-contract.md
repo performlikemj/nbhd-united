@@ -16,6 +16,9 @@ for the sautai user id. Single-use, 1h expiry.
 
 - Request: `{"link_key": "...", "nbhd_tenant_id": "..."}`. The tenant id is
   NBHD's opaque tenant UUID string (non-blank, at most 255 characters).
+- Optional request fields: `"nbhd_account_email": "..."` and
+  `"nbhd_display_name": "..."` (strings at most 255 characters each). Both are
+  informational/display-only and omitted when unavailable.
 - 200: `{"status":"ok","sautai_user_id":<int>,"email":"...","nbhd_tenant_id":"<echoed>"}`
 - Malformed request or missing/invalid tenant id → 400 `{"status":"error","code":"validation","detail":"..."}`
 - Missing/invalid platform secret → 401 `{"status":"error","code":"invalid_secret"}`
