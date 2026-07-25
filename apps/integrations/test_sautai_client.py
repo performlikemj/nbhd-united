@@ -21,7 +21,7 @@ from django.test import SimpleTestCase, TestCase, override_settings
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
-from .models import SautaiMealPlanAddressedBy, SautaiMealPlanJob, SautaiMealPlanJobStatus
+from .models import Integration, SautaiMealPlanAddressedBy, SautaiMealPlanJob, SautaiMealPlanJobStatus
 from .sautai_client import call_sautai_generate_plan, fetch_sautai_current_plan
 from .tasks import generate_sautai_meal_plan_task
 
@@ -48,10 +48,14 @@ def _mock_response(fixture: dict) -> MagicMock:
 class CallSautaiGeneratePlanTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Sautai Client Test", telegram_chat_id=848484)
-        # create_tenant() never sets an email (Telegram-only signup path) —
-        # set one explicitly since this module's whole job is emailing sautai.
         self.tenant.user.email = "diner@example.com"
         self.tenant.user.save(update_fields=["email"])
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider=Integration.Provider.SAUTAI,
+            status=Integration.Status.ACTIVE,
+            sautai_user_id=501,
+        )
 
     def _job(self, **kwargs) -> SautaiMealPlanJob:
         return SautaiMealPlanJob.objects.create(tenant=self.tenant, **kwargs)
@@ -74,13 +78,14 @@ class CallSautaiGeneratePlanTests(TestCase):
         self.assertEqual(len(job.result["days"]), 7)
         self.assertEqual(job.web_link, "https://sautai.com/meal-plans?week_start=2026-08-03")
         self.assertEqual(job.error, "")
-        self.assertEqual(job.addressed_by, SautaiMealPlanAddressedBy.EMAIL)
-        self.assertIsNone(job.sautai_user_id)
+        self.assertEqual(job.addressed_by, SautaiMealPlanAddressedBy.LINKED_ID)
+        self.assertEqual(job.sautai_user_id, 501)
 
         mock_post.assert_called_once()
         _, kwargs = mock_post.call_args
         self.assertEqual(kwargs["headers"]["X-NBHD-Platform-Secret"], "test-secret")
-        self.assertEqual(kwargs["json"]["user_email"], self.tenant.user.email)
+        self.assertEqual(kwargs["json"]["sautai_user_id"], 501)
+        self.assertNotIn("user_email", kwargs["json"])
         self.assertEqual(kwargs["json"]["week_start"], "2026-08-03")
         self.assertGreaterEqual(kwargs["timeout"], 120)
 
@@ -119,10 +124,11 @@ class CallSautaiGeneratePlanTests(TestCase):
         _, kwargs = mock_post.call_args
         self.assertEqual(kwargs["json"]["user_prompt"], "cook more for Alice")
 
-    def test_no_email_fails_without_network_call(self):
-        user = self.tenant.user
-        user.email = ""
-        user.save(update_fields=["email"])
+    def test_no_link_fails_without_network_call(self):
+        Integration.objects.filter(
+            tenant=self.tenant,
+            provider=Integration.Provider.SAUTAI,
+        ).delete()
         job = self._job()
 
         with patch("apps.integrations.sautai_client.httpx.post") as mock_post:
@@ -131,7 +137,8 @@ class CallSautaiGeneratePlanTests(TestCase):
         mock_post.assert_not_called()
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
-        self.assertIn("no_identity", job.error)
+        self.assertIn("sautai_link_required", job.error)
+        self.assertIn("connection invitation in Fuel", job.error)
 
     def test_missing_platform_secret_fails_without_network_call(self):
         fixture = _load_fixture("generate_ok.json")
@@ -434,9 +441,7 @@ class FetchSautaiCurrentPlanTests(SimpleTestCase):
     def test_current_ok_returns_plan_and_link(self):
         fixture = _load_fixture("current_ok.json")
         with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post:
-            result = fetch_sautai_current_plan(
-                identity={"user_email": "diner@example.com"}, week_start_iso="2026-08-03"
-            )
+            result = fetch_sautai_current_plan(identity={"sautai_user_id": 501}, week_start_iso="2026-08-03")
 
         self.assertEqual(result["outcome"], "ok")
         self.assertIsInstance(result["plan"]["id"], int)
@@ -450,7 +455,8 @@ class FetchSautaiCurrentPlanTests(SimpleTestCase):
 
         _, kwargs = mock_post.call_args
         self.assertEqual(kwargs["headers"]["X-NBHD-Platform-Secret"], "test-secret")
-        self.assertEqual(kwargs["json"]["user_email"], "diner@example.com")
+        self.assertEqual(kwargs["json"]["sautai_user_id"], 501)
+        self.assertNotIn("user_email", kwargs["json"])
         self.assertEqual(kwargs["json"]["week_start"], "2026-08-03")
         # Fast read: a short timeout the plugin can wait on inside its 20s budget.
         self.assertLessEqual(kwargs["timeout"], 15)
@@ -458,15 +464,13 @@ class FetchSautaiCurrentPlanTests(SimpleTestCase):
     def test_current_not_found_maps_to_not_found(self):
         fixture = _load_fixture("current_not_found.json")
         with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)):
-            result = fetch_sautai_current_plan(identity={"user_email": "nobody@example.com"}, week_start_iso=None)
+            result = fetch_sautai_current_plan(identity={"sautai_user_id": 501}, week_start_iso=None)
         self.assertEqual(result["outcome"], "not_found")
 
     def test_current_invalid_secret_is_error(self):
         fixture = _load_fixture("error_invalid_secret.json")
         with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)):
-            result = fetch_sautai_current_plan(
-                identity={"user_email": "diner@example.com"}, week_start_iso="2026-08-03"
-            )
+            result = fetch_sautai_current_plan(identity={"sautai_user_id": 501}, week_start_iso="2026-08-03")
         self.assertEqual(result["outcome"], "error")
         self.assertIn("401", result["detail"])
 
@@ -476,15 +480,43 @@ class FetchSautaiCurrentPlanTests(SimpleTestCase):
             override_settings(SAUTAI_M2M_BASE_URL=""),
             patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post,
         ):
-            result = fetch_sautai_current_plan(identity={"user_email": "diner@example.com"}, week_start_iso=None)
+            result = fetch_sautai_current_plan(identity={"sautai_user_id": 501}, week_start_iso=None)
         mock_post.assert_not_called()
         self.assertEqual(result["outcome"], "not_configured")
+
+    def test_email_identity_is_rejected_without_network(self):
+        with patch("apps.integrations.sautai_client.httpx.post") as mock_post:
+            result = fetch_sautai_current_plan(
+                identity={"user_email": "diner@example.com"},
+                week_start_iso=None,
+            )
+        mock_post.assert_not_called()
+        self.assertEqual(result["outcome"], "link_required")
+
+    def test_remote_link_required_maps_to_link_required(self):
+        link_required = {
+            "status_code": 403,
+            "body": {
+                "status": "error",
+                "code": "link_required",
+                "detail": "Link this sautai account to NBHD.",
+            },
+        }
+        with patch(
+            "apps.integrations.sautai_client.httpx.post",
+            return_value=_mock_response(link_required),
+        ):
+            result = fetch_sautai_current_plan(
+                identity={"sautai_user_id": 501},
+                week_start_iso=None,
+            )
+        self.assertEqual(result["outcome"], "link_required")
 
     def test_transport_error_maps_to_error(self):
         import httpx
 
         with patch("apps.integrations.sautai_client.httpx.post", side_effect=httpx.ConnectTimeout("boom")):
-            result = fetch_sautai_current_plan(identity={"user_email": "diner@example.com"}, week_start_iso=None)
+            result = fetch_sautai_current_plan(identity={"sautai_user_id": 501}, week_start_iso=None)
         self.assertEqual(result["outcome"], "error")
         self.assertIn("request_failed", result["detail"])
 
@@ -619,8 +651,8 @@ class SautaiPhase05ClientTests(TestCase):
             provider_email="diner@example.com",
         )
 
-    # ── sautai_identity: link wins over email ──
-    def test_identity_prefers_link_over_email(self):
+    # ── sautai_identity: only a stored link is an identity ──
+    def test_identity_returns_linked_id(self):
         from .sautai_client import sautai_identity
 
         self._link(sautai_user_id=777)
@@ -628,13 +660,13 @@ class SautaiPhase05ClientTests(TestCase):
         self.assertEqual(identity, {"sautai_user_id": 777})
         self.assertIsNotNone(integration)
 
-    def test_identity_falls_back_to_email(self):
+    def test_identity_does_not_fall_back_to_email(self):
         from .sautai_client import sautai_identity
 
         identity, _integration = sautai_identity(self.tenant)
-        self.assertEqual(identity, {"user_email": "diner@example.com"})
+        self.assertEqual(identity, {})
 
-    def test_identity_empty_when_no_link_no_email(self):
+    def test_identity_empty_when_no_link_and_no_email(self):
         from .sautai_client import sautai_identity
 
         self.tenant.user.email = ""
@@ -663,6 +695,7 @@ class SautaiPhase05ClientTests(TestCase):
         self.assertEqual(job.funnel.get("plan_count"), fixture["body"]["plan_count"])
 
     def test_generate_regenerate_passthrough(self):
+        self._link()
         fixture = _load_fixture("generate_regenerated.json")
         job = SautaiMealPlanJob.objects.create(
             tenant=self.tenant, week_start=date(2026, 7, 13), regenerate=True, user_prompt="more veg"
@@ -676,6 +709,7 @@ class SautaiPhase05ClientTests(TestCase):
         self.assertIs(kwargs["json"]["regenerate"], True)
 
     def test_generate_captures_funnel_fields(self):
+        self._link()
         fixture = _load_fixture("generate_ok_funnel.json")
         job = SautaiMealPlanJob.objects.create(tenant=self.tenant, week_start=date(2026, 7, 13))
         with (
@@ -702,7 +736,36 @@ class SautaiPhase05ClientTests(TestCase):
             call_sautai_generate_plan(job)
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
-        self.assertIn("reconnect", job.error.lower())
+        self.assertIn("connection invitation in Fuel", job.error)
+        integration.refresh_from_db()
+        self.assertIsNone(integration.sautai_user_id)
+        self.assertIsNone(integration.linked_at)
+
+    def test_generate_link_required_clears_link_and_fails_with_connect_guidance(self):
+        integration = self._link(sautai_user_id=501)
+        link_required = {
+            "status_code": 403,
+            "body": {
+                "status": "error",
+                "code": "link_required",
+                "detail": "Link this sautai account to NBHD.",
+            },
+        }
+        job = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start=date(2026, 7, 13),
+        )
+
+        with patch(
+            "apps.integrations.sautai_client.httpx.post",
+            return_value=_mock_response(link_required),
+        ):
+            call_sautai_generate_plan(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+        self.assertIn("sautai_link_required", job.error)
+        self.assertIn("connection invitation in Fuel", job.error)
         integration.refresh_from_db()
         self.assertIsNone(integration.sautai_user_id)
         self.assertIsNone(integration.linked_at)

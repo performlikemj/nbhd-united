@@ -4105,6 +4105,18 @@ def _sautai_repair_guidance(missing_days: list) -> str:
     return f"The missing days{date_detail} are being filled in. Existing meals will be left untouched."
 
 
+def _sautai_link_required_response() -> Response:
+    from apps.integrations.sautai_client import SAUTAI_LINK_REQUIRED_DETAIL
+
+    return Response(
+        {
+            "error": "sautai_link_required",
+            "detail": SAUTAI_LINK_REQUIRED_DETAIL,
+        },
+        status=status.HTTP_409_CONFLICT,
+    )
+
+
 class RuntimeSautaiGeneratePlanView(APIView):
     """POST — kick off an async sautai meal-plan generation.
 
@@ -4134,7 +4146,11 @@ class RuntimeSautaiGeneratePlanView(APIView):
         # QStash worker could only ever mark the job FAILED with no push, so the
         # user would be promised a plan that never arrives. Surfacing it here
         # lets the tool tell them "sautai integration is not configured" instead.
-        from apps.integrations.sautai_client import sautai_m2m_config
+        from apps.integrations.sautai_client import sautai_identity, sautai_m2m_config
+
+        identity, _integration = sautai_identity(tenant)
+        if not identity:
+            return _sautai_link_required_response()
 
         base_url, secret = sautai_m2m_config()
         if not base_url or not secret:
@@ -4252,17 +4268,6 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 .first()
             )
             if in_flight is None:
-                # Record the link (Phase 0 has no OAuth consent flow — this is an
-                # audit trail, not proof of a completed handshake; see the
-                # research doc's Auth & identity linking section). get_or_create
-                # so a repeat call never trips the (tenant, provider) unique
-                # constraint.
-                Integration.objects.get_or_create(
-                    tenant=tenant,
-                    provider=Integration.Provider.SAUTAI,
-                    defaults={"status": Integration.Status.ACTIVE},
-                )
-
                 job = SautaiMealPlanJob.objects.create(
                     tenant=tenant,
                     week_start=week_start,
@@ -4362,10 +4367,15 @@ class RuntimeSautaiCurrentPlanView(APIView):
             return Response({"error": "sautai_disabled"}, status=status.HTTP_409_CONFLICT)
 
         from apps.integrations.sautai_client import (
+            clear_sautai_link,
             fetch_sautai_current_plan,
             sautai_identity,
             sautai_m2m_config,
         )
+
+        identity, integration = sautai_identity(tenant)
+        if not identity:
+            return _sautai_link_required_response()
 
         base_url, secret = sautai_m2m_config()
         if not base_url or not secret:
@@ -4389,15 +4399,16 @@ class RuntimeSautaiCurrentPlanView(APIView):
                 payload["generation_in_progress"] = generation_in_progress
             return payload
 
-        # Identity is derived SERVER-SIDE (linked sautai_user_id, else the tenant
-        # owner's verified email) — NEVER from the plugin payload (an agent-supplied
-        # id/email would be an injection vector).
-        identity, _integration = sautai_identity(tenant)
-        if not identity:
-            return Response(response_payload({"status": "no_plan", "week_start": week_start.isoformat()}))
-
+        # Identity is derived SERVER-SIDE from the linked sautai_user_id — NEVER
+        # from the plugin payload (an agent-supplied id would be an injection
+        # vector).
         result = fetch_sautai_current_plan(identity=identity, week_start_iso=week_start.isoformat())
         outcome = result.get("outcome")
+
+        if outcome == "link_required":
+            if integration is not None:
+                clear_sautai_link(integration)
+            return _sautai_link_required_response()
 
         if outcome == "ok":
             return Response(

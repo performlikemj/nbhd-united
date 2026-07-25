@@ -14,6 +14,7 @@ from apps.tenants.models import UserSituation
 from apps.tenants.services import create_tenant
 from apps.tenants.test_utils import seed_internal_key
 
+from .models import Integration, SautaiMealPlanJob
 from .services import (
     IntegrationNotConnectedError,
     IntegrationScopeError,
@@ -818,6 +819,12 @@ class SautaiGeneratePlanViewTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Sautai Test", telegram_chat_id=838383)
         seed_internal_key(self.tenant)
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider=Integration.Provider.SAUTAI,
+            status=Integration.Status.ACTIVE,
+            sautai_user_id=501,
+        )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -869,7 +876,7 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.json()["error"], "invalid_request")
 
-    def test_happy_path_creates_pending_job_enqueues_and_records_integration(self):
+    def test_happy_path_creates_pending_job_and_enqueues(self):
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
 
@@ -896,10 +903,31 @@ class SautaiGeneratePlanViewTests(TestCase):
 
         mock_publish.assert_called_once_with("generate_sautai_meal_plan", str(job.id))
 
-        from .models import Integration
-
         integration = Integration.objects.get(tenant=self.tenant, provider=Integration.Provider.SAUTAI)
         self.assertEqual(integration.status, Integration.Status.ACTIVE)
+        self.assertEqual(integration.sautai_user_id, 501)
+
+    def test_unlinked_user_gets_connect_first_response_without_job_or_enqueue(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+        Integration.objects.filter(
+            tenant=self.tenant,
+            provider=Integration.Provider.SAUTAI,
+        ).delete()
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self.client.post(
+                self._url(),
+                data={},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "sautai_link_required")
+        self.assertIn("connection invitation in Fuel", response.json()["detail"])
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+        mock_publish.assert_not_called()
 
     def test_repeat_call_same_week_coalesces_to_existing_job(self):
         # Realistic trigger: the plugin's 20s tool timeout fires while this
@@ -1381,9 +1409,14 @@ class SautaiCurrentPlanViewTests(TestCase):
         seed_internal_key(self.tenant)
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
-        # create_tenant() never sets an email — set one since the view derives it.
         self.tenant.user.email = "diner@example.com"
         self.tenant.user.save(update_fields=["email"])
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider=Integration.Provider.SAUTAI,
+            status=Integration.Status.ACTIVE,
+            sautai_user_id=501,
+        )
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -1411,9 +1444,9 @@ class SautaiCurrentPlanViewTests(TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json()["error"], "sautai_not_configured")
 
-    def test_ok_returns_plan_and_derives_email_server_side(self):
-        # A payload-supplied email must be IGNORED — the view derives it from the
-        # tenant owner (an agent-supplied email would be an injection vector).
+    def test_ok_returns_plan_and_derives_linked_id_server_side(self):
+        # Payload-supplied identity fields must be ignored. The view derives the
+        # linked ID from the tenant's Integration row.
         with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
             mock_fetch.return_value = {
                 "outcome": "ok",
@@ -1436,8 +1469,45 @@ class SautaiCurrentPlanViewTests(TestCase):
         self.assertEqual(body["plan"]["id"], 66)
         self.assertIs(body["complete"], False)
         self.assertEqual(body["missing_days"], ["2026-07-15"])
-        # Called with the tenant owner's email, never the payload's.
-        self.assertEqual(mock_fetch.call_args.kwargs["identity"], {"user_email": "diner@example.com"})
+        self.assertEqual(mock_fetch.call_args.kwargs["identity"], {"sautai_user_id": 501})
+
+    def test_unlinked_user_gets_connect_first_response_without_sautai_call(self):
+        Integration.objects.filter(
+            tenant=self.tenant,
+            provider=Integration.Provider.SAUTAI,
+        ).delete()
+
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            response = self.client.post(
+                self._url(),
+                data={},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "sautai_link_required")
+        self.assertIn("connection invitation in Fuel", response.json()["detail"])
+        mock_fetch.assert_not_called()
+
+    def test_remote_link_required_gets_same_connect_first_response(self):
+        with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
+            mock_fetch.return_value = {"outcome": "link_required"}
+            response = self.client.post(
+                self._url(),
+                data={},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "sautai_link_required")
+        self.assertIn("connection invitation in Fuel", response.json()["detail"])
+        integration = Integration.objects.get(
+            tenant=self.tenant,
+            provider=Integration.Provider.SAUTAI,
+        )
+        self.assertIsNone(integration.sautai_user_id)
 
     def test_no_plan_maps_to_no_plan(self):
         with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
@@ -1580,16 +1650,13 @@ class SautaiCurrentPlanViewTests(TestCase):
         self.assertEqual(response.json()["error"], "sautai_unavailable")
 
     def test_linked_tenant_reads_by_sautai_user_id(self):
-        # A linked Integration makes the read address sautai by user id, not email.
         from django.utils import timezone
 
-        from .models import Integration
-
-        Integration.objects.create(
+        Integration.objects.filter(
             tenant=self.tenant,
             provider=Integration.Provider.SAUTAI,
-            status=Integration.Status.ACTIVE,
-            sautai_user_id=501,
+        ).update(
+            sautai_user_id=777,
             linked_at=timezone.now(),
         )
         with patch("apps.integrations.sautai_client.fetch_sautai_current_plan") as mock_fetch:
@@ -1597,7 +1664,7 @@ class SautaiCurrentPlanViewTests(TestCase):
             response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(mock_fetch.call_args.kwargs["identity"], {"sautai_user_id": 501})
+        self.assertEqual(mock_fetch.call_args.kwargs["identity"], {"sautai_user_id": 777})
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
