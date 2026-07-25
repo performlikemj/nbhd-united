@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from unittest import mock
 
+from django.db import IntegrityError, ProgrammingError
 from django.test import TestCase
 from django.utils import timezone
+from psycopg.errors import InsufficientPrivilege
 from rest_framework.test import APIClient
 
 from apps.router.models import DeviceToken
@@ -97,6 +99,117 @@ class SendAndFeedTest(TestCase):
         self.assertFalse(c2)
         self.assertEqual(m1.seq, m2.seq)
         self.assertEqual(FriendMessage.objects.filter(thread=self.thread).count(), 1)
+
+    def test_create_message_retries_rls_privilege_failure_once(self):
+        real_create = FriendMessage.objects.create
+        rls_error = InsufficientPrivilege('new row violates row-level security policy for table "friend_messages"')
+        wrapped_error = ProgrammingError(*rls_error.args)
+        wrapped_error.__cause__ = rls_error
+        create_calls = 0
+
+        def fail_once(**kwargs):
+            nonlocal create_calls
+            create_calls += 1
+            if create_calls == 1:
+                raise wrapped_error
+            return real_create(**kwargs)
+
+        with (
+            mock.patch.object(FriendMessage.objects, "create", side_effect=fail_once),
+            mock.patch("apps.tenants.middleware.set_rls_context") as set_context,
+        ):
+            message, created = access.create_friend_message(
+                self.thread,
+                self.a,
+                self.a.user,
+                "rls-retry",
+                "survives a pooled connection",
+            )
+
+        self.assertTrue(created)
+        self.assertEqual(message.text, "survives a pooled connection")
+        self.assertEqual(create_calls, 2)
+        self.assertEqual(set_context.call_count, 2)
+        set_context.assert_has_calls(
+            [
+                mock.call(tenant_id=self.a.id, user_id=self.a.user.id),
+                mock.call(tenant_id=self.a.id, user_id=self.a.user.id),
+            ]
+        )
+
+    def test_create_message_second_rls_failure_raises_without_looping(self):
+        rls_error = InsufficientPrivilege('new row violates row-level security policy for table "friend_messages"')
+        wrapped_error = ProgrammingError(*rls_error.args)
+        wrapped_error.__cause__ = rls_error
+        with (
+            mock.patch.object(FriendMessage.objects, "create", side_effect=wrapped_error) as create,
+            mock.patch("apps.tenants.middleware.set_rls_context") as set_context,
+            self.assertRaises(ProgrammingError),
+        ):
+            access.create_friend_message(
+                self.thread,
+                self.a,
+                self.a.user,
+                "rls-double-failure",
+                "must raise after one retry",
+            )
+
+        self.assertEqual(create.call_count, 2)
+        self.assertEqual(set_context.call_count, 2)
+
+    def test_create_message_false_miss_refetches_unique_winner(self):
+        winner = FriendMessage.objects.create(
+            thread=self.thread,
+            sender_tenant=self.a,
+            sender_user=self.a.user,
+            client_msg_id="false-miss",
+            text="already persisted",
+        )
+        with (
+            mock.patch.object(
+                FriendMessage.objects,
+                "get",
+                side_effect=[FriendMessage.DoesNotExist, winner],
+            ),
+            mock.patch.object(
+                FriendMessage.objects,
+                "create",
+                side_effect=IntegrityError("duplicate uq_friend_msg_idem"),
+            ),
+            mock.patch("apps.tenants.middleware.set_rls_context") as set_context,
+        ):
+            message, created = access.create_friend_message(
+                self.thread,
+                self.a,
+                self.a.user,
+                "false-miss",
+                "outbox replay",
+            )
+
+        self.assertFalse(created)
+        self.assertEqual(message.seq, winner.seq)
+        self.assertEqual(set_context.call_count, 2)
+
+    def test_create_message_plain_idempotent_retry_returns_existing(self):
+        first, first_created = access.create_friend_message(
+            self.thread,
+            self.a,
+            self.a.user,
+            "plain-retry",
+            "original",
+        )
+        second, second_created = access.create_friend_message(
+            self.thread,
+            self.a,
+            self.a.user,
+            "plain-retry",
+            "ignored replay",
+        )
+
+        self.assertTrue(first_created)
+        self.assertFalse(second_created)
+        self.assertEqual(second.seq, first.seq)
+        self.assertEqual(second.text, "original")
 
     def test_malformed_cursor_restarts(self):
         self._send(self.a, "one", "c1")
