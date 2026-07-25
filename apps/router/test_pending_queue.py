@@ -126,9 +126,10 @@ class PendingMessageInFlightLockTest(TestCase):
     Same shape as ``DeliverBufferedInFlightLockTest`` (PR #430) — the
     queue reuses the lease pattern."""
 
+    @patch("apps.router.pending_queue._is_tenant_container_live", return_value=True)
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
     @patch("apps.router.pending_queue.httpx.post")
-    def test_concurrent_drain_skips_message_with_live_lease(self, mock_post, _mock_send):
+    def test_concurrent_drain_skips_message_with_live_lease(self, mock_post, _mock_send, mock_live):
         """While the first drain is mid-POST, a second concurrent drain
         must observe the live lease and skip the row instead of firing
         a duplicate /v1/chat/completions at the container."""
@@ -174,6 +175,7 @@ class PendingMessageInFlightLockTest(TestCase):
         self.assertEqual(second_call_result["data"]["skipped_in_flight"], 1)
         # Crucially: only ONE chat completion was POSTed.
         self.assertEqual(mock_post.call_count, 1)
+        mock_live.assert_called_once_with(tenant)
 
         # Delivered → hard-deleted on drain (PR-3 privacy sweep).
         self.assertFalse(PendingMessage.objects.filter(id=msg.id).exists())
@@ -1390,23 +1392,27 @@ class PendingMessageColdStartCoalesceTest(TestCase):
         self.assertEqual(mock_post.call_count, 1)
 
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.get")
     @patch("apps.router.pending_queue.httpx.post")
-    def test_in_flight_lease_blocks_batch_claim(self, mock_post, _mock_send):
+    def test_in_flight_lease_blocks_batch_claim(self, mock_post, mock_get, _mock_send):
         """If ANY row in the key's queue has a live in-flight lease, the
         batch claim must return empty (skipped_in_flight) instead of
         racing the concurrent drain. Preserves the single-turn invariant
         the Claude CLI backend requires."""
-        mock_post.return_value = _ok_chat_response("ack")
+        live_response = MagicMock()
+        live_response.status_code = 200
+        mock_get.return_value = live_response
 
         user = _make_user(line_user_id="U_lease")
         tenant = _make_tenant(user)
+        lease_expiry = timezone.now() + timedelta(minutes=5)
         leased = PendingMessage.objects.create(
             tenant=tenant,
             channel=PendingMessage.Channel.LINE,
             channel_user_id="U_lease",
             payload={"message_text": "leased", "user_param": "U_lease", "user_timezone": "UTC"},
             user_text="leased",
-            delivery_in_flight_until=timezone.now() + timedelta(minutes=5),
+            delivery_in_flight_until=lease_expiry,
         )
         fresh = PendingMessage.objects.create(
             tenant=tenant,
@@ -1421,13 +1427,100 @@ class PendingMessageColdStartCoalesceTest(TestCase):
         self.assertEqual(result["delivered"], 0)
         self.assertEqual(result["skipped_in_flight"], 2)
         mock_post.assert_not_called()
+        mock_get.assert_called_once_with(
+            f"https://{tenant.container_fqdn}/health",
+            timeout=3.0,
+        )
 
         leased.refresh_from_db()
         fresh.refresh_from_db()
         self.assertEqual(leased.delivery_status, PendingMessage.Status.PENDING)
         self.assertEqual(fresh.delivery_status, PendingMessage.Status.PENDING)
+        self.assertEqual(leased.delivery_in_flight_until, lease_expiry)
         # Fresh row didn't get a lease — the batch claim is all-or-nothing.
         self.assertIsNone(fresh.delivery_in_flight_until)
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=True)
+    @patch("apps.billing.services.check_budget", return_value="")
+    @patch("apps.router.pending_queue._looks_like_openrouter_credit_limit", return_value=False)
+    @patch("apps.router.pending_queue.httpx.get")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_in_flight_lease_is_broken_when_container_is_down(
+        self,
+        mock_post,
+        mock_get,
+        _mock_credit,
+        _mock_budget,
+        mock_wake,
+        _mock_send,
+        mock_publish,
+    ):
+        health_response = MagicMock()
+        health_response.status_code = 404
+        mock_get.return_value = health_response
+
+        chat_response = MagicMock()
+        chat_response.status_code = 404
+        chat_response.text = "Not Found"
+        chat_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "404 Not Found",
+            request=MagicMock(),
+            response=chat_response,
+        )
+        mock_post.return_value = chat_response
+
+        user = _make_user(line_user_id="U_down_lease")
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+        leased = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_down_lease",
+            payload={
+                "message_text": "leased",
+                "user_param": "U_down_lease",
+                "user_timezone": "UTC",
+            },
+            user_text="leased",
+            delivery_in_flight_until=timezone.now() + timedelta(minutes=5),
+        )
+        fresh = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_down_lease",
+            payload={
+                "message_text": "fresh",
+                "user_param": "U_down_lease",
+                "user_timezone": "UTC",
+            },
+            user_text="fresh",
+        )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_down_lease")
+
+        self.assertTrue(result.get("woke"))
+        mock_get.assert_called_once_with(
+            f"https://{tenant.container_fqdn}/health",
+            timeout=3.0,
+        )
+        mock_post.assert_called_once()
+        mock_wake.assert_called_once()
+
+        leased.refresh_from_db()
+        fresh.refresh_from_db()
+        for row in (leased, fresh):
+            self.assertEqual(row.delivery_status, PendingMessage.Status.PENDING)
+            self.assertEqual(row.delivery_attempts, 0)
+            self.assertIsNone(row.delivery_in_flight_until)
+
+        drain_calls = [
+            call
+            for call in mock_publish.call_args_list
+            if call.args and call.args[0] == "drain_pending_messages_for_tenant"
+        ]
+        self.assertEqual(drain_calls[-1].kwargs.get("delay_seconds"), _WAKE_DEFER_SECONDS)
 
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
@@ -1454,6 +1547,113 @@ class WakeBootGraceTest(TestCase):
         ok.is_success = True
         ok.status_code = 200
         return ok
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant", return_value=True)
+    @patch("apps.billing.services.check_budget", return_value="")
+    @patch("apps.router.pending_queue.httpx.get")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_read_timeout_with_down_container_wakes_and_releases_lease(
+        self,
+        mock_post,
+        mock_get,
+        _mock_budget,
+        mock_wake,
+        _mock_send,
+        mock_publish,
+    ):
+        request = httpx.Request(
+            "POST",
+            "https://oc-pq.example.com/v1/chat/completions",
+        )
+        mock_post.side_effect = httpx.ReadTimeout("read timed out", request=request)
+        health_response = MagicMock()
+        health_response.status_code = 404
+        mock_get.return_value = health_response
+
+        user = _make_user(line_user_id="U_read_timeout")
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_read_timeout",
+            payload={
+                "message_text": "please wake",
+                "user_param": "U_read_timeout",
+                "user_timezone": "UTC",
+            },
+            user_text="please wake",
+        )
+
+        result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_read_timeout")
+
+        self.assertTrue(result.get("woke"))
+        mock_get.assert_called_once_with(
+            f"https://{tenant.container_fqdn}/health",
+            timeout=3.0,
+        )
+        mock_wake.assert_called_once()
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.PENDING)
+        self.assertEqual(msg.delivery_attempts, 0)
+        self.assertIsNone(msg.delivery_in_flight_until)
+
+        drain_calls = [
+            call
+            for call in mock_publish.call_args_list
+            if call.args and call.args[0] == "drain_pending_messages_for_tenant"
+        ]
+        self.assertEqual(drain_calls[-1].kwargs.get("delay_seconds"), _WAKE_DEFER_SECONDS)
+
+    @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.get")
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_read_timeout_with_live_container_keeps_bounded_failure_semantics(
+        self,
+        mock_post,
+        mock_get,
+        _mock_send,
+        mock_wake,
+    ):
+        request = httpx.Request(
+            "POST",
+            "https://oc-pq.example.com/v1/chat/completions",
+        )
+        mock_post.side_effect = httpx.ReadTimeout("turn timed out", request=request)
+        health_response = MagicMock()
+        health_response.status_code = 200
+        mock_get.return_value = health_response
+
+        user = _make_user(line_user_id="U_live_timeout")
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(hibernated_at=timezone.now())
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_live_timeout",
+            payload={
+                "message_text": "long turn",
+                "user_param": "U_live_timeout",
+                "user_timezone": "UTC",
+            },
+            user_text="long turn",
+        )
+
+        with self.assertRaises(RuntimeError):
+            drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_live_timeout")
+
+        mock_get.assert_called_once_with(
+            f"https://{tenant.container_fqdn}/health",
+            timeout=3.0,
+        )
+        mock_wake.assert_not_called()
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_attempts, 1)
+        self.assertIsNone(msg.delivery_in_flight_until)
 
     @patch("apps.cron.publish.publish_task")
     @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
