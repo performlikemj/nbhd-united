@@ -14,11 +14,14 @@ The spine under test:
 
 from __future__ import annotations
 
+from unittest import mock
+
 from django.db import connection
 from django.test import TestCase
 from rest_framework.test import APIClient
 
 from apps.lessons.models import Lesson
+from apps.tenants.middleware import set_rls_context as real_set_rls_context
 from apps.tenants.models import Tenant, User
 
 from . import access, services
@@ -233,6 +236,39 @@ class SkyHomeBFFTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         row = self._row(resp.data, self.k_edge.id)
         self.assertTrue(row["in_my_sky"])
+
+
+# ── Transaction-pool-safe owner reads ────────────────────────────────────────
+
+
+class SkyGucSafetyTest(TestCase):
+    def setUp(self):
+        self.viewer = _tenant("guc_viewer")
+        _profile(self.viewer, "guc_viewer")
+        _, self.edge = _neighbor(self.viewer, "guc_neighbor")
+        created, full = access.add_to_sky(self.viewer, self.edge)
+        self.assertEqual((created, full), (True, False))
+
+    def test_friendship_ids_reassert_tenant_guc_inside_pinned_transaction(self):
+        # Simulate a pooled backend that lost the middleware-set tenant GUC.
+        with connection.cursor() as cur:
+            cur.execute("SELECT set_config('app.tenant_id', '', false)")
+            self.assertEqual(cur.fetchone()[0], "")
+
+        starting_savepoint_depth = len(connection.savepoint_ids)
+        reassert_depths = []
+
+        def reassert(**kwargs):
+            reassert_depths.append(len(connection.savepoint_ids))
+            return real_set_rls_context(**kwargs)
+
+        with mock.patch("apps.tenants.middleware.set_rls_context", side_effect=reassert) as set_context:
+            friendship_ids = access.sky_friendship_ids(self.viewer)
+
+        self.assertEqual(friendship_ids, {self.edge.id})
+        set_context.assert_called_once_with(tenant_id=self.viewer.id)
+        self.assertEqual(len(reassert_depths), 1)
+        self.assertGreater(reassert_depths[0], starting_savepoint_depth)
 
 
 # ── in_my_sky + warpable=sky on the wormholes payload (web parity) ────────────
