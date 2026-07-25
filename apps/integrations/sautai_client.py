@@ -2,8 +2,8 @@
 
 Phase 0 (docs/sautai-phase0-contract.md): generate + current-plan.
 Phase 0.5 (contract addendum v2): account linking via ``/link/resolve/`` and
-addressing sautai by ``sautai_user_id`` (a linked account) instead of the tenant
-email. See ``apps.integrations.runtime_views`` (proxy) and
+addressing sautai by ``sautai_user_id`` (a linked account). Post-link data calls
+never identify a user by email. See ``apps.integrations.runtime_views`` (proxy) and
 ``apps.integrations.link_views`` (console connect flow).
 """
 
@@ -31,6 +31,10 @@ REQUEST_TIMEOUT_SECONDS = 125.0
 # on inside a 20s budget, so they get short timeouts.
 CURRENT_PLAN_TIMEOUT_SECONDS = 10.0
 LINK_RESOLVE_TIMEOUT_SECONDS = 10.0
+
+SAUTAI_LINK_REQUIRED_DETAIL = (
+    "Connect your sautai account first from the sautai connection invitation in Fuel, then try again."
+)
 
 
 class RetryableSautaiError(Exception):
@@ -66,23 +70,17 @@ def sautai_m2m_config() -> tuple[str, str]:
 
 
 def sautai_identity(tenant) -> tuple[dict, Integration | None]:
-    """Pick the M2M identity for a tenant: linked ``sautai_user_id`` over email.
+    """Return the tenant's linked ``sautai_user_id`` M2M identity, if present.
 
-    Phase 0.5: if the tenant's ``Provider.SAUTAI`` Integration carries a
-    ``sautai_user_id`` (they linked an existing sautai account), address sautai
-    by that id — their real dietary profile applies and sautai never auto-creates
-    on the id path. Otherwise fall back to the tenant owner's verified email (the
-    Phase 0 shell-account path). Returns the identity payload fragment plus the
-    Integration row (so a caller can clear a stale link). Empty dict if the tenant
-    has neither a link nor an email.
+    Post-link data calls are consent-scoped: the tenant's
+    ``Provider.SAUTAI`` Integration must carry a ``sautai_user_id`` captured by
+    the connect-key flow. There is deliberately no email fallback. Returns the
+    identity payload fragment plus the Integration row (so a caller can clear a
+    stale link), or an empty dict when the account is not linked.
     """
     integration = Integration.objects.filter(tenant=tenant, provider=Integration.Provider.SAUTAI).first()
     if integration and integration.sautai_user_id:
         return {"sautai_user_id": integration.sautai_user_id}, integration
-    user = getattr(tenant, "user", None)
-    email = (getattr(user, "email", "") or "").strip()
-    if email:
-        return {"user_email": email}, integration
     return {}, integration
 
 
@@ -105,9 +103,9 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
     - RETRYABLE (transport/timeout, ``503`` busy, any ``5xx``) → ``_fail`` then
       raise :class:`RetryableSautaiError`, which propagates → ``trigger_task``
       500 → QStash redelivers (3x), re-claiming the FAILED row each time.
-    - STALE LINK (``404 code=unknown_user`` on a ``sautai_user_id`` call) → clear
-      the link (email auto-create resumes next time) and ``_fail`` with a
-      reconnect hint. Terminal — retrying the same dead id won't help.
+    - LINK REQUIRED (``403 code=link_required``) or STALE LINK
+      (``404 code=unknown_user``) → clear the local link and ``_fail`` with a
+      reconnect hint. Terminal — retrying the same dead link won't help.
     - TERMINAL (other ``4xx``, non-JSON body, missing plan, no identity,
       unconfigured) → ``_fail`` and return normally (200); no retry.
     """
@@ -115,15 +113,17 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
 
     identity, integration = sautai_identity(tenant)
     if not identity:
-        _fail(job, "no_identity: tenant has no sautai link and no email to resolve an account")
+        _fail(job, f"sautai_link_required: {SAUTAI_LINK_REQUIRED_DETAIL}")
         return
 
     # Minimal structured payload only — never raw conversation (research doc
-    # §Egress posture). A linked call sends sautai_user_id (no email); the email
-    # path sends the real email (already a User-row value, not a PII placeholder).
-    # user_prompt may carry [PERSON_N] placeholders and IS rehydrated here, at the
-    # deliberate egress point.
-    payload: dict = {**identity, "number_of_days": job.number_of_days}
+    # §Egress posture). Post-link calls send only the stored sautai_user_id;
+    # user_prompt may carry [PERSON_N] placeholders and IS rehydrated here, at
+    # the deliberate egress point.
+    payload: dict = {
+        "sautai_user_id": identity["sautai_user_id"],
+        "number_of_days": job.number_of_days,
+    }
     if job.week_start:
         payload["week_start"] = job.week_start.isoformat()
     if job.regenerate:
@@ -144,14 +144,9 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
         _fail(job, "not_configured: SAUTAI_M2M_BASE_URL / SAUTAI_PLATFORM_SECRET missing")
         return
 
-    # Persist only the identity route and linked numeric id used for this egress.
-    # Never duplicate the raw email onto the job row.
-    if "sautai_user_id" in identity:
-        job.addressed_by = SautaiMealPlanAddressedBy.LINKED_ID
-        job.sautai_user_id = identity["sautai_user_id"]
-    else:
-        job.addressed_by = SautaiMealPlanAddressedBy.EMAIL
-        job.sautai_user_id = None
+    # Persist the linked numeric id used for this egress.
+    job.addressed_by = SautaiMealPlanAddressedBy.LINKED_ID
+    job.sautai_user_id = identity["sautai_user_id"]
     job.save(update_fields=["addressed_by", "sautai_user_id", "updated_at"])
 
     url = f"{base_url}/api/m2m/meal-plan/generate/"
@@ -176,17 +171,19 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
             job.id,
             detail,
         )
-        # Stale link: the linked sautai account no longer exists. Clear it so the
-        # email (auto-create) path resumes next time, and fail with a reconnect
-        # hint. Terminal — the same dead id will never resolve.
-        if (
-            response.status_code == 404
-            and _response_code(response) == "unknown_user"
-            and "sautai_user_id" in identity
-            and integration is not None
-        ):
+        response_code = _response_code(response)
+        if response.status_code == 403 and response_code == "link_required":
+            if integration is not None:
+                clear_sautai_link(integration)
+            _fail(job, f"sautai_link_required: {SAUTAI_LINK_REQUIRED_DETAIL}")
+            return
+
+        # Stale link: the linked sautai account no longer exists. Clear it and
+        # fail with a reconnect hint. Terminal — the same dead id will never
+        # resolve.
+        if response.status_code == 404 and response_code == "unknown_user" and integration is not None:
             clear_sautai_link(integration)
-            _fail(job, "sautai_link_invalid: linked sautai account not found — reconnect sautai in settings")
+            _fail(job, f"sautai_link_required: {SAUTAI_LINK_REQUIRED_DETAIL}")
             return
 
         message = f"sautai_error_{response.status_code}: {detail}"
@@ -283,25 +280,29 @@ def fetch_sautai_current_plan(
 ) -> dict:
     """Synchronously read a user's current plan from sautai's ``/current/`` endpoint.
 
-    ``identity`` is a payload fragment from :func:`sautai_identity` — either
-    ``{"sautai_user_id": int}`` (linked) or ``{"user_email": str}``. Returns a
-    small outcome dict the runtime view maps to an HTTP response; the HTTP call +
-    contract-fixture parsing live here (unit-testable against the golden
-    ``current_*.json`` fixtures), the cached-fallback policy in the view. Outcomes:
+    ``identity`` must be the ``{"sautai_user_id": int}`` fragment returned by
+    :func:`sautai_identity`. Email identities are rejected locally without an
+    outbound call. Returns a small outcome dict the runtime view maps to an HTTP
+    response; the HTTP call + contract-fixture parsing live here (unit-testable
+    against the golden ``current_*.json`` fixtures), the cached-fallback policy
+    in the view. Outcomes:
 
     - ``{"outcome": "ok", "plan": {...}, "web_link": "...", "funnel": {...}}``
     - ``{"outcome": "not_found"}`` — no plan (or unknown user_id); contract 404.
+    - ``{"outcome": "link_required"}`` — no local link or sautai rejected it.
     - ``{"outcome": "not_configured"}`` — the M2M bridge env is unset (fail loud).
     - ``{"outcome": "error", "detail": "..."}`` — timeout / transport / non-200;
       the view falls back to the most recent READY job's cached plan.
     """
+    sautai_user_id = identity.get("sautai_user_id") if isinstance(identity, dict) else None
+    if not isinstance(sautai_user_id, int) or isinstance(sautai_user_id, bool) or sautai_user_id <= 0:
+        return {"outcome": "link_required"}
+
     base_url, secret = sautai_m2m_config()
     if not base_url or not secret:
         return {"outcome": "not_configured"}
-    if not identity:
-        return {"outcome": "not_found"}
 
-    payload: dict = {**identity}
+    payload: dict = {"sautai_user_id": sautai_user_id}
     if week_start_iso:
         payload["week_start"] = week_start_iso
 
@@ -319,6 +320,8 @@ def fetch_sautai_current_plan(
 
     if response.status_code == 404:
         return {"outcome": "not_found"}
+    if response.status_code == 403 and _response_code(response) == "link_required":
+        return {"outcome": "link_required"}
     if response.status_code != 200:
         return {"outcome": "error", "detail": f"sautai_error_{response.status_code}: {_safe_error_detail(response)}"}
 
