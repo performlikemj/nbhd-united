@@ -757,13 +757,67 @@ def get_friend_message_by_public_id(public_id) -> FriendMessage | None:
 
 def create_friend_message(thread, sender_tenant, sender_user, client_msg_id, text) -> tuple[FriendMessage, bool]:
     """Idempotent insert on ``(sender_tenant, client_msg_id)`` — an offline-outbox
-    retry returns the existing row. Returns ``(message, created)``."""
-    message, created = FriendMessage.objects.get_or_create(
-        sender_tenant=sender_tenant,
-        client_msg_id=client_msg_id,
-        defaults={"thread": thread, "sender_user": sender_user, "text": text},
-    )
-    return message, created
+    retry returns the existing row. Returns ``(message, created)``.
+
+    Each attempt re-asserts the request tenant/user GUC inside the same
+    transaction as the SELECT/INSERT. This pins both statements to one
+    transaction-pooler backend, so a GUC-less connection cannot fail the
+    FORCE-RLS INSERT/RETURNING path. An RLS privilege failure retries once.
+
+    The manual get/create is deliberate: if a GUC-less SELECT false-misses an
+    idempotency winner, the INSERT hits ``uq_friend_msg_idem``. The winner is
+    then re-fetched in a fresh, correctly-contextualized transaction instead of
+    relying on Django's ``get_or_create`` re-get on the failed connection.
+    """
+    from django.db import IntegrityError, ProgrammingError
+    from psycopg.errors import InsufficientPrivilege
+
+    from apps.tenants.middleware import set_rls_context
+
+    lookup = {
+        "sender_tenant": sender_tenant,
+        "client_msg_id": client_msg_id,
+    }
+
+    def run_with_rls_context(operation):
+        for attempt in range(2):
+            try:
+                with transaction.atomic():
+                    set_rls_context(
+                        tenant_id=_tenant_id(sender_tenant),
+                        user_id=getattr(sender_user, "id", sender_user),
+                    )
+                    return operation()
+            except (InsufficientPrivilege, ProgrammingError) as exc:
+                is_rls_failure = isinstance(exc, InsufficientPrivilege) or (
+                    isinstance(exc.__cause__, InsufficientPrivilege) or "row-level security policy" in str(exc).lower()
+                )
+                if not is_rls_failure or attempt == 1:
+                    raise
+        raise AssertionError("unreachable")
+
+    def get_or_insert():
+        try:
+            return FriendMessage.objects.get(**lookup), False
+        except FriendMessage.DoesNotExist:
+            return (
+                FriendMessage.objects.create(
+                    **lookup,
+                    thread=thread,
+                    sender_user=sender_user,
+                    text=text,
+                ),
+                True,
+            )
+
+    try:
+        return run_with_rls_context(get_or_insert)
+    except IntegrityError as collision:
+        try:
+            message = run_with_rls_context(lambda: FriendMessage.objects.get(**lookup))
+        except FriendMessage.DoesNotExist:
+            raise collision
+        return message, False
 
 
 def claim_message_notified(message) -> bool:
