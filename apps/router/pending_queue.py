@@ -97,6 +97,13 @@ _WAKE_DEFER_SECONDS = 20
 # Past the window a down container is treated as a real failure again.
 _WAKE_BOOT_GRACE_SECONDS = 240
 
+# A live in-flight lease is only safe to honor while the tenant container is
+# actually serving. Keep this probe short: it runs only when a drain would
+# otherwise defer behind a live lease, or after a transport-family POST
+# failure where container liveness decides between wake/defer and the normal
+# bounded failure path.
+_CONTAINER_HEALTH_TIMEOUT_SECONDS = 3.0
+
 # Reaper sweep. Pending rows older than this with no live in-flight lease
 # are presumed stuck (publish_task raised + got swallowed, or QStash
 # delivered the drain task into the Django 5xx → DLQ pit, or a worker
@@ -475,6 +482,8 @@ def _claim_pending_batch_for_key(
     channel: str,
     channel_user_id: str,
     timeout_seconds: float,
+    *,
+    break_live_lease_snapshot: list[tuple[Any, Any]] | None = None,
 ) -> tuple[list[PendingMessage], dict]:
     """Claim a deliverable head-of-queue batch for the given key.
 
@@ -488,6 +497,10 @@ def _claim_pending_batch_for_key(
         ``_STALE_MESSAGE_AGE_SECONDS`` — lease IS taken so caller can
         atomically flip ``status=FAILED`` and clear the lease without a
         concurrent drain racing for the same row.
+      - ``info["live_lease_snapshot"]``: exact row/expiry pairs that
+        prevented a claim. The caller may probe liveness outside this
+        transaction and pass the snapshot back for an atomic compare-and-set
+        lease break followed by the normal claim.
 
     Batch composition rules (preserves the per-key single-turn invariant
     that prevents the OpenClaw claude-cli backend from rejecting
@@ -513,6 +526,7 @@ def _claim_pending_batch_for_key(
     lease_seconds = timeout_seconds * _IN_FLIGHT_LEASE_FACTOR
 
     with transaction.atomic():
+        claim_info: dict[str, Any] = {}
         now = timezone.now()
         stale_cutoff = now - timedelta(seconds=_STALE_MESSAGE_AGE_SECONDS)
 
@@ -527,15 +541,61 @@ def _claim_pending_batch_for_key(
         # SKIP LOCKED, not same-key); coalescing strengthens it so
         # follow-up messages naturally fall into the next batch instead
         # of racing the in-flight turn.
-        has_live_lease = PendingMessage.objects.filter(
+        live_lease_qs = PendingMessage.objects.filter(
             tenant=tenant,
             channel=channel,
             channel_user_id=channel_user_id or "",
             delivery_status=PendingMessage.Status.PENDING,
             delivery_in_flight_until__gt=now,
-        ).exists()
-        if has_live_lease:
-            return ([], {})
+        )
+        live_lease_snapshot = list(
+            live_lease_qs.values_list(
+                "id",
+                "delivery_in_flight_until",
+            )
+        )
+        if live_lease_snapshot:
+            live_lease_expiry = max(expiry for _, expiry in live_lease_snapshot)
+            if break_live_lease_snapshot is None:
+                return (
+                    [],
+                    {
+                        "live_lease_expiry": live_lease_expiry,
+                        "live_lease_snapshot": live_lease_snapshot,
+                    },
+                )
+
+            # The liveness probe happened before this transaction. Only break
+            # the exact row+expiry pairs it observed: if another drain acquired
+            # a replacement lease while the probe was in flight, it remains
+            # protected and the re-check below defers behind it.
+            break_filter = models.Q()
+            for row_id, lease_expiry in break_live_lease_snapshot:
+                break_filter |= models.Q(
+                    id=row_id,
+                    delivery_in_flight_until=lease_expiry,
+                )
+            broken_lease_count = live_lease_qs.filter(break_filter).update(
+                delivery_in_flight_until=None,
+            )
+            if broken_lease_count:
+                claim_info.update(
+                    {
+                        "broken_lease_count": broken_lease_count,
+                        "broken_lease_expiry": max(expiry for _, expiry in break_live_lease_snapshot),
+                    }
+                )
+
+            remaining_live_lease_snapshot = list(
+                live_lease_qs.values_list(
+                    "id",
+                    "delivery_in_flight_until",
+                )
+            )
+            if remaining_live_lease_snapshot:
+                claim_info["live_lease_expiry"] = max(expiry for _, expiry in remaining_live_lease_snapshot)
+                claim_info["live_lease_snapshot"] = remaining_live_lease_snapshot
+                return ([], claim_info)
 
         qs = (
             PendingMessage.objects.select_for_update(skip_locked=True)
@@ -550,25 +610,27 @@ def _claim_pending_batch_for_key(
         )
         rows = list(qs)
         if not rows:
-            return ([], {})
+            return ([], claim_info)
 
         head = rows[0]
 
         # Past-cap head → caller drops + apologizes. No lease.
         if head.delivery_attempts >= _MAX_DELIVERY_ATTEMPTS:
-            return ([], {"past_cap_head": head})
+            claim_info["past_cap_head"] = head
+            return ([], claim_info)
 
         # Stale head → take lease so the FAILED-flip is uncontended.
         if head.created_at < stale_cutoff:
             head.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
             head.save(update_fields=["delivery_in_flight_until"])
-            return ([], {"stale_head": head})
+            claim_info["stale_head"] = head
+            return ([], claim_info)
 
         # Voice/image head → singleton batch (singleton media is never coalesced).
         if _row_is_singleton_media(head):
             head.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
             head.save(update_fields=["delivery_in_flight_until"])
-            return ([head], {})
+            return ([head], claim_info)
 
         # Build a contiguous head batch of fresh, under-cap, non-singleton-media rows.
         batch: list[PendingMessage] = [head]
@@ -585,7 +647,7 @@ def _claim_pending_batch_for_key(
             row.delivery_in_flight_until = now + timedelta(seconds=lease_seconds)
             row.save(update_fields=["delivery_in_flight_until"])
 
-        return (batch, {})
+        return (batch, claim_info)
 
 
 def _has_more_pending(tenant: Tenant, channel: str, channel_user_id: str) -> bool:
@@ -847,6 +909,33 @@ def drain_pending_messages_for_tenant_task(
     chat_timeout = _resolve_chat_timeout(tenant)
     batch, info = _claim_pending_batch_for_key(tenant, channel, channel_user_id or "", chat_timeout)
 
+    # A live per-key lease normally means another drain is mid-turn. Before
+    # trusting it, probe the container OUTSIDE the claim transaction. A lease
+    # against a down container cannot be making progress; clear only the
+    # leases observed by the first claim attempt, then clear + claim atomically
+    # in a fresh transaction. A newer concurrent lease remains protected.
+    live_lease_expiry = info.get("live_lease_expiry")
+    live_lease_snapshot = info.get("live_lease_snapshot")
+    if live_lease_expiry is not None and not _is_tenant_container_live(tenant):
+        batch, info = _claim_pending_batch_for_key(
+            tenant,
+            channel,
+            channel_user_id or "",
+            chat_timeout,
+            break_live_lease_snapshot=live_lease_snapshot,
+        )
+        broken_lease_count = info.get("broken_lease_count", 0)
+        if broken_lease_count:
+            logger.error(
+                "drain_pending: BROKE %d live in-flight lease(s) against DOWN container "
+                "for tenant %s key=%s/%s (overrode expiry %s); claiming in same tick",
+                broken_lease_count,
+                tenant_id[:8],
+                channel,
+                (channel_user_id or "")[:24],
+                info["broken_lease_expiry"].isoformat(),
+            )
+
     # Past-cap head — no lease taken; drop + apologize + reschedule if more.
     past_cap_head = info.get("past_cap_head")
     if past_cap_head is not None:
@@ -995,6 +1084,20 @@ def drain_pending_messages_for_tenant_task(
             )
 
     except Exception as exc:
+        container_down = _delivery_failure_has_down_container(tenant, exc)
+        if container_down:
+            # Idle hibernation can race a drain that loaded the tenant just
+            # before hibernated_at was stamped. Refresh the two recovery fields
+            # after the failed POST so timeout-family failures see the current
+            # wake/hibernate state.
+            try:
+                tenant.refresh_from_db(fields=["hibernated_at", "last_wake_at"])
+            except Exception:
+                logger.exception(
+                    "drain_pending: failed to refresh container recovery state for tenant %s",
+                    tenant_id[:8],
+                )
+
         # Hibernated container on the poller path. The Telegram poller
         # (apps/router/poller.py) enqueues straight to PendingMessage with
         # no hibernation check — unlike the webhook handlers (views.py /
@@ -1008,10 +1111,11 @@ def drain_pending_messages_for_tenant_task(
         # drain instead. Release the lease but DON'T advance the attempt
         # counter — the message did nothing wrong, the container was asleep;
         # genuine post-wake failures still hit the cap on the deferred
-        # re-drain. Gated on a 404 (the deactivated-revision signature) so a
-        # transient 5xx from a live-but-stale-flagged container still flows
-        # through the normal retry path (and the reconcile below).
-        if tenant.hibernated_at is not None and _is_container_down_error(exc):
+        # re-drain. Gated on a direct 404 or a timeout/network/protocol error
+        # whose follow-up health probe also says down, so a genuine turn
+        # timeout against a live container still flows through the normal
+        # bounded retry path.
+        if tenant.hibernated_at is not None and container_down:
             from apps.billing.services import check_budget
 
             # Mirror the webhook's "budget check before wake": never re-wake
@@ -1036,7 +1140,7 @@ def drain_pending_messages_for_tenant_task(
                         row.delivery_in_flight_until = None
                         row.save(update_fields=["delivery_in_flight_until"])
                     logger.info(
-                        "drain_pending: tenant %s hibernated (container 404) — woke and deferring drain %ds",
+                        "drain_pending: tenant %s hibernated (container down) — woke and deferring drain %ds",
                         tenant_id[:8],
                         _WAKE_DEFER_SECONDS,
                     )
@@ -1066,7 +1170,7 @@ def drain_pending_messages_for_tenant_task(
         # Without this, the shorter _WAKE_DEFER_SECONDS would burn all
         # _MAX_DELIVERY_ATTEMPTS during a slow cold boot.
         if (
-            _is_container_down_error(exc)
+            container_down
             and tenant.last_wake_at is not None
             and (timezone.now() - tenant.last_wake_at).total_seconds() < _WAKE_BOOT_GRACE_SECONDS
         ):
@@ -1239,16 +1343,58 @@ def _mark_ios_waking(channel: str, batch: list[PendingMessage]) -> None:
         logger.exception("drain_pending: failed to stamp waking_at for ios batch")
 
 
-def _is_container_down_error(exc: Exception) -> bool:
-    """True if ``exc`` from a drain POST means the OpenClaw container isn't
-    serving. A hibernated tenant's revision is deactivated, so the Container
-    Apps ingress returns 404; a connection-level failure means no replica is
-    accepting traffic yet. Both are "wake the container" signals rather than
-    "the request is broken" signals.
+def _is_tenant_container_live(tenant: Tenant) -> bool:
+    """Cheaply probe whether the tenant container is serving.
+
+    A deactivated Container Apps revision returns 404 at ingress. Transport
+    timeouts, connection failures, connection resets, and a remote protocol
+    close likewise mean the probe could not reach a serving replica. Any other
+    HTTP response proves that a container answered, and an unexpected local
+    probe error fails safe as "live" so we never break a potentially-progressing
+    per-key turn on ambiguous evidence.
+
+    This helper performs network I/O and must only be called outside
+    ``transaction.atomic()``.
+    """
+    url = f"https://{tenant.container_fqdn}/health"
+    try:
+        response = httpx.get(url, timeout=_CONTAINER_HEALTH_TIMEOUT_SECONDS)
+    except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+        logger.warning(
+            "drain_pending: container health probe says DOWN for tenant %s (%s)",
+            str(tenant.id)[:8],
+            type(exc).__name__,
+        )
+        return False
+    except Exception:
+        logger.exception(
+            "drain_pending: ambiguous container health probe failure for tenant %s; preserving live lease",
+            str(tenant.id)[:8],
+        )
+        return True
+
+    if response.status_code == 404:
+        logger.warning(
+            "drain_pending: container health probe returned 404 for tenant %s",
+            str(tenant.id)[:8],
+        )
+        return False
+    return True
+
+
+def _delivery_failure_has_down_container(tenant: Tenant, exc: Exception) -> bool:
+    """Resolve whether a failed delivery POST should enter wake/boot grace.
+
+    A 404 is the direct deactivated-revision signal. Timeout-family failures,
+    network errors (including connection resets), and remote protocol closes
+    are ambiguous on their own: probe ``/health`` and only treat them as down
+    when that independent signal also says no replica is serving.
     """
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code == 404
-    return isinstance(exc, (httpx.ConnectError, httpx.ConnectTimeout))
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
+        return not _is_tenant_container_live(tenant)
+    return False
 
 
 def _notify_waking(tenant: Tenant, channel: str, channel_user_id: str) -> None:
