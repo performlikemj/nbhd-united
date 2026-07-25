@@ -984,17 +984,33 @@ def set_mission_status(mission, status, **extra):
 MAX_SKY = 12  # hard inner-circle cap (Bounded Neighborhood brief §4.4, accepted 2026-07-07)
 
 
+def _run_sky_with_rls_context(viewer_tenant, operation):
+    """Run a SkyMembership operation on a transaction-pinned tenant backend."""
+    from apps.tenants.middleware import set_rls_context
+
+    viewer_id = _tenant_id(viewer_tenant)
+    with transaction.atomic():
+        set_rls_context(tenant_id=viewer_id)
+        return operation(viewer_id)
+
+
 def sky_count(viewer_tenant) -> int:
     """How many neighbors the viewer keeps in their sky (drives the hard cap)."""
-    return SkyMembership.objects.filter(viewer_tenant_id=_tenant_id(viewer_tenant)).count()
+    return _run_sky_with_rls_context(
+        viewer_tenant,
+        lambda viewer_id: SkyMembership.objects.filter(viewer_tenant_id=viewer_id).count(),
+    )
 
 
 def sky_friendship_ids(viewer_tenant) -> set:
     """The set of friendship ids in the viewer's sky — ONE query, for the additive
     ``in_my_sky`` flag on the home BFF + wormhole payloads. Self-scoped: a viewer
     only ever sees their own picks."""
-    return set(
-        SkyMembership.objects.filter(viewer_tenant_id=_tenant_id(viewer_tenant)).values_list("friendship_id", flat=True)
+    return _run_sky_with_rls_context(
+        viewer_tenant,
+        lambda viewer_id: set(
+            SkyMembership.objects.filter(viewer_tenant_id=viewer_id).values_list("friendship_id", flat=True)
+        ),
     )
 
 
@@ -1012,23 +1028,28 @@ def add_to_sky(viewer_tenant, friendship) -> tuple[bool, bool]:
     :func:`assert_neighbors`. One-way + invisible: no signal of any kind reaches
     the other party.
     """
-    from django.db import IntegrityError, transaction
+    from django.db import IntegrityError
 
-    viewer_id = _tenant_id(viewer_tenant)
-    if SkyMembership.objects.filter(viewer_tenant_id=viewer_id, friendship=friendship).exists():
-        return False, False  # idempotent — already chosen
-    # Hard cap — mirrors the circle-member cap (circles.py), but only a genuinely
-    # new add at capacity is blocked. A tiny TOCTOU on concurrent adds of
-    # *different* edges is benign (a private list momentarily at 13, never a
-    # security boundary); the forced-removal UX is the real cap mechanism.
-    if SkyMembership.objects.filter(viewer_tenant_id=viewer_id).count() >= MAX_SKY:
-        return False, True
-    try:
-        with transaction.atomic():
-            SkyMembership.objects.create(viewer_tenant_id=viewer_id, friendship=friendship)
-    except IntegrityError:
-        return False, False  # concurrent same-edge add won the unique race — idempotent
-    return True, False
+    def add(viewer_id):
+        if SkyMembership.objects.filter(viewer_tenant_id=viewer_id, friendship=friendship).exists():
+            return False, False  # idempotent — already chosen
+        # Hard cap — mirrors the circle-member cap (circles.py), but only a
+        # genuinely new add at capacity is blocked. A tiny TOCTOU on concurrent
+        # adds of *different* edges is benign (a private list momentarily at 13,
+        # never a security boundary); the forced-removal UX is the real cap
+        # mechanism.
+        if SkyMembership.objects.filter(viewer_tenant_id=viewer_id).count() >= MAX_SKY:
+            return False, True
+        try:
+            # Isolate a unique-race failure so the outer tenant-context
+            # transaction remains usable for the idempotent return.
+            with transaction.atomic():
+                SkyMembership.objects.create(viewer_tenant_id=viewer_id, friendship=friendship)
+        except IntegrityError:
+            return False, False  # concurrent same-edge add won the unique race
+        return True, False
+
+    return _run_sky_with_rls_context(viewer_tenant, add)
 
 
 def remove_from_sky(viewer_tenant, friendship) -> bool:
@@ -1038,10 +1059,16 @@ def remove_from_sky(viewer_tenant, friendship) -> bool:
     and everything shared over it are untouched — only the flight gate goes away.
     Works regardless of edge status (so a stale pick can always be tidied).
     ``friendship`` may be a ``Friendship`` instance or a raw friendship id."""
-    deleted, _ = SkyMembership.objects.filter(
-        viewer_tenant_id=_tenant_id(viewer_tenant), friendship_id=getattr(friendship, "id", friendship)
-    ).delete()
-    return deleted > 0
+    friendship_id = getattr(friendship, "id", friendship)
+
+    def remove(viewer_id):
+        deleted, _ = SkyMembership.objects.filter(
+            viewer_tenant_id=viewer_id,
+            friendship_id=friendship_id,
+        ).delete()
+        return deleted > 0
+
+    return _run_sky_with_rls_context(viewer_tenant, remove)
 
 
 def sky_roster(viewer_tenant) -> list[dict]:
@@ -1052,20 +1079,25 @@ def sky_roster(viewer_tenant) -> list[dict]:
     row whose edge is no longer an accepted edge the viewer is a party to (a
     revoked/blocked edge can outlive its sky row until the human tidies it,
     exactly as a ``WormholeVisit`` watermark does)."""
-    viewer_id = _tenant_id(viewer_tenant)
-    rows = SkyMembership.objects.filter(viewer_tenant_id=viewer_id).select_related("friendship").order_by("-added_at")
-    out: list[dict] = []
-    for row in rows:
-        edge = row.friendship
-        if edge.status != Friendship.Status.ACCEPTED:
-            continue
-        if viewer_id not in (edge.requester_id, edge.addressee_id):
-            continue
-        out.append(
-            {
-                "friendship_id": str(edge.id),
-                "owner_id": other_party_id(edge, viewer_id),
-                "added_at": row.added_at,
-            }
+
+    def roster(viewer_id):
+        rows = (
+            SkyMembership.objects.filter(viewer_tenant_id=viewer_id).select_related("friendship").order_by("-added_at")
         )
-    return out
+        out: list[dict] = []
+        for row in rows:
+            edge = row.friendship
+            if edge.status != Friendship.Status.ACCEPTED:
+                continue
+            if viewer_id not in (edge.requester_id, edge.addressee_id):
+                continue
+            out.append(
+                {
+                    "friendship_id": str(edge.id),
+                    "owner_id": other_party_id(edge, viewer_id),
+                    "added_at": row.added_at,
+                }
+            )
+        return out
+
+    return _run_sky_with_rls_context(viewer_tenant, roster)
