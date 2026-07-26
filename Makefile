@@ -1,4 +1,4 @@
-.PHONY: setup migrate run test lint harness integrate-gate compile-deps sync-deps docker-up docker-down superuser tenants health \
+.PHONY: setup migrate run test lint harness integrate-gate docker-gate compile-deps sync-deps docker-up docker-down superuser tenants health \
 	provision deprovision \
 	canary canary-build canary-deploy canary-logs canary-health canary-rollback canary-prune
 
@@ -60,6 +60,9 @@ integrate-gate:
 	"$$PYTHON" manage.py makemigrations --check --dry-run; \
 	DJANGO_TEST_DB_NAME=test_nbhd_united_train "$$PYTHON" manage.py test apps/ --noinput; \
 	cd frontend && npm ci && npm run lint && npm run build
+
+docker-gate:
+	./scripts/docker-gate.sh
 
 compile-deps:
 	pip-compile requirements.in
