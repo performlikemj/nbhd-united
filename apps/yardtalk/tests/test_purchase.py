@@ -4,6 +4,7 @@ from django.core import mail
 from django.test import TestCase, override_settings
 
 from apps.yardtalk.models import License
+from apps.yardtalk.services import YARDTALK_DOWNLOAD_URL
 
 YARDTALK_PRICE_ID = "price_yardtalk_test"
 
@@ -84,7 +85,13 @@ class YardTalkWebhookTests(TestCase):
         self.assertEqual(license_obj.stripe_customer_id, "cus_yardtalk")
         self.assertEqual(license_obj.stripe_payment_intent_id, "pi_yardtalk")
         self.assertEqual(len(mail.outbox), 1)
-        self.assertIn(license_obj.key, mail.outbox[0].body)
+        message = mail.outbox[0]
+        self.assertIn(license_obj.key, message.body)
+        self.assertIn(YARDTALK_DOWNLOAD_URL, message.body)
+        html_body = next(
+            alternative.content for alternative in message.alternatives if alternative.mimetype == "text/html"
+        )
+        self.assertIn(f'href="{YARDTALK_DOWNLOAD_URL}"', html_body)
 
     def test_webhook_redelivery_is_idempotent(self):
         event = self.webhook_event()

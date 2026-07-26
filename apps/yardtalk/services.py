@@ -24,6 +24,7 @@ LICENSE_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 LICENSE_BODY_LENGTH = 12
 LICENSE_SEAT_LIMIT = 3
 LICENSE_KEY_GENERATION_ATTEMPTS = 5
+YARDTALK_DOWNLOAD_URL = "https://github.com/performlikemj/yardtalk-releases/releases/latest"
 
 
 class CheckoutSessionRejected(Exception):
@@ -164,7 +165,11 @@ def issue_license(checkout: VerifiedCheckoutSession) -> tuple[License, bool]:
 
 
 def send_license_email(license_obj: License) -> bool:
-    context = {"license_key": license_obj.key, "seat_limit": LICENSE_SEAT_LIMIT}
+    context = {
+        "download_url": YARDTALK_DOWNLOAD_URL,
+        "license_key": license_obj.key,
+        "seat_limit": LICENSE_SEAT_LIMIT,
+    }
     try:
         subject = render_to_string("email/yardtalk/license_key_subject.txt", context).strip()
         text_body = render_to_string("email/yardtalk/license_key_body.txt", context)
