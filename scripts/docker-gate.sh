@@ -105,6 +105,11 @@ run_backend() {
 cp -a /repo/. /workspace
 
 echo "--- Install dependencies ---"
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+  tzdata \
+  tzdata-legacy
+rm -rf /var/lib/apt/lists/*
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install "ruff==0.15.21"
