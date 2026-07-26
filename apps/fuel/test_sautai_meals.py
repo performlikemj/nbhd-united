@@ -1,6 +1,8 @@
 """Consumer endpoint tests for the linked Sautai meal surface."""
 
+import json
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from time import monotonic
 from unittest.mock import patch
 
@@ -14,6 +16,8 @@ from apps.fuel.views import _today_meals_from_sautai_plan
 from apps.integrations.models import Integration, SautaiMealPlanJob, SautaiMealPlanJobStatus
 from apps.tenants.services import create_tenant
 
+_M2M_FIXTURES_DIR = Path(__file__).parents[1] / "integrations" / "fixtures" / "m2m"
+
 
 class TodayMealsFromSautaiPlanTests(TestCase):
     day = date(2026, 7, 22)
@@ -26,20 +30,13 @@ class TodayMealsFromSautaiPlanTests(TestCase):
             "days": [{"day": cls.day.strftime("%A"), "meals": meals}],
         }
 
-    def test_valid_web_link_is_included_verbatim(self):
-        web_link = "https://sautai.com/meal-plans?week_start=2026-07-20&day=Wednesday&meal=Dinner"
+    def test_canonical_fixture_web_link_is_included_verbatim(self):
+        fixture = json.loads((_M2M_FIXTURES_DIR / "current_ok.json").read_text())
+        web_link = "https://sautai.com/meal-plans?week_start=2026-08-03&day=Monday&meal=Dinner"
 
         meals = _today_meals_from_sautai_plan(
-            self._plan_for(
-                [
-                    {
-                        "meal_type": "Dinner",
-                        "name": "Miso-glazed salmon",
-                        "web_link": web_link,
-                    }
-                ]
-            ),
-            self.day,
+            fixture["body"]["plan"],
+            date(2026, 8, 3),
         )
 
         self.assertEqual(
@@ -47,9 +44,9 @@ class TodayMealsFromSautaiPlanTests(TestCase):
             [
                 {
                     "slot": "dinner",
-                    "name": "Miso-glazed salmon",
+                    "name": "Monday Dinner",
                     "note": "",
-                    "date": "2026-07-22",
+                    "date": "2026-08-03",
                     "web_link": web_link,
                 }
             ],

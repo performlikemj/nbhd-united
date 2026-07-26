@@ -17,7 +17,8 @@
           "meals": [
             {
               "meal_type": "Dinner",
-              "name": "Monday Dinner"
+              "name": "Monday Dinner",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Monday&meal=Dinner"
             }
           ]
         }

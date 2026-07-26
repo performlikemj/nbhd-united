@@ -76,6 +76,10 @@ class CallSautaiGeneratePlanTests(TestCase):
         self.assertGreater(job.result["id"], 0)
         self.assertEqual(job.result["week_start"], "2026-08-03")
         self.assertEqual(len(job.result["days"]), 7)
+        self.assertEqual(
+            job.result["days"][0]["meals"][0]["web_link"],
+            "https://sautai.com/meal-plans?week_start=2026-08-03&day=Monday&meal=Breakfast",
+        )
         self.assertEqual(job.web_link, "https://sautai.com/meal-plans?week_start=2026-08-03")
         self.assertEqual(job.error, "")
         self.assertEqual(job.addressed_by, SautaiMealPlanAddressedBy.LINKED_ID)
@@ -447,6 +451,10 @@ class FetchSautaiCurrentPlanTests(SimpleTestCase):
         self.assertIsInstance(result["plan"]["id"], int)
         self.assertGreater(result["plan"]["id"], 0)
         self.assertEqual(result["plan"]["week_start"], "2026-08-03")
+        self.assertEqual(
+            result["plan"]["days"][0]["meals"][0]["web_link"],
+            "https://sautai.com/meal-plans?week_start=2026-08-03&day=Monday&meal=Dinner",
+        )
         self.assertEqual(result["web_link"], "https://sautai.com/meal-plans?week_start=2026-08-03")
         self.assertIs(result["complete"], fixture["body"]["complete"])
         self.assertEqual(result["missing_days"], fixture["body"]["missing_days"])
