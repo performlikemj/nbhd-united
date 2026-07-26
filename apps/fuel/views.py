@@ -5,6 +5,7 @@ import logging
 from collections import defaultdict
 from datetime import date as date_cls
 from datetime import timedelta
+from urllib.parse import urlparse
 
 from django.db.models import Count, Sum
 from rest_framework import status
@@ -94,6 +95,19 @@ _SAUTAI_MEALS_CACHE_SECONDS = 15 * 60
 _SAUTAI_MEALS_TIMEOUT_SECONDS = 3.0
 
 
+def _validated_sautai_web_link(value):
+    if not isinstance(value, str) or any(character.isspace() for character in value):
+        return None
+    try:
+        parsed = urlparse(value)
+        host, _port = parsed.hostname, parsed.port
+    except ValueError:
+        return None
+    if parsed.scheme != "https" or host not in {"sautai.com", "www.sautai.com"}:
+        return None
+    return value
+
+
 def _today_meals_from_sautai_plan(plan, today):
     """Return the public meal shape for ``today`` from a Sautai weekly plan."""
     if not isinstance(plan, dict):
@@ -128,14 +142,16 @@ def _today_meals_from_sautai_plan(plan, today):
             if not isinstance(slot, str) or not slot.strip() or not isinstance(name, str) or not name.strip():
                 continue
             note = meal.get("note", "")
-            payload.append(
-                {
-                    "slot": slot.strip().lower(),
-                    "name": name,
-                    "note": note if isinstance(note, str) else "",
-                    "date": today.isoformat(),
-                }
-            )
+            item = {
+                "slot": slot.strip().lower(),
+                "name": name,
+                "note": note if isinstance(note, str) else "",
+                "date": today.isoformat(),
+            }
+            web_link = _validated_sautai_web_link(meal.get("web_link"))
+            if web_link is not None:
+                item["web_link"] = web_link
+            payload.append(item)
         return payload
     return []
 
