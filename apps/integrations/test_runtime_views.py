@@ -835,6 +835,23 @@ class SautaiGeneratePlanViewTests(TestCase):
     def _url(self) -> str:
         return f"/api/v1/integrations/runtime/{self.tenant.id}/sautai/generate-plan/"
 
+    def _post(self, data: dict):
+        return self.client.post(
+            self._url(),
+            data=data,
+            content_type="application/json",
+            **self._headers(),
+        )
+
+    def _dispatch(self, data: dict):
+        preview_response = self._post(data)
+        self.assertEqual(preview_response.status_code, 200)
+        preview_payload = preview_response.json()
+        self.assertEqual(preview_payload["status"], "confirmation_required")
+        confirmed = dict(preview_payload["preview"]["tool_parameters"])
+        confirmed["confirm_token"] = preview_payload["confirm_token"]
+        return self._post(confirmed)
+
     def test_requires_internal_auth(self):
         response = self.client.post(self._url(), data={}, content_type="application/json")
         self.assertEqual(response.status_code, 401)
@@ -877,23 +894,24 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(response.json()["error"], "invalid_request")
 
     def test_happy_path_creates_pending_job_and_enqueues(self):
+        from .models import SautaiMealPlanJobStatus
+
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
 
         with patch("apps.cron.publish.publish_task") as mock_publish:
-            response = self.client.post(
-                self._url(),
-                data={"user_prompt": "high protein, no pork", "week_start": "2026-07-13"},
-                content_type="application/json",
-                **self._headers(),
-            )
+            preview_response = self._post({"user_prompt": "high protein, no pork", "week_start": "2026-07-13"})
+            self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+            mock_publish.assert_not_called()
+            preview = preview_response.json()
+            confirmed = dict(preview["preview"]["tool_parameters"])
+            confirmed["confirm_token"] = preview["confirm_token"]
+            response = self._post(confirmed)
 
         self.assertEqual(response.status_code, 201)
         body = response.json()
         self.assertEqual(body["status"], "pending")
         self.assertIn("job_id", body)
-
-        from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
 
         job = SautaiMealPlanJob.objects.get(id=body["job_id"])
         self.assertEqual(job.tenant_id, self.tenant.id)
@@ -906,6 +924,65 @@ class SautaiGeneratePlanViewTests(TestCase):
         integration = Integration.objects.get(tenant=self.tenant, provider=Integration.Provider.SAUTAI)
         self.assertEqual(integration.status, Integration.Status.ACTIVE)
         self.assertEqual(integration.sautai_user_id, 501)
+
+    def test_mismatched_payload_token_returns_fresh_preview_without_dispatch(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        preview = self._post({"week_start": "2026-07-13", "user_prompt": "high protein"}).json()
+        changed = dict(preview["preview"]["tool_parameters"])
+        changed["user_prompt"] = "low sodium"
+        changed["confirm_token"] = preview["confirm_token"]
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self._post(changed)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "confirmation_required")
+        self.assertEqual(response.json()["confirmation_reason"], "mismatch")
+        self.assertEqual(response.json()["preview"]["request"]["user_prompt"], "low sodium")
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+        mock_publish.assert_not_called()
+
+    def test_mismatched_week_token_returns_fresh_preview_without_dispatch(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        preview = self._post({"week_start": "2026-07-13"}).json()
+        changed = dict(preview["preview"]["tool_parameters"])
+        changed["week_start"] = "2026-07-20"
+        changed["confirm_token"] = preview["confirm_token"]
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self._post(changed)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["confirmation_reason"], "mismatch")
+        self.assertEqual(response.json()["preview"]["week_start"], "2026-07-20")
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+        mock_publish.assert_not_called()
+
+    def test_expired_token_returns_fresh_preview_without_dispatch(self):
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+
+        issued_at = 1_800_000_000
+        with patch("django.core.signing.time.time", return_value=issued_at):
+            preview = self._post({"week_start": "2026-07-13"}).json()
+        confirmed = dict(preview["preview"]["tool_parameters"])
+        confirmed["confirm_token"] = preview["confirm_token"]
+
+        with (
+            patch("django.core.signing.time.time", return_value=issued_at + 601),
+            patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            response = self._post(confirmed)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["confirmation_reason"], "expired")
+        self.assertNotEqual(response.json()["confirm_token"], preview["confirm_token"])
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+        mock_publish.assert_not_called()
 
     def test_unlinked_user_gets_connect_first_response_without_job_or_enqueue(self):
         self.tenant.sautai_enabled = True
@@ -938,18 +1015,8 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.tenant.save(update_fields=["sautai_enabled"])
 
         with patch("apps.cron.publish.publish_task") as mock_publish:
-            first = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13"},
-                content_type="application/json",
-                **self._headers(),
-            )
-            second = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13"},
-                content_type="application/json",
-                **self._headers(),
-            )
+            first = self._dispatch({"week_start": "2026-07-13"})
+            second = self._dispatch({"week_start": "2026-07-13"})
 
         from .models import Integration, SautaiMealPlanJob
 
@@ -972,18 +1039,8 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.tenant.save(update_fields=["sautai_enabled"])
 
         with patch("apps.cron.publish.publish_task"):
-            first = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13"},
-                content_type="application/json",
-                **self._headers(),
-            )
-            second = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-20"},
-                content_type="application/json",
-                **self._headers(),
-            )
+            first = self._dispatch({"week_start": "2026-07-13"})
+            second = self._dispatch({"week_start": "2026-07-20"})
 
         from .models import SautaiMealPlanJob
 
@@ -1007,12 +1064,7 @@ class SautaiGeneratePlanViewTests(TestCase):
         )
 
         with patch("apps.cron.publish.publish_task") as mock_publish:
-            response = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13"},
-                content_type="application/json",
-                **self._headers(),
-            )
+            response = self._dispatch({"week_start": "2026-07-13"})
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -1040,12 +1092,7 @@ class SautaiGeneratePlanViewTests(TestCase):
         )
 
         with patch("apps.cron.publish.publish_task") as mock_publish:
-            response = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13"},
-                content_type="application/json",
-                **self._headers(),
-            )
+            response = self._dispatch({"week_start": "2026-07-13"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "exists")
@@ -1073,12 +1120,7 @@ class SautaiGeneratePlanViewTests(TestCase):
                 )
 
                 with patch("apps.cron.publish.publish_task") as mock_publish:
-                    response = self.client.post(
-                        self._url(),
-                        data={"week_start": week_start},
-                        content_type="application/json",
-                        **self._headers(),
-                    )
+                    response = self._dispatch({"week_start": week_start})
 
                 self.assertEqual(response.status_code, 201)
                 payload = response.json()
@@ -1112,24 +1154,59 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
         mock_publish.assert_not_called()
 
-    def test_omitted_week_start_defaults_to_a_monday(self):
-        # sautai defaults an omitted week to its OWN tz; we resolve the tenant-tz
-        # Monday server-side and store it, so the payload is always explicit.
+    def test_omitted_week_midweek_previews_current_tenant_week_without_dispatch(self):
+        from datetime import UTC, datetime
+
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
+        self.tenant.user.timezone = "Asia/Tokyo"
+        self.tenant.user.save(update_fields=["timezone"])
 
-        with patch("apps.cron.publish.publish_task"):
-            response = self.client.post(self._url(), data={}, content_type="application/json", **self._headers())
+        # Wednesday, 2026-07-22 in Tokyo proposes that week's Monday.
+        now = datetime(2026, 7, 22, 3, 0, tzinfo=UTC)
+        with (
+            patch("apps.integrations.runtime_views.tz.now", return_value=now),
+            patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            response = self._post({"user_prompt": "  high protein, no pork  "})
 
-        self.assertEqual(response.status_code, 201)
-        self.assertIn("week_start", response.json())
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "confirmation_required")
+        self.assertEqual(payload["preview"]["week_start"], "2026-07-20")
+        self.assertEqual(payload["preview"]["week_end"], "2026-07-26")
+        self.assertIn("Monday, July 20, 2026 through Sunday, July 26, 2026", payload["preview"]["week_label"])
+        self.assertEqual(payload["preview"]["request"]["week_start"], "2026-07-20")
+        self.assertEqual(payload["preview"]["request"]["user_prompt"], "  high protein, no pork  ")
+        self.assertIn("  high protein, no pork  ", payload["preview"]["confirmation_message"])
+        self.assertTrue(payload["confirm_token"])
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+        mock_publish.assert_not_called()
 
-        from .models import SautaiMealPlanJob
+    def test_omitted_week_on_sunday_previews_next_tenant_week_without_dispatch(self):
+        from datetime import UTC, datetime
 
-        job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
-        self.assertIsNotNone(job.week_start)
-        self.assertEqual(job.week_start.weekday(), 0)  # Monday
-        self.assertEqual(response.json()["week_start"], job.week_start.isoformat())
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+        self.tenant.user.timezone = "Asia/Tokyo"
+        self.tenant.user.save(update_fields=["timezone"])
+
+        # Sunday evening in Tokyo proposes the next morning's Monday.
+        now = datetime(2026, 7, 26, 9, 0, tzinfo=UTC)
+        with (
+            patch("apps.integrations.runtime_views.tz.now", return_value=now),
+            patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            response = self._post({})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["preview"]["week_start"], "2026-07-27")
+        self.assertEqual(payload["preview"]["week_end"], "2026-08-02")
+        self.assertIn("Monday, July 27, 2026 through Sunday, August 2, 2026", payload["preview"]["week_label"])
+        self.assertEqual(payload["preview"]["request"]["week_start"], "2026-07-27")
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+        mock_publish.assert_not_called()
 
     def test_next_week_resolves_in_tenant_timezone_across_utc_boundary(self):
         from datetime import UTC, datetime
@@ -1144,30 +1221,22 @@ class SautaiGeneratePlanViewTests(TestCase):
         now = datetime(2026, 7, 19, 23, 30, tzinfo=UTC)
         with (
             patch("apps.integrations.runtime_views.tz.now", return_value=now),
-            patch("apps.cron.publish.publish_task"),
+            patch("apps.cron.publish.publish_task") as mock_publish,
         ):
-            response = self.client.post(
-                self._url(),
-                data={"week": "next"},
-                content_type="application/json",
-                **self._headers(),
-            )
+            response = self._post({"week": "next"})
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(response.json()["week_start"], "2026-07-27")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["preview"]["week_start"], "2026-07-27")
+        self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 0)
+        mock_publish.assert_not_called()
 
     def test_non_monday_week_start_is_snapped_back_to_its_monday(self):
         self.tenant.sautai_enabled = True
         self.tenant.save(update_fields=["sautai_enabled"])
 
         with patch("apps.cron.publish.publish_task"):
-            response = self.client.post(
-                self._url(),
-                # Explicit date wins over symbolic next week, then snaps back.
-                data={"week": "next", "week_start": "2026-07-15"},  # a Wednesday
-                content_type="application/json",
-                **self._headers(),
-            )
+            # Explicit date wins over symbolic next week, then snaps back.
+            response = self._dispatch({"week": "next", "week_start": "2026-07-15"})  # a Wednesday
 
         self.assertEqual(response.status_code, 201)
 
@@ -1196,9 +1265,7 @@ class SautaiGeneratePlanViewTests(TestCase):
         SautaiMealPlanJob.objects.filter(id=job.id).update(updated_at=timezone.now() - timedelta(minutes=5))
 
         with patch("apps.cron.publish.publish_task") as mock_publish:
-            response = self.client.post(
-                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
-            )
+            response = self._dispatch({"week_start": "2026-07-13"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["job_id"], str(job.id))
@@ -1219,9 +1286,7 @@ class SautaiGeneratePlanViewTests(TestCase):
         )  # updated_at = now (fresh)
 
         with patch("apps.cron.publish.publish_task") as mock_publish:
-            response = self.client.post(
-                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
-            )
+            response = self._dispatch({"week_start": "2026-07-13"})
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["job_id"], str(job.id))
@@ -1241,12 +1306,7 @@ class SautaiGeneratePlanViewTests(TestCase):
         )
 
         with patch("apps.cron.publish.publish_task"):
-            response = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13", "regenerate": True, "confirm_replace": True},
-                content_type="application/json",
-                **self._headers(),
-            )
+            response = self._dispatch({"week_start": "2026-07-13", "regenerate": True, "confirm_replace": True})
 
         self.assertEqual(response.status_code, 201)
 
@@ -1258,16 +1318,13 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.tenant.save(update_fields=["sautai_enabled"])
 
         with patch("apps.cron.publish.publish_task"):
-            response = self.client.post(
-                self._url(),
-                data={
+            response = self._dispatch(
+                {
                     "week_start": "2026-07-13",
                     "user_prompt": "Jamaican/Japanese fusion",
                     "regenerate": True,
                     "confirm_replace": True,
-                },
-                content_type="application/json",
-                **self._headers(),
+                }
             )
 
         from .models import SautaiMealPlanJob
@@ -1294,7 +1351,7 @@ class SautaiGeneratePlanViewTests(TestCase):
             {"week_start": "2026-07-13", "regenerate": True, "confirm_replace": False},
         ):
             with self.subTest(body=body), patch("apps.cron.publish.publish_task") as mock_publish:
-                response = self.client.post(self._url(), data=body, content_type="application/json", **self._headers())
+                response = self._dispatch(body)
 
             self.assertEqual(response.status_code, 200)
             payload = response.json()
@@ -1322,12 +1379,7 @@ class SautaiGeneratePlanViewTests(TestCase):
         )
 
         with patch("apps.cron.publish.publish_task") as mock_publish:
-            response = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13", "user_prompt": "more vegetables"},
-                content_type="application/json",
-                **self._headers(),
-            )
+            response = self._dispatch({"week_start": "2026-07-13", "user_prompt": "more vegetables"})
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
@@ -1342,15 +1394,8 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.tenant.save(update_fields=["sautai_enabled"])
 
         with patch("apps.cron.publish.publish_task"):
-            self.client.post(
-                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
-            )
-            second = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13", "user_prompt": "make it high protein"},
-                content_type="application/json",
-                **self._headers(),
-            )
+            self._dispatch({"week_start": "2026-07-13"})
+            second = self._dispatch({"week_start": "2026-07-13", "user_prompt": "make it high protein"})
 
         self.assertEqual(second.status_code, 200)
         self.assertIs(second.json()["request_applied"], False)
@@ -1363,18 +1408,8 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.tenant.save(update_fields=["sautai_enabled"])
 
         with patch("apps.cron.publish.publish_task"):
-            self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13", "user_prompt": "high protein"},
-                content_type="application/json",
-                **self._headers(),
-            )
-            second = self.client.post(
-                self._url(),
-                data={"week_start": "2026-07-13", "user_prompt": "high protein"},
-                content_type="application/json",
-                **self._headers(),
-            )
+            self._dispatch({"week_start": "2026-07-13", "user_prompt": "high protein"})
+            second = self._dispatch({"week_start": "2026-07-13", "user_prompt": "high protein"})
 
         self.assertEqual(second.status_code, 200)
         self.assertNotIn("request_applied", second.json())
@@ -1385,12 +1420,8 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.tenant.save(update_fields=["sautai_enabled"])
 
         with patch("apps.cron.publish.publish_task"):
-            self.client.post(
-                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
-            )
-            second = self.client.post(
-                self._url(), data={"week_start": "2026-07-13"}, content_type="application/json", **self._headers()
-            )
+            self._dispatch({"week_start": "2026-07-13"})
+            second = self._dispatch({"week_start": "2026-07-13"})
 
         self.assertEqual(second.status_code, 200)
         self.assertNotIn("request_applied", second.json())

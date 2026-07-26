@@ -706,7 +706,10 @@ class SautaiPhase05ClientTests(TestCase):
         self._link()
         fixture = _load_fixture("generate_regenerated.json")
         job = SautaiMealPlanJob.objects.create(
-            tenant=self.tenant, week_start=date(2026, 7, 13), regenerate=True, user_prompt="more veg"
+            tenant=self.tenant,
+            week_start=date(2026, 7, 13),
+            regenerate=True,
+            user_prompt="  more veg  ",
         )
         with (
             patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post,
@@ -715,6 +718,7 @@ class SautaiPhase05ClientTests(TestCase):
             call_sautai_generate_plan(job)
         _, kwargs = mock_post.call_args
         self.assertIs(kwargs["json"]["regenerate"], True)
+        self.assertEqual(kwargs["json"]["user_prompt"], "  more veg  ")
 
     def test_generate_captures_funnel_fields(self):
         self._link()

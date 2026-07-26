@@ -8,11 +8,10 @@ const wrap = (def) => wrapTool(def, { plugin: "nbhd-sautai-tools" });
  * directly (generation blocks 30-60s, past this plugin's 20s tool budget, and a
  * container-direct call would bypass the PII rehydrate chokepoint):
  *
- *   - nbhd_generate_meal_plan — fire-and-forget. The proxy creates a PENDING job
- *     and returns immediately; the plan is generated out of band via QStash and
- *     the user gets a push when it's ready. The tool RESPONSE tells the assistant
- *     honestly that it's on the way and NOT to claim the plan exists yet (the
- *     detailed latency messaging rides the response, not always-loaded AGENTS.md).
+ *   - nbhd_generate_meal_plan — confirm, then fire-and-forget. The first call
+ *     returns the exact request and a short-lived token without creating a job.
+ *     Only after the user verifies that preview does the same call with the token
+ *     create a PENDING job for out-of-band QStash generation.
  *   - nbhd_get_meal_plan — fast synchronous read of the current plan. The proxy
  *     calls sautai's /current/ with a short timeout and falls back to NBHD's
  *     cache if sautai is slow.
@@ -28,6 +27,10 @@ function asObject(value) {
 
 function asTrimmedString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function asString(value) {
+  return typeof value === "string" ? value : "";
 }
 
 function parseInteger(value, { defaultValue, min, max }) {
@@ -170,7 +173,7 @@ export default function register(api) {
     wrap({
       name: "nbhd_generate_meal_plan",
       description:
-        "Start generating a personalized weekly meal plan, powered by sautai (the nutrition sibling of Fuel). ASYNC and fire-and-forget: it returns a job acknowledgment, not the plan — generation runs in the background. sautai already stores the user's dietary profile (allergies, preferences), so do not ask for those before calling. Pass user_prompt only for extra guidance the user gives this time (e.g. 'high protein, no pork'). Use week='next' whenever the user says next week or the upcoming week. Only pass week_start when the user names an explicit calendar date; NEVER compute next week yourself via week_start. regenerate=true is destructive: set it ONLY after the user has explicitly confirmed rebuilding a week that ALREADY has a plan. New guidance for a week with no plan is NOT regeneration.",
+        "Prepare, confirm, then generate a personalized weekly meal plan powered by sautai (the nutrition sibling of Fuel). TWO PHASES ARE MANDATORY. First call: omit confirm_token. The server returns a structured preview and does NOT create or send anything. Relay preview.confirmation_message to the user and wait for them to verify it. Second call, only after verification: pass the returned confirm_token with the identical preview.tool_parameters, including explicit week_start. Only then does asynchronous generation start. Never infer verification or silently skip the preview. sautai already stores the user's dietary profile, so do not ask for it before the preview. Pass user_prompt verbatim only for extra guidance the user gives this time. Use week='next' when the user says next/upcoming week, week='current' when they explicitly say this/current week, and otherwise omit both week and week_start so the server proposes a safe tenant-local week. Only pass week_start initially when the user names an explicit calendar date. regenerate=true remains destructive: use it only after explicit confirmation to replace an existing plan.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -184,9 +187,8 @@ export default function register(api) {
           week: {
             type: "string",
             enum: ["current", "next"],
-            default: "current",
             description:
-              "Target week resolved by the server in the user's timezone. Use 'next' whenever the user says next week or the upcoming week; otherwise use 'current'. NEVER compute next week via week_start.",
+              "Optional target resolved in the user's timezone. Use 'next' for next/upcoming week or 'current' for an explicitly requested current/this week. If the user did not specify a week, omit this so the server proposes current week on Monday-Friday and next week on Saturday-Sunday.",
           },
           week_start: {
             type: "string",
@@ -209,13 +211,18 @@ export default function register(api) {
             description:
               "Set true together with regenerate=true only after the user explicitly confirms replacing the existing plan after being shown or told about it. Never infer confirmation from new guidance alone.",
           },
+          confirm_token: {
+            type: "string",
+            description:
+              "Short-lived opaque token returned by the server preview. Omit on the first call. Pass it only after the user verifies preview.confirmation_message, together with the identical preview.tool_parameters and explicit week_start.",
+          },
         },
       },
       async execute(_id, params) {
         try {
           const input = asObject(params);
           const body = {};
-          const userPrompt = asTrimmedString(input.user_prompt);
+          const userPrompt = asString(input.user_prompt);
           if (userPrompt) body.user_prompt = userPrompt;
           const inputWeek = asTrimmedString(input.week);
           if (inputWeek) body.week = inputWeek;
@@ -226,6 +233,8 @@ export default function register(api) {
           }
           if (input.regenerate === true) body.regenerate = true;
           if (input.confirm_replace === true) body.confirm_replace = true;
+          const confirmToken = asTrimmedString(input.confirm_token);
+          if (confirmToken) body.confirm_token = confirmToken;
 
           const payload = await callRuntime(api, {
             path: sautaiPath(api, "/sautai/generate-plan/"),
@@ -234,6 +243,19 @@ export default function register(api) {
 
           const week = asTrimmedString(payload.week_start);
           const weekPhrase = week ? ` for the week of ${week}` : "";
+
+          if (payload.status === "confirmation_required") {
+            const preview = asObject(payload.preview);
+            const confirmationMessage =
+              asString(preview.confirmation_message) ||
+              "Review the structured meal-plan request in this result. Does it look correct to send?";
+            return renderResult(
+              `${confirmationMessage}\n\nDo NOT send or start generation yet. Wait for the user's explicit ` +
+                "verification. Only then call nbhd_generate_meal_plan again with this result's confirm_token " +
+                "and the identical preview.tool_parameters, including its explicit week_start.",
+              payload,
+            );
+          }
 
           if (payload.status === "confirm_required") {
             return renderResult(
