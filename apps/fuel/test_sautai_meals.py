@@ -1,6 +1,8 @@
 """Consumer endpoint tests for the linked Sautai meal surface."""
 
+import json
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from time import monotonic
 from unittest.mock import patch
 
@@ -10,8 +12,88 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.fuel.views import _today_meals_from_sautai_plan
 from apps.integrations.models import Integration, SautaiMealPlanJob, SautaiMealPlanJobStatus
 from apps.tenants.services import create_tenant
+
+_M2M_FIXTURES_DIR = Path(__file__).parents[1] / "integrations" / "fixtures" / "m2m"
+
+
+class TodayMealsFromSautaiPlanTests(TestCase):
+    day = date(2026, 7, 22)
+
+    @classmethod
+    def _plan_for(cls, meals):
+        week_start = cls.day - timedelta(days=cls.day.weekday())
+        return {
+            "week_start": week_start.isoformat(),
+            "days": [{"day": cls.day.strftime("%A"), "meals": meals}],
+        }
+
+    def test_canonical_fixture_web_link_is_included_verbatim(self):
+        fixture = json.loads((_M2M_FIXTURES_DIR / "current_ok.json").read_text())
+        web_link = "https://sautai.com/meal-plans?week_start=2026-08-03&day=Monday&meal=Dinner"
+
+        meals = _today_meals_from_sautai_plan(
+            fixture["body"]["plan"],
+            date(2026, 8, 3),
+        )
+
+        self.assertEqual(
+            meals,
+            [
+                {
+                    "slot": "dinner",
+                    "name": "Monday Dinner",
+                    "note": "",
+                    "date": "2026-08-03",
+                    "web_link": web_link,
+                }
+            ],
+        )
+
+    def test_absent_web_link_leaves_key_absent(self):
+        meals = _today_meals_from_sautai_plan(
+            self._plan_for([{"meal_type": "Dinner", "name": "Miso-glazed salmon"}]),
+            self.day,
+        )
+
+        self.assertEqual(
+            meals,
+            [
+                {
+                    "slot": "dinner",
+                    "name": "Miso-glazed salmon",
+                    "note": "",
+                    "date": "2026-07-22",
+                }
+            ],
+        )
+
+    def test_invalid_web_links_are_omitted_without_dropping_meals(self):
+        invalid_links = [
+            "https://example.com/meal-plans",
+            "http://sautai.com/meal-plans",
+            "not a URL",
+            "https://[malformed",
+            " https://sautai.com/meal-plans",
+        ]
+        meals = _today_meals_from_sautai_plan(
+            self._plan_for(
+                [
+                    {
+                        "meal_type": "Dinner",
+                        "name": f"Meal {index}",
+                        "web_link": web_link,
+                    }
+                    for index, web_link in enumerate(invalid_links)
+                ]
+            ),
+            self.day,
+        )
+
+        self.assertEqual([meal["name"] for meal in meals], [f"Meal {index}" for index in range(5)])
+        self.assertTrue(all("web_link" not in meal for meal in meals))
 
 
 class FuelMealsTodayViewTests(TestCase):

@@ -2,7 +2,7 @@
   "body": {
     "account_claimed": false,
     "already_existed": true,
-    "claim_link": "https://sautai.com/claim?uid=Mg&token=fixture-token&src=nbhd",
+    "claim_link": "https://sautai.com/claim?uid=Mg&token=fixture-token&src=nbhd&next=/meal-plans%3Fweek_start%3D2026-08-03",
     "complete": true,
     "missing_days": [],
     "plan": {
@@ -12,15 +12,18 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Monday Breakfast"
+              "name": "Monday Breakfast",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Monday&meal=Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Monday Lunch"
+              "name": "Monday Lunch",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Monday&meal=Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Monday Dinner"
+              "name": "Monday Dinner",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Monday&meal=Dinner"
             }
           ]
         },
@@ -29,15 +32,18 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Tuesday Breakfast"
+              "name": "Tuesday Breakfast",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Tuesday&meal=Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Tuesday Lunch"
+              "name": "Tuesday Lunch",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Tuesday&meal=Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Tuesday Dinner"
+              "name": "Tuesday Dinner",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Tuesday&meal=Dinner"
             }
           ]
         },
@@ -46,15 +52,18 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Wednesday Breakfast"
+              "name": "Wednesday Breakfast",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Wednesday&meal=Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Wednesday Lunch"
+              "name": "Wednesday Lunch",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Wednesday&meal=Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Wednesday Dinner"
+              "name": "Wednesday Dinner",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Wednesday&meal=Dinner"
             }
           ]
         },
@@ -63,15 +72,18 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Thursday Breakfast"
+              "name": "Thursday Breakfast",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Thursday&meal=Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Thursday Lunch"
+              "name": "Thursday Lunch",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Thursday&meal=Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Thursday Dinner"
+              "name": "Thursday Dinner",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Thursday&meal=Dinner"
             }
           ]
         },
@@ -80,15 +92,18 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Friday Breakfast"
+              "name": "Friday Breakfast",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Friday&meal=Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Friday Lunch"
+              "name": "Friday Lunch",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Friday&meal=Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Friday Dinner"
+              "name": "Friday Dinner",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Friday&meal=Dinner"
             }
           ]
         },
@@ -97,15 +112,18 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Saturday Breakfast"
+              "name": "Saturday Breakfast",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Saturday&meal=Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Saturday Lunch"
+              "name": "Saturday Lunch",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Saturday&meal=Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Saturday Dinner"
+              "name": "Saturday Dinner",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Saturday&meal=Dinner"
             }
           ]
         },
@@ -114,15 +132,18 @@
           "meals": [
             {
               "meal_type": "Breakfast",
-              "name": "Sunday Breakfast"
+              "name": "Sunday Breakfast",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Sunday&meal=Breakfast"
             },
             {
               "meal_type": "Lunch",
-              "name": "Sunday Lunch"
+              "name": "Sunday Lunch",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Sunday&meal=Lunch"
             },
             {
               "meal_type": "Dinner",
-              "name": "Sunday Dinner"
+              "name": "Sunday Dinner",
+              "web_link": "https://sautai.com/meal-plans?week_start=2026-08-03&day=Sunday&meal=Dinner"
             }
           ]
         }
