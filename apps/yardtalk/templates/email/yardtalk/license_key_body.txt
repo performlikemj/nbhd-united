@@ -1,5 +1,11 @@
 Thanks for buying YardTalk!
 
+First, download YardTalk for macOS 14.2 or later (Apple Silicon).
+If you already have YardTalk installed, skip this step.
+
+Download YardTalk:
+{{ download_url }}
+
 Your license key is:
 
     {{ license_key }}
@@ -12,4 +18,4 @@ any time until you reach that limit.
 
 Keep this email — it's your record of the key.
 
-If you have any trouble activating, just reply to this email and we'll help.
+If you have any trouble installing or activating, just reply to this email and we'll help.
