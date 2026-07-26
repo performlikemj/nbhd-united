@@ -39,6 +39,7 @@ INSTALLED_APPS = [
     # Local apps
     "apps.tenants",
     "apps.billing",
+    "apps.yardtalk",
     "apps.orchestrator",
     "apps.router",
     "apps.integrations",
@@ -154,6 +155,9 @@ REST_FRAMEWORK = {
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
+    "DEFAULT_THROTTLE_RATES": {
+        "yardtalk_license_validate": "30/minute",
+    },
 }
 
 # Simple JWT
@@ -261,6 +265,11 @@ STRIPE_TEST_SECRET_KEY = env("STRIPE_TEST_SECRET_KEY", default="")
 STRIPE_LIVE_MODE = env.bool("STRIPE_LIVE_MODE", default=False)
 DJSTRIPE_WEBHOOK_SECRET = env("DJSTRIPE_WEBHOOK_SECRET", default="")
 DJSTRIPE_FOREIGN_KEY_TO_FIELD = "id"
+YARDTALK_STRIPE_PRICE_ID = env("YARDTALK_STRIPE_PRICE_ID", default="")
+YARDTALK_LICENSE_RECEIPT_SECRET = env(
+    "YARDTALK_LICENSE_RECEIPT_SECRET",
+    default=SECRET_KEY,
+)
 
 # Telegram (shared bot)
 TELEGRAM_BOT_TOKEN = env("TELEGRAM_BOT_TOKEN", default="")

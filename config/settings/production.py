@@ -115,6 +115,11 @@ DEFAULT_FROM_EMAIL = env(
     default="NBHD United <noreply@neighborhoodunited.org>",
 )
 
+# YardTalk one-time purchase + validation. The Price id is a Container App
+# config value; the HMAC key is a Key Vault-backed secretref.
+YARDTALK_STRIPE_PRICE_ID = env("YARDTALK_STRIPE_PRICE_ID", default="")
+YARDTALK_LICENSE_RECEIPT_SECRET = env("YARDTALK_LICENSE_RECEIPT_SECRET", default="")
+
 # Eval journey canaries (Wave B) — mirror of the base.py names so the deploy's
 # Azure Container App env vars are documented here. EVAL_JOURNEY_TENANT_ID +
 # EVAL_JOURNEY_PAT must be set for the journey probes; EVAL_BEHAVIOR_TENANT_ID is
