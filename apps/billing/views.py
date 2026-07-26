@@ -13,7 +13,11 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.tenants.models import Tenant
-from apps.yardtalk.services import handle_yardtalk_checkout_completed
+from apps.yardtalk.services import (
+    handle_yardtalk_charge_refunded,
+    handle_yardtalk_checkout_completed,
+    handle_yardtalk_dispute_created,
+)
 
 from .constants import CREDIT_PACKS
 from .credits import credits_state, handle_credit_refund, handle_credit_topup_completed
@@ -184,8 +188,9 @@ def stripe_webhook(request):
                 handle_checkout_completed(data)
         case "charge.refunded":
             handle_credit_refund(event_id, data)
+            handle_yardtalk_charge_refunded(event_id, data)
         case "charge.dispute.created":
-            logger.warning("Stripe dispute opened (charge=%s) — manual review", data.get("id"))
+            handle_yardtalk_dispute_created(event_id, data)
         case "customer.subscription.deleted":
             handle_subscription_deleted(data)
         case "customer.subscription.updated":

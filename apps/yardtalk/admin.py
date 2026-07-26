@@ -16,11 +16,12 @@ class LicenseAdmin(admin.ModelAdmin):
     list_display = (
         "key",
         "status",
+        "revocation_reason",
         "purchaser_email",
         "activation_count",
         "created_at",
     )
-    list_filter = ("status",)
+    list_filter = ("status", "revocation_reason")
     search_fields = (
         "key",
         "purchaser_email",
@@ -33,6 +34,7 @@ class LicenseAdmin(admin.ModelAdmin):
         "stripe_session_id",
         "stripe_customer_id",
         "stripe_payment_intent_id",
+        "revocation_reason",
         "key_email_sent_at",
         "created_at",
     )
@@ -48,5 +50,8 @@ class LicenseAdmin(admin.ModelAdmin):
 
     @admin.action(description="Revoke selected licenses")
     def revoke_licenses(self, request, queryset):
-        updated = queryset.exclude(status=License.Status.REVOKED).update(status=License.Status.REVOKED)
+        updated = queryset.exclude(status=License.Status.REVOKED).update(
+            status=License.Status.REVOKED,
+            revocation_reason=License.RevocationReason.MANUAL,
+        )
         self.message_user(request, f"Revoked {updated} license(s).")
