@@ -8,9 +8,20 @@ class License(models.Model):
         ACTIVE = "active", "Active"
         REVOKED = "revoked", "Revoked"
 
+    class RevocationReason(models.TextChoices):
+        REFUND = "refund", "Refund"
+        DISPUTE = "dispute", "Dispute"
+        MANUAL = "manual", "Manual"
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     key = models.CharField(max_length=17, unique=True)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.ACTIVE)
+    revocation_reason = models.CharField(
+        max_length=16,
+        choices=RevocationReason.choices,
+        blank=True,
+        default="",
+    )
     purchaser_email = models.EmailField(db_index=True)
     stripe_session_id = models.CharField(max_length=255, unique=True)
     stripe_customer_id = models.CharField(max_length=255, blank=True, default="")

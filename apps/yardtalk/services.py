@@ -208,3 +208,127 @@ def handle_yardtalk_checkout_completed(session_data: dict) -> None:
         fulfill_checkout_session(session_id)
     except CheckoutSessionRejected:
         logger.info("Checkout Session %s is not a paid YardTalk purchase", session_id)
+
+
+def _license_for_payment_intent(payment_intent_id: str, event_id: str) -> License | None:
+    if not payment_intent_id:
+        logger.debug("YardTalk revocation ignored: Stripe event %s had no PaymentIntent", event_id)
+        return None
+
+    license_obj = (
+        License.objects.filter(stripe_payment_intent_id=payment_intent_id)
+        .only("id", "status", "revocation_reason")
+        .first()
+    )
+    if license_obj is None:
+        logger.debug(
+            "YardTalk revocation ignored: no license for PaymentIntent %s (event=%s)",
+            payment_intent_id,
+            event_id,
+        )
+    return license_obj
+
+
+def _revoke_license(license_obj: License, reason: License.RevocationReason, event_id: str) -> bool:
+    if license_obj.status == License.Status.REVOKED:
+        logger.debug(
+            "YardTalk license %s already revoked; event %s is a no-op",
+            license_obj.pk,
+            event_id,
+        )
+        return False
+
+    updated = License.objects.filter(pk=license_obj.pk, status=License.Status.ACTIVE).update(
+        status=License.Status.REVOKED,
+        revocation_reason=reason,
+    )
+    if not updated:
+        logger.debug(
+            "YardTalk license %s was concurrently revoked; event %s is a no-op",
+            license_obj.pk,
+            event_id,
+        )
+        return False
+
+    logger.info(
+        "YardTalk license %s revoked (reason=%s event=%s)",
+        license_obj.pk,
+        reason,
+        event_id,
+    )
+    return True
+
+
+def handle_yardtalk_charge_refunded(event_id: str, charge_data: dict) -> bool:
+    """Revoke the matching YardTalk license only when the charge is fully refunded."""
+    payment_intent_id = _stripe_id(charge_data.get("payment_intent"))
+    license_obj = _license_for_payment_intent(payment_intent_id, event_id)
+    if license_obj is None:
+        return False
+
+    amount = charge_data.get("amount")
+    amount_refunded = charge_data.get("amount_refunded")
+    fully_refunded = charge_data.get("refunded") is True or (
+        isinstance(amount, int)
+        and not isinstance(amount, bool)
+        and amount > 0
+        and isinstance(amount_refunded, int)
+        and not isinstance(amount_refunded, bool)
+        and amount_refunded == amount
+    )
+    if not fully_refunded:
+        logger.warning(
+            "YardTalk partial refund requires manual review "
+            "(event=%s payment_intent=%s license=%s amount_refunded=%r amount=%r refunded=%r)",
+            event_id,
+            payment_intent_id,
+            license_obj.pk,
+            amount_refunded,
+            amount,
+            charge_data.get("refunded"),
+        )
+        return False
+
+    return _revoke_license(license_obj, License.RevocationReason.REFUND, event_id)
+
+
+def _dispute_payment_intent_id(event_id: str, dispute_data: dict) -> str:
+    payment_intent_id = _stripe_id(dispute_data.get("payment_intent"))
+    if payment_intent_id:
+        return payment_intent_id
+
+    charge = _plain_dict(dispute_data.get("charge"))
+    if isinstance(charge, dict):
+        payment_intent_id = _stripe_id(charge.get("payment_intent"))
+        if payment_intent_id:
+            return payment_intent_id
+
+    charge_id = _stripe_id(charge)
+    if not charge_id:
+        return ""
+
+    try:
+        charge_data = _plain_dict(
+            stripe.Charge.retrieve(
+                charge_id,
+                api_key=_stripe_api_key(),
+            )
+        )
+    except stripe.error.StripeError as exc:
+        logger.warning(
+            "YardTalk dispute could not resolve charge %s (event=%s): %s",
+            charge_id,
+            event_id,
+            exc,
+        )
+        return ""
+    return _stripe_id(charge_data.get("payment_intent"))
+
+
+def handle_yardtalk_dispute_created(event_id: str, dispute_data: dict) -> bool:
+    """Immediately revoke the YardTalk license associated with a new dispute."""
+    payment_intent_id = _dispute_payment_intent_id(event_id, dispute_data)
+    license_obj = _license_for_payment_intent(payment_intent_id, event_id)
+    if license_obj is None:
+        return False
+    return _revoke_license(license_obj, License.RevocationReason.DISPUTE, event_id)
