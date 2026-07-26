@@ -39,7 +39,7 @@ test("registers both sautai tools", () => {
   assert.ok(tools.has("nbhd_get_meal_plan"));
 });
 
-test("schemas expose server-resolved current/next week targeting", () => {
+test("schemas expose server-resolved week targeting and confirmation", () => {
   setupEnv();
   const { api, tools } = buildApi();
   register(api);
@@ -47,11 +47,13 @@ test("schemas expose server-resolved current/next week targeting", () => {
   for (const name of ["nbhd_generate_meal_plan", "nbhd_get_meal_plan"]) {
     const week = tools.get(name).parameters.properties.week;
     assert.deepEqual(week.enum, ["current", "next"]);
-    assert.equal(week.default, "current");
-    assert.match(week.description, /NEVER compute next week/i);
     assert.match(tools.get(name).parameters.properties.week_start.description, /explicitly names a date/i);
   }
+  assert.equal(tools.get("nbhd_generate_meal_plan").parameters.properties.week.default, undefined);
+  assert.match(tools.get("nbhd_generate_meal_plan").parameters.properties.week.description, /Saturday-Sunday/i);
+  assert.equal(tools.get("nbhd_get_meal_plan").parameters.properties.week.default, "current");
   assert.ok(tools.get("nbhd_generate_meal_plan").parameters.properties.confirm_replace);
+  assert.ok(tools.get("nbhd_generate_meal_plan").parameters.properties.confirm_token);
 });
 
 // ── nbhd_generate_meal_plan ────────────────────────────────────────────
@@ -105,6 +107,7 @@ test("generate — passes through guidance, week targeting, confirmation and day
       number_of_days: 5,
       regenerate: true,
       confirm_replace: true,
+      confirm_token: "signed-preview-token",
     });
 
   const body = JSON.parse(calls[0].options.body);
@@ -114,6 +117,33 @@ test("generate — passes through guidance, week targeting, confirmation and day
   assert.equal(body.number_of_days, 5);
   assert.equal(body.regenerate, true);
   assert.equal(body.confirm_replace, true);
+  assert.equal(body.confirm_token, "signed-preview-token");
+});
+
+test("generate — preview tells the assistant to wait for user verification", async () => {
+  setupEnv();
+  const { api, tools } = buildApi();
+  global.fetch = async () =>
+    mockResponse({
+      payload: {
+        status: "confirmation_required",
+        confirm_token: "signed-preview-token",
+        preview: {
+          week_start: "2026-07-27",
+          week_end: "2026-08-02",
+          confirmation_message:
+            "Send this meal-plan request to sautai for Monday, July 27, 2026 through Sunday, August 2, 2026?",
+          tool_parameters: { week_start: "2026-07-27", number_of_days: 7 },
+        },
+      },
+    });
+
+  register(api);
+  const result = await tools.get("nbhd_generate_meal_plan").execute("preview", {});
+  assert.match(result.content[0].text, /Monday, July 27, 2026 through Sunday, August 2, 2026/);
+  assert.match(result.content[0].text, /Do NOT send or start generation yet/i);
+  assert.match(result.content[0].text, /explicit verification/i);
+  assert.equal(result.details.json.confirm_token, "signed-preview-token");
 });
 
 test("generate — passes regenerate=true through, omits it otherwise", async () => {
@@ -267,7 +297,7 @@ test("generate — clamps out-of-range number_of_days into 1-7", async () => {
   assert.equal(JSON.parse(calls[0].options.body).number_of_days, 7);
 });
 
-test("generate — omits blank optional fields", async () => {
+test("generate — preserves prompt text verbatim and omits empty optional fields", async () => {
   setupEnv();
   const { api, tools } = buildApi();
   const calls = [];
@@ -280,7 +310,7 @@ test("generate — omits blank optional fields", async () => {
   await tools.get("nbhd_generate_meal_plan").execute("3", { user_prompt: "   ", week_start: "", number_of_days: "" });
 
   const body = JSON.parse(calls[0].options.body);
-  assert.equal(body.user_prompt, undefined);
+  assert.equal(body.user_prompt, "   ");
   assert.equal(body.week_start, undefined);
   assert.equal(body.number_of_days, undefined);
 });

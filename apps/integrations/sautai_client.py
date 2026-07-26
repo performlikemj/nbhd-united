@@ -91,6 +91,28 @@ def clear_sautai_link(integration: Integration) -> None:
     integration.save(update_fields=["sautai_user_id", "linked_at", "updated_at"])
 
 
+def build_sautai_generate_payload(
+    *,
+    sautai_user_id: int,
+    week_start,
+    number_of_days: int,
+    user_prompt: str,
+    regenerate: bool,
+) -> dict:
+    """Build the exact JSON body for sautai's meal-plan generate endpoint."""
+    payload: dict = {
+        "sautai_user_id": sautai_user_id,
+        "number_of_days": number_of_days,
+    }
+    if week_start is not None:
+        payload["week_start"] = week_start.isoformat()
+    if regenerate:
+        payload["regenerate"] = True
+    if user_prompt:
+        payload["user_prompt"] = user_prompt
+    return payload
+
+
 def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
     """POST to sautai's ``/api/m2m/meal-plan/generate/`` and persist the result.
 
@@ -120,16 +142,7 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
     # §Egress posture). Post-link calls send only the stored sautai_user_id;
     # user_prompt may carry [PERSON_N] placeholders and IS rehydrated here, at
     # the deliberate egress point.
-    payload: dict = {
-        "sautai_user_id": identity["sautai_user_id"],
-        "number_of_days": job.number_of_days,
-    }
-    if job.week_start:
-        payload["week_start"] = job.week_start.isoformat()
-    if job.regenerate:
-        payload["regenerate"] = True
-
-    prompt = (job.user_prompt or "").strip()
+    prompt = job.user_prompt or ""
     if prompt:
         from apps.pii.redactor import rehydrate_for_tenant
 
@@ -137,7 +150,14 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
             prompt = rehydrate_for_tenant(tenant, prompt)
         except Exception:
             logger.warning("call_sautai_generate_plan: prompt rehydrate failed for job %s", job.id, exc_info=True)
-        payload["user_prompt"] = prompt
+
+    payload = build_sautai_generate_payload(
+        sautai_user_id=identity["sautai_user_id"],
+        week_start=job.week_start,
+        number_of_days=job.number_of_days,
+        user_prompt=prompt,
+        regenerate=job.regenerate,
+    )
 
     base_url, secret = sautai_m2m_config()
     if not base_url or not secret:

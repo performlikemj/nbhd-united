@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import logging
 import re
@@ -12,6 +14,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
+from django.core import signing
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import transaction
 from django.utils import timezone as tz
@@ -22,7 +25,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.billing.services import record_usage
-from apps.common.tenant_tz import safe_zoneinfo, tenant_tz_name
+from apps.common.tenant_tz import safe_zoneinfo, tenant_today, tenant_tz_name
 from apps.common.windows import Window, resolve_window
 from apps.integrations.content_sanitize import neutralize_remote_image_markdown
 from apps.journal.document_views import _default_markdown, _default_title
@@ -305,30 +308,27 @@ def _tenant_today(tenant: Tenant) -> date:
     return _tenant_now(tenant).date()
 
 
-def _tenant_week_start_monday(tenant: Tenant) -> date:
-    """The Monday of the current week in the tenant's timezone (front door §7).
+def _resolve_sautai_week_start(data, tenant: Tenant, *, propose_if_omitted: bool = False) -> date:
+    """Resolve an explicit date, symbolic week, or safe generation proposal.
 
     sautai's generate endpoint defaults an omitted ``week_start`` to ITS OWN
-    server tz's current Monday; we always send an explicit tenant-tz Monday so a
-    late-Sunday / early-Monday timezone gap can't silently generate the wrong
-    week for the user.
+    server timezone. Generation callers instead opt into a tenant-local proposal:
+    the current Monday on weekdays, or next Monday on weekends.
     """
-    today = _tenant_today(tenant)
-    return today - timedelta(days=today.weekday())
-
-
-def _resolve_sautai_week_start(data, tenant: Tenant) -> date:
-    """Resolve an explicit date or symbolic current/next week for sautai."""
     explicit = _parse_iso_date(data.get("week_start"), field_name="week_start")
     if explicit is not None:
         # Explicit calendar dates retain the existing backward-to-Monday rule.
         return explicit - timedelta(days=explicit.weekday())
 
-    week = str(data.get("week") or "current").strip()
+    raw_week = data.get("week")
+    week = str(raw_week or "current").strip()
     if week not in {"current", "next"}:
         raise ValueError('week must be "current" or "next"')
 
-    current = _tenant_week_start_monday(tenant)
+    today = tenant_today(tenant)
+    current = today - timedelta(days=today.weekday())
+    if propose_if_omitted and raw_week in (None, "") and today.weekday() >= 5:
+        return current + timedelta(days=7)
     return current + timedelta(days=7) if week == "next" else current
 
 
@@ -4075,6 +4075,116 @@ class RedditToolView(APIView):
 # docs/sautai-phase0-contract.md.
 
 _SAUTAI_MAX_PROMPT_CHARS = 2000
+_SAUTAI_CONFIRM_TOKEN_MAX_AGE_SECONDS = 10 * 60
+_SAUTAI_CONFIRM_TOKEN_SALT = "apps.integrations.sautai.generate-confirm.v1"
+
+
+def _sautai_tool_parameters(
+    *,
+    week_start: date,
+    number_of_days: int,
+    user_prompt: str,
+    regenerate: bool,
+    confirm_replace: bool,
+) -> dict:
+    """Return the normalized parameters an agent must replay after approval."""
+    parameters: dict = {
+        "week_start": week_start.isoformat(),
+        "number_of_days": number_of_days,
+    }
+    if user_prompt:
+        parameters["user_prompt"] = user_prompt
+    if regenerate:
+        parameters["regenerate"] = True
+    if confirm_replace:
+        parameters["confirm_replace"] = True
+    return parameters
+
+
+def _sautai_confirmation_context(*, tenant: Tenant, request_payload: dict, tool_parameters: dict) -> dict:
+    return {
+        "tenant_id": str(tenant.id),
+        "request": request_payload,
+        "tool_parameters": tool_parameters,
+    }
+
+
+def _sautai_confirmation_digest(context: dict) -> str:
+    canonical = json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _sautai_issue_confirm_token(context: dict) -> str:
+    digest = _sautai_confirmation_digest(context)
+    return signing.TimestampSigner(salt=_SAUTAI_CONFIRM_TOKEN_SALT).sign(digest)
+
+
+def _sautai_confirm_token_failure(confirm_token: str, context: dict) -> str | None:
+    """Return an agent-facing failure reason, or ``None`` for a valid token."""
+    if len(confirm_token) > 512:
+        return "invalid"
+    try:
+        signed_digest = signing.TimestampSigner(salt=_SAUTAI_CONFIRM_TOKEN_SALT).unsign(
+            confirm_token,
+            max_age=_SAUTAI_CONFIRM_TOKEN_MAX_AGE_SECONDS,
+        )
+    except signing.SignatureExpired:
+        return "expired"
+    except signing.BadSignature:
+        return "invalid"
+    if not hmac.compare_digest(signed_digest, _sautai_confirmation_digest(context)):
+        return "mismatch"
+    return None
+
+
+def _sautai_display_date(value: date) -> str:
+    return f"{value.strftime('%A, %B')} {value.day}, {value.year}"
+
+
+def _sautai_confirmation_preview(
+    *,
+    tenant: Tenant,
+    week_start: date,
+    request_payload: dict,
+    tool_parameters: dict,
+    user_prompt: str,
+    reason: str,
+) -> Response:
+    week_end = week_start + timedelta(days=6)
+    week_label = f"{_sautai_display_date(week_start)} through {_sautai_display_date(week_end)}"
+    prompt_line = (
+        f"\nPrompt/preferences (verbatim):\n{user_prompt}" if user_prompt else "\nPrompt/preferences: none provided."
+    )
+    confirmation_message = (
+        f"Send this meal-plan request to sautai for {week_label}?{prompt_line}\nDoes this look correct to send?"
+    )
+    context = _sautai_confirmation_context(
+        tenant=tenant,
+        request_payload=request_payload,
+        tool_parameters=tool_parameters,
+    )
+    return Response(
+        {
+            "status": "confirmation_required",
+            "confirmation_reason": reason,
+            "preview": {
+                "week_start": week_start.isoformat(),
+                "week_end": week_end.isoformat(),
+                "week_label": week_label,
+                "request": request_payload,
+                "tool_parameters": tool_parameters,
+                "confirmation_message": confirmation_message,
+            },
+            "confirm_token": _sautai_issue_confirm_token(context),
+            "confirm_token_expires_in_seconds": _SAUTAI_CONFIRM_TOKEN_MAX_AGE_SECONDS,
+            "guidance": (
+                "Present preview.confirmation_message to the user and wait for explicit verification. "
+                "Do not send anything to sautai yet. After the user says it looks correct, call "
+                "nbhd_generate_meal_plan again with this confirm_token and the identical "
+                "preview.tool_parameters, including the explicit week_start."
+            ),
+        }
+    )
 
 
 def _sautai_existing_plan_payload(status_value: str, job: SautaiMealPlanJob, guidance: str) -> dict:
@@ -4118,11 +4228,12 @@ def _sautai_link_required_response() -> Response:
 
 
 class RuntimeSautaiGeneratePlanView(APIView):
-    """POST — kick off an async sautai meal-plan generation.
+    """POST — preview, then kick off an async sautai meal-plan generation.
 
-    Fast ack only (<20s — the plugin's own tool-call timeout): creates a
-    PENDING ``SautaiMealPlanJob`` and enqueues ``generate_sautai_meal_plan``
-    via QStash, which does the slow (30-60s) call to sautai's M2M API.
+    A no-token call returns the exact explicit-week request and a short-lived
+    confirmation token without side effects. A matching confirmed call is a
+    fast ack (<20s): it creates a PENDING job and enqueues via QStash, which
+    does the slow (30-60s) sautai M2M request.
     """
 
     permission_classes = [AllowAny]
@@ -4146,7 +4257,11 @@ class RuntimeSautaiGeneratePlanView(APIView):
         # QStash worker could only ever mark the job FAILED with no push, so the
         # user would be promised a plan that never arrives. Surfacing it here
         # lets the tool tell them "sautai integration is not configured" instead.
-        from apps.integrations.sautai_client import sautai_identity, sautai_m2m_config
+        from apps.integrations.sautai_client import (
+            build_sautai_generate_payload,
+            sautai_identity,
+            sautai_m2m_config,
+        )
 
         identity, _integration = sautai_identity(tenant)
         if not identity:
@@ -4159,7 +4274,8 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
-        user_prompt = str(request.data.get("user_prompt") or "").strip()
+        raw_user_prompt = request.data.get("user_prompt")
+        user_prompt = "" if raw_user_prompt is None else str(raw_user_prompt)
         if len(user_prompt) > _SAUTAI_MAX_PROMPT_CHARS:
             return Response(
                 {
@@ -4170,7 +4286,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
             )
 
         try:
-            week_start = _resolve_sautai_week_start(request.data, tenant)
+            week_start = _resolve_sautai_week_start(request.data, tenant, propose_if_omitted=True)
         except ValueError as exc:
             return Response(
                 {"error": "invalid_request", "detail": str(exc)},
@@ -4199,6 +4315,45 @@ class RuntimeSautaiGeneratePlanView(APIView):
             return Response(
                 {"error": "invalid_request", "detail": f"regenerate/confirm_replace {exc}"},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        tool_parameters = _sautai_tool_parameters(
+            week_start=week_start,
+            number_of_days=number_of_days,
+            user_prompt=user_prompt,
+            regenerate=regenerate,
+            confirm_replace=confirm_replace,
+        )
+        request_payload = build_sautai_generate_payload(
+            sautai_user_id=identity["sautai_user_id"],
+            week_start=week_start,
+            number_of_days=number_of_days,
+            user_prompt=user_prompt,
+            regenerate=regenerate,
+        )
+        confirmation_context = _sautai_confirmation_context(
+            tenant=tenant,
+            request_payload=request_payload,
+            tool_parameters=tool_parameters,
+        )
+        confirm_token = str(request.data.get("confirm_token") or "").strip()
+        confirmation_failure = "missing"
+        if confirm_token:
+            raw_confirmed_week = request.data.get("week_start")
+            if raw_confirmed_week in (None, ""):
+                confirmation_failure = "explicit_week_required"
+            elif str(raw_confirmed_week) != week_start.isoformat():
+                confirmation_failure = "mismatch"
+            else:
+                confirmation_failure = _sautai_confirm_token_failure(confirm_token, confirmation_context)
+        if confirmation_failure is not None:
+            return _sautai_confirmation_preview(
+                tenant=tenant,
+                week_start=week_start,
+                request_payload=request_payload,
+                tool_parameters=tool_parameters,
+                user_prompt=user_prompt,
+                reason=confirmation_failure,
             )
 
         # Atomic coalesce: lock the tenant row so concurrent POSTs (the agent
