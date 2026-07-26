@@ -20,8 +20,13 @@ ENV NODE_ENV=production
 # present yet).
 ENV NODE_OPTIONS="--max-old-space-size=512 --dns-result-order=ipv4first --no-network-family-autoselection"
 
+# Older Debian releases bundle legacy aliases in tzdata and have no
+# tzdata-legacy package, so install the split package only when available.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git ca-certificates bsdmainutils curl \
+    && apt-get install -y --no-install-recommends git ca-certificates bsdmainutils curl tzdata \
+    && if apt-cache show tzdata-legacy >/dev/null 2>&1; then \
+        apt-get install -y --no-install-recommends tzdata-legacy; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 # curl is used by entrypoint.sh to fire the container-started + BYO pre-warm
 # hooks back at the Django control plane; without it those hooks silently

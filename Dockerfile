@@ -6,9 +6,15 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Older Debian releases bundle legacy aliases in tzdata and have no
+# tzdata-legacy package, so install the split package only when available.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     ffmpeg \
+    tzdata \
+    && if apt-cache show tzdata-legacy >/dev/null 2>&1; then \
+        apt-get install -y --no-install-recommends tzdata-legacy; \
+    fi \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
