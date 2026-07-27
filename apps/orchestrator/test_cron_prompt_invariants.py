@@ -110,7 +110,10 @@ class MorningBriefingJournalLinkMarkerTest(SimpleTestCase):
 class ProactiveQuickRepliesMarkerTest(SimpleTestCase):
     def _assert_quick_reply_contract(self, body: str, journal_marker: str) -> None:
         quick_marker = "[[quick-replies:"
-        self.assertIn("1-3 short labels (≤30 characters each)", body)
+        self.assertIn(
+            "1-3 short labels (≤24 characters each; longer labels invalidate the whole marker, so prefer 2-3 words)",
+            body,
+        )
         self.assertIn("sent verbatim as the user's message when tapped", body)
         self.assertIn("clearly actionable next move", body)
         self.assertIn("quick-replies marker must be the very last line", body)

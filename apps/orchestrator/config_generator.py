@@ -450,7 +450,8 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "If there is no quick-replies marker, the journal-link marker must be the very "
     "last line, with nothing (not even a space) after it.\n\n"
     "Only when there is a clearly actionable next move, you MAY end the message "
-    "with ONE quick-replies marker offering 1-3 short labels (≤30 characters each). "
+    "with ONE quick-replies marker offering 1-3 short labels (≤24 characters each; "
+    "longer labels invalidate the whole marker, so prefer 2-3 words). "
     "Each label is sent verbatim as the user's message when tapped, so every label "
     'must read as something the user would say, such as "How\'s my week?", '
     '"Add a note", or "Move tomorrow\'s session". When you include both markers, '
@@ -582,7 +583,8 @@ _EVENING_CHECKIN_PROMPT = (
     "the actual slug of the daily note you wrote in step 5. If there is no "
     "quick-replies marker, the journal-link marker must be the very last line.\n\n"
     "Only when there is a clearly actionable next move, you MAY end the message "
-    "with ONE quick-replies marker offering 1-3 short labels (≤30 characters each). "
+    "with ONE quick-replies marker offering 1-3 short labels (≤24 characters each; "
+    "longer labels invalidate the whole marker, so prefer 2-3 words). "
     "Each label is sent verbatim as the user's message when tapped, so every label "
     "must read as something the user would say. For the evening energy/mood ask, "
     'for example: "👍 Good day" | "🫤 Mixed" | "👎 Rough". When you include both '
