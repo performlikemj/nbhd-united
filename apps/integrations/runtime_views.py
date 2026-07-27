@@ -39,6 +39,7 @@ from apps.journal.services import (
     get_default_template,
     get_or_seed_note_template,
     parse_daily_sections,
+    resolve_daily_section_heading,
     seed_default_templates_for_tenant,
     upsert_markdown_section,
 )
@@ -1479,8 +1480,11 @@ class RuntimeDailyNoteAppendView(APIView):
             md = doc.markdown or ""
 
             if section_slug_str:
-                # Derive heading from slug (e.g. "morning-report" → "Morning Report")
-                heading = section_slug_str.replace("-", " ").title()
+                heading = resolve_daily_section_heading(
+                    tenant=tenant,
+                    markdown=md,
+                    section_slug=section_slug_str,
+                )
                 doc.markdown = upsert_markdown_section(md, heading, content)
             else:
                 # Quick-log append with timestamp

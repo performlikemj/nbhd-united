@@ -4,7 +4,7 @@ from django.contrib.auth import get_user_model
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from apps.journal.models import Document
+from apps.journal.models import Document, NoteTemplate
 from apps.tenants.models import Tenant
 from apps.tenants.test_utils import seed_internal_key
 
@@ -131,4 +131,144 @@ class MarkdownSectionIntegrityTest(TestCase):
         self.assertEqual(
             response.data["markdown"],
             "# 2026-07-27\n\n## Report\nnew report\n",
+        )
+
+    def test_legacy_short_heading_routes_to_existing_short_section(self):
+        document = self._daily_document("# 2026-07-27\n\n## News\nold legacy news\n\n## Later\nlater section\n")
+
+        response = self.client.post(
+            self.daily_url,
+            {
+                "content": "new legacy news",
+                "date": document.slug,
+                "section_slug": "news",
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIn("## News\nnew legacy news", response.data["markdown"])
+        self.assertNotIn("old legacy news", response.data["markdown"])
+        self.assertNotIn("## News & Interests", response.data["markdown"])
+        self.assertEqual(response.data["markdown"].count("## News\n"), 1)
+
+    def test_canonical_heading_routes_to_existing_canonical_section(self):
+        document = self._daily_document(
+            "# 2026-07-27\n\n## News & Interests\nold canonical news\n\n## Later\nlater section\n"
+        )
+
+        response = self.client.post(
+            self.daily_url,
+            {
+                "content": "new canonical news",
+                "date": document.slug,
+                "section_slug": "news",
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIn(
+            "## News & Interests\nnew canonical news",
+            response.data["markdown"],
+        )
+        self.assertNotIn("old canonical news", response.data["markdown"])
+        self.assertNotIn("## News\n", response.data["markdown"])
+        self.assertEqual(response.data["markdown"].count("## News & Interests"), 1)
+
+    def test_canonical_heading_wins_when_canonical_and_legacy_both_exist(self):
+        document = self._daily_document(
+            "# 2026-07-27\n\n## News & Interests\nold canonical news\n\n## News\nlegacy news stays\n"
+        )
+
+        response = self.client.post(
+            self.daily_url,
+            {
+                "content": "new canonical news",
+                "date": document.slug,
+                "section_slug": "news",
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIn(
+            "## News & Interests\nnew canonical news",
+            response.data["markdown"],
+        )
+        self.assertIn("## News\nlegacy news stays", response.data["markdown"])
+        self.assertNotIn("old canonical news", response.data["markdown"])
+
+    def test_absent_section_is_created_with_canonical_default_title(self):
+        document = self._daily_document("# 2026-07-27\n")
+
+        response = self.client.post(
+            self.daily_url,
+            {
+                "content": "Three priorities",
+                "date": document.slug,
+                "section_slug": "focus",
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIn("## Today's Focus\nThree priorities", response.data["markdown"])
+        self.assertNotIn("## Focus\n", response.data["markdown"])
+
+    def test_tenant_template_title_wins_when_section_is_absent(self):
+        NoteTemplate.objects.create(
+            tenant=self.tenant,
+            slug="custom",
+            name="Custom",
+            is_default=True,
+            sections=[
+                {
+                    "slug": "news",
+                    "title": "Neighborhood Pulse",
+                    "content": "",
+                    "source": "agent",
+                }
+            ],
+        )
+        document = self._daily_document("# 2026-07-27\n")
+
+        response = self.client.post(
+            self.daily_url,
+            {
+                "content": "Local updates",
+                "date": document.slug,
+                "section_slug": "news",
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIn("## Neighborhood Pulse\nLocal updates", response.data["markdown"])
+        self.assertNotIn("## News\n", response.data["markdown"])
+        self.assertNotIn("## News & Interests", response.data["markdown"])
+
+    def test_unknown_slug_keeps_derived_heading_behavior(self):
+        document = self._daily_document("# 2026-07-27\n")
+
+        response = self.client.post(
+            self.daily_url,
+            {
+                "content": "Unknown section content",
+                "date": document.slug,
+                "section_slug": "custom-insights",
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertIn(
+            "## Custom Insights\nUnknown section content",
+            response.data["markdown"],
         )
