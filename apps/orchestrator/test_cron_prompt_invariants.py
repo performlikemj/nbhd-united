@@ -103,5 +103,41 @@ class MorningBriefingJournalLinkMarkerTest(SimpleTestCase):
         self.assertIn("[[journal-link: daily|<DATE>|Morning Report]]", body)
         # And the guardrails that keep the emitted marker parseable: it must be
         # the last line alone, and the date must be the real daily-note slug.
-        self.assertIn("its very last line", body)
+        self.assertIn("must be the very last line", body)
         self.assertIn("must be the daily note's actual slug", body)
+
+
+class ProactiveQuickRepliesMarkerTest(SimpleTestCase):
+    def _assert_quick_reply_contract(self, body: str, journal_marker: str) -> None:
+        quick_marker = "[[quick-replies:"
+        self.assertIn("1-3 short labels (≤30 characters each)", body)
+        self.assertIn("sent verbatim as the user's message when tapped", body)
+        self.assertIn("clearly actionable next move", body)
+        self.assertIn("quick-replies marker must be the very last line", body)
+        self.assertIn("delivery parser strips it first", body)
+        self.assertIn("Do not reverse these two marker lines", body)
+        self.assertLess(
+            body.rindex(journal_marker),
+            body.rindex(quick_marker),
+            "The prompt's concrete message tail must put journal-link before the final quick-replies marker.",
+        )
+
+    def test_morning_briefing_offers_optional_next_moves_in_parse_order(self):
+        body = config_generator._MORNING_BRIEFING_PROMPT_TEMPLATE
+        self._assert_quick_reply_contract(
+            body,
+            "[[journal-link: daily|<DATE>|Morning Report]]",
+        )
+        self.assertIn("How's my week?", body)
+        self.assertIn("Add a note", body)
+        self.assertIn("Move tomorrow's session", body)
+
+    def test_evening_checkin_offers_optional_next_moves_in_parse_order(self):
+        body = config_generator._EVENING_CHECKIN_PROMPT
+        self._assert_quick_reply_contract(
+            body,
+            "[[journal-link: daily|<DATE>|Evening Check-in]]",
+        )
+        self.assertIn("👍 Good day", body)
+        self.assertIn("🫤 Mixed", body)
+        self.assertIn("👎 Rough", body)
