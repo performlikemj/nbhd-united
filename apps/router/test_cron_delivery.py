@@ -1,7 +1,7 @@
 """Tests for cron delivery endpoint."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, PropertyMock, patch
 from zoneinfo import ZoneInfo
 
 from django.test import TestCase, override_settings
@@ -374,6 +374,81 @@ class MorningBriefingJournalFallbackTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self._assert_fallback_link()
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_snapshot_daemon_id_gets_fallback_when_cron_row_ids_are_stale(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+        daemon_job_id = "e5428d81-3333-4444-8888-123456789abc"
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="Morning Briefing",
+            gateway_job_id="5c383417-stale-gateway-id",
+            data={},
+        )
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [{"id": daemon_job_id, "name": "Morning Briefing"}],
+            "snapshot_at": "2026-07-27T00:00:00Z",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING") as logs:
+            response = self._post(job_name=daemon_job_id)
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_fallback_link()
+        self.assertIn("briefing_missing_journal_link_fallback", logs.output[0])
+        self.assertEqual(logs.records[0].tenant_id, str(self.tenant.id))
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_snapshot_daemon_id_for_different_job_stays_chipless(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+        daemon_job_id = "e5428d81-3333-4444-8888-123456789abc"
+        self.tenant.cron_jobs_snapshot = {
+            "jobs": [{"id": daemon_job_id, "name": "Evening Check-in"}],
+            "snapshot_at": "2026-07-27T00:00:00Z",
+        }
+        self.tenant.save(update_fields=["cron_jobs_snapshot"])
+
+        with self.assertNoLogs("apps.router.cron_delivery", level="WARNING"):
+            response = self._post(job_name=daemon_job_id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(ProactiveOutbound.objects.get(tenant=self.tenant).journal_link)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_malformed_snapshots_do_not_block_delivery_or_attach_chip(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+        malformed_snapshots = {
+            "none": None,
+            "non_dict": [],
+            "jobs_not_list": {"jobs": {"id": "opaque-job-id", "name": "Morning Briefing"}},
+            "non_dict_jobs": {"jobs": [None, "bad-entry", 42]},
+        }
+
+        for label, snapshot in malformed_snapshots.items():
+            with self.subTest(snapshot=label):
+                _rate_counts.clear()
+                ProactiveOutbound.objects.filter(tenant=self.tenant).delete()
+                with (
+                    patch.object(
+                        Tenant,
+                        "cron_jobs_snapshot",
+                        new_callable=PropertyMock,
+                        return_value=snapshot,
+                    ),
+                    self.assertNoLogs("apps.router.cron_delivery", level="WARNING"),
+                ):
+                    response = self._post(
+                        job_name=f"opaque-job-id-{label}",
+                        message=f"Malformed snapshot: {label}",
+                    )
+
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["status"], "sent")
+                self.assertIsNone(ProactiveOutbound.objects.get(tenant=self.tenant).journal_link)
 
     @patch("apps.router.cron_delivery.httpx.Client")
     def test_non_briefing_job_stays_chipless(self, mock_client_cls):

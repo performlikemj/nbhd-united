@@ -47,34 +47,60 @@ def _record_send(tenant_id: str) -> None:
 
 
 def _is_morning_briefing_send(*, tenant, job_name: str) -> bool:
-    normalized_job_name = str(job_name or "").strip()
+    try:
+        normalized_job_name = str(job_name or "").strip()
+    except Exception:
+        return False
     if normalized_job_name.casefold() == "morning briefing":
         return True
     if not normalized_job_name:
         return False
 
-    from django.db.models import CharField, Q
-    from django.db.models.fields.json import KeyTextTransform
-    from django.db.models.functions import Cast
+    try:
+        from django.db.models import CharField, Q
+        from django.db.models.fields.json import KeyTextTransform
+        from django.db.models.functions import Cast
 
-    from apps.cron.models import CronJob
+        from apps.cron.models import CronJob
 
-    return (
-        CronJob.objects.filter(
-            tenant=tenant,
-            name="Morning Briefing",
+        row_matches = (
+            CronJob.objects.filter(
+                tenant=tenant,
+                name="Morning Briefing",
+            )
+            .annotate(
+                row_id_text=Cast("id", output_field=CharField()),
+                data_id_text=KeyTextTransform("id", "data"),
+            )
+            .filter(
+                Q(row_id_text=normalized_job_name)
+                | Q(gateway_job_id=normalized_job_name)
+                | Q(data_id_text=normalized_job_name)
+            )
+            .exists()
         )
-        .annotate(
-            row_id_text=Cast("id", output_field=CharField()),
-            data_id_text=KeyTextTransform("id", "data"),
-        )
-        .filter(
-            Q(row_id_text=normalized_job_name)
-            | Q(gateway_job_id=normalized_job_name)
-            | Q(data_id_text=normalized_job_name)
-        )
-        .exists()
-    )
+    except Exception:
+        row_matches = False
+    if row_matches:
+        return True
+
+    try:
+        snapshot = tenant.cron_jobs_snapshot
+        if not isinstance(snapshot, dict):
+            return False
+        jobs = snapshot.get("jobs") or []
+        if not isinstance(jobs, list):
+            return False
+        for job in jobs:
+            if not isinstance(job, dict):
+                continue
+            if str(job.get("id") or "") != normalized_job_name:
+                continue
+            if str(job.get("name") or "").strip().casefold() == "morning briefing":
+                return True
+    except Exception:
+        return False
+    return False
 
 
 def resolve_user_channel(user) -> str | None:
