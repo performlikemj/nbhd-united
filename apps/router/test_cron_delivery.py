@@ -1,11 +1,16 @@
 """Tests for cron delivery endpoint."""
 
+from datetime import datetime
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
+from apps.cron.models import CronJob
+from apps.journal.models import Document
 from apps.router.cron_delivery import _rate_counts, _split_message
+from apps.router.models import ProactiveOutbound
 from apps.tenants.models import Tenant
 from apps.tenants.test_utils import seed_internal_key
 
@@ -214,3 +219,197 @@ class CronDeliveryViewTest(TestCase):
 
         stored = ProactiveOutbound.objects.get(tenant=self.tenant)
         self.assertIsNone(stored.journal_link)
+
+
+@override_settings(
+    TELEGRAM_BOT_TOKEN="test-token",
+    NBHD_INTERNAL_API_KEY="test-key",
+)
+class MorningBriefingJournalFallbackTest(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            username="briefing-fallback",
+            password="pass",
+            timezone="Asia/Tokyo",
+        )
+        self.user.telegram_chat_id = 12345
+        self.user.save(update_fields=["telegram_chat_id"])
+        self.tenant = Tenant.objects.create(
+            user=self.user,
+            status=Tenant.Status.ACTIVE,
+        )
+        seed_internal_key(self.tenant)
+        self.client = APIClient()
+        self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"
+        self.utc_now = datetime(2026, 7, 27, 15, 30, tzinfo=ZoneInfo("UTC"))
+        self.local_slug = "2026-07-28"
+        _rate_counts.clear()
+
+    def _headers(self, job_name):
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+            "HTTP_X_NBHD_JOB_NAME": job_name,
+        }
+
+    def _configure_successful_telegram(self, mock_client_cls):
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+    def _create_today_document(self):
+        return Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug=self.local_slug,
+            title=self.local_slug,
+            markdown=f"# {self.local_slug}\n\n## Morning Report\nBriefing.\n",
+        )
+
+    def _post(self, *, job_name, message="Good morning."):
+        with patch("django.utils.timezone.now", return_value=self.utc_now):
+            return self.client.post(
+                self.url,
+                {"message": message},
+                format="json",
+                **self._headers(job_name),
+            )
+
+    def _assert_fallback_link(self):
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(
+            stored.journal_link,
+            {
+                "kind": "daily",
+                "slug": self.local_slug,
+                "title": "Morning Report",
+            },
+        )
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_marker_present_is_stored_as_parsed_without_fallback(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+        message = "Briefing.\n[[journal-link: daily|2026-07-27|Agent Title]]"
+
+        with (
+            patch("apps.cron.models.CronJob.objects.filter") as mock_cron_filter,
+            self.assertNoLogs("apps.router.cron_delivery", level="WARNING"),
+        ):
+            response = self._post(job_name="Morning Briefing", message=message)
+
+        self.assertEqual(response.status_code, 200)
+        mock_cron_filter.assert_not_called()
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(
+            stored.journal_link,
+            {
+                "kind": "daily",
+                "slug": "2026-07-27",
+                "title": "Agent Title",
+            },
+        )
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_name_header_gets_tenant_local_fallback(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING") as logs:
+            response = self._post(job_name="mOrNiNg BrIeFiNg")
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_fallback_link()
+        self.assertIn("briefing_missing_journal_link_fallback", logs.output[0])
+        self.assertEqual(logs.records[0].tenant_id, str(self.tenant.id))
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_cron_row_id_header_gets_fallback(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+        job = CronJob.objects.create(tenant=self.tenant, name="Morning Briefing")
+
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            response = self._post(job_name=str(job.id))
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_fallback_link()
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_gateway_job_id_header_gets_fallback(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+        job = CronJob.objects.create(
+            tenant=self.tenant,
+            name="Morning Briefing",
+            gateway_job_id="gateway-briefing-id",
+        )
+
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            response = self._post(job_name=job.gateway_job_id)
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_fallback_link()
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_json_data_id_header_gets_fallback(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+        job = CronJob.objects.create(
+            tenant=self.tenant,
+            name="Morning Briefing",
+            data={"id": "json-briefing-id"},
+        )
+
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            response = self._post(job_name=job.data["id"])
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_fallback_link()
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_non_briefing_job_stays_chipless(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+
+        with self.assertNoLogs("apps.router.cron_delivery", level="WARNING"):
+            response = self._post(job_name="Evening Check-in")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(ProactiveOutbound.objects.get(tenant=self.tenant).journal_link)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_briefing_without_today_document_stays_chipless(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+
+        with self.assertNoLogs("apps.router.cron_delivery", level="WARNING"):
+            response = self._post(job_name="Morning Briefing")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(ProactiveOutbound.objects.get(tenant=self.tenant).journal_link)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_detection_exception_does_not_block_delivery(self, mock_client_cls):
+        self._configure_successful_telegram(mock_client_cls)
+        self._create_today_document()
+
+        with (
+            patch(
+                "apps.cron.models.CronJob.objects.filter",
+                side_effect=RuntimeError("detection failed"),
+            ),
+            self.assertNoLogs("apps.router.cron_delivery", level="WARNING"),
+        ):
+            response = self._post(job_name="opaque-job-id")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "sent")
+        self.assertIsNone(ProactiveOutbound.objects.get(tenant=self.tenant).journal_link)

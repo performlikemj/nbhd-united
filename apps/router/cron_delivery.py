@@ -46,6 +46,37 @@ def _record_send(tenant_id: str) -> None:
     _rate_counts.setdefault(tenant_id, []).append(time.time())
 
 
+def _is_morning_briefing_send(*, tenant, job_name: str) -> bool:
+    normalized_job_name = str(job_name or "").strip()
+    if normalized_job_name.casefold() == "morning briefing":
+        return True
+    if not normalized_job_name:
+        return False
+
+    from django.db.models import CharField, Q
+    from django.db.models.fields.json import KeyTextTransform
+    from django.db.models.functions import Cast
+
+    from apps.cron.models import CronJob
+
+    return (
+        CronJob.objects.filter(
+            tenant=tenant,
+            name="Morning Briefing",
+        )
+        .annotate(
+            row_id_text=Cast("id", output_field=CharField()),
+            data_id_text=KeyTextTransform("id", "data"),
+        )
+        .filter(
+            Q(row_id_text=normalized_job_name)
+            | Q(gateway_job_id=normalized_job_name)
+            | Q(data_id_text=normalized_job_name)
+        )
+        .exists()
+    )
+
+
 def resolve_user_channel(user) -> str | None:
     """Determine which channel to use for outbound / proactive messages to ``user``.
 
@@ -237,6 +268,34 @@ class CronDeliveryView(APIView):
         placeholder_message_text, journal_link = extract_journal_link(
             placeholder_message_text, tenant_id=tenant.id, channel=f"cron_{channel}"
         )
+        if journal_link is None:
+            try:
+                if _is_morning_briefing_send(
+                    tenant=tenant,
+                    job_name=request.headers.get("X-NBHD-Job-Name", ""),
+                ):
+                    from apps.common.tenant_tz import tenant_today
+                    from apps.journal.models import Document
+
+                    daily_slug = str(tenant_today(tenant))
+                    if Document.objects.filter(
+                        tenant=tenant,
+                        kind=Document.Kind.DAILY,
+                        slug=daily_slug,
+                    ).exists():
+                        journal_link = {
+                            "kind": Document.Kind.DAILY,
+                            "slug": daily_slug,
+                            "title": "Morning Report",
+                        }
+                        logger.warning(
+                            "briefing_missing_journal_link_fallback",
+                            extra={"tenant_id": str(tenant.id)},
+                        )
+            except Exception:
+                # Job identification and fallback lookup are best-effort. A
+                # missing chip must never block the underlying delivery.
+                pass
 
         # Rehydrate PII placeholders before sending to user (owner-facing egress).
         entity_map = tenant.pii_entity_map
