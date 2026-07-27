@@ -1425,7 +1425,7 @@ class ChatSinceFeedTest(TestCase):
         ConversationTurn.objects.filter(pk=t.pk).update(created_at=self._at(minute))
         return t
 
-    def _cron_send(self, *, message_text, minute, journal_link=None):
+    def _cron_send(self, *, message_text, minute, journal_link=None, quick_replies=None):
         from apps.router.models import ProactiveOutbound
 
         p = ProactiveOutbound.objects.create(
@@ -1435,6 +1435,7 @@ class ChatSinceFeedTest(TestCase):
             message_text=message_text,
             job_name="Morning Briefing",
             journal_link=journal_link,
+            quick_replies=quick_replies,
         )
         ProactiveOutbound.objects.filter(pk=p.pk).update(created_at=self._at(minute))
         return p
@@ -1495,6 +1496,42 @@ class ChatSinceFeedTest(TestCase):
         self._cron_send(message_text="Plain check-in.", minute=1)
         cron_row = next(m for m in self._get().data["messages"] if m["source"] == "cron")
         self.assertNotIn("journal_link", cron_row)
+
+    def test_cron_row_surfaces_rehydrated_quick_replies(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        self._cron_send(
+            message_text="Want to follow up, [PERSON_1]?",
+            minute=1,
+            quick_replies=["Ask [PERSON_1]", "Not now"],
+        )
+
+        cron_row = next(m for m in self._get().data["messages"] if m["source"] == "cron")
+        self.assertEqual(cron_row["quick_replies"], ["Ask Alice", "Not now"])
+
+    def test_cron_marker_only_row_keeps_quick_replies(self):
+        self._cron_send(
+            message_text="",
+            minute=1,
+            quick_replies=["Tell me more"],
+        )
+
+        cron_row = next(m for m in self._get().data["messages"] if m["source"] == "cron")
+        self.assertEqual(cron_row["text"], "")
+        self.assertEqual(cron_row["quick_replies"], ["Tell me more"])
+
+    def test_cron_row_drops_quick_replies_on_rehydration_overflow(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": "A very long person name"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        self._cron_send(
+            message_text="Want to follow up?",
+            minute=1,
+            quick_replies=["Ask [PERSON_1] today"],
+        )
+
+        with self.assertLogs("apps.router.quick_replies", level="WARNING"):
+            cron_row = next(m for m in self._get().data["messages"] if m["source"] == "cron")
+        self.assertNotIn("quick_replies", cron_row)
 
     def test_client_msg_id_on_both_device_rows_not_other_channels(self):
         self._app_turn(cid="a1", user_text="ping", reply_text="pong", minute=1)

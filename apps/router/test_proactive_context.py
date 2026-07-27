@@ -274,6 +274,39 @@ class SurfaceProactiveContextTest(_TenantFixture):
             block,
         )
 
+    def test_quick_reply_offer_set_is_model_only_and_stays_placeholder_space(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Alice"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        row = record_proactive_outbound(
+            tenant=self.tenant,
+            channel="app",
+            channel_user_id="app-user",
+            message_text="Want to follow up?",
+            quick_replies=["Ask [PERSON_1]", "Not now"],
+        )
+        assert row is not None
+        self.assertEqual(row.quick_replies, ["Ask [PERSON_1]", "Not now"])
+
+        block = surface_proactive_context(tenant=self.tenant)
+
+        self.assertIn(
+            '(you offered quick replies: "Ask [PERSON_1]" | "Not now")',
+            block,
+        )
+        self.assertNotIn("Alice", block)
+
+    def test_quick_reply_offer_line_absent_without_offers(self):
+        record_proactive_outbound(
+            tenant=self.tenant,
+            channel="app",
+            channel_user_id="app-user",
+            message_text="Plain proactive message.",
+        )
+
+        block = surface_proactive_context(tenant=self.tenant)
+
+        self.assertNotIn("you offered quick replies", block)
+
     def test_answer_binding_guidance_present_when_any_row_surfaces(self):
         # Always-on binding rule (2026-07-11 canary incident: "energy 1-10?"
         # answered "6.5 today" got logged as SLEEP HOURS even though the

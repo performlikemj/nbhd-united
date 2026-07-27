@@ -275,14 +275,15 @@ class CronDeliveryView(APIView):
         placeholder_message_text = serializer.validated_data["message"]
         parse_mode = serializer.validated_data.get("parse_mode", "Markdown")
 
-        # Quick-reply buttons aren't wired for cron/proactive sends (no
-        # ProactiveOutbound column, no iOS UI for it this cycle — see PR
-        # description). Still strip the marker here so it can never leak as
-        # raw text on ANY channel if an agent emits it on a proactive send.
+        # Strip the generic marker before every transport, but retain its labels
+        # in placeholder space on ProactiveOutbound. The row is cross-channel:
+        # even a Telegram/LINE delivery can later render pills in the iOS feed.
+        # This parser runs first, so when both supported markers are present the
+        # quick-replies line must be LAST and journal-link immediately before it.
         from apps.router.journal_link import extract_journal_link
         from apps.router.quick_replies import extract_quick_replies
 
-        placeholder_message_text, _quick_replies = extract_quick_replies(
+        placeholder_message_text, quick_replies = extract_quick_replies(
             placeholder_message_text, tenant_id=tenant.id, channel=f"cron_{channel}"
         )
         # The journal deep-link chip, unlike quick-replies, IS persisted for
@@ -381,6 +382,7 @@ class CronDeliveryView(APIView):
                 # the ?since= feed rehydrates + renders it as a chip. None when
                 # the send carried no marker.
                 journal_link=journal_link,
+                quick_replies=quick_replies,
                 artifact_dedup_key=artifact_dedup_key,
             )
             if row is None:
@@ -423,6 +425,7 @@ class CronDeliveryView(APIView):
                 message_text=placeholder_message_text,
                 job_name=job_name,
                 journal_link=journal_link,
+                quick_replies=quick_replies,
                 artifact_dedup_key=artifact_dedup_key,
             )
             if row is None:
@@ -483,6 +486,7 @@ class CronDeliveryView(APIView):
                 # the ?since= feed rehydrates + renders it as a chip. None when
                 # the send carried no marker.
                 journal_link=journal_link,
+                quick_replies=quick_replies,
                 artifact_dedup_key=artifact_dedup_key,
             )
 
