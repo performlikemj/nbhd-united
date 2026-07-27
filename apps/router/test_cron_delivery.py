@@ -135,9 +135,7 @@ class CronDeliveryViewTest(TestCase):
 
     @patch("apps.router.cron_delivery.httpx.Client")
     def test_quick_reply_marker_stripped_before_send_and_persist(self, mock_client_cls):
-        """Proactive/cron sends don't wire up quick-reply buttons (no
-        ProactiveOutbound column, no iOS UI for it yet) but the marker must
-        still never leak as raw text if an agent emits it on a cron message."""
+        """Telegram gets clean text while its cross-channel row keeps pills."""
         mock_http = MagicMock()
         mock_resp = MagicMock()
         mock_resp.is_success = True
@@ -163,6 +161,93 @@ class CronDeliveryViewTest(TestCase):
 
         stored = ProactiveOutbound.objects.get(tenant=self.tenant)
         self.assertNotIn("quick-replies", stored.message_text)
+        self.assertEqual(stored.quick_replies, ["Snooze", "Done"])
+
+    @override_settings(LINE_CHANNEL_ACCESS_TOKEN="line-token")
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_line_quick_reply_marker_stripped_before_send_and_persisted(self, mock_client_cls):
+        self.user.telegram_chat_id = None
+        self.user.line_user_id = "Ulinequickreply"
+        self.user.save(update_fields=["telegram_chat_id", "line_user_id"])
+
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        resp = self.client.post(
+            self.url,
+            {"message": "How was today?\n[[quick-replies: 👍 Good day | 🫤 Mixed | 👎 Rough]]"},
+            format="json",
+            **self._headers(),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotIn("quick-replies", str(mock_http.post.call_args.kwargs["json"]))
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(stored.channel, "line")
+        self.assertEqual(stored.quick_replies, ["👍 Good day", "🫤 Mixed", "👎 Rough"])
+        self.assertNotIn("quick-replies", stored.message_text)
+
+    @patch("apps.router.proactive_context._dispatch_ios_push")
+    def test_app_quick_reply_marker_stripped_before_send_and_persisted(self, _push):
+        from apps.router.models import DeviceToken
+
+        DeviceToken.objects.create(tenant=self.tenant, user=self.user, token="q" * 64)
+
+        resp = self.client.post(
+            self.url,
+            {"message": "What next?\n[[quick-replies: Add a note | How's my week?]]"},
+            format="json",
+            **self._headers(),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["channel"], "app")
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(stored.quick_replies, ["Add a note", "How's my week?"])
+        self.assertEqual(stored.message_text, "What next?")
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_journal_then_quick_replies_tail_parses_and_stores_both(self, mock_client_cls):
+        """Parse order requires journal-link before the final quick-replies line."""
+        mock_http = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.is_success = True
+        mock_resp.status_code = 200
+        mock_http.post.return_value = mock_resp
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        resp = self.client.post(
+            self.url,
+            {
+                "message": (
+                    "Here's your morning report.\n\n"
+                    "[[journal-link: daily|2026-07-13|Morning Report]]\n"
+                    "[[quick-replies: How's my week? | Add a note]]"
+                )
+            },
+            format="json",
+            **self._headers(),
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        sent_text = mock_http.post.call_args.kwargs["json"]["text"]
+        self.assertNotIn("[[journal-link:", sent_text)
+        self.assertNotIn("[[quick-replies:", sent_text)
+        stored = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(
+            stored.journal_link,
+            {"kind": "daily", "slug": "2026-07-13", "title": "Morning Report"},
+        )
+        self.assertEqual(stored.quick_replies, ["How's my week?", "Add a note"])
+        self.assertEqual(stored.message_text, "Here's your morning report.")
 
     @patch("apps.router.cron_delivery.httpx.Client")
     def test_journal_link_marker_stripped_from_send_and_persisted(self, mock_client_cls):
@@ -219,6 +304,7 @@ class CronDeliveryViewTest(TestCase):
 
         stored = ProactiveOutbound.objects.get(tenant=self.tenant)
         self.assertIsNone(stored.journal_link)
+        self.assertIsNone(stored.quick_replies)
 
 
 @override_settings(

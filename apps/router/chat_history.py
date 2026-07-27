@@ -331,12 +331,15 @@ def _proactive_rows(p, main_thread_id, entity_map=None):
     """A ``ProactiveOutbound`` (cron / proactive send) → one assistant row.
 
     ``message_text`` is stored placeholder-space and rehydrated here (owner-facing).
-    A ``journal_link`` (e.g. from MJ's Telegram-delivered morning report) rides
-    the row too — rehydrated via the same shared helper the app-message seams use
-    so a proactive chip and an app-reply chip resolve a stored title identically."""
+    ``quick_replies`` and a ``journal_link`` ride the row too — rehydrated via
+    the same shared helpers the app-message seams use so proactive and app-reply
+    affordances resolve stored placeholder text identically."""
     from apps.router.journal_link import rehydrate_journal_link
+    from apps.router.quick_replies import rehydrate_quick_replies
 
-    if not (p.message_text or "").strip():
+    # Keep a marker-only row: stripping can legitimately leave no prose, but
+    # the pills/chip are still the proactive payload the app needs to render.
+    if not (p.message_text or "").strip() and not p.quick_replies and not p.journal_link:
         return []
     return [
         _row(
@@ -346,6 +349,9 @@ def _proactive_rows(p, main_thread_id, entity_map=None):
             text=_rehydrate(p.message_text, entity_map),
             source="cron",
             thread_id=main_thread_id,
+            quick_replies=rehydrate_quick_replies(
+                p.quick_replies, entity_map, tenant_id=p.tenant_id, channel="cron_feed"
+            ),
             journal_link=rehydrate_journal_link(p.journal_link, entity_map, tenant_id=p.tenant_id, channel="cron_feed"),
         )
     ]

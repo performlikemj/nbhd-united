@@ -101,6 +101,7 @@ def record_proactive_outbound(
     message_text: str,
     job_name: str = "",
     journal_link: dict | None = None,
+    quick_replies: list[str] | None = None,
     artifact_dedup_key: str | None = None,
 ) -> ProactiveOutbound | None:
     """Persist a row describing one proactive delivery or eval evidence event.
@@ -151,6 +152,10 @@ def record_proactive_outbound(
                 # in placeholder space) — surfaced + rehydrated by the ?since= feed.
                 # None on sends that carried no marker.
                 journal_link=journal_link,
+                # Parsed tap-to-send labels in placeholder space. They ride the
+                # row across every delivery channel for the iOS feed and the
+                # deterministic model-facing offer set below.
+                quick_replies=quick_replies,
             )
     except Exception:
         logger.exception(
@@ -276,6 +281,9 @@ def _format_block(rows: Iterable[ProactiveOutbound]) -> str:
                 f"\n[journal-ref: {link.get('kind', '')}|{link.get('slug', '')}|"
                 f"{link.get('title', '')}; retrieve with nbhd_document_get]"
             )
+        if row.quick_replies:
+            offers = " | ".join(f'"{label}"' for label in row.quick_replies)
+            body += f"\n(you offered quick replies: {offers})"
         parts.append(f"[earlier-from-you {when}{job}:\n{body}\n]")
     if not parts:
         return ""

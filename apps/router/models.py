@@ -364,6 +364,12 @@ class ProactiveOutbound(models.Model):
             "is the path MJ's morning report uses."
         ),
     )
+    # Up to 3 short tappable choice labels parsed from a trailing
+    # ``[[quick-replies: A | B | C]]`` marker on a proactive / cron send (see
+    # ``apps.router.quick_replies.extract_quick_replies``). Stored in
+    # PII-placeholder space and rehydrated only at the owner-facing ``?since=``
+    # feed. null/absent means the send carried no valid marker.
+    quick_replies = models.JSONField(null=True, blank=True, default=None)
 
     class Meta:
         db_table = "proactive_outbounds"
