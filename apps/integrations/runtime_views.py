@@ -40,6 +40,7 @@ from apps.journal.services import (
     get_or_seed_note_template,
     parse_daily_sections,
     seed_default_templates_for_tenant,
+    upsert_markdown_section,
 )
 from apps.journal.session_models import Session
 from apps.lessons.models import Lesson
@@ -1480,30 +1481,7 @@ class RuntimeDailyNoteAppendView(APIView):
             if section_slug_str:
                 # Derive heading from slug (e.g. "morning-report" → "Morning Report")
                 heading = section_slug_str.replace("-", " ").title()
-                marker = f"## {heading}"
-                # Anchor the heading match to a full line so "## Report" does not
-                # match "## Report Card", and so a "## " embedded mid-line inside
-                # another section's body cannot shift the slice boundaries.
-                head_match = re.search(r"(?m)^" + re.escape(marker) + r"[ \t]*$", md)
-                if head_match is not None:
-                    # Replace section content (everything between this heading and the next)
-                    heading_end = md.find("\n", head_match.end())
-                    if heading_end == -1:
-                        heading_end = len(md)
-                    else:
-                        heading_end += 1  # include the newline
-                    # Match the next "## " heading on its own line; capture the
-                    # preceding newline (if any) so the slice boundary matches the
-                    # original "\n## " behaviour and blank-line spacing is preserved.
-                    next_match = re.search(r"(?:^|\n)(## )", md[heading_end:])
-                    if next_match is None:
-                        doc.markdown = md[:heading_end] + content + "\n"
-                    else:
-                        next_heading = heading_end + next_match.start(1) - 1
-                        doc.markdown = md[:heading_end] + content + "\n" + md[next_heading:]
-                else:
-                    # Section heading doesn't exist yet — append it
-                    doc.markdown = md.rstrip() + f"\n\n{marker}\n{content}\n"
+                doc.markdown = upsert_markdown_section(md, heading, content)
             else:
                 # Quick-log append with timestamp
                 now = _tenant_now(tenant)
@@ -1537,25 +1515,7 @@ def _upsert_markdown_section(md: str, heading: str, body: str) -> str:
     ``## People`` cannot match ``## People & Context`` and a ``## `` embedded
     mid-body cannot shift the slice boundary.
     """
-    md = md or ""
-    body = (body or "").strip()
-    marker = f"## {heading}"
-    head_match = re.search(r"(?m)^" + re.escape(marker) + r"[ \t]*$", md)
-    if head_match is None:
-        # Section heading doesn't exist yet — append it.
-        return md.rstrip() + f"\n\n{marker}\n{body}\n"
-
-    heading_end = md.find("\n", head_match.end())
-    if heading_end == -1:
-        heading_end = len(md)
-    else:
-        heading_end += 1  # include the newline after the heading line
-    # Replace everything between this heading and the next "## " heading.
-    next_match = re.search(r"(?:^|\n)(## )", md[heading_end:])
-    if next_match is None:
-        return md[:heading_end] + body + "\n"
-    next_heading = heading_end + next_match.start(1) - 1
-    return md[:heading_end] + body + "\n" + md[next_heading:]
+    return upsert_markdown_section(md, heading, body)
 
 
 class RuntimeUserMemoryView(APIView):

@@ -63,6 +63,32 @@ _OLD_DEFAULT_SLUGS = {"morning-report", "log", "evening-check-in"}
 
 _ENTRY_SECTION_HEADER_RE = re.compile(r"^\d{1,2}:\d{2}\b")
 _LEGACY_ENTRY_HEADER_RE = re.compile(r"^##\s+\d{1,2}:\d{2}\b")
+_MARKDOWN_SECTION_BOUNDARY_RE = re.compile(r"(?:^|\n)(## |### \d{1,2}:\d{2}\b)")
+
+
+def upsert_markdown_section(md: str, heading: str, body: str) -> str:
+    """Replace a ``##`` section body without consuming later journal entries."""
+    md = md or ""
+    body = (body or "").strip()
+    marker = f"## {heading}"
+    head_match = re.search(r"(?m)^" + re.escape(marker) + r"[ \t]*$", md)
+    if head_match is None:
+        return md.rstrip() + f"\n\n{marker}\n{body}\n"
+
+    heading_end = md.find("\n", head_match.end())
+    if heading_end == -1:
+        heading_end = len(md)
+    else:
+        heading_end += 1
+
+    boundary_match = _MARKDOWN_SECTION_BOUNDARY_RE.search(md[heading_end:])
+    if boundary_match is None:
+        return md[:heading_end] + body + "\n"
+
+    boundary = heading_end + boundary_match.start(1)
+    if boundary_match.start(1) > 0:
+        boundary -= 1
+    return md[:heading_end] + body + "\n" + md[boundary:]
 
 
 def _validate_template_sections(sections: list[dict], /) -> list[dict[str, str]]:
