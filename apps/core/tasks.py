@@ -51,11 +51,12 @@ def render_meditation_task(meditation_id: str) -> None:
 
 
 def compose_meditation_task(meditation_id: str) -> None:
-    """Author a pending session's manifest (LLM) then render it (async via QStash).
+    """Author a pending session's manifest, then enqueue its render via QStash.
 
     The web orb's entry point: the consumer view creates a PENDING session and
-    enqueues this. Only acts on a PENDING row, so a QStash retry after the render
-    has begun is a no-op (render_meditation's own claim guards double-render).
+    enqueues this. Only acts on a PENDING row, so a retry before render claims the
+    row can resume from the persisted manifest; after the render begins it is a
+    no-op (render_meditation's own claim guards double-render).
     """
     from apps.core.models import MeditationSession, MeditationStatus
     from apps.core.services import compose_meditation

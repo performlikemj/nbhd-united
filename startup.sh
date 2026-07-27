@@ -27,6 +27,10 @@ echo "Starting gunicorn..."
 # - max-requests recycles each worker after ~1000 requests (±100 jitter so
 #   they don't all recycle simultaneously) — bounds the long-tail memory
 #   growth that drove the May 24 SIGKILL incident.
+# - graceful-timeout 600 lets accepted compose/render requests drain while a
+#   recycling worker stops taking new traffic. These requests legitimately run
+#   for minutes (compose alone can spend ~6 min across fallbacks and attempts);
+#   the 30s default killed them mid-flight.
 # -c gunicorn.conf.py: post_worker_init warms the PII model at worker boot so
 #   it never cold-loads inside a user's chat POST (8-114s measured in-request).
 gunicorn config.wsgi:application \
@@ -36,6 +40,7 @@ gunicorn config.wsgi:application \
   --workers 2 \
   --threads 8 \
   --timeout 300 \
+  --graceful-timeout 600 \
   --max-requests 1000 \
   --max-requests-jitter 100 \
   --access-logfile - \
