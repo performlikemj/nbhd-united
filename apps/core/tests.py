@@ -388,13 +388,25 @@ class RenderMeditationOrchestrationTests(TestCase):
     def test_transient_error_marks_failed_and_reraises(self):
         session = self._session()
         with (
-            patch.object(render, "render_manifest_to_audio", side_effect=RuntimeError("ffmpeg boom")),
-            self.assertRaises(RuntimeError),
+            patch.object(
+                render,
+                "render_manifest_to_audio",
+                side_effect=[RuntimeError("ffmpeg boom"), _fake_result()],
+            ) as mock_render,
+            patch.object(services, "upload_workspace_file_binary"),
+            patch.object(services, "notify_meditation_ready"),
         ):
+            with self.assertRaises(RuntimeError):
+                services.render_meditation(session)
+            session.refresh_from_db()
+            self.assertEqual(session.status, MeditationStatus.FAILED)
+            self.assertIn("render_error", session.error)
+
             services.render_meditation(session)
+
+        self.assertEqual(mock_render.call_count, 2)
         session.refresh_from_db()
-        self.assertEqual(session.status, MeditationStatus.FAILED)
-        self.assertIn("render_error", session.error)
+        self.assertEqual(session.status, MeditationStatus.READY)
 
     def test_mostly_rate_limited_marks_failed_without_reraise(self):
         # Most segments rate-limited out → fail clearly (don't ship near-silent),
@@ -767,6 +779,14 @@ class RenderMeditationTaskTests(TestCase):
             tasks.render_meditation_task(str(session.id))
         mock_render.assert_called_once()
 
+    def test_task_is_registered(self):
+        from apps.cron.views import TASK_MAP
+
+        self.assertEqual(
+            TASK_MAP["render_meditation"],
+            "apps.core.tasks.render_meditation_task",
+        )
+
 
 # ═════════════════════════════════════════════════════════════════════
 # 6. Real ffmpeg stitch (skipped when ffmpeg is unavailable). Mock TTS tones,
@@ -1132,19 +1152,51 @@ class ComposeMeditationServiceTests(TestCase):
     def _session(self):
         return MeditationSession.objects.create(tenant=self.tenant, date=date.today(), status=MeditationStatus.PENDING)
 
-    def test_authors_saves_manifest_then_renders(self):
+    def test_authors_saves_manifest_then_publishes_render(self):
         session = self._session()
         manifest = _valid_manifest()
         with (
             patch.object(compose, "author_manifest", return_value=manifest) as mock_author,
             patch.object(services, "render_meditation") as mock_render,
+            patch("apps.cron.publish.publish_task") as mock_publish,
         ):
             services.compose_meditation(session)
         mock_author.assert_called_once()
-        mock_render.assert_called_once()
+        mock_render.assert_not_called()
         session.refresh_from_db()
         self.assertTrue(session.manifest.get("phases"))
         self.assertEqual(session.title, manifest["title"])
+        mock_publish.assert_called_once_with("render_meditation", str(session.id))
+
+    def test_redelivery_with_valid_manifest_skips_author_and_republishes(self):
+        session = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=date.today(),
+            status=MeditationStatus.PENDING,
+            manifest=_valid_manifest(),
+        )
+        with (
+            patch.object(compose, "author_manifest") as mock_author,
+            patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            services.compose_meditation(session)
+
+        mock_author.assert_not_called()
+        mock_publish.assert_called_once_with("render_meditation", str(session.id))
+
+    def test_publish_failure_propagates_with_persisted_manifest(self):
+        session = self._session()
+        manifest = _valid_manifest()
+        with (
+            patch.object(compose, "author_manifest", return_value=manifest),
+            patch("apps.cron.publish.publish_task", side_effect=RuntimeError("qstash unavailable")),
+            self.assertRaises(RuntimeError),
+        ):
+            services.compose_meditation(session)
+
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.PENDING)
+        self.assertEqual(session.manifest, manifest)
 
     def test_compose_error_marks_failed_without_rendering(self):
         session = self._session()

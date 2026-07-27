@@ -201,31 +201,37 @@ def _recent_note_snippets(tenant: Tenant, *, days: int = 7, limit: int = 3, cap:
 
 
 def compose_meditation(session: MeditationSession) -> None:
-    """Author a pending session's manifest via the LLM, then render it.
+    """Ensure a pending session has a manifest, then enqueue its render.
 
     The web orb's compose flow: gather signals → LLM authors the manifest
-    (judgment) → persist it → ``render_meditation`` (deterministic execution).
-    Authoring failure is terminal for this session (a retry won't help a refusal /
-    invalid manifest); the manifest save uses the reconnect-safe path because the
-    LLM call is itself a multi-second no-DB gap.
+    (judgment) → persist it → publish ``render_meditation`` (deterministic
+    execution in a second QStash request). A redelivery with an already-valid
+    persisted manifest skips authoring and republishes the render task. Authoring
+    failure is terminal for this session (a retry won't help a refusal / invalid
+    manifest); the manifest save uses the reconnect-safe path because the LLM call
+    is itself a multi-second no-DB gap.
     """
     sid = str(session.id)
-    try:
-        signals = gather_meditation_signals(session.tenant)
-        manifest = compose.author_manifest(signals, voice=session.voice)
-    except compose.ComposeError as exc:
-        logger.warning("compose_meditation: session %s authoring failed: %s", sid[:8], str(exc)[:160])
-        _fail(session, f"compose_error: {exc}")
-        _log_compose_failure(session.tenant, str(exc))
-        return
+    if render.validate_manifest(session.manifest):
+        try:
+            signals = gather_meditation_signals(session.tenant)
+            manifest = compose.author_manifest(signals, voice=session.voice)
+        except compose.ComposeError as exc:
+            logger.warning("compose_meditation: session %s authoring failed: %s", sid[:8], str(exc)[:160])
+            _fail(session, f"compose_error: {exc}")
+            _log_compose_failure(session.tenant, str(exc))
+            return
 
-    session.manifest = manifest
-    session.title = str(manifest.get("title", ""))[:160]
-    session.theme = str(manifest.get("theme", ""))
-    _save_session(session, ["manifest", "title", "theme", "updated_at"])
+        session.manifest = manifest
+        session.title = str(manifest.get("title", ""))[:160]
+        session.theme = str(manifest.get("theme", ""))
+        _save_session(session, ["manifest", "title", "theme", "updated_at"])
 
-    # Render it (claims PENDING→RENDERING, validates, renders, persists, notifies).
-    render_meditation(session)
+    # A publish failure intentionally propagates. QStash will redeliver compose,
+    # which resumes from the valid persisted manifest without another LLM call.
+    from apps.cron.publish import publish_task
+
+    publish_task("render_meditation", sid)
 
 
 def render_meditation(session: MeditationSession) -> None:
