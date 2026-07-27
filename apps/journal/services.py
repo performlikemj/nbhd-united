@@ -63,6 +63,70 @@ _OLD_DEFAULT_SLUGS = {"morning-report", "log", "evening-check-in"}
 
 _ENTRY_SECTION_HEADER_RE = re.compile(r"^\d{1,2}:\d{2}\b")
 _LEGACY_ENTRY_HEADER_RE = re.compile(r"^##\s+\d{1,2}:\d{2}\b")
+_MARKDOWN_SECTION_BOUNDARY_RE = re.compile(r"(?:^|\n)(## |### \d{1,2}:\d{2}\b)")
+
+
+def markdown_has_section(md: str, heading: str) -> bool:
+    """Return whether ``md`` contains the exact ``## <heading>`` line."""
+    marker = f"## {heading}"
+    return re.search(r"(?m)^" + re.escape(marker) + r"[ \t]*$", md or "") is not None
+
+
+def upsert_markdown_section(md: str, heading: str, body: str) -> str:
+    """Replace a ``##`` section body without consuming later journal entries."""
+    md = md or ""
+    body = (body or "").strip()
+    marker = f"## {heading}"
+    head_match = re.search(r"(?m)^" + re.escape(marker) + r"[ \t]*$", md)
+    if head_match is None:
+        return md.rstrip() + f"\n\n{marker}\n{body}\n"
+
+    heading_end = md.find("\n", head_match.end())
+    if heading_end == -1:
+        heading_end = len(md)
+    else:
+        heading_end += 1
+
+    boundary_match = _MARKDOWN_SECTION_BOUNDARY_RE.search(md[heading_end:])
+    if boundary_match is None:
+        return md[:heading_end] + body + "\n"
+
+    boundary = heading_end + boundary_match.start(1)
+    if boundary_match.start(1) > 0:
+        boundary -= 1
+    return md[:heading_end] + body + "\n" + md[boundary:]
+
+
+def resolve_daily_section_heading(*, tenant, markdown: str, section_slug: str) -> str:
+    """Choose a template-aware heading while honoring legacy derived headings."""
+    derived_heading = section_slug.replace("-", " ").title()
+
+    canonical_heading = None
+    template = get_default_template(tenant=tenant)
+    section_sources = [
+        getattr(template, "sections", None) or [],
+        DEFAULT_TEMPLATE_SECTIONS,
+    ]
+    for sections in section_sources:
+        for section in sections:
+            if not isinstance(section, dict):
+                continue
+            if str(section.get("slug") or "").strip() != section_slug:
+                continue
+            title = str(section.get("title") or "").strip()
+            if title:
+                canonical_heading = title
+                break
+        if canonical_heading is not None:
+            break
+
+    if canonical_heading is None:
+        return derived_heading
+    if markdown_has_section(markdown, canonical_heading):
+        return canonical_heading
+    if markdown_has_section(markdown, derived_heading):
+        return derived_heading
+    return canonical_heading
 
 
 def _validate_template_sections(sections: list[dict], /) -> list[dict[str, str]]:
