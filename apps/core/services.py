@@ -10,16 +10,24 @@ ping to the linked channel.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import Q
+from django.db import transaction
 from django.utils import timezone
 
 from apps.core import compose, render
-from apps.core.models import CoreOnboardingStatus, CoreProfile, MeditationSession, MeditationStatus
-from apps.orchestrator.azure_client import upload_workspace_file_binary
+from apps.core.models import (
+    CoreOnboardingStatus,
+    CoreProfile,
+    MeditationFailureClass,
+    MeditationSession,
+    MeditationStatus,
+)
+from apps.orchestrator.azure_client import download_workspace_file, upload_workspace_file_binary
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -29,6 +37,8 @@ logger = logging.getLogger(__name__)
 # bypass the SMB text-sanitize chokepoint, which is correct for mp3/ogg.
 _MEDITATION_DIR = "workspace/meditations"
 _READY_JOB_NAME = "_core:ready"
+_COMPOSE_CLAIM_MARKER = "compose_claim: active"
+_COMPOSE_CLAIM_STALE_MINUTES = 10
 
 # Forward-only onboarding ladder. DECLINED is off-ladder (a user opt-out we never
 # auto-override). pending → in_progress (they engaged: saved a profile) →
@@ -200,6 +210,32 @@ def _recent_note_snippets(tenant: Tenant, *, days: int = 7, limit: int = 3, cap:
     return out
 
 
+def _claim_compose_authoring(session: MeditationSession) -> bool:
+    """Lease invalid-manifest authoring without holding a DB lock over the LLM."""
+    now = timezone.now()
+    stale_cutoff = now - timedelta(minutes=_COMPOSE_CLAIM_STALE_MINUTES)
+    claimed = (
+        MeditationSession.objects.filter(
+            id=session.id,
+            status=MeditationStatus.PENDING,
+        )
+        .exclude(
+            error=_COMPOSE_CLAIM_MARKER,
+            updated_at__gte=stale_cutoff,
+        )
+        .update(
+            error=_COMPOSE_CLAIM_MARKER,
+            updated_at=now,
+        )
+    )
+    if claimed:
+        session.error = _COMPOSE_CLAIM_MARKER
+        session.updated_at = now
+        return True
+    logger.info("compose_meditation: session %s already has a live authoring claim", str(session.id)[:8])
+    return False
+
+
 def compose_meditation(session: MeditationSession) -> None:
     """Ensure a pending session has a manifest, then enqueue its render.
 
@@ -213,6 +249,8 @@ def compose_meditation(session: MeditationSession) -> None:
     """
     sid = str(session.id)
     if render.validate_manifest(session.manifest):
+        if not _claim_compose_authoring(session):
+            return
         try:
             signals = gather_meditation_signals(session.tenant)
             manifest = compose.author_manifest(signals, voice=session.voice)
@@ -234,6 +272,145 @@ def compose_meditation(session: MeditationSession) -> None:
     publish_task("render_meditation", sid)
 
 
+def _claim_render_session(session_id) -> tuple[MeditationSession | None, bool]:
+    """Atomically claim one render attempt and return its persist-resume hint."""
+    now = timezone.now()
+    stale_minutes = int(getattr(settings, "CORE_RENDER_STALE_MINUTES", 15) or 15)
+    stale_cutoff = now - timedelta(minutes=stale_minutes)
+    max_attempts = int(getattr(settings, "CORE_RENDER_MAX_ATTEMPTS", 3) or 3)
+
+    with transaction.atomic():
+        current = MeditationSession.objects.select_for_update().filter(id=session_id).first()
+        if current is None:
+            return None, False
+
+        failed_retry = (
+            current.status == MeditationStatus.FAILED and current.failure_class == MeditationFailureClass.TRANSIENT
+        )
+        stale_render = current.status == MeditationStatus.RENDERING and current.updated_at < stale_cutoff
+        claimable = current.status == MeditationStatus.PENDING or failed_retry or stale_render
+        if not claimable:
+            logger.info(
+                "render_meditation: session %s not claimable (status=%s, failure_class=%s) — skipping",
+                str(current.id)[:8],
+                current.status,
+                current.failure_class,
+            )
+            return None, False
+
+        if current.attempt_count >= max_attempts:
+            suffix = "attempts exhausted"
+            existing = (current.error or "").rstrip()
+            if not existing.endswith(suffix):
+                current.error = f"{existing[: 480 - len(suffix) - 2]}; {suffix}" if existing else suffix
+            current.status = MeditationStatus.FAILED
+            current.failure_class = MeditationFailureClass.TERMINAL
+            current.updated_at = now
+            current.save(update_fields=["status", "failure_class", "error", "updated_at"])
+            logger.warning(
+                "render_meditation: session %s exhausted %d attempts — terminal",
+                str(current.id)[:8],
+                current.attempt_count,
+            )
+            return None, False
+
+        # A consumer retry resets recoverable FAILED rows to PENDING before
+        # publishing. Preserve the typed persist checkpoint hint from either
+        # pre-claim status. If that publish also failed, dispatch_error replaced
+        # the persist prefix; the durable hash plus the required MP3 probe below
+        # still make artifact resume safe (new dispatch failures have no hash).
+        error = current.error or ""
+        resume_persist = (
+            current.failure_class == MeditationFailureClass.TRANSIENT
+            and (
+                error.startswith("persist_error:")
+                or (error.startswith("dispatch_error:") and bool(current.artifact_manifest_sha256))
+            )
+        ) or (
+            # A worker can die after saving the MP3/hash checkpoint but before
+            # setting READY. The stale claim has no failure prefix because its
+            # original claim cleared it; the hash + required artifact probe are
+            # the durable evidence that persistence can resume without TTS.
+            stale_render and bool(current.artifact_manifest_sha256)
+        )
+        current.status = MeditationStatus.RENDERING
+        current.failure_class = MeditationFailureClass.NONE
+        current.error = ""
+        current.attempt_count += 1
+        current.updated_at = now
+        current.save(
+            update_fields=[
+                "status",
+                "failure_class",
+                "error",
+                "attempt_count",
+                "updated_at",
+            ]
+        )
+        return current, resume_persist
+
+
+def _manifest_sha256(manifest: dict) -> str:
+    """Return a stable fingerprint for a JSON render manifest."""
+    canonical = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _meditation_artifact_exists(tenant_id: str, file_path: str) -> bool:
+    """Probe a deterministic meditation path through the existing share API."""
+    return download_workspace_file(tenant_id, file_path) is not None
+
+
+def _resume_uploaded_artifacts(
+    session: MeditationSession,
+    *,
+    manifest_sha256: str,
+    voice: str,
+    model: str,
+) -> bool:
+    """Finalize a matching persist checkpoint without another TTS render."""
+    if session.artifact_manifest_sha256 != manifest_sha256:
+        return False
+
+    sid = str(session.id)
+    tenant_id = str(session.tenant_id)
+    mp3_name = f"{sid}.mp3"
+    if not _meditation_artifact_exists(tenant_id, f"{_MEDITATION_DIR}/{mp3_name}"):
+        return False
+
+    ogg_name = f"{sid}.ogg"
+    has_ogg = _meditation_artifact_exists(tenant_id, f"{_MEDITATION_DIR}/{ogg_name}")
+    api_base = (getattr(settings, "API_BASE_URL", "") or "").rstrip("/")
+    session.audio_url = f"{api_base}/api/v1/meditations/{tenant_id}/{mp3_name}"
+    session.ogg_url = f"{api_base}/api/v1/meditations/{tenant_id}/{ogg_name}" if has_ogg else ""
+    session.guidance_text = session.guidance_text or render.flatten_guidance_text(session.manifest)
+    session.model = session.model or model
+    session.voice = session.voice or voice
+    session.status = MeditationStatus.READY
+    session.failure_class = MeditationFailureClass.NONE
+    session.error = ""
+    _save_session(
+        session,
+        [
+            "audio_url",
+            "ogg_url",
+            "guidance_text",
+            "model",
+            "voice",
+            "status",
+            "failure_class",
+            "error",
+            "updated_at",
+        ],
+    )
+    return True
+
+
 def render_meditation(session: MeditationSession) -> None:
     """Render a session's manifest to audio and flip it to ``ready``.
 
@@ -253,26 +430,11 @@ def render_meditation(session: MeditationSession) -> None:
     sid = str(session.id)
 
     # ---- idempotency claim (finance-style guard against QStash double-fire) ----
-    # Atomically take ownership: a PENDING/FAILED row — or a RENDERING row whose
-    # claim has gone stale (its worker was killed mid-render, e.g. at the gunicorn
-    # boundary) — transitions to RENDERING. A live concurrent render keeps the row
-    # fresh and is left alone, so a slow render is never duplicated/re-billed; a
-    # dead one is recoverable instead of permanently wedged. We set ``updated_at``
-    # explicitly because ``.update()`` bypasses ``auto_now`` — that timestamp is
-    # the staleness clock.
-    stale_minutes = int(getattr(settings, "CORE_RENDER_STALE_MINUTES", 15) or 15)
-    stale_cutoff = timezone.now() - timedelta(minutes=stale_minutes)
-    claimed = MeditationSession.objects.filter(
-        Q(id=session.id)
-        & (
-            Q(status__in=[MeditationStatus.PENDING, MeditationStatus.FAILED])
-            | Q(status=MeditationStatus.RENDERING, updated_at__lt=stale_cutoff)
-        )
-    ).update(status=MeditationStatus.RENDERING, error="", updated_at=timezone.now())
-    if not claimed:
-        logger.info("render_meditation: session %s not claimable (status=%s) — skipping", sid[:8], session.status)
+    # The locked row is the single authority for claimability, attempt caps, and
+    # whether this is specifically a persist-only retry.
+    session, resume_persist = _claim_render_session(session.id)
+    if session is None:
         return
-    session.refresh_from_db()
 
     # ---- validate before any TTS spend; a bad manifest is terminal ----
     errors = render.validate_manifest(session.manifest)
@@ -281,12 +443,39 @@ def render_meditation(session: MeditationSession) -> None:
         _fail(session, "invalid_manifest: " + "; ".join(errors))
         return
 
+    manifest_sha256 = _manifest_sha256(session.manifest)
     voice = (
         session.voice
         or (session.manifest.get("voice") if isinstance(session.manifest, dict) else "")
         or render.DEFAULT_VOICE
     )
     model = getattr(settings, "GEMINI_TTS_MODEL", "") or render.DEFAULT_MODEL
+
+    if resume_persist:
+        try:
+            resumed = _resume_uploaded_artifacts(
+                session,
+                manifest_sha256=manifest_sha256,
+                voice=voice,
+                model=model,
+            )
+        except Exception as exc:  # noqa: BLE001 — transient share/DB probe failure
+            logger.exception("render_meditation: session %s checkpoint resume failed (will retry)", sid[:8])
+            _fail(session, f"persist_error: checkpoint resume: {exc}")
+            raise
+        if resumed:
+            logger.info("render_meditation: session %s ready from artifact checkpoint", sid[:8])
+            _advance_onboarding_on_ready(session.tenant)
+            try:
+                notify_meditation_ready(session)
+            except Exception:
+                logger.warning(
+                    "render_meditation: notify failed for session %s (audio already ready)",
+                    sid[:8],
+                    exc_info=True,
+                )
+            return
+
     api_key = getattr(settings, "GEMINI_API_KEY", "") or ""
     concurrency = int(getattr(settings, "CORE_RENDER_CONCURRENCY", 4) or 4)
 
@@ -332,48 +521,56 @@ def render_meditation(session: MeditationSession) -> None:
 
     # ---- persist audio to the per-tenant share, then flip to ready ----
     # A failure here (transient Azure SMB throttle/timeout, or the final save)
-    # must follow the same FAILED-then-reraise contract as the render branch —
-    # otherwise the row is stranded at RENDERING with no audio and the claim
-    # filter can't re-take it. Re-render on retry is safe: it overwrites the same
-    # share paths.
+    # must follow the same FAILED-then-reraise contract as the render branch.
+    # Once the MP3 exists, checkpoint the metadata + manifest hash while the row
+    # remains RENDERING. A retry can then probe the deterministic paths and
+    # finish persistence without spending on TTS again.
+    checkpoint_fields: list[str] = []
     try:
         tenant_id = str(session.tenant_id)
         mp3_name = f"{sid}.mp3"
         upload_workspace_file_binary(tenant_id, f"{_MEDITATION_DIR}/{mp3_name}", result.mp3_bytes)
         api_base = (getattr(settings, "API_BASE_URL", "") or "").rstrip("/")
-        audio_url = f"{api_base}/api/v1/meditations/{tenant_id}/{mp3_name}"
-
-        ogg_url = ""
-        if result.ogg_bytes:
-            ogg_name = f"{sid}.ogg"
-            upload_workspace_file_binary(tenant_id, f"{_MEDITATION_DIR}/{ogg_name}", result.ogg_bytes)
-            ogg_url = f"{api_base}/api/v1/meditations/{tenant_id}/{ogg_name}"
-
-        session.audio_url = audio_url
-        session.ogg_url = ogg_url
+        session.audio_url = f"{api_base}/api/v1/meditations/{tenant_id}/{mp3_name}"
+        session.ogg_url = ""
         session.duration_ms = result.duration_ms
         session.guidance_text = result.guidance_text
         session.model = model
         session.voice = voice
+        session.artifact_manifest_sha256 = manifest_sha256
+        checkpoint_fields = [
+            "audio_url",
+            "ogg_url",
+            "duration_ms",
+            "guidance_text",
+            "model",
+            "voice",
+            "artifact_manifest_sha256",
+            "updated_at",
+        ]
+        _save_session(session, checkpoint_fields)
+
+        if result.ogg_bytes:
+            ogg_name = f"{sid}.ogg"
+            upload_workspace_file_binary(tenant_id, f"{_MEDITATION_DIR}/{ogg_name}", result.ogg_bytes)
+            session.ogg_url = f"{api_base}/api/v1/meditations/{tenant_id}/{ogg_name}"
+
         session.status = MeditationStatus.READY
+        session.failure_class = MeditationFailureClass.NONE
         session.error = ""
         _save_session(
             session,
             [
-                "audio_url",
                 "ogg_url",
-                "duration_ms",
-                "guidance_text",
-                "model",
-                "voice",
                 "status",
+                "failure_class",
                 "error",
                 "updated_at",
             ],
         )
     except Exception as exc:  # noqa: BLE001 — transient persist failure: FAILED, then retry
         logger.exception("render_meditation: session %s persist failed (will retry)", sid[:8])
-        _fail(session, f"persist_error: {exc}")
+        _fail(session, f"persist_error: {exc}", update_fields=checkpoint_fields)
         raise
     logger.info(
         "render_meditation: session %s ready (%.1fs, %d segs, %d fallback)",
@@ -409,10 +606,19 @@ def render_meditation(session: MeditationSession) -> None:
         logger.warning("render_meditation: notify failed for session %s (audio already ready)", sid[:8], exc_info=True)
 
 
-def _fail(session: MeditationSession, message: str) -> None:
+def _failure_class(message: str) -> str:
+    """Classify retry safety from the pipeline's typed error prefix."""
+    if message.startswith(("render_error:", "persist_error:")):
+        return MeditationFailureClass.TRANSIENT
+    return MeditationFailureClass.TERMINAL
+
+
+def _fail(session: MeditationSession, message: str, *, update_fields: list[str] | None = None) -> None:
     session.status = MeditationStatus.FAILED
+    session.failure_class = _failure_class(message)
     session.error = message[:480]
-    _save_session(session, ["status", "error", "updated_at"])
+    fields = ["status", "failure_class", "error", *(update_fields or []), "updated_at"]
+    _save_session(session, list(dict.fromkeys(fields)))
 
 
 def _log_compose_failure(tenant: Tenant, reason: str) -> None:

@@ -339,6 +339,7 @@ CORE_RENDER_DEADLINE_SECONDS = env.int("CORE_RENDER_DEADLINE_SECONDS", default=2
 # A RENDERING session older than this (minutes) is treated as a dead claim and
 # may be re-taken — recovers a render whose worker was killed mid-flight.
 CORE_RENDER_STALE_MINUTES = env.int("CORE_RENDER_STALE_MINUTES", default=15)
+CORE_RENDER_MAX_ATTEMPTS = env.int("CORE_RENDER_MAX_ATTEMPTS", default=3)
 OPENCLAW_GOOGLE_PLUGIN_ID = env("OPENCLAW_GOOGLE_PLUGIN_ID", default="")
 OPENCLAW_GOOGLE_PLUGIN_PATH = env(
     "OPENCLAW_GOOGLE_PLUGIN_PATH",
