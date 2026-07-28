@@ -30,6 +30,12 @@ class MeditationStatus(models.TextChoices):
     FAILED = "failed", "Failed"
 
 
+class MeditationFailureClass(models.TextChoices):
+    NONE = "", "None"
+    TRANSIENT = "transient", "Transient"
+    TERMINAL = "terminal", "Terminal"
+
+
 class CoreProfile(models.Model):
     """Per-tenant mindfulness profile — populated via assistant-led onboarding."""
 
@@ -93,6 +99,13 @@ class MeditationSession(models.Model):
         choices=MeditationStatus.choices,
         default=MeditationStatus.PENDING,
     )
+    failure_class = models.CharField(
+        max_length=12,
+        choices=MeditationFailureClass.choices,
+        default=MeditationFailureClass.NONE,
+        blank=True,
+    )
+    attempt_count = models.PositiveSmallIntegerField(default=0)
     title = models.CharField(max_length=160, blank=True, default="")
     theme = models.TextField(
         blank=True,
@@ -125,6 +138,12 @@ class MeditationSession(models.Model):
     )
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.MEDITATION_SESSION_GUIDANCE_TEXT``) — ships DARK.
     guidance_text_enc = models.BinaryField(null=True)
+    artifact_manifest_sha256 = models.CharField(
+        max_length=64,
+        blank=True,
+        null=True,
+        help_text="Canonical manifest SHA-256 for the uploaded audio checkpoint.",
+    )
     audio_url = models.CharField(max_length=512, blank=True, default="", help_text="Public URL of the rendered mp3.")
     ogg_url = models.CharField(
         max_length=512, blank=True, default="", help_text="Public URL of the ogg/opus (LINE/Telegram voice)."

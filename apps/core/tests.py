@@ -13,7 +13,7 @@ import shutil
 from datetime import date, timedelta
 from unittest import TestCase as UnitTestCase
 from unittest import skipUnless
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 from uuid import uuid4
 
 from django.test import SimpleTestCase, TestCase, override_settings
@@ -337,6 +337,7 @@ class RenderMeditationOrchestrationTests(TestCase):
         self.assertEqual(session.duration_ms, 601_000)
         self.assertEqual(session.guidance_text, "flattened narration")
         self.assertEqual(session.model, "gemini-2.5-flash-preview-tts")
+        self.assertEqual(session.artifact_manifest_sha256, services._manifest_sha256(session.manifest))
         tid = str(self.tenant.id)
         self.assertEqual(session.audio_url, f"https://api.example.test/api/v1/meditations/{tid}/{session.id}.mp3")
         self.assertEqual(session.ogg_url, f"https://api.example.test/api/v1/meditations/{tid}/{session.id}.ogg")
@@ -373,6 +374,7 @@ class RenderMeditationOrchestrationTests(TestCase):
         mock_render.assert_not_called()
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.FAILED)
+        self.assertEqual(session.failure_class, "terminal")
         self.assertIn("invalid_manifest", session.error)
 
     @override_settings(GEMINI_API_KEY="")
@@ -383,6 +385,7 @@ class RenderMeditationOrchestrationTests(TestCase):
         mock_render.assert_not_called()
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.FAILED)
+        self.assertEqual(session.failure_class, "terminal")
         self.assertIn("GEMINI_API_KEY", session.error)
 
     def test_transient_error_marks_failed_and_reraises(self):
@@ -400,6 +403,8 @@ class RenderMeditationOrchestrationTests(TestCase):
                 services.render_meditation(session)
             session.refresh_from_db()
             self.assertEqual(session.status, MeditationStatus.FAILED)
+            self.assertEqual(session.failure_class, "transient")
+            self.assertEqual(session.attempt_count, 1)
             self.assertIn("render_error", session.error)
 
             services.render_meditation(session)
@@ -407,6 +412,8 @@ class RenderMeditationOrchestrationTests(TestCase):
         self.assertEqual(mock_render.call_count, 2)
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.READY)
+        self.assertEqual(session.failure_class, "")
+        self.assertEqual(session.attempt_count, 2)
 
     def test_mostly_rate_limited_marks_failed_without_reraise(self):
         # Most segments rate-limited out → fail clearly (don't ship near-silent),
@@ -429,6 +436,7 @@ class RenderMeditationOrchestrationTests(TestCase):
             services.render_meditation(session)  # must NOT raise
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.FAILED)
+        self.assertEqual(session.failure_class, "terminal")
         self.assertIn("tts_quota", session.error)
         mock_upload.assert_not_called()
         mock_notify.assert_not_called()
@@ -454,8 +462,11 @@ class RenderMeditationOrchestrationTests(TestCase):
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.READY)
 
-    def test_failed_session_can_be_reclaimed(self):
+    def test_failed_transient_session_can_be_reclaimed(self):
         session = self._session(status=MeditationStatus.FAILED)
+        session.failure_class = "transient"
+        session.error = "render_error: temporary"
+        session.save(update_fields=["failure_class", "error", "updated_at"])
         with (
             patch.object(render, "render_manifest_to_audio", return_value=_fake_result()) as mock_render,
             patch.object(services, "upload_workspace_file_binary"),
@@ -465,6 +476,35 @@ class RenderMeditationOrchestrationTests(TestCase):
         mock_render.assert_called_once()
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.READY)
+
+    def test_failed_terminal_session_is_not_claimed(self):
+        session = self._session(status=MeditationStatus.FAILED)
+        session.failure_class = "terminal"
+        session.error = "invalid_manifest: bad arc"
+        session.save(update_fields=["failure_class", "error", "updated_at"])
+        with patch.object(render, "render_manifest_to_audio") as mock_render:
+            services.render_meditation(session)
+        mock_render.assert_not_called()
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.FAILED)
+        self.assertEqual(session.failure_class, "terminal")
+        self.assertEqual(session.attempt_count, 0)
+
+    @override_settings(CORE_RENDER_MAX_ATTEMPTS=3)
+    def test_attempts_exhausted_finalizes_terminal_without_rendering(self):
+        session = self._session(status=MeditationStatus.FAILED)
+        session.failure_class = "transient"
+        session.attempt_count = 3
+        session.error = "render_error: temporary"
+        session.save(update_fields=["failure_class", "attempt_count", "error", "updated_at"])
+        with patch.object(render, "render_manifest_to_audio") as mock_render:
+            services.render_meditation(session)
+        mock_render.assert_not_called()
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.FAILED)
+        self.assertEqual(session.failure_class, "terminal")
+        self.assertEqual(session.attempt_count, 3)
+        self.assertEqual(session.error, "render_error: temporary; attempts exhausted")
 
     def test_persist_failure_marks_failed_and_reraises(self):
         # A successful render but a failed share upload must not strand the row at
@@ -479,8 +519,163 @@ class RenderMeditationOrchestrationTests(TestCase):
             services.render_meditation(session)
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.FAILED)
+        self.assertEqual(session.failure_class, "transient")
         self.assertIn("persist_error", session.error)
         mock_notify.assert_not_called()
+
+    def test_persist_retry_with_matching_artifact_skips_tts(self):
+        session = self._session(status=MeditationStatus.FAILED)
+        session.failure_class = "transient"
+        session.attempt_count = 1
+        session.error = "persist_error: database unavailable"
+        session.artifact_manifest_sha256 = services._manifest_sha256(session.manifest)
+        session.duration_ms = 601_000
+        session.guidance_text = "flattened narration"
+        session.model = "checkpoint-model"
+        session.voice = "Aoede"
+        session.save(
+            update_fields=[
+                "failure_class",
+                "attempt_count",
+                "error",
+                "artifact_manifest_sha256",
+                "duration_ms",
+                "guidance_text",
+                "model",
+                "voice",
+                "updated_at",
+            ]
+        )
+
+        with (
+            patch.object(render, "render_manifest_to_audio") as mock_render,
+            patch.object(services, "_meditation_artifact_exists", side_effect=[True, False]) as mock_probe,
+            patch.object(services, "upload_workspace_file_binary") as mock_upload,
+            patch.object(services, "notify_meditation_ready") as mock_notify,
+        ):
+            services.render_meditation(session)
+
+        mock_render.assert_not_called()
+        mock_upload.assert_not_called()
+        tenant_id = str(self.tenant.id)
+        mock_probe.assert_has_calls(
+            [
+                call(tenant_id, f"workspace/meditations/{session.id}.mp3"),
+                call(tenant_id, f"workspace/meditations/{session.id}.ogg"),
+            ]
+        )
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.READY)
+        self.assertEqual(session.failure_class, "")
+        self.assertEqual(session.attempt_count, 2)
+        self.assertEqual(
+            session.audio_url,
+            f"https://api.example.test/api/v1/meditations/{tenant_id}/{session.id}.mp3",
+        )
+        self.assertEqual(session.ogg_url, "")
+        self.assertEqual(session.duration_ms, 601_000)
+        self.assertEqual(session.model, "checkpoint-model")
+        self.assertEqual(session.voice, "Aoede")
+        mock_notify.assert_called_once()
+
+    def test_consumer_reset_pending_persist_retry_still_skips_tts(self):
+        session = self._session(status=MeditationStatus.PENDING)
+        session.failure_class = "transient"
+        session.attempt_count = 1
+        session.error = "persist_error: database unavailable"
+        session.artifact_manifest_sha256 = services._manifest_sha256(session.manifest)
+        session.duration_ms = 601_000
+        session.guidance_text = "flattened narration"
+        session.save(
+            update_fields=[
+                "failure_class",
+                "attempt_count",
+                "error",
+                "artifact_manifest_sha256",
+                "duration_ms",
+                "guidance_text",
+                "updated_at",
+            ]
+        )
+
+        with (
+            patch.object(render, "render_manifest_to_audio") as mock_render,
+            patch.object(services, "_meditation_artifact_exists", side_effect=[True, False]),
+            patch.object(services, "upload_workspace_file_binary") as mock_upload,
+            patch.object(services, "notify_meditation_ready"),
+        ):
+            services.render_meditation(session)
+
+        mock_render.assert_not_called()
+        mock_upload.assert_not_called()
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.READY)
+        self.assertEqual(session.attempt_count, 2)
+
+    def test_dispatch_failure_after_consumer_reset_still_skips_tts(self):
+        session = self._session(status=MeditationStatus.PENDING)
+        session.failure_class = "transient"
+        session.attempt_count = 1
+        session.error = "dispatch_error: qstash unavailable"
+        session.artifact_manifest_sha256 = services._manifest_sha256(session.manifest)
+        session.duration_ms = 601_000
+        session.guidance_text = "flattened narration"
+        session.save(
+            update_fields=[
+                "failure_class",
+                "attempt_count",
+                "error",
+                "artifact_manifest_sha256",
+                "duration_ms",
+                "guidance_text",
+                "updated_at",
+            ]
+        )
+
+        with (
+            patch.object(render, "render_manifest_to_audio") as mock_render,
+            patch.object(services, "_meditation_artifact_exists", side_effect=[True, False]),
+            patch.object(services, "upload_workspace_file_binary") as mock_upload,
+            patch.object(services, "notify_meditation_ready"),
+        ):
+            services.render_meditation(session)
+
+        mock_render.assert_not_called()
+        mock_upload.assert_not_called()
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.READY)
+        self.assertEqual(session.attempt_count, 2)
+
+    def test_stale_rendering_with_checkpoint_skips_tts(self):
+        session = self._session(status=MeditationStatus.RENDERING)
+        session.attempt_count = 1
+        session.artifact_manifest_sha256 = services._manifest_sha256(session.manifest)
+        session.duration_ms = 601_000
+        session.guidance_text = "flattened narration"
+        session.save(
+            update_fields=[
+                "attempt_count",
+                "artifact_manifest_sha256",
+                "duration_ms",
+                "guidance_text",
+                "updated_at",
+            ]
+        )
+        MeditationSession.objects.filter(id=session.id).update(updated_at=timezone.now() - timedelta(minutes=30))
+
+        with (
+            patch.object(render, "render_manifest_to_audio") as mock_render,
+            patch.object(services, "_meditation_artifact_exists", side_effect=[True, False]),
+            patch.object(services, "upload_workspace_file_binary") as mock_upload,
+            patch.object(services, "notify_meditation_ready"),
+        ):
+            services.render_meditation(MeditationSession.objects.get(id=session.id))
+
+        mock_render.assert_not_called()
+        mock_upload.assert_not_called()
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.READY)
+        self.assertEqual(session.attempt_count, 2)
 
     def test_notify_failure_does_not_undo_ready(self):
         # Notify is best-effort: a send exception must NOT propagate or un-ready
@@ -742,13 +937,128 @@ class RuntimeMeditationCreateViewTests(TestCase):
         self.assertEqual(mock_publish.call_args.args[0], "render_meditation")
         self.assertEqual(mock_publish.call_args.args[1], str(session.id))
 
+    def test_transient_failed_session_is_reused_and_republished(self):
+        from apps.common.tenant_tz import tenant_today
+
+        stored_manifest = _valid_manifest()
+        session = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant),
+            status=MeditationStatus.FAILED,
+            failure_class="transient",
+            attempt_count=1,
+            error="render_error: temporary",
+            manifest=stored_manifest,
+        )
+        submitted_manifest = _valid_manifest()
+        submitted_manifest["title"] = "A different valid request"
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            resp = self.client.post(self._url(), {"manifest": submitted_manifest}, format="json", **self.headers)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["meditation_id"], str(session.id))
+        self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 1)
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.PENDING)
+        self.assertEqual(session.manifest, stored_manifest)
+        mock_publish.assert_called_once_with("render_meditation", str(session.id))
+
+    @override_settings(CORE_RENDER_MAX_ATTEMPTS=3)
+    def test_attempt_exhausted_transient_session_is_not_reused(self):
+        from apps.common.tenant_tz import tenant_today
+
+        failed = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant),
+            status=MeditationStatus.FAILED,
+            failure_class="transient",
+            attempt_count=3,
+            error="render_error: temporary",
+            manifest=_valid_manifest(),
+        )
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            resp = self.client.post(self._url(), {"manifest": _valid_manifest()}, format="json", **self.headers)
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertNotEqual(resp.data["meditation_id"], str(failed.id))
+        self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 2)
+        mock_publish.assert_called_once_with("render_meditation", resp.data["meditation_id"])
+
+    def test_in_flight_coalescing_is_date_scoped(self):
+        from apps.common.tenant_tz import tenant_today
+
+        old = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant) - timedelta(days=1),
+            status=MeditationStatus.RENDERING,
+            manifest=_valid_manifest(),
+        )
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            created = self.client.post(self._url(), {"manifest": _valid_manifest()}, format="json", **self.headers)
+            coalesced = self.client.post(self._url(), {"manifest": _valid_manifest()}, format="json", **self.headers)
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(coalesced.status_code, 200)
+        self.assertNotEqual(created.data["meditation_id"], str(old.id))
+        self.assertEqual(coalesced.data["meditation_id"], created.data["meditation_id"])
+        self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 2)
+        mock_publish.assert_called_once_with("render_meditation", created.data["meditation_id"])
+
+    def test_terminal_failed_session_creates_new_row(self):
+        from apps.common.tenant_tz import tenant_today
+
+        failed = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant),
+            status=MeditationStatus.FAILED,
+            failure_class="terminal",
+            error="invalid_manifest: terminal",
+            manifest=_valid_manifest(),
+        )
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            resp = self.client.post(self._url(), {"manifest": _valid_manifest()}, format="json", **self.headers)
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertNotEqual(resp.data["meditation_id"], str(failed.id))
+        self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 2)
+        mock_publish.assert_called_once_with("render_meditation", resp.data["meditation_id"])
+
+    def test_publish_failure_is_durable_and_returns_created(self):
+        with patch("apps.cron.publish.publish_task", side_effect=RuntimeError("qstash unavailable")):
+            resp = self.client.post(self._url(), {"manifest": _valid_manifest()}, format="json", **self.headers)
+
+        self.assertEqual(resp.status_code, 201)
+        session = MeditationSession.objects.get(tenant=self.tenant)
+        self.assertEqual(session.status, MeditationStatus.PENDING)
+        self.assertEqual(session.failure_class, "transient")
+        self.assertEqual(session.error, "dispatch_error: qstash unavailable")
+
+    def test_ambiguous_publish_failure_does_not_overwrite_progressed_worker(self):
+        def delivered_then_timed_out(_task_name, meditation_id):
+            MeditationSession.objects.filter(id=meditation_id).update(
+                status=MeditationStatus.READY,
+                failure_class="",
+                error="",
+            )
+            raise RuntimeError("timeout after accept")
+
+        with patch("apps.cron.publish.publish_task", side_effect=delivered_then_timed_out):
+            resp = self.client.post(self._url(), {"manifest": _valid_manifest()}, format="json", **self.headers)
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["status"], MeditationStatus.READY)
+        session = MeditationSession.objects.get(tenant=self.tenant)
+        self.assertEqual(session.status, MeditationStatus.READY)
+        self.assertEqual(session.failure_class, "")
+        self.assertEqual(session.error, "")
+
     def test_auth_required(self):
         resp = self.client.post(self._url(), {"manifest": _valid_manifest()}, format="json")
         self.assertEqual(resp.status_code, 401)
 
 
 class RenderMeditationTaskTests(TestCase):
-    """The QStash entry point: load-by-id + idempotency precheck (tasks.py)."""
+    """The QStash entry point resolves by id; the service owns all claims."""
 
     def setUp(self):
         self.tenant = create_tenant(display_name="Task Test", telegram_chat_id=900400)
@@ -763,13 +1073,13 @@ class RenderMeditationTaskTests(TestCase):
             tasks.render_meditation_task(str(uuid4()))  # bogus id — must not raise
         mock_render.assert_not_called()
 
-    def test_ready_session_is_skipped(self):
+    def test_ready_session_is_delegated_to_service_claim_authority(self):
         from apps.core import tasks
 
         session = self._session(status=MeditationStatus.READY)
         with patch.object(services, "render_meditation") as mock_render:
             tasks.render_meditation_task(str(session.id))
-        mock_render.assert_not_called()
+        mock_render.assert_called_once_with(session)
 
     def test_pending_session_dispatches_once(self):
         from apps.core import tasks
@@ -786,6 +1096,201 @@ class RenderMeditationTaskTests(TestCase):
             TASK_MAP["render_meditation"],
             "apps.core.tasks.render_meditation_task",
         )
+
+
+@override_settings(CORE_RENDER_MAX_ATTEMPTS=3, CORE_RENDER_STALE_MINUTES=15)
+class ReapMeditationsTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Meditation Reaper", telegram_chat_id=900401)
+
+    def _session(self, status, *, manifest=None, failure_class="", attempt_count=0):
+        return MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=date.today(),
+            status=status,
+            manifest=manifest if manifest is not None else {},
+            failure_class=failure_class,
+            attempt_count=attempt_count,
+        )
+
+    def _age(self, *sessions, minutes):
+        MeditationSession.objects.filter(id__in=[session.id for session in sessions]).update(
+            updated_at=timezone.now() - timedelta(minutes=minutes)
+        )
+
+    def test_reaps_each_recoverable_stranded_state(self):
+        from apps.core import tasks
+
+        stale_rendering = self._session(MeditationStatus.RENDERING, manifest=_valid_manifest())
+        pending_with_manifest = self._session(MeditationStatus.PENDING, manifest=_valid_manifest())
+        pending_without_manifest = self._session(MeditationStatus.PENDING)
+        failed_transient = self._session(
+            MeditationStatus.FAILED,
+            manifest=_valid_manifest(),
+            failure_class="transient",
+            attempt_count=2,
+        )
+        self._age(stale_rendering, pending_with_manifest, pending_without_manifest, failed_transient, minutes=20)
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            result = tasks.reap_meditations()
+
+        self.assertEqual(result["candidates"], 4)
+        self.assertEqual(result["render_published"], 3)
+        self.assertEqual(result["compose_published"], 1)
+        self.assertEqual(result["errors"], 0)
+        mock_publish.assert_has_calls(
+            [
+                call("render_meditation", str(stale_rendering.id)),
+                call("render_meditation", str(pending_with_manifest.id)),
+                call("compose_meditation", str(pending_without_manifest.id)),
+                call("render_meditation", str(failed_transient.id)),
+            ],
+            any_order=True,
+        )
+
+    def test_reaper_skips_fresh_terminal_and_attempt_exhausted_rows(self):
+        from apps.core import tasks
+
+        fresh_pending = self._session(MeditationStatus.PENDING)
+        terminal = self._session(
+            MeditationStatus.FAILED,
+            manifest=_valid_manifest(),
+            failure_class="terminal",
+        )
+        attempts_exhausted = self._session(
+            MeditationStatus.FAILED,
+            manifest=_valid_manifest(),
+            failure_class="transient",
+            attempt_count=3,
+        )
+        self._age(terminal, attempts_exhausted, minutes=20)
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            result = tasks.reap_meditations()
+
+        self.assertEqual(result["candidates"], 0)
+        mock_publish.assert_not_called()
+        fresh_pending.refresh_from_db()
+        terminal.refresh_from_db()
+        attempts_exhausted.refresh_from_db()
+        self.assertEqual(fresh_pending.status, MeditationStatus.PENDING)
+        self.assertEqual(terminal.failure_class, "terminal")
+        self.assertEqual(attempts_exhausted.failure_class, "transient")
+
+    def test_reaper_bounds_each_run_to_fifty_oldest_rows(self):
+        from apps.core import tasks
+
+        sessions = [self._session(MeditationStatus.PENDING) for _ in range(51)]
+        self._age(*sessions, minutes=20)
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            result = tasks.reap_meditations()
+
+        self.assertEqual(result["candidates"], 50)
+        self.assertEqual(result["compose_published"], 50)
+        self.assertEqual(mock_publish.call_count, 50)
+
+    def test_reaper_continues_after_individual_publish_failure(self):
+        from apps.core import tasks
+
+        first = self._session(MeditationStatus.PENDING)
+        second = self._session(MeditationStatus.PENDING)
+        self._age(first, second, minutes=20)
+
+        with patch(
+            "apps.cron.publish.publish_task",
+            side_effect=[RuntimeError("qstash down"), None],
+        ) as mock_publish:
+            result = tasks.reap_meditations()
+
+        self.assertEqual(result["candidates"], 2)
+        self.assertEqual(result["compose_published"], 1)
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(mock_publish.call_count, 2)
+
+    def test_reaper_is_registered(self):
+        from apps.cron.views import TASK_MAP
+
+        self.assertEqual(TASK_MAP["reap_meditations"], "apps.core.tasks.reap_meditations")
+
+
+@override_settings(CORE_RENDER_MAX_ATTEMPTS=3)
+class MeditationSessionSerializerRetryTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Retry Serializer", telegram_chat_id=900402)
+
+    def test_retryable_and_attempt_count_projection(self):
+        from apps.core.serializers import MeditationSessionSerializer
+
+        session = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=date.today(),
+            status=MeditationStatus.FAILED,
+            failure_class="transient",
+            attempt_count=2,
+        )
+        data = MeditationSessionSerializer(session).data
+        self.assertEqual(data["attempt_count"], 2)
+        self.assertIs(data["retryable"], True)
+        self.assertNotIn("failure_class", data)
+
+        serializer = MeditationSessionSerializer(session, data={"attempt_count": 0}, partial=True)
+        self.assertTrue(serializer.is_valid())
+        serializer.save()
+        session.refresh_from_db()
+        self.assertEqual(session.attempt_count, 2)
+
+        session.attempt_count = 3
+        data = MeditationSessionSerializer(session).data
+        self.assertIs(data["retryable"], False)
+
+        session.attempt_count = 1
+        session.failure_class = "terminal"
+        data = MeditationSessionSerializer(session).data
+        self.assertIs(data["retryable"], False)
+
+        session.failure_class = "transient"
+        session.status = MeditationStatus.PENDING
+        data = MeditationSessionSerializer(session).data
+        self.assertIs(data["retryable"], False)
+
+
+class MeditationRetryMigrationTests(TestCase):
+    def test_existing_failed_rows_are_backfilled_by_error_prefix(self):
+        from importlib import import_module
+
+        from django.apps import apps as django_apps
+
+        migration = import_module("apps.core.migrations.0004_meditationsession_retry_state")
+        tenant = create_tenant(display_name="Retry Migration", telegram_chat_id=900403)
+        render_failed = MeditationSession.objects.create(
+            tenant=tenant,
+            date=date.today(),
+            status=MeditationStatus.FAILED,
+            error="render_error: ffmpeg unavailable",
+        )
+        persist_failed = MeditationSession.objects.create(
+            tenant=tenant,
+            date=date.today(),
+            status=MeditationStatus.FAILED,
+            error="persist_error: share timeout",
+        )
+        terminal_failed = MeditationSession.objects.create(
+            tenant=tenant,
+            date=date.today(),
+            status=MeditationStatus.FAILED,
+            error="invalid_manifest: bad arc",
+        )
+
+        migration.classify_existing_failures(django_apps, None)
+
+        render_failed.refresh_from_db()
+        persist_failed.refresh_from_db()
+        terminal_failed.refresh_from_db()
+        self.assertEqual(render_failed.failure_class, "transient")
+        self.assertEqual(persist_failed.failure_class, "transient")
+        self.assertEqual(terminal_failed.failure_class, "terminal")
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1096,12 +1601,151 @@ class CoreComposeViewTests(TestCase):
         self.assertEqual(mock_pub.call_args.args[1], str(sessions.first().id))
 
     def test_compose_dedups_in_flight(self):
-        MeditationSession.objects.create(tenant=self.tenant, date=date.today(), status=MeditationStatus.RENDERING)
+        from apps.common.tenant_tz import tenant_today
+
+        MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant),
+            status=MeditationStatus.RENDERING,
+        )
         with patch("apps.cron.publish.publish_task") as mock_pub:
             resp = self.client.post("/api/v1/core/compose/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 1)  # no new row
         mock_pub.assert_not_called()
+
+    def test_compose_ignores_in_flight_row_from_prior_day(self):
+        from apps.common.tenant_tz import tenant_today
+
+        MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant) - timedelta(days=1),
+            status=MeditationStatus.RENDERING,
+        )
+        with patch("apps.cron.publish.publish_task") as mock_pub:
+            resp = self.client.post("/api/v1/core/compose/")
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 2)
+        created = MeditationSession.objects.get(id=resp.data["meditation_id"])
+        self.assertEqual(created.date, tenant_today(self.tenant))
+        mock_pub.assert_called_once_with("compose_meditation", str(created.id))
+
+    def test_compose_reuses_transient_failed_session_today(self):
+        from apps.common.tenant_tz import tenant_today
+
+        session = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant),
+            status=MeditationStatus.FAILED,
+            failure_class="transient",
+            attempt_count=1,
+            error="render_error: temporary",
+            manifest=_valid_manifest(),
+        )
+        with patch("apps.cron.publish.publish_task") as mock_pub:
+            resp = self.client.post("/api/v1/core/compose/")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data["meditation_id"], str(session.id))
+        self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 1)
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.PENDING)
+        mock_pub.assert_called_once_with("render_meditation", str(session.id))
+
+    def test_compose_does_not_reuse_terminal_failed_session(self):
+        from apps.common.tenant_tz import tenant_today
+
+        recoverable_older = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant),
+            status=MeditationStatus.FAILED,
+            failure_class="transient",
+            attempt_count=1,
+            error="render_error: temporary",
+            manifest=_valid_manifest(),
+        )
+        terminal = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=tenant_today(self.tenant),
+            status=MeditationStatus.FAILED,
+            failure_class="terminal",
+            error="invalid_manifest: terminal",
+            manifest=_valid_manifest(),
+        )
+        with patch("apps.cron.publish.publish_task") as mock_pub:
+            resp = self.client.post("/api/v1/core/compose/")
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertNotEqual(resp.data["meditation_id"], str(terminal.id))
+        self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 3)
+        recoverable_older.refresh_from_db()
+        self.assertEqual(recoverable_older.status, MeditationStatus.FAILED)
+        mock_pub.assert_called_once_with("compose_meditation", resp.data["meditation_id"])
+
+    @override_settings(CORE_RENDER_MAX_ATTEMPTS=3)
+    def test_compose_does_not_reuse_exhausted_or_invalid_transient_failure(self):
+        from apps.common.tenant_tz import tenant_today
+
+        cases = (
+            {"attempt_count": 3, "manifest": _valid_manifest()},
+            {"attempt_count": 1, "manifest": {}},
+        )
+        for case in cases:
+            with self.subTest(case=case):
+                MeditationSession.objects.filter(tenant=self.tenant).delete()
+                failed = MeditationSession.objects.create(
+                    tenant=self.tenant,
+                    date=tenant_today(self.tenant),
+                    status=MeditationStatus.FAILED,
+                    failure_class="transient",
+                    error="render_error: temporary",
+                    **case,
+                )
+                with patch("apps.cron.publish.publish_task") as mock_pub:
+                    resp = self.client.post("/api/v1/core/compose/")
+
+                self.assertEqual(resp.status_code, 201)
+                self.assertNotEqual(resp.data["meditation_id"], str(failed.id))
+                self.assertEqual(MeditationSession.objects.filter(tenant=self.tenant).count(), 2)
+                mock_pub.assert_called_once_with("compose_meditation", resp.data["meditation_id"])
+
+    def test_compose_publish_failure_is_durable_and_reaper_rescuable(self):
+        from apps.core import tasks
+
+        with patch("apps.cron.publish.publish_task", side_effect=RuntimeError("qstash unavailable")):
+            resp = self.client.post("/api/v1/core/compose/")
+
+        self.assertEqual(resp.status_code, 201)
+        session = MeditationSession.objects.get(id=resp.data["meditation_id"])
+        self.assertEqual(session.status, MeditationStatus.PENDING)
+        self.assertEqual(session.failure_class, "transient")
+        self.assertEqual(session.error, "dispatch_error: qstash unavailable")
+
+        MeditationSession.objects.filter(id=session.id).update(updated_at=timezone.now() - timedelta(minutes=11))
+        with patch("apps.cron.publish.publish_task") as mock_republish:
+            result = tasks.reap_meditations()
+
+        self.assertEqual(result["compose_published"], 1)
+        mock_republish.assert_called_once_with("compose_meditation", str(session.id))
+
+    def test_compose_ambiguous_publish_failure_preserves_terminal_worker_state(self):
+        def delivered_then_timed_out(_task_name, meditation_id):
+            MeditationSession.objects.filter(id=meditation_id).update(
+                status=MeditationStatus.FAILED,
+                failure_class="terminal",
+                error="compose_error: refused",
+            )
+            raise RuntimeError("timeout after accept")
+
+        with patch("apps.cron.publish.publish_task", side_effect=delivered_then_timed_out):
+            resp = self.client.post("/api/v1/core/compose/")
+
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["status"], MeditationStatus.FAILED)
+        session = MeditationSession.objects.get(id=resp.data["meditation_id"])
+        self.assertEqual(session.failure_class, "terminal")
+        self.assertEqual(session.error, "compose_error: refused")
 
     def test_compose_requires_core_enabled(self):
         self.tenant.core_enabled = False
@@ -1168,6 +1812,25 @@ class ComposeMeditationServiceTests(TestCase):
         self.assertEqual(session.title, manifest["title"])
         mock_publish.assert_called_once_with("render_meditation", str(session.id))
 
+    def test_concurrent_compose_delivery_does_not_author_twice(self):
+        session = self._session()
+        manifest = _valid_manifest()
+
+        def overlap_delivery(_signals, *, voice):
+            services.compose_meditation(MeditationSession.objects.get(id=session.id))
+            return manifest
+
+        with (
+            patch.object(compose, "author_manifest", side_effect=overlap_delivery) as mock_author,
+            patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            services.compose_meditation(session)
+
+        mock_author.assert_called_once()
+        mock_publish.assert_called_once_with("render_meditation", str(session.id))
+        session.refresh_from_db()
+        self.assertEqual(session.manifest, manifest)
+
     def test_redelivery_with_valid_manifest_skips_author_and_republishes(self):
         session = MeditationSession.objects.create(
             tenant=self.tenant,
@@ -1208,6 +1871,7 @@ class ComposeMeditationServiceTests(TestCase):
         mock_render.assert_not_called()
         session.refresh_from_db()
         self.assertEqual(session.status, MeditationStatus.FAILED)
+        self.assertEqual(session.failure_class, "terminal")
         self.assertIn("compose_error", session.error)
 
 

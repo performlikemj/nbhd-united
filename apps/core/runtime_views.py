@@ -11,6 +11,9 @@ from __future__ import annotations
 import logging
 from uuid import UUID
 
+from django.conf import settings
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
@@ -33,6 +36,42 @@ _PROFILE_FIELDS = (
     "preferred_time",
     "additional_context",
 )
+
+
+def _is_recoverable_render_failure(session: MeditationSession) -> bool:
+    """Return whether a failed session can safely resume its existing render."""
+    if (
+        session.status != MeditationStatus.FAILED
+        or session.failure_class != "transient"
+        or session.attempt_count >= settings.CORE_RENDER_MAX_ATTEMPTS
+    ):
+        return False
+
+    from apps.core import render as core_render
+
+    return not core_render.validate_manifest(session.manifest)
+
+
+def _record_dispatch_error(session: MeditationSession, exc: Exception) -> None:
+    """Leave a durable marker for the reaper when QStash publish fails."""
+    error = f"dispatch_error: {exc}"
+    updated = MeditationSession.objects.filter(
+        id=session.id,
+        status=MeditationStatus.PENDING,
+        error=session.error,
+        failure_class=session.failure_class,
+    ).update(
+        error=error,
+        failure_class="transient",
+        updated_at=timezone.now(),
+    )
+    if updated:
+        session.error = error
+        session.failure_class = "transient"
+    else:
+        # A publish timeout is ambiguous: QStash may have accepted and already
+        # delivered the task. Never overwrite a worker's progressed state.
+        session.refresh_from_db()
 
 
 def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
@@ -144,26 +183,60 @@ class RuntimeMeditationCreateView(APIView):
 
         from apps.common.tenant_tz import tenant_today
 
-        session = MeditationSession.objects.create(
-            tenant=tenant,
-            date=tenant_today(tenant),  # the user's LOCAL day, not server UTC
-            status=MeditationStatus.PENDING,
-            title=str(manifest.get("title", ""))[:160],
-            theme=str(manifest.get("theme", "")),
-            voice=str(manifest.get("voice", "")),
-            manifest=manifest,
-        )
+        today = tenant_today(tenant)
+        response_status = status.HTTP_201_CREATED
+
+        # Serialize creation per tenant so repeated runtime calls cannot create
+        # a second billable render while today's first request is still active.
+        with transaction.atomic():
+            Tenant.objects.select_for_update().get(pk=tenant.pk)
+
+            in_flight = (
+                MeditationSession.objects.select_for_update()
+                .filter(
+                    tenant=tenant,
+                    date=today,
+                    status__in=[MeditationStatus.PENDING, MeditationStatus.RENDERING],
+                )
+                .order_by("-created_at")
+                .first()
+            )
+            if in_flight:
+                return Response({"meditation_id": str(in_flight.id), "status": in_flight.status})
+
+            latest_today = (
+                MeditationSession.objects.select_for_update()
+                .filter(tenant=tenant, date=today)
+                .order_by("-created_at")
+                .first()
+            )
+            if latest_today and _is_recoverable_render_failure(latest_today):
+                session = latest_today
+                session.status = MeditationStatus.PENDING
+                session.save(update_fields=["status", "updated_at"])
+                response_status = status.HTTP_200_OK
+            else:
+                session = MeditationSession.objects.create(
+                    tenant=tenant,
+                    date=today,  # the user's LOCAL day, not server UTC
+                    status=MeditationStatus.PENDING,
+                    title=str(manifest.get("title", ""))[:160],
+                    theme=str(manifest.get("theme", "")),
+                    voice=str(manifest.get("voice", "")),
+                    manifest=manifest,
+                )
 
         try:
             from apps.cron.publish import publish_task
 
             publish_task("render_meditation", str(session.id))
-        except Exception:
-            logger.warning("Failed to enqueue render for meditation %s", session.id)
+        except Exception as exc:
+            _record_dispatch_error(session, exc)
+            logger.exception("Failed to enqueue render for meditation %s", session.id)
 
         return Response(
             {"meditation_id": str(session.id), "status": session.status},
-            status=status.HTTP_201_CREATED,
+            status=response_status,
         )
 
 

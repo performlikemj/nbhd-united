@@ -2,6 +2,7 @@
 
 import logging
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status
@@ -35,6 +36,42 @@ _CORE_WELCOME_PROMPT_TEMPLATE = (
     "If `nbhd_send_to_user` returned an error (timeout, channel rejection, etc.), "
     "DO NOT run the curl — leave the welcome unmarked so the next deploy retries."
 )
+
+
+def _is_recoverable_render_failure(session: MeditationSession) -> bool:
+    """Return whether a failed session can safely resume its existing render."""
+    if (
+        session.status != MeditationStatus.FAILED
+        or session.failure_class != "transient"
+        or session.attempt_count >= settings.CORE_RENDER_MAX_ATTEMPTS
+    ):
+        return False
+
+    from apps.core import render as core_render
+
+    return not core_render.validate_manifest(session.manifest)
+
+
+def _record_dispatch_error(session: MeditationSession, exc: Exception) -> None:
+    """Leave a durable marker for the reaper when QStash publish fails."""
+    error = f"dispatch_error: {exc}"
+    updated = MeditationSession.objects.filter(
+        id=session.id,
+        status=MeditationStatus.PENDING,
+        error=session.error,
+        failure_class=session.failure_class,
+    ).update(
+        error=error,
+        failure_class="transient",
+        updated_at=timezone.now(),
+    )
+    if updated:
+        session.error = error
+        session.failure_class = "transient"
+    else:
+        # A publish timeout is ambiguous: QStash may have accepted and already
+        # delivered the task. Never overwrite a worker's progressed state.
+        session.refresh_from_db()
 
 
 def _schedule_core_welcome(tenant):
@@ -241,6 +278,10 @@ class CoreComposeView(APIView):
 
         from apps.common.tenant_tz import tenant_today
 
+        today = tenant_today(tenant)
+        publish_task_name = "compose_meditation"
+        response_status = status.HTTP_201_CREATED
+
         # Atomic coalesce: lock the tenant row so concurrent POST requests cannot
         # both pass the in-flight check and create duplicate sessions.
         with transaction.atomic():
@@ -249,8 +290,11 @@ class CoreComposeView(APIView):
             _Tenant.objects.select_for_update().get(pk=tenant.pk)
 
             in_flight = (
-                MeditationSession.objects.filter(
-                    tenant=tenant, status__in=[MeditationStatus.PENDING, MeditationStatus.RENDERING]
+                MeditationSession.objects.select_for_update()
+                .filter(
+                    tenant=tenant,
+                    date=today,
+                    status__in=[MeditationStatus.PENDING, MeditationStatus.RENDERING],
                 )
                 .order_by("-created_at")
                 .first()
@@ -258,20 +302,34 @@ class CoreComposeView(APIView):
             if in_flight:
                 return Response({"meditation_id": str(in_flight.id), "status": in_flight.status})
 
-            session = MeditationSession.objects.create(
-                tenant=tenant,
-                date=tenant_today(tenant),  # the user's LOCAL day, not server UTC
-                status=MeditationStatus.PENDING,
+            latest_today = (
+                MeditationSession.objects.select_for_update()
+                .filter(tenant=tenant, date=today)
+                .order_by("-created_at")
+                .first()
             )
+            if latest_today and _is_recoverable_render_failure(latest_today):
+                session = latest_today
+                session.status = MeditationStatus.PENDING
+                session.save(update_fields=["status", "updated_at"])
+                publish_task_name = "render_meditation"
+                response_status = status.HTTP_200_OK
+            else:
+                session = MeditationSession.objects.create(
+                    tenant=tenant,
+                    date=today,  # the user's LOCAL day, not server UTC
+                    status=MeditationStatus.PENDING,
+                )
 
         try:
             from apps.cron.publish import publish_task
 
-            publish_task("compose_meditation", str(session.id))
-        except Exception:
-            _logger.warning("Failed to enqueue compose for meditation %s", session.id)
+            publish_task(publish_task_name, str(session.id))
+        except Exception as exc:
+            _record_dispatch_error(session, exc)
+            _logger.exception("Failed to enqueue %s for meditation %s", publish_task_name, session.id)
 
         return Response(
             {"meditation_id": str(session.id), "status": session.status},
-            status=status.HTTP_201_CREATED,
+            status=response_status,
         )

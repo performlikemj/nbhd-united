@@ -1,8 +1,9 @@
 """Core serializers — mindfulness profile and meditation sessions."""
 
+from django.conf import settings
 from rest_framework import serializers
 
-from .models import CoreProfile, MeditationSession
+from .models import CoreProfile, MeditationSession, MeditationStatus
 
 # The thumb signal the feedback UI writes. Empty clears a prior signal. Kept in
 # sync with the frontend feedback control (thumbs up/down) and the render-side
@@ -39,12 +40,16 @@ class MeditationSessionSerializer(serializers.ModelSerializer):
     pipeline and is read-only. ``feedback_at`` is stamped server-side.
     """
 
+    retryable = serializers.SerializerMethodField()
+
     class Meta:
         model = MeditationSession
         fields = [
             "id",
             "date",
             "status",
+            "retryable",
+            "attempt_count",
             "title",
             "theme",
             "voice",
@@ -65,6 +70,8 @@ class MeditationSessionSerializer(serializers.ModelSerializer):
             "id",
             "date",
             "status",
+            "retryable",
+            "attempt_count",
             "title",
             "theme",
             "voice",
@@ -79,6 +86,13 @@ class MeditationSessionSerializer(serializers.ModelSerializer):
             "created_at",
             "updated_at",
         ]
+
+    def get_retryable(self, obj: MeditationSession) -> bool:
+        return (
+            obj.status == MeditationStatus.FAILED
+            and obj.failure_class == "transient"
+            and obj.attempt_count < settings.CORE_RENDER_MAX_ATTEMPTS
+        )
 
     def validate_user_feedback(self, value: str) -> str:
         normalized = (value or "").strip().lower()
