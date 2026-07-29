@@ -154,6 +154,72 @@ def _sweep_ghost_jobs(tenant, jobs: list[dict]) -> dict[str, int]:
     return summary
 
 
+def _live_job_id(job: dict) -> str:
+    return str(job.get("id") or job.get("jobId") or "")
+
+
+def _resync_gateway_job_ids(tenant, jobs: list[dict]) -> int:
+    """Repair stale IDs for managed rows only when one live name match exists."""
+    from apps.cron.models import CronJob
+
+    live_ids = {_live_job_id(job) for job in jobs}
+    live_ids.discard("")
+
+    live_by_name: dict[str, list[dict]] = {}
+    for job in jobs:
+        name = job.get("name")
+        if not isinstance(name, str) or not name or name.startswith("_sync:"):
+            continue
+        live_by_name.setdefault(name, []).append(job)
+
+    resynced = 0
+    for row in CronJob.objects.filter(tenant=tenant, managed=True):
+        old_id = str(row.gateway_job_id or "")
+        if old_id in live_ids:
+            continue
+
+        matches = live_by_name.get(row.name, [])
+        if not matches:
+            logger.info(
+                "cron_gateway_id_resync tenant=%s row=%s old=%s matches=0",
+                tenant.id,
+                row.pk,
+                old_id,
+            )
+            continue
+        if len(matches) > 1:
+            logger.warning(
+                "cron_gateway_id_resync tenant=%s row=%s old=%s matches=%s",
+                tenant.id,
+                row.pk,
+                old_id,
+                len(matches),
+            )
+            continue
+
+        new_id = _live_job_id(matches[0])
+        if not new_id:
+            logger.info(
+                "cron_gateway_id_resync tenant=%s row=%s old=%s matches=1 missing_live_id=1",
+                tenant.id,
+                row.pk,
+                old_id,
+            )
+            continue
+
+        CronJob.objects.filter(pk=row.pk).update(gateway_job_id=new_id)
+        resynced += 1
+        logger.info(
+            "cron_gateway_id_resync tenant=%s row=%s old=%s new=%s",
+            tenant.id,
+            row.pk,
+            old_id,
+            new_id,
+        )
+
+    return resynced
+
+
 def run_post_reconcile_maintenance(tenant) -> dict[str, int]:
     """Fetch the live cron list and run gated container-start maintenance."""
     if not _ghost_sweep_enabled(tenant):
@@ -162,6 +228,7 @@ def run_post_reconcile_maintenance(tenant) -> dict[str, int]:
             "deferred": 0,
             "skipped_future": 0,
             "skipped_invalid": 0,
+            "resynced": 0,
         }
 
     try:
@@ -177,6 +244,10 @@ def run_post_reconcile_maintenance(tenant) -> dict[str, int]:
             "deferred": 0,
             "skipped_future": 0,
             "skipped_invalid": 0,
+            "resynced": 0,
         }
 
-    return _sweep_ghost_jobs(tenant, _extract_live_jobs(list_result))
+    jobs = _extract_live_jobs(list_result)
+    summary = _sweep_ghost_jobs(tenant, jobs)
+    summary["resynced"] = _resync_gateway_job_ids(tenant, jobs)
+    return summary

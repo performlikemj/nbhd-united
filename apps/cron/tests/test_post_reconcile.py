@@ -5,14 +5,16 @@ from types import SimpleNamespace
 from unittest.mock import call, patch
 from uuid import UUID
 
-from django.test import SimpleTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, override_settings
 
 from apps.cron.gateway_client import GatewayError
+from apps.cron.models import CronJob
 from apps.cron.post_reconcile import (
     _dated_sync_disposition,
     _sweep_ghost_jobs,
     run_post_reconcile_maintenance,
 )
+from apps.tenants.models import Tenant, User
 
 
 def _tenant(tenant_id: str = "11111111-1111-1111-1111-111111111111"):
@@ -121,6 +123,12 @@ class DatedSyncDispositionTest(SimpleTestCase):
 class GhostSweepOrchestrationTest(SimpleTestCase):
     def setUp(self):
         self.tenant = _tenant()
+        self.resync_patch = patch(
+            "apps.cron.post_reconcile._resync_gateway_job_ids",
+            return_value=0,
+        )
+        self.resync_patch.start()
+        self.addCleanup(self.resync_patch.stop)
         self.today_patch = patch(
             "apps.cron.post_reconcile.tenant_today",
             return_value=date(2026, 7, 29),
@@ -207,3 +215,124 @@ class GhostSweepOrchestrationTest(SimpleTestCase):
 
         self.assertEqual(summary["swept"], 1)
         mock_remove.assert_called_once_with(self.tenant, "already-gone")
+
+
+class GatewayJobIdResyncTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="resync-user", password="testpass123")
+        self.tenant = Tenant.objects.create(
+            user=self.user,
+            status=Tenant.Status.ACTIVE,
+            container_id="oc-resync",
+            container_fqdn="oc-resync.example.com",
+            postgres_cron_canonical=True,
+        )
+
+    def _row(self, name: str, gateway_job_id: str = "dead-id", *, managed: bool = True) -> CronJob:
+        return CronJob.objects.create(
+            tenant=self.tenant,
+            name=name,
+            gateway_job_id=gateway_job_id,
+            data={},
+            managed=managed,
+        )
+
+    @override_settings(CRON_GHOST_SWEEP_TENANTS="*")
+    @patch("apps.cron.post_reconcile.invoke_gateway_tool")
+    def test_single_name_match_updates_from_same_live_list(self, mock_invoke):
+        row = self._row("Morning Briefing")
+        mock_invoke.return_value = {
+            "details": {
+                "jobs": [
+                    {
+                        "id": "live-id",
+                        "name": "Morning Briefing",
+                        "schedule": {"kind": "cron", "expr": "0 7 * * *"},
+                    }
+                ]
+            }
+        }
+
+        with self.assertLogs("apps.cron.post_reconcile", level="INFO") as logs:
+            summary = run_post_reconcile_maintenance(self.tenant)
+
+        row.refresh_from_db()
+        self.assertEqual(row.gateway_job_id, "live-id")
+        self.assertEqual(summary["resynced"], 1)
+        mock_invoke.assert_called_once_with(
+            self.tenant,
+            "cron.list",
+            {"includeDisabled": True},
+        )
+        self.assertIn(
+            f"cron_gateway_id_resync tenant={self.tenant.id} row={row.pk} old=dead-id new=live-id",
+            "\n".join(logs.output),
+        )
+
+    @override_settings(CRON_GHOST_SWEEP_TENANTS="*")
+    @patch("apps.cron.post_reconcile.invoke_gateway_tool")
+    def test_multiple_name_matches_warn_and_leave_row_untouched(self, mock_invoke):
+        row = self._row("Duplicated")
+        mock_invoke.return_value = {
+            "jobs": [
+                {"id": "live-1", "name": "Duplicated"},
+                {"id": "live-2", "name": "Duplicated"},
+            ]
+        }
+
+        with self.assertLogs("apps.cron.post_reconcile", level="WARNING") as logs:
+            summary = run_post_reconcile_maintenance(self.tenant)
+
+        row.refresh_from_db()
+        self.assertEqual(row.gateway_job_id, "dead-id")
+        self.assertEqual(summary["resynced"], 0)
+        self.assertIn(
+            f"cron_gateway_id_resync tenant={self.tenant.id} row={row.pk} old=dead-id matches=2",
+            "\n".join(logs.output),
+        )
+
+    @override_settings(CRON_GHOST_SWEEP_TENANTS="*")
+    @patch("apps.cron.post_reconcile.invoke_gateway_tool")
+    def test_absent_name_logs_info_and_leaves_row_untouched(self, mock_invoke):
+        row = self._row("Missing")
+        mock_invoke.return_value = {"jobs": [{"id": "other-id", "name": "Other"}]}
+
+        with self.assertLogs("apps.cron.post_reconcile", level="INFO") as logs:
+            summary = run_post_reconcile_maintenance(self.tenant)
+
+        row.refresh_from_db()
+        self.assertEqual(row.gateway_job_id, "dead-id")
+        self.assertEqual(summary["resynced"], 0)
+        self.assertIn(
+            f"cron_gateway_id_resync tenant={self.tenant.id} row={row.pk} old=dead-id matches=0",
+            "\n".join(logs.output),
+        )
+
+    @override_settings(CRON_GHOST_SWEEP_TENANTS="*")
+    @patch("apps.cron.post_reconcile.invoke_gateway_tool")
+    def test_sync_job_is_never_a_resync_target(self, mock_invoke):
+        row = self._row("_sync:Internal")
+        mock_invoke.return_value = {"jobs": [{"id": "sync-live", "name": "_sync:Internal"}]}
+
+        with self.assertLogs("apps.cron.post_reconcile", level="INFO") as logs:
+            summary = run_post_reconcile_maintenance(self.tenant)
+
+        row.refresh_from_db()
+        self.assertEqual(row.gateway_job_id, "dead-id")
+        self.assertEqual(summary["resynced"], 0)
+        self.assertIn(
+            f"cron_gateway_id_resync tenant={self.tenant.id} row={row.pk} old=dead-id matches=0",
+            "\n".join(logs.output),
+        )
+
+    @override_settings(CRON_GHOST_SWEEP_TENANTS="")
+    @patch("apps.cron.post_reconcile.invoke_gateway_tool")
+    def test_disabled_gate_does_not_resync(self, mock_invoke):
+        row = self._row("Morning Briefing")
+
+        summary = run_post_reconcile_maintenance(self.tenant)
+
+        row.refresh_from_db()
+        self.assertEqual(row.gateway_job_id, "dead-id")
+        self.assertEqual(summary["resynced"], 0)
+        mock_invoke.assert_not_called()
