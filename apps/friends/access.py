@@ -31,7 +31,7 @@ import contextlib
 from django.conf import settings
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.db import connection, transaction
-from django.db.models import Count, Exists, OuterRef, Q
+from django.db.models import Count, Exists, Max, OuterRef, Q
 from django.utils import timezone
 
 from apps.tenants.models import Tenant
@@ -109,7 +109,7 @@ def are_neighbors(a: Tenant, b: Tenant) -> bool:
     return edge.status == Friendship.Status.ACCEPTED
 
 
-def assert_neighbors(viewer_tenant, friendship_id) -> Friendship:
+def assert_neighbors(viewer_tenant, friendship_id, *, for_update=False) -> Friendship:
     """Return the ``accepted`` Friendship the viewer is a party to, or raise
     ``PermissionDenied``.
 
@@ -118,8 +118,9 @@ def assert_neighbors(viewer_tenant, friendship_id) -> Friendship:
     ``friendship_id`` resolves a real row but fails the party check.
     """
     viewer_id = _tenant_id(viewer_tenant)
+    queryset = Friendship.objects.select_for_update() if for_update else Friendship.objects
     try:
-        edge = Friendship.objects.get(id=friendship_id)
+        edge = queryset.get(id=friendship_id)
     except Friendship.DoesNotExist as exc:
         raise PermissionDenied("No such friendship") from exc
     if viewer_id not in (edge.requester_id, edge.addressee_id):
@@ -838,6 +839,25 @@ def unread_count(thread, last_read_seq: int, viewer_tenant_id) -> int:
 
 def latest_message(thread) -> FriendMessage | None:
     return FriendMessage.objects.filter(thread=thread, deleted_at__isnull=True).order_by("-seq").first()
+
+
+def friendship_retirement_cutoff(friendship, tenant) -> tuple:
+    """Return the direct thread id and raw max message sequence for an edge.
+
+    The caller holds ``select_for_update`` on ``friendship`` inside its outer
+    transaction. Reasserting the tenant GUC here pins the FORCE-RLS message read
+    to that same transaction-pooler connection. Soft-deleted rows intentionally
+    count: this is an insertion boundary, not a visibility-filtered feed page.
+    """
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(tenant_id=_tenant_id(tenant))
+    friendship_id = getattr(friendship, "id", friendship)
+    thread = FriendThread.objects.filter(friendship_id=friendship_id).only("id").first()
+    if thread is None:
+        return None, 0
+    max_seq = FriendMessage.objects.filter(thread_id=thread.id).aggregate(max_seq=Max("seq"))["max_seq"]
+    return thread.id, max_seq or 0
 
 
 def _thread_other_party_id(thread, viewer_id):

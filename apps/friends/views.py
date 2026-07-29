@@ -63,8 +63,15 @@ class WaveRespondView(FriendsView):
 
     def post(self, request, friendship_id, action):
         tenant = self.get_tenant(request)
+        if action == "block":
+            edge, retirement = services.block_friendship(tenant, friendship_id)
+            return Response({"friendship_id": str(edge.id), "status": edge.status, **retirement})
         edge = services.respond_to_wave(tenant, friendship_id, action)
-        return Response({"friendship_id": str(edge.id), "status": edge.status})
+        payload = {"friendship_id": str(edge.id), "status": edge.status}
+        if action == "accept":
+            payload["acceptance_cutoff_seq"] = edge.acceptance_cutoff_seq
+            payload["acceptance_incarnation"] = edge.acceptance_incarnation
+        return Response(payload)
 
 
 class UnfriendView(FriendsView):
@@ -72,8 +79,8 @@ class UnfriendView(FriendsView):
 
     def delete(self, request, friendship_id):
         tenant = self.get_tenant(request)
-        edge = services.unfriend(tenant, friendship_id)
-        return Response({"friendship_id": str(edge.id), "status": edge.status})
+        edge, retirement = services.unfriend_with_retirement(tenant, friendship_id)
+        return Response({"friendship_id": str(edge.id), "status": edge.status, **retirement})
 
 
 class UnblockView(FriendsView):
@@ -151,16 +158,20 @@ class InviteClaimView(FriendsView):
 def _wave_result(edge, viewer_tenant) -> dict:
     """The other party's public profile + edge status, from the viewer's side."""
     other = edge.addressee if edge.requester_id == viewer_tenant.id else edge.requester
-    from .models import NeighborProfile
+    from .models import Friendship, NeighborProfile
 
     profile = NeighborProfile.objects.filter(tenant=other).first()
-    return {
+    payload = {
         "friendship_id": str(edge.id),
         "status": edge.status,
         "display_name": profile.display_name if profile else (getattr(other.user, "display_name", None) or "Neighbor"),
         "handle": profile.handle if profile else None,
         "avatar_hue": profile.avatar_hue if profile else 210,
     }
+    if edge.status == Friendship.Status.ACCEPTED:
+        payload["acceptance_cutoff_seq"] = edge.acceptance_cutoff_seq
+        payload["acceptance_incarnation"] = edge.acceptance_incarnation
+    return payload
 
 
 def _invite_result(invite) -> dict:
@@ -341,6 +352,8 @@ class ThreadsView(FriendsView):
             {
                 "thread_id": str(thread.id),
                 "friendship_id": str(thread.friendship_id) if thread.friendship_id else None,
+                "acceptance_cutoff_seq": (thread.friendship.acceptance_cutoff_seq if thread.friendship_id else None),
+                "acceptance_incarnation": (thread.friendship.acceptance_incarnation if thread.friendship_id else None),
             },
             status=status.HTTP_200_OK,
         )

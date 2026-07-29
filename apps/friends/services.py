@@ -221,39 +221,41 @@ def send_wave(from_tenant, from_user, handle: str, note: str = "") -> tuple[Frie
 
     ensure_neighbor_profile(from_tenant, from_user)  # so the addressee can see who waved
     pair = compute_pair_key(from_tenant.id, target.id)
-    existing = Friendship.objects.filter(pair_key=pair).first()
+    existing = Friendship.objects.filter(pair_key=pair).only("id").first()
 
-    # Neighbor cap — enforced only when this wave would GROW the sender's network
-    # (a fresh wave, a re-wave after decline, or waving back to accept). An
-    # already-accepted edge is idempotent and never blocked.
-    if existing is None or existing.status != Friendship.Status.ACCEPTED:
+    if existing is None:
+        # Neighbor cap — enforced only when this fresh wave would grow the
+        # sender's network. A concurrent insert still resolves through pair_key.
         if accepted_neighbor_count(from_tenant) >= MAX_NEIGHBORS:
             raise ValidationError(_AT_MAX_NEIGHBORS_MSG)
 
     if existing is not None:
-        if existing.status == Friendship.Status.BLOCKED:
-            raise NotFound("No neighbor with that handle.")  # no-reveal
-        if existing.status == Friendship.Status.ACCEPTED:
-            return existing, False
-        if existing.status == Friendship.Status.PENDING:
-            if existing.addressee_id == from_tenant.id:
-                # They already waved me — waving back accepts it (mutual consent).
-                existing.status = Friendship.Status.ACCEPTED
-                existing.responded_at = timezone.now()
-                existing.save(update_fields=["status", "responded_at"])
+        with transaction.atomic():
+            # Re-read after taking the universal edge lock. All status decisions
+            # below must observe a block that committed before this lock.
+            existing = Friendship.objects.select_for_update().get(pair_key=pair)
+            if existing.status == Friendship.Status.BLOCKED:
+                raise NotFound("No neighbor with that handle.")  # no-reveal
+            if existing.status == Friendship.Status.ACCEPTED:
                 return existing, False
-            return existing, False  # I already sent this wave — idempotent
-        # declined or revoked → reuse the row, flip to pending in the new direction
-        existing.requester = from_tenant
-        existing.addressee = target
-        existing.requested_by = from_user
-        existing.status = Friendship.Status.PENDING
-        existing.responded_at = None
-        existing.revoked_at = None
-        existing.blocked_by = None
-        existing.invite_note = note or ""
-        existing.requested_via = "handle"
-        existing.save()
+            if accepted_neighbor_count(from_tenant) >= MAX_NEIGHBORS:
+                raise ValidationError(_AT_MAX_NEIGHBORS_MSG)
+            if existing.status == Friendship.Status.PENDING:
+                if existing.addressee_id == from_tenant.id:
+                    # They already waved me — waving back accepts it.
+                    _accept_locked_friendship(existing, from_tenant)
+                return existing, False
+            # declined or revoked → reuse the locked row in the new direction
+            existing.requester = from_tenant
+            existing.addressee = target
+            existing.requested_by = from_user
+            existing.status = Friendship.Status.PENDING
+            existing.responded_at = None
+            existing.revoked_at = None
+            existing.blocked_by = None
+            existing.invite_note = note or ""
+            existing.requested_via = "handle"
+            existing.save()
         _notify_wave_received(existing)
         return existing, False
 
@@ -279,38 +281,79 @@ def respond_to_wave(tenant, friendship_id, action: str) -> Friendship:
     """accept / decline (addressee only) or block (either party). Non-party →
     404 (no-reveal); requester trying to accept their own wave → 403. Idempotent
     on the terminal state."""
-    edge = _load_edge_for_party(tenant, friendship_id)
-    is_addressee = edge.addressee_id == tenant.id
-    now = timezone.now()
-
-    if action in ("accept", "decline"):
-        if not is_addressee:
-            raise PermissionDenied("Only the neighbor who was waved can respond to this wave.")
-        target_status = Friendship.Status.ACCEPTED if action == "accept" else Friendship.Status.DECLINED
-        if edge.status == target_status:
-            return edge  # idempotent
-        if edge.status != Friendship.Status.PENDING:
-            raise ValidationError("This wave can no longer be answered.")
-        edge.status = target_status
-        edge.responded_at = now
-        edge.save(update_fields=["status", "responded_at"])
+    if action == "block":
+        edge, _retirement = block_friendship(tenant, friendship_id)
         return edge
 
-    if action == "block":
-        if edge.status == Friendship.Status.BLOCKED:
-            return edge  # idempotent
-        edge.status = Friendship.Status.BLOCKED
-        edge.blocked_by = tenant
-        edge.responded_at = now
-        edge.save(update_fields=["status", "blocked_by", "responded_at"])
-        _purge_absorbed_between(tenant.id, _edge_other_party_id(edge, tenant.id))  # PR10: block = purge now
+    if action in ("accept", "decline"):
+        with transaction.atomic():
+            edge = _load_edge_for_party(tenant, friendship_id, for_update=True)
+            if edge.addressee_id != tenant.id:
+                raise PermissionDenied("Only the neighbor who was waved can respond to this wave.")
+            target_status = Friendship.Status.ACCEPTED if action == "accept" else Friendship.Status.DECLINED
+            if edge.status == target_status:
+                return edge  # idempotent
+            if edge.status != Friendship.Status.PENDING:
+                raise ValidationError("This wave can no longer be answered.")
+            if target_status == Friendship.Status.ACCEPTED:
+                _accept_locked_friendship(edge, tenant)
+            else:
+                edge.status = target_status
+                edge.responded_at = timezone.now()
+                edge.save(update_fields=["status", "responded_at"])
         return edge
 
     raise ValidationError("Unknown action.")
 
 
+def _accept_locked_friendship(edge, tenant, *, extra_update_fields=()) -> None:
+    """Persist a new acceptance incarnation while holding its Friendship lock."""
+    _thread_id, cutoff_seq = access.friendship_retirement_cutoff(edge, tenant)
+    edge.acceptance_cutoff_seq = cutoff_seq
+    edge.acceptance_incarnation += 1
+    edge.status = Friendship.Status.ACCEPTED
+    edge.responded_at = timezone.now()
+    edge.save(
+        update_fields=[
+            "acceptance_cutoff_seq",
+            "acceptance_incarnation",
+            "status",
+            "responded_at",
+            *extra_update_fields,
+        ]
+    )
+
+
+def block_friendship(tenant, friendship_id) -> tuple[Friendship, dict]:
+    """Block an edge and return its direct-thread retirement boundary.
+
+    The Friendship row is the shared rendezvous lock with direct message sends.
+    It exists even when chat was never opened and owns the status predicate both
+    operations inspect, unlike an optional thread row.
+    """
+    with transaction.atomic():
+        edge = _load_edge_for_party(tenant, friendship_id, for_update=True)
+        if edge.status != Friendship.Status.BLOCKED:
+            edge.status = Friendship.Status.BLOCKED
+            edge.blocked_by = tenant
+            edge.responded_at = timezone.now()
+            edge.save(update_fields=["status", "blocked_by", "responded_at"])
+            _purge_absorbed_between(tenant.id, _edge_other_party_id(edge, tenant.id))  # PR10: block = purge now
+        retirement = _friendship_retirement_payload(edge, tenant)
+    return edge, retirement
+
+
 def _edge_other_party_id(edge, tenant_id):
     return edge.addressee_id if edge.requester_id == tenant_id else edge.requester_id
+
+
+def _friendship_retirement_payload(edge, tenant) -> dict:
+    thread_id, cutoff_seq = access.friendship_retirement_cutoff(edge, tenant)
+    return {
+        "thread_id": str(thread_id) if thread_id is not None else None,
+        "retirement_cutoff_seq": cutoff_seq,
+        "acceptance_incarnation": edge.acceptance_incarnation,
+    }
 
 
 def _purge_absorbed_between(a_id, b_id) -> None:
@@ -329,33 +372,49 @@ def unblock(tenant, friendship_id) -> Friendship:
     the blocked side gets 404 (no-reveal — the block was never disclosed to them).
     Flips to ``revoked`` (NOT accepted): the relationship must be re-waved to
     resume, so unblocking never silently restores a connection. Idempotent."""
-    edge = _load_edge_for_party(tenant, friendship_id)
-    if edge.status != Friendship.Status.BLOCKED or edge.blocked_by_id != tenant.id:
-        # Not a block this tenant owns — don't confirm one exists.
-        raise NotFound("No such block.")
-    edge.status = Friendship.Status.REVOKED
-    edge.blocked_by = None
-    edge.revoked_at = timezone.now()
-    edge.save(update_fields=["status", "blocked_by", "revoked_at"])
+    with transaction.atomic():
+        edge = _load_edge_for_party(tenant, friendship_id, for_update=True)
+        if edge.status != Friendship.Status.BLOCKED or edge.blocked_by_id != tenant.id:
+            # Not a block this tenant owns — don't confirm one exists.
+            raise NotFound("No such block.")
+        edge.status = Friendship.Status.REVOKED
+        edge.blocked_by = None
+        edge.revoked_at = timezone.now()
+        edge.save(update_fields=["status", "blocked_by", "revoked_at"])
     return edge
 
 
 def unfriend(tenant, friendship_id) -> Friendship:
     """Revoke an accepted/pending edge. A ``blocked`` edge is left intact (you
     can't un-block by unfriending). Idempotent."""
-    edge = _load_edge_for_party(tenant, friendship_id)
-    if edge.status in (Friendship.Status.ACCEPTED, Friendship.Status.PENDING):
-        edge.status = Friendship.Status.REVOKED
-        edge.revoked_at = timezone.now()
-        edge.save(update_fields=["status", "revoked_at"])
+    edge, _retirement = unfriend_with_retirement(tenant, friendship_id)
     return edge
 
 
-def _load_edge_for_party(tenant, friendship_id) -> Friendship:
+def unfriend_with_retirement(tenant, friendship_id) -> tuple[Friendship, dict]:
+    """Revoke an edge under the send lock and return its retirement boundary."""
+    with transaction.atomic():
+        edge = _load_edge_for_party(tenant, friendship_id, for_update=True)
+        if edge.status in (Friendship.Status.ACCEPTED, Friendship.Status.PENDING):
+            edge.status = Friendship.Status.REVOKED
+            edge.revoked_at = timezone.now()
+            edge.save(update_fields=["status", "revoked_at"])
+        retirement = _friendship_retirement_payload(edge, tenant)
+    return edge, retirement
+
+
+def _load_edge_for_party(tenant, friendship_id, *, for_update=False) -> Friendship:
     """Load the edge, or raise ``NotFound`` if it doesn't exist OR the caller
     isn't a party (no-reveal for both cases)."""
+    queryset = Friendship.objects
+    if for_update:
+        # No select_related here: lock only the consent edge, not joined Tenant
+        # rows. Every serialized path acquires this exact row first.
+        queryset = queryset.select_for_update()
+    else:
+        queryset = queryset.select_related("requester", "addressee")
     try:
-        edge = Friendship.objects.select_related("requester", "addressee").get(id=friendship_id)
+        edge = queryset.get(id=friendship_id)
     except (Friendship.DoesNotExist, ValueError, DjangoValidationError, ValidationError) as exc:
         # DjangoValidationError: a malformed UUID reaches here from callback
         # paths (the console URLs are <uuid:>-guarded, callbacks are not).
@@ -434,18 +493,22 @@ def claim_invite(tenant, user, token: str) -> Friendship:
                 requester=inviter,
                 addressee=tenant,
                 requested_by=inviter.user,
-                status=Friendship.Status.ACCEPTED,
+                status=Friendship.Status.PENDING,
                 requested_via="link",
                 invite=invite,
-                responded_at=timezone.now(),
             )
+            # The transaction-owned insert is invisible to other sessions; mint
+            # its first accepted incarnation through the same centralized path.
+            _accept_locked_friendship(edge, tenant)
         else:
             if edge.status == Friendship.Status.BLOCKED:
                 raise NotFound("Invite not found.")  # no-reveal
-            edge.status = Friendship.Status.ACCEPTED
-            edge.responded_at = timezone.now()
             edge.invite = invite
-            edge.save()
+            if edge.status == Friendship.Status.ACCEPTED:
+                edge.responded_at = timezone.now()
+                edge.save(update_fields=["responded_at", "invite"])
+            else:
+                _accept_locked_friendship(edge, tenant, extra_update_fields=("invite",))
         FriendInvite.objects.filter(id=invite.id).update(uses=F("uses") + 1)
     return edge
 
@@ -1397,8 +1460,12 @@ def _accepted_neighbor_handles(tenant) -> list[str]:
 def open_thread(tenant, friendship_id) -> FriendThread:
     """Open (get-or-create) the direct thread for an accepted friendship the
     caller is a party to. Idempotent (uq_direct_thread)."""
-    edge = access.assert_neighbors(tenant, friendship_id)  # accepted party, else PermissionDenied
-    return _get_or_create_direct_thread(tenant, edge)
+    with transaction.atomic():
+        edge = access.assert_neighbors(tenant, friendship_id, for_update=True)
+        thread = _get_or_create_direct_thread(tenant, edge)
+        # Keep the exact locked incarnation attached for the POST response.
+        thread.friendship = edge
+        return thread
 
 
 def _get_or_create_direct_thread(tenant, edge) -> FriendThread:
@@ -1424,6 +1491,8 @@ def list_threads(tenant) -> list[dict]:
             {
                 "thread_id": str(thread.id),
                 "friendship_id": str(thread.friendship_id) if thread.friendship_id else None,
+                "acceptance_cutoff_seq": (thread.friendship.acceptance_cutoff_seq if thread.friendship_id else None),
+                "acceptance_incarnation": (thread.friendship.acceptance_incarnation if thread.friendship_id else None),
                 "display_name": profile.display_name if profile else "Neighbor",
                 "handle": profile.handle if profile else None,
                 "avatar_hue": profile.avatar_hue if profile else 210,
@@ -1448,7 +1517,8 @@ def send_friend_message(tenant, user, thread_id, client_msg_id, text) -> tuple:
     membership not edge status). Chat is a CONTROL-PLANE store, so a SUSPENDED
     target is naturally store-only + notify (no container to touch) — we do NOT
     reject it (design §10); assert_can_write's raise-on-SUSPENDED guards
-    container writes, which chat never does, so we gate on are_neighbors."""
+    container writes, which chat never does, so direct sends gate on the locked
+    Friendship status."""
     thread = access.assert_participant(tenant, thread_id)  # PermissionDenied if not a member
     text = (text or "").strip()
     if not text:
@@ -1456,15 +1526,25 @@ def send_friend_message(tenant, user, thread_id, client_msg_id, text) -> tuple:
     if not (client_msg_id or "").strip():
         raise ValidationError("client_msg_id is required.")
 
-    other_id = access._thread_other_party_id(thread, tenant.id)
-    if other_id is not None and not access.are_neighbors(tenant, other_id):
-        raise PermissionDenied("You can't message this neighbor right now.")
+    def create_message():
+        message, created = access.create_friend_message(thread, tenant, user, client_msg_id.strip(), text)
+        if created:
+            FriendThread.objects.filter(id=thread.id).update(last_message_at=timezone.now())
+            _notify_friend_message(message)
+        return message, created
 
-    message, created = access.create_friend_message(thread, tenant, user, client_msg_id.strip(), text)
-    if created:
-        FriendThread.objects.filter(id=thread.id).update(last_message_at=timezone.now())
-        _notify_friend_message(message)
-    return message, created
+    if thread.friendship_id is None:
+        # Circle threads have no single relationship edge and keep their existing
+        # membership-gated send path unchanged.
+        return create_message()
+
+    with transaction.atomic():
+        # Friendship is the first row lock on every direct retirement/send path.
+        # The status decision and INSERT therefore share this outer transaction.
+        edge = _load_edge_for_party(tenant, thread.friendship_id, for_update=True)
+        if edge.status != Friendship.Status.ACCEPTED:
+            raise PermissionDenied("You can't message this neighbor right now.")
+        return create_message()
 
 
 def get_thread_messages(tenant, thread_id, cursor, limit) -> dict:

@@ -13,7 +13,7 @@ from unittest import mock
 
 from django.db import IntegrityError, connection, transaction
 from django.db.migrations.executor import MigrationExecutor
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.test import APIClient
@@ -22,7 +22,7 @@ from apps.lessons.models import Lesson
 from apps.tenants.models import Tenant, User
 
 from . import access, scrub, services
-from .models import Friendship, LessonShareGrant, NeighborProfile, PendingShare, SharedLesson
+from .models import Friendship, LessonShareGrant, NeighborProfile, PendingShare, SharedLesson, compute_pair_key
 
 
 def _tenant(username: str, *, friends_enabled: bool = True) -> Tenant:
@@ -670,35 +670,53 @@ class SharePreviewContract404Test(TestCase):
         self.assertIsNotNone(snap)
 
 
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
 class PendingShareDedupeMigrationTest(TransactionTestCase):
     migrate_from = ("friends", "0011_sky_rls_backstop")
     migrate_to = ("friends", "0012_dedupe_pending_shares")
+    migrate_latest = ("friends", "0014_friendship_acceptance_incarnation")
 
     def setUp(self):
         super().setUp()
-        MigrationExecutor(connection).migrate([self.migrate_from])
+        self.user_md_patcher = mock.patch(
+            "apps.orchestrator.workspace_envelope.push_user_md",
+            return_value=True,
+        )
+        self.user_md_patcher.start()
+        self.addCleanup(self.user_md_patcher.stop)
+        # Create non-friends fixtures while the schema still matches the current
+        # runtime models; only historical friends models are used after rollback.
+        self.owner = _tenant("dedupe_migration_owner")
+        self.neighbor = _tenant("dedupe_migration_neighbor")
+        self.lesson = _lesson(self.owner)
+        executor = MigrationExecutor(connection)
+        executor.migrate([self.migrate_from])
+        self.old_apps = executor.loader.project_state([self.migrate_from]).apps
 
     def tearDown(self):
-        MigrationExecutor(connection).migrate([self.migrate_to])
+        MigrationExecutor(connection).migrate([self.migrate_latest])
         super().tearDown()
 
     def test_migration_keeps_newest_pending_share(self):
-        owner = _tenant("dedupe_migration_owner")
-        neighbor = _tenant("dedupe_migration_neighbor")
-        edge = _accepted_edge(owner, neighbor)
-        lesson = _lesson(owner)
+        historical_friendship = self.old_apps.get_model("friends", "Friendship")
+        edge = historical_friendship.objects.create(
+            requester_id=self.owner.id,
+            addressee_id=self.neighbor.id,
+            pair_key=compute_pair_key(self.owner.id, self.neighbor.id),
+            status=Friendship.Status.ACCEPTED,
+        )
         expires_at = timezone.now() + timedelta(days=7)
         older = PendingShare.objects.create(
-            tenant=owner,
-            source_lesson=lesson,
-            target_friendship=edge,
+            tenant=self.owner,
+            source_lesson=self.lesson,
+            target_friendship_id=edge.id,
             status=PendingShare.Status.PENDING,
             expires_at=expires_at,
         )
         newer = PendingShare.objects.create(
-            tenant=owner,
-            source_lesson=lesson,
-            target_friendship=edge,
+            tenant=self.owner,
+            source_lesson=self.lesson,
+            target_friendship_id=edge.id,
             status=PendingShare.Status.PENDING,
             expires_at=expires_at,
         )
@@ -713,18 +731,18 @@ class PendingShareDedupeMigrationTest(TransactionTestCase):
         self.assertIsNotNone(older.resolved_at)
         self.assertEqual(
             PendingShare.objects.filter(
-                tenant=owner,
-                source_lesson=lesson,
-                target_friendship=edge,
+                tenant=self.owner,
+                source_lesson=self.lesson,
+                target_friendship_id=edge.id,
                 status=PendingShare.Status.PENDING,
             ).count(),
             1,
         )
         with self.assertRaises(IntegrityError), transaction.atomic():
             PendingShare.objects.create(
-                tenant=owner,
-                source_lesson=lesson,
-                target_friendship=edge,
+                tenant=self.owner,
+                source_lesson=self.lesson,
+                target_friendship_id=edge.id,
                 status=PendingShare.Status.PENDING,
                 expires_at=expires_at,
             )

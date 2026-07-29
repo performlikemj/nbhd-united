@@ -90,6 +90,12 @@ class Friendship(models.Model):
     # service-layer-only (that races to dup edges).
     pair_key = models.CharField(max_length=73, unique=True, editable=False)
     status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    # Raw thread MAX(seq) immediately before the current acceptance incarnation.
+    # NULL is intentionally reserved for legacy/never-accepted unknowns.
+    acceptance_cutoff_seq = models.BigIntegerField(null=True, blank=True)
+    # Monotonic identity for accepted relationship incarnations. Legacy and
+    # never-accepted rows start at zero; the first real acceptance mints one.
+    acceptance_incarnation = models.BigIntegerField(default=0)
     blocked_by = models.ForeignKey(Tenant, on_delete=models.CASCADE, null=True, blank=True, related_name="+")
     requested_via = models.CharField(max_length=16, default="handle")  # handle | link | qr | referral
     invite = models.ForeignKey("FriendInvite", on_delete=models.SET_NULL, null=True, blank=True)
