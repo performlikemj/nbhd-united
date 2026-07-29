@@ -1383,7 +1383,12 @@ def remove_zombie_heartbeats_task() -> dict:
             time.sleep(0.5)
             continue
 
-        job_id = heartbeat.get("id") or heartbeat.get("jobId", "Heartbeat Check-in")
+        job_id = heartbeat.get("id") or heartbeat.get("jobId")
+        if not job_id:
+            logger.error("zombie_heartbeats: tenant %s — heartbeat is missing its gateway job ID", tid)
+            errors += 1
+            time.sleep(1)
+            continue
         try:
             invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
             removed += 1

@@ -174,7 +174,17 @@ class PendingAtCronCancelView(APIView):
         if target is None:
             return Response({"detail": "Pending reminder not found."}, status=status.HTTP_404_NOT_FOUND)
 
-        job_id = target.get("id") or target.get("jobId") or name
+        job_id = target.get("id") or target.get("jobId")
+        if not job_id:
+            logger.warning(
+                "pending_at_cancel_missing_id tenant=%s name=%s",
+                tenant.id,
+                name,
+            )
+            return Response(
+                {"detail": "Pending reminder is missing its gateway job ID."},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
         try:
             invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
         except GatewayError as exc:

@@ -249,6 +249,8 @@ class ReminderRemovalBothFlagStatesTest(TestCase):
     the Postgres row delete.
     """
 
+    gateway_job_id = "journal-reminder-id"
+
     def setUp(self):
         self.tenant = create_tenant(display_name="Reminder", telegram_chat_id=930001)
 
@@ -261,11 +263,10 @@ class ReminderRemovalBothFlagStatesTest(TestCase):
         )
         return rem.name, result["ingestion_id"]
 
-    def _assert_gateway_remove_called(self, mock_invoke, name):
+    def _assert_gateway_remove_called(self, mock_invoke):
         remove_calls = [c for c in mock_invoke.call_args_list if len(c.args) >= 2 and c.args[1] == "cron.remove"]
         self.assertTrue(remove_calls, "gateway cron.remove was never invoked")
-        # jobId is the CronJob.name (== gateway job name, verbatim)
-        self.assertTrue(any(c.args[2].get("jobId") == name for c in remove_calls))
+        self.assertTrue(any(c.args[2].get("jobId") == self.gateway_job_id for c in remove_calls))
 
     def test_canonical_flag_true_deletes_row_and_hits_gateway(self):
         self.tenant.postgres_cron_canonical = True
@@ -275,10 +276,14 @@ class ReminderRemovalBothFlagStatesTest(TestCase):
             patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
             patch("apps.cron.signals._enqueue_regen"),
         ):
+            mock_invoke.side_effect = [
+                {"details": {"jobs": [{"id": self.gateway_job_id, "name": name}]}},
+                {},
+            ]
             result = forget_ingestion(self.tenant, ingestion)
         self.assertEqual(result["removed"], 1)
         self.assertFalse(CronJob.objects.filter(tenant=self.tenant, name=name).exists())
-        self._assert_gateway_remove_called(mock_invoke, name)
+        self._assert_gateway_remove_called(mock_invoke)
 
     def test_canonical_flag_false_deletes_row_and_hits_gateway(self):
         self.tenant.postgres_cron_canonical = False
@@ -288,10 +293,14 @@ class ReminderRemovalBothFlagStatesTest(TestCase):
             patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
             patch("apps.cron.signals._enqueue_regen"),
         ):
+            mock_invoke.side_effect = [
+                {"details": {"jobs": [{"id": self.gateway_job_id, "name": name}]}},
+                {},
+            ]
             result = forget_ingestion(self.tenant, ingestion)
         self.assertEqual(result["removed"], 1)
         self.assertFalse(CronJob.objects.filter(tenant=self.tenant, name=name).exists())
-        self._assert_gateway_remove_called(mock_invoke, name)
+        self._assert_gateway_remove_called(mock_invoke)
 
     def test_gateway_unavailable_on_canonical_tenant_is_treated_as_removed(self):
         self.tenant.postgres_cron_canonical = True

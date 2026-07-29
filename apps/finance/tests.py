@@ -1812,6 +1812,7 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         past = datetime.now(UTC) - timedelta(days=7)
         expr = f"{past.minute} {past.hour} {past.day} {past.month} *"
         return {
+            "id": "finance-welcome-id",
             "name": "_finance:welcome",
             "schedule": {"kind": "cron", "expr": expr, "tz": "UTC"},
         }
@@ -1889,12 +1890,14 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         from apps.finance.views import _schedule_finance_welcome
         from apps.orchestrator.welcome_scheduler import WelcomeStatus
 
+        stale_job = self._stale_welcome_cron()
+
         with (
             self._patch(
                 "apps.cron.gateway_client.cron_get",
-                return_value=self._stale_welcome_cron(),
+                return_value=stale_job,
             ),
-            self._patch("apps.cron.gateway_client.invoke_gateway_tool") as mock_invoke,
+            self._patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={}) as mock_invoke,
         ):
             status = _schedule_finance_welcome(self.tenant)
 
@@ -1903,6 +1906,8 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         # Both remove (to clear the stale row) and add (fresh schedule).
         self.assertIn("cron.remove", tools_called)
         self.assertIn("cron.add", tools_called)
+        remove_call = next(call for call in mock_invoke.call_args_list if call.args[1] == "cron.remove")
+        self.assertEqual(remove_call.args[2], {"jobId": "finance-welcome-id"})
         # Order matters: remove must precede add so the gateway doesn't
         # see a name collision.
         self.assertLess(tools_called.index("cron.remove"), tools_called.index("cron.add"))

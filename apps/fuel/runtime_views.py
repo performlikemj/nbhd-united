@@ -1295,9 +1295,15 @@ def _manage_fuel_cron(tenant, plan, action="create"):
                     # (e.g. _fuel:welcome, owned by the welcome scheduler)
                     # alone — symmetric with the reconciler's exclusion.
                     if name.startswith("_fuel:") and name not in _FUEL_RESERVED_NAMES:
-                        job_id = job.get("id") or job.get("jobId") or name
-                        if job_id:
-                            invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
+                        job_id = job.get("id") or job.get("jobId")
+                        if not job_id:
+                            logger.warning(
+                                "Cannot remove fuel cron %s for tenant %s: missing gateway job ID",
+                                name,
+                                tenant.id,
+                            )
+                            continue
+                        invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
             except GatewayError:
                 logger.warning("Failed to remove fuel cron for tenant %s", tenant.id)
 

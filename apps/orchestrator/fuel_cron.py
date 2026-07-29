@@ -326,13 +326,15 @@ def regenerate_fuel_crons(tenant: Tenant) -> dict:
             summary["errors"] += 1
 
     for job, reason in plan["to_remove"]:
-        # Fall back to the cron name as the remove key: the gateway's
-        # cron.remove accepts a name as jobId, and a legacy ``_fuel:{plan_name}``
-        # orphan that somehow lacks an id would otherwise be reaped by the
-        # planner but silently skipped here (matches the sweep in
-        # runtime_views._manage_fuel_cron and the general dedup reaper).
-        job_id = job.get("id") or job.get("jobId") or job.get("name", "")
+        job_id = job.get("id") or job.get("jobId") or ""
         if not job_id:
+            logger.warning(
+                "regenerate_fuel_crons: cannot remove %s (%s) on tenant %s: missing gateway job ID",
+                job.get("name", ""),
+                reason,
+                tenant.id,
+            )
+            summary["errors"] += 1
             continue
         try:
             invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})

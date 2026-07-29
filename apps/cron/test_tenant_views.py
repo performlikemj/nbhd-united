@@ -180,15 +180,13 @@ class CronJobDetailTest(TestCase):
             },
         )
 
-    @patch("apps.cron.tenant_views.invoke_gateway_tool")
-    def test_delete_cron_job(self, mock_invoke):
-        mock_invoke.return_value = {}
+    @patch("apps.cron.tenant_views.cron_remove")
+    def test_delete_cron_job(self, mock_remove):
         resp = self.client.delete("/api/v1/cron-jobs/Morning Briefing/")
         self.assertEqual(resp.status_code, 204)
-        mock_invoke.assert_called_once_with(
+        mock_remove.assert_called_once_with(
             self.tenant,
-            "cron.remove",
-            {"jobId": "Morning Briefing"},
+            cron_name="Morning Briefing",
         )
 
 
@@ -732,10 +730,10 @@ class CronJobBulkWriteHibernationTest(TestCase):
     @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_bulk_delete_503_on_mid_loop_azure_splash(self, mock_invoke, mock_wake):
-        """If the gateway returns the Azure splash mid-loop, abort and 503."""
+        """If the gateway returns the Azure splash during resolution, wake and 503."""
         from apps.cron.gateway_client import GatewayError
 
-        # First delete: Azure splash. We should not attempt subsequent ones.
+        # The live-list resolution gets the Azure splash, so no remove is attempted.
         mock_invoke.side_effect = GatewayError(
             "Gateway returned 404: <title>Container App - Unavailable</title>",
             status_code=404,
@@ -748,9 +746,36 @@ class CronJobBulkWriteHibernationTest(TestCase):
         self.assertEqual(resp.status_code, 503)
         self.assertTrue(resp.json().get("container_waking"))
         mock_wake.assert_called_once()
-        # We aborted after the first failure rather than calling cron.remove
-        # for every id.
         self.assertEqual(mock_invoke.call_count, 1)
+        self.assertEqual(mock_invoke.call_args.args[1], "cron.list")
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_bulk_delete_resolves_names_and_ids_to_live_gateway_ids(self, mock_invoke):
+        mock_invoke.side_effect = [
+            {
+                "details": {
+                    "jobs": [
+                        {"id": "gateway-a", "name": "Task A"},
+                        {"id": "gateway-b", "name": "Task B"},
+                    ]
+                }
+            },
+            {},
+            {},
+        ]
+
+        resp = self.client.post(
+            "/api/v1/cron-jobs/bulk-delete/",
+            {"ids": ["Task A", "gateway-b"]},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        remove_calls = [call for call in mock_invoke.call_args_list if call.args[1] == "cron.remove"]
+        self.assertEqual(
+            [call.args[2] for call in remove_calls],
+            [{"jobId": "gateway-a"}, {"jobId": "gateway-b"}],
+        )
 
     @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
     def test_bulk_update_foreground_hibernated_returns_503_and_wakes(self, mock_wake):

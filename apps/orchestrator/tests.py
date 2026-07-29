@@ -1387,11 +1387,8 @@ class RegenerateFuelCronsTest(TestCase):
         self.assertCountEqual(removed, ["o1", "o2", "o3"])  # the active cron 'keep' survives
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
-    def test_reaps_orphan_with_no_id_via_name(self, mock_invoke):
-        """A _fuel: orphan that lacks id/jobId is still removable using its name
-        as the cron.remove key (the gateway accepts a name as jobId). Without
-        the name fallback it would be classified to_remove but silently skipped,
-        persisting across every hourly pass."""
+    def test_idless_orphan_is_reported_without_name_as_job_id(self, mock_invoke):
+        """An id-less gateway row is an error; its name is not a removable ID."""
         self.tenant.fuel_profile.use_session_scheduling = False
         self.tenant.fuel_profile.save(update_fields=["use_session_scheduling"])
         from apps.orchestrator.fuel_cron import regenerate_fuel_crons
@@ -1406,10 +1403,12 @@ class RegenerateFuelCronsTest(TestCase):
             return None
 
         mock_invoke.side_effect = fake
-        # No active plan → desired empty → the id-less orphan must still be reaped.
+        # No active plan → desired empty → the id-less orphan is planned for
+        # removal, but the invalid gateway row cannot be removed safely.
         result = regenerate_fuel_crons(self.tenant)
-        self.assertEqual(removed, ["_fuel:No Id Orphan"])
-        self.assertEqual(result["legacy_reaped"], 1)
+        self.assertEqual(removed, [])
+        self.assertEqual(result["legacy_reaped"], 0)
+        self.assertEqual(result["errors"], 1)
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_adds_missing_jobs(self, mock_invoke):

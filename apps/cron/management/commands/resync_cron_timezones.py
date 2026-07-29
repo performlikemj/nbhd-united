@@ -82,7 +82,10 @@ class Command(BaseCommand):
                 deleted = 0
                 for job in jobs:
                     if job.get("name", "") in seed_names:
-                        job_id = job.get("jobId") or job.get("name")
+                        job_id = job.get("id") or job.get("jobId")
+                        if not job_id:
+                            self.stderr.write(f"    warn: could not delete {job.get('name')}: missing gateway job ID")
+                            continue
                         try:
                             invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
                             deleted += 1

@@ -350,22 +350,52 @@ def cron_get(
     return None
 
 
-def cron_remove(tenant: Tenant, cron_name: str) -> None:
-    """Remove a cron job by name from the tenant's gateway.
+def cron_remove(
+    tenant: Tenant,
+    cron_name: str | None = None,
+    *,
+    job_id: str | None = None,
+) -> None:
+    """Remove a cron job using the OpenClaw job ID contract.
 
-    Used by welcome schedulers to clear a stale one-shot before adding a
-    fresh one. Idempotent at the gateway level — a missing job is not
-    treated as an error.
+    OpenClaw 2026.5.28's ``createCronTool`` names the public argument
+    ``jobId`` (``id`` is a compatibility alias), but its remove action
+    forwards that value to the daemon as an ID and the daemon matches only
+    ``job.id``. A name is *not* accepted as an ID.
 
-    Raises ``GatewayError`` only on transport failure; missing-job
-    responses are swallowed.
+    New callers with a live job dict must pass ``job_id=job["id"]``. The
+    positional ``cron_name`` path remains for name-based schedulers outside
+    this app; it resolves the exact live name to its real ID before removal.
+    Missing names/jobs are idempotent. Ambiguous names and transport/tool
+    failures raise ``GatewayError``. Name resolution has the same first-page
+    visibility limit documented at the sweep call site.
     """
+    if job_id is not None and cron_name is not None:
+        raise ValueError("Pass either cron_name or job_id, not both")
+
+    resolved_job_id = (job_id or "").strip()
+    if not resolved_job_id:
+        requested_name = (cron_name or "").strip()
+        if not requested_name:
+            raise ValueError("cron_name or job_id is required")
+
+        result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+        inner = result.get("details", result) if isinstance(result, dict) else result
+        jobs = inner.get("jobs", []) if isinstance(inner, dict) else inner
+        jobs = jobs if isinstance(jobs, list) else []
+        matches = [job for job in jobs if isinstance(job, dict) and job.get("name") == requested_name]
+        if not matches:
+            return
+        if len(matches) > 1:
+            raise GatewayError(
+                f"Refusing to remove ambiguous cron name {requested_name!r}: {len(matches)} live matches"
+            )
+        resolved_job_id = str(matches[0].get("id") or matches[0].get("jobId") or "").strip()
+        if not resolved_job_id:
+            raise GatewayError(f"Live cron {requested_name!r} is missing its job ID")
+
     try:
-        # Gateway's cron.remove expects ``jobId`` (which accepts either
-        # the gateway's UUID or the cron's name field) — see existing
-        # usages in apps/cron/tenant_views.py. Passing ``name`` returns
-        # an HTTP 500 "tool execution failed" from the gateway.
-        invoke_gateway_tool(tenant, "cron.remove", {"jobId": cron_name})
+        invoke_gateway_tool(tenant, "cron.remove", {"jobId": resolved_job_id})
     except GatewayError as exc:
         # The gateway returns ok=false with "not found" when the cron is
         # already gone. Anything else is a real failure worth raising.

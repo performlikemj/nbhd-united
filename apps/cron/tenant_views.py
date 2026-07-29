@@ -20,7 +20,7 @@ from .cache import (
     read_jobs_from_cache,
     upsert_jobs_to_cache,
 )
-from .gateway_client import GatewayError, invoke_gateway_tool
+from .gateway_client import GatewayError, cron_remove, invoke_gateway_tool
 from .models import CronJob
 
 logger = logging.getLogger(__name__)
@@ -545,7 +545,11 @@ class CronJobDetailView(APIView):
                     result = invoke_gateway_tool(tenant, "cron.add", {"job": merged})
                 else:
                     # Use the actual ID from the gateway response for remove
-                    gateway_job_id = existing.get("jobId") or existing.get("id") or job_name
+                    gateway_job_id = existing.get("id") or existing.get("jobId")
+                    if not gateway_job_id:
+                        raise GatewayError(
+                            f"Live cron {existing.get('name') or job_name!r} is missing its gateway job ID"
+                        )
                     logger.info("cron.update (delete+create) job_name=%s gateway_id=%s", job_name, gateway_job_id)
                     # Back up existing job before delete so we can rollback if recreate fails
                     backup_job = {k: v for k, v in existing.items() if k not in _STRIP}
@@ -594,7 +598,7 @@ class CronJobDetailView(APIView):
         tenant = _get_tenant_for_user(request.user)
         try:
             _require_active_tenant(tenant)
-            invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_name})
+            cron_remove(tenant, cron_name=job_name)
         except GatewayError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
         return Response(status=status.HTTP_204_NO_CONTENT)
@@ -724,11 +728,51 @@ class CronJobBulkDeleteView(APIView):
         errors: list[dict] = []
         container_unavailable = False
 
-        for job_id in unique_ids:
+        # The public API accepts either a displayed name or a gateway ID, but
+        # OpenClaw's cron.remove action accepts only the live job ID. Resolve
+        # every requested identifier from one live list before mutating.
+        try:
+            list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
+        except GatewayError as exc:
+            if is_container_unavailable_error(exc):
+                return _wake_and_503(tenant, action="delete")
+            return Response({"detail": str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        inner = list_result.get("details", list_result) if isinstance(list_result, dict) else list_result
+        live_jobs = inner.get("jobs", []) if isinstance(inner, dict) else inner
+        live_jobs = live_jobs if isinstance(live_jobs, list) else []
+        job_lookup: dict[str, dict] = {}
+        for job in live_jobs:
+            if not isinstance(job, dict):
+                continue
+            for key in (job.get("id"), job.get("jobId"), job.get("name")):
+                if key:
+                    job_lookup[str(key)] = job
+
+        for requested_id in unique_ids:
+            live_job = job_lookup.get(requested_id)
+            if live_job is None:
+                errors.append({"id": requested_id, "deleted": False, "error": "Job not found"})
+                continue
+            gateway_job_id = live_job.get("id") or live_job.get("jobId")
+            if not gateway_job_id:
+                errors.append(
+                    {
+                        "id": requested_id,
+                        "deleted": False,
+                        "error": "Live job is missing its gateway job ID",
+                    }
+                )
+                continue
             try:
-                invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
-                results.append({"id": job_id, "deleted": True})
-                logger.info("cron.bulk_delete: deleted job_id=%s tenant=%s", job_id, tenant.id)
+                invoke_gateway_tool(tenant, "cron.remove", {"jobId": gateway_job_id})
+                results.append({"id": requested_id, "deleted": True})
+                logger.info(
+                    "cron.bulk_delete: deleted requested_id=%s gateway_id=%s tenant=%s",
+                    requested_id,
+                    gateway_job_id,
+                    tenant.id,
+                )
             except GatewayError as exc:
                 # If even one delete trips the Azure splash, the container is
                 # effectively unavailable — abort the rest of the loop and
@@ -740,10 +784,11 @@ class CronJobBulkDeleteView(APIView):
                         tenant.id,
                     )
                     break
-                errors.append({"id": job_id, "deleted": False, "error": str(exc)})
+                errors.append({"id": requested_id, "deleted": False, "error": str(exc)})
                 logger.warning(
-                    "cron.bulk_delete: failed to delete job_id=%s tenant=%s error=%s",
-                    job_id,
+                    "cron.bulk_delete: failed to delete requested_id=%s gateway_id=%s tenant=%s error=%s",
+                    requested_id,
+                    gateway_job_id,
                     tenant.id,
                     exc,
                 )
@@ -894,7 +939,16 @@ class CronJobBulkUpdateForegroundView(APIView):
                 rewrapped = _wrap_message_with_phase2(base_message, job_name, foreground)
                 merged = {**merged, "payload": {**merged_payload, "message": rewrapped}}
 
-            gateway_job_id = existing.get("jobId") or existing.get("id") or job_id
+            gateway_job_id = existing.get("id") or existing.get("jobId")
+            if not gateway_job_id:
+                errors.append(
+                    {
+                        "id": job_id,
+                        "updated": False,
+                        "error": "Live job is missing its gateway job ID",
+                    }
+                )
+                continue
             try:
                 backup_job = {k: v for k, v in existing.items() if k not in self._STRIP_FIELDS}
                 invoke_gateway_tool(tenant, "cron.remove", {"jobId": gateway_job_id})

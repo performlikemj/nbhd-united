@@ -188,7 +188,8 @@ def _remove_cron(tenant, object_id):
     (directive finding-4). So: delete the Postgres desired-state row (fires the
     signal → async reconcile for flag-on tenants) AND remove the job directly from
     the gateway (authoritative + immediate under both flag states). ``cron_remove``
-    swallows a gateway "not found".
+    resolves this exact gateway name to the live job ID and swallows a gateway
+    "not found".
     """
     from apps.cron.gateway_client import GatewayError, cron_remove
     from apps.cron.models import CronJob
@@ -201,7 +202,7 @@ def _remove_cron(tenant, object_id):
     if row is not None:
         row.delete()  # desired-state row gone; reconciler won't re-add the job.
     try:
-        cron_remove(tenant, name)
+        cron_remove(tenant, cron_name=name)
     except GatewayError as exc:
         # A hibernated container isn't running its gateway (fires nothing now); for
         # canonical-flag tenants the desired-state deletion is authoritative and the

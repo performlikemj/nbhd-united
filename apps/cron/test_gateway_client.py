@@ -13,6 +13,7 @@ from apps.cron.gateway_client import (
     _normalize_cron_delivery_for_ios,
     cron_exists,
     cron_get,
+    cron_remove,
     invoke_gateway_tool,
 )
 
@@ -208,6 +209,65 @@ class CronGetTests(TestCase):
             side_effect=GatewayError("simulated"),
         ):
             self.assertIsNone(cron_get(_FakeTenant(), "_fuel:welcome"))
+
+
+class CronRemoveContractTests(TestCase):
+    """Pin OpenClaw 2026.5.28's real public-tool contract.
+
+    ``jobId`` is the canonical tool argument name, but the value must be the
+    live job's ``id``. OpenClaw forwards it to daemon ``cron.remove`` as
+    ``{"id": ...}`` and the daemon compares only ``job.id``.
+    """
+
+    def test_live_job_id_is_sent_as_canonical_job_id_argument(self):
+        tenant = _FakeTenant()
+        with mock.patch(
+            "apps.cron.gateway_client.invoke_gateway_tool",
+            return_value={},
+        ) as invoke:
+            cron_remove(tenant, job_id="f05243cb-0000-4000-8000-000000000000")
+
+        invoke.assert_called_once_with(
+            tenant,
+            "cron.remove",
+            {"jobId": "f05243cb-0000-4000-8000-000000000000"},
+        )
+
+    def test_name_caller_resolves_real_id_before_remove(self):
+        tenant = _FakeTenant()
+        with mock.patch(
+            "apps.cron.gateway_client.invoke_gateway_tool",
+            side_effect=[
+                {
+                    "details": {
+                        "jobs": [
+                            {
+                                "id": "real-job-id",
+                                "name": "_fuel:welcome",
+                            }
+                        ]
+                    }
+                },
+                {},
+            ],
+        ) as invoke:
+            cron_remove(tenant, "_fuel:welcome")
+
+        self.assertEqual(
+            invoke.call_args_list,
+            [
+                mock.call(
+                    tenant,
+                    "cron.list",
+                    {"includeDisabled": True},
+                ),
+                mock.call(
+                    tenant,
+                    "cron.remove",
+                    {"jobId": "real-job-id"},
+                ),
+            ],
+        )
 
 
 class WelcomeFreshnessIntegrationTests(TestCase):
