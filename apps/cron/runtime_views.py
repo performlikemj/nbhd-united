@@ -163,6 +163,20 @@ class RuntimeContainerStartedView(APIView):
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
+
+        # The normal reconciler intentionally ignores agent-owned ``_sync:*``
+        # jobs. This separately gated maintenance pass is the sole sanctioned
+        # exception: it only reaps dated ghosts after reconciliation completes.
+        try:
+            from apps.cron.post_reconcile import run_post_reconcile_maintenance
+
+            run_post_reconcile_maintenance(tenant)
+        except Exception:
+            logger.exception(
+                "RuntimeContainerStartedView: post-reconcile cron maintenance failed for tenant %s",
+                tenant_id,
+            )
+
         return Response(
             {
                 "ok": True,

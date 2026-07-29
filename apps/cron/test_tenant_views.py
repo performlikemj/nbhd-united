@@ -1429,8 +1429,9 @@ class RuntimeContainerStartedTest(TestCase):
     def tearDown(self):
         self._override.disable()
 
+    @patch("apps.cron.post_reconcile.run_post_reconcile_maintenance")
     @patch("apps.orchestrator.cron_reconcile.regenerate_tenant_crons")
-    def test_hook_invokes_reconciler(self, mock_regen):
+    def test_hook_invokes_reconciler_then_maintenance(self, mock_regen, mock_maintenance):
         mock_regen.return_value = {"added": 0, "removed": 0, "unchanged": 0, "errors": 0}
         resp = self.client.post(
             f"/api/cron/runtime/{self.tenant.id}/container-started/",
@@ -1438,6 +1439,7 @@ class RuntimeContainerStartedTest(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         mock_regen.assert_called_once()
+        mock_maintenance.assert_called_once()
 
     @patch("apps.orchestrator.cron_reconcile.regenerate_tenant_crons")
     def test_hook_skipped_when_flag_off(self, mock_regen):
