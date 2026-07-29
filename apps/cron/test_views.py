@@ -181,6 +181,44 @@ class BumpAllPendingConfigsTest(TestCase):
         self.assertEqual(line_tenant.pending_config_version, 8)
 
 
+@override_settings(DEPLOY_SECRET="test-deploy-secret")
+class BackfillWelcomesTransitionRegressionTest(TestCase):
+    """An unstamped veteran is scheduled once, then the schedule stamp closes the loop."""
+
+    def setUp(self):
+        self.client = APIClient()
+        self.tenant = _create_tenant_with_config_state(suffix=20)
+        self.tenant.fuel_enabled = True
+        self.tenant.save(update_fields=["fuel_enabled"])
+
+    def _post(self):
+        return self.client.post(
+            "/api/v1/cron/backfill-welcomes/",
+            HTTP_X_DEPLOY_SECRET="test-deploy-secret",
+        )
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={})
+    @patch("apps.cron.gateway_client.cron_get", return_value=None)
+    def test_grandfathered_veteran_without_cron_schedules_once_and_stamps(
+        self,
+        mock_cron_get,
+        mock_invoke,
+    ):
+        first = self._post()
+        second = self._post()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["fuel"], {"scheduled": 1})
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(second.json()["fuel"], {"skipped_already_delivered": 1})
+
+        self.tenant.refresh_from_db()
+        self.assertIn("fuel", self.tenant.welcomes_sent)
+        mock_cron_get.assert_called_once()
+        mock_invoke.assert_called_once()
+        self.assertEqual(mock_invoke.call_args.args[1], "cron.add")
+
+
 class CronAuthTest(TestCase):
     def setUp(self):
         self.client = APIClient()
