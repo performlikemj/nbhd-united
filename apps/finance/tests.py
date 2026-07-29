@@ -1876,6 +1876,8 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         message = args[2]["job"]["payload"]["message"]
         self.assertIn(str(self.tenant.id), message)
         self.assertNotIn("{tenant_id}", message)
+        self.tenant.refresh_from_db()
+        self.assertIn("finance", self.tenant.welcomes_sent)
 
     def test_replaces_stale_welcome_cron(self):
         """A welcome cron whose next fire is far in the future (annual
@@ -1911,6 +1913,8 @@ class FinanceWelcomeIdempotencyTests(TestCase):
         # Order matters: remove must precede add so the gateway doesn't
         # see a name collision.
         self.assertLess(tools_called.index("cron.remove"), tools_called.index("cron.add"))
+        self.tenant.refresh_from_db()
+        self.assertIn("finance", self.tenant.welcomes_sent)
 
     def test_raises_on_gateway_failure(self):
         """Transport failures bubble up so backfill telemetry is honest.
@@ -1932,6 +1936,8 @@ class FinanceWelcomeIdempotencyTests(TestCase):
             self.assertRaises(GatewayError),
         ):
             _schedule_finance_welcome(self.tenant)
+        self.tenant.refresh_from_db()
+        self.assertNotIn("finance", self.tenant.welcomes_sent)
 
 
 class FinanceSettingsViewClearsDeliveryFlagTests(TestCase):

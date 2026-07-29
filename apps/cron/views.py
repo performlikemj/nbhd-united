@@ -1059,14 +1059,14 @@ def bump_all_pending_configs(request):
 
 @csrf_exempt
 def backfill_welcomes(request):
-    """Schedule Fuel/Gravity welcome crons for active tenants who never got one.
+    """Retry missing Fuel/Gravity welcome schedules for active tenants.
 
-    Called by CI after deploy to cover the SOL gap: tenants who enabled a
-    feature *before* the welcome cron mechanism shipped, plus tenants whose
-    welcome failed transiently on a prior deploy. The underlying schedulers
-    (``_schedule_fuel_welcome`` / ``_schedule_finance_welcome``) are
-    idempotent — they check the container's cron list for a pending
-    ``_<feature>:welcome`` and skip when one exists, so re-running is safe.
+    Called by CI after deploy for the rare case where both the activation-flow
+    stamp and a prior schedule-time stamp failed transiently. The schedulers
+    stamp immediately after a successful cron creation and skip stamped
+    tenants, so re-running cannot re-welcome an already-recorded activation.
+    Pre-stamp enabled tenants are retired separately by the one-time
+    ``stamp_grandfathered_welcomes`` management command.
 
     Auth: X-Deploy-Secret header must match DEPLOY_SECRET setting.
     """

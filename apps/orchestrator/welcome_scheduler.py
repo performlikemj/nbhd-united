@@ -25,6 +25,9 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
+from django.db import transaction
+from django.utils import timezone
+
 if TYPE_CHECKING:
     from apps.tenants.models import Tenant
 
@@ -58,6 +61,11 @@ def schedule_welcome(
     ``feature`` is the key in ``Tenant.welcomes_sent`` (e.g. ``"fuel"``).
     ``cron_name`` is the gateway cron job name (e.g. ``"_fuel:welcome"``).
     ``prompt_template`` may contain ``{tenant_id}`` for interpolation.
+
+    A successful ``cron.add`` stamps ``welcomes_sent[feature]`` immediately.
+    This deliberately prefers at-most-once welcome scheduling: if the cron
+    later fails transiently at fire time, it will not self-retry. Repeatedly
+    welcoming an already-enabled tenant is the worse failure mode.
 
     Raises any underlying gateway exception. Callers that want to
     swallow (live toggle path, async tasks) should wrap; the backfill
@@ -135,8 +143,21 @@ def schedule_welcome(
             }
         },
     )
+
+    # Re-read under a row lock so concurrent feature activations cannot
+    # overwrite one another's JSON keys with stale in-memory dictionaries.
+    from apps.tenants.models import Tenant
+
+    with transaction.atomic():
+        locked_tenant = Tenant.objects.select_for_update().only("welcomes_sent").get(pk=tenant.pk)
+        marks = dict(locked_tenant.welcomes_sent or {})
+        marks[feature] = timezone.now().isoformat()
+        locked_tenant.welcomes_sent = marks
+        locked_tenant.save(update_fields=["welcomes_sent"])
+    tenant.welcomes_sent = marks
+
     logger.info(
-        "Scheduled %s welcome cron for tenant %s (fires at %s)",
+        "Scheduled and stamped %s welcome cron for tenant %s (fires at %s)",
         feature,
         tenant.id,
         fire_at.isoformat(),

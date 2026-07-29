@@ -1,15 +1,15 @@
-"""Backfill welcome crons for already-enabled tenants.
+"""Retry welcome scheduling when activation-time persistence failed.
 
-When Fuel or Gravity (finance) was enabled before the corresponding
-welcome-cron feature shipped, the tenant never received the warm
-intro. This command walks active tenants with the feature flag set and
-calls the same ``_schedule_fuel_welcome`` / ``_schedule_finance_welcome``
-helpers used by the live toggle path.
+This operator fallback walks active enabled tenants and calls the same
+``_schedule_fuel_welcome`` / ``_schedule_finance_welcome`` helpers used
+by the live toggle path. It now serves the rare case where both the
+activation-flow stamp and a prior schedule-time stamp failed.
 
 The schedulers are self-healing: a stale one-shot cron whose fire date
 already passed (without successful agent self-removal) is replaced with
-a fresh one. ``Tenant.welcomes_sent[feature]`` short-circuits when the
-agent has confirmed delivery. So re-running this command is safe.
+a fresh one and immediately stamped. ``Tenant.welcomes_sent[feature]``
+short-circuits all later runs. Pre-stamp enabled tenants are retired by
+``stamp_grandfathered_welcomes`` instead of being welcomed retroactively.
 
 Usage:
     python manage.py backfill_welcomes                         # both features, all active tenants
@@ -30,7 +30,7 @@ from apps.tenants.models import Tenant
 
 
 class Command(BaseCommand):
-    help = "Schedule welcome crons for active tenants who never received them"
+    help = "Retry missing welcome schedules for active enabled tenants"
 
     def add_arguments(self, parser):
         parser.add_argument(
