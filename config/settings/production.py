@@ -141,6 +141,10 @@ EVAL_BEHAVIOR_PAT = env("EVAL_BEHAVIOR_PAT", default="")
 SAUTAI_M2M_BASE_URL = env("SAUTAI_M2M_BASE_URL", default="")
 SAUTAI_PLATFORM_SECRET = env("SAUTAI_PLATFORM_SECRET", default="")
 
+# Cron ghost-sweep rollout gate. The Azure Container App env var name MUST
+# match CRON_GHOST_SWEEP_TENANTS exactly (invariant §10).
+CRON_GHOST_SWEEP_TENANTS = env("CRON_GHOST_SWEEP_TENANTS", default="")
+
 # CORS — production uses the explicit allowlist from CORS_ALLOWED_ORIGINS in base.py.
 # Do NOT set CORS_ALLOW_ALL_ORIGINS here (that is dev-only).
 
