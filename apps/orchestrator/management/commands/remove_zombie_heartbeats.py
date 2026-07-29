@@ -81,7 +81,12 @@ class Command(BaseCommand):
                 time.sleep(0.5)
                 continue
 
-            job_id = heartbeat_job.get("id") or heartbeat_job.get("jobId", HEARTBEAT_JOB_NAME)
+            job_id = heartbeat_job.get("id") or heartbeat_job.get("jobId")
+            if not job_id:
+                self.stderr.write(f"  {tenant.id}: ERROR removing heartbeat — missing gateway job ID\n")
+                errors += 1
+                time.sleep(1)
+                continue
 
             if dry_run:
                 self.stdout.write(f"  {tenant.id}: WOULD REMOVE '{HEARTBEAT_JOB_NAME}' (id={job_id})")

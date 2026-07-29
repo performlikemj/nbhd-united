@@ -63,7 +63,7 @@ def schedule_welcome(
     swallow (live toggle path, async tasks) should wrap; the backfill
     and watchdog paths surface failures so telemetry is honest.
     """
-    from apps.cron.gateway_client import _next_fire_at, cron_get, cron_remove, invoke_gateway_tool
+    from apps.cron.gateway_client import GatewayError, _next_fire_at, cron_get, cron_remove, invoke_gateway_tool
 
     sent = (tenant.welcomes_sent or {}).get(feature)
     if sent:
@@ -94,7 +94,10 @@ def schedule_welcome(
                 tenant.id,
             )
             return WelcomeStatus.SKIPPED_PENDING
-        cron_remove(tenant, cron_name)
+        gateway_job_id = str(existing.get("id") or existing.get("jobId") or "").strip()
+        if not gateway_job_id:
+            raise GatewayError(f"Live welcome cron {cron_name!r} is missing its gateway job ID")
+        cron_remove(tenant, job_id=gateway_job_id)
         has_stale = True
         logger.info(
             "%s welcome cron for tenant %s was stale (next fire %s) — removed before reschedule",

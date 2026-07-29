@@ -2282,7 +2282,9 @@ def sync_heartbeat_cron(
 
         if not desired_hb and existing_hb:
             # Heartbeat disabled but job exists → remove it
-            job_id = existing_hb.get("id") or existing_hb.get("jobId", HEARTBEAT_NAME)
+            job_id = existing_hb.get("id") or existing_hb.get("jobId")
+            if not job_id:
+                raise GatewayError(f"Live cron {HEARTBEAT_NAME!r} is missing its gateway job ID")
             invoke_gateway_tool(tenant, "cron.remove", {"jobId": job_id})
             logger.info("sync_heartbeat_cron: removed heartbeat for tenant %s", tenant.id)
             return "removed"

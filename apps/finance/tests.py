@@ -1892,20 +1892,12 @@ class FinanceWelcomeIdempotencyTests(TestCase):
 
         stale_job = self._stale_welcome_cron()
 
-        def _gateway_result(_tenant, tool, _args):
-            if tool == "cron.list":
-                return {"details": {"jobs": [stale_job]}}
-            return {}
-
         with (
             self._patch(
                 "apps.cron.gateway_client.cron_get",
                 return_value=stale_job,
             ),
-            self._patch(
-                "apps.cron.gateway_client.invoke_gateway_tool",
-                side_effect=_gateway_result,
-            ) as mock_invoke,
+            self._patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={}) as mock_invoke,
         ):
             status = _schedule_finance_welcome(self.tenant)
 

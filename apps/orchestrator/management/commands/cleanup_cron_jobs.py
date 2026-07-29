@@ -104,17 +104,22 @@ class Command(BaseCommand):
         # Find duplicates: track seen names, mark extras for removal
         seen_names: dict[str, int] = {}
         to_remove: list[dict] = []
+        missing_id_errors = 0
 
         for job in jobs:
             if not isinstance(job, dict):
                 continue
             name = job.get("name", "")
-            job_id = job.get("jobId", name)
+            job_id = job.get("id") or job.get("jobId")
 
             if name in seen_names:
                 seen_names[name] += 1
-                to_remove.append({"jobId": job_id, "name": name, "reason": "duplicate"})
                 self.stdout.write(f"  DUP: '{name}' (copy #{seen_names[name]})")
+                if not job_id:
+                    missing_id_errors += 1
+                    self.stderr.write(f"  ERROR removing '{name}': missing gateway job ID\n")
+                    continue
+                to_remove.append({"jobId": job_id, "name": name, "reason": "duplicate"})
             else:
                 seen_names[name] = 1
 
@@ -128,7 +133,7 @@ class Command(BaseCommand):
             self.stdout.write(f"  {action} {len(to_remove)} duplicate(s)")
 
         removed = 0
-        errors = 0
+        errors = missing_id_errors
         for job in to_remove:
             if dry_run:
                 removed += 1
