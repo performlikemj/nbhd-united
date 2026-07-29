@@ -213,3 +213,24 @@ class PendingAtCronCancelViewTest(TestCase):
         mock_invoke.side_effect = lambda tenant, tool, args: {"details": {"jobs": []}} if tool == "cron.list" else None
         resp = self.client.delete("/api/v1/cron-jobs/pending-at/ghost/")
         self.assertEqual(resp.status_code, 404)
+
+    @patch("apps.cron.pending_at_views.invoke_gateway_tool")
+    def test_cancel_never_falls_back_from_missing_id_to_name(self, mock_invoke):
+        mock_invoke.return_value = {
+            "details": {
+                "jobs": [
+                    {
+                        "name": "missing-id",
+                        "schedule": {
+                            "kind": "at",
+                            "at": "2099-01-01T00:00:00Z",
+                        },
+                    }
+                ]
+            }
+        }
+
+        resp = self.client.delete("/api/v1/cron-jobs/pending-at/missing-id/")
+
+        self.assertEqual(resp.status_code, 502)
+        mock_invoke.assert_called_once_with(self.tenant, "cron.list", {})

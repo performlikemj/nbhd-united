@@ -79,6 +79,19 @@ def _extract_live_jobs(list_result: object) -> list[dict]:
     return [job for job in jobs if isinstance(job, dict)]
 
 
+def _extract_list_page_metadata(
+    list_result: object,
+    *,
+    list_size: int,
+) -> tuple[int, bool]:
+    inner = list_result.get("details", list_result) if isinstance(list_result, dict) else list_result
+    if not isinstance(inner, dict):
+        return list_size, False
+    raw_total = inner.get("total")
+    total = raw_total if type(raw_total) is int and raw_total >= list_size else list_size
+    return total, inner.get("hasMore") is True
+
+
 def _already_removed(exc: GatewayError) -> bool:
     if exc.status_code in {404, 409}:
         return True
@@ -86,7 +99,20 @@ def _already_removed(exc: GatewayError) -> bool:
     return "not found" in message or "no such" in message or "missing id" in message
 
 
-def _sweep_ghost_jobs(tenant, jobs: list[dict]) -> dict[str, int]:
+def _is_oc_tool_error_500(exc: GatewayError) -> bool:
+    if exc.status_code != 500:
+        return False
+    message = str(exc).lower()
+    return "tool_error" in message or "tool execution failed" in message
+
+
+def _sweep_ghost_jobs(
+    tenant,
+    jobs: list[dict],
+    *,
+    list_total: int | None = None,
+    list_has_more: bool = False,
+) -> dict[str, int]:
     today = tenant_today(tenant)
     candidates: list[tuple[str, dict]] = []
     skipped_future = 0
@@ -120,33 +146,55 @@ def _sweep_ghost_jobs(tenant, jobs: list[dict]) -> dict[str, int]:
 
     deferred = max(0, len(candidates) - _GHOST_SWEEP_LIMIT)
     swept = 0
+    failed = 0
     for job_id, job in candidates[:_GHOST_SWEEP_LIMIT]:
-        try:
-            cron_remove(tenant, job_id)
-        except GatewayError as exc:
-            if _already_removed(exc):
+        for attempt in (1, 2):
+            try:
+                cron_remove(tenant, job_id=job_id)
+            except GatewayError as exc:
+                if _already_removed(exc):
+                    swept += 1
+                    break
+                if _is_oc_tool_error_500(exc) and attempt == 1:
+                    logger.warning(
+                        "cron_ghost_sweep_remove_retry tenant=%s job=%s name=%s status=500 attempt=1/2",
+                        tenant.id,
+                        job_id,
+                        job.get("name") or "",
+                    )
+                    continue
+                failed += 1
+                logger.warning(
+                    "cron_ghost_sweep_remove_failed tenant=%s job=%s name=%s status=%s attempt=%s/2",
+                    tenant.id,
+                    job_id,
+                    job.get("name") or "",
+                    exc.status_code,
+                    attempt,
+                    exc_info=True,
+                )
+                break
+            else:
                 swept += 1
-                continue
-            logger.warning(
-                "cron_ghost_sweep_remove_failed tenant=%s job=%s name=%s",
-                tenant.id,
-                job_id,
-                job.get("name") or "",
-                exc_info=True,
-            )
-        else:
-            swept += 1
+                break
 
     summary = {
         "swept": swept,
+        "failed": failed,
         "deferred": deferred,
         "skipped_future": skipped_future,
         "skipped_invalid": skipped_invalid,
+        "list_size": len(jobs),
     }
     logger.info(
-        "cron_ghost_sweep tenant=%s swept=%s deferred=%s skipped_future=%s skipped_invalid=%s",
+        "cron_ghost_sweep tenant=%s list_size=%s list_total=%s list_has_more=%s "
+        "swept=%s failed=%s deferred=%s skipped_future=%s skipped_invalid=%s",
         tenant.id,
+        len(jobs),
+        list_total if list_total is not None else len(jobs),
+        list_has_more,
         swept,
+        failed,
         deferred,
         skipped_future,
         skipped_invalid,
@@ -225,13 +273,21 @@ def run_post_reconcile_maintenance(tenant) -> dict[str, int]:
     if not _ghost_sweep_enabled(tenant):
         return {
             "swept": 0,
+            "failed": 0,
             "deferred": 0,
             "skipped_future": 0,
             "skipped_invalid": 0,
+            "list_size": 0,
             "resynced": 0,
         }
 
     try:
+        # OpenClaw 2026.5.28's public ``cron`` tool forwards only
+        # includeDisabled/agentId to RPC ``cron.list``. Its daemon listPage
+        # clamps the page to 200, while limit/offset supplied to this HTTP
+        # tool are ignored. This is therefore the first <=200 jobs after the
+        # tool's agent/enabled filters and nextRunAtMs sort, from the daemon's
+        # loaded valid-job snapshot — not necessarily every row in jobs.json.
         list_result = invoke_gateway_tool(tenant, "cron.list", {"includeDisabled": True})
     except GatewayError:
         logger.warning(
@@ -241,13 +297,24 @@ def run_post_reconcile_maintenance(tenant) -> dict[str, int]:
         )
         return {
             "swept": 0,
+            "failed": 0,
             "deferred": 0,
             "skipped_future": 0,
             "skipped_invalid": 0,
+            "list_size": 0,
             "resynced": 0,
         }
 
     jobs = _extract_live_jobs(list_result)
-    summary = _sweep_ghost_jobs(tenant, jobs)
+    list_total, list_has_more = _extract_list_page_metadata(
+        list_result,
+        list_size=len(jobs),
+    )
+    summary = _sweep_ghost_jobs(
+        tenant,
+        jobs,
+        list_total=list_total,
+        list_has_more=list_has_more,
+    )
     summary["resynced"] = _resync_gateway_job_ids(tenant, jobs)
     return summary

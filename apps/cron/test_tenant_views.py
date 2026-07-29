@@ -180,15 +180,13 @@ class CronJobDetailTest(TestCase):
             },
         )
 
-    @patch("apps.cron.tenant_views.invoke_gateway_tool")
-    def test_delete_cron_job(self, mock_invoke):
-        mock_invoke.return_value = {}
+    @patch("apps.cron.tenant_views.cron_remove")
+    def test_delete_cron_job(self, mock_remove):
         resp = self.client.delete("/api/v1/cron-jobs/Morning Briefing/")
         self.assertEqual(resp.status_code, 204)
-        mock_invoke.assert_called_once_with(
+        mock_remove.assert_called_once_with(
             self.tenant,
-            "cron.remove",
-            {"jobId": "Morning Briefing"},
+            cron_name="Morning Briefing",
         )
 
 

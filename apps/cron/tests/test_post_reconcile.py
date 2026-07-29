@@ -11,6 +11,7 @@ from apps.cron.gateway_client import GatewayError
 from apps.cron.models import CronJob
 from apps.cron.post_reconcile import (
     _dated_sync_disposition,
+    _is_oc_tool_error_500,
     _sweep_ghost_jobs,
     run_post_reconcile_maintenance,
 )
@@ -61,7 +62,7 @@ class DatedSyncDispositionTest(SimpleTestCase):
 
         self.assertEqual(summary["swept"], 1)
         self.assertEqual(summary["skipped_future"], 1)
-        mock_remove.assert_called_once_with(tenant, "past")
+        mock_remove.assert_called_once_with(tenant, job_id="past")
 
     def test_two_day_margin_is_not_more_than_two_days_past(self):
         today = date(2026, 7, 29)
@@ -120,6 +121,22 @@ class DatedSyncDispositionTest(SimpleTestCase):
                 self.assertEqual(_dated_sync_disposition(job, today=today), "keep")
 
 
+class RemoveFailureClassificationTest(SimpleTestCase):
+    def test_only_oc_tool_execution_500_is_retryable(self):
+        self.assertTrue(
+            _is_oc_tool_error_500(
+                GatewayError(
+                    'Gateway returned 500: {"error":{"type":"tool_error"}}',
+                    status_code=500,
+                )
+            )
+        )
+        self.assertFalse(
+            _is_oc_tool_error_500(GatewayError("Gateway returned 500: upstream unavailable", status_code=500))
+        )
+        self.assertFalse(_is_oc_tool_error_500(GatewayError("Gateway returned 503: tool_error", status_code=503)))
+
+
 class GhostSweepOrchestrationTest(SimpleTestCase):
     def setUp(self):
         self.tenant = _tenant()
@@ -158,7 +175,7 @@ class GhostSweepOrchestrationTest(SimpleTestCase):
             "cron.list",
             {"includeDisabled": True},
         )
-        mock_remove.assert_called_once_with(self.tenant, "ghost")
+        mock_remove.assert_called_once_with(self.tenant, job_id="ghost")
 
     @override_settings(CRON_GHOST_SWEEP_TENANTS="*")
     @patch("apps.cron.post_reconcile.cron_remove")
@@ -179,7 +196,7 @@ class GhostSweepOrchestrationTest(SimpleTestCase):
 
         self.assertEqual(summary["swept"], 1)
         self.assertEqual(summary["skipped_future"], 1)
-        mock_remove.assert_called_once_with(self.tenant, "ghost")
+        mock_remove.assert_called_once_with(self.tenant, job_id="ghost")
 
     @override_settings(CRON_GHOST_SWEEP_TENANTS="*")
     @patch("apps.cron.post_reconcile.cron_remove")
@@ -193,12 +210,14 @@ class GhostSweepOrchestrationTest(SimpleTestCase):
         self.assertEqual(mock_remove.call_count, 100)
         self.assertEqual(
             mock_remove.call_args_list,
-            [call(self.tenant, f"ghost-{index}") for index in range(100)],
+            [call(self.tenant, job_id=f"ghost-{index}") for index in range(100)],
         )
         self.assertEqual(summary["swept"], 100)
         self.assertEqual(summary["deferred"], 2)
         self.assertIn(
-            f"cron_ghost_sweep tenant={self.tenant.id} swept=100 deferred=2 skipped_future=0 skipped_invalid=0",
+            f"cron_ghost_sweep tenant={self.tenant.id} list_size=102 "
+            "list_total=102 list_has_more=False swept=100 failed=0 "
+            "deferred=2 skipped_future=0 skipped_invalid=0",
             "\n".join(logs.output),
         )
 
@@ -214,7 +233,82 @@ class GhostSweepOrchestrationTest(SimpleTestCase):
         summary = run_post_reconcile_maintenance(self.tenant)
 
         self.assertEqual(summary["swept"], 1)
-        mock_remove.assert_called_once_with(self.tenant, "already-gone")
+        mock_remove.assert_called_once_with(self.tenant, job_id="already-gone")
+
+    @override_settings(CRON_GHOST_SWEEP_TENANTS="*")
+    @patch("apps.cron.post_reconcile.cron_remove")
+    @patch("apps.cron.post_reconcile.invoke_gateway_tool")
+    def test_500_retries_once_warns_and_continues_loop(self, mock_invoke, mock_remove):
+        mock_invoke.return_value = {
+            "details": {
+                "jobs": [
+                    _job("flaky", "0 8 1 7 *"),
+                    _job("healthy", "0 8 1 7 *"),
+                ]
+            }
+        }
+
+        attempts: dict[str, int] = {}
+
+        def _remove(_tenant, *, job_id):
+            attempts[job_id] = attempts.get(job_id, 0) + 1
+            if job_id == "flaky":
+                raise GatewayError(
+                    "Gateway returned 500: tool_error",
+                    status_code=500,
+                )
+
+        mock_remove.side_effect = _remove
+        with self.assertLogs("apps.cron.post_reconcile", level="WARNING") as logs:
+            summary = run_post_reconcile_maintenance(self.tenant)
+
+        self.assertEqual(summary["swept"], 1)
+        self.assertEqual(summary["failed"], 1)
+        self.assertEqual(
+            mock_remove.call_args_list,
+            [
+                call(self.tenant, job_id="flaky"),
+                call(self.tenant, job_id="flaky"),
+                call(self.tenant, job_id="healthy"),
+            ],
+        )
+        joined = "\n".join(logs.output)
+        self.assertIn("cron_ghost_sweep_remove_retry", joined)
+        self.assertIn("cron_ghost_sweep_remove_failed", joined)
+
+    @override_settings(CRON_GHOST_SWEEP_TENANTS="*")
+    @patch("apps.cron.post_reconcile.cron_remove")
+    @patch("apps.cron.post_reconcile.invoke_gateway_tool")
+    def test_list_receipt_records_visible_page_and_daemon_total(self, mock_invoke, mock_remove):
+        jobs = [
+            _job("visible-1", "0 8 * * *"),
+            _job("visible-2", "0 8 * * *"),
+        ]
+        mock_invoke.return_value = {
+            "details": {
+                "jobs": jobs,
+                "total": 1155,
+                "offset": 0,
+                "limit": 200,
+                "hasMore": True,
+                "nextOffset": 200,
+            }
+        }
+
+        with self.assertLogs("apps.cron.post_reconcile", level="INFO") as logs:
+            summary = run_post_reconcile_maintenance(self.tenant)
+
+        self.assertEqual(summary["list_size"], 2)
+        mock_remove.assert_not_called()
+        mock_invoke.assert_called_once_with(
+            self.tenant,
+            "cron.list",
+            {"includeDisabled": True},
+        )
+        self.assertIn(
+            f"cron_ghost_sweep tenant={self.tenant.id} list_size=2 list_total=1155 list_has_more=True",
+            "\n".join(logs.output),
+        )
 
 
 class GatewayJobIdResyncTest(TestCase):
