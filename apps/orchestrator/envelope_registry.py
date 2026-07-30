@@ -88,6 +88,10 @@ class EnvelopeSection:
     """Display order in USER.md. Lower comes first. Use 10/20/30/... so
     new sections can slot between existing ones without renumbering."""
 
+    client_render: Callable[[Tenant], str] | None = None
+    """Optional renderer for client snapshots. USER.md always uses
+    ``render``; client digests fall back to it when this is unset."""
+
 
 _REGISTRY: list[EnvelopeSection] = []
 _REGISTRY_LOCK = threading.Lock()
@@ -121,6 +125,7 @@ def register_section(
     enabled: Callable[[Tenant], bool],
     refresh_on: tuple[type[Model], ...] = (),
     order: int,
+    client_render: Callable[[Tenant], str] | None = None,
 ) -> Callable[[Callable[[Tenant], str]], Callable[[Tenant], str]]:
     """Decorator: register an envelope section.
 
@@ -140,6 +145,7 @@ def register_section(
             enabled=enabled,
             refresh_on=tuple(refresh_on),
             order=order,
+            client_render=client_render,
         )
         with _REGISTRY_LOCK:
             existing_keys = {s.key for s in _REGISTRY}

@@ -384,6 +384,30 @@ class ConversationCaptureTest(TestCase):
         self.assertIn("Did the budget meeting go ok?", digest)
         self.assertIn("morning_briefing", digest)
 
+    def test_container_envelope_proactive_block_is_byte_identical(self):
+        from apps.common.tenant_tz import tenant_tz
+        from apps.journal.envelope import render_conversation_digest
+        from apps.orchestrator.workspace_envelope import render_managed_region
+        from apps.router.models import ProactiveOutbound
+
+        row = ProactiveOutbound.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="1",
+            message_text="Did the budget meeting go ok?",
+            job_name="morning_briefing",
+        )
+        created_at = timezone.now().replace(microsecond=0)
+        ProactiveOutbound.objects.filter(pk=row.pk).update(created_at=created_at)
+        local_hhmm = created_at.astimezone(tenant_tz(self.tenant)).strftime("%H:%M")
+        expected = (
+            "\n**Already sent to the user proactively (last 24h) — do NOT re-ask these in a proactive turn:**\n"
+            f"- {local_hhmm} · morning_briefing: Did the budget meeting go ok?"
+        )
+
+        self.assertEqual(render_conversation_digest(self.tenant), expected)
+        self.assertIn(f"## Conversation so far\n{expected}\n", render_managed_region(self.tenant))
+
     def test_digest_proactive_block_caps_at_limit(self):
         from apps.router.models import ProactiveOutbound
         from apps.router.proactive_context import DEFAULT_LIMIT
