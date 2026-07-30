@@ -14,12 +14,21 @@ from apps.steward.auth import StewardAuthError, validate_steward_hmac
 from apps.steward.models import EvidenceEvent, EvidenceSource
 from apps.steward.notify import send_urgent
 from apps.steward.services import (
+    MAX_EVIDENCE_FINGERPRINT_LENGTH,
     generated_fingerprint,
     ingest_evidence,
     validate_payload_size,
 )
 
 logger = logging.getLogger(__name__)
+
+_EXTERNAL_EVIDENCE_SOURCES = frozenset(
+    {
+        EvidenceSource.GATEWAY_HEARTBEAT,
+        EvidenceSource.CI_RUN,
+        EvidenceSource.ASC_VERSION_STATE,
+    }
+)
 
 
 def _auth_error_response(exc: StewardAuthError) -> JsonResponse:
@@ -63,6 +72,26 @@ def _send_recoveries(result) -> None:
                 expectation.pk,
                 type(exc).__name__,
             )
+
+
+def _ingest_response(result) -> JsonResponse:
+    if result.collision:
+        return JsonResponse(
+            {
+                "status": "collision",
+                "created": False,
+                "event_id": result.event.pk,
+            },
+            status=409,
+        )
+    return JsonResponse(
+        {
+            "status": "accepted",
+            "created": result.created,
+            "event_id": result.event.pk,
+        },
+        status=201 if result.created else 200,
+    )
 
 
 @csrf_exempt
@@ -111,10 +140,7 @@ def heartbeat(request: HttpRequest) -> JsonResponse:
         now=received_at,
     )
     _send_recoveries(result)
-    return JsonResponse(
-        {"status": "accepted", "created": result.created, "event_id": result.event.pk},
-        status=201 if result.created else 200,
-    )
+    return _ingest_response(result)
 
 
 @csrf_exempt
@@ -137,6 +163,11 @@ def evidence(request: HttpRequest) -> JsonResponse:
     source = body.get("source")
     if source not in EvidenceSource.values:
         return JsonResponse({"error": "source is not a valid Steward evidence source."}, status=400)
+    if source not in _EXTERNAL_EVIDENCE_SOURCES:
+        return JsonResponse(
+            {"error": "source is internal-only and cannot be submitted over HTTP."},
+            status=403,
+        )
     subject = _validated_subject(body.get("subject"))
     if subject is None:
         return JsonResponse({"error": "subject must be a non-empty string of at most 128 characters."}, status=400)
@@ -169,9 +200,18 @@ def evidence(request: HttpRequest) -> JsonResponse:
             occurred_at=occurred_at,
             payload=payload,
         )
-    if not isinstance(fingerprint, str) or not fingerprint.strip() or len(fingerprint) > 128:
+    if (
+        not isinstance(fingerprint, str)
+        or not fingerprint.strip()
+        or len(f"{source}:{fingerprint.strip()}") > MAX_EVIDENCE_FINGERPRINT_LENGTH
+    ):
         return JsonResponse(
-            {"error": "fingerprint must be a non-empty string of at most 128 characters."},
+            {
+                "error": (
+                    "fingerprint must be non-empty and produce a source-prefixed "
+                    f"value of at most {MAX_EVIDENCE_FINGERPRINT_LENGTH} characters."
+                )
+            },
             status=400,
         )
 
@@ -185,7 +225,4 @@ def evidence(request: HttpRequest) -> JsonResponse:
         provenance=EvidenceEvent.Provenance.COLLECTOR,
     )
     _send_recoveries(result)
-    return JsonResponse(
-        {"status": "accepted", "created": result.created, "event_id": result.event.pk},
-        status=201 if result.created else 200,
-    )
+    return _ingest_response(result)

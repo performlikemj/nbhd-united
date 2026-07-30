@@ -5,7 +5,8 @@ from __future__ import annotations
 from datetime import timedelta
 from importlib import import_module
 
-from django.test import TestCase
+from django.core import mail
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from apps.evals.models import EvalResult, EvalRun
@@ -276,6 +277,22 @@ class ReapStuckRunsTest(TestCase):
         self.assertEqual(result["run_ids"], [dead.id])
         # The reaped count is logged for greppability in Log Analytics.
         self.assertTrue(any("flipped 1 orphaned eval run" in m for m in log.output))
+
+    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    def test_reaper_batches_all_runs_into_one_email(self):
+        from apps.evals.tasks import reap_stuck_eval_runs_task
+
+        first = self._running_run(minutes_ago=45)
+        second = self._running_run(minutes_ago=46)
+        mail.outbox = []
+
+        result = reap_stuck_eval_runs_task()
+
+        self.assertEqual(result["reaped"], 2)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("2 stuck eval run", mail.outbox[0].subject)
+        self.assertIn(str(first.id), mail.outbox[0].body)
+        self.assertIn(str(second.id), mail.outbox[0].body)
 
     def test_reaper_registered_zero_arg_in_task_map(self):
         import inspect

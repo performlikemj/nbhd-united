@@ -252,7 +252,8 @@ def _ping_deadman() -> None:
 
 def run_steward_sweep() -> dict[str, int]:
     """Evaluate the portfolio expectations and send direct urgent notices."""
-    notices, digest_misses = _claim_sweep_work(timezone.now())
+    evaluated_at = timezone.now()
+    notices, digest_misses = _claim_sweep_work(evaluated_at)
     delivered = 0
     for notice in notices:
         try:
@@ -276,6 +277,9 @@ def run_steward_sweep() -> dict[str, int]:
             digest_misses,
         )
     _ping_deadman()
+    from apps.steward.gate import record_sent
+
+    record_sent("steward-sweep:liveness")
     return {
         "notices": len(notices),
         "delivered": delivered,

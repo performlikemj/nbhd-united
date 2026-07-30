@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from unittest.mock import patch
 
 from django.core import mail
 from django.test import TestCase, override_settings
@@ -94,6 +95,44 @@ class FailureAlertTest(TestCase):
         # Content-free: EvalResult.details values NEVER reach the email.
         self.assertNotIn("NEVER_IN_EMAIL", msg.body)
         self.assertNotIn("reason_code", msg.body)
+
+    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    def test_failure_email_is_suppressed_for_24h_by_suite_and_status(self):
+        first = self._failed_run()
+        second = self._failed_run()
+
+        self.assertTrue(send_eval_failure_alert(first))
+        self.assertFalse(send_eval_failure_alert(second))
+
+        self.assertEqual(len(mail.outbox), 1)
+
+    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    @patch(
+        "apps.evals.alerting.send_mail",
+        side_effect=[RuntimeError("mail down"), 1],
+    )
+    def test_failed_delivery_does_not_burn_cooldown(self, send_mail):
+        first = self._failed_run()
+        retry = self._failed_run()
+
+        self.assertFalse(send_eval_failure_alert(first))
+        self.assertTrue(send_eval_failure_alert(retry))
+
+        self.assertEqual(send_mail.call_count, 2)
+        from apps.steward.models import AlertState
+
+        state = AlertState.objects.get(fingerprint="eval-email:journey:fail")
+        self.assertEqual(state.sent_count, 1)
+        self.assertIsNone(state.last_reserved_at)
+
+    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    def test_degraded_is_digest_only(self):
+        run = self._failed_run()
+        run.status = EvalRun.Status.DEGRADED
+        run.save(update_fields=["status"])
+
+        self.assertFalse(send_eval_failure_alert(run))
+        self.assertEqual(len(mail.outbox), 0)
 
 
 class FinalizeTaskRunTest(TestCase):

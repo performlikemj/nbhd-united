@@ -314,21 +314,17 @@ def reap_stuck_eval_runs_task() -> dict:
         reaped_ids,
     )
 
-    # Best-effort, content-free owner alert per reaped run — a stranded run means a
-    # probe worker died mid-flight, worth surfacing. send_eval_failure_alert never
-    # raises and is gated on PLATFORM_OWNER_EMAIL; the loop stays defensive anyway
-    # so alerting can never break the reap it follows.
-    from apps.evals.alerting import send_eval_failure_alert
-
+    # Best-effort, content-free owner alert for the whole batch. One reaper fire
+    # produces at most one email, and the alert helper applies the 6h cooldown.
     for run in stranded:
-        # Mutate the in-memory copy so the alert reflects the reaped state (the
-        # bulk update above already persisted it; we don't re-save here).
         run.status = EvalRun.Status.ERROR
         run.finished_at = finished
-        try:
-            send_eval_failure_alert(run)
-        except Exception:  # pragma: no cover — the helper is documented never to raise
-            logger.exception("eval reaper: failure alert errored for reaped run %s", run.id)
+    from apps.evals.alerting import send_reaped_eval_runs_alert
+
+    try:
+        send_reaped_eval_runs_alert(stranded)
+    except Exception:  # pragma: no cover — the helper is documented never to raise
+        logger.exception("eval reaper: batch failure alert errored")
 
     return {"reaped": len(reaped_ids), "run_ids": reaped_ids}
 

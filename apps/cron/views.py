@@ -403,6 +403,8 @@ TASK_MAP = {
     # Portfolio-scoped deterministic watchtower; direct notification has no
     # tenant runtime, agent, gateway, Celery, or OpenClaw dependency.
     "steward_sweep": "apps.steward.sweep.run_steward_sweep",
+    # Daily facts-only PM digest; refreshes eval/SLO intake before delivery.
+    "steward_daily_digest": "apps.steward.digest.run_steward_daily_digest",
 }
 
 

@@ -18,6 +18,7 @@ PII ever reaches this email.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Literal
 
 from django.conf import settings
@@ -38,34 +39,54 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
     the send raises — it NEVER propagates an exception (the caller's DLQ-raise is
     the real failure signal; a mail hiccup must not compound it).
     """
+    if run.status == EvalRun.Status.DEGRADED:
+        logger.info(
+            "eval alert: degraded runs are digest-only suite=%s run=%s",
+            run.suite,
+            run.id,
+        )
+        return False
+
     owner_email = getattr(settings, "PLATFORM_OWNER_EMAIL", "")
     if not owner_email:
         logger.warning("eval alert: PLATFORM_OWNER_EMAIL not set — %s failure alert skipped", run.suite)
         return False
+    from apps.steward.gate import (
+        record_sent,
+        record_suppressed,
+        release_failed,
+        should_send,
+    )
 
-    results = list(run.results.all())
-    total = len(results)
-    passed = sum(1 for r in results if r.passed)
-    failed_case_ids = [r.case_id for r in results if not r.passed]
-
-    ctx = {
-        "suite": run.suite,
-        "run_id": run.id,
-        "status": run.status,
-        "trigger": run.trigger,
-        "git_sha": run.git_sha,
-        "image_tag": run.image_tag or "",
-        "passed": passed,
-        "total": total,
-        "failed_case_ids": failed_case_ids,
-        "started_at": run.started_at,
-        "finished_at": run.finished_at,
-    }
-    subject = render_to_string("email/evals/failure_subject.txt", ctx).strip()
-    body = render_to_string("email/evals/failure_body.txt", ctx)
+    fingerprint = f"eval-email:{run.suite}:{run.status}"
+    reservation = should_send(fingerprint, timedelta(hours=24))
+    if reservation is None:
+        record_suppressed(fingerprint)
+        logger.info("eval alert: suppressed by cooldown fingerprint=%s", fingerprint)
+        return False
 
     try:
-        send_mail(
+        results = list(run.results.all())
+        total = len(results)
+        passed = sum(1 for r in results if r.passed)
+        failed_case_ids = [r.case_id for r in results if not r.passed]
+
+        ctx = {
+            "suite": run.suite,
+            "run_id": run.id,
+            "status": run.status,
+            "trigger": run.trigger,
+            "git_sha": run.git_sha,
+            "image_tag": run.image_tag or "",
+            "passed": passed,
+            "total": total,
+            "failed_case_ids": failed_case_ids,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+        }
+        subject = render_to_string("email/evals/failure_subject.txt", ctx).strip()
+        body = render_to_string("email/evals/failure_body.txt", ctx)
+        sent = send_mail(
             subject=subject,
             message=body,
             from_email=None,
@@ -73,8 +94,60 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
             fail_silently=False,
         )
     except Exception:
+        release_failed(fingerprint, reservation)
         logger.exception("eval alert: failure email send failed for run %s", run.id)
         return False
+    if sent == 0:
+        release_failed(fingerprint, reservation)
+        logger.error("eval alert: email backend reported zero deliveries for run %s", run.id)
+        return False
+    record_sent(fingerprint)
+    return True
+
+
+def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
+    """Send one metadata-only alert for a batch of reaped eval runs."""
+    if not runs:
+        return False
+    owner_email = getattr(settings, "PLATFORM_OWNER_EMAIL", "")
+    if not owner_email:
+        logger.warning("eval reaper alert: PLATFORM_OWNER_EMAIL not set — batch skipped")
+        return False
+    from apps.steward.gate import (
+        record_sent,
+        record_suppressed,
+        release_failed,
+        should_send,
+    )
+
+    fingerprint = "eval-email:reaper"
+    reservation = should_send(fingerprint, timedelta(hours=6))
+    if reservation is None:
+        record_suppressed(fingerprint, count=len(runs))
+        logger.info("eval reaper alert: suppressed by cooldown fingerprint=%s", fingerprint)
+        return False
+
+    run_ids = ", ".join(str(run.id) for run in runs)
+    suites = ", ".join(sorted({run.suite for run in runs}))
+    subject = f"[EVAL] {len(runs)} stuck eval run(s) reaped"
+    body = f"Count: {len(runs)}\nRun IDs: {run_ids}\nSuites: {suites}\nStatus: error\n"
+    try:
+        sent = send_mail(
+            subject=subject,
+            message=body,
+            from_email=None,
+            recipient_list=[owner_email],
+            fail_silently=False,
+        )
+    except Exception:
+        release_failed(fingerprint, reservation)
+        logger.exception("eval reaper alert: batch email send failed")
+        return False
+    if sent == 0:
+        release_failed(fingerprint, reservation)
+        logger.error("eval reaper alert: email backend reported zero deliveries")
+        return False
+    record_sent(fingerprint)
     return True
 
 

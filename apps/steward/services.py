@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Literal
 
 from django.db import transaction
 from django.utils import timezone
@@ -11,13 +13,36 @@ from django.utils import timezone
 from apps.steward.models import EvidenceEvent, Expectation
 
 MAX_EVIDENCE_PAYLOAD_BYTES = 4096
+MAX_EVIDENCE_FINGERPRINT_LENGTH = 192
+logger = logging.getLogger(__name__)
+
+EvidenceIngestOutcome = Literal["created", "duplicate", "collision"]
 
 
 @dataclass(frozen=True)
 class EvidenceIngestResult:
     event: EvidenceEvent
-    created: bool
+    outcome: EvidenceIngestOutcome
     recovery_expectations: tuple[Expectation, ...]
+
+    @property
+    def created(self) -> bool:
+        return self.outcome == "created"
+
+    @property
+    def collision(self) -> bool:
+        return self.outcome == "collision"
+
+
+@dataclass(frozen=True)
+class EvidenceIngestInput:
+    source: str
+    subject: str
+    occurred_at: datetime
+    payload: object
+    fingerprint: str
+    trust: str
+    provenance: str
 
 
 def validate_payload_size(payload: object) -> None:
@@ -47,6 +72,43 @@ def generated_fingerprint(
         sort_keys=True,
     )
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+
+def stored_evidence_fingerprint(source: str, fingerprint: str) -> str:
+    if not isinstance(fingerprint, str) or not fingerprint:
+        raise ValueError("fingerprint must be a non-empty string.")
+    stored = f"{source}:{fingerprint}"
+    if len(stored) > MAX_EVIDENCE_FINGERPRINT_LENGTH:
+        raise ValueError(f"source-prefixed fingerprint exceeds the {MAX_EVIDENCE_FINGERPRINT_LENGTH}-character limit.")
+    return stored
+
+
+def _event_matches_input(event: EvidenceEvent, item: EvidenceIngestInput) -> bool:
+    return (
+        event.source == item.source
+        and event.subject == item.subject
+        and event.occurred_at == item.occurred_at
+        and event.payload == item.payload
+        and event.trust == item.trust
+        and event.provenance == item.provenance
+    )
+
+
+def _log_collision(
+    *,
+    fingerprint: str,
+    event: EvidenceEvent,
+    item: EvidenceIngestInput,
+) -> None:
+    logger.error(
+        "Steward evidence fingerprint collision fingerprint=%s "
+        "existing_source=%s incoming_source=%s subject_mismatch=%s content_mismatch=%s",
+        fingerprint,
+        event.source,
+        item.source,
+        event.subject != item.subject,
+        not _event_matches_input(event, item),
+    )
 
 
 def _apply_event_to_locked_expectations(
@@ -106,6 +168,16 @@ def ingest_evidence(
 ) -> EvidenceIngestResult:
     """Append evidence and atomically apply it to matching expectations."""
     validate_payload_size(payload)
+    item = EvidenceIngestInput(
+        source=source,
+        subject=subject,
+        occurred_at=occurred_at,
+        payload=payload,
+        fingerprint=fingerprint,
+        trust=trust,
+        provenance=provenance,
+    )
+    stored_fingerprint = stored_evidence_fingerprint(source, fingerprint)
     evaluated_at = now or timezone.now()
 
     with transaction.atomic():
@@ -117,7 +189,7 @@ def ingest_evidence(
         locked = list(expectation_query)
 
         event, created = EvidenceEvent.objects.get_or_create(
-            fingerprint=fingerprint,
+            fingerprint=stored_fingerprint,
             defaults={
                 "source": source,
                 "subject": subject,
@@ -130,9 +202,16 @@ def ingest_evidence(
         )
 
         if not created:
+            collision = not _event_matches_input(event, item)
+            if collision:
+                _log_collision(
+                    fingerprint=stored_fingerprint,
+                    event=event,
+                    item=item,
+                )
             return EvidenceIngestResult(
                 event=event,
-                created=False,
+                outcome="collision" if collision else "duplicate",
                 recovery_expectations=(),
             )
 
@@ -149,6 +228,113 @@ def ingest_evidence(
 
     return EvidenceIngestResult(
         event=event,
-        created=True,
+        outcome="created",
         recovery_expectations=recoveries,
     )
+
+
+def ingest_evidence_batch(
+    items: list[EvidenceIngestInput],
+    *,
+    now: datetime | None = None,
+) -> tuple[EvidenceIngestResult, ...]:
+    """Append an internal collector batch with bounded query cost."""
+    if not items:
+        return ()
+
+    evaluated_at = now or timezone.now()
+    normalized: list[tuple[EvidenceIngestInput, str]] = []
+    seen: set[str] = set()
+    for item in items:
+        validate_payload_size(item.payload)
+        fingerprint = stored_evidence_fingerprint(item.source, item.fingerprint)
+        if fingerprint in seen:
+            raise ValueError("batch fingerprints must be unique.")
+        seen.add(fingerprint)
+        normalized.append((item, fingerprint))
+
+    with transaction.atomic():
+        locked_expectations = list(
+            Expectation.objects.select_for_update()
+            .filter(subject__in={item.subject for item, _ in normalized})
+            .exclude(state=Expectation.State.RETIRED)
+        )
+        expectations_by_subject: dict[str, list[Expectation]] = {}
+        for expectation in locked_expectations:
+            expectations_by_subject.setdefault(expectation.subject, []).append(expectation)
+
+        existing = {
+            event.fingerprint: event
+            for event in EvidenceEvent.objects.filter(fingerprint__in=[fingerprint for _, fingerprint in normalized])
+        }
+        candidates = [
+            EvidenceEvent(
+                source=item.source,
+                subject=item.subject,
+                occurred_at=item.occurred_at,
+                received_at=evaluated_at,
+                payload=item.payload,
+                fingerprint=fingerprint,
+                trust=item.trust,
+                provenance=item.provenance,
+            )
+            for item, fingerprint in normalized
+            if fingerprint not in existing
+        ]
+        if candidates:
+            EvidenceEvent.objects.bulk_create(candidates, ignore_conflicts=True)
+
+        canonical = {
+            event.fingerprint: event
+            for event in EvidenceEvent.objects.filter(fingerprint__in=[fingerprint for _, fingerprint in normalized])
+        }
+        results: list[EvidenceIngestResult] = []
+        for item, fingerprint in normalized:
+            event = canonical[fingerprint]
+            if fingerprint in existing:
+                collision = not _event_matches_input(event, item)
+                if collision:
+                    _log_collision(
+                        fingerprint=fingerprint,
+                        event=event,
+                        item=item,
+                    )
+                results.append(
+                    EvidenceIngestResult(
+                        event=event,
+                        outcome="collision" if collision else "duplicate",
+                        recovery_expectations=(),
+                    )
+                )
+                continue
+
+            if not _event_matches_input(event, item):
+                _log_collision(
+                    fingerprint=fingerprint,
+                    event=event,
+                    item=item,
+                )
+                results.append(
+                    EvidenceIngestResult(
+                        event=event,
+                        outcome="collision",
+                        recovery_expectations=(),
+                    )
+                )
+                continue
+
+            recoveries = _apply_event_to_locked_expectations(
+                event=event,
+                expectations=expectations_by_subject.get(item.subject, []),
+                now=evaluated_at,
+                targeted_mj_ack=False,
+            )
+            results.append(
+                EvidenceIngestResult(
+                    event=event,
+                    outcome="created",
+                    recovery_expectations=recoveries,
+                )
+            )
+
+    return tuple(results)

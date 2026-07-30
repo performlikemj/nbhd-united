@@ -42,6 +42,7 @@ class StewardIngestTests(TestCase):
         self.assertEqual(response.status_code, 201)
         event = EvidenceEvent.objects.get()
         self.assertEqual(event.source, EvidenceSource.CI_RUN)
+        self.assertEqual(event.fingerprint, "ci_run:commit-deadbeef")
         self.assertEqual(event.provenance, EvidenceEvent.Provenance.COLLECTOR)
         self.assertEqual(event.trust, EvidenceEvent.Trust.AUTHENTICATED_API)
 
@@ -114,6 +115,100 @@ class StewardIngestTests(TestCase):
             {"source": "free_text", "subject": "nbhd-united-main-ci"},
         )
         self.assertEqual(response.status_code, 400)
+
+    def test_internal_sources_are_rejected_over_http(self):
+        for source in ("eval_run", "eval_slo", "mj_ack"):
+            with self.subTest(source=source):
+                response = self._post(
+                    "/api/steward/evidence/",
+                    {
+                        "source": source,
+                        "subject": f"{source}:forged",
+                        "fingerprint": f"forged-{source}",
+                    },
+                )
+                self.assertEqual(response.status_code, 403)
+                self.assertIn("internal-only", response.json()["error"])
+        self.assertFalse(EvidenceEvent.objects.exists())
+
+    def test_same_source_content_mismatch_is_a_collision(self):
+        fingerprint = "caller-chosen-shared-fingerprint"
+        first = self._post(
+            "/api/steward/evidence/",
+            {
+                "source": "ci_run",
+                "subject": "nbhd-united-main-ci",
+                "fingerprint": fingerprint,
+            },
+        )
+        with self.assertLogs("apps.steward.services", level="ERROR"):
+            collision = self._post(
+                "/api/steward/evidence/",
+                {
+                    "source": "ci_run",
+                    "subject": "nbhd-united-main-ci",
+                    "fingerprint": fingerprint,
+                    "payload": {"conclusion": "different"},
+                },
+            )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(collision.status_code, 409)
+        self.assertEqual(collision.json()["status"], "collision")
+        self.assertFalse(collision.json()["created"])
+        self.assertEqual(EvidenceEvent.objects.count(), 1)
+
+    def test_same_client_fingerprint_coexists_across_sources(self):
+        fingerprint = "shared-by-client"
+
+        first = self._post(
+            "/api/steward/evidence/",
+            {
+                "source": "ci_run",
+                "subject": "nbhd-united-main-ci",
+                "fingerprint": fingerprint,
+            },
+        )
+        second = self._post(
+            "/api/steward/evidence/",
+            {
+                "source": "asc_version_state",
+                "subject": "nbhd-ios-version",
+                "fingerprint": fingerprint,
+            },
+        )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(second.status_code, 201)
+        self.assertSetEqual(
+            set(EvidenceEvent.objects.values_list("fingerprint", flat=True)),
+            {
+                f"ci_run:{fingerprint}",
+                f"asc_version_state:{fingerprint}",
+            },
+        )
+
+    def test_fingerprint_limit_applies_to_source_prefixed_value(self):
+        accepted = self._post(
+            "/api/steward/evidence/",
+            {
+                "source": "ci_run",
+                "subject": "within-combined-cap",
+                "fingerprint": "a" * 185,
+            },
+        )
+        rejected = self._post(
+            "/api/steward/evidence/",
+            {
+                "source": "ci_run",
+                "subject": "over-combined-cap",
+                "fingerprint": "b" * 186,
+            },
+        )
+
+        self.assertEqual(accepted.status_code, 201)
+        self.assertEqual(len(EvidenceEvent.objects.get().fingerprint), 192)
+        self.assertEqual(rejected.status_code, 400)
 
     @override_settings(STEWARD_INGEST_SECRET="")
     def test_unconfigured_secret_fails_closed(self):
