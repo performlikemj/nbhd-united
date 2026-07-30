@@ -1392,6 +1392,66 @@ def run_reseed_lessons(request):
 
 
 @csrf_exempt
+def scrub_thread_titles(request):
+    """Scrub persisted chat-thread titles without logging title content.
+
+    Auth: X-Deploy-Secret header.
+    URL: /api/cron/scrub-thread-titles/?apply=1&tenant_id=<uuid>
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not deploy_secret or not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(service_role=True)
+
+    import re
+    from io import StringIO
+
+    from django.core.management import call_command
+
+    dry_run = request.GET.get("apply") != "1"
+    tenant_id = request.GET.get("tenant_id") or None
+    out = StringIO()
+    call_command(
+        "scrub_chat_thread_titles",
+        dry_run=dry_run,
+        tenant_id=tenant_id,
+        stdout=out,
+    )
+    output = out.getvalue()
+    summary = re.search(
+        r"Scanned (?P<scanned>\d+); (?:would change|changed) (?P<changed>\d+); "
+        r"errors (?P<errors>\d+) across (?P<tenants>\d+) tenant\(s\)",
+        output,
+    )
+    counts = {key: int(value) for key, value in summary.groupdict().items()}
+    logger.info(
+        "scrub_chat_thread_titles: completed (dry_run=%s, tenant_id=%s, scanned=%d, changed=%d, errors=%d, tenants=%d)",
+        dry_run,
+        tenant_id or "all",
+        counts["scanned"],
+        counts["changed"],
+        counts["errors"],
+        counts["tenants"],
+    )
+    return JsonResponse(
+        {
+            "ok": True,
+            "dry_run": dry_run,
+            "tenant_id": tenant_id,
+            **counts,
+            "output_bytes": len(output),
+        }
+    )
+
+
+@csrf_exempt
 @require_POST
 def broadcast_message(request):
     """Send a one-off message from each tenant's agent to their user.
