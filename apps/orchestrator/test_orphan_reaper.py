@@ -149,7 +149,10 @@ class ReapOrphanedContainersTest(TestCase):
 class TenantDeleteHibernationSignalTest(TestCase):
     def test_deleting_tenant_hibernates_its_container(self):
         tenant = _make_tenant(container_id="oc-signal-test-1")
-        with patch(f"{AZ}.hibernate_container_app") as hib:
+        with (
+            patch(f"{AZ}.hibernate_container_app") as hib,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             tenant.delete()
         hib.assert_called_once_with("oc-signal-test-1")
 
@@ -157,7 +160,10 @@ class TenantDeleteHibernationSignalTest(TestCase):
         """The real orphan path: deleting the User cascade-deletes the Tenant."""
         tenant = _make_tenant(container_id="oc-cascade-1")
         user = tenant.user
-        with patch(f"{AZ}.hibernate_container_app") as hib:
+        with (
+            patch(f"{AZ}.hibernate_container_app") as hib,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             user.delete()
         hib.assert_called_once_with("oc-cascade-1")
 
@@ -170,6 +176,9 @@ class TenantDeleteHibernationSignalTest(TestCase):
     def test_hibernate_failure_does_not_block_delete(self):
         tenant = _make_tenant(container_id="oc-flaky-1")
         tid = tenant.id
-        with patch(f"{AZ}.hibernate_container_app", side_effect=RuntimeError("azure down")):
+        with (
+            patch(f"{AZ}.hibernate_container_app", side_effect=RuntimeError("azure down")),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             tenant.delete()  # must not raise
         self.assertFalse(Tenant.objects.filter(id=tid).exists())
