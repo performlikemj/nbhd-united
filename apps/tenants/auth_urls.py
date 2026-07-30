@@ -1,6 +1,7 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
+from .apple_views import AppleBeginView, AppleCompleteView, AppleLinkView
 from .auth_views import (
     LogoutView,
     MeView,
@@ -36,4 +37,8 @@ urlpatterns = [
     # Web→app PKCE handoff (iOS "Create an account")
     path("authorize/", AuthorizeBeginView.as_view(), name="auth-authorize"),
     path("exchange/", ExchangeView.as_view(), name="auth-exchange"),
+    # Sign in with Apple web popup flow
+    path("apple/begin/", AppleBeginView.as_view(), name="auth-apple-begin"),
+    path("apple/complete/", AppleCompleteView.as_view(), name="auth-apple-complete"),
+    path("apple/link/", AppleLinkView.as_view(), name="auth-apple-link"),
 ]

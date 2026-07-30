@@ -72,6 +72,7 @@ TASK_MAP = {
     "reset_daily_counters": "apps.tenants.tasks.reset_daily_counters_task",
     "reset_monthly_counters": "apps.tenants.tasks.reset_monthly_counters_task",
     "cleanup_expired_telegram_tokens": "apps.tenants.tasks.cleanup_expired_telegram_tokens",
+    "revoke_apple_token": "apps.cron.tasks.revoke_apple_token_task",
     # Privacy-rotation campaign (June 2026) — one-off scheduled fires.
     # Set via the upstash QStash MCP a day or two before the campaign
     # dates. See apps/tenants/management/commands/rotate_all_passwords.py

@@ -9,6 +9,7 @@ gunicorn
 # Auth
 djangorestframework-simplejwt
 PyJWT
+cryptography
 
 # Task scheduling (QStash — replaces Celery)
 qstash>=2.0

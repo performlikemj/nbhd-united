@@ -658,9 +658,29 @@ def _do_hard_delete(user) -> None:
                 tenant.id,
                 exc_info=True,
             )
-
     user_id, user_email = user.id, user.email
-    user.delete()
+    with transaction.atomic():
+        # Serialize deletion against a concurrent link (FK insert) and against
+        # existing-identity token rotation. The outbox copy and cascade delete
+        # then commit together, so the newest revocation credential cannot be
+        # rotated into the gap between those two operations.
+        locked_user = type(user).objects.select_for_update().get(pk=user.pk)
+        try:
+            from apps.tenants.apple_services import revoke_apple_before_delete
+
+            revoke_apple_before_delete(locked_user)
+        except Exception:
+            # The durable outbox is best-effort at this boundary: an Apple/QStash
+            # failure must never override the user's request to delete their
+            # account. The pre_delete signal provides an ORM-only second chance.
+            _log.warning(
+                "Could not preserve Apple revocation grant during deletion — continuing",
+                exc_info=True,
+            )
+        from apps.tenants.signals import defer_tenant_delete_hibernation
+
+        with defer_tenant_delete_hibernation():
+            locked_user.delete()
     _log.info("Hard-deleted account: user_id=%s email=%s", user_id, user_email)
 
 

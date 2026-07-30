@@ -1,0 +1,348 @@
+"""Apple OAuth client-secret, token exchange, and ID-token verification."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+import threading
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from urllib.parse import urlsplit
+
+import httpx
+import jwt
+from cryptography.exceptions import UnsupportedAlgorithm
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from django.conf import settings
+from django.core.exceptions import ValidationError
+from django.core.validators import validate_email
+
+from .apple_crypto import validate_apple_token_keyring
+from .apple_models import APPLE_ISSUER
+
+APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+APPLE_TOKEN_URL = "https://appleid.apple.com/auth/token"
+APPLE_REVOKE_URL = "https://appleid.apple.com/auth/revoke"
+APPLE_HTTP_TIMEOUT_SECONDS = 5
+APPLE_CLIENT_SECRET_TTL_SECONDS = 300
+UNKNOWN_KID_TTL_SECONDS = 60
+
+
+class AppleInvalidGrant(Exception):
+    """Apple rejected the grant or its server-verified claims were invalid."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+class AppleUnavailable(Exception):
+    """Apple's token/JWKS/revocation service could not be used safely."""
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(reason)
+
+
+@dataclass(frozen=True)
+class AppleGrant:
+    subject: str
+    issuer: str
+    audience: str
+    email: str
+    email_verified: bool
+    email_is_relay: bool
+    refresh_token: str | None
+
+
+_jwks_client = jwt.PyJWKClient(APPLE_JWKS_URL, cache_keys=True, lifespan=300)
+_unknown_kids: dict[str, float] = {}
+_unknown_kids_lock = threading.Lock()
+
+
+def _canonical_redirect_uri(value: str) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme != "https" or not parsed.hostname or port == 443:
+        return False
+    if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path:
+        return False
+    hostname = parsed.hostname.lower()
+    canonical_host = f"{hostname}:{port}" if port is not None else hostname
+    return value == f"https://{canonical_host}"
+
+
+def _p256_private_key_is_valid(value: str) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        key = serialization.load_pem_private_key(value.encode("utf-8"), password=None)
+    except (TypeError, ValueError, UnsupportedAlgorithm):
+        return False
+    return isinstance(key, ec.EllipticCurvePrivateKey) and isinstance(key.curve, ec.SECP256R1)
+
+
+def apple_readiness_error() -> str | None:
+    """Return a non-secret readiness reason, or ``None`` when fully ready."""
+
+    required = (
+        ("services_id", getattr(settings, "APPLE_SIWA_SERVICES_ID", "")),
+        ("team_id", getattr(settings, "APPLE_SIWA_TEAM_ID", "")),
+        ("key_id", getattr(settings, "APPLE_SIWA_KEY_ID", "")),
+    )
+    for reason, value in required:
+        if not isinstance(value, str) or not value.strip():
+            return f"missing_{reason}"
+    if not _p256_private_key_is_valid(getattr(settings, "APPLE_SIWA_PRIVATE_KEY", "")):
+        return "invalid_private_key"
+    if not _canonical_redirect_uri(getattr(settings, "APPLE_SIWA_REDIRECT_URI", "")):
+        return "invalid_redirect_uri"
+    ttl = getattr(settings, "APPLE_SIWA_TRANSACTION_TTL_SECONDS", 0)
+    if not isinstance(ttl, int) or isinstance(ttl, bool) or ttl <= 0:
+        return "invalid_transaction_ttl"
+    if not validate_apple_token_keyring():
+        return "invalid_token_keyring"
+    return None
+
+
+def generate_apple_client_secret() -> str:
+    """Mint the five-minute ES256 client assertion Apple requires."""
+
+    now = int(datetime.now(UTC).timestamp())
+    payload = {
+        "iss": settings.APPLE_SIWA_TEAM_ID,
+        "sub": settings.APPLE_SIWA_SERVICES_ID,
+        "aud": APPLE_ISSUER,
+        "iat": now,
+        "exp": now + APPLE_CLIENT_SECRET_TTL_SECONDS,
+    }
+    return jwt.encode(
+        payload,
+        settings.APPLE_SIWA_PRIVATE_KEY,
+        algorithm="ES256",
+        headers={"kid": settings.APPLE_SIWA_KEY_ID},
+    )
+
+
+def _negative_kid_is_live(kid: str) -> bool:
+    now = time.monotonic()
+    with _unknown_kids_lock:
+        expires_at = _unknown_kids.get(kid)
+        if expires_at is None:
+            return False
+        if expires_at <= now:
+            _unknown_kids.pop(kid, None)
+            return False
+        return True
+
+
+def _negative_cache_kid(kid: str) -> None:
+    with _unknown_kids_lock:
+        _unknown_kids[kid] = time.monotonic() + UNKNOWN_KID_TTL_SECONDS
+
+
+def _safe_string_compare(left: object, right: object) -> bool:
+    if not isinstance(left, str) or not isinstance(right, str):
+        return False
+    try:
+        return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
+    except UnicodeEncodeError:
+        return False
+
+
+def _signing_key_for_kid(kid: str):
+    if _negative_kid_is_live(kid):
+        raise AppleInvalidGrant("unknown_kid_cached")
+
+    try:
+        signing_keys = _jwks_client.get_signing_keys()
+    except Exception as exc:
+        raise AppleUnavailable("jwks_fetch_failed") from exc
+
+    for signing_key in signing_keys:
+        if _safe_string_compare(signing_key.key_id, kid):
+            return signing_key.key
+
+    # One forced refresh handles normal Apple key rotation. A successful
+    # refresh that still lacks the key is the only leg eligible for negative
+    # caching; transport and parse failures must remain immediately retryable.
+    try:
+        refreshed_keys = _jwks_client.get_signing_keys(refresh=True)
+    except Exception as exc:
+        raise AppleUnavailable("jwks_refresh_failed") from exc
+    for signing_key in refreshed_keys:
+        if _safe_string_compare(signing_key.key_id, kid):
+            return signing_key.key
+
+    _negative_cache_kid(kid)
+    raise AppleInvalidGrant("unknown_kid")
+
+
+def _normalise_email(claim) -> str:
+    if not isinstance(claim, str):
+        return ""
+    email = claim.strip().lower()
+    if len(email) > 254:
+        return ""
+    try:
+        email.encode("utf-8")
+    except UnicodeEncodeError:
+        return ""
+    try:
+        validate_email(email)
+    except ValidationError:
+        return ""
+    return email
+
+
+def verify_apple_id_token(id_token: str, nonce_hash: str) -> AppleGrant:
+    try:
+        header = jwt.get_unverified_header(id_token)
+    except jwt.PyJWTError as exc:
+        raise AppleInvalidGrant("invalid_token_header") from exc
+
+    kid = header.get("kid")
+    if header.get("alg") != "RS256" or not isinstance(kid, str) or not kid:
+        raise AppleInvalidGrant("invalid_token_header")
+    signing_key = _signing_key_for_kid(kid)
+
+    try:
+        claims = jwt.decode(
+            id_token,
+            signing_key,
+            algorithms=["RS256"],
+            audience=settings.APPLE_SIWA_SERVICES_ID,
+            issuer=APPLE_ISSUER,
+            options={"require": ["iss", "aud", "exp", "sub", "nonce"]},
+        )
+    except jwt.PyJWTError as exc:
+        raise AppleInvalidGrant("invalid_id_token") from exc
+
+    if claims.get("iss") != APPLE_ISSUER or claims.get("aud") != settings.APPLE_SIWA_SERVICES_ID:
+        raise AppleInvalidGrant("invalid_issuer_or_audience")
+    subject = claims.get("sub")
+    if not isinstance(subject, str) or not subject.strip() or len(subject) > 255:
+        raise AppleInvalidGrant("invalid_subject")
+    nonce = claims.get("nonce")
+    if not isinstance(nonce, str):
+        raise AppleInvalidGrant("invalid_nonce")
+    try:
+        subject.encode("utf-8")
+        nonce_bytes = nonce.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise AppleInvalidGrant("invalid_subject_or_nonce") from exc
+    computed_nonce_hash = hashlib.sha256(nonce_bytes).hexdigest()
+    if not hmac.compare_digest(computed_nonce_hash, nonce_hash):
+        raise AppleInvalidGrant("nonce_mismatch")
+
+    email = _normalise_email(claims.get("email"))
+    email_verified_claim = claims.get("email_verified")
+    email_verified = email_verified_claim is True or email_verified_claim == "true"
+    return AppleGrant(
+        subject=subject,
+        issuer=APPLE_ISSUER,
+        audience=settings.APPLE_SIWA_SERVICES_ID,
+        email=email,
+        email_verified=email_verified,
+        email_is_relay=email.endswith("@privaterelay.appleid.com"),
+        refresh_token=None,
+    )
+
+
+def exchange_apple_code(code: str, nonce_hash: str) -> AppleGrant:
+    """Exchange a one-time code, then verify only Apple's returned ID token."""
+
+    try:
+        response = httpx.post(
+            APPLE_TOKEN_URL,
+            data={
+                "client_id": settings.APPLE_SIWA_SERVICES_ID,
+                "client_secret": generate_apple_client_secret(),
+                "code": code,
+                "grant_type": "authorization_code",
+                "redirect_uri": settings.APPLE_SIWA_REDIRECT_URI,
+            },
+            timeout=APPLE_HTTP_TIMEOUT_SECONDS,
+        )
+    except (httpx.HTTPError, OSError) as exc:
+        raise AppleUnavailable("token_request_failed") from exc
+
+    if response.status_code >= 500:
+        raise AppleUnavailable("token_server_error")
+    if 400 <= response.status_code < 500:
+        raise AppleInvalidGrant("token_rejected")
+    if response.status_code != 200:
+        raise AppleUnavailable("token_unexpected_status")
+
+    try:
+        body = response.json()
+    except (TypeError, ValueError) as exc:
+        raise AppleUnavailable("token_malformed_json") from exc
+    if not isinstance(body, dict):
+        raise AppleUnavailable("token_malformed_json")
+
+    id_token = body.get("id_token")
+    if not isinstance(id_token, str) or not id_token:
+        raise AppleInvalidGrant("missing_id_token")
+    refresh_token = body.get("refresh_token")
+    if refresh_token is not None and (not isinstance(refresh_token, str) or not refresh_token):
+        raise AppleInvalidGrant("invalid_refresh_token")
+    if refresh_token is not None:
+        try:
+            refresh_token.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise AppleInvalidGrant("invalid_refresh_token") from exc
+
+    verified = verify_apple_id_token(id_token, nonce_hash)
+    return AppleGrant(
+        subject=verified.subject,
+        issuer=verified.issuer,
+        audience=verified.audience,
+        email=verified.email,
+        email_verified=verified.email_verified,
+        email_is_relay=verified.email_is_relay,
+        refresh_token=refresh_token,
+    )
+
+
+def revoke_apple_refresh_token(refresh_token: str) -> int:
+    """POST one refresh token and return only terminal-success statuses."""
+
+    try:
+        response = httpx.post(
+            APPLE_REVOKE_URL,
+            data={
+                "client_id": settings.APPLE_SIWA_SERVICES_ID,
+                "client_secret": generate_apple_client_secret(),
+                "token": refresh_token,
+                "token_type_hint": "refresh_token",
+            },
+            timeout=APPLE_HTTP_TIMEOUT_SECONDS,
+        )
+    except (httpx.HTTPError, OSError) as exc:
+        raise AppleUnavailable("revoke_request_failed") from exc
+    if response.status_code == 200:
+        return response.status_code
+    if 400 <= response.status_code < 500:
+        try:
+            body = response.json()
+        except (TypeError, ValueError) as exc:
+            raise AppleUnavailable("revoke_rejected") from exc
+        error = body.get("error") if isinstance(body, dict) else None
+        if error == "invalid_token":
+            return response.status_code
+        if error == "invalid_client":
+            raise AppleUnavailable("revoke_invalid_client")
+        if error == "invalid_request":
+            raise AppleUnavailable("revoke_invalid_request")
+        raise AppleUnavailable("revoke_rejected")
+    if response.status_code >= 500:
+        raise AppleUnavailable("revoke_server_error")
+    raise AppleUnavailable("revoke_unexpected_status")
