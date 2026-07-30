@@ -182,7 +182,7 @@ fsspec==2026.2.0
     #   torch
 google-auth[requests]==2.56.1
     # via google-genai
-google-genai==2.14.0
+google-genai==2.15.0
     # via -r requirements.in
 gunicorn==26.0.0
     # via -r requirements.in
@@ -248,7 +248,7 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 kiwisolver==1.5.0
     # via matplotlib
-litellm==1.93.0
+litellm==1.94.0
     # via -r requirements.in
 markdown-it-py==4.0.0
     # via rich
@@ -331,7 +331,7 @@ nvidia-nvtx==13.0.85
     # via cuda-toolkit
 oauthlib==3.3.1
     # via requests-oauthlib
-openai==2.49.0
+openai==2.50.0
     # via
     #   -r requirements.in
     #   composio
