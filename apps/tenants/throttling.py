@@ -141,6 +141,33 @@ class ExchangeMinuteThrottle(SimpleRateThrottle):
         return self.cache_format % {"scope": self.scope, "ident": ident or "anon"}
 
 
+class _AppleIpThrottle(SimpleRateThrottle):
+    """Apple popup endpoints keyed by the first Container Apps XFF hop."""
+
+    def get_cache_key(self, request, view):
+        forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
+        if forwarded:
+            ident = forwarded.split(",")[0].strip()
+        else:
+            ident = request.META.get("REMOTE_ADDR", "")
+        return self.cache_format % {"scope": self.scope, "ident": ident or "anon"}
+
+
+class AppleBeginMinuteThrottle(_AppleIpThrottle):
+    scope = "apple_begin_minute"
+    rate = "30/minute"
+
+
+class AppleCompleteMinuteThrottle(_AppleIpThrottle):
+    scope = "apple_complete_minute"
+    rate = "10/minute"
+
+
+class AppleLinkMinuteThrottle(_UserScopedThrottle):
+    scope = "apple_link_minute"
+    rate = "10/minute"
+
+
 class LoginIpThrottle(SimpleRateThrottle):
     """Per-client-IP throttle for the ``AllowAny`` login endpoint — caps how
     fast one source can guess credentials (credential stuffing). Honours the

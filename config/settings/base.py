@@ -558,6 +558,18 @@ APNS_TEAM_ID = env("APNS_TEAM_ID", default="")
 APNS_BUNDLE_ID = env("APNS_BUNDLE_ID", default="")
 APNS_USE_SANDBOX = env.bool("APNS_USE_SANDBOX", default=False)
 
+# Sign in with Apple (web Services ID popup flow).
+APPLE_SIWA_SERVICES_ID = env("APPLE_SIWA_SERVICES_ID", default="")
+APPLE_SIWA_TEAM_ID = env("APPLE_SIWA_TEAM_ID", default="")
+APPLE_SIWA_KEY_ID = env("APPLE_SIWA_KEY_ID", default="")
+APPLE_SIWA_PRIVATE_KEY = env("APPLE_SIWA_PRIVATE_KEY", default="").replace("\\n", "\n")
+APPLE_SIWA_REDIRECT_URI = env("APPLE_SIWA_REDIRECT_URI", default="https://hoodunited.org")
+APPLE_SIWA_TOKEN_ENC_KEYS = env.list("APPLE_SIWA_TOKEN_ENC_KEYS", default=[])
+APPLE_SIWA_TRANSACTION_TTL_SECONDS = env.int(
+    "APPLE_SIWA_TRANSACTION_TTL_SECONDS",
+    default=600,
+)
+
 # Per-tenant OpenRouter sub-keys (PR #1.6).
 #
 # OPENROUTER_API_BASE: API root for /v1/keys (POST/DELETE), /v1/key (GET).

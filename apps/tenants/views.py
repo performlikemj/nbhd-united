@@ -3,7 +3,7 @@
 import logging
 import re
 
-from django.db import transaction
+from django.db import connection, transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -640,7 +640,15 @@ class ProfileView(APIView):
 
 def _do_hard_delete(user) -> None:
     """Deprovision tenant and hard-delete the user. Called immediately (no
-    subscription) or from the Stripe webhook when the subscription ends."""
+    subscription) or from the Stripe webhook when the subscription ends.
+
+    This service performs Azure teardown before opening its own short database
+    transaction and therefore must never be composed under an outer atomic
+    block. Callers must invoke it from autocommit.
+    """
+    if connection.in_atomic_block:
+        raise RuntimeError("_do_hard_delete must be called outside transaction.atomic()")
+
     import logging as _logging
 
     _log = _logging.getLogger(__name__)
@@ -658,9 +666,28 @@ def _do_hard_delete(user) -> None:
                 tenant.id,
                 exc_info=True,
             )
-
     user_id, user_email = user.id, user.email
-    user.delete()
+    with transaction.atomic():
+        # Serialize deletion against a concurrent link (FK insert) and against
+        # existing-identity token rotation. The outbox copy and cascade delete
+        # then commit together, so the newest revocation credential cannot be
+        # rotated into the gap between those two operations.
+        locked_user = type(user).objects.select_for_update().get(pk=user.pk)
+        try:
+            from apps.tenants.apple_services import revoke_apple_before_delete
+
+            revoke_apple_before_delete(locked_user)
+        except Exception:
+            # The durable outbox is best-effort at this boundary: an Apple/QStash
+            # failure must never override the user's request to delete their
+            # account. The pre_delete signal provides an ORM-only second chance.
+            _log.warning(
+                "Could not preserve Apple revocation grant during deletion — continuing",
+                exc_info=True,
+            )
+        locked_user.delete()
+    # This log is intentionally after the atomic block: it records committed
+    # account deletion, never an operation that could still roll back.
     _log.info("Hard-deleted account: user_id=%s email=%s", user_id, user_email)
 
 

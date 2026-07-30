@@ -20,6 +20,8 @@ def _validate_timezone(value: str) -> str:
 
 
 class UserSerializer(serializers.ModelSerializer):
+    apple_linked = serializers.SerializerMethodField()
+
     class Meta:
         model = User
         fields = (
@@ -37,6 +39,7 @@ class UserSerializer(serializers.ModelSerializer):
             "location_city",
             "location_lat",
             "location_lon",
+            "apple_linked",
         )
         read_only_fields = (
             "id",
@@ -50,6 +53,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     def validate_timezone(self, value):
         return _validate_timezone(value)
+
+    def get_apple_linked(self, obj):
+        return obj.external_identities.filter(provider="apple").exists()
 
     def validate_location_lat(self, value):
         if value is not None and not (-90 <= value <= 90):

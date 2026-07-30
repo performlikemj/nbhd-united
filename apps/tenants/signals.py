@@ -4,17 +4,44 @@ from __future__ import annotations
 
 import logging
 
+from django.db import transaction
 from django.db.models.signals import pre_delete
 from django.dispatch import receiver
 
-from apps.tenants.models import Tenant
+from apps.tenants.models import Tenant, User
 
 logger = logging.getLogger(__name__)
 
 
+@receiver(pre_delete, sender=User)
+def preserve_apple_grant_on_user_delete(sender, instance: User, **kwargs) -> None:
+    """ORM-only fallback for user deletions that bypass ``_do_hard_delete``."""
+
+    using = kwargs.get("using") or instance._state.db or "default"
+    try:
+        # This savepoint must own any DB error: catching inside the Collector's
+        # transaction would leave it rollback-only and silently defeat the
+        # user's deletion. Locking the User first serializes this copy against
+        # a concurrent ExternalIdentity FK insert.
+        with transaction.atomic(using=using):
+            locked_user = User.objects.using(using).select_for_update().get(pk=instance.pk)
+            from apps.tenants.apple_services import write_apple_revocation_outbox_fallback
+
+            write_apple_revocation_outbox_fallback(locked_user, using=using)
+    except User.DoesNotExist:
+        return
+    except Exception:
+        # Deletion intent wins even if the fallback copy fails. No QStash
+        # publish, decrypt, or Apple HTTP is permitted from this signal.
+        logger.warning(
+            "user_delete: failed to preserve Apple revocation grant",
+            exc_info=True,
+        )
+
+
 @receiver(pre_delete, sender=Tenant)
 def hibernate_container_on_tenant_delete(sender, instance: Tenant, **kwargs) -> None:
-    """Hibernate a tenant's container the instant its row is deleted.
+    """Hibernate a tenant's container after its row deletion commits.
 
     A Tenant row can be hard-deleted without deprovisioning the Azure side —
     most commonly a User account deletion (``Tenant.user`` is
@@ -24,9 +51,9 @@ def hibernate_container_on_tenant_delete(sender, instance: Tenant, **kwargs) -> 
     longer has a Tenant row to validate against → log noise).
 
     Deactivating revisions is NOT a delete, so it succeeds under the prod
-    locks. This guarantees a deleted tenant's container goes dormant
-    immediately even when full teardown is blocked. Best-effort — never raises,
-    so it cannot block the delete (including a User cascade).
+    locks. This guarantees a committed tenant deletion makes its container
+    dormant even when full teardown is blocked. Best-effort — never raises, so
+    it cannot block the delete (including a User cascade).
 
     Full resource teardown (delete, not just hibernate) is handled separately
     by ``orphan_reaper`` / ``deprovision_tenant`` once the locks permit.
@@ -35,18 +62,26 @@ def hibernate_container_on_tenant_delete(sender, instance: Tenant, **kwargs) -> 
     if not container_id:
         return
 
-    try:
-        from apps.orchestrator.azure_client import hibernate_container_app
+    tenant_id = str(instance.id)
 
-        hibernate_container_app(container_id)
-        logger.info(
-            "tenant_delete: hibernated container %s for deleted tenant %s",
-            container_id,
-            str(instance.id)[:8],
-        )
-    except Exception:
-        logger.exception(
-            "tenant_delete: failed to hibernate container %s for tenant %s",
-            container_id,
-            str(instance.id)[:8],
-        )
+    def hibernate_container() -> None:
+        try:
+            from apps.orchestrator.azure_client import hibernate_container_app
+
+            hibernate_container_app(container_id)
+            logger.info(
+                "tenant_delete: hibernated container %s for deleted tenant %s",
+                container_id,
+                tenant_id[:8],
+            )
+        except Exception:
+            logger.exception(
+                "tenant_delete: failed to hibernate container %s for tenant %s",
+                container_id,
+                tenant_id[:8],
+            )
+
+    # Autocommit executes this immediately; Collector/admin transactions run it
+    # only after commit. External Azure HTTP therefore never occurs inside an
+    # atomic deletion, including direct Tenant and queryset deletion paths.
+    transaction.on_commit(hibernate_container, using=kwargs.get("using"))

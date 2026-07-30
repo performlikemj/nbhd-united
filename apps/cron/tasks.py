@@ -7,6 +7,7 @@ publish to ``/api/cron/trigger/<name>/``.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, timedelta
 
 from django.utils import timezone
@@ -15,6 +16,134 @@ from django.utils.dateparse import parse_datetime
 from apps.cron.models import CronJob
 
 logger = logging.getLogger(__name__)
+
+APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS = 3
+
+
+def _record_apple_revocation_error(
+    outbox_id,
+    claimed_attempt: int,
+    message: str,
+) -> int:
+    from apps.tenants.apple_models import AppleRevocationOutbox
+
+    return (
+        AppleRevocationOutbox.objects.filter(
+            id=outbox_id,
+            attempts=claimed_attempt,
+            revoked_at__isnull=True,
+        )
+        .exclude(last_error__startswith="terminal:")
+        .update(last_error=message[:512])
+    )
+
+
+def revoke_apple_token_task(outbox_id: str) -> dict:
+    """Idempotently revoke one durable Apple refresh-token grant."""
+
+    from django.db import transaction
+    from django.utils import timezone
+
+    from apps.tenants.apple_client import AppleUnavailable, revoke_apple_refresh_token
+    from apps.tenants.apple_crypto import AppleTokenCryptoError, decrypt_apple_refresh_token
+    from apps.tenants.apple_models import AppleRevocationOutbox
+
+    try:
+        parsed_outbox_id = uuid.UUID(str(outbox_id))
+    except ValueError:
+        return {"status": "missing"}
+    outbox_id = parsed_outbox_id
+
+    decrypt_error = None
+    decrypt_terminal = False
+    with transaction.atomic():
+        try:
+            row = AppleRevocationOutbox.objects.select_for_update(of=("self",)).get(id=outbox_id)
+        except AppleRevocationOutbox.DoesNotExist:
+            return {"status": "missing"}
+        if row.revoked_at is not None:
+            return {"status": "already_revoked"}
+        if row.last_error.startswith("terminal:"):
+            return {
+                "status": "terminal",
+                "reason": row.last_error.removeprefix("terminal:"),
+            }
+
+        try:
+            refresh_token = decrypt_apple_refresh_token(row.token_ciphertext)
+        except AppleTokenCryptoError as exc:
+            decrypt_error = exc
+            update_fields = ["last_error"]
+            # Once three failed decryptions have been claimed, later corrupt
+            # deliveries terminalize without advancing the counter.
+            if row.attempts < APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS:
+                row.attempts += 1
+                row.last_attempt_at = timezone.now()
+                update_fields.extend(["attempts", "last_attempt_at"])
+            attempts = row.attempts
+            decrypt_terminal = attempts >= APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS
+            prefix = "terminal:" if decrypt_terminal else "retry:"
+            row.last_error = f"{prefix}decrypt_failed"
+            row.save(update_fields=update_fields)
+        else:
+            row.attempts += 1
+            row.last_attempt_at = timezone.now()
+            row.save(update_fields=["attempts", "last_attempt_at"])
+            attempts = row.attempts
+
+    if decrypt_error is not None:
+        logger.warning(
+            "auth.apple.revocation.decrypt_failed outbox_id=%s attempt=%s terminal=%s",
+            outbox_id,
+            attempts,
+            decrypt_terminal,
+        )
+        if decrypt_terminal:
+            return {"status": "terminal", "reason": "decrypt_failed"}
+        raise RuntimeError("Apple revocation token decrypt failed") from decrypt_error
+
+    # Apple HTTP remains outside the locked claim/decrypt transaction.
+    try:
+        response_status = revoke_apple_refresh_token(refresh_token)
+    except AppleUnavailable as exc:
+        _record_apple_revocation_error(
+            outbox_id,
+            attempts,
+            f"retry:{exc.reason}",
+        )
+        logger.warning(
+            "auth.apple.revocation.transport_failed outbox_id=%s attempt=%s reason=%s",
+            outbox_id,
+            attempts,
+            exc.reason,
+        )
+        raise
+    except Exception as exc:
+        reason = f"retry:client_error_{type(exc).__name__}"
+        _record_apple_revocation_error(outbox_id, attempts, reason)
+        logger.warning(
+            "auth.apple.revocation.client_failed outbox_id=%s attempt=%s",
+            outbox_id,
+            attempts,
+        )
+        raise
+
+    now = timezone.now()
+    if 400 <= response_status < 500:
+        note = f"apple_{response_status}_treated_as_revoked"
+    else:
+        note = ""
+    AppleRevocationOutbox.objects.filter(id=outbox_id, revoked_at__isnull=True).update(
+        revoked_at=now,
+        last_error=note,
+    )
+    logger.info(
+        "auth.apple.revocation.complete outbox_id=%s outcome=%s",
+        outbox_id,
+        "apple_4xx" if note else "revoked",
+    )
+    return {"status": "revoked", "apple_status": response_status}
+
 
 # How long past its fire time a one-shot cron is left alone before being retired.
 # The container owns firing; this row is bookkeeping. A tenant hibernated across
