@@ -10,9 +10,14 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from apps.crypto import audit
-from apps.router.models import DeviceToken
+from apps.crypto import audit, box
+from apps.crypto.keys import mint_and_wrap_dek
+from apps.router import enc_columns
+from apps.router.models import ChatThread, DeviceToken
 from apps.tenants.models import Tenant, User
+
+_RAW_PIN_TITLE = "📍 Current location: 34.69337, 135.49415 (±12m)"
+_SAFE_PIN_TITLE = "📍 Current location: … (±12m)"
 
 
 def _create_tenant_with_config_state(
@@ -227,6 +232,107 @@ class CronAuthTest(TestCase):
         response = self.client.post("/api/v1/cron/apply-pending-configs/")
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["error"], "Invalid signature")
+
+
+@override_settings(DEPLOY_SECRET="test-deploy-secret")
+class ScrubThreadTitlesCronTest(TestCase):
+    def setUp(self):
+        patcher = patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        self.client = APIClient()
+        self.tenant = self._create_tenant("target")
+
+    def _create_tenant(self, suffix: str) -> Tenant:
+        user = User.objects.create_user(
+            username=f"title-scrub-cron-{suffix}",
+            email=f"title-scrub-cron-{suffix}@example.com",
+        )
+        tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            encrypt_chat_writes=True,
+            read_encrypted_chat=True,
+        )
+        mint_and_wrap_dek(tenant)
+        return tenant
+
+    def _create_thread(self, tenant: Tenant) -> ChatThread:
+        return ChatThread.objects.create(
+            tenant=tenant,
+            user=tenant.user,
+            title=_RAW_PIN_TITLE,
+            title_enc=box.encrypt(
+                tenant.id,
+                *enc_columns.CHAT_THREAD_TITLE,
+                _RAW_PIN_TITLE,
+            ),
+        )
+
+    def _post(self, query: str = ""):
+        return self.client.post(
+            f"/api/cron/scrub-thread-titles/{query}",
+            HTTP_X_DEPLOY_SECRET="test-deploy-secret",
+        )
+
+    def _reveal_title(self, thread: ChatThread) -> str:
+        return box.decrypt(
+            thread.tenant_id,
+            *enc_columns.CHAT_THREAD_TITLE,
+            bytes(thread.title_enc),
+        ).reveal()
+
+    def test_auth_required(self):
+        response = self.client.post("/api/cron/scrub-thread-titles/")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "Unauthorized")
+
+    def test_default_is_dry_run_and_changes_no_rows(self):
+        thread = self._create_thread(self.tenant)
+
+        response = self._post(f"?tenant_id={self.tenant.id}")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            {key: response.json()[key] for key in ("dry_run", "scanned", "changed", "errors", "tenants")},
+            {"dry_run": True, "scanned": 1, "changed": 1, "errors": 0, "tenants": 1},
+        )
+        thread.refresh_from_db()
+        self.assertEqual(thread.title, _RAW_PIN_TITLE)
+        self.assertEqual(self._reveal_title(thread), _RAW_PIN_TITLE)
+
+    def test_apply_one_changes_rows(self):
+        thread = self._create_thread(self.tenant)
+
+        response = self._post(f"?apply=1&tenant_id={self.tenant.id}")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            {key: response.json()[key] for key in ("dry_run", "scanned", "changed", "errors", "tenants")},
+            {"dry_run": False, "scanned": 1, "changed": 1, "errors": 0, "tenants": 1},
+        )
+        thread.refresh_from_db()
+        self.assertEqual(thread.title, _SAFE_PIN_TITLE)
+        self.assertEqual(self._reveal_title(thread), _SAFE_PIN_TITLE)
+
+    def test_tenant_scoping_is_honored(self):
+        target_thread = self._create_thread(self.tenant)
+        other_tenant = self._create_tenant("other")
+        other_thread = self._create_thread(other_tenant)
+
+        response = self._post(f"?apply=1&tenant_id={self.tenant.id}")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["tenant_id"], str(self.tenant.id))
+        self.assertEqual(response.json()["scanned"], 1)
+        self.assertEqual(response.json()["changed"], 1)
+        target_thread.refresh_from_db()
+        other_thread.refresh_from_db()
+        self.assertEqual(target_thread.title, _SAFE_PIN_TITLE)
+        self.assertEqual(other_thread.title, _RAW_PIN_TITLE)
+        self.assertEqual(self._reveal_title(other_thread), _RAW_PIN_TITLE)
 
 
 class ExpireTrialsCronTest(TestCase):
