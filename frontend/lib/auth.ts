@@ -33,7 +33,8 @@ export function completeAuthentication(tokens: {
 }): void {
   authenticationEpoch += 1;
   // Never install account B's credentials over account A's in-memory or
-  // persisted React Query data. Both caches are gone before token mutation.
+  // persisted React Query data. Both caches, including any pending persisted
+  // flush, are gone before token mutation.
   clearInMemoryQueryCache();
   clearPersistedCache();
   setTokens(tokens.access, tokens.refresh);

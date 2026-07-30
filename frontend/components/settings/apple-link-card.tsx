@@ -66,6 +66,7 @@ export function AppleLinkCard({ linked }: AppleLinkCardProps) {
               currentPassword={currentPassword}
               disabled={!currentPassword}
               onLinked={handleLinked}
+              onTerminalFailure={() => setCurrentPassword("")}
             />
           </div>
         ) : (

@@ -20,7 +20,7 @@ export interface AuthorizeStashRecord {
 }
 
 export type AuthorizeStashDecision =
-  | { kind: "valid"; params: AuthorizeParams }
+  | { kind: "valid"; params: AuthorizeParams; stashedAt: number }
   | { kind: "absent" }
   | { kind: "invalid" }
   | { kind: "expired" };
@@ -29,6 +29,16 @@ export const AUTHORIZE_STASH_MAX_AGE_MS = 15 * 60 * 1000;
 
 export const ALLOWED_REDIRECT_URIS = ["nbhd://auth/callback"];
 
+const HANDOFF_RESERVED_QUERY_KEYS = [
+  "response_type",
+  "client",
+  "redirect_uri",
+  "code_challenge",
+  "code_challenge_method",
+  "state",
+  "intent",
+] as const;
+
 /**
  * Read the authorize params from a URL query string. Returns null when the
  * query carries none of the handshake keys (e.g. a bounce-back to
@@ -36,7 +46,7 @@ export const ALLOWED_REDIRECT_URIS = ["nbhd://auth/callback"];
  */
 export function parseAuthorizeParams(search: string): AuthorizeParams | null {
   const q = new URLSearchParams(search);
-  if (!q.has("code_challenge") && !q.has("response_type") && !q.has("state")) {
+  if (!HANDOFF_RESERVED_QUERY_KEYS.some((key) => q.has(key))) {
     return null;
   }
   return {
@@ -112,7 +122,7 @@ export function parseAuthorizeStash(
   if (nowMs - value.stashedAt > AUTHORIZE_STASH_MAX_AGE_MS) {
     return { kind: "expired" };
   }
-  return { kind: "valid", params };
+  return { kind: "valid", params, stashedAt: value.stashedAt };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

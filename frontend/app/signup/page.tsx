@@ -9,7 +9,10 @@ import {
   type AppleAuthenticationResult,
 } from "@/components/apple-sign-in-button";
 import { fetchMe, signup } from "@/lib/api";
-import { completeAuthentication } from "@/lib/auth";
+import {
+  completeAuthentication,
+  getAuthenticationEpoch,
+} from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
 import { stashInviteToken } from "@/lib/invite-token";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
@@ -33,8 +36,13 @@ function SignupPageInner() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [appleBusy, setAppleBusy] = useState(false);
 
-  const finishAuthentication = async (result: AppleAuthenticationResult) => {
+  const finishAuthentication = async (
+    result: AppleAuthenticationResult,
+    attemptEpoch: number,
+  ) => {
+    if (getAuthenticationEpoch() !== attemptEpoch) return;
     completeAuthentication(result);
     // Mid-flight iOS auth never offers Apple, but keep the handoff first so
     // every successful authentication path preserves the routing contract.
@@ -57,6 +65,7 @@ function SignupPageInner() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (appleBusy) return;
     setError("");
 
     if (password !== confirmPassword) {
@@ -69,9 +78,13 @@ function SignupPageInner() {
     }
 
     setLoading(true);
+    const attemptEpoch = getAuthenticationEpoch();
     try {
       const tokens = await signup(email, password, displayName || undefined);
-      await finishAuthentication({ ...tokens, created: true });
+      await finishAuthentication(
+        { ...tokens, created: true },
+        attemptEpoch,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed.");
     } finally {
@@ -176,7 +189,7 @@ function SignupPageInner() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || appleBusy}
               className="glow-purple w-full rounded-full bg-[#7C6BF0] px-4 py-3 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? "Creating account..." : "Create account"}
@@ -185,7 +198,9 @@ function SignupPageInner() {
 
           <AppleSignInButton
             flow="authenticate"
+            disabled={loading}
             onAuthenticated={finishAuthentication}
+            onBusyChange={setAppleBusy}
             showDivider
           />
 

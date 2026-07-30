@@ -9,7 +9,10 @@ import {
   type AppleAuthenticationResult,
 } from "@/components/apple-sign-in-button";
 import { fetchMe, login } from "@/lib/api";
-import { completeAuthentication } from "@/lib/auth";
+import {
+  completeAuthentication,
+  getAuthenticationEpoch,
+} from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 
@@ -19,10 +22,13 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [appleBusy, setAppleBusy] = useState(false);
 
   const finishAuthentication = async (
     result: Omit<AppleAuthenticationResult, "created"> & { created?: boolean },
+    attemptEpoch: number,
   ) => {
+    if (getAuthenticationEpoch() !== attemptEpoch) return;
     completeAuthentication(result);
     // Mid-flight iOS "Create an account" / sign-in handoff: hand control back
     // to /app/authorize, which mints the one-time code and redirects nbhd://.
@@ -45,12 +51,14 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (appleBusy) return;
     setError("");
     setLoading(true);
+    const attemptEpoch = getAuthenticationEpoch();
 
     try {
       const tokens = await login(email, password);
-      await finishAuthentication(tokens);
+      await finishAuthentication(tokens, attemptEpoch);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
@@ -137,7 +145,7 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || appleBusy}
               className="glow-purple w-full rounded-full bg-[#7C6BF0] px-4 py-3 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? "Signing in..." : "Sign in"}
@@ -146,7 +154,9 @@ export default function LoginPage() {
 
           <AppleSignInButton
             flow="authenticate"
+            disabled={loading}
             onAuthenticated={finishAuthentication}
+            onBusyChange={setAppleBusy}
             showDivider
             legalCopy={
               <p className="mt-3 text-center text-[11px] leading-relaxed text-white/25">

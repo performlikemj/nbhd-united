@@ -1,5 +1,5 @@
-import { API_BASE } from "@/lib/api";
-import { getAccessToken } from "@/lib/auth";
+import { API_BASE, refreshAccessToken } from "@/lib/api";
+import { getAuthenticationEpoch } from "@/lib/auth";
 
 const APPLE_SDK_ID = "apple-sign-in-sdk";
 const APPLE_SDK_SRC =
@@ -11,13 +11,13 @@ export const APPLE_REDIRECT_URI =
   process.env.NEXT_PUBLIC_APPLE_REDIRECT_URI ?? "";
 
 export const APPLE_TRANSACTION_TTL_SECONDS = 600;
-export const APPLE_TRANSACTION_REFRESH_MS =
-  (APPLE_TRANSACTION_TTL_SECONDS - 60) * 1000;
+const APPLE_TRANSACTION_REFRESH_MARGIN_SECONDS = 60;
 
 export interface AppleAuthTransaction {
   transaction_id: string;
   state: string;
   nonce: string;
+  expires_in?: number;
 }
 
 export interface AppleAuthorizationResponse {
@@ -53,6 +53,7 @@ export interface PreparedAppleAuthorization {
   sdk: AppleIdSdk;
   transaction: AppleAuthTransaction;
   preparationStartedAt: number;
+  refreshAt: number;
 }
 
 export interface AppleAuthenticationResult {
@@ -157,7 +158,13 @@ export async function prepareAppleAuthorization(): Promise<PreparedAppleAuthoriz
     beginAppleTransaction(),
   ]);
 
-  return { sdk, transaction, preparationStartedAt };
+  const expiresIn =
+    transaction.expires_in ?? APPLE_TRANSACTION_TTL_SECONDS;
+  const refreshAt =
+    preparationStartedAt +
+    Math.max(0, expiresIn - APPLE_TRANSACTION_REFRESH_MARGIN_SECONDS) * 1000;
+
+  return { sdk, transaction, preparationStartedAt, refreshAt };
 }
 
 /**
@@ -197,12 +204,16 @@ export async function submitAppleAuthorization(args: {
   prepared: PreparedAppleAuthorization;
   response: AppleAuthorizationResponse;
   currentPassword: string;
+  bearer: string | null;
+  authenticationEpoch: number;
 }): Promise<{ linked: true }>;
 export async function submitAppleAuthorization(args: {
   flow: AppleAuthFlow;
   prepared: PreparedAppleAuthorization;
   response: AppleAuthorizationResponse;
   currentPassword?: string;
+  bearer?: string | null;
+  authenticationEpoch?: number;
 }): Promise<AppleAuthenticationResult | { linked: true }> {
   const authorization = args.response?.authorization;
   if (
@@ -216,7 +227,6 @@ export async function submitAppleAuthorization(args: {
   }
 
   const link = args.flow === "link";
-  const token = link ? getAccessToken() : null;
   const requestBody = link
     ? {
         transaction_id: args.prepared.transaction.transaction_id,
@@ -229,24 +239,40 @@ export async function submitAppleAuthorization(args: {
         code: authorization.code,
         state: authorization.state,
       };
-
-  const headers: Record<string, string> = {
-    "content-type": "application/json",
-  };
-  if (token) headers.authorization = `Bearer ${token}`;
+  const serializedRequestBody = JSON.stringify(requestBody);
 
   let response: Response;
-  try {
-    response = await fetch(
-      `${API_BASE}/api/v1/auth/apple/${link ? "link" : "complete"}/`,
-      {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-      },
+  if (link) {
+    const authenticationEpoch = args.authenticationEpoch;
+    if (typeof authenticationEpoch !== "number") {
+      throw new AppleAuthFlowError({ kind: "popup" });
+    }
+    assertLinkAttemptCurrent(authenticationEpoch);
+    response = await postAppleAuthorization(
+      "link",
+      serializedRequestBody,
+      args.bearer ?? null,
     );
-  } catch {
-    throw new AppleAuthFlowError({ kind: "network" });
+    assertLinkAttemptCurrent(authenticationEpoch);
+
+    if (response.status === 401) {
+      // DRF authenticates before parsing, so this 401 consumed neither the
+      // transaction nor the code. Refresh once and retry this identical body.
+      const refreshedBearer = await refreshAccessToken();
+      assertLinkAttemptCurrent(authenticationEpoch);
+      response = await postAppleAuthorization(
+        "link",
+        serializedRequestBody,
+        refreshedBearer,
+      );
+      assertLinkAttemptCurrent(authenticationEpoch);
+    }
+  } else {
+    response = await postAppleAuthorization(
+      "complete",
+      serializedRequestBody,
+      null,
+    );
   }
 
   if (!response.ok) throw await responseError(response);
@@ -259,6 +285,7 @@ export async function submitAppleAuthorization(args: {
   }
 
   if (link) {
+    assertLinkAttemptCurrent(args.authenticationEpoch as number);
     if (!isRecord(body) || body.linked !== true) {
       throw new AppleAuthFlowError({ kind: "http", status: response.status });
     }
@@ -312,8 +339,39 @@ function isAppleAuthTransaction(value: unknown): value is AppleAuthTransaction {
     typeof value.state === "string" &&
     value.state.length > 0 &&
     typeof value.nonce === "string" &&
-    value.nonce.length > 0
+    value.nonce.length > 0 &&
+    (!("expires_in" in value) ||
+      (typeof value.expires_in === "number" &&
+        Number.isFinite(value.expires_in) &&
+        value.expires_in > 0))
   );
+}
+
+async function postAppleAuthorization(
+  endpoint: "complete" | "link",
+  body: string,
+  bearer: string | null,
+): Promise<Response> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+  };
+  if (bearer) headers.authorization = `Bearer ${bearer}`;
+
+  try {
+    return await fetch(`${API_BASE}/api/v1/auth/apple/${endpoint}/`, {
+      method: "POST",
+      headers,
+      body,
+    });
+  } catch {
+    throw new AppleAuthFlowError({ kind: "network" });
+  }
+}
+
+function assertLinkAttemptCurrent(expectedEpoch: number): void {
+  if (getAuthenticationEpoch() !== expectedEpoch) {
+    throw new AppleAuthFlowError({ kind: "popup" });
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

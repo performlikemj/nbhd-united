@@ -39,16 +39,56 @@ import {
 export const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
-let refreshPromise: Promise<string> | null = null;
+interface RefreshFlight {
+  authenticationEpoch: number;
+  refreshToken: string;
+  promise: Promise<string>;
+}
+
+let refreshFlight: RefreshFlight | null = null;
+
+export class AuthenticationSupersededError extends Error {
+  constructor() {
+    super("Authentication request was superseded.");
+    this.name = "AuthenticationSupersededError";
+  }
+}
 
 /** Shared, deduped refresh — concurrent callers await the same in-flight request. */
 function getDedupedRefresh(): Promise<string> {
-  if (!refreshPromise) {
-    refreshPromise = refreshAccessToken().finally(() => {
-      refreshPromise = null;
-    });
+  const authenticationEpoch = getAuthenticationEpoch();
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    return Promise.reject(new Error("No refresh token available."));
   }
-  return refreshPromise;
+
+  if (
+    refreshFlight &&
+    refreshFlight.authenticationEpoch === authenticationEpoch &&
+    refreshFlight.refreshToken === refreshToken
+  ) {
+    return refreshFlight.promise;
+  }
+
+  const flight: RefreshFlight = {
+    authenticationEpoch,
+    refreshToken,
+    promise: Promise.resolve(""),
+  };
+  flight.promise = performRefreshAccessToken(
+    authenticationEpoch,
+    refreshToken,
+  ).finally(() => {
+    // An older account's completion must not erase a newer account's flight.
+    if (refreshFlight === flight) refreshFlight = null;
+  });
+  refreshFlight = flight;
+  return flight.promise;
+}
+
+/** Guarded refresh primitive used by API retries and the Apple link 401 leg. */
+export function refreshAccessToken(): Promise<string> {
+  return getDedupedRefresh();
 }
 
 // Proactively refresh when the access token expires within this window, so
@@ -75,14 +115,10 @@ function isTokenExpiringSoon(token: string): boolean {
   }
 }
 
-async function refreshAccessToken(): Promise<string> {
-  const authenticationEpoch = getAuthenticationEpoch();
-  const refresh = getRefreshToken();
-  if (!refresh) {
-    clearTokens();
-    throw new Error("No refresh token available.");
-  }
-
+async function performRefreshAccessToken(
+  authenticationEpoch: number,
+  refresh: string,
+): Promise<string> {
   const response = await fetch(`${API_BASE}/api/v1/auth/refresh/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -91,7 +127,6 @@ async function refreshAccessToken(): Promise<string> {
   assertRefreshStillCurrent(authenticationEpoch, refresh);
 
   if (!response.ok) {
-    clearTokens();
     throw new Error("Session expired. Please sign in again.");
   }
 
@@ -106,6 +141,7 @@ async function refreshAccessToken(): Promise<string> {
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  const requestEpoch = getAuthenticationEpoch();
   let accessToken = getAccessToken();
 
   // Proactive refresh: if the token is expired or about to expire, await the
@@ -113,8 +149,12 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   // 401 → refresh → retry below still covers us.
   if (accessToken && getRefreshToken() && isTokenExpiringSoon(accessToken)) {
     try {
+      assertAuthenticationEpoch(requestEpoch);
       accessToken = await getDedupedRefresh();
-    } catch {
+      assertAuthenticationEpoch(requestEpoch);
+    } catch (error) {
+      if (error instanceof AuthenticationSupersededError) throw error;
+      assertAuthenticationEpoch(requestEpoch);
       // Proceed with the stale token; the 401 handler decides what to do.
     }
   }
@@ -135,19 +175,27 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (response.status === 401 && getRefreshToken()) {
     try {
+      assertAuthenticationEpoch(requestEpoch);
       const newToken = await getDedupedRefresh();
+      // Never replay Account A's request after Account B takes the session.
+      assertAuthenticationEpoch(requestEpoch);
 
       headers["Authorization"] = `Bearer ${newToken}`;
       response = await fetch(`${API_BASE}${path}`, {
         ...init,
         headers,
       });
-    } catch {
+    } catch (error) {
+      if (error instanceof AuthenticationSupersededError) throw error;
+      assertAuthenticationEpoch(requestEpoch);
       // Fall through — response is still the original 401
     }
   }
 
   if (response.status === 401) {
+    // A stale request may observe a 401 after another account has signed in.
+    // That request must not clear or redirect the replacement session.
+    assertAuthenticationEpoch(requestEpoch);
     // Distinguish "your session expired" from "those credentials don't work".
     // The first case requires a prior refresh token; the second is the
     // backend rejecting login / signup / password-reset-confirm payloads.
@@ -200,7 +248,13 @@ function assertRefreshStillCurrent(
     getAuthenticationEpoch() !== expectedEpoch ||
     getRefreshToken() !== expectedRefresh
   ) {
-    throw new Error("Authentication changed while the request was in flight.");
+    throw new AuthenticationSupersededError();
+  }
+}
+
+function assertAuthenticationEpoch(expectedEpoch: number): void {
+  if (getAuthenticationEpoch() !== expectedEpoch) {
+    throw new AuthenticationSupersededError();
   }
 }
 
@@ -1933,12 +1987,17 @@ async function apiFetchStatus<T>(
   path: string,
   init?: RequestInit,
 ): Promise<{ status: number; data: T }> {
+  const requestEpoch = getAuthenticationEpoch();
   let accessToken = getAccessToken();
 
   if (accessToken && getRefreshToken() && isTokenExpiringSoon(accessToken)) {
     try {
+      assertAuthenticationEpoch(requestEpoch);
       accessToken = await getDedupedRefresh();
-    } catch {
+      assertAuthenticationEpoch(requestEpoch);
+    } catch (error) {
+      if (error instanceof AuthenticationSupersededError) throw error;
+      assertAuthenticationEpoch(requestEpoch);
       // Proceed with the stale token; a 401 below is handled the same way.
     }
   }
@@ -1955,10 +2014,14 @@ async function apiFetchStatus<T>(
 
   if (response.status === 401 && getRefreshToken()) {
     try {
+      assertAuthenticationEpoch(requestEpoch);
       const newToken = await getDedupedRefresh();
+      assertAuthenticationEpoch(requestEpoch);
       headers["Authorization"] = `Bearer ${newToken}`;
       response = await fetch(`${API_BASE}${path}`, { ...init, headers });
-    } catch {
+    } catch (error) {
+      if (error instanceof AuthenticationSupersededError) throw error;
+      assertAuthenticationEpoch(requestEpoch);
       // Fall through — response is still the original 401.
     }
   }

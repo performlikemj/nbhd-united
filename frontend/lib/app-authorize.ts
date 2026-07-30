@@ -11,7 +11,12 @@
 // session, cleared when the session ends). Keep ALLOWED_REDIRECT_URIS in sync
 // with the backend AUTH_ALLOWED_REDIRECT_URIS and the iOS WebAuth.redirectURI.
 
-import { getAccessToken, getRefreshToken, setTokens } from "@/lib/auth";
+import {
+  getAccessToken,
+  getAuthenticationEpoch,
+  getRefreshToken,
+  setTokens,
+} from "@/lib/auth";
 import { API_BASE } from "@/lib/api";
 
 export {
@@ -32,6 +37,8 @@ export interface ProbedIdentity {
   displayName: string;
 }
 
+export type ProbeIdentityResult = ProbedIdentity | null | "superseded";
+
 /**
  * Resolve WHO the current browser session belongs to, for the authorize page's
  * "you already have an account" decision.
@@ -47,21 +54,26 @@ export interface ProbedIdentity {
  * session (no token, or both access and refresh are dead). A null result means
  * "treat as logged out" — the caller clears the stale token and routes to auth.
  */
-export async function probeIdentity(): Promise<ProbedIdentity | null> {
+export async function probeIdentity(): Promise<ProbeIdentityResult> {
+  const probeEpoch = getAuthenticationEpoch();
   let token = getAccessToken();
   if (!token) return null;
 
   let res = await fetchMeRaw(token);
+  if (!isProbeCurrent(probeEpoch, token)) return "superseded";
   if (res && res.status === 401) {
     const refreshed = await tryRefreshRaw();
-    if (!refreshed) return null;
-    token = refreshed;
+    if (refreshed.kind === "superseded") return "superseded";
+    if (refreshed.kind === "failed") return null;
+    token = refreshed.access;
     res = await fetchMeRaw(token);
+    if (!isProbeCurrent(probeEpoch, token)) return "superseded";
   }
   if (!res || !res.ok) return null;
 
   try {
     const data = (await res.json()) as { email?: unknown; display_name?: unknown };
+    if (!isProbeCurrent(probeEpoch, token)) return "superseded";
     if (typeof data.email === "string" && data.email) {
       return {
         email: data.email,
@@ -69,7 +81,8 @@ export async function probeIdentity(): Promise<ProbedIdentity | null> {
       };
     }
   } catch {
-    // Body wasn't JSON — fall through to null.
+    // Body wasn't JSON. A replacement session still wins over this stale probe.
+    if (!isProbeCurrent(probeEpoch, token)) return "superseded";
   }
   return null;
 }
@@ -90,21 +103,54 @@ async function fetchMeRaw(token: string): Promise<Response | null> {
  * WITHOUT its navigate-to-/login side effect. Returns the new access token, or
  * null on failure. Does not clear tokens — the caller owns that decision.
  */
-async function tryRefreshRaw(): Promise<string | null> {
+type RawRefreshResult =
+  | { kind: "refreshed"; access: string }
+  | { kind: "failed" }
+  | { kind: "superseded" };
+
+async function tryRefreshRaw(): Promise<RawRefreshResult> {
+  const authenticationEpoch = getAuthenticationEpoch();
   const refresh = getRefreshToken();
-  if (!refresh) return null;
+  if (!refresh) return { kind: "failed" };
   try {
     const res = await fetch(`${API_BASE}/api/v1/auth/refresh/`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ refresh }),
     });
-    if (!res.ok) return null;
+    if (!isRawRefreshCurrent(authenticationEpoch, refresh)) {
+      return { kind: "superseded" };
+    }
+    if (!res.ok) return { kind: "failed" };
     const data = (await res.json()) as { access?: unknown; refresh?: unknown };
-    if (typeof data.access !== "string" || !data.access) return null;
+    if (!isRawRefreshCurrent(authenticationEpoch, refresh)) {
+      return { kind: "superseded" };
+    }
+    if (typeof data.access !== "string" || !data.access) {
+      return { kind: "failed" };
+    }
     setTokens(data.access, typeof data.refresh === "string" ? data.refresh : refresh);
-    return data.access;
+    return { kind: "refreshed", access: data.access };
   } catch {
-    return null;
+    return isRawRefreshCurrent(authenticationEpoch, refresh)
+      ? { kind: "failed" }
+      : { kind: "superseded" };
   }
+}
+
+function isRawRefreshCurrent(
+  expectedEpoch: number,
+  expectedRefresh: string,
+): boolean {
+  return (
+    getAuthenticationEpoch() === expectedEpoch &&
+    getRefreshToken() === expectedRefresh
+  );
+}
+
+function isProbeCurrent(expectedEpoch: number, expectedAccess: string): boolean {
+  return (
+    getAuthenticationEpoch() === expectedEpoch &&
+    getAccessToken() === expectedAccess
+  );
 }

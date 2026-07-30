@@ -13,7 +13,7 @@ import {
   activateApplePopup,
   APPLE_CLIENT_ID,
   APPLE_REDIRECT_URI,
-  APPLE_TRANSACTION_REFRESH_MS,
+  AppleAuthFlowError,
   type AppleAuthenticationResult,
   initializeAppleAuthorization,
   normalizeAppleFailure,
@@ -25,7 +25,15 @@ import {
   getAppleAuthErrorMessage,
   isAppleSignInEligible,
 } from "@/lib/apple-auth-decision";
-import { hasPendingAppAuthorize } from "@/lib/app-authorize-stash";
+import {
+  AUTHORIZE_STASH_STORAGE_KEY,
+  getAuthorizeStashExpiryMs,
+  hasPendingAppAuthorize,
+} from "@/lib/app-authorize-stash";
+import {
+  getAccessToken,
+  getAuthenticationEpoch,
+} from "@/lib/auth";
 
 export type { AppleAuthenticationResult } from "@/lib/apple-auth";
 
@@ -34,6 +42,7 @@ interface SharedAppleButtonProps {
   disabled?: boolean;
   label?: string;
   legalCopy?: ReactNode;
+  onBusyChange?: (busy: boolean) => void;
   showDivider?: boolean;
 }
 
@@ -41,6 +50,7 @@ interface AuthenticateAppleButtonProps extends SharedAppleButtonProps {
   flow: "authenticate";
   onAuthenticated: (
     result: AppleAuthenticationResult,
+    authenticationEpoch: number,
   ) => void | Promise<void>;
 }
 
@@ -48,6 +58,7 @@ interface LinkAppleButtonProps extends SharedAppleButtonProps {
   flow: "link";
   currentPassword: string;
   onLinked: () => void | Promise<void>;
+  onTerminalFailure: () => void;
 }
 
 type AppleSignInButtonProps =
@@ -56,9 +67,14 @@ type AppleSignInButtonProps =
 
 type PreparationStatus = "preparing" | "ready" | "failed";
 
-const emptySubscribe = () => () => {};
 const PREPARATION_RETRY_MS = 5_000;
 const RATE_LIMIT_RETRY_MS = 60_000;
+
+interface AppleAttemptSnapshot {
+  authenticationEpoch: number;
+  bearer: string | null;
+  currentPassword: string;
+}
 
 function getEligibilitySnapshot(): boolean {
   if (typeof window === "undefined") return false;
@@ -70,11 +86,46 @@ function getEligibilitySnapshot(): boolean {
   });
 }
 
+function subscribeToEligibility(onStoreChange: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+
+  let expiryTimer: number | null = null;
+
+  const scheduleExpiryCheck = () => {
+    if (expiryTimer !== null) window.clearTimeout(expiryTimer);
+    expiryTimer = null;
+
+    const expiresAt = getAuthorizeStashExpiryMs();
+    if (expiresAt === null) return;
+    // The stash is valid at exactly 15 minutes and expires one millisecond
+    // later under authorize-stash-decision's strict greater-than check.
+    expiryTimer = window.setTimeout(() => {
+      expiryTimer = null;
+      onStoreChange();
+      scheduleExpiryCheck();
+    }, Math.max(0, expiresAt - Date.now() + 1));
+  };
+
+  const handleStorage = (event: StorageEvent) => {
+    if (event.key !== AUTHORIZE_STASH_STORAGE_KEY) return;
+    scheduleExpiryCheck();
+    onStoreChange();
+  };
+
+  window.addEventListener("storage", handleStorage);
+  scheduleExpiryCheck();
+
+  return () => {
+    window.removeEventListener("storage", handleStorage);
+    if (expiryTimer !== null) window.clearTimeout(expiryTimer);
+  };
+}
+
 export function AppleSignInButton(props: AppleSignInButtonProps) {
   // Server/static-export snapshot is false. The first client snapshot performs
   // all eligibility checks, so no Apple markup participates in hydration.
   const eligible = useSyncExternalStore(
-    emptySubscribe,
+    subscribeToEligibility,
     getEligibilitySnapshot,
     () => false,
   );
@@ -101,10 +152,9 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
         initializeAppleAuthorization(prepared);
         preparedRef.current = prepared;
         setStatus("ready");
-        const elapsed = Date.now() - prepared.preparationStartedAt;
         refreshTimerRef.current = window.setTimeout(
           prepareFresh,
-          Math.max(0, APPLE_TRANSACTION_REFRESH_MS - elapsed),
+          Math.max(0, prepared.refreshAt - Date.now()),
         );
       })
       .catch((error: unknown) => {
@@ -119,7 +169,7 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
           }),
         );
         // Preparation itself failed, so schedule a fresh SDK+begin prefetch.
-        // The visible, enabled failed-state button can also retry immediately.
+        // The failed-state control remains disabled until that retry succeeds.
         refreshTimerRef.current = window.setTimeout(
           prepareFresh,
           failure.status === 429
@@ -150,6 +200,8 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
       const failure = normalizeAppleFailure(error);
       attemptInFlightRef.current = false;
       setBusy(false);
+      props.onBusyChange?.(false);
+      if (props.flow === "link") props.onTerminalFailure();
       setErrorMessage(
         getAppleAuthErrorMessage({
           kind: failure.kind,
@@ -160,34 +212,44 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
       // The attempted transaction is never reused, including popup cancel.
       prepareFresh();
     },
-    [prepareFresh],
+    [prepareFresh, props],
   );
 
   const finishAttempt = useCallback(
     async (
       prepared: PreparedAppleAuthorization,
       signInPromise: ReturnType<typeof activateApplePopup>,
+      attempt: AppleAttemptSnapshot,
     ) => {
       try {
         const response = await signInPromise;
+        assertAttemptCurrent(attempt.authenticationEpoch);
         if (props.flow === "authenticate") {
           const result = await submitAppleAuthorization({
             flow: "authenticate",
             prepared,
             response,
           });
-          await props.onAuthenticated(result);
+          assertAttemptCurrent(attempt.authenticationEpoch);
+          await props.onAuthenticated(
+            result,
+            attempt.authenticationEpoch,
+          );
         } else {
           await submitAppleAuthorization({
             flow: "link",
             prepared,
             response,
-            currentPassword: props.currentPassword,
+            currentPassword: attempt.currentPassword,
+            bearer: attempt.bearer,
+            authenticationEpoch: attempt.authenticationEpoch,
           });
+          assertAttemptCurrent(attempt.authenticationEpoch);
           await props.onLinked();
         }
         attemptInFlightRef.current = false;
         setBusy(false);
+        props.onBusyChange?.(false);
       } catch (error) {
         handleFailure(error);
       }
@@ -200,24 +262,14 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
     setErrorMessage("");
 
     const prepared = preparedRef.current;
-    if (!prepared) {
-      setErrorMessage(
-        getAppleAuthErrorMessage({ kind: "popup" }),
-      );
-      prepareFresh();
-      return;
-    }
-    if (
-      Date.now() - prepared.preparationStartedAt >=
-      APPLE_TRANSACTION_REFRESH_MS
-    ) {
-      preparedRef.current = null;
-      setErrorMessage(
-        getAppleAuthErrorMessage({ kind: "popup" }),
-      );
-      prepareFresh();
-      return;
-    }
+    if (!prepared || Date.now() >= prepared.refreshAt) return;
+
+    const attempt: AppleAttemptSnapshot = {
+      authenticationEpoch: getAuthenticationEpoch(),
+      bearer: props.flow === "link" ? getAccessToken() : null,
+      currentPassword:
+        props.flow === "link" ? props.currentPassword : "",
+    };
 
     attemptInFlightRef.current = true;
     preparedRef.current = null;
@@ -226,6 +278,7 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
       refreshTimerRef.current = null;
     }
     setBusy(true);
+    props.onBusyChange?.(true);
 
     let signInPromise: ReturnType<typeof activateApplePopup>;
     try {
@@ -236,13 +289,18 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
       handleFailure(error);
       return;
     }
-    void finishAttempt(prepared, signInPromise);
+    void finishAttempt(prepared, signInPromise, attempt);
   }
 
   if (!eligible) return null;
 
+  const prepared = preparedRef.current;
   const disabled =
-    Boolean(props.disabled) || busy || status === "preparing";
+    Boolean(props.disabled) ||
+    busy ||
+    status !== "ready" ||
+    !prepared ||
+    Date.now() >= prepared.refreshAt;
   const label =
     props.label ??
     (props.flow === "link" ? "Connect Apple ID" : "Continue with Apple");
@@ -288,4 +346,10 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
       {props.legalCopy}
     </div>
   );
+}
+
+function assertAttemptCurrent(expectedEpoch: number): void {
+  if (getAuthenticationEpoch() !== expectedEpoch) {
+    throw new AppleAuthFlowError({ kind: "popup" });
+  }
 }
