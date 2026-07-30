@@ -29,6 +29,7 @@ const publicPages = [
   "/",
   "/login",
   "/signup",
+  "/app/authorize",
   "/forgot-password",
   "/reset-password",
   "/promo/redeem",
@@ -308,6 +309,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const fullBleedPages = [
     "/",
     "/signup",
+    "/app/authorize",
     "/login",
     "/forgot-password",
     "/reset-password",
