@@ -7,6 +7,7 @@ publish to ``/api/cron/trigger/<name>/``.
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, timedelta
 
 from django.utils import timezone
@@ -19,11 +20,21 @@ logger = logging.getLogger(__name__)
 APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS = 3
 
 
-def _record_apple_revocation_error(outbox_id, message: str) -> None:
+def _record_apple_revocation_error(
+    outbox_id,
+    claimed_attempt: int,
+    message: str,
+) -> int:
     from apps.tenants.apple_models import AppleRevocationOutbox
 
-    AppleRevocationOutbox.objects.filter(id=outbox_id, revoked_at__isnull=True).update(
-        last_error=message[:512],
+    return (
+        AppleRevocationOutbox.objects.filter(
+            id=outbox_id,
+            attempts=claimed_attempt,
+            revoked_at__isnull=True,
+        )
+        .exclude(last_error__startswith="terminal:")
+        .update(last_error=message[:512])
     )
 
 
@@ -37,10 +48,16 @@ def revoke_apple_token_task(outbox_id: str) -> dict:
     from apps.tenants.apple_crypto import AppleTokenCryptoError, decrypt_apple_refresh_token
     from apps.tenants.apple_models import AppleRevocationOutbox
 
+    try:
+        parsed_outbox_id = uuid.UUID(str(outbox_id))
+    except ValueError:
+        return {"status": "missing"}
+    outbox_id = parsed_outbox_id
+
     with transaction.atomic():
         try:
             row = AppleRevocationOutbox.objects.select_for_update(of=("self",)).get(id=outbox_id)
-        except (AppleRevocationOutbox.DoesNotExist, ValueError):
+        except AppleRevocationOutbox.DoesNotExist:
             return {"status": "missing"}
         if row.revoked_at is not None:
             return {"status": "already_revoked"}
@@ -61,7 +78,11 @@ def revoke_apple_token_task(outbox_id: str) -> dict:
     except AppleTokenCryptoError as exc:
         terminal = attempts >= APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS
         prefix = "terminal:" if terminal else "retry:"
-        _record_apple_revocation_error(outbox_id, f"{prefix}decrypt_failed")
+        _record_apple_revocation_error(
+            outbox_id,
+            attempts,
+            f"{prefix}decrypt_failed",
+        )
         logger.warning(
             "auth.apple.revocation.decrypt_failed outbox_id=%s attempt=%s terminal=%s",
             outbox_id,
@@ -75,7 +96,11 @@ def revoke_apple_token_task(outbox_id: str) -> dict:
     try:
         response_status = revoke_apple_refresh_token(refresh_token)
     except AppleUnavailable as exc:
-        _record_apple_revocation_error(outbox_id, f"retry:{exc.reason}")
+        _record_apple_revocation_error(
+            outbox_id,
+            attempts,
+            f"retry:{exc.reason}",
+        )
         logger.warning(
             "auth.apple.revocation.transport_failed outbox_id=%s attempt=%s reason=%s",
             outbox_id,
@@ -85,7 +110,7 @@ def revoke_apple_token_task(outbox_id: str) -> dict:
         raise
     except Exception as exc:
         reason = f"retry:client_error_{type(exc).__name__}"
-        _record_apple_revocation_error(outbox_id, reason)
+        _record_apple_revocation_error(outbox_id, attempts, reason)
         logger.warning(
             "auth.apple.revocation.client_failed outbox_id=%s attempt=%s",
             outbox_id,

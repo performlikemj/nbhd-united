@@ -105,6 +105,7 @@ class AppleBeginView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
                 "transaction_id": str(row.id),
                 "state": state_value,
                 "nonce": nonce,
+                "expires_in": settings.APPLE_SIWA_TRANSACTION_TTL_SECONDS,
             },
             status=status.HTTP_200_OK,
         )

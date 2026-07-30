@@ -302,10 +302,12 @@ def enqueue_unpersisted_apple_grant(grant: AppleGrant) -> AppleRevocationOutbox 
     return row
 
 
-def _copy_identity_tokens_to_outbox(user: User) -> list[str]:
+def _copy_identity_tokens_to_outbox(user: User, *, using: str | None = None) -> list[str]:
+    database = using or user._state.db or "default"
     outbox_ids: list[str] = []
     identities = (
-        ExternalIdentity.objects.select_for_update(of=("self",))
+        ExternalIdentity.objects.using(database)
+        .select_for_update(of=("self",))
         .filter(user=user, provider=APPLE_PROVIDER)
         .only(
             "subject",
@@ -313,13 +315,17 @@ def _copy_identity_tokens_to_outbox(user: User) -> list[str]:
         )
     )
     for identity in identities:
-        existing = AppleRevocationOutbox.objects.filter(
-            subject=identity.subject,
-            token_ciphertext=identity.refresh_token_encrypted,
-        ).first()
+        existing = (
+            AppleRevocationOutbox.objects.using(database)
+            .filter(
+                subject=identity.subject,
+                token_ciphertext=identity.refresh_token_encrypted,
+            )
+            .first()
+        )
         if existing is not None:
             continue
-        row = AppleRevocationOutbox.objects.create(
+        row = AppleRevocationOutbox.objects.using(database).create(
             token_ciphertext=identity.refresh_token_encrypted,
             subject=identity.subject,
         )
@@ -330,12 +336,13 @@ def _copy_identity_tokens_to_outbox(user: User) -> list[str]:
 def revoke_apple_before_delete(user: User) -> None:
     """Atomically preserve Apple grants, then publish only outbox UUIDs."""
 
-    with transaction.atomic():
-        outbox_ids = _copy_identity_tokens_to_outbox(user)
+    database = user._state.db or "default"
+    with transaction.atomic(using=database):
+        outbox_ids = _copy_identity_tokens_to_outbox(user, using=database)
         _schedule_outbox_publication(outbox_ids)
 
 
-def write_apple_revocation_outbox_fallback(user: User) -> None:
+def write_apple_revocation_outbox_fallback(user: User, *, using: str | None = None) -> None:
     """Signal-only belt-and-braces copy. Deliberately performs no publishing."""
 
-    _copy_identity_tokens_to_outbox(user)
+    _copy_identity_tokens_to_outbox(user, using=using)

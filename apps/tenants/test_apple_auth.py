@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import io
 import json
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 from unittest.mock import patch
 
@@ -15,7 +17,7 @@ from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import connection, connections
-from django.test import TestCase, TransactionTestCase, override_settings
+from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -32,6 +34,7 @@ from .apple_client import (
 from .apple_crypto import decrypt_apple_refresh_token, encrypt_apple_refresh_token
 from .apple_models import AppleAuthTransaction, AppleRevocationOutbox, ExternalIdentity
 from .models import Tenant
+from .serializers import UserSerializer
 from .throttling import AppleBeginMinuteThrottle, AppleCompleteMinuteThrottle, AppleLinkMinuteThrottle
 
 User = get_user_model()
@@ -299,6 +302,11 @@ class AppleBeginAndTransactionTests(AppleFixtureMixin, TestCase):
         response = self.client.post(reverse("auth-apple-begin"), {}, format="json")
 
         self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            set(response.data),
+            {"transaction_id", "state", "nonce", "expires_in"},
+        )
+        self.assertEqual(response.data["expires_in"], 600)
         self.assertEqual(len(response.data["state"]), 43)
         self.assertEqual(len(response.data["nonce"]), 43)
         row = AppleAuthTransaction.objects.get(id=response.data["transaction_id"])
@@ -391,6 +399,45 @@ class AppleBeginAndTransactionTests(AppleFixtureMixin, TestCase):
             self.assertEqual(response.data, {"error": "invalid_grant"})
             mocked.assert_not_called()
 
+    def test_complete_code_and_state_caps_accept_max_and_reject_max_plus_one(self):
+        from .apple_services import AppleTransactionRejected
+
+        transaction_id = "00000000-0000-0000-0000-000000000000"
+        base = {
+            "transaction_id": transaction_id,
+            "code": "x",
+            "state": "x",
+        }
+        for field, limit in (("code", 1024), ("state", 128)):
+            accepted = {**base, field: "a" * limit}
+            with (
+                self.subTest(field=field, size=limit),
+                patch(
+                    "apps.tenants.apple_views.consume_apple_transaction",
+                    side_effect=AppleTransactionRejected("test_stop"),
+                ) as consume,
+            ):
+                response = self.client.post(
+                    reverse("auth-apple-complete"),
+                    accepted,
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                consume.assert_called_once()
+
+            rejected = {**base, field: "a" * (limit + 1)}
+            with (
+                self.subTest(field=field, size=limit + 1),
+                patch("apps.tenants.apple_views.consume_apple_transaction") as consume,
+            ):
+                response = self.client.post(
+                    reverse("auth-apple-complete"),
+                    rejected,
+                    format="json",
+                )
+                self.assertEqual(response.status_code, 400)
+                consume.assert_not_called()
+
 
 @override_settings(**READY_SETTINGS)
 class ApplePhaseBTests(AppleFixtureMixin, TestCase):
@@ -456,6 +503,7 @@ class ApplePhaseBTests(AppleFixtureMixin, TestCase):
             {"token_overrides": {"iss": "https://evil.example"}},
             {"token_overrides": {"aud": "org.hoodunited.ios"}},
             {"token_overrides": {"exp": int((datetime.now(UTC) - timedelta(minutes=1)).timestamp())}},
+            {"token_overrides": {"exp": []}},
             {"token_overrides": {"nonce": "wrong-nonce"}},
         )
         for token_kwargs in cases:
@@ -520,6 +568,147 @@ class ApplePhaseBTests(AppleFixtureMixin, TestCase):
         self.assertEqual(claims["sub"], SERVICES_ID)
         self.assertEqual(claims["aud"], APPLE_ISSUER)
         self.assertEqual(claims["exp"] - claims["iat"], 300)
+
+
+@override_settings(APPLE_SIWA_SERVICES_ID=SERVICES_ID)
+class AppleRealJwksClientTests(SimpleTestCase):
+    def setUp(self):
+        from . import apple_client
+
+        with apple_client._unknown_kids_lock:
+            apple_client._unknown_kids.clear()
+
+    def tearDown(self):
+        from . import apple_client
+
+        with apple_client._unknown_kids_lock:
+            apple_client._unknown_kids.clear()
+
+    def make_token(self):
+        return jwt.encode(
+            {
+                "iss": APPLE_ISSUER,
+                "aud": SERVICES_ID,
+                "exp": int((datetime.now(UTC) + timedelta(minutes=5)).timestamp()),
+                "sub": SUBJECT,
+                "nonce": NONCE,
+            },
+            _rsa_private_key,
+            algorithm="RS256",
+            headers={"kid": JWT_KID},
+        )
+
+    def test_production_jwks_client_has_five_second_timeout(self):
+        from . import apple_client
+
+        self.assertEqual(apple_client._jwks_client.timeout, 5)
+
+    def test_malformed_cached_set_is_invalidated_and_next_request_recovers(self):
+        from . import apple_client
+
+        client = jwt.PyJWKClient(
+            apple_client.APPLE_JWKS_URL,
+            cache_keys=True,
+            lifespan=300,
+            timeout=5,
+        )
+        responses = iter(
+            [
+                {"keys": []},
+                {"keys": [_rsa_jwk]},
+            ]
+        )
+
+        def urlopen(*args, **kwargs):
+            self.assertEqual(kwargs["timeout"], 5)
+            return io.BytesIO(json.dumps(next(responses)).encode("utf-8"))
+
+        nonce_hash = __import__("hashlib").sha256(NONCE.encode()).hexdigest()
+        with (
+            patch("apps.tenants.apple_client._jwks_client", client),
+            patch(
+                "jwt.jwks_client.urllib.request.urlopen",
+                side_effect=urlopen,
+            ) as mocked_urlopen,
+        ):
+            with self.assertRaises(AppleUnavailable):
+                verify_apple_id_token(self.make_token(), nonce_hash)
+            self.assertIsNone(client.jwk_set_cache.get())
+            with apple_client._unknown_kids_lock:
+                self.assertNotIn(JWT_KID, apple_client._unknown_kids)
+
+            grant = verify_apple_id_token(self.make_token(), nonce_hash)
+
+        self.assertEqual(grant.subject, SUBJECT)
+        self.assertEqual(mocked_urlopen.call_count, 2)
+
+    def test_two_thread_rotation_never_negative_caches_successfully_refreshed_kid(self):
+        from . import apple_client
+
+        old_jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(_other_rsa_private_key.public_key()))
+        old_jwk.update({"kid": "old-rsa-key", "use": "sig", "alg": "RS256"})
+        client = jwt.PyJWKClient(
+            apple_client.APPLE_JWKS_URL,
+            cache_keys=True,
+            lifespan=300,
+            timeout=5,
+        )
+        client.jwk_set_cache.put({"keys": [old_jwk]})
+
+        refresh_started = threading.Event()
+        release_refresh = threading.Event()
+        start = threading.Barrier(3)
+        urlopen_lock = threading.Lock()
+        urlopen_calls = 0
+        results: list[str] = []
+        errors: list[BaseException] = []
+
+        def urlopen(*args, **kwargs):
+            nonlocal urlopen_calls
+            with urlopen_lock:
+                urlopen_calls += 1
+                call_number = urlopen_calls
+            refresh_started.set()
+            if not release_refresh.wait(5):
+                raise TimeoutError("test did not release JWKS refresh")
+            payload = {"keys": [_rsa_jwk]} if call_number == 1 else {"keys": [old_jwk]}
+            return io.BytesIO(json.dumps(payload).encode("utf-8"))
+
+        nonce_hash = __import__("hashlib").sha256(NONCE.encode()).hexdigest()
+
+        def verify_worker():
+            start.wait()
+            try:
+                grant = verify_apple_id_token(self.make_token(), nonce_hash)
+                results.append(grant.subject)
+            except BaseException as exc:
+                errors.append(exc)
+
+        with (
+            patch("apps.tenants.apple_client._jwks_client", client),
+            patch(
+                "jwt.jwks_client.urllib.request.urlopen",
+                side_effect=urlopen,
+            ) as mocked_urlopen,
+        ):
+            first = threading.Thread(target=verify_worker)
+            second = threading.Thread(target=verify_worker)
+            first.start()
+            second.start()
+            start.wait()
+            self.assertTrue(refresh_started.wait(5))
+            time.sleep(0.05)
+            release_refresh.set()
+            first.join(5)
+            second.join(5)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(results, [SUBJECT, SUBJECT])
+        self.assertEqual(mocked_urlopen.call_count, 1)
+        with apple_client._unknown_kids_lock:
+            self.assertNotIn(JWT_KID, apple_client._unknown_kids)
 
 
 @override_settings(**READY_SETTINGS)
@@ -873,6 +1062,20 @@ class AppleExistingIdentityTests(AppleFixtureMixin, TestCase):
         self.make_identity(user)
         linked = self.client.get(reverse("auth-me"))
         self.assertTrue(linked.data["apple_linked"])
+        self.assertEqual(
+            set(linked.data),
+            set(UserSerializer.Meta.fields) | {"tenant"},
+        )
+        for forbidden in (
+            "external_identities",
+            "provider",
+            "subject",
+            "issuer",
+            "audience",
+            "refresh_token_encrypted",
+            "token_ciphertext",
+        ):
+            self.assertNotIn(forbidden, linked.data)
 
 
 @override_settings(**READY_SETTINGS)
@@ -1043,6 +1246,31 @@ class AppleLinkTests(AppleFixtureMixin, TestCase):
         self.assertEqual(response.status_code, 401)
         self.assertIn("detail", response.data)
 
+    def test_current_password_cap_accepts_max_and_rejects_max_plus_one(self):
+        transaction_id = "00000000-0000-0000-0000-000000000000"
+        base = {
+            "transaction_id": transaction_id,
+            "code": "x",
+            "state": "x",
+        }
+        with patch.object(User, "check_password", return_value=False) as check_password:
+            accepted = self.client.post(
+                reverse("auth-apple-link"),
+                {**base, "current_password": "a" * 128},
+                format="json",
+            )
+        self.assertEqual(accepted.status_code, 400)
+        check_password.assert_called_once()
+
+        with patch.object(User, "check_password", return_value=False) as check_password:
+            rejected = self.client.post(
+                reverse("auth-apple-link"),
+                {**base, "current_password": "a" * 129},
+                format="json",
+            )
+        self.assertEqual(rejected.status_code, 400)
+        check_password.assert_not_called()
+
 
 @override_settings(**READY_SETTINGS)
 class AppleThrottleAndLoggingTests(AppleFixtureMixin, TestCase):
@@ -1124,6 +1352,97 @@ class AppleThrottleAndLoggingTests(AppleFixtureMixin, TestCase):
             self.assertNotIn(secret, logs)
         self.assertIn("auth.apple.complete.success", logs)
 
+    def test_link_secret_material_never_appears_in_apple_logs(self):
+        raw_password = "link-step-up-secret"
+        user = self.make_user(
+            email="link-log@example.com",
+            password=raw_password,
+        )
+        self.client.force_authenticate(user)
+        row, nonce = self.mint_transaction()
+        raw_code = "link-super-secret-code"
+        raw_refresh = "link-super-secret-refresh"
+        raw_token = self.id_token(
+            nonce=nonce,
+            subject="link-log-subject",
+            email="link-log@example.com",
+        )
+
+        with (
+            self.assertLogs("apps.tenants", level="INFO") as captured,
+            patch(
+                "apps.tenants.apple_client.httpx.post",
+                return_value=FakeResponse(
+                    200,
+                    {
+                        "id_token": raw_token,
+                        "refresh_token": raw_refresh,
+                    },
+                ),
+            ) as mocked,
+        ):
+            response = self.client.post(
+                reverse("auth-apple-link"),
+                {
+                    "transaction_id": str(row.id),
+                    "code": raw_code,
+                    "state": STATE,
+                    "current_password": raw_password,
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        logs = "\n".join(captured.output)
+        client_secret = mocked.call_args.kwargs["data"]["client_secret"]
+        for secret in (
+            raw_password,
+            raw_code,
+            raw_refresh,
+            raw_token,
+            nonce,
+            client_secret,
+        ):
+            self.assertNotIn(secret, logs)
+        self.assertIn("auth.apple.link.success", logs)
+
+    def test_jwks_failure_logs_no_secret_material(self):
+        row, nonce = self.mint_transaction()
+        raw_code = "jwks-failure-secret-code"
+        raw_refresh = "jwks-failure-secret-refresh"
+        raw_token = self.id_token(nonce=nonce)
+        self.jwks.initial_error = OSError("network down")
+
+        with (
+            self.assertLogs("apps.tenants", level="WARNING") as captured,
+            patch(
+                "apps.tenants.apple_client.httpx.post",
+                return_value=FakeResponse(
+                    200,
+                    {
+                        "id_token": raw_token,
+                        "refresh_token": raw_refresh,
+                    },
+                ),
+            ) as mocked,
+        ):
+            response = self.client.post(
+                reverse("auth-apple-complete"),
+                {
+                    "transaction_id": str(row.id),
+                    "code": raw_code,
+                    "state": STATE,
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 503)
+        logs = "\n".join(captured.output)
+        client_secret = mocked.call_args.kwargs["data"]["client_secret"]
+        for secret in (raw_code, raw_refresh, raw_token, nonce, client_secret):
+            self.assertNotIn(secret, logs)
+        self.assertIn("auth.apple.complete.unavailable", logs)
+
     def test_normal_rejections_log_info_and_transport_failures_warning(self):
         row, _ = self.mint_transaction()
         with self.assertLogs("apps.tenants.apple_views", level="INFO") as normal_logs:
@@ -1182,6 +1501,45 @@ class AppleAtomicAndRaceTests(AppleFixtureMixin, TransactionTestCase):
                 {"transaction_id": str(row.id), "code": "x", "state": STATE},
                 format="json",
             )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(observed, [False])
+
+    def test_link_phase_b_runs_after_consume_commit(self):
+        password = "LinkAtomicPassword123!"
+        user = self.make_user(
+            email="link-atomic@example.com",
+            password=password,
+        )
+        self.client.force_authenticate(user)
+        row, _ = self.mint_transaction()
+        observed = []
+
+        def phase_b(*args, **kwargs):
+            observed.append(connection.in_atomic_block)
+            row.refresh_from_db()
+            self.assertIsNotNone(row.consumed_at)
+            return AppleGrant(
+                subject="link-atomic-subject",
+                issuer=APPLE_ISSUER,
+                audience=SERVICES_ID,
+                email="link-atomic@example.com",
+                email_verified=True,
+                email_is_relay=False,
+                refresh_token="link-atomic-refresh",
+            )
+
+        with patch("apps.tenants.apple_views.exchange_apple_code", side_effect=phase_b):
+            response = self.client.post(
+                reverse("auth-apple-link"),
+                {
+                    "transaction_id": str(row.id),
+                    "code": "x",
+                    "state": STATE,
+                    "current_password": password,
+                },
+                format="json",
+            )
+
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(observed, [False])
 

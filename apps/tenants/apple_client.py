@@ -57,9 +57,14 @@ class AppleGrant:
     refresh_token: str | None
 
 
-_jwks_client = jwt.PyJWKClient(APPLE_JWKS_URL, cache_keys=True, lifespan=300)
+_jwks_client = jwt.PyJWKClient(
+    APPLE_JWKS_URL,
+    cache_keys=True,
+    lifespan=300,
+    timeout=APPLE_HTTP_TIMEOUT_SECONDS,
+)
 _unknown_kids: dict[str, float] = {}
-_unknown_kids_lock = threading.Lock()
+_unknown_kids_lock = threading.RLock()
 
 
 def _canonical_redirect_uri(value: str) -> bool:
@@ -157,32 +162,61 @@ def _safe_string_compare(left: object, right: object) -> bool:
         return False
 
 
+def _invalidate_jwks_cache() -> None:
+    cache = getattr(_jwks_client, "jwk_set_cache", None)
+    if cache is not None:
+        cache.put(None)
+
+
+def _get_signing_keys(*, refresh: bool, unavailable_reason: str):
+    try:
+        signing_keys = _jwks_client.get_signing_keys(refresh=refresh)
+    except jwt.PyJWKClientConnectionError as exc:
+        raise AppleUnavailable(unavailable_reason) from exc
+    except (OSError, TimeoutError) as exc:
+        raise AppleUnavailable(unavailable_reason) from exc
+    except (jwt.PyJWTError, TypeError, ValueError, OverflowError, KeyError) as exc:
+        _invalidate_jwks_cache()
+        raise AppleUnavailable(unavailable_reason) from exc
+    except Exception as exc:
+        _invalidate_jwks_cache()
+        raise AppleUnavailable(unavailable_reason) from exc
+    if not signing_keys:
+        _invalidate_jwks_cache()
+        raise AppleUnavailable(unavailable_reason)
+    return signing_keys
+
+
 def _signing_key_for_kid(kid: str):
-    if _negative_kid_is_live(kid):
-        raise AppleInvalidGrant("unknown_kid_cached")
+    # Serialize the complete cached lookup -> refresh -> negative-cache
+    # decision. Otherwise two simultaneous rotation requests can race so one
+    # thread negatively caches a kid that the other just fetched successfully.
+    with _unknown_kids_lock:
+        if _negative_kid_is_live(kid):
+            raise AppleInvalidGrant("unknown_kid_cached")
 
-    try:
-        signing_keys = _jwks_client.get_signing_keys()
-    except Exception as exc:
-        raise AppleUnavailable("jwks_fetch_failed") from exc
+        signing_keys = _get_signing_keys(
+            refresh=False,
+            unavailable_reason="jwks_fetch_failed",
+        )
+        for signing_key in signing_keys:
+            if _safe_string_compare(signing_key.key_id, kid):
+                return signing_key.key
 
-    for signing_key in signing_keys:
-        if _safe_string_compare(signing_key.key_id, kid):
-            return signing_key.key
+        # One forced refresh handles normal Apple key rotation. A successful,
+        # nonempty refresh that still lacks the key is the only leg eligible
+        # for negative caching. Malformed and unavailable sets remain
+        # immediately retryable and have their poisoned cache entry cleared.
+        refreshed_keys = _get_signing_keys(
+            refresh=True,
+            unavailable_reason="jwks_refresh_failed",
+        )
+        for signing_key in refreshed_keys:
+            if _safe_string_compare(signing_key.key_id, kid):
+                return signing_key.key
 
-    # One forced refresh handles normal Apple key rotation. A successful
-    # refresh that still lacks the key is the only leg eligible for negative
-    # caching; transport and parse failures must remain immediately retryable.
-    try:
-        refreshed_keys = _jwks_client.get_signing_keys(refresh=True)
-    except Exception as exc:
-        raise AppleUnavailable("jwks_refresh_failed") from exc
-    for signing_key in refreshed_keys:
-        if _safe_string_compare(signing_key.key_id, kid):
-            return signing_key.key
-
-    _negative_cache_kid(kid)
-    raise AppleInvalidGrant("unknown_kid")
+        _negative_cache_kid(kid)
+        raise AppleInvalidGrant("unknown_kid")
 
 
 def _normalise_email(claim) -> str:
@@ -222,7 +256,7 @@ def verify_apple_id_token(id_token: str, nonce_hash: str) -> AppleGrant:
             issuer=APPLE_ISSUER,
             options={"require": ["iss", "aud", "exp", "sub", "nonce"]},
         )
-    except jwt.PyJWTError as exc:
+    except (jwt.PyJWTError, TypeError, ValueError, OverflowError) as exc:
         raise AppleInvalidGrant("invalid_id_token") from exc
 
     if claims.get("iss") != APPLE_ISSUER or claims.get("aud") != settings.APPLE_SIWA_SERVICES_ID:
