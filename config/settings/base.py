@@ -70,6 +70,8 @@ INSTALLED_APPS = [
     # ready() intentionally stays empty (it runs during migrate, before this
     # app's own tables exist — see apps/evals/apps.py).
     "apps.evals",
+    # apps.steward — portfolio-scoped deterministic expectations/watchtower.
+    "apps.steward",
 ]
 
 MIDDLEWARE = [
@@ -192,6 +194,15 @@ CORS_PREFLIGHT_MAX_AGE = 86400
 QSTASH_CURRENT_SIGNING_KEY = env("QSTASH_CURRENT_SIGNING_KEY", default="")
 QSTASH_NEXT_SIGNING_KEY = env("QSTASH_NEXT_SIGNING_KEY", default="")
 QSTASH_TOKEN = env("QSTASH_TOKEN", default="")
+
+# Steward Phase 1 — portfolio-scoped deterministic evidence ingestion,
+# direct urgent delivery, and the external dead-man. Every value is optional
+# at process boot; ingest fails closed with 503 while its secret is empty.
+STEWARD_INGEST_SECRET = env("STEWARD_INGEST_SECRET", default="")
+STEWARD_TELEGRAM_BOT_TOKEN = env("STEWARD_TELEGRAM_BOT_TOKEN", default="")
+STEWARD_TELEGRAM_CHAT_ID = env("STEWARD_TELEGRAM_CHAT_ID", default="")
+STEWARD_ALERT_EMAIL = env("STEWARD_ALERT_EMAIL", default="")
+STEWARD_DEADMAN_URL = env("STEWARD_DEADMAN_URL", default="")
 
 # Core AI on-device model (iOS 27 bring-your-own model) delivery.
 # Django serves only the small JWT-gated manifest (GET /api/v1/coreai/model/manifest/);

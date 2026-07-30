@@ -91,6 +91,10 @@ SYSTEM_CRONS = [
     # QStash wake task queued (idempotency-keyed on fire_time so duplicates
     # collapse), so an out-of-band container restart can't cause a missed fire.
     ("ensure-at-cron-wakes", "*/5 * * * *", "/api/cron/trigger/ensure_at_cron_wakes/"),
+    # Every 5 min — deterministic portfolio expectation sweep. This is the L0
+    # watchtower path: QStash runs off-host and the daily reconcile above
+    # self-heals any registration drift.
+    ("steward-sweep", "*/5 * * * *", "/api/cron/trigger/steward_sweep/"),
     # Every hour — retire spent kind:"at" rows after their late-fire grace so
     # their names can be reused. Uses QStash's default maintenance retries.
     ("expire-finished-at-crons", "0 * * * *", "/api/cron/trigger/expire_finished_at_crons/"),

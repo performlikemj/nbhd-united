@@ -115,6 +115,15 @@ DEFAULT_FROM_EMAIL = env(
     default="NBHD United <noreply@neighborhoodunited.org>",
 )
 
+# Steward Phase 1. These names intentionally mirror the Azure Container App
+# env vars verbatim (invariant §10). Empty ingest secret is fail-closed at the
+# endpoint; empty delivery/dead-man values safely disable that optional channel.
+STEWARD_INGEST_SECRET = env("STEWARD_INGEST_SECRET", default="")
+STEWARD_TELEGRAM_BOT_TOKEN = env("STEWARD_TELEGRAM_BOT_TOKEN", default="")
+STEWARD_TELEGRAM_CHAT_ID = env("STEWARD_TELEGRAM_CHAT_ID", default="")
+STEWARD_ALERT_EMAIL = env("STEWARD_ALERT_EMAIL", default="")
+STEWARD_DEADMAN_URL = env("STEWARD_DEADMAN_URL", default="")
+
 # YardTalk one-time purchase + validation. The Price id is a Container App
 # config value; the HMAC key is a Key Vault-backed secretref.
 YARDTALK_STRIPE_PRICE_ID = env("YARDTALK_STRIPE_PRICE_ID", default="")
