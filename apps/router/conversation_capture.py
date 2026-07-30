@@ -250,6 +250,17 @@ def _normalize_user_location_lines(text: str) -> str:
     return "\n".join(normalized)
 
 
+def scrub_chat_thread_title(title: str) -> str:
+    """Scrub a title through the shared location seam, with a safe empty-label fallback."""
+    scrubbed = _normalize_user_location_lines(title)
+    line_normalized_title = "\n".join((title or "").splitlines())
+    if scrubbed == line_normalized_title:
+        return title
+    if not any(character.isalnum() for character in scrubbed):
+        return "New chat"
+    return scrubbed
+
+
 def digest_thread_attribution_enabled(tenant: object | None) -> bool:
     """Return whether the shared digest should identify non-main iOS threads."""
     return tenant is not None and getattr(tenant, "digest_thread_attribution_enabled", False) is True
