@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -14,6 +15,7 @@ from apps.steward.digest import (
     run_steward_daily_digest,
 )
 from apps.steward.models import (
+    AlertState,
     DigestRecord,
     EvidenceEvent,
     EvidenceSource,
@@ -75,6 +77,7 @@ class StewardDigestTests(TestCase):
             threshold=Decimal("15.000"),
             details={"poison": "NEVER_RENDER_DETAILS"},
         )
+        return run
 
     def test_renders_every_facts_section_and_no_payload_or_details(self):
         now = timezone.now()
@@ -157,11 +160,225 @@ class StewardDigestTests(TestCase):
         self.assertLessEqual(len(text), MAX_DIGEST_CHARS)
         self.assertRegex(text, r"… \+\d+ lines omitted$")
 
+    def test_section_budgets_preserve_every_priority_section_under_pressure(self):
+        now = timezone.now()
+        for index in range(15):
+            self._item(
+                f"blocked-{index}",
+                status=TrackedItem.Status.BLOCKED,
+                age_days=2,
+                context="n" * 240,
+            )
+            self._missed(f"missed-{index}")
+            self._item(f"orphan-{index}")
+            run = EvalRun.objects.create(
+                suite=f"unhealthy-{index}",
+                trigger=EvalRun.Trigger.SCHEDULED,
+                status=EvalRun.Status.FAIL,
+                finished_at=now,
+            )
+            EvalRun.objects.filter(pk=run.pk).update(started_at=now)
+            EvidenceEvent.objects.create(
+                source=EvidenceSource.EVAL_RUN,
+                subject=f"eval:recovery-{index}",
+                occurred_at=now,
+                received_at=now,
+                payload={
+                    "status": EvalRun.Status.PASS,
+                    "prev_status": EvalRun.Status.FAIL,
+                },
+                fingerprint=f"budget-transition-{index}",
+                trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+                provenance=EvidenceEvent.Provenance.COLLECTOR,
+            )
+
+        text, _ = render_steward_daily_digest(now=now + timedelta(minutes=1))
+
+        self.assertLessEqual(len(text), MAX_DIGEST_CHARS)
+        headings = (
+            "NEEDS YOU",
+            "STALLED",
+            "SLO / EVALS",
+            "CHANGES (24h)",
+            "INTEGRITY",
+        )
+        for index, heading in enumerate(headings):
+            start = text.index(f"{heading} (")
+            end = text.index(f"{headings[index + 1]} (") if index + 1 < len(headings) else len(text)
+            section = text[start:end]
+            self.assertRegex(
+                section.splitlines()[0],
+                rf"^{re.escape(heading)} \(\d+\)$",
+            )
+            self.assertRegex(section, r"… \+\d+ lines omitted")
+
     def test_all_quiet_is_liveness_proof(self):
         text, stats = render_steward_daily_digest()
         self.assertIn("ALL QUIET", text)
         self.assertIn("All quiet — 0 expectations armed, last sweep unknown.", text)
         self.assertEqual(sum(stats.values()), 0)
+
+    def test_latest_unhealthy_suite_is_rendered_without_a_transition(self):
+        now = timezone.now()
+        older = EvalRun.objects.create(
+            suite="stuck-suite",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.FAIL,
+            finished_at=now - timedelta(hours=2),
+        )
+        latest = EvalRun.objects.create(
+            suite="stuck-suite",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.FAIL,
+            finished_at=now - timedelta(hours=1),
+        )
+        healthy = EvalRun.objects.create(
+            suite="healthy-suite",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.PASS,
+            finished_at=now,
+        )
+        EvalRun.objects.filter(pk__in=[older.pk, latest.pk, healthy.pk]).update(started_at=now - timedelta(hours=3))
+
+        text, _ = render_steward_daily_digest(now=now)
+
+        self.assertIn(
+            f"EVAL stuck-suite: current fail; 1h ago; run {latest.id}",
+            text,
+        )
+        self.assertNotIn(f"run {older.id}", text)
+        self.assertNotIn("healthy-suite", text)
+        self.assertNotIn("ALL QUIET", text)
+
+    def test_all_skipped_slo_run_still_renders_current_degraded_state(self):
+        now = timezone.now()
+        run = EvalRun.objects.create(
+            suite="slo_snapshot",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.DEGRADED,
+            finished_at=now,
+        )
+        EvalRun.objects.filter(pk=run.pk).update(started_at=now)
+        EvalResult.objects.create(
+            run=run,
+            case_id="reply_latency_p50_ms",
+            kind=EvalResult.Kind.SLO,
+            passed=True,
+            score=None,
+            threshold=Decimal("15.000"),
+            details={"skipped": True},
+        )
+
+        text, _ = render_steward_daily_digest(now=now)
+
+        self.assertIn(
+            f"EVAL slo_snapshot: current degraded; 0m ago; run {run.id}",
+            text,
+        )
+        self.assertNotIn("ALL QUIET", text)
+
+    def test_changes_use_received_time_for_late_ingested_evidence(self):
+        now = timezone.now()
+        DigestRecord.objects.create(
+            sent_at=now - timedelta(hours=1),
+            delivery=DigestRecord.Delivery.DELIVERED,
+            body="delivered",
+            stats={},
+        )
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.CI_RUN,
+            subject="late-ci",
+            occurred_at=now - timedelta(days=3),
+            received_at=now,
+            payload={},
+            fingerprint="late-received",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+
+        text, stats = render_steward_daily_digest(now=now)
+
+        self.assertIn("- ci_run: 1", text)
+        self.assertEqual(stats["changes"], 1)
+
+    def test_failed_digest_does_not_advance_delivered_change_cutoff(self):
+        now = timezone.now()
+        delivered_at = now - timedelta(hours=3)
+        DigestRecord.objects.create(
+            sent_at=delivered_at,
+            delivery=DigestRecord.Delivery.DELIVERED,
+            body="delivered",
+            stats={},
+        )
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.CI_RUN,
+            subject="between-attempts",
+            occurred_at=delivered_at,
+            received_at=now - timedelta(hours=2),
+            payload={},
+            fingerprint="between-attempts",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+        DigestRecord.objects.create(
+            sent_at=now - timedelta(hours=1),
+            delivery=DigestRecord.Delivery.TRANSIENT,
+            body="failed",
+            stats={},
+        )
+
+        text, stats = render_steward_daily_digest(now=now)
+
+        self.assertIn("- ci_run: 1", text)
+        self.assertEqual(stats["changes"], 1)
+
+    def test_cooldown_suppression_count_is_since_delivered_and_bounded(self):
+        now = timezone.now()
+        DigestRecord.objects.create(
+            sent_at=now - timedelta(hours=1),
+            delivery=DigestRecord.Delivery.DELIVERED,
+            body="delivered",
+            stats={"cooldown_suppressed_total": 2},
+        )
+        AlertState.objects.create(
+            fingerprint="eval-email:journey:fail",
+            suppressed_count=1002,
+        )
+
+        text, stats = render_steward_daily_digest(now=now)
+
+        self.assertIn(
+            "EMAIL cooldown: 999+ eval run(s) suppressed since last delivered digest",
+            text,
+        )
+        self.assertEqual(stats["cooldown_suppressed_total"], 1002)
+
+    def test_subjects_strip_controls_and_cap_rendered_length(self):
+        now = timezone.now()
+        dangerous = "safe\u0007\u0085\u202e" + ("x" * 100) + "TAIL"
+        self._missed(dangerous)
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.EVAL_RUN,
+            subject=f"eval:{dangerous}",
+            occurred_at=now,
+            received_at=now,
+            payload={
+                "status": EvalRun.Status.PASS,
+                "prev_status": EvalRun.Status.FAIL,
+            },
+            fingerprint="dangerous-subject",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+
+        text, _ = render_steward_daily_digest(now=now + timedelta(minutes=1))
+
+        for control in ("\u0007", "\u0085", "\u202e"):
+            self.assertNotIn(control, text)
+        self.assertNotIn("TAIL", text)
+        transition_line = next(line for line in text.splitlines() if line.startswith("- EVAL safe"))
+        rendered_suite = transition_line.removeprefix("- EVAL ").split(":", 1)[0]
+        self.assertLessEqual(len(rendered_suite), 80)
 
     @patch(
         "apps.steward.digest.send_digest",
@@ -177,6 +394,23 @@ class StewardDigestTests(TestCase):
         self.assertEqual(record.delivery, DigestRecord.Delivery.TRANSIENT)
         self.assertEqual(record.body, "STEWARD DAILY FACTS\n" + record.body.split("\n", 1)[1])
         self.assertEqual(result["digest_id"], record.id)
+
+    @patch("apps.steward.digest.send_digest", return_value="delivered")
+    @patch(
+        "apps.steward.digest.collect_eval_evidence",
+        return_value={"created": 0},
+    )
+    def test_same_utc_date_retry_skips_second_send(self, _collect, send):
+        now = timezone.now()
+        with patch("apps.steward.digest.timezone.now", return_value=now):
+            first = run_steward_daily_digest()
+            retry = run_steward_daily_digest()
+
+        self.assertFalse(first["skipped"])
+        self.assertTrue(retry["skipped"])
+        self.assertEqual(first["digest_id"], retry["digest_id"])
+        send.assert_called_once()
+        self.assertEqual(DigestRecord.objects.count(), 1)
 
     def test_integrity_flags_are_soft_and_linked_armed_expectation_clears_flag(self):
         active = self._item("Active orphan")

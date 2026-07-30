@@ -64,6 +64,46 @@ class EvalEvidenceCollectorTests(TestCase):
 
         self.assertFalse(EvidenceEvent.objects.filter(source=EvidenceSource.EVAL_RUN).exists())
 
+    def test_late_terminal_commit_is_replayed_after_newer_run_was_collected(self):
+        now = timezone.now()
+        self._run("journey", EvalRun.Status.PASS, now - timedelta(hours=3))
+        late = EvalRun.objects.create(
+            suite="journey",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.RUNNING,
+            git_sha="late",
+        )
+        EvalResult.objects.create(
+            run=late,
+            case_id="late-case",
+            kind=EvalResult.Kind.JOURNEY,
+            passed=False,
+            details={},
+        )
+        newer = self._run(
+            "journey",
+            EvalRun.Status.PASS,
+            now - timedelta(hours=1),
+        )
+
+        first = collect_eval_evidence()
+        self.assertEqual(first["eval_run"], 0)
+
+        EvalRun.objects.filter(pk=late.pk).update(
+            status=EvalRun.Status.FAIL,
+            finished_at=now - timedelta(hours=2),
+        )
+        second = collect_eval_evidence()
+
+        self.assertEqual(second["eval_run"], 2)
+        self.assertSetEqual(
+            set(EvidenceEvent.objects.filter(source=EvidenceSource.EVAL_RUN).values_list("fingerprint", flat=True)),
+            {
+                f"eval-transition:journey:{late.id}",
+                f"eval-transition:journey:{newer.id}",
+            },
+        )
+
     def test_slo_transition_serializes_decimals_and_never_details(self):
         now = timezone.now()
         previous = self._run(

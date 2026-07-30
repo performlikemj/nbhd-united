@@ -277,9 +277,9 @@ def run_steward_sweep() -> dict[str, int]:
             digest_misses,
         )
     _ping_deadman()
-    from apps.steward.gate import should_send
+    from apps.steward.gate import record_sent
 
-    should_send("steward-sweep:liveness", timedelta(0))
+    record_sent("steward-sweep:liveness")
     return {
         "notices": len(notices),
         "delivered": delivered,

@@ -283,6 +283,7 @@ class AlertState(models.Model):
     fingerprint = models.CharField(max_length=128, unique=True)
     last_sent_at = models.DateTimeField(null=True, blank=True)
     sent_count = models.PositiveIntegerField(default=0)
+    suppressed_count = models.PositiveIntegerField(default=0)
 
     class Meta:
         db_table = "steward_alert_states"
@@ -296,6 +297,12 @@ class DigestRecord(models.Model):
         UNDELIVERABLE = "undeliverable", "Undeliverable"
 
     sent_at = models.DateTimeField(default=timezone.now)
+    period_date = models.DateField(
+        null=True,
+        blank=True,
+        unique=True,
+        help_text="UTC delivery date claimed by the scheduled daily digest.",
+    )
     delivery = models.CharField(max_length=16, choices=Delivery.choices)
     body = models.TextField()
     stats = models.JSONField(default=dict)

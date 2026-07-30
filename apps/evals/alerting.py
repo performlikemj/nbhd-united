@@ -51,10 +51,11 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
     if not owner_email:
         logger.warning("eval alert: PLATFORM_OWNER_EMAIL not set — %s failure alert skipped", run.suite)
         return False
-    from apps.steward.gate import should_send
+    from apps.steward.gate import record_sent, record_suppressed, should_send
 
     fingerprint = f"eval-email:{run.suite}:{run.status}"
     if not should_send(fingerprint, timedelta(hours=24)):
+        record_suppressed(fingerprint)
         logger.info("eval alert: suppressed by cooldown fingerprint=%s", fingerprint)
         return False
 
@@ -80,7 +81,7 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
     body = render_to_string("email/evals/failure_body.txt", ctx)
 
     try:
-        send_mail(
+        sent = send_mail(
             subject=subject,
             message=body,
             from_email=None,
@@ -90,6 +91,10 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
     except Exception:
         logger.exception("eval alert: failure email send failed for run %s", run.id)
         return False
+    if sent == 0:
+        logger.error("eval alert: email backend reported zero deliveries for run %s", run.id)
+        return False
+    record_sent(fingerprint)
     return True
 
 
@@ -101,10 +106,11 @@ def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
     if not owner_email:
         logger.warning("eval reaper alert: PLATFORM_OWNER_EMAIL not set — batch skipped")
         return False
-    from apps.steward.gate import should_send
+    from apps.steward.gate import record_sent, record_suppressed, should_send
 
     fingerprint = "eval-email:reaper"
     if not should_send(fingerprint, timedelta(hours=6)):
+        record_suppressed(fingerprint, count=len(runs))
         logger.info("eval reaper alert: suppressed by cooldown fingerprint=%s", fingerprint)
         return False
 
@@ -113,7 +119,7 @@ def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
     subject = f"[EVAL] {len(runs)} stuck eval run(s) reaped"
     body = f"Count: {len(runs)}\nRun IDs: {run_ids}\nSuites: {suites}\nStatus: error\n"
     try:
-        send_mail(
+        sent = send_mail(
             subject=subject,
             message=body,
             from_email=None,
@@ -123,6 +129,10 @@ def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
     except Exception:
         logger.exception("eval reaper alert: batch email send failed")
         return False
+    if sent == 0:
+        logger.error("eval reaper alert: email backend reported zero deliveries")
+        return False
+    record_sent(fingerprint)
     return True
 
 

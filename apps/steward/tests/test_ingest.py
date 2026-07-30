@@ -115,6 +115,47 @@ class StewardIngestTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_internal_sources_are_rejected_over_http(self):
+        for source in ("eval_run", "eval_slo", "mj_ack"):
+            with self.subTest(source=source):
+                response = self._post(
+                    "/api/steward/evidence/",
+                    {
+                        "source": source,
+                        "subject": f"{source}:forged",
+                        "fingerprint": f"forged-{source}",
+                    },
+                )
+                self.assertEqual(response.status_code, 403)
+                self.assertIn("internal-only", response.json()["error"])
+        self.assertFalse(EvidenceEvent.objects.exists())
+
+    def test_cross_subject_fingerprint_collision_is_not_idempotent_success(self):
+        fingerprint = "caller-chosen-shared-fingerprint"
+        first = self._post(
+            "/api/steward/evidence/",
+            {
+                "source": "ci_run",
+                "subject": "nbhd-united-main-ci",
+                "fingerprint": fingerprint,
+            },
+        )
+        with self.assertLogs("apps.steward.services", level="ERROR"):
+            collision = self._post(
+                "/api/steward/evidence/",
+                {
+                    "source": "asc_version_state",
+                    "subject": "nbhd-ios-version",
+                    "fingerprint": fingerprint,
+                },
+            )
+
+        self.assertEqual(first.status_code, 201)
+        self.assertEqual(collision.status_code, 409)
+        self.assertEqual(collision.json()["status"], "collision")
+        self.assertFalse(collision.json()["created"])
+        self.assertEqual(EvidenceEvent.objects.count(), 1)
+
     @override_settings(STEWARD_INGEST_SECRET="")
     def test_unconfigured_secret_fails_closed(self):
         response = self._post(

@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Literal
 
 from django.db import transaction
 from django.utils import timezone
@@ -11,13 +13,24 @@ from django.utils import timezone
 from apps.steward.models import EvidenceEvent, Expectation
 
 MAX_EVIDENCE_PAYLOAD_BYTES = 4096
+logger = logging.getLogger(__name__)
+
+EvidenceIngestOutcome = Literal["created", "duplicate", "collision"]
 
 
 @dataclass(frozen=True)
 class EvidenceIngestResult:
     event: EvidenceEvent
-    created: bool
+    outcome: EvidenceIngestOutcome
     recovery_expectations: tuple[Expectation, ...]
+
+    @property
+    def created(self) -> bool:
+        return self.outcome == "created"
+
+    @property
+    def collision(self) -> bool:
+        return self.outcome == "collision"
 
 
 def validate_payload_size(payload: object) -> None:
@@ -130,9 +143,19 @@ def ingest_evidence(
         )
 
         if not created:
+            collision = (event.source, event.subject) != (source, subject)
+            if collision:
+                logger.error(
+                    "Steward evidence fingerprint collision fingerprint=%s "
+                    "existing_source=%s incoming_source=%s subject_mismatch=%s",
+                    fingerprint,
+                    event.source,
+                    source,
+                    event.subject != subject,
+                )
             return EvidenceIngestResult(
                 event=event,
-                created=False,
+                outcome="collision" if collision else "duplicate",
                 recovery_expectations=(),
             )
 
@@ -149,6 +172,6 @@ def ingest_evidence(
 
     return EvidenceIngestResult(
         event=event,
-        created=True,
+        outcome="created",
         recovery_expectations=recoveries,
     )
