@@ -883,6 +883,7 @@ class ChatContextView(APIView):
             CONTEXT_DIGEST_DEFAULT_CHARS,
             CONTEXT_DIGEST_MAX_CHARS,
             CONTEXT_DIGEST_MIN_CHARS,
+            CONTEXT_DIGEST_VERSION,
             render_context_digest,
         )
 
@@ -892,7 +893,7 @@ class ChatContextView(APIView):
             max_chars = CONTEXT_DIGEST_DEFAULT_CHARS
         max_chars = max(CONTEXT_DIGEST_MIN_CHARS, min(max_chars, CONTEXT_DIGEST_MAX_CHARS))
 
-        context_md = render_context_digest(tenant, max_chars=max_chars)
+        context_md = render_context_digest(tenant, max_chars=max_chars, client_variant=True)
 
         # The device has no entity map, so a raw ``[PERSON_1]`` would be
         # parroted to the user verbatim. Fail-open: a rehydration error
@@ -910,6 +911,7 @@ class ChatContextView(APIView):
             Response(
                 {
                     "context_md": context_md,
+                    "context_version": CONTEXT_DIGEST_VERSION,
                     "max_chars": max_chars,
                     "generated_at": timezone.now().isoformat(),
                 }

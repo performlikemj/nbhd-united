@@ -416,14 +416,15 @@ def _recent_proactive_lines(tenant, tz) -> list[str]:
     return lines
 
 
-def build_conversation_digest(tenant) -> str:
+def build_conversation_digest(tenant, *, include_proactive_sends: bool = True) -> str:
     """Render the body of the USER.md "Conversation so far" section.
 
     Returns ``""`` when the window holds neither a captured turn NOR a recent
     proactive send (the registry then omits the section). Today is the
     tenant-local date; previous days are a terse per-day rollup; a trailing block
     replays recent proactive sends for cron-to-cron dedup (D2). Deterministic —
-    no LLM, no summarization.
+    no LLM, no summarization. Client digests set ``include_proactive_sends=False``
+    because the device injects those rows from its local store.
 
     EVAL-SINK TENANTS GET NO DIGEST — see the guard below.
     """
@@ -463,11 +464,12 @@ def build_conversation_digest(tenant) -> str:
         logger.exception("conversation_capture: digest collection failed (non-fatal)")
         return ""
 
-    try:
-        proactive_lines = _recent_proactive_lines(tenant, tz)
-    except Exception:
-        logger.exception("conversation_capture: proactive digest block failed (non-fatal)")
-        proactive_lines = []
+    proactive_lines: list[str] = []
+    if include_proactive_sends:
+        try:
+            proactive_lines = _recent_proactive_lines(tenant, tz)
+        except Exception:
+            logger.exception("conversation_capture: proactive digest block failed (non-fatal)")
 
     # Crons fire precisely when the user was quiet, so a proactive-only digest
     # (no captured turns) is still worth rendering — it is the sibling-cron dedup

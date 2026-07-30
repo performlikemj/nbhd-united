@@ -27,6 +27,17 @@ from apps.tenants.models import Tenant
 _STARTER_CACHE: dict[str, str] = {}
 
 
+def render_client_conversation_digest(tenant: Tenant) -> str:
+    """Conversation history for client snapshots.
+
+    Recent proactive sends are injected independently by the device from its
+    local store, so this variant omits that otherwise shared USER.md block.
+    """
+    from apps.router.conversation_capture import build_conversation_digest
+
+    return build_conversation_digest(tenant, include_proactive_sends=False)
+
+
 def _starter_markdown(slug: str) -> str:
     if not _STARTER_CACHE:
         from apps.journal.services import STARTER_DOCUMENT_TEMPLATES
@@ -264,6 +275,7 @@ def render_open_tasks_summary(tenant: Tenant) -> str:
     # its own DEBOUNCED push instead (apps.router.conversation_capture).
     refresh_on=(),
     order=65,  # just above Recent journal (70)
+    client_render=render_client_conversation_digest,
 )
 def render_conversation_digest(tenant: Tenant) -> str:
     """Deterministic 'what the user actually discussed today + recent days'.

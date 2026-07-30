@@ -232,6 +232,9 @@ def _persist_session_entities(tenant: Tenant, session) -> None:
 CONTEXT_DIGEST_DEFAULT_CHARS = 6000
 CONTEXT_DIGEST_MIN_CHARS = 1000
 CONTEXT_DIGEST_MAX_CHARS = 16000
+# The original unversioned response is implicit v1. V2 removes proactive
+# sends from the client variant so devices can invalidate cached v1 digests.
+CONTEXT_DIGEST_VERSION = 2
 
 # Sections that only make sense inside the tenant container's pipeline.
 # ``privacy_placeholders`` instructs the model to emit ``[PERSON_N]``
@@ -241,14 +244,21 @@ CONTEXT_DIGEST_MAX_CHARS = 16000
 _CLIENT_DIGEST_SKIP_KEYS = frozenset({"privacy_placeholders"})
 
 
-def render_context_digest(tenant: Tenant, *, max_chars: int = CONTEXT_DIGEST_DEFAULT_CHARS) -> str:
+def render_context_digest(
+    tenant: Tenant,
+    *,
+    max_chars: int = CONTEXT_DIGEST_DEFAULT_CHARS,
+    client_variant: bool = False,
+) -> str:
     """Compact plain-markdown snapshot of the tenant's state for clients that
     run their own model (the iOS private/on-device assistant).
 
-    Same per-pillar sections as USER.md's managed region — goals, tasks,
-    fuel, finance, recent journal, conversation digest — but rendered for a
-    SMALL context window: no sentinel markers (nothing merges this back into
-    a file), each section body is truncated, and the total is hard-capped.
+    Same per-pillar sections as USER.md's managed region — goals, tasks, fuel,
+    finance, recent journal, conversation digest — but rendered for a SMALL
+    context window: no sentinel markers (nothing merges this back into a file),
+    each section body is truncated, and the total is hard-capped. The
+    ``client_variant`` selects registered client renderers for `/chat/context/`;
+    other callers retain the existing section renderers.
 
     Budgeting: room for the conversation digest is reserved up front — it is
     the most load-bearing section for a client-side model (cross-channel
@@ -270,7 +280,8 @@ def render_context_digest(tenant: Tenant, *, max_chars: int = CONTEXT_DIGEST_DEF
         try:
             if not section.enabled(tenant):
                 continue
-            body = section.render(tenant)
+            renderer = section.client_render if client_variant and section.client_render else section.render
+            body = renderer(tenant)
         except Exception:
             # Mirror render_managed_region: one broken section must not
             # blank the whole digest.

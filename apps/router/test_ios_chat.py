@@ -1089,6 +1089,7 @@ class IOSChatContextTest(TestCase):
         resp = self.client.get("/api/v1/chat/context/")
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertIn("Current local time", resp.data["context_md"])
+        self.assertEqual(resp.data["context_version"], 2)
         self.assertEqual(resp.data["max_chars"], 6000)
         self.assertIn("generated_at", resp.data)
         # Chat reads must never be HTTP-cached (same rule as message polls).
@@ -1109,6 +1110,34 @@ class IOSChatContextTest(TestCase):
         resp = self.client.get("/api/v1/chat/context/")
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertIn("aced the big interview", resp.data["context_md"])
+
+    def test_client_digest_omits_proactive_sends_and_versions_contract(self):
+        from apps.common.tenant_tz import tenant_today
+        from apps.router.models import ConversationTurn, ProactiveOutbound
+
+        ConversationTurn.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            local_date=tenant_today(self.tenant),
+            user_text="Keep this ordinary conversation line",
+            reply_text="It remains in the client digest.",
+        )
+        ProactiveOutbound.objects.create(
+            tenant=self.tenant,
+            channel="telegram",
+            channel_user_id="123",
+            message_text="This proactive line comes from the device store",
+            job_name="morning_briefing",
+        )
+
+        resp = self.client.get("/api/v1/chat/context/")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["context_version"], 2)
+        self.assertIn("Keep this ordinary conversation line", resp.data["context_md"])
+        self.assertNotIn("Already sent to the user proactively", resp.data["context_md"])
+        self.assertNotIn("This proactive line comes from the device store", resp.data["context_md"])
 
     def test_rehydrates_placeholders_and_skips_privacy_section(self):
         from apps.common.tenant_tz import tenant_today
