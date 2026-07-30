@@ -399,6 +399,9 @@ TASK_MAP = {
     # settings.DJANGO_BASE_URL. See apps/cron/system_cron_registry.py and the
     # SYSTEM_CRONS entry in register_system_crons.py.
     "reconcile_system_crons": "apps.cron.system_cron_registry.reconcile_system_crons_task",
+    # Portfolio-scoped deterministic watchtower; direct notification has no
+    # tenant runtime, agent, gateway, Celery, or OpenClaw dependency.
+    "steward_sweep": "apps.steward.sweep.run_steward_sweep",
 }
 
 

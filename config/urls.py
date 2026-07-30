@@ -76,6 +76,7 @@ urlpatterns = [
     path("api/v1/cron-jobs/", include("apps.cron.tenant_urls")),
     path("api/v1/workspaces/", include("apps.journal.workspace_urls")),
     path("api/v1/sessions/", include("apps.journal.session_urls")),
+    path("api/steward/", include("apps.steward.urls")),
     path("api/cron/", include("apps.cron.urls")),
     path("api/v1/cron/", include("apps.cron.urls")),
     path("stripe/", include("djstripe.urls", namespace="djstripe")),

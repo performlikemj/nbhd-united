@@ -1,0 +1,7 @@
+[Unit]
+Description=Send the personal OpenClaw host heartbeat to Steward
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/steward-send-heartbeat

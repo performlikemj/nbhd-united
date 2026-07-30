@@ -672,6 +672,24 @@ jobs:
             "$DJANGO_URL/api/cron/backfill-welcomes/" \
             || echo "Warning: backfill-welcomes failed (non-fatal — manual: python manage.py backfill_welcomes)"
 
+      - name: Emit successful main CI evidence to Steward
+        if: steps.freshness.outputs.superseded != 'true'
+        continue-on-error: true
+        env:
+          STEWARD_INGEST_SECRET: ${{ secrets.STEWARD_INGEST_SECRET }}
+        run: |
+          STEWARD_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
+          TIMESTAMP=$(date +%s)
+          BODY=$(printf '{"source":"ci_run","subject":"nbhd-united-main-ci","fingerprint":"%s"}' "$GITHUB_SHA")
+          SIGNATURE=$(python -c 'import hashlib,hmac,os,sys; print(hmac.new(os.environ["STEWARD_INGEST_SECRET"].encode(), f"{sys.argv[1]}.".encode() + sys.argv[2].encode(), hashlib.sha256).hexdigest())' "$TIMESTAMP" "$BODY")
+          printf '%s' "$BODY" | curl --fail --silent --show-error --max-time 10 \
+            -X POST \
+            -H "Content-Type: application/json" \
+            -H "X-Steward-Timestamp: $TIMESTAMP" \
+            -H "X-Steward-Signature: $SIGNATURE" \
+            --data-binary @- \
+            "$STEWARD_URL/api/steward/evidence/"
+
   # ==========================================================================
   # Fleet rollout (workflow_dispatch only) — one-shot eager bump of every
   # active tenant onto the current ACR image / current AGENTS.md template.
