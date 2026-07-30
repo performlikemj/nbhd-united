@@ -36,6 +36,7 @@ from rest_framework.views import APIView
 from apps.billing.services import check_budget
 from apps.crypto.nolog import RedactedStr
 from apps.router import enc_columns, enc_read
+from apps.router.conversation_capture import scrub_chat_thread_title
 from apps.router.inbound_media import (
     MAX_APP_DOCUMENT_BYTES,
     MAX_APP_IMAGE_BYTES,
@@ -144,15 +145,16 @@ def _encrypt_chat_value(tenant, aad: tuple[str, str], value: str) -> bytes | Non
 def _get_or_create_main_thread(tenant, user) -> ChatThread:
     """The shared default thread every channel resumes. One per tenant —
     the partial unique constraint makes the get_or_create race-safe."""
+    title = scrub_chat_thread_title("Main")
     thread, _ = ChatThread.objects.get_or_create(
         tenant=tenant,
         is_main=True,
         defaults={
             "user": user,
-            "title": "Main",
+            "title": title,
             # Sealed only on CREATE (defaults are ignored on get) — matches the
             # column's insert-once contract.
-            "title_enc": _encrypt_chat_value(tenant, enc_columns.CHAT_THREAD_TITLE, "Main"),
+            "title_enc": _encrypt_chat_value(tenant, enc_columns.CHAT_THREAD_TITLE, title),
         },
     )
     return thread
@@ -579,7 +581,7 @@ class ChatThreadListView(APIView):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        title = str(request.data.get("title") or "").strip()[:120]
+        title = scrub_chat_thread_title(str(request.data.get("title") or "").strip()[:120])
         thread = ChatThread.objects.create(
             tenant=tenant,
             user=request.user,
