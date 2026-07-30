@@ -4,8 +4,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
+import {
+  AppleSignInButton,
+  type AppleAuthenticationResult,
+} from "@/components/apple-sign-in-button";
 import { fetchMe, login } from "@/lib/api";
-import { setTokens } from "@/lib/auth";
+import { completeAuthentication } from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 
@@ -16,6 +20,29 @@ export default function LoginPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const finishAuthentication = async (
+    result: Omit<AppleAuthenticationResult, "created"> & { created?: boolean },
+  ) => {
+    completeAuthentication(result);
+    // Mid-flight iOS "Create an account" / sign-in handoff: hand control back
+    // to /app/authorize, which mints the one-time code and redirects nbhd://.
+    if (hasPendingAppAuthorize()) {
+      router.replace("/app/authorize");
+      return;
+    }
+    if (result.created) {
+      router.push("/onboarding");
+      return;
+    }
+    try {
+      const me = await fetchMe();
+      const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active";
+      router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
+    } catch {
+      router.push("/onboarding");
+    }
+  };
+
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setError("");
@@ -23,20 +50,7 @@ export default function LoginPage() {
 
     try {
       const tokens = await login(email, password);
-      setTokens(tokens.access, tokens.refresh);
-      // Mid-flight iOS "Create an account" / sign-in handoff: hand control back
-      // to /app/authorize, which mints the one-time code and redirects nbhd://.
-      if (hasPendingAppAuthorize()) {
-        router.replace("/app/authorize");
-        return;
-      }
-      try {
-        const me = await fetchMe();
-        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active";
-        router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
-      } catch {
-        router.push("/onboarding");
-      }
+      await finishAuthentication(tokens);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
@@ -129,6 +143,25 @@ export default function LoginPage() {
               {loading ? "Signing in..." : "Sign in"}
             </button>
           </form>
+
+          <AppleSignInButton
+            flow="authenticate"
+            onAuthenticated={finishAuthentication}
+            showDivider
+            legalCopy={
+              <p className="mt-3 text-center text-[11px] leading-relaxed text-white/25">
+                By continuing with Apple, you agree to our{" "}
+                <Link href="/legal/terms" className="underline hover:text-white/40">
+                  Terms of Service
+                </Link>{" "}
+                and{" "}
+                <Link href="/legal/privacy" className="underline hover:text-white/40">
+                  Privacy Policy
+                </Link>
+                .
+              </p>
+            }
+          />
         </div>
 
         <p className="mt-6 text-center text-sm text-white/40">

@@ -10,6 +10,8 @@ const STORAGE_KEY = "nbhd_qc_v3";
 
 const FLUSH_DEBOUNCE_MS = 500;
 
+let activeQueryClient: QueryClient | null = null;
+
 // One persisted query entry: the cached data plus the epoch-ms timestamp of
 // when it was last fetched. Persisting `u` is what lets staleTime math
 // survive a reload — without it, setQueryData stamps dataUpdatedAt=now and
@@ -109,6 +111,7 @@ export function seedQueryClient(qc: QueryClient): void {
 export function installPersistence(qc: QueryClient): () => void {
   if (typeof window === "undefined") return () => {};
 
+  activeQueryClient = qc;
   let timer: number | null = null;
 
   const flush = () => {
@@ -138,8 +141,13 @@ export function installPersistence(qc: QueryClient): () => void {
 
   return () => {
     if (timer != null) window.clearTimeout(timer);
+    if (activeQueryClient === qc) activeQueryClient = null;
     unsubscribe();
   };
+}
+
+export function clearInMemoryQueryCache(): void {
+  activeQueryClient?.clear();
 }
 
 export function clearPersistedCache(): void {

@@ -1,4 +1,10 @@
-import { clearTokens, getAccessToken, getRefreshToken, setTokens } from "@/lib/auth";
+import {
+  clearTokens,
+  getAccessToken,
+  getAuthenticationEpoch,
+  getRefreshToken,
+  setTokens,
+} from "@/lib/auth";
 import {
   AuthUser,
   Automation,
@@ -30,7 +36,8 @@ import {
   CreditsResponse,
 } from "@/lib/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+export const API_BASE =
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 let refreshPromise: Promise<string> | null = null;
 
@@ -69,6 +76,7 @@ function isTokenExpiringSoon(token: string): boolean {
 }
 
 async function refreshAccessToken(): Promise<string> {
+  const authenticationEpoch = getAuthenticationEpoch();
   const refresh = getRefreshToken();
   if (!refresh) {
     clearTokens();
@@ -80,6 +88,7 @@ async function refreshAccessToken(): Promise<string> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ refresh }),
   });
+  assertRefreshStillCurrent(authenticationEpoch, refresh);
 
   if (!response.ok) {
     clearTokens();
@@ -87,6 +96,7 @@ async function refreshAccessToken(): Promise<string> {
   }
 
   const data = await response.json();
+  assertRefreshStillCurrent(authenticationEpoch, refresh);
   // With ROTATE_REFRESH_TOKENS the response carries a NEW refresh token and the
   // presented one is blacklisted on use — persist the rotated one or the next
   // refresh dies. Falls back to the old token when rotation is off (no `refresh`
@@ -180,6 +190,18 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+function assertRefreshStillCurrent(
+  expectedEpoch: number,
+  expectedRefresh: string,
+): void {
+  if (
+    getAuthenticationEpoch() !== expectedEpoch ||
+    getRefreshToken() !== expectedRefresh
+  ) {
+    throw new Error("Authentication changed while the request was in flight.");
+  }
 }
 
 // Auth

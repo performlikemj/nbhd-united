@@ -4,6 +4,7 @@ import { Suspense, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
+import { API_BASE } from "@/lib/api";
 
 /**
  * Promo redemption bounce page.
@@ -15,8 +16,6 @@ import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
  * /promo/redeemed?status=. Without this hop the email link would land on the
  * SPA navigationFallback (no such route) and silently never redeem.
  */
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 
 function PromoRedeemInner() {
   const params = useSearchParams();

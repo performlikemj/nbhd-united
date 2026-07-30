@@ -5,8 +5,9 @@
 // (and thus the onboardTenant() call that the backend actually claims the
 // invite against) doesn't happen until the PersonaScene step of /onboarding.
 // The query param would be lost across that redirect, so we stash it in
-// sessionStorage on the way in and read it back (once) right before the
-// onboardTenant() call.
+// sessionStorage on the way in and read it back right before the
+// onboardTenant() call. The token is cleared only after onboarding succeeds,
+// so a transient failure can retry with the same invite.
 //
 // Mirrors the stash/read/clear shape of lib/app-authorize.ts.
 
@@ -22,14 +23,22 @@ export function stashInviteToken(token: string): void {
   }
 }
 
-/** Read the stashed token and clear it so it's only ever applied once. */
-export function readAndClearInviteToken(): string | null {
+/** Read the stashed token without consuming it. */
+export function peekInviteToken(): string | null {
   if (typeof window === "undefined") return null;
   try {
-    const token = window.sessionStorage.getItem(STORAGE_KEY);
-    if (token) window.sessionStorage.removeItem(STORAGE_KEY);
-    return token;
+    return window.sessionStorage.getItem(STORAGE_KEY);
   } catch {
     return null;
+  }
+}
+
+/** Consume the token after the invite-bearing onboarding request succeeds. */
+export function clearInviteToken(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // Best effort. A repeated claim is safe for the backend to reject.
   }
 }

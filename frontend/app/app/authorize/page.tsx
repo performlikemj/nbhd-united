@@ -20,8 +20,7 @@ import {
   decideInitialStep,
   stepForDifferentAccount,
 } from "@/lib/authorize-decision";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+import { API_BASE } from "@/lib/api";
 
 // `working` covers every spinner state (verifying, probing, redirecting,
 // finishing); `choose` shows the account-confirmation screen.
@@ -134,11 +133,19 @@ export default function AppAuthorizePage() {
       return;
     }
 
-    // Persist for the register/login round trip, then decide what to do. A
-    // leftover browser session is NEVER trusted blindly on a first hop — we
+    // Persist a fresh first-hop transaction for the register/login round trip.
+    // A storage failure makes the handoff impossible, so report it to iOS
+    // instead of silently routing to auth. A bounce-back keeps the original
+    // timestamp rather than extending the 15-minute stash lifetime.
+    if (fromUrl && !stashAuthorizeParams(params)) {
+      clearAuthorizeParams();
+      redirectToApp("error=server_error");
+      return;
+    }
+
+    // A leftover browser session is NEVER trusted blindly on a first hop — we
     // resolve whose it is and let the user confirm (the fix for new users
     // landing in a stale account). See authorize-decision.ts.
-    stashAuthorizeParams(params);
     paramsRef.current = params;
 
     const step = decideInitialStep({

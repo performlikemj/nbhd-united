@@ -6,6 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { PendingConfigChip } from "@/components/pending-config-chip";
 import { PersonaSelector } from "@/components/persona-selector";
 import { SectionCard } from "@/components/section-card";
+import { AppleLinkCard } from "@/components/settings/apple-link-card";
 import { SectionCardSkeleton } from "@/components/skeleton";
 import { StatusPill } from "@/components/status-pill";
 import {
@@ -711,6 +712,8 @@ export default function SettingsPage() {
                 )}
               </dd>
             </div>
+
+            <AppleLinkCard linked={me.apple_linked} />
 
             {/* Tenant */}
             <div className="rounded-panel border border-border bg-surface-elevated p-4 min-w-0 overflow-visible">

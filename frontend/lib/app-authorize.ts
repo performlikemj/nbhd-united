@@ -12,95 +12,20 @@
 // with the backend AUTH_ALLOWED_REDIRECT_URIS and the iOS WebAuth.redirectURI.
 
 import { getAccessToken, getRefreshToken, setTokens } from "@/lib/auth";
+import { API_BASE } from "@/lib/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-
-export interface AuthorizeParams {
-  responseType: string;
-  client: string;
-  redirectUri: string;
-  codeChallenge: string;
-  codeChallengeMethod: string;
-  state: string;
-  intent: string;
-}
-
-const STORAGE_KEY = "nbhd_authorize_params";
-
-export const ALLOWED_REDIRECT_URIS = ["nbhd://auth/callback"];
-
-/**
- * Read the authorize params from a URL query string. Returns null when the
- * query carries none of the handshake keys (e.g. a bounce-back to
- * /app/authorize with no query, where we fall back to the stashed copy).
- */
-export function parseAuthorizeParams(search: string): AuthorizeParams | null {
-  const q = new URLSearchParams(search);
-  if (!q.has("code_challenge") && !q.has("response_type") && !q.has("state")) {
-    return null;
-  }
-  return {
-    responseType: q.get("response_type") ?? "",
-    client: q.get("client") ?? "",
-    redirectUri: q.get("redirect_uri") ?? "",
-    codeChallenge: q.get("code_challenge") ?? "",
-    codeChallengeMethod: q.get("code_challenge_method") ?? "",
-    state: q.get("state") ?? "",
-    intent: q.get("intent") ?? "register",
-  };
-}
-
-/** Enforce the iOS contract before spending anything on the params. */
-export function isValidAuthorizeParams(p: AuthorizeParams): boolean {
-  return (
-    p.responseType === "code" &&
-    p.client === "ios" &&
-    p.codeChallengeMethod === "S256" &&
-    p.codeChallenge.length > 0 &&
-    p.state.length > 0 &&
-    ALLOWED_REDIRECT_URIS.includes(p.redirectUri) &&
-    // iOS WebAuth.Intent is a closed enum {register, signin}.
-    (p.intent === "register" || p.intent === "signin")
-  );
-}
-
-export function stashAuthorizeParams(p: AuthorizeParams): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(p));
-  } catch {
-    // sessionStorage can throw (private mode / quota). The handoff just can't
-    // survive a round trip then — the authorize page handles the missing stash.
-  }
-}
-
-export function readAuthorizeParams(): AuthorizeParams | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as AuthorizeParams;
-  } catch {
-    return null;
-  }
-}
-
-export function clearAuthorizeParams(): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-/**
- * True when a web→app handoff is mid-flight — the signal for the signup/login
- * success moments to bounce back to /app/authorize instead of /onboarding.
- */
-export function hasPendingAppAuthorize(): boolean {
-  return readAuthorizeParams() !== null;
-}
+export {
+  ALLOWED_REDIRECT_URIS,
+  isValidAuthorizeParams,
+  parseAuthorizeParams,
+} from "@/lib/authorize-stash-decision";
+export type { AuthorizeParams } from "@/lib/authorize-stash-decision";
+export {
+  clearAuthorizeParams,
+  hasPendingAppAuthorize,
+  readAuthorizeParams,
+  stashAuthorizeParams,
+} from "@/lib/app-authorize-stash";
 
 export interface ProbedIdentity {
   email: string;
