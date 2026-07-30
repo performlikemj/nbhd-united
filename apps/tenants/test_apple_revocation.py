@@ -503,6 +503,55 @@ class AppleRevocationHandlerTests(TransactionTestCase):
         self.assertEqual(row.attempts, 3)
         self.assertEqual(row.last_error, "terminal:decrypt_failed")
 
+    def test_four_concurrent_corrupt_deliveries_stop_at_three_attempts(self):
+        row = AppleRevocationOutbox.objects.create(
+            token_ciphertext="concurrently-corrupt-ciphertext",
+            subject="concurrent-corrupt-subject",
+        )
+        start = threading.Barrier(5)
+        connection_ids: list[int] = []
+        results: list[dict] = []
+        errors: list[BaseException] = []
+
+        def deliver():
+            connections.close_all()
+            try:
+                connection.ensure_connection()
+                connection_ids.append(id(connection.connection))
+                start.wait()
+                results.append(revoke_apple_token_task(str(row.id)))
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                connections.close_all()
+
+        workers = [threading.Thread(target=deliver) for _ in range(4)]
+        for worker in workers:
+            worker.start()
+        start.wait()
+        for worker in workers:
+            worker.join(5)
+
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
+        self.assertEqual(len(set(connection_ids)), 4)
+        self.assertEqual(len(errors), 2)
+        self.assertTrue(all(isinstance(exc, RuntimeError) for exc in errors))
+        self.assertEqual(
+            results,
+            [
+                {"status": "terminal", "reason": "decrypt_failed"},
+                {"status": "terminal", "reason": "decrypt_failed"},
+            ],
+        )
+
+        row.refresh_from_db()
+        self.assertEqual(row.attempts, 3)
+        self.assertEqual(row.last_error, "terminal:decrypt_failed")
+        fifth = revoke_apple_token_task(str(row.id))
+        self.assertEqual(fifth, {"status": "terminal", "reason": "decrypt_failed"})
+        row.refresh_from_db()
+        self.assertEqual(row.attempts, 3)
+
     def test_multifernet_decrypts_with_old_rotation_key(self):
         old_key = Fernet.generate_key().decode()
         new_key = Fernet.generate_key().decode()

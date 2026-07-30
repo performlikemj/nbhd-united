@@ -54,6 +54,8 @@ def revoke_apple_token_task(outbox_id: str) -> dict:
         return {"status": "missing"}
     outbox_id = parsed_outbox_id
 
+    decrypt_error = None
+    decrypt_terminal = False
     with transaction.atomic():
         try:
             row = AppleRevocationOutbox.objects.select_for_update(of=("self",)).get(id=outbox_id)
@@ -66,33 +68,41 @@ def revoke_apple_token_task(outbox_id: str) -> dict:
                 "status": "terminal",
                 "reason": row.last_error.removeprefix("terminal:"),
             }
-        row.attempts += 1
-        row.last_attempt_at = timezone.now()
-        row.save(update_fields=["attempts", "last_attempt_at"])
-        attempts = row.attempts
-        ciphertext = row.token_ciphertext
 
-    # Decrypt and Apple HTTP both happen after the short claim transaction.
-    try:
-        refresh_token = decrypt_apple_refresh_token(ciphertext)
-    except AppleTokenCryptoError as exc:
-        terminal = attempts >= APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS
-        prefix = "terminal:" if terminal else "retry:"
-        _record_apple_revocation_error(
-            outbox_id,
-            attempts,
-            f"{prefix}decrypt_failed",
-        )
+        try:
+            refresh_token = decrypt_apple_refresh_token(row.token_ciphertext)
+        except AppleTokenCryptoError as exc:
+            decrypt_error = exc
+            update_fields = ["last_error"]
+            # Once three failed decryptions have been claimed, later corrupt
+            # deliveries terminalize without advancing the counter.
+            if row.attempts < APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS:
+                row.attempts += 1
+                row.last_attempt_at = timezone.now()
+                update_fields.extend(["attempts", "last_attempt_at"])
+            attempts = row.attempts
+            decrypt_terminal = attempts >= APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS
+            prefix = "terminal:" if decrypt_terminal else "retry:"
+            row.last_error = f"{prefix}decrypt_failed"
+            row.save(update_fields=update_fields)
+        else:
+            row.attempts += 1
+            row.last_attempt_at = timezone.now()
+            row.save(update_fields=["attempts", "last_attempt_at"])
+            attempts = row.attempts
+
+    if decrypt_error is not None:
         logger.warning(
             "auth.apple.revocation.decrypt_failed outbox_id=%s attempt=%s terminal=%s",
             outbox_id,
             attempts,
-            terminal,
+            decrypt_terminal,
         )
-        if terminal:
+        if decrypt_terminal:
             return {"status": "terminal", "reason": "decrypt_failed"}
-        raise RuntimeError("Apple revocation token decrypt failed") from exc
+        raise RuntimeError("Apple revocation token decrypt failed") from decrypt_error
 
+    # Apple HTTP remains outside the locked claim/decrypt transaction.
     try:
         response_status = revoke_apple_refresh_token(refresh_token)
     except AppleUnavailable as exc:
