@@ -95,8 +95,12 @@ class StewardDigestTests(TestCase):
             subject="eval:journey",
             occurred_at=now,
             payload={
+                "run_id": 123,
                 "status": EvalRun.Status.PASS,
-                "prev_status": EvalRun.Status.FAIL,
+                "prev_status_at_collection": EvalRun.Status.FAIL,
+                "passed": 1,
+                "total": 1,
+                "git_sha": "abc123",
                 "poison": "NEVER_RENDER_PAYLOAD",
             },
             fingerprint="digest-transition",
@@ -117,7 +121,8 @@ class StewardDigestTests(TestCase):
         self.assertIn("Needs decision", text)
         self.assertIn("deadline-one", text)
         self.assertIn("reply_latency_p50_ms", text)
-        self.assertIn("journey: fail -> pass", text)
+        self.assertIn("journey: run 123 finished pass", text)
+        self.assertNotIn("->", text)
         self.assertIn("No expectation", text)
         self.assertNotIn("NEVER_RENDER_PAYLOAD", text)
         self.assertNotIn("NEVER_RENDER_DETAILS", text)
@@ -184,8 +189,12 @@ class StewardDigestTests(TestCase):
                 occurred_at=now,
                 received_at=now,
                 payload={
+                    "run_id": index + 1,
                     "status": EvalRun.Status.PASS,
-                    "prev_status": EvalRun.Status.FAIL,
+                    "prev_status_at_collection": EvalRun.Status.FAIL,
+                    "passed": 1,
+                    "total": 1,
+                    "git_sha": "abc123",
                 },
                 fingerprint=f"budget-transition-{index}",
                 trust=EvidenceEvent.Trust.AUTHENTICATED_API,
@@ -249,6 +258,23 @@ class StewardDigestTests(TestCase):
         self.assertNotIn(f"run {older.id}", text)
         self.assertNotIn("healthy-suite", text)
         self.assertNotIn("ALL QUIET", text)
+
+    def test_latest_unhealthy_suite_scan_is_bounded_to_thirty_days(self):
+        now = timezone.now()
+        old = EvalRun.objects.create(
+            suite="historical-suite",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.FAIL,
+            finished_at=now - timedelta(days=31),
+        )
+        EvalRun.objects.filter(pk=old.pk).update(
+            started_at=now - timedelta(days=31),
+        )
+
+        text, _ = render_steward_daily_digest(now=now)
+
+        self.assertNotIn("historical-suite", text)
+        self.assertIn("ALL QUIET", text)
 
     def test_all_skipped_slo_run_still_renders_current_degraded_state(self):
         now = timezone.now()
@@ -363,8 +389,12 @@ class StewardDigestTests(TestCase):
             occurred_at=now,
             received_at=now,
             payload={
+                "run_id": 456,
                 "status": EvalRun.Status.PASS,
-                "prev_status": EvalRun.Status.FAIL,
+                "prev_status_at_collection": EvalRun.Status.FAIL,
+                "passed": 1,
+                "total": 1,
+                "git_sha": "abc123",
             },
             fingerprint="dangerous-subject",
             trust=EvidenceEvent.Trust.AUTHENTICATED_API,
@@ -411,6 +441,32 @@ class StewardDigestTests(TestCase):
         self.assertEqual(first["digest_id"], retry["digest_id"])
         send.assert_called_once()
         self.assertEqual(DigestRecord.objects.count(), 1)
+
+    @patch("apps.steward.digest.send_digest", return_value="delivered")
+    @patch(
+        "apps.steward.digest.collect_eval_evidence",
+        side_effect=[RuntimeError("collector unavailable"), {"created": 0}],
+    )
+    def test_collection_failure_does_not_claim_date_and_same_day_retry_sends(
+        self,
+        collect,
+        send,
+    ):
+        now = timezone.now()
+        with patch("apps.steward.digest.timezone.now", return_value=now):
+            with self.assertRaisesRegex(RuntimeError, "collector unavailable"):
+                run_steward_daily_digest()
+            self.assertFalse(DigestRecord.objects.exists())
+
+            retry = run_steward_daily_digest()
+
+        self.assertFalse(retry["skipped"])
+        self.assertEqual(collect.call_count, 2)
+        send.assert_called_once()
+        self.assertEqual(
+            DigestRecord.objects.get().delivery,
+            DigestRecord.Delivery.DELIVERED,
+        )
 
     def test_integrity_flags_are_soft_and_linked_armed_expectation_clears_flag(self):
         active = self._item("Active orphan")

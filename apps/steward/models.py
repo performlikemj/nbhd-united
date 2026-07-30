@@ -185,7 +185,7 @@ class EvidenceEvent(models.Model):
         blank=True,
         help_text="Structured evidence metadata only; maximum 4KB and no user PII.",
     )
-    fingerprint = models.CharField(max_length=128, unique=True)
+    fingerprint = models.CharField(max_length=192, unique=True)
     trust = models.CharField(max_length=24, choices=Trust.choices)
     provenance = models.CharField(max_length=24, choices=Provenance.choices)
 
@@ -282,6 +282,7 @@ class DependencyEdge(models.Model):
 class AlertState(models.Model):
     fingerprint = models.CharField(max_length=128, unique=True)
     last_sent_at = models.DateTimeField(null=True, blank=True)
+    last_reserved_at = models.DateTimeField(null=True, blank=True)
     sent_count = models.PositiveIntegerField(default=0)
     suppressed_count = models.PositiveIntegerField(default=0)
 

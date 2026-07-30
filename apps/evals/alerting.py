@@ -51,7 +51,12 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
     if not owner_email:
         logger.warning("eval alert: PLATFORM_OWNER_EMAIL not set — %s failure alert skipped", run.suite)
         return False
-    from apps.steward.gate import record_sent, record_suppressed, should_send
+    from apps.steward.gate import (
+        record_sent,
+        record_suppressed,
+        release_failed,
+        should_send,
+    )
 
     fingerprint = f"eval-email:{run.suite}:{run.status}"
     if not should_send(fingerprint, timedelta(hours=24)):
@@ -59,28 +64,27 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
         logger.info("eval alert: suppressed by cooldown fingerprint=%s", fingerprint)
         return False
 
-    results = list(run.results.all())
-    total = len(results)
-    passed = sum(1 for r in results if r.passed)
-    failed_case_ids = [r.case_id for r in results if not r.passed]
-
-    ctx = {
-        "suite": run.suite,
-        "run_id": run.id,
-        "status": run.status,
-        "trigger": run.trigger,
-        "git_sha": run.git_sha,
-        "image_tag": run.image_tag or "",
-        "passed": passed,
-        "total": total,
-        "failed_case_ids": failed_case_ids,
-        "started_at": run.started_at,
-        "finished_at": run.finished_at,
-    }
-    subject = render_to_string("email/evals/failure_subject.txt", ctx).strip()
-    body = render_to_string("email/evals/failure_body.txt", ctx)
-
     try:
+        results = list(run.results.all())
+        total = len(results)
+        passed = sum(1 for r in results if r.passed)
+        failed_case_ids = [r.case_id for r in results if not r.passed]
+
+        ctx = {
+            "suite": run.suite,
+            "run_id": run.id,
+            "status": run.status,
+            "trigger": run.trigger,
+            "git_sha": run.git_sha,
+            "image_tag": run.image_tag or "",
+            "passed": passed,
+            "total": total,
+            "failed_case_ids": failed_case_ids,
+            "started_at": run.started_at,
+            "finished_at": run.finished_at,
+        }
+        subject = render_to_string("email/evals/failure_subject.txt", ctx).strip()
+        body = render_to_string("email/evals/failure_body.txt", ctx)
         sent = send_mail(
             subject=subject,
             message=body,
@@ -89,9 +93,11 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
             fail_silently=False,
         )
     except Exception:
+        release_failed(fingerprint)
         logger.exception("eval alert: failure email send failed for run %s", run.id)
         return False
     if sent == 0:
+        release_failed(fingerprint)
         logger.error("eval alert: email backend reported zero deliveries for run %s", run.id)
         return False
     record_sent(fingerprint)
@@ -106,7 +112,12 @@ def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
     if not owner_email:
         logger.warning("eval reaper alert: PLATFORM_OWNER_EMAIL not set — batch skipped")
         return False
-    from apps.steward.gate import record_sent, record_suppressed, should_send
+    from apps.steward.gate import (
+        record_sent,
+        record_suppressed,
+        release_failed,
+        should_send,
+    )
 
     fingerprint = "eval-email:reaper"
     if not should_send(fingerprint, timedelta(hours=6)):
@@ -127,9 +138,11 @@ def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
             fail_silently=False,
         )
     except Exception:
+        release_failed(fingerprint)
         logger.exception("eval reaper alert: batch email send failed")
         return False
     if sent == 0:
+        release_failed(fingerprint)
         logger.error("eval reaper alert: email backend reported zero deliveries")
         return False
     record_sent(fingerprint)

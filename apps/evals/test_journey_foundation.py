@@ -123,6 +123,7 @@ class FailureAlertTest(TestCase):
 
         state = AlertState.objects.get(fingerprint="eval-email:journey:fail")
         self.assertEqual(state.sent_count, 1)
+        self.assertIsNone(state.last_reserved_at)
 
     @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
     def test_degraded_is_digest_only(self):

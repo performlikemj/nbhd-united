@@ -8,7 +8,7 @@ from django.db import OperationalError, close_old_connections
 from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
-from apps.steward.gate import record_sent, record_suppressed, should_send
+from apps.steward.gate import record_sent, record_suppressed, release_failed, should_send
 from apps.steward.models import AlertState
 
 
@@ -17,6 +17,8 @@ class AlertGateTests(TestCase):
         now = timezone.now()
         with patch("apps.steward.gate.timezone.now", return_value=now):
             self.assertTrue(should_send("gate:test", timedelta(hours=1)))
+            self.assertFalse(should_send("gate:test", timedelta(hours=1)))
+            release_failed("gate:test")
             self.assertTrue(should_send("gate:test", timedelta(hours=1)))
             record_sent("gate:test")
             self.assertFalse(should_send("gate:test", timedelta(hours=1)))
@@ -30,6 +32,29 @@ class AlertGateTests(TestCase):
         state = AlertState.objects.get(fingerprint="gate:test")
         self.assertEqual(state.sent_count, 1)
         self.assertEqual(state.suppressed_count, 1)
+        self.assertIsNotNone(state.last_reserved_at)
+
+    def test_failed_delivery_release_allows_immediate_retry(self):
+        self.assertTrue(should_send("gate:retry", timedelta(hours=1)))
+
+        release_failed("gate:retry")
+
+        self.assertTrue(should_send("gate:retry", timedelta(hours=1)))
+
+    def test_reservation_is_reclaimable_only_after_five_minutes(self):
+        now = timezone.now()
+        with patch("apps.steward.gate.timezone.now", return_value=now):
+            self.assertTrue(should_send("gate:stale", timedelta(hours=1)))
+        with patch(
+            "apps.steward.gate.timezone.now",
+            return_value=now + timedelta(minutes=5),
+        ):
+            self.assertFalse(should_send("gate:stale", timedelta(hours=1)))
+        with patch(
+            "apps.steward.gate.timezone.now",
+            return_value=now + timedelta(minutes=5, microseconds=1),
+        ):
+            self.assertTrue(should_send("gate:stale", timedelta(hours=1)))
 
     @patch(
         "apps.steward.gate.AlertState.objects.filter",
@@ -50,8 +75,10 @@ class AlertGateConcurrencyTests(TransactionTestCase):
         finally:
             close_old_connections()
 
-    def test_unconfirmed_concurrent_checks_may_both_send(self):
+    def test_concurrent_claimants_grant_exactly_one_reservation(self):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda _: self._attempt(), range(2)))
-        self.assertEqual(results, [True, True])
-        self.assertFalse(AlertState.objects.filter(fingerprint="gate:concurrent").exists())
+        self.assertEqual(sorted(results), [False, True])
+        self.assertIsNotNone(
+            AlertState.objects.get(fingerprint="gate:concurrent").last_reserved_at,
+        )

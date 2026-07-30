@@ -4,12 +4,13 @@ import logging
 from datetime import timedelta
 
 from django.db import DatabaseError, IntegrityError, transaction
-from django.db.models import F
+from django.db.models import F, Q
 from django.utils import timezone
 
 from apps.steward.models import AlertState
 
 logger = logging.getLogger(__name__)
+RESERVATION_TTL = timedelta(minutes=5)
 
 
 def _locked_state(fingerprint: str) -> AlertState:
@@ -24,11 +25,11 @@ def _locked_state(fingerprint: str) -> AlertState:
 
 
 def should_send(fingerprint: str, cooldown: timedelta) -> bool:
-    """Check whether an outbound alert is outside its cooldown window.
+    """Atomically reserve an outbound alert outside its cooldown window.
 
     Database failures fail open so a migration edge can increase noise but can
-    never suppress an operational alert. This check does not reserve or stamp
-    the window; callers must call ``record_sent`` only after successful delivery.
+    never suppress an operational alert. A successful caller must convert the
+    reservation with ``record_sent`` or clear it with ``release_failed``.
     """
     if not isinstance(fingerprint, str) or not fingerprint or len(fingerprint) > 128:
         raise ValueError("fingerprint must be a non-empty string of at most 128 characters.")
@@ -36,10 +37,16 @@ def should_send(fingerprint: str, cooldown: timedelta) -> bool:
         raise ValueError("cooldown must not be negative.")
 
     try:
-        state = AlertState.objects.filter(fingerprint=fingerprint).first()
-        if state is None or state.last_sent_at is None:
-            return True
-        return timezone.now() - state.last_sent_at >= cooldown
+        now = timezone.now()
+        with transaction.atomic():
+            state = _locked_state(fingerprint)
+            claimed = (
+                AlertState.objects.filter(pk=state.pk)
+                .filter(Q(last_sent_at__isnull=True) | Q(last_sent_at__lte=now - cooldown))
+                .filter(Q(last_reserved_at__isnull=True) | Q(last_reserved_at__lt=now - RESERVATION_TTL))
+                .update(last_reserved_at=now)
+            )
+        return claimed == 1
     except DatabaseError as exc:
         logger.warning(
             "Steward alert gate unavailable; failing open fingerprint=%s error_class=%s",
@@ -57,11 +64,34 @@ def record_sent(fingerprint: str) -> None:
         with transaction.atomic():
             state = _locked_state(fingerprint)
             state.last_sent_at = timezone.now()
+            state.last_reserved_at = None
             state.sent_count += 1
-            state.save(update_fields=["last_sent_at", "sent_count"])
+            state.save(
+                update_fields=[
+                    "last_sent_at",
+                    "last_reserved_at",
+                    "sent_count",
+                ]
+            )
     except DatabaseError as exc:
         logger.warning(
             "Steward alert delivery stamp unavailable fingerprint=%s error_class=%s",
+            fingerprint,
+            type(exc).__name__,
+        )
+
+
+def release_failed(fingerprint: str) -> None:
+    """Release a reservation immediately after an unsuccessful delivery."""
+    if not isinstance(fingerprint, str) or not fingerprint or len(fingerprint) > 128:
+        raise ValueError("fingerprint must be a non-empty string of at most 128 characters.")
+    try:
+        AlertState.objects.filter(fingerprint=fingerprint).update(
+            last_reserved_at=None,
+        )
+    except DatabaseError as exc:
+        logger.warning(
+            "Steward alert reservation release unavailable fingerprint=%s error_class=%s",
             fingerprint,
             type(exc).__name__,
         )

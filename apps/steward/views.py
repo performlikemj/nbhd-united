@@ -14,6 +14,7 @@ from apps.steward.auth import StewardAuthError, validate_steward_hmac
 from apps.steward.models import EvidenceEvent, EvidenceSource
 from apps.steward.notify import send_urgent
 from apps.steward.services import (
+    MAX_EVIDENCE_FINGERPRINT_LENGTH,
     generated_fingerprint,
     ingest_evidence,
     validate_payload_size,
@@ -199,9 +200,18 @@ def evidence(request: HttpRequest) -> JsonResponse:
             occurred_at=occurred_at,
             payload=payload,
         )
-    if not isinstance(fingerprint, str) or not fingerprint.strip() or len(fingerprint) > 128:
+    if (
+        not isinstance(fingerprint, str)
+        or not fingerprint.strip()
+        or len(f"{source}:{fingerprint.strip()}") > MAX_EVIDENCE_FINGERPRINT_LENGTH
+    ):
         return JsonResponse(
-            {"error": "fingerprint must be a non-empty string of at most 128 characters."},
+            {
+                "error": (
+                    "fingerprint must be non-empty and produce a source-prefixed "
+                    f"value of at most {MAX_EVIDENCE_FINGERPRINT_LENGTH} characters."
+                )
+            },
             status=400,
         )
 

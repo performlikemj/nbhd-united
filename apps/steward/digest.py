@@ -31,6 +31,14 @@ MAX_SECTION_LINES = 10
 MAX_RENDERED_SUBJECT_CHARS = 80
 MAX_SUPPRESSED_COUNT = 999
 _SWEEP_LIVENESS_FINGERPRINT = "steward-sweep:liveness"
+_TERMINAL_EVAL_STATUSES = frozenset(
+    {
+        EvalRun.Status.PASS,
+        EvalRun.Status.DEGRADED,
+        EvalRun.Status.FAIL,
+        EvalRun.Status.ERROR,
+    }
+)
 
 
 def _safe_text(value: str, limit: int) -> str:
@@ -121,25 +129,28 @@ def _stalled(now: datetime) -> tuple[list[str], int]:
 
 
 def _latest_unhealthy_suites(now: datetime) -> list[str]:
-    latest_by_suite: dict[str, EvalRun] = {}
-    runs = EvalRun.objects.filter(
-        status__in=[
-            EvalRun.Status.PASS,
-            EvalRun.Status.DEGRADED,
-            EvalRun.Status.FAIL,
-            EvalRun.Status.ERROR,
-        ],
-        finished_at__isnull=False,
-    ).order_by("suite", "-finished_at", "-id")
-    for run in runs.iterator():
-        latest_by_suite.setdefault(run.suite, run)
-
+    cutoff = now - timedelta(days=30)
+    runs = (
+        EvalRun.objects.filter(
+            status__in=[
+                EvalRun.Status.PASS,
+                EvalRun.Status.DEGRADED,
+                EvalRun.Status.FAIL,
+                EvalRun.Status.ERROR,
+            ],
+            finished_at__isnull=False,
+            finished_at__gte=cutoff,
+            started_at__gte=cutoff,
+        )
+        .order_by("suite", "-finished_at", "-id")
+        .distinct("suite")
+    )
     return [
         (
-            f"- EVAL {_safe_text(suite, MAX_RENDERED_SUBJECT_CHARS)}: "
+            f"- EVAL {_safe_text(run.suite, MAX_RENDERED_SUBJECT_CHARS)}: "
             f"current {run.status}; {_age_label(now, run.finished_at)}; run {run.id}"
         )
-        for suite, run in sorted(latest_by_suite.items())
+        for run in runs
         if run.status != EvalRun.Status.PASS
     ]
 
@@ -176,14 +187,29 @@ def _trusted_changes_since(since: datetime):
     ).exclude(trust=EvidenceEvent.Trust.UNTRUSTED_TEXT)
 
 
-def _validated_eval_transition(event: EvidenceEvent) -> tuple[str, str] | None:
+def _validated_eval_run_fact(event: EvidenceEvent) -> tuple[int, str] | None:
     if event.source != EvidenceSource.EVAL_RUN or not event.subject.startswith("eval:"):
         return None
+    run_id = event.payload.get("run_id")
     status = event.payload.get("status")
-    previous = event.payload.get("prev_status")
-    if status not in EvalRun.Status.values or previous not in EvalRun.Status.values:
+    previous = event.payload.get("prev_status_at_collection")
+    passed = event.payload.get("passed")
+    total = event.payload.get("total")
+    git_sha = event.payload.get("git_sha")
+    if (
+        not isinstance(run_id, int)
+        or run_id < 1
+        or status not in _TERMINAL_EVAL_STATUSES
+        or previous not in _TERMINAL_EVAL_STATUSES
+        or not isinstance(passed, int)
+        or isinstance(passed, bool)
+        or not isinstance(total, int)
+        or isinstance(total, bool)
+        or not 0 <= passed <= total
+        or not isinstance(git_sha, str)
+    ):
         return None
-    return previous, status
+    return run_id, status
 
 
 def _cooldown_suppressions(last_delivered: DigestRecord | None) -> tuple[list[str], int]:
@@ -213,15 +239,15 @@ def _slo_and_evals(
 ) -> tuple[list[str], int, int]:
     lines = [*_latest_unhealthy_suites(now), *_latest_slo_breaches(now)]
     for event in _trusted_changes_since(since).filter(source=EvidenceSource.EVAL_RUN).order_by("received_at", "id"):
-        transition = _validated_eval_transition(event)
-        if transition is None:
+        fact = _validated_eval_run_fact(event)
+        if fact is None:
             continue
-        previous, status = transition
+        run_id, status = fact
         suite = _safe_text(
             event.subject.removeprefix("eval:"),
             MAX_RENDERED_SUBJECT_CHARS,
         )
-        lines.append(f"- EVAL {suite}: {previous} -> {status}")
+        lines.append(f"- EVAL {suite}: run {run_id} finished {status}")
     suppression_lines, suppression_total = _cooldown_suppressions(last_delivered)
     lines.extend(suppression_lines)
     return lines, len(lines), suppression_total
@@ -240,8 +266,8 @@ def _changes(since: datetime) -> tuple[list[str], int]:
             lines.append(f"- new source: {source}")
 
     for event in events:
-        transition = _validated_eval_transition(event)
-        if transition is None or transition[1] != EvalRun.Status.PASS:
+        fact = _validated_eval_run_fact(event)
+        if fact is None or fact[1] != EvalRun.Status.PASS:
             continue
         lines.append(f"- recovery: {_safe_text(event.subject, MAX_RENDERED_SUBJECT_CHARS)}")
     return lines, len(events)
@@ -374,6 +400,9 @@ def run_steward_daily_digest() -> dict[str, object]:
     """Collect fresh eval facts, render, deliver, and record the daily digest."""
     rendered_at = timezone.now()
     period_date = rendered_at.astimezone(UTC).date()
+    collect_eval_evidence()
+    text, stats = render_steward_daily_digest(now=rendered_at)
+
     with transaction.atomic():
         record, claimed = DigestRecord.objects.get_or_create(
             period_date=period_date,
@@ -393,8 +422,6 @@ def run_steward_daily_digest() -> dict[str, object]:
             "skipped": True,
         }
 
-    collect_eval_evidence()
-    text, stats = render_steward_daily_digest(now=rendered_at)
     try:
         delivery = send_digest(text)
     except Exception as exc:
