@@ -259,7 +259,7 @@ class StewardDigestTests(TestCase):
         self.assertNotIn("healthy-suite", text)
         self.assertNotIn("ALL QUIET", text)
 
-    def test_latest_unhealthy_suite_scan_is_bounded_to_thirty_days(self):
+    def test_latest_failure_older_than_bound_silently_disappears(self):
         now = timezone.now()
         old = EvalRun.objects.create(
             suite="historical-suite",
@@ -273,8 +273,31 @@ class StewardDigestTests(TestCase):
 
         text, _ = render_steward_daily_digest(now=now)
 
-        self.assertNotIn("historical-suite", text)
-        self.assertIn("ALL QUIET", text)
+        self.assertIn(
+            f"EVAL historical-suite: current fail; 31d ago; run {old.id}",
+            text,
+        )
+        self.assertNotIn("ALL QUIET", text)
+
+    def test_recent_finish_started_before_bound_silently_disappears(self):
+        now = timezone.now()
+        run = EvalRun.objects.create(
+            suite="long-running-suite",
+            trigger=EvalRun.Trigger.SCHEDULED,
+            status=EvalRun.Status.FAIL,
+            finished_at=now - timedelta(hours=1),
+        )
+        EvalRun.objects.filter(pk=run.pk).update(
+            started_at=now - timedelta(days=31),
+        )
+
+        text, _ = render_steward_daily_digest(now=now)
+
+        self.assertIn(
+            f"EVAL long-running-suite: current fail; 1h ago; run {run.id}",
+            text,
+        )
+        self.assertNotIn("ALL QUIET", text)
 
     def test_all_skipped_slo_run_still_renders_current_degraded_state(self):
         now = timezone.now()
@@ -467,6 +490,82 @@ class StewardDigestTests(TestCase):
             DigestRecord.objects.get().delivery,
             DigestRecord.Delivery.DELIVERED,
         )
+
+    @patch(
+        "apps.steward.digest.collect_eval_evidence",
+        return_value={"created": 0},
+    )
+    def test_hard_exit_after_claim_burns_day(self, _collect):
+        now = timezone.now()
+        with (
+            patch("apps.steward.digest.timezone.now", return_value=now),
+            patch(
+                "apps.steward.digest.send_digest",
+                side_effect=[SystemExit("worker killed"), DigestRecord.Delivery.DELIVERED],
+            ) as send,
+        ):
+            with self.assertRaisesRegex(SystemExit, "worker killed"):
+                run_steward_daily_digest()
+
+            burned = DigestRecord.objects.get()
+            self.assertEqual(burned.delivery, DigestRecord.Delivery.TRANSIENT)
+            self.assertEqual(burned.body, "")
+
+            retry = run_steward_daily_digest()
+
+        self.assertFalse(retry["skipped"])
+        self.assertEqual(send.call_count, 2)
+        burned.refresh_from_db()
+        self.assertEqual(burned.delivery, DigestRecord.Delivery.DELIVERED)
+        self.assertTrue(burned.body)
+
+    def test_collected_event_repeats_after_sent_at_watermark(self):
+        first_started = timezone.now()
+        collected_at = first_started + timedelta(minutes=1)
+        first_delivered = first_started + timedelta(minutes=2)
+        tomorrow_started = first_started + timedelta(days=1)
+        tomorrow_delivered = tomorrow_started + timedelta(minutes=1)
+        collection_count = 0
+
+        def collect():
+            nonlocal collection_count
+            collection_count += 1
+            if collection_count == 1:
+                EvidenceEvent.objects.create(
+                    source=EvidenceSource.CI_RUN,
+                    subject="collected-mid-digest",
+                    occurred_at=collected_at,
+                    received_at=collected_at,
+                    payload={},
+                    fingerprint="collected-mid-digest",
+                    trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+                    provenance=EvidenceEvent.Provenance.COLLECTOR,
+                )
+            return {"created": int(collection_count == 1)}
+
+        with (
+            patch("apps.steward.digest.collect_eval_evidence", side_effect=collect),
+            patch(
+                "apps.steward.digest.send_digest",
+                return_value=DigestRecord.Delivery.DELIVERED,
+            ),
+        ):
+            with patch(
+                "apps.steward.digest.timezone.now",
+                side_effect=[first_started, first_delivered],
+            ):
+                first = run_steward_daily_digest()
+            with patch(
+                "apps.steward.digest.timezone.now",
+                side_effect=[tomorrow_started, tomorrow_delivered],
+            ):
+                second = run_steward_daily_digest()
+
+        first_record = DigestRecord.objects.get(pk=first["digest_id"])
+        second_record = DigestRecord.objects.get(pk=second["digest_id"])
+        self.assertIn("- ci_run: 1", first_record.body)
+        self.assertEqual(first_record.sent_at, first_delivered)
+        self.assertNotIn("- ci_run: 1", second_record.body)
 
     def test_integrity_flags_are_soft_and_linked_armed_expectation_clears_flag(self):
         active = self._item("Active orphan")

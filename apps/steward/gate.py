@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.db import DatabaseError, IntegrityError, transaction
 from django.db.models import F, Q
@@ -24,7 +24,7 @@ def _locked_state(fingerprint: str) -> AlertState:
             return AlertState.objects.select_for_update().get(fingerprint=fingerprint)
 
 
-def should_send(fingerprint: str, cooldown: timedelta) -> bool:
+def should_send(fingerprint: str, cooldown: timedelta) -> datetime | None:
     """Atomically reserve an outbound alert outside its cooldown window.
 
     Database failures fail open so a migration edge can increase noise but can
@@ -46,14 +46,14 @@ def should_send(fingerprint: str, cooldown: timedelta) -> bool:
                 .filter(Q(last_reserved_at__isnull=True) | Q(last_reserved_at__lt=now - RESERVATION_TTL))
                 .update(last_reserved_at=now)
             )
-        return claimed == 1
+        return now if claimed == 1 else None
     except DatabaseError as exc:
         logger.warning(
             "Steward alert gate unavailable; failing open fingerprint=%s error_class=%s",
             fingerprint,
             type(exc).__name__,
         )
-        return True
+        return now
 
 
 def record_sent(fingerprint: str) -> None:
@@ -81,12 +81,17 @@ def record_sent(fingerprint: str) -> None:
         )
 
 
-def release_failed(fingerprint: str) -> None:
-    """Release a reservation immediately after an unsuccessful delivery."""
+def release_failed(fingerprint: str, reservation: datetime) -> None:
+    """Release only the caller's reservation after an unsuccessful delivery."""
     if not isinstance(fingerprint, str) or not fingerprint or len(fingerprint) > 128:
         raise ValueError("fingerprint must be a non-empty string of at most 128 characters.")
+    if not isinstance(reservation, datetime):
+        raise ValueError("reservation must be the datetime returned by should_send.")
     try:
-        AlertState.objects.filter(fingerprint=fingerprint).update(
+        AlertState.objects.filter(
+            fingerprint=fingerprint,
+            last_reserved_at=reservation,
+        ).update(
             last_reserved_at=None,
         )
     except DatabaseError as exc:

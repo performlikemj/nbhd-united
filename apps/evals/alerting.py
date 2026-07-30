@@ -59,7 +59,8 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
     )
 
     fingerprint = f"eval-email:{run.suite}:{run.status}"
-    if not should_send(fingerprint, timedelta(hours=24)):
+    reservation = should_send(fingerprint, timedelta(hours=24))
+    if reservation is None:
         record_suppressed(fingerprint)
         logger.info("eval alert: suppressed by cooldown fingerprint=%s", fingerprint)
         return False
@@ -93,11 +94,11 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
             fail_silently=False,
         )
     except Exception:
-        release_failed(fingerprint)
+        release_failed(fingerprint, reservation)
         logger.exception("eval alert: failure email send failed for run %s", run.id)
         return False
     if sent == 0:
-        release_failed(fingerprint)
+        release_failed(fingerprint, reservation)
         logger.error("eval alert: email backend reported zero deliveries for run %s", run.id)
         return False
     record_sent(fingerprint)
@@ -120,7 +121,8 @@ def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
     )
 
     fingerprint = "eval-email:reaper"
-    if not should_send(fingerprint, timedelta(hours=6)):
+    reservation = should_send(fingerprint, timedelta(hours=6))
+    if reservation is None:
         record_suppressed(fingerprint, count=len(runs))
         logger.info("eval reaper alert: suppressed by cooldown fingerprint=%s", fingerprint)
         return False
@@ -138,11 +140,11 @@ def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
             fail_silently=False,
         )
     except Exception:
-        release_failed(fingerprint)
+        release_failed(fingerprint, reservation)
         logger.exception("eval reaper alert: batch email send failed")
         return False
     if sent == 0:
-        release_failed(fingerprint)
+        release_failed(fingerprint, reservation)
         logger.error("eval reaper alert: email backend reported zero deliveries")
         return False
     record_sent(fingerprint)

@@ -16,18 +16,19 @@ class AlertGateTests(TestCase):
     def test_grants_suppresses_then_regrants_after_cooldown(self):
         now = timezone.now()
         with patch("apps.steward.gate.timezone.now", return_value=now):
-            self.assertTrue(should_send("gate:test", timedelta(hours=1)))
-            self.assertFalse(should_send("gate:test", timedelta(hours=1)))
-            release_failed("gate:test")
-            self.assertTrue(should_send("gate:test", timedelta(hours=1)))
+            first = should_send("gate:test", timedelta(hours=1))
+            self.assertIsNotNone(first)
+            self.assertIsNone(should_send("gate:test", timedelta(hours=1)))
+            release_failed("gate:test", first)
+            self.assertIsNotNone(should_send("gate:test", timedelta(hours=1)))
             record_sent("gate:test")
-            self.assertFalse(should_send("gate:test", timedelta(hours=1)))
+            self.assertIsNone(should_send("gate:test", timedelta(hours=1)))
             record_suppressed("gate:test")
         with patch(
             "apps.steward.gate.timezone.now",
             return_value=now + timedelta(hours=1),
         ):
-            self.assertTrue(should_send("gate:test", timedelta(hours=1)))
+            self.assertIsNotNone(should_send("gate:test", timedelta(hours=1)))
 
         state = AlertState.objects.get(fingerprint="gate:test")
         self.assertEqual(state.sent_count, 1)
@@ -35,40 +36,63 @@ class AlertGateTests(TestCase):
         self.assertIsNotNone(state.last_reserved_at)
 
     def test_failed_delivery_release_allows_immediate_retry(self):
-        self.assertTrue(should_send("gate:retry", timedelta(hours=1)))
+        reservation = should_send("gate:retry", timedelta(hours=1))
+        self.assertIsNotNone(reservation)
 
-        release_failed("gate:retry")
+        release_failed("gate:retry", reservation)
 
-        self.assertTrue(should_send("gate:retry", timedelta(hours=1)))
+        self.assertIsNotNone(should_send("gate:retry", timedelta(hours=1)))
 
     def test_reservation_is_reclaimable_only_after_five_minutes(self):
         now = timezone.now()
         with patch("apps.steward.gate.timezone.now", return_value=now):
-            self.assertTrue(should_send("gate:stale", timedelta(hours=1)))
+            self.assertIsNotNone(should_send("gate:stale", timedelta(hours=1)))
         with patch(
             "apps.steward.gate.timezone.now",
             return_value=now + timedelta(minutes=5),
         ):
-            self.assertFalse(should_send("gate:stale", timedelta(hours=1)))
+            self.assertIsNone(should_send("gate:stale", timedelta(hours=1)))
         with patch(
             "apps.steward.gate.timezone.now",
             return_value=now + timedelta(minutes=5, microseconds=1),
         ):
-            self.assertTrue(should_send("gate:stale", timedelta(hours=1)))
+            self.assertIsNotNone(should_send("gate:stale", timedelta(hours=1)))
+
+    def test_stale_worker_can_clear_successor_reservation(self):
+        now = timezone.now()
+        with patch("apps.steward.gate.timezone.now", return_value=now):
+            worker_a = should_send("gate:owned", timedelta(hours=1))
+        with patch(
+            "apps.steward.gate.timezone.now",
+            return_value=now + timedelta(minutes=5, microseconds=1),
+        ):
+            worker_b = should_send("gate:owned", timedelta(hours=1))
+
+        release_failed("gate:owned", worker_a)
+
+        self.assertEqual(
+            AlertState.objects.get(fingerprint="gate:owned").last_reserved_at,
+            worker_b,
+        )
+        with patch(
+            "apps.steward.gate.timezone.now",
+            return_value=now + timedelta(minutes=5, microseconds=2),
+        ):
+            self.assertFalse(should_send("gate:owned", timedelta(hours=1)))
 
     @patch(
         "apps.steward.gate.AlertState.objects.filter",
         side_effect=OperationalError("missing table"),
     )
     def test_database_unavailable_fails_open(self, _filter):
-        self.assertTrue(should_send("gate:missing", timedelta(hours=1)))
+        self.assertIsNotNone(should_send("gate:missing", timedelta(hours=1)))
 
 
 class AlertGateConcurrencyTests(TransactionTestCase):
     reset_sequences = True
 
     @staticmethod
-    def _attempt() -> bool:
+    def _attempt():
         close_old_connections()
         try:
             return should_send("gate:concurrent", timedelta(hours=1))
@@ -78,7 +102,8 @@ class AlertGateConcurrencyTests(TransactionTestCase):
     def test_concurrent_claimants_grant_exactly_one_reservation(self):
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda _: self._attempt(), range(2)))
-        self.assertEqual(sorted(results), [False, True])
+        self.assertEqual(sum(result is not None for result in results), 1)
+        self.assertEqual(sum(result is None for result in results), 1)
         self.assertIsNotNone(
             AlertState.objects.get(fingerprint="gate:concurrent").last_reserved_at,
         )

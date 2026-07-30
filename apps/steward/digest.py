@@ -129,7 +129,6 @@ def _stalled(now: datetime) -> tuple[list[str], int]:
 
 
 def _latest_unhealthy_suites(now: datetime) -> list[str]:
-    cutoff = now - timedelta(days=30)
     runs = (
         EvalRun.objects.filter(
             status__in=[
@@ -139,8 +138,6 @@ def _latest_unhealthy_suites(now: datetime) -> list[str]:
                 EvalRun.Status.ERROR,
             ],
             finished_at__isnull=False,
-            finished_at__gte=cutoff,
-            started_at__gte=cutoff,
         )
         .order_by("suite", "-finished_at", "-id")
         .distinct("suite")
@@ -404,7 +401,7 @@ def run_steward_daily_digest() -> dict[str, object]:
     text, stats = render_steward_daily_digest(now=rendered_at)
 
     with transaction.atomic():
-        record, claimed = DigestRecord.objects.get_or_create(
+        record, _ = DigestRecord.objects.get_or_create(
             period_date=period_date,
             defaults={
                 "sent_at": rendered_at,
@@ -413,30 +410,34 @@ def run_steward_daily_digest() -> dict[str, object]:
                 "stats": {},
             },
         )
-    if not claimed:
-        return {
-            "delivery": record.delivery,
-            "digest_id": record.id,
-            "chars": len(record.body),
-            "stats": record.stats,
-            "skipped": True,
-        }
 
-    try:
-        delivery = send_digest(text)
-    except Exception as exc:
-        logger.error(
-            "Steward digest notifier raised error_class=%s",
-            type(exc).__name__,
-        )
-        delivery = DigestRecord.Delivery.TRANSIENT
-    if delivery not in DigestRecord.Delivery.values:
-        delivery = DigestRecord.Delivery.TRANSIENT
-    record.delivery = delivery
-    record.body = text
-    record.stats = stats
-    record.full_clean()
-    record.save(update_fields=["delivery", "body", "stats"])
+    with transaction.atomic():
+        record = DigestRecord.objects.select_for_update().get(pk=record.pk)
+        if record.delivery == DigestRecord.Delivery.DELIVERED or record.body:
+            return {
+                "delivery": record.delivery,
+                "digest_id": record.id,
+                "chars": len(record.body),
+                "stats": record.stats,
+                "skipped": True,
+            }
+
+        try:
+            delivery = send_digest(text)
+        except Exception as exc:
+            logger.error(
+                "Steward digest notifier raised error_class=%s",
+                type(exc).__name__,
+            )
+            delivery = DigestRecord.Delivery.TRANSIENT
+        if delivery not in DigestRecord.Delivery.values:
+            delivery = DigestRecord.Delivery.TRANSIENT
+        record.sent_at = timezone.now()
+        record.delivery = delivery
+        record.body = text
+        record.stats = stats
+        record.full_clean()
+        record.save(update_fields=["sent_at", "delivery", "body", "stats"])
     return {
         "delivery": delivery,
         "digest_id": record.id,
