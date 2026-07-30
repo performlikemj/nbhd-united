@@ -42,7 +42,18 @@ export const API_BASE =
 interface RefreshFlight {
   authenticationEpoch: number;
   refreshToken: string;
-  promise: Promise<string>;
+  promise: Promise<RefreshedTokens>;
+}
+
+interface AuthenticationSnapshot {
+  authenticationEpoch: number;
+  access: string | null;
+  refresh: string | null;
+}
+
+interface RefreshedTokens {
+  access: string;
+  refresh: string;
 }
 
 let refreshFlight: RefreshFlight | null = null;
@@ -55,13 +66,10 @@ export class AuthenticationSupersededError extends Error {
 }
 
 /** Shared, deduped refresh — concurrent callers await the same in-flight request. */
-function getDedupedRefresh(): Promise<string> {
-  const authenticationEpoch = getAuthenticationEpoch();
-  const refreshToken = getRefreshToken();
-  if (!refreshToken) {
-    return Promise.reject(new Error("No refresh token available."));
-  }
-
+function getDedupedRefresh(
+  authenticationEpoch: number,
+  refreshToken: string,
+): Promise<RefreshedTokens> {
   if (
     refreshFlight &&
     refreshFlight.authenticationEpoch === authenticationEpoch &&
@@ -73,7 +81,7 @@ function getDedupedRefresh(): Promise<string> {
   const flight: RefreshFlight = {
     authenticationEpoch,
     refreshToken,
-    promise: Promise.resolve(""),
+    promise: Promise.resolve({ access: "", refresh: "" }),
   };
   flight.promise = performRefreshAccessToken(
     authenticationEpoch,
@@ -87,8 +95,31 @@ function getDedupedRefresh(): Promise<string> {
 }
 
 /** Guarded refresh primitive used by API retries and the Apple link 401 leg. */
-export function refreshAccessToken(): Promise<string> {
-  return getDedupedRefresh();
+export async function refreshAccessToken(args: {
+  authenticationEpoch: number;
+  accessToken: string | null;
+}): Promise<string> {
+  assertAccessTokenCurrent(args.authenticationEpoch, args.accessToken);
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) {
+    throw new Error("No refresh token available.");
+  }
+  // Bind the selected refresh to the click-captured access token. A session
+  // switch between either read is rejected instead of selecting B's refresh.
+  assertAccessTokenCurrent(args.authenticationEpoch, args.accessToken);
+  if (getRefreshToken() !== refreshToken) {
+    throw new AuthenticationSupersededError();
+  }
+  const refreshed = await getDedupedRefresh(
+    args.authenticationEpoch,
+    refreshToken,
+  );
+  assertAuthenticationSnapshotCurrent({
+    authenticationEpoch: args.authenticationEpoch,
+    access: refreshed.access,
+    refresh: refreshed.refresh,
+  });
+  return refreshed.access;
 }
 
 // Proactively refresh when the access token expires within this window, so
@@ -118,7 +149,7 @@ function isTokenExpiringSoon(token: string): boolean {
 async function performRefreshAccessToken(
   authenticationEpoch: number,
   refresh: string,
-): Promise<string> {
+): Promise<RefreshedTokens> {
   const response = await fetch(`${API_BASE}/api/v1/auth/refresh/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -130,31 +161,53 @@ async function performRefreshAccessToken(
     throw new Error("Session expired. Please sign in again.");
   }
 
-  const data = await response.json();
+  const data = (await response.json()) as {
+    access?: unknown;
+    refresh?: unknown;
+  };
   assertRefreshStillCurrent(authenticationEpoch, refresh);
+  if (typeof data.access !== "string" || !data.access) {
+    throw new Error("Session expired. Please sign in again.");
+  }
   // With ROTATE_REFRESH_TOKENS the response carries a NEW refresh token and the
   // presented one is blacklisted on use — persist the rotated one or the next
   // refresh dies. Falls back to the old token when rotation is off (no `refresh`
   // field), so this is safe regardless of the server setting.
-  setTokens(data.access, data.refresh ?? refresh);
-  return data.access;
+  const nextRefresh =
+    typeof data.refresh === "string" ? data.refresh : refresh;
+  setTokens(data.access, nextRefresh);
+  return { access: data.access, refresh: nextRefresh };
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const requestEpoch = getAuthenticationEpoch();
-  let accessToken = getAccessToken();
+  let requestSession = captureAuthenticationSnapshot();
+  let accessToken = requestSession.access;
 
   // Proactive refresh: if the token is expired or about to expire, await the
   // (deduped) refresh before firing. Fail open on any error — the reactive
   // 401 → refresh → retry below still covers us.
-  if (accessToken && getRefreshToken() && isTokenExpiringSoon(accessToken)) {
+  const proactiveRefresh = requestSession.refresh;
+  if (
+    accessToken &&
+    proactiveRefresh &&
+    isTokenExpiringSoon(accessToken)
+  ) {
     try {
-      assertAuthenticationEpoch(requestEpoch);
-      accessToken = await getDedupedRefresh();
-      assertAuthenticationEpoch(requestEpoch);
+      assertAuthenticationSnapshotCurrent(requestSession);
+      const refreshed = await getDedupedRefresh(
+        requestSession.authenticationEpoch,
+        proactiveRefresh,
+      );
+      requestSession = {
+        authenticationEpoch: requestSession.authenticationEpoch,
+        access: refreshed.access,
+        refresh: refreshed.refresh,
+      };
+      assertAuthenticationSnapshotCurrent(requestSession);
+      accessToken = refreshed.access;
     } catch (error) {
       if (error instanceof AuthenticationSupersededError) throw error;
-      assertAuthenticationEpoch(requestEpoch);
+      assertAuthenticationSnapshotCurrent(requestSession);
       // Proceed with the stale token; the 401 handler decides what to do.
     }
   }
@@ -173,21 +226,30 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     headers,
   });
 
-  if (response.status === 401 && getRefreshToken()) {
+  const reactiveRefresh = requestSession.refresh;
+  if (response.status === 401 && reactiveRefresh) {
     try {
-      assertAuthenticationEpoch(requestEpoch);
-      const newToken = await getDedupedRefresh();
+      assertAuthenticationSnapshotCurrent(requestSession);
+      const refreshed = await getDedupedRefresh(
+        requestSession.authenticationEpoch,
+        reactiveRefresh,
+      );
+      requestSession = {
+        authenticationEpoch: requestSession.authenticationEpoch,
+        access: refreshed.access,
+        refresh: refreshed.refresh,
+      };
       // Never replay Account A's request after Account B takes the session.
-      assertAuthenticationEpoch(requestEpoch);
+      assertAuthenticationSnapshotCurrent(requestSession);
 
-      headers["Authorization"] = `Bearer ${newToken}`;
+      headers["Authorization"] = `Bearer ${refreshed.access}`;
       response = await fetch(`${API_BASE}${path}`, {
         ...init,
         headers,
       });
     } catch (error) {
       if (error instanceof AuthenticationSupersededError) throw error;
-      assertAuthenticationEpoch(requestEpoch);
+      assertAuthenticationSnapshotCurrent(requestSession);
       // Fall through — response is still the original 401
     }
   }
@@ -195,14 +257,16 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   if (response.status === 401) {
     // A stale request may observe a 401 after another account has signed in.
     // That request must not clear or redirect the replacement session.
-    assertAuthenticationEpoch(requestEpoch);
+    assertAuthenticationSnapshotCurrent(requestSession);
     // Distinguish "your session expired" from "those credentials don't work".
     // The first case requires a prior refresh token; the second is the
     // backend rejecting login / signup / password-reset-confirm payloads.
     // Showing "Session expired" on a fresh login attempt was confusing —
     // see PR fixing #696-adjacent UX.
-    const hadSession = !!getRefreshToken();
-    clearTokens();
+    const hadSession = requestSession.refresh !== null;
+    if (!clearTokens(requestSession.refresh)) {
+      throw new AuthenticationSupersededError();
+    }
     if (hadSession) {
       if (typeof window !== "undefined" && window.location.pathname !== "/login") {
         window.location.href = "/login";
@@ -252,8 +316,34 @@ function assertRefreshStillCurrent(
   }
 }
 
-function assertAuthenticationEpoch(expectedEpoch: number): void {
-  if (getAuthenticationEpoch() !== expectedEpoch) {
+function captureAuthenticationSnapshot(): AuthenticationSnapshot {
+  return {
+    authenticationEpoch: getAuthenticationEpoch(),
+    access: getAccessToken(),
+    refresh: getRefreshToken(),
+  };
+}
+
+function assertAuthenticationSnapshotCurrent(
+  expected: AuthenticationSnapshot,
+): void {
+  if (
+    getAccessToken() !== expected.access ||
+    getRefreshToken() !== expected.refresh ||
+    getAuthenticationEpoch() !== expected.authenticationEpoch
+  ) {
+    throw new AuthenticationSupersededError();
+  }
+}
+
+function assertAccessTokenCurrent(
+  expectedEpoch: number,
+  expectedAccess: string | null,
+): void {
+  if (
+    getAccessToken() !== expectedAccess ||
+    getAuthenticationEpoch() !== expectedEpoch
+  ) {
     throw new AuthenticationSupersededError();
   }
 }
@@ -1987,17 +2077,31 @@ async function apiFetchStatus<T>(
   path: string,
   init?: RequestInit,
 ): Promise<{ status: number; data: T }> {
-  const requestEpoch = getAuthenticationEpoch();
-  let accessToken = getAccessToken();
+  let requestSession = captureAuthenticationSnapshot();
+  let accessToken = requestSession.access;
 
-  if (accessToken && getRefreshToken() && isTokenExpiringSoon(accessToken)) {
+  const proactiveRefresh = requestSession.refresh;
+  if (
+    accessToken &&
+    proactiveRefresh &&
+    isTokenExpiringSoon(accessToken)
+  ) {
     try {
-      assertAuthenticationEpoch(requestEpoch);
-      accessToken = await getDedupedRefresh();
-      assertAuthenticationEpoch(requestEpoch);
+      assertAuthenticationSnapshotCurrent(requestSession);
+      const refreshed = await getDedupedRefresh(
+        requestSession.authenticationEpoch,
+        proactiveRefresh,
+      );
+      requestSession = {
+        authenticationEpoch: requestSession.authenticationEpoch,
+        access: refreshed.access,
+        refresh: refreshed.refresh,
+      };
+      assertAuthenticationSnapshotCurrent(requestSession);
+      accessToken = refreshed.access;
     } catch (error) {
       if (error instanceof AuthenticationSupersededError) throw error;
-      assertAuthenticationEpoch(requestEpoch);
+      assertAuthenticationSnapshotCurrent(requestSession);
       // Proceed with the stale token; a 401 below is handled the same way.
     }
   }
@@ -2012,16 +2116,25 @@ async function apiFetchStatus<T>(
 
   let response = await fetch(`${API_BASE}${path}`, { ...init, headers });
 
-  if (response.status === 401 && getRefreshToken()) {
+  const reactiveRefresh = requestSession.refresh;
+  if (response.status === 401 && reactiveRefresh) {
     try {
-      assertAuthenticationEpoch(requestEpoch);
-      const newToken = await getDedupedRefresh();
-      assertAuthenticationEpoch(requestEpoch);
-      headers["Authorization"] = `Bearer ${newToken}`;
+      assertAuthenticationSnapshotCurrent(requestSession);
+      const refreshed = await getDedupedRefresh(
+        requestSession.authenticationEpoch,
+        reactiveRefresh,
+      );
+      requestSession = {
+        authenticationEpoch: requestSession.authenticationEpoch,
+        access: refreshed.access,
+        refresh: refreshed.refresh,
+      };
+      assertAuthenticationSnapshotCurrent(requestSession);
+      headers["Authorization"] = `Bearer ${refreshed.access}`;
       response = await fetch(`${API_BASE}${path}`, { ...init, headers });
     } catch (error) {
       if (error instanceof AuthenticationSupersededError) throw error;
-      assertAuthenticationEpoch(requestEpoch);
+      assertAuthenticationSnapshotCurrent(requestSession);
       // Fall through — response is still the original 401.
     }
   }

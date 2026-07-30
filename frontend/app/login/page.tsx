@@ -11,6 +11,7 @@ import {
 import { fetchMe, login } from "@/lib/api";
 import {
   completeAuthentication,
+  getAccessToken,
   getAuthenticationEpoch,
 } from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
@@ -27,8 +28,14 @@ export default function LoginPage() {
   const finishAuthentication = async (
     result: Omit<AppleAuthenticationResult, "created"> & { created?: boolean },
     attemptEpoch: number,
+    attemptAccessToken: string | null,
   ) => {
-    if (getAuthenticationEpoch() !== attemptEpoch) return;
+    if (
+      getAccessToken() !== attemptAccessToken ||
+      getAuthenticationEpoch() !== attemptEpoch
+    ) {
+      return;
+    }
     completeAuthentication(result);
     // Mid-flight iOS "Create an account" / sign-in handoff: hand control back
     // to /app/authorize, which mints the one-time code and redirects nbhd://.
@@ -55,10 +62,15 @@ export default function LoginPage() {
     setError("");
     setLoading(true);
     const attemptEpoch = getAuthenticationEpoch();
+    const attemptAccessToken = getAccessToken();
 
     try {
       const tokens = await login(email, password);
-      await finishAuthentication(tokens, attemptEpoch);
+      await finishAuthentication(
+        tokens,
+        attemptEpoch,
+        attemptAccessToken,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {

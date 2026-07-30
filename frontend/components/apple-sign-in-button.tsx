@@ -51,6 +51,7 @@ interface AuthenticateAppleButtonProps extends SharedAppleButtonProps {
   onAuthenticated: (
     result: AppleAuthenticationResult,
     authenticationEpoch: number,
+    accessToken: string | null,
   ) => void | Promise<void>;
 }
 
@@ -72,7 +73,7 @@ const RATE_LIMIT_RETRY_MS = 60_000;
 
 interface AppleAttemptSnapshot {
   authenticationEpoch: number;
-  bearer: string | null;
+  accessToken: string | null;
   currentPassword: string;
 }
 
@@ -129,6 +130,7 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
     getEligibilitySnapshot,
     () => false,
   );
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
   const preparedRef = useRef<PreparedAppleAuthorization | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
   const generationRef = useRef(0);
@@ -138,9 +140,14 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
 
+  const disableAndReleasePrepared = useCallback(() => {
+    if (buttonRef.current) buttonRef.current.disabled = true;
+    preparedRef.current = null;
+  }, []);
+
   const prepareFresh = useCallback(function prepareFresh() {
     const generation = ++generationRef.current;
-    preparedRef.current = null;
+    disableAndReleasePrepared();
     if (refreshTimerRef.current !== null) {
       window.clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;
@@ -181,7 +188,7 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
             : PREPARATION_RETRY_MS,
         );
       });
-  }, []);
+  }, [disableAndReleasePrepared]);
 
   useEffect(() => {
     if (!eligible) return;
@@ -219,14 +226,14 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
         handleVisibilityChange,
       );
       generationRef.current += 1;
-      preparedRef.current = null;
+      disableAndReleasePrepared();
       statusRef.current = "preparing";
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
       }
     };
-  }, [eligible, prepareFresh]);
+  }, [disableAndReleasePrepared, eligible, prepareFresh]);
 
   const handleFailure = useCallback(
     (error: unknown) => {
@@ -256,28 +263,38 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
     ) => {
       try {
         const response = await signInPromise;
-        assertAttemptCurrent(attempt.authenticationEpoch);
+        assertAttemptCurrent(
+          attempt.authenticationEpoch,
+          attempt.accessToken,
+        );
         if (props.flow === "authenticate") {
           const result = await submitAppleAuthorization({
             flow: "authenticate",
             prepared,
             response,
           });
-          assertAttemptCurrent(attempt.authenticationEpoch);
+          assertAttemptCurrent(
+            attempt.authenticationEpoch,
+            attempt.accessToken,
+          );
           await props.onAuthenticated(
             result,
             attempt.authenticationEpoch,
+            attempt.accessToken,
           );
         } else {
-          await submitAppleAuthorization({
+          const result = await submitAppleAuthorization({
             flow: "link",
             prepared,
             response,
             currentPassword: attempt.currentPassword,
-            bearer: attempt.bearer,
+            bearer: attempt.accessToken,
             authenticationEpoch: attempt.authenticationEpoch,
           });
-          assertAttemptCurrent(attempt.authenticationEpoch);
+          assertAttemptCurrent(
+            attempt.authenticationEpoch,
+            result.bearer,
+          );
           await props.onLinked();
         }
         attemptInFlightRef.current = false;
@@ -295,7 +312,14 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
     setErrorMessage("");
 
     const prepared = preparedRef.current;
-    if (!prepared || Date.now() >= prepared.refreshAt) {
+    if (!prepared) {
+      // Defensive only: every synchronous release disables the native control
+      // before clearing the ref, so an enabled DOM click cannot reach here.
+      setErrorMessage(getAppleAuthErrorMessage({ kind: "popup" }));
+      if (statusRef.current !== "preparing") prepareFresh();
+      return;
+    }
+    if (Date.now() >= prepared.refreshAt) {
       // A throttled expiry timer can leave the rendered control enabled for
       // microseconds after expiry. That click intentionally gets retry UX
       // instead of attempting a stale-gesture popup (which Safari may reject).
@@ -306,13 +330,13 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
 
     const attempt: AppleAttemptSnapshot = {
       authenticationEpoch: getAuthenticationEpoch(),
-      bearer: props.flow === "link" ? getAccessToken() : null,
+      accessToken: getAccessToken(),
       currentPassword:
         props.flow === "link" ? props.currentPassword : "",
     };
 
     attemptInFlightRef.current = true;
-    preparedRef.current = null;
+    disableAndReleasePrepared();
     if (refreshTimerRef.current !== null) {
       window.clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;
@@ -358,6 +382,7 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
       ) : null}
 
       <button
+        ref={buttonRef}
         type="button"
         onClick={handleClick}
         disabled={disabled}
@@ -388,8 +413,14 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
   );
 }
 
-function assertAttemptCurrent(expectedEpoch: number): void {
-  if (getAuthenticationEpoch() !== expectedEpoch) {
+function assertAttemptCurrent(
+  expectedEpoch: number,
+  expectedAccessToken: string | null,
+): void {
+  if (
+    getAccessToken() !== expectedAccessToken ||
+    getAuthenticationEpoch() !== expectedEpoch
+  ) {
     throw new AppleAuthFlowError({ kind: "popup" });
   }
 }

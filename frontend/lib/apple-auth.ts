@@ -1,5 +1,5 @@
 import { API_BASE, refreshAccessToken } from "@/lib/api";
-import { getAuthenticationEpoch } from "@/lib/auth";
+import { getAccessToken, getAuthenticationEpoch } from "@/lib/auth";
 
 const APPLE_SDK_ID = "apple-sign-in-sdk";
 const APPLE_SDK_SRC =
@@ -206,7 +206,7 @@ export async function submitAppleAuthorization(args: {
   currentPassword: string;
   bearer: string | null;
   authenticationEpoch: number;
-}): Promise<{ linked: true }>;
+}): Promise<{ linked: true; bearer: string | null }>;
 export async function submitAppleAuthorization(args: {
   flow: AppleAuthFlow;
   prepared: PreparedAppleAuthorization;
@@ -214,7 +214,9 @@ export async function submitAppleAuthorization(args: {
   currentPassword?: string;
   bearer?: string | null;
   authenticationEpoch?: number;
-}): Promise<AppleAuthenticationResult | { linked: true }> {
+}): Promise<
+  AppleAuthenticationResult | { linked: true; bearer: string | null }
+> {
   const authorization = args.response?.authorization;
   if (
     !authorization ||
@@ -242,30 +244,34 @@ export async function submitAppleAuthorization(args: {
   const serializedRequestBody = JSON.stringify(requestBody);
 
   let response: Response;
+  let linkBearer = args.bearer ?? null;
   if (link) {
     const authenticationEpoch = args.authenticationEpoch;
     if (typeof authenticationEpoch !== "number") {
       throw new AppleAuthFlowError({ kind: "popup" });
     }
-    assertLinkAttemptCurrent(authenticationEpoch);
+    assertLinkAttemptCurrent(authenticationEpoch, linkBearer);
     response = await postAppleAuthorization(
       "link",
       serializedRequestBody,
-      args.bearer ?? null,
+      linkBearer,
     );
-    assertLinkAttemptCurrent(authenticationEpoch);
+    assertLinkAttemptCurrent(authenticationEpoch, linkBearer);
 
     if (response.status === 401) {
       // DRF authenticates before parsing, so this 401 consumed neither the
       // transaction nor the code. Refresh once and retry this identical body.
-      const refreshedBearer = await refreshAccessToken();
-      assertLinkAttemptCurrent(authenticationEpoch);
+      linkBearer = await refreshAccessToken({
+        authenticationEpoch,
+        accessToken: linkBearer,
+      });
+      assertLinkAttemptCurrent(authenticationEpoch, linkBearer);
       response = await postAppleAuthorization(
         "link",
         serializedRequestBody,
-        refreshedBearer,
+        linkBearer,
       );
-      assertLinkAttemptCurrent(authenticationEpoch);
+      assertLinkAttemptCurrent(authenticationEpoch, linkBearer);
     }
   } else {
     response = await postAppleAuthorization(
@@ -285,11 +291,14 @@ export async function submitAppleAuthorization(args: {
   }
 
   if (link) {
-    assertLinkAttemptCurrent(args.authenticationEpoch as number);
+    assertLinkAttemptCurrent(
+      args.authenticationEpoch as number,
+      linkBearer,
+    );
     if (!isRecord(body) || body.linked !== true) {
       throw new AppleAuthFlowError({ kind: "http", status: response.status });
     }
-    return { linked: true };
+    return { linked: true, bearer: linkBearer };
   }
 
   if (
@@ -368,8 +377,14 @@ async function postAppleAuthorization(
   }
 }
 
-function assertLinkAttemptCurrent(expectedEpoch: number): void {
-  if (getAuthenticationEpoch() !== expectedEpoch) {
+function assertLinkAttemptCurrent(
+  expectedEpoch: number,
+  expectedBearer: string | null,
+): void {
+  if (
+    getAccessToken() !== expectedBearer ||
+    getAuthenticationEpoch() !== expectedEpoch
+  ) {
     throw new AppleAuthFlowError({ kind: "popup" });
   }
 }

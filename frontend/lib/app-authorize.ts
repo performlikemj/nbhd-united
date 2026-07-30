@@ -37,7 +37,16 @@ export interface ProbedIdentity {
   displayName: string;
 }
 
-export type ProbeIdentityResult = ProbedIdentity | null | "superseded";
+export interface UnusableProbeSession {
+  kind: "unusable";
+  accessToken: string | null;
+  refreshToken: string | null;
+}
+
+export type ProbeIdentityResult =
+  | ProbedIdentity
+  | UnusableProbeSession
+  | "superseded";
 
 /**
  * Resolve WHO the current browser session belongs to, for the authorize page's
@@ -50,26 +59,30 @@ export type ProbeIdentityResult = ProbedIdentity | null | "superseded";
  * access token, and on a 401 attempt exactly one manual refresh (mirroring the
  * rotate-refresh persistence) before giving up.
  *
- * Returns the account on a live session, or `null` when there is no usable
- * session (no token, or both access and refresh are dead). A null result means
- * "treat as logged out" — the caller clears the stale token and routes to auth.
+ * Returns the account on a live session, or an unusable-session snapshot when
+ * there is no usable token. The caller conditionally clears only that exact
+ * refresh token before routing to auth.
  */
 export async function probeIdentity(): Promise<ProbeIdentityResult> {
   const probeEpoch = getAuthenticationEpoch();
   let token = getAccessToken();
-  if (!token) return null;
+  if (!token) return getUnusableProbeSession(probeEpoch, null);
 
   let res = await fetchMeRaw(token);
   if (!isProbeCurrent(probeEpoch, token)) return "superseded";
   if (res && res.status === 401) {
     const refreshed = await tryRefreshRaw();
     if (refreshed.kind === "superseded") return "superseded";
-    if (refreshed.kind === "failed") return null;
+    if (refreshed.kind === "failed") {
+      return getUnusableProbeSession(probeEpoch, token);
+    }
     token = refreshed.access;
     res = await fetchMeRaw(token);
     if (!isProbeCurrent(probeEpoch, token)) return "superseded";
   }
-  if (!res || !res.ok) return null;
+  if (!res || !res.ok) {
+    return getUnusableProbeSession(probeEpoch, token);
+  }
 
   try {
     const data = (await res.json()) as { email?: unknown; display_name?: unknown };
@@ -84,7 +97,7 @@ export async function probeIdentity(): Promise<ProbeIdentityResult> {
     // Body wasn't JSON. A replacement session still wins over this stale probe.
     if (!isProbeCurrent(probeEpoch, token)) return "superseded";
   }
-  return null;
+  return getUnusableProbeSession(probeEpoch, token);
 }
 
 async function fetchMeRaw(token: string): Promise<Response | null> {
@@ -153,4 +166,23 @@ function isProbeCurrent(expectedEpoch: number, expectedAccess: string): boolean 
     getAuthenticationEpoch() === expectedEpoch &&
     getAccessToken() === expectedAccess
   );
+}
+
+function getUnusableProbeSession(
+  expectedEpoch: number,
+  expectedAccess: string | null,
+): UnusableProbeSession | "superseded" {
+  const refreshToken = getRefreshToken();
+  if (
+    getAccessToken() !== expectedAccess ||
+    getRefreshToken() !== refreshToken ||
+    getAuthenticationEpoch() !== expectedEpoch
+  ) {
+    return "superseded";
+  }
+  return {
+    kind: "unusable",
+    accessToken: expectedAccess,
+    refreshToken,
+  };
 }

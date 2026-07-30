@@ -11,6 +11,7 @@ import {
 import { fetchMe, signup } from "@/lib/api";
 import {
   completeAuthentication,
+  getAccessToken,
   getAuthenticationEpoch,
 } from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
@@ -41,8 +42,14 @@ function SignupPageInner() {
   const finishAuthentication = async (
     result: AppleAuthenticationResult,
     attemptEpoch: number,
+    attemptAccessToken: string | null,
   ) => {
-    if (getAuthenticationEpoch() !== attemptEpoch) return;
+    if (
+      getAccessToken() !== attemptAccessToken ||
+      getAuthenticationEpoch() !== attemptEpoch
+    ) {
+      return;
+    }
     completeAuthentication(result);
     // Mid-flight iOS auth never offers Apple, but keep the handoff first so
     // every successful authentication path preserves the routing contract.
@@ -79,11 +86,13 @@ function SignupPageInner() {
 
     setLoading(true);
     const attemptEpoch = getAuthenticationEpoch();
+    const attemptAccessToken = getAccessToken();
     try {
       const tokens = await signup(email, password, displayName || undefined);
       await finishAuthentication(
         { ...tokens, created: true },
         attemptEpoch,
+        attemptAccessToken,
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed.");

@@ -1,8 +1,7 @@
 import {
   clearInMemoryQueryCache,
   clearPersistedCache,
-  getJwtOwner,
-  setActiveQueryClientOwner,
+  replaceActiveQueryClient,
 } from "@/lib/query-persist";
 
 const ACCESS_TOKEN_KEY = "nbhd_access_token";
@@ -38,28 +37,38 @@ export function completeAuthentication(tokens: {
   access: string;
   refresh: string;
 }): void {
-  incrementAuthenticationEpoch();
+  rotateAuthenticationEpoch();
   // Never install account B's credentials over account A's in-memory or
   // persisted React Query data. Both caches, including any pending persisted
   // flush, are gone before token mutation.
   clearInMemoryQueryCache();
   clearPersistedCache();
   setTokens(tokens.access, tokens.refresh);
-  setActiveQueryClientOwner(getJwtOwner(tokens.access));
+  // Providers replace the cleared client with a new, B-owned instance. During
+  // SSR/tests there is no registered callback, so the clear above is the
+  // complete fallback behavior.
+  replaceActiveQueryClient();
 }
 
-export function clearTokens(): void {
-  incrementAuthenticationEpoch();
+export function clearTokens(expectedRefresh?: string | null): boolean {
+  if (
+    expectedRefresh !== undefined &&
+    getRefreshToken() !== expectedRefresh
+  ) {
+    return false;
+  }
+  rotateAuthenticationEpoch();
   localStorage.removeItem(ACCESS_TOKEN_KEY);
   localStorage.removeItem(REFRESH_TOKEN_KEY);
+  return true;
 }
 
 export function isLoggedIn(): boolean {
   return getAccessToken() !== null;
 }
 
-function incrementAuthenticationEpoch(): void {
-  const nextEpoch = getAuthenticationEpoch() + 1;
+function rotateAuthenticationEpoch(): void {
+  const nextEpoch = createRandomAuthenticationEpoch();
   authenticationEpoch = nextEpoch;
   if (typeof window === "undefined") return;
   try {
@@ -70,6 +79,16 @@ function incrementAuthenticationEpoch(): void {
   } catch {
     // Storage may be unavailable; the in-memory mirror still fences this tab.
   }
+}
+
+function createRandomAuthenticationEpoch(): number {
+  if (typeof globalThis.crypto !== "undefined") {
+    const words = new Uint32Array(2);
+    globalThis.crypto.getRandomValues(words);
+    // 21 high bits + 32 low bits = the full non-negative safe-integer range.
+    return (words[0]! & 0x1fffff) * 0x100000000 + words[1]!;
+  }
+  return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
 }
 
 function readPersistedAuthenticationEpoch(): number | null {

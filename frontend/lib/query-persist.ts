@@ -18,6 +18,7 @@ interface ActiveQueryClientRegistration {
 
 let activeQueryClientRegistration: ActiveQueryClientRegistration | null = null;
 let cancelActiveFlush: (() => void) | null = null;
+let queryClientReplacement: (() => void) | null = null;
 
 // One persisted query entry: the cached data plus the epoch-ms timestamp of
 // when it was last fetched. Persisting `u` is what lets staleTime math
@@ -211,11 +212,22 @@ export function clearPersistedCache(): void {
   removeStorage();
 }
 
-/** Assign a cleared active client to the newly authenticated token owner. */
-export function setActiveQueryClientOwner(owner: string | null): void {
-  if (activeQueryClientRegistration) {
-    activeQueryClientRegistration.owner = owner;
-  }
+export function registerQueryClientReplacement(
+  replaceQueryClient: () => void,
+): () => void {
+  queryClientReplacement = replaceQueryClient;
+  return () => {
+    if (queryClientReplacement === replaceQueryClient) {
+      queryClientReplacement = null;
+    }
+  };
+}
+
+/** Replace the provider-owned client; false means SSR/tests use clear fallback. */
+export function replaceActiveQueryClient(): boolean {
+  if (!queryClientReplacement) return false;
+  queryClientReplacement();
+  return true;
 }
 
 function registerActiveQueryClient(
@@ -264,7 +276,7 @@ function getCurrentAccessTokenOwner(): string | null {
 }
 
 /** Decode only the untrusted owner claim; API authentication still verifies JWTs. */
-export function getJwtOwner(token: string | null): string | null {
+function getJwtOwner(token: string | null): string | null {
   if (!token) return null;
   try {
     const payload = token.split(".")[1];

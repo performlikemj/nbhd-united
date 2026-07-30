@@ -13,6 +13,7 @@ import {
   probeIdentity,
   readAuthorizeParams,
   stashAuthorizeParams,
+  type UnusableProbeSession,
 } from "@/lib/app-authorize";
 import {
   AuthorizeStep,
@@ -101,7 +102,11 @@ export default function AppAuthorizePage() {
     }
   }
 
-  async function runStep(step: AuthorizeStep, params: AuthorizeParams) {
+  async function runStep(
+    step: AuthorizeStep,
+    params: AuthorizeParams,
+    unusableSession?: UnusableProbeSession,
+  ) {
     switch (step.kind) {
       case "finish":
         await completeHandoff();
@@ -111,7 +116,19 @@ export default function AppAuthorizePage() {
         if (!currentParams) return;
         // `clearFirst` performs a local logout (this browser's tokens only) of a
         // dead or explicitly-rejected leftover session before routing.
-        if (step.clearFirst) clearTokens();
+        if (step.clearFirst) {
+          if (
+            unusableSession &&
+            (getAccessToken() !== unusableSession.accessToken ||
+              !clearTokens(unusableSession.refreshToken))
+          ) {
+            // Another account replaced the dead session after the probe. Show
+            // account choice for that owner; never clear it or route past it.
+            await runStep({ kind: "probe-identity" }, params);
+            return;
+          }
+          if (!unusableSession) clearTokens();
+        }
         setStage("working");
         const target = authPathForIntent(currentParams.intent);
         setMessage(
@@ -135,6 +152,14 @@ export default function AppAuthorizePage() {
           // in flight. Probe that current session and show the account-choice
           // step; never route through clearFirst and log it out.
           await runStep({ kind: "probe-identity" }, params);
+          return;
+        }
+        if ("kind" in identity) {
+          await runStep(
+            decideAfterProbe(null, params.intent),
+            params,
+            identity,
+          );
           return;
         }
         await runStep(decideAfterProbe(identity, params.intent), params);
