@@ -4,8 +4,16 @@ import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useEffect, useState } from "react";
 
+import {
+  AppleSignInButton,
+  type AppleAuthenticationResult,
+} from "@/components/apple-sign-in-button";
 import { fetchMe, signup } from "@/lib/api";
-import { setTokens } from "@/lib/auth";
+import {
+  completeAuthentication,
+  getAccessToken,
+  getAuthenticationEpoch,
+} from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
 import { stashInviteToken } from "@/lib/invite-token";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
@@ -29,9 +37,42 @@ function SignupPageInner() {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [appleBusy, setAppleBusy] = useState(false);
+
+  const finishAuthentication = async (
+    result: AppleAuthenticationResult,
+    attemptEpoch: number,
+    attemptAccessToken: string | null,
+  ) => {
+    if (
+      getAccessToken() !== attemptAccessToken ||
+      getAuthenticationEpoch() !== attemptEpoch
+    ) {
+      return;
+    }
+    completeAuthentication(result);
+    // Mid-flight iOS auth never offers Apple, but keep the handoff first so
+    // every successful authentication path preserves the routing contract.
+    if (hasPendingAppAuthorize()) {
+      router.replace("/app/authorize");
+      return;
+    }
+    if (result.created) {
+      router.push("/onboarding");
+      return;
+    }
+    try {
+      const me = await fetchMe();
+      const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active";
+      router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
+    } catch {
+      router.push("/onboarding");
+    }
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (appleBusy) return;
     setError("");
 
     if (password !== confirmPassword) {
@@ -44,22 +85,15 @@ function SignupPageInner() {
     }
 
     setLoading(true);
+    const attemptEpoch = getAuthenticationEpoch();
+    const attemptAccessToken = getAccessToken();
     try {
       const tokens = await signup(email, password, displayName || undefined);
-      setTokens(tokens.access, tokens.refresh);
-      // Mid-flight iOS "Create an account" handoff: hand control back to
-      // /app/authorize, which mints the one-time code and redirects nbhd://.
-      if (hasPendingAppAuthorize()) {
-        router.replace("/app/authorize");
-        return;
-      }
-      try {
-        const me = await fetchMe();
-        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active";
-        router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
-      } catch {
-        router.push("/onboarding");
-      }
+      await finishAuthentication(
+        { ...tokens, created: true },
+        attemptEpoch,
+        attemptAccessToken,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Signup failed.");
     } finally {
@@ -164,12 +198,20 @@ function SignupPageInner() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || appleBusy}
               className="glow-purple w-full rounded-full bg-[#7C6BF0] px-4 py-3 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? "Creating account..." : "Create account"}
             </button>
           </form>
+
+          <AppleSignInButton
+            flow="authenticate"
+            disabled={loading}
+            onAuthenticated={finishAuthentication}
+            onBusyChange={setAppleBusy}
+            showDivider
+          />
 
           <p className="mt-5 text-center text-[11px] text-white/25 leading-relaxed">
             By creating an account, you agree to our{" "}

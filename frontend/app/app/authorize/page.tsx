@@ -13,15 +13,16 @@ import {
   probeIdentity,
   readAuthorizeParams,
   stashAuthorizeParams,
+  type UnusableProbeSession,
 } from "@/lib/app-authorize";
 import {
   AuthorizeStep,
+  authPathForIntent,
   decideAfterProbe,
   decideInitialStep,
   stepForDifferentAccount,
 } from "@/lib/authorize-decision";
-
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+import { API_BASE } from "@/lib/api";
 
 // `working` covers every spinner state (verifying, probing, redirecting,
 // finishing); `choose` shows the account-confirmation screen.
@@ -42,10 +43,27 @@ export default function AppAuthorizePage() {
   const [message, setMessage] = useState("Connecting your account…");
   const [email, setEmail] = useState("");
 
+  function requireFreshAuthorizeParams(): AuthorizeParams | null {
+    const params = readAuthorizeParams();
+    if (!params || !isValidAuthorizeParams(params)) {
+      paramsRef.current = null;
+      clearAuthorizeParams();
+      redirectToApp("error=invalid_request");
+      return null;
+    }
+    paramsRef.current = params;
+    return params;
+  }
+
   // Mint the one-time code for the CURRENT browser session and redirect into the
   // app. Only ever reached for a session the user actively chose: a fresh
   // signup/login bounce-back, or an explicit "Continue as <email>".
-  async function completeHandoff(params: AuthorizeParams) {
+  async function completeHandoff() {
+    // The stash may expire while a probe, popup, or account-choice screen is
+    // open. Never mint from params retained in a React ref.
+    const params = requireFreshAuthorizeParams();
+    if (!params) return;
+
     setStage("working");
     setMessage("Finishing sign-in…");
     const token = getAccessToken();
@@ -84,23 +102,43 @@ export default function AppAuthorizePage() {
     }
   }
 
-  async function runStep(step: AuthorizeStep, params: AuthorizeParams) {
+  async function runStep(
+    step: AuthorizeStep,
+    params: AuthorizeParams,
+    unusableSession?: UnusableProbeSession,
+  ) {
     switch (step.kind) {
       case "finish":
-        await completeHandoff(params);
+        await completeHandoff();
         return;
-      case "redirect-auth":
+      case "redirect-auth": {
+        const currentParams = requireFreshAuthorizeParams();
+        if (!currentParams) return;
         // `clearFirst` performs a local logout (this browser's tokens only) of a
         // dead or explicitly-rejected leftover session before routing.
-        if (step.clearFirst) clearTokens();
+        if (step.clearFirst) {
+          if (
+            unusableSession &&
+            (getAccessToken() !== unusableSession.accessToken ||
+              !clearTokens(unusableSession.refreshToken))
+          ) {
+            // Another account replaced the dead session after the probe. Show
+            // account choice for that owner; never clear it or route past it.
+            await runStep({ kind: "probe-identity" }, params);
+            return;
+          }
+          if (!unusableSession) clearTokens();
+        }
         setStage("working");
+        const target = authPathForIntent(currentParams.intent);
         setMessage(
-          step.target === "/login"
+          target === "/login"
             ? "Redirecting you to sign in…"
             : "Redirecting you to sign up…",
         );
-        router.replace(step.target);
+        router.replace(target);
         return;
+      }
       case "choose-account":
         setEmail(step.email);
         setStage("choose");
@@ -109,6 +147,21 @@ export default function AppAuthorizePage() {
         setStage("working");
         setMessage("Connecting your account…");
         const identity = await probeIdentity();
+        if (identity === "superseded") {
+          // A different account took ownership while the old raw refresh was
+          // in flight. Probe that current session and show the account-choice
+          // step; never route through clearFirst and log it out.
+          await runStep({ kind: "probe-identity" }, params);
+          return;
+        }
+        if ("kind" in identity) {
+          await runStep(
+            decideAfterProbe(null, params.intent),
+            params,
+            identity,
+          );
+          return;
+        }
         await runStep(decideAfterProbe(identity, params.intent), params);
         return;
       }
@@ -125,6 +178,7 @@ export default function AppAuthorizePage() {
     // signup/login arrives with no query, so fall back to the stashed copy.
     const fromUrl = parseAuthorizeParams(window.location.search);
     if (fromUrl && !isValidAuthorizeParams(fromUrl)) {
+      clearAuthorizeParams();
       redirectToApp("error=invalid_request");
       return;
     }
@@ -134,11 +188,19 @@ export default function AppAuthorizePage() {
       return;
     }
 
-    // Persist for the register/login round trip, then decide what to do. A
-    // leftover browser session is NEVER trusted blindly on a first hop — we
+    // Persist a fresh first-hop transaction for the register/login round trip.
+    // A storage failure makes the handoff impossible, so report it to iOS
+    // instead of silently routing to auth. A bounce-back keeps the original
+    // timestamp rather than extending the 15-minute stash lifetime.
+    if (fromUrl && !stashAuthorizeParams(params)) {
+      clearAuthorizeParams();
+      redirectToApp("error=server_error");
+      return;
+    }
+
+    // A leftover browser session is NEVER trusted blindly on a first hop — we
     // resolve whose it is and let the user confirm (the fix for new users
     // landing in a stale account). See authorize-decision.ts.
-    stashAuthorizeParams(params);
     paramsRef.current = params;
 
     const step = decideInitialStep({
@@ -153,13 +215,12 @@ export default function AppAuthorizePage() {
   }, [router]);
 
   function handleContinue() {
-    const params = paramsRef.current;
-    if (!params) return;
-    void completeHandoff(params);
+    if (!requireFreshAuthorizeParams()) return;
+    void completeHandoff();
   }
 
   function handleUseDifferent() {
-    const params = paramsRef.current;
+    const params = requireFreshAuthorizeParams();
     if (!params) return;
     void runStep(stepForDifferentAccount(params.intent), params);
   }

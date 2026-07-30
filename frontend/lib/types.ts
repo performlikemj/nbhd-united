@@ -213,6 +213,7 @@ export interface AuthUser {
   id: string;
   email: string;
   username: string;
+  apple_linked: boolean;
   display_name: string;
   language: string;
   timezone: string;

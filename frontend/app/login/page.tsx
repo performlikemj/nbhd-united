@@ -4,8 +4,16 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useState } from "react";
 
+import {
+  AppleSignInButton,
+  type AppleAuthenticationResult,
+} from "@/components/apple-sign-in-button";
 import { fetchMe, login } from "@/lib/api";
-import { setTokens } from "@/lib/auth";
+import {
+  completeAuthentication,
+  getAccessToken,
+  getAuthenticationEpoch,
+} from "@/lib/auth";
 import { hasPendingAppAuthorize } from "@/lib/app-authorize";
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
 
@@ -15,28 +23,54 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [appleBusy, setAppleBusy] = useState(false);
+
+  const finishAuthentication = async (
+    result: Omit<AppleAuthenticationResult, "created"> & { created?: boolean },
+    attemptEpoch: number,
+    attemptAccessToken: string | null,
+  ) => {
+    if (
+      getAccessToken() !== attemptAccessToken ||
+      getAuthenticationEpoch() !== attemptEpoch
+    ) {
+      return;
+    }
+    completeAuthentication(result);
+    // Mid-flight iOS "Create an account" / sign-in handoff: hand control back
+    // to /app/authorize, which mints the one-time code and redirects nbhd://.
+    if (hasPendingAppAuthorize()) {
+      router.replace("/app/authorize");
+      return;
+    }
+    if (result.created) {
+      router.push("/onboarding");
+      return;
+    }
+    try {
+      const me = await fetchMe();
+      const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active";
+      router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
+    } catch {
+      router.push("/onboarding");
+    }
+  };
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (appleBusy) return;
     setError("");
     setLoading(true);
+    const attemptEpoch = getAuthenticationEpoch();
+    const attemptAccessToken = getAccessToken();
 
     try {
       const tokens = await login(email, password);
-      setTokens(tokens.access, tokens.refresh);
-      // Mid-flight iOS "Create an account" / sign-in handoff: hand control back
-      // to /app/authorize, which mints the one-time code and redirects nbhd://.
-      if (hasPendingAppAuthorize()) {
-        router.replace("/app/authorize");
-        return;
-      }
-      try {
-        const me = await fetchMe();
-        const isOnboardingNeeded = !me.tenant || me.tenant.status !== "active";
-        router.push(isOnboardingNeeded ? "/onboarding" : "/journal");
-      } catch {
-        router.push("/onboarding");
-      }
+      await finishAuthentication(
+        tokens,
+        attemptEpoch,
+        attemptAccessToken,
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed.");
     } finally {
@@ -123,12 +157,33 @@ export default function LoginPage() {
 
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || appleBusy}
               className="glow-purple w-full rounded-full bg-[#7C6BF0] px-4 py-3 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
             >
               {loading ? "Signing in..." : "Sign in"}
             </button>
           </form>
+
+          <AppleSignInButton
+            flow="authenticate"
+            disabled={loading}
+            onAuthenticated={finishAuthentication}
+            onBusyChange={setAppleBusy}
+            showDivider
+            legalCopy={
+              <p className="mt-3 text-center text-[11px] leading-relaxed text-white/25">
+                By continuing with Apple, you agree to our{" "}
+                <Link href="/legal/terms" className="underline hover:text-white/40">
+                  Terms of Service
+                </Link>{" "}
+                and{" "}
+                <Link href="/legal/privacy" className="underline hover:text-white/40">
+                  Privacy Policy
+                </Link>
+                .
+              </p>
+            }
+          />
         </div>
 
         <p className="mt-6 text-center text-sm text-white/40">

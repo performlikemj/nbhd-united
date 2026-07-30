@@ -11,101 +11,42 @@
 // session, cleared when the session ends). Keep ALLOWED_REDIRECT_URIS in sync
 // with the backend AUTH_ALLOWED_REDIRECT_URIS and the iOS WebAuth.redirectURI.
 
-import { getAccessToken, getRefreshToken, setTokens } from "@/lib/auth";
+import {
+  getAccessToken,
+  getAuthenticationEpoch,
+  getRefreshToken,
+  setTokens,
+} from "@/lib/auth";
+import { API_BASE } from "@/lib/api";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-
-export interface AuthorizeParams {
-  responseType: string;
-  client: string;
-  redirectUri: string;
-  codeChallenge: string;
-  codeChallengeMethod: string;
-  state: string;
-  intent: string;
-}
-
-const STORAGE_KEY = "nbhd_authorize_params";
-
-export const ALLOWED_REDIRECT_URIS = ["nbhd://auth/callback"];
-
-/**
- * Read the authorize params from a URL query string. Returns null when the
- * query carries none of the handshake keys (e.g. a bounce-back to
- * /app/authorize with no query, where we fall back to the stashed copy).
- */
-export function parseAuthorizeParams(search: string): AuthorizeParams | null {
-  const q = new URLSearchParams(search);
-  if (!q.has("code_challenge") && !q.has("response_type") && !q.has("state")) {
-    return null;
-  }
-  return {
-    responseType: q.get("response_type") ?? "",
-    client: q.get("client") ?? "",
-    redirectUri: q.get("redirect_uri") ?? "",
-    codeChallenge: q.get("code_challenge") ?? "",
-    codeChallengeMethod: q.get("code_challenge_method") ?? "",
-    state: q.get("state") ?? "",
-    intent: q.get("intent") ?? "register",
-  };
-}
-
-/** Enforce the iOS contract before spending anything on the params. */
-export function isValidAuthorizeParams(p: AuthorizeParams): boolean {
-  return (
-    p.responseType === "code" &&
-    p.client === "ios" &&
-    p.codeChallengeMethod === "S256" &&
-    p.codeChallenge.length > 0 &&
-    p.state.length > 0 &&
-    ALLOWED_REDIRECT_URIS.includes(p.redirectUri) &&
-    // iOS WebAuth.Intent is a closed enum {register, signin}.
-    (p.intent === "register" || p.intent === "signin")
-  );
-}
-
-export function stashAuthorizeParams(p: AuthorizeParams): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify(p));
-  } catch {
-    // sessionStorage can throw (private mode / quota). The handoff just can't
-    // survive a round trip then — the authorize page handles the missing stash.
-  }
-}
-
-export function readAuthorizeParams(): AuthorizeParams | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as AuthorizeParams;
-  } catch {
-    return null;
-  }
-}
-
-export function clearAuthorizeParams(): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // ignore
-  }
-}
-
-/**
- * True when a web→app handoff is mid-flight — the signal for the signup/login
- * success moments to bounce back to /app/authorize instead of /onboarding.
- */
-export function hasPendingAppAuthorize(): boolean {
-  return readAuthorizeParams() !== null;
-}
+export {
+  ALLOWED_REDIRECT_URIS,
+  isValidAuthorizeParams,
+  parseAuthorizeParams,
+} from "@/lib/authorize-stash-decision";
+export type { AuthorizeParams } from "@/lib/authorize-stash-decision";
+export {
+  clearAuthorizeParams,
+  hasPendingAppAuthorize,
+  readAuthorizeParams,
+  stashAuthorizeParams,
+} from "@/lib/app-authorize-stash";
 
 export interface ProbedIdentity {
   email: string;
   displayName: string;
 }
+
+export interface UnusableProbeSession {
+  kind: "unusable";
+  accessToken: string | null;
+  refreshToken: string | null;
+}
+
+export type ProbeIdentityResult =
+  | ProbedIdentity
+  | UnusableProbeSession
+  | "superseded";
 
 /**
  * Resolve WHO the current browser session belongs to, for the authorize page's
@@ -118,25 +59,34 @@ export interface ProbedIdentity {
  * access token, and on a 401 attempt exactly one manual refresh (mirroring the
  * rotate-refresh persistence) before giving up.
  *
- * Returns the account on a live session, or `null` when there is no usable
- * session (no token, or both access and refresh are dead). A null result means
- * "treat as logged out" — the caller clears the stale token and routes to auth.
+ * Returns the account on a live session, or an unusable-session snapshot when
+ * there is no usable token. The caller conditionally clears only that exact
+ * refresh token before routing to auth.
  */
-export async function probeIdentity(): Promise<ProbedIdentity | null> {
+export async function probeIdentity(): Promise<ProbeIdentityResult> {
+  const probeEpoch = getAuthenticationEpoch();
   let token = getAccessToken();
-  if (!token) return null;
+  if (!token) return getUnusableProbeSession(probeEpoch, null);
 
   let res = await fetchMeRaw(token);
+  if (!isProbeCurrent(probeEpoch, token)) return "superseded";
   if (res && res.status === 401) {
     const refreshed = await tryRefreshRaw();
-    if (!refreshed) return null;
-    token = refreshed;
+    if (refreshed.kind === "superseded") return "superseded";
+    if (refreshed.kind === "failed") {
+      return getUnusableProbeSession(probeEpoch, token);
+    }
+    token = refreshed.access;
     res = await fetchMeRaw(token);
+    if (!isProbeCurrent(probeEpoch, token)) return "superseded";
   }
-  if (!res || !res.ok) return null;
+  if (!res || !res.ok) {
+    return getUnusableProbeSession(probeEpoch, token);
+  }
 
   try {
     const data = (await res.json()) as { email?: unknown; display_name?: unknown };
+    if (!isProbeCurrent(probeEpoch, token)) return "superseded";
     if (typeof data.email === "string" && data.email) {
       return {
         email: data.email,
@@ -144,9 +94,10 @@ export async function probeIdentity(): Promise<ProbedIdentity | null> {
       };
     }
   } catch {
-    // Body wasn't JSON — fall through to null.
+    // Body wasn't JSON. A replacement session still wins over this stale probe.
+    if (!isProbeCurrent(probeEpoch, token)) return "superseded";
   }
-  return null;
+  return getUnusableProbeSession(probeEpoch, token);
 }
 
 async function fetchMeRaw(token: string): Promise<Response | null> {
@@ -165,21 +116,73 @@ async function fetchMeRaw(token: string): Promise<Response | null> {
  * WITHOUT its navigate-to-/login side effect. Returns the new access token, or
  * null on failure. Does not clear tokens — the caller owns that decision.
  */
-async function tryRefreshRaw(): Promise<string | null> {
+type RawRefreshResult =
+  | { kind: "refreshed"; access: string }
+  | { kind: "failed" }
+  | { kind: "superseded" };
+
+async function tryRefreshRaw(): Promise<RawRefreshResult> {
+  const authenticationEpoch = getAuthenticationEpoch();
   const refresh = getRefreshToken();
-  if (!refresh) return null;
+  if (!refresh) return { kind: "failed" };
   try {
     const res = await fetch(`${API_BASE}/api/v1/auth/refresh/`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ refresh }),
     });
-    if (!res.ok) return null;
+    if (!isRawRefreshCurrent(authenticationEpoch, refresh)) {
+      return { kind: "superseded" };
+    }
+    if (!res.ok) return { kind: "failed" };
     const data = (await res.json()) as { access?: unknown; refresh?: unknown };
-    if (typeof data.access !== "string" || !data.access) return null;
+    if (!isRawRefreshCurrent(authenticationEpoch, refresh)) {
+      return { kind: "superseded" };
+    }
+    if (typeof data.access !== "string" || !data.access) {
+      return { kind: "failed" };
+    }
     setTokens(data.access, typeof data.refresh === "string" ? data.refresh : refresh);
-    return data.access;
+    return { kind: "refreshed", access: data.access };
   } catch {
-    return null;
+    return isRawRefreshCurrent(authenticationEpoch, refresh)
+      ? { kind: "failed" }
+      : { kind: "superseded" };
   }
+}
+
+function isRawRefreshCurrent(
+  expectedEpoch: number,
+  expectedRefresh: string,
+): boolean {
+  return (
+    getAuthenticationEpoch() === expectedEpoch &&
+    getRefreshToken() === expectedRefresh
+  );
+}
+
+function isProbeCurrent(expectedEpoch: number, expectedAccess: string): boolean {
+  return (
+    getAuthenticationEpoch() === expectedEpoch &&
+    getAccessToken() === expectedAccess
+  );
+}
+
+function getUnusableProbeSession(
+  expectedEpoch: number,
+  expectedAccess: string | null,
+): UnusableProbeSession | "superseded" {
+  const refreshToken = getRefreshToken();
+  if (
+    getAccessToken() !== expectedAccess ||
+    getRefreshToken() !== refreshToken ||
+    getAuthenticationEpoch() !== expectedEpoch
+  ) {
+    return "superseded";
+  }
+  return {
+    kind: "unusable",
+    accessToken: expectedAccess,
+    refreshToken,
+  };
 }
