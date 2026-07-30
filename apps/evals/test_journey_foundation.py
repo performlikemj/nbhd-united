@@ -95,6 +95,25 @@ class FailureAlertTest(TestCase):
         self.assertNotIn("NEVER_IN_EMAIL", msg.body)
         self.assertNotIn("reason_code", msg.body)
 
+    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    def test_failure_email_is_suppressed_for_24h_by_suite_and_status(self):
+        first = self._failed_run()
+        second = self._failed_run()
+
+        self.assertTrue(send_eval_failure_alert(first))
+        self.assertFalse(send_eval_failure_alert(second))
+
+        self.assertEqual(len(mail.outbox), 1)
+
+    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    def test_degraded_is_digest_only(self):
+        run = self._failed_run()
+        run.status = EvalRun.Status.DEGRADED
+        run.save(update_fields=["status"])
+
+        self.assertFalse(send_eval_failure_alert(run))
+        self.assertEqual(len(mail.outbox), 0)
+
 
 class FinalizeTaskRunTest(TestCase):
     @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")

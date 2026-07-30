@@ -95,6 +95,8 @@ SYSTEM_CRONS = [
     # watchtower path: QStash runs off-host and the daily reconcile above
     # self-heals any registration drift.
     ("steward-sweep", "*/5 * * * *", "/api/cron/trigger/steward_sweep/"),
+    # Daily at 22:35 UTC (07:35 JST) — facts-only portfolio PM digest.
+    ("steward-daily-digest", "35 22 * * *", "/api/cron/trigger/steward_daily_digest/"),
     # Every hour — retire spent kind:"at" rows after their late-fire grace so
     # their names can be reused. Uses QStash's default maintenance retries.
     ("expire-finished-at-crons", "0 * * * *", "/api/cron/trigger/expire_finished_at_crons/"),

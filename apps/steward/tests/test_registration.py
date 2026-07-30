@@ -21,3 +21,18 @@ class StewardRegistrationTests(SimpleTestCase):
                 None,
             ),
         )
+
+    def test_daily_digest_is_allowlisted_and_registered(self):
+        self.assertEqual(
+            TASK_MAP["steward_daily_digest"],
+            "apps.steward.digest.run_steward_daily_digest",
+        )
+        crons = {name: (cron_expr, path, retries) for name, cron_expr, path, retries in iter_system_crons()}
+        self.assertEqual(
+            crons["steward-daily-digest"],
+            (
+                "35 22 * * *",
+                "/api/cron/trigger/steward_daily_digest/",
+                None,
+            ),
+        )

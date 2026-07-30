@@ -28,7 +28,7 @@ def _send_telegram(subject: str, text: str) -> DeliveryClassification:
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={
                 "chat_id": chat_id,
-                "text": f"{subject}\n\n{text}",
+                "text": f"{subject}\n\n{text}" if subject else text,
                 "disable_web_page_preview": True,
             },
             timeout=10,
@@ -62,13 +62,18 @@ def _send_telegram(subject: str, text: str) -> DeliveryClassification:
     return "transient"
 
 
-def _send_mailgun_fallback(subject: str, text: str) -> DeliveryClassification:
+def _send_mailgun_fallback(
+    subject: str,
+    text: str,
+    *,
+    digest: bool = False,
+) -> DeliveryClassification:
     recipient = getattr(settings, "STEWARD_ALERT_EMAIL", "").strip()
     if not recipient:
         return "undeliverable"
     try:
         sent = send_mail(
-            subject=f"[Steward] {subject}",
+            subject="[Steward digest]" if digest else f"[Steward] {subject}",
             message=text,
             from_email=None,
             recipient_list=[recipient],
@@ -122,6 +127,44 @@ def send_urgent(subject: str, text: str, fingerprint: str) -> str:
     logger.error(
         "Steward urgent delivery failed fingerprint=%s telegram=%s fallback=%s",
         fingerprint,
+        telegram_status,
+        fallback_status,
+    )
+    if fallback_status == "transient":
+        return "transient"
+    return telegram_status
+
+
+def send_digest(text: str) -> str:
+    """Deliver the daily facts digest by Telegram, then Mailgun fallback."""
+    try:
+        telegram_status = _send_telegram("", text)
+    except Exception as exc:
+        logger.error(
+            "Steward Telegram digest failed unexpectedly error_class=%s",
+            type(exc).__name__,
+        )
+        telegram_status = "transient"
+    if telegram_status == "delivered":
+        logger.info("Steward digest delivered")
+        return telegram_status
+
+    fallback_status = _send_mailgun_fallback("", text, digest=True)
+    if fallback_status == "delivered":
+        logger.info(
+            "Steward digest delivered by fallback primary=%s",
+            telegram_status,
+        )
+        return fallback_status
+
+    token = getattr(settings, "STEWARD_TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = getattr(settings, "STEWARD_TELEGRAM_CHAT_ID", "").strip()
+    recipient = getattr(settings, "STEWARD_ALERT_EMAIL", "").strip()
+    if not (token and chat_id) and not recipient:
+        logger.error("Steward digest undeliverable: no direct channel configured")
+        return "undeliverable"
+    logger.error(
+        "Steward digest delivery failed telegram=%s fallback=%s",
         telegram_status,
         fallback_status,
     )

@@ -18,6 +18,7 @@ PII ever reaches this email.
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 from typing import Literal
 
 from django.conf import settings
@@ -38,9 +39,23 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
     the send raises — it NEVER propagates an exception (the caller's DLQ-raise is
     the real failure signal; a mail hiccup must not compound it).
     """
+    if run.status == EvalRun.Status.DEGRADED:
+        logger.info(
+            "eval alert: degraded runs are digest-only suite=%s run=%s",
+            run.suite,
+            run.id,
+        )
+        return False
+
     owner_email = getattr(settings, "PLATFORM_OWNER_EMAIL", "")
     if not owner_email:
         logger.warning("eval alert: PLATFORM_OWNER_EMAIL not set — %s failure alert skipped", run.suite)
+        return False
+    from apps.steward.gate import should_send
+
+    fingerprint = f"eval-email:{run.suite}:{run.status}"
+    if not should_send(fingerprint, timedelta(hours=24)):
+        logger.info("eval alert: suppressed by cooldown fingerprint=%s", fingerprint)
         return False
 
     results = list(run.results.all())
@@ -74,6 +89,39 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
         )
     except Exception:
         logger.exception("eval alert: failure email send failed for run %s", run.id)
+        return False
+    return True
+
+
+def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
+    """Send one metadata-only alert for a batch of reaped eval runs."""
+    if not runs:
+        return False
+    owner_email = getattr(settings, "PLATFORM_OWNER_EMAIL", "")
+    if not owner_email:
+        logger.warning("eval reaper alert: PLATFORM_OWNER_EMAIL not set — batch skipped")
+        return False
+    from apps.steward.gate import should_send
+
+    fingerprint = "eval-email:reaper"
+    if not should_send(fingerprint, timedelta(hours=6)):
+        logger.info("eval reaper alert: suppressed by cooldown fingerprint=%s", fingerprint)
+        return False
+
+    run_ids = ", ".join(str(run.id) for run in runs)
+    suites = ", ".join(sorted({run.suite for run in runs}))
+    subject = f"[EVAL] {len(runs)} stuck eval run(s) reaped"
+    body = f"Count: {len(runs)}\nRun IDs: {run_ids}\nSuites: {suites}\nStatus: error\n"
+    try:
+        send_mail(
+            subject=subject,
+            message=body,
+            from_email=None,
+            recipient_list=[owner_email],
+            fail_silently=False,
+        )
+    except Exception:
+        logger.exception("eval reaper alert: batch email send failed")
         return False
     return True
 
