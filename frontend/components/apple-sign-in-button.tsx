@@ -133,6 +133,7 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
   const refreshTimerRef = useRef<number | null>(null);
   const generationRef = useRef(0);
   const attemptInFlightRef = useRef(false);
+  const statusRef = useRef<PreparationStatus>("preparing");
   const [status, setStatus] = useState<PreparationStatus>("preparing");
   const [busy, setBusy] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
@@ -144,6 +145,7 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
       window.clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;
     }
+    statusRef.current = "preparing";
     setStatus("preparing");
 
     void prepareAppleAuthorization()
@@ -151,6 +153,7 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
         if (generation !== generationRef.current) return;
         initializeAppleAuthorization(prepared);
         preparedRef.current = prepared;
+        statusRef.current = "ready";
         setStatus("ready");
         refreshTimerRef.current = window.setTimeout(
           prepareFresh,
@@ -160,6 +163,7 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
       .catch((error: unknown) => {
         if (generation !== generationRef.current) return;
         const failure = normalizeAppleFailure(error);
+        statusRef.current = "failed";
         setStatus("failed");
         setErrorMessage(
           getAppleAuthErrorMessage({
@@ -184,10 +188,39 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
     // Schedule outside the effect body to satisfy the compiler-aware hooks
     // rule while still prefetching both resources immediately after mount.
     const activationTimer = window.setTimeout(prepareFresh, 0);
+
+    const revalidatePreparedOnForeground = () => {
+      if (
+        document.visibilityState !== "visible" ||
+        attemptInFlightRef.current ||
+        statusRef.current !== "ready"
+      ) {
+        return;
+      }
+      const prepared = preparedRef.current;
+      if (!prepared || Date.now() >= prepared.refreshAt) {
+        prepareFresh();
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        revalidatePreparedOnForeground();
+      }
+    };
+
+    window.addEventListener("focus", revalidatePreparedOnForeground);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
     return () => {
       window.clearTimeout(activationTimer);
+      window.removeEventListener("focus", revalidatePreparedOnForeground);
+      document.removeEventListener(
+        "visibilitychange",
+        handleVisibilityChange,
+      );
       generationRef.current += 1;
       preparedRef.current = null;
+      statusRef.current = "preparing";
       if (refreshTimerRef.current !== null) {
         window.clearTimeout(refreshTimerRef.current);
         refreshTimerRef.current = null;
@@ -262,7 +295,14 @@ export function AppleSignInButton(props: AppleSignInButtonProps) {
     setErrorMessage("");
 
     const prepared = preparedRef.current;
-    if (!prepared || Date.now() >= prepared.refreshAt) return;
+    if (!prepared || Date.now() >= prepared.refreshAt) {
+      // A throttled expiry timer can leave the rendered control enabled for
+      // microseconds after expiry. That click intentionally gets retry UX
+      // instead of attempting a stale-gesture popup (which Safari may reject).
+      setErrorMessage(getAppleAuthErrorMessage({ kind: "popup" }));
+      if (statusRef.current !== "preparing") prepareFresh();
+      return;
+    }
 
     const attempt: AppleAttemptSnapshot = {
       authenticationEpoch: getAuthenticationEpoch(),

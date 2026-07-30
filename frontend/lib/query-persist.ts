@@ -11,7 +11,12 @@ const ACCESS_TOKEN_KEY = "nbhd_access_token";
 
 const FLUSH_DEBOUNCE_MS = 500;
 
-let activeQueryClient: QueryClient | null = null;
+interface ActiveQueryClientRegistration {
+  client: QueryClient;
+  owner: string | null;
+}
+
+let activeQueryClientRegistration: ActiveQueryClientRegistration | null = null;
 let cancelActiveFlush: (() => void) | null = null;
 
 // One persisted query entry: the cached data plus the epoch-ms timestamp of
@@ -102,10 +107,12 @@ function writeStorage(data: PersistedEnvelope): void {
 }
 
 export function seedQueryClient(qc: QueryClient): void {
+  const currentOwner = getCurrentAccessTokenOwner();
+  registerActiveQueryClient(qc, currentOwner);
+
   const envelope = readStorage();
   if (!envelope) return;
 
-  const currentOwner = getCurrentAccessTokenOwner();
   if (!currentOwner || envelope.owner !== currentOwner) {
     removeStorage();
     return;
@@ -132,7 +139,8 @@ export function seedQueryClient(qc: QueryClient): void {
 export function installPersistence(qc: QueryClient): () => void {
   if (typeof window === "undefined") return () => {};
 
-  activeQueryClient = qc;
+  const registration = registerActiveQueryClient(qc);
+  if (!registration) return () => {};
   let timer: number | null = null;
 
   const cancelPendingFlush = () => {
@@ -144,10 +152,12 @@ export function installPersistence(qc: QueryClient): () => void {
 
   const flush = (scheduledOwner: string | null) => {
     timer = null;
-    // A debounce scheduled under Account A may fire after Account B installs
-    // tokens. Never let that stale closure recreate A's persisted cache.
+    // The owner describes the data in this tab's QueryClient, not whichever
+    // account most recently wrote the shared token keys from another tab.
     if (
       !scheduledOwner ||
+      activeQueryClientRegistration !== registration ||
+      registration.owner !== scheduledOwner ||
       getCurrentAccessTokenOwner() !== scheduledOwner
     ) {
       return;
@@ -166,7 +176,7 @@ export function installPersistence(qc: QueryClient): () => void {
 
   const scheduleFlush = () => {
     if (timer != null) return;
-    const scheduledOwner = getCurrentAccessTokenOwner();
+    const scheduledOwner = registration.owner;
     if (!scheduledOwner) return;
     timer = window.setTimeout(
       () => flush(scheduledOwner),
@@ -183,20 +193,43 @@ export function installPersistence(qc: QueryClient): () => void {
 
   return () => {
     cancelPendingFlush();
-    if (activeQueryClient === qc) activeQueryClient = null;
+    if (activeQueryClientRegistration === registration) {
+      activeQueryClientRegistration = null;
+    }
     if (cancelActiveFlush === cancelPendingFlush) cancelActiveFlush = null;
     unsubscribe();
   };
 }
 
 export function clearInMemoryQueryCache(): void {
-  activeQueryClient?.clear();
+  activeQueryClientRegistration?.client.clear();
 }
 
 export function clearPersistedCache(): void {
   if (typeof window === "undefined") return;
   cancelActiveFlush?.();
   removeStorage();
+}
+
+/** Assign a cleared active client to the newly authenticated token owner. */
+export function setActiveQueryClientOwner(owner: string | null): void {
+  if (activeQueryClientRegistration) {
+    activeQueryClientRegistration.owner = owner;
+  }
+}
+
+function registerActiveQueryClient(
+  client: QueryClient,
+  owner = getCurrentAccessTokenOwner(),
+): ActiveQueryClientRegistration | null {
+  // Providers' state initializer also runs during static rendering. Never
+  // retain a server-created QueryClient in module state.
+  if (typeof window === "undefined") return null;
+  if (activeQueryClientRegistration?.client === client) {
+    return activeQueryClientRegistration;
+  }
+  activeQueryClientRegistration = { client, owner };
+  return activeQueryClientRegistration;
 }
 
 function removeStorage(): void {
@@ -231,7 +264,7 @@ function getCurrentAccessTokenOwner(): string | null {
 }
 
 /** Decode only the untrusted owner claim; API authentication still verifies JWTs. */
-function getJwtOwner(token: string | null): string | null {
+export function getJwtOwner(token: string | null): string | null {
   if (!token) return null;
   try {
     const payload = token.split(".")[1];
