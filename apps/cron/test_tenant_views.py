@@ -113,6 +113,27 @@ class CronJobListCreateTest(TestCase):
         self.assertNotIn("foreground", created_job)
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_legacy_create_rejects_restricted_dom_and_dow(self, mock_invoke):
+        resp = self.client.post(
+            "/api/v1/cron-jobs/",
+            {
+                "name": "Unsafe one-time reminder",
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 9 24 7 5",
+                    "tz": "UTC",
+                },
+                "payload": {"kind": "agentTurn", "message": "do thing"},
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("OR-ed", resp.json()["detail"])
+        self.assertIn("kind:'at'", resp.json()["detail"])
+        mock_invoke.assert_not_called()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_create_cron_job_rejected_at_cap(self, mock_invoke):
         """Creating a job when at the cap returns 409."""
         mock_invoke.return_value = {
@@ -870,6 +891,154 @@ class PostgresCanonicalWriteTest(TestCase):
         self.assertEqual(resp.status_code, 201)
         self.assertTrue(CronJob.objects.filter(tenant=self.tenant, name="Daily Reminder").exists())
         mock_invoke.assert_not_called()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_create_rejects_restricted_dom_and_dow(self, mock_invoke):
+        from apps.cron.models import CronJob
+
+        resp = self.client.post(
+            "/api/v1/cron-jobs/",
+            {
+                "name": "Unsafe one-time reminder",
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 9 24 7 5",
+                    "tz": "UTC",
+                },
+                "payload": {"kind": "agentTurn", "message": "do thing"},
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("OR-ed", resp.json()["detail"])
+        self.assertIn("kind:'at'", resp.json()["detail"])
+        self.assertFalse(
+            CronJob.objects.filter(
+                tenant=self.tenant,
+                name="Unsafe one-time reminder",
+            ).exists()
+        )
+        mock_invoke.assert_not_called()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_update_rejects_restricted_dom_and_dow(self, mock_invoke):
+        from apps.cron.models import CronJob, CronJobSource
+
+        row = CronJob.objects.create(
+            tenant=self.tenant,
+            name="Safe weekly reminder",
+            data={
+                "name": "Safe weekly reminder",
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 9 * * 5",
+                    "tz": "UTC",
+                },
+            },
+            source=CronJobSource.USER,
+        )
+
+        resp = self.client.patch(
+            f"/api/v1/cron-jobs/{row.name}/",
+            {
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 9 24 7 5",
+                    "tz": "UTC",
+                }
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("OR-ed", resp.json()["detail"])
+        row.refresh_from_db()
+        self.assertEqual(row.data["schedule"]["expr"], "0 9 * * 5")
+        mock_invoke.assert_not_called()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_update_accepts_schedule_with_wildcard_dow(self, mock_invoke):
+        from apps.cron.models import CronJob, CronJobSource
+
+        row = CronJob.objects.create(
+            tenant=self.tenant,
+            name="Monthly reminder",
+            data={
+                "name": "Monthly reminder",
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 9 * * 5",
+                    "tz": "UTC",
+                },
+            },
+            source=CronJobSource.USER,
+        )
+
+        resp = self.client.patch(
+            f"/api/v1/cron-jobs/{row.name}/",
+            {
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 9 24 7 *",
+                    "tz": "UTC",
+                }
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        row.refresh_from_db()
+        self.assertEqual(row.data["schedule"]["expr"], "0 9 24 7 *")
+        mock_invoke.assert_not_called()
+
+    def test_canonical_chokepoints_validate_without_the_view(self):
+        from apps.cron import postgres_canonical
+        from apps.cron.models import CronJob, CronJobSource
+
+        invalid_schedule = {
+            "kind": "cron",
+            "expr": "0 9 24 7 5",
+            "tz": "UTC",
+        }
+        payload, code = postgres_canonical.create_job(
+            self.tenant,
+            {
+                "name": "Unsafe direct create",
+                "schedule": invalid_schedule,
+            },
+        )
+        self.assertEqual(code, 400)
+        self.assertIn("OR-ed", payload["detail"])
+        self.assertFalse(
+            CronJob.objects.filter(
+                tenant=self.tenant,
+                name="Unsafe direct create",
+            ).exists()
+        )
+
+        row = CronJob.objects.create(
+            tenant=self.tenant,
+            name="Safe direct update",
+            data={
+                "name": "Safe direct update",
+                "schedule": {
+                    "kind": "cron",
+                    "expr": "0 9 * * 5",
+                    "tz": "UTC",
+                },
+            },
+            source=CronJobSource.USER,
+        )
+        payload, code = postgres_canonical.update_job(
+            self.tenant,
+            row.name,
+            {"schedule": invalid_schedule},
+        )
+        self.assertEqual(code, 400)
+        self.assertIn("OR-ed", payload["detail"])
+        row.refresh_from_db()
+        self.assertEqual(row.data["schedule"]["expr"], "0 9 * * 5")
 
     @patch("apps.cron.tenant_views.invoke_gateway_tool")
     def test_delete_removes_row_no_gateway(self, mock_invoke):
