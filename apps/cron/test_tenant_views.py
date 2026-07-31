@@ -1091,7 +1091,7 @@ class RegenerateTenantCronsTest(TestCase):
         )
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
-    def test_adds_missing_jobs(self, mock_invoke):
+    def test_normal_managed_row_still_projects(self, mock_invoke):
         from apps.cron.models import CronJob, CronJobSource
         from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
 
@@ -1112,6 +1112,49 @@ class RegenerateTenantCronsTest(TestCase):
         result = regenerate_tenant_crons(self.tenant)
         self.assertEqual(result["added"], 1)
         self.assertEqual(result["removed"], 0)
+        add_calls = [call for call in mock_invoke.call_args_list if call.args[1] == "cron.add"]
+        self.assertEqual(len(add_calls), 1)
+        self.assertEqual(add_calls[0].args[2]["job"]["name"], "Morning Briefing")
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_managed_fuel_prefix_row_never_projects_or_removes_live_fuel_job(self, mock_invoke):
+        from apps.cron.models import CronJob, CronJobSource
+        from apps.orchestrator.cron_reconcile import regenerate_tenant_crons
+
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="_fuel:welcome",
+            data={
+                "name": "_fuel:welcome",
+                "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+            },
+            source=CronJobSource.SYSTEM,
+            managed=True,
+        )
+        mock_invoke.side_effect = lambda tenant, tool, args: (
+            {
+                "details": {
+                    "jobs": [
+                        {
+                            "name": "_fuel:welcome",
+                            "id": "fuel-live-1",
+                            "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+                        }
+                    ]
+                }
+            }
+            if tool == "cron.list"
+            else None
+        )
+
+        with self.assertLogs("apps.orchestrator.cron_reconcile", level="INFO") as logs:
+            result = regenerate_tenant_crons(self.tenant)
+
+        self.assertEqual(result["added"], 0)
+        self.assertEqual(result["removed"], 0)
+        mutation_calls = [call for call in mock_invoke.call_args_list if call.args[1] in {"cron.add", "cron.remove"}]
+        self.assertEqual(mutation_calls, [])
+        self.assertTrue(any("skipped_unmanaged_desired=1" in message for message in logs.output))
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_removes_stale_managed_jobs(self, mock_invoke):
