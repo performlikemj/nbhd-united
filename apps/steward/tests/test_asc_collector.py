@@ -626,6 +626,96 @@ class ASCCollectorTests(TestCase):
         self.assertEqual(trains[0].phase, ReleaseTrain.Phase.PLANNED)
         self.assertEqual(advances, 1)
 
+    def test_recovery_advances_despite_newer_unmapped_state(self):
+        train = open_train(
+            product=TrackedItem.Product.NBHD_IOS,
+            version_string="milestone-before-unmapped",
+        )
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.ASC_VERSION_STATE,
+            subject=f"nbhd-ios-{train.version_string}",
+            occurred_at=timezone.now(),
+            payload={"state": "WAITING_FOR_REVIEW"},
+            fingerprint="asc-milestone-before-unmapped",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.ASC_VERSION_STATE,
+            subject=f"nbhd-ios-{train.version_string}",
+            occurred_at=timezone.now(),
+            payload={"state": "UNMAPPED_STATE"},
+            fingerprint="asc-newer-unmapped-state",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+
+        advances = asc._recover_train_advances()
+
+        train.refresh_from_db()
+        self.assertEqual(advances, 1)
+        self.assertEqual(train.phase, ReleaseTrain.Phase.SUBMITTED)
+
+    def test_recovery_unmapped_events_cannot_starve_train_beyond_cap(self):
+        trains = [
+            open_train(
+                product=TrackedItem.Product.NBHD_IOS,
+                version_string=f"unmapped-starvation-{index}",
+            )
+            for index in range(21)
+        ]
+        advancing_at = timezone.now()
+        EvidenceEvent.objects.bulk_create(
+            [
+                EvidenceEvent(
+                    source=EvidenceSource.ASC_VERSION_STATE,
+                    subject=f"nbhd-ios-{train.version_string}",
+                    occurred_at=advancing_at,
+                    payload={"state": "WAITING_FOR_REVIEW"},
+                    fingerprint=f"asc-unmapped-starvation-advance-{index}",
+                    trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+                    provenance=EvidenceEvent.Provenance.COLLECTOR,
+                )
+                for index, train in enumerate(trains)
+            ]
+        )
+        unmapped_at = timezone.now()
+        EvidenceEvent.objects.bulk_create(
+            [
+                EvidenceEvent(
+                    source=EvidenceSource.ASC_VERSION_STATE,
+                    subject=f"nbhd-ios-{train.version_string}",
+                    occurred_at=unmapped_at,
+                    payload={"state": "UNMAPPED_STATE"},
+                    fingerprint=f"asc-unmapped-starvation-neutral-{index}",
+                    trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+                    provenance=EvidenceEvent.Provenance.COLLECTOR,
+                )
+                for index, train in enumerate(trains[:20])
+            ]
+        )
+
+        first_advances = asc._recover_train_advances()
+        phases_after_first_sweep = list(
+            ReleaseTrain.objects.filter(pk__in=[train.pk for train in trains])
+            .order_by("id")
+            .values_list("phase", flat=True)
+        )
+
+        second_advances = asc._recover_train_advances()
+        final_phases = list(
+            ReleaseTrain.objects.filter(pk__in=[train.pk for train in trains])
+            .order_by("id")
+            .values_list("phase", flat=True)
+        )
+        self.assertEqual(first_advances, 20)
+        self.assertEqual(
+            phases_after_first_sweep,
+            [ReleaseTrain.Phase.SUBMITTED] * 20 + [ReleaseTrain.Phase.PLANNED],
+        )
+        self.assertEqual(second_advances, 1)
+        self.assertEqual(final_phases, [ReleaseTrain.Phase.SUBMITTED] * 21)
+
     def test_recovery_sweep_caps_trains_and_uses_two_set_based_queries(self):
         trains = [
             open_train(

@@ -348,6 +348,8 @@ def _recover_train_advances() -> int:
         occurred_at__gte=OuterRef("phase_changed_at"),
         target_phase_position__gt=OuterRef("phase_position"),
     )
+    # Every selected train advances this sweep, moving its phase epoch past the
+    # evidence that selected it; row 21+ therefore cannot starve behind the cap.
     trains = list(
         ReleaseTrain.objects.filter(
             product=TrackedItem.Product.NBHD_IOS,
@@ -365,25 +367,28 @@ def _recover_train_advances() -> int:
     )
     if not trains:
         return advances
-    subjects = {f"nbhd-ios-{train.version_string}" for train in trains}
-    earliest_epoch = min(phase_evidence_epoch(train) for train in trains)
-    latest_events = {
-        event.subject: event
-        for event in EvidenceEvent.objects.filter(
-            source=EvidenceSource.ASC_VERSION_STATE,
-            subject__in=subjects,
-            occurred_at__gte=earliest_epoch,
-        )
-        .order_by("subject", "-occurred_at", "-id")
-        .distinct("subject")
-    }
-    for train in trains:
-        evidence = latest_events.get(f"nbhd-ios-{train.version_string}")
-        if evidence is None or evidence.occurred_at < phase_evidence_epoch(train):
+    trains_by_subject = {f"nbhd-ios-{train.version_string}": train for train in trains}
+    evidence_epochs = {train.pk: phase_evidence_epoch(train) for train in trains}
+    earliest_epoch = min(evidence_epochs.values())
+    furthest_events: dict[str, tuple[int, EvidenceEvent]] = {}
+    for event in EvidenceEvent.objects.filter(
+        source=EvidenceSource.ASC_VERSION_STATE,
+        subject__in=trains_by_subject,
+        occurred_at__gte=earliest_epoch,
+        payload__state__in=ASC_TRAIN_TARGETS,
+    ):
+        train = trains_by_subject[event.subject]
+        if event.occurred_at < evidence_epochs[train.pk]:
             continue
-        target_phase = ASC_TRAIN_TARGETS.get(evidence.payload.get("state"))
-        if target_phase is None or PHASE_ORDER.index(target_phase) <= PHASE_ORDER.index(train.phase):
-            continue
+        target_phase = ASC_TRAIN_TARGETS[event.payload["state"]]
+        target_position = PHASE_ORDER.index(target_phase)
+        current = furthest_events.get(event.subject)
+        if current is None or target_position > current[0]:
+            furthest_events[event.subject] = (target_position, event)
+
+    for subject, train in trains_by_subject.items():
+        _, evidence = furthest_events[subject]
+        target_phase = ASC_TRAIN_TARGETS[evidence.payload["state"]]
         advance_train(
             train,
             target_phase,
