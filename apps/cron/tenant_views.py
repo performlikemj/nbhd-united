@@ -22,6 +22,7 @@ from .cache import (
 )
 from .gateway_client import GatewayError, cron_remove, invoke_gateway_tool
 from .models import CronJob
+from .schedule_validation import ScheduleValidationError, validate_schedule
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +275,13 @@ class CronJobListCreateView(APIView):
         tenant = _get_tenant_for_user(request.user)
 
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        try:
+            validate_schedule(data.get("schedule"))
+        except ScheduleValidationError as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         # Postgres-canonical path — create a CronJob row, signal triggers
         # debounced reconcile to push to the container's SQLite.
@@ -394,6 +402,14 @@ class CronJobDetailView(APIView):
             )
         tenant = _get_tenant_for_user(request.user)
         data = request.data.copy() if hasattr(request.data, "copy") else dict(request.data)
+        if "schedule" in data:
+            try:
+                validate_schedule(data["schedule"])
+            except ScheduleValidationError as exc:
+                return Response(
+                    {"detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
         delivery = data.get("delivery")
         if isinstance(delivery, dict) and delivery.get("channel") == "telegram" and delivery.get("mode") != "none":
             chat_id = _tenant_telegram_chat_id(tenant)

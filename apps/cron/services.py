@@ -35,6 +35,10 @@ from django.db import IntegrityError, transaction
 
 from apps.cron.models import CronCreationPath, CronJob, CronJobSource, CronPattern
 from apps.cron.patterns import get_handler
+from apps.cron.schedule_validation import (
+    ScheduleValidationError,
+    validate_schedule,
+)
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -71,33 +75,6 @@ def _is_at_schedule(schedule: dict[str, Any]) -> bool:
     return isinstance(schedule, dict) and schedule.get("kind") == "at"
 
 
-def _validate_schedule_shape(schedule: dict[str, Any]) -> None:
-    """Surface-level schedule validation. OC does the full normalization."""
-    if not isinstance(schedule, dict):
-        raise TypedCronError("schedule must be an object", code="invalid_schedule")
-    kind = schedule.get("kind")
-    if kind not in ("cron", "every", "at"):
-        raise TypedCronError(
-            f"schedule.kind must be one of cron/every/at; got {kind!r}",
-            code="invalid_schedule",
-        )
-    if kind == "cron" and not schedule.get("expr"):
-        raise TypedCronError(
-            "schedule.kind='cron' requires schedule.expr",
-            code="invalid_schedule",
-        )
-    if kind == "at" and not schedule.get("at"):
-        raise TypedCronError(
-            "schedule.kind='at' requires schedule.at (ISO-8601)",
-            code="invalid_schedule",
-        )
-    if kind == "every" and not schedule.get("everyMs"):
-        raise TypedCronError(
-            "schedule.kind='every' requires schedule.everyMs",
-            code="invalid_schedule",
-        )
-
-
 def create_typed_cron(
     *,
     tenant: Tenant,
@@ -121,7 +98,10 @@ def create_typed_cron(
             f"pattern must be one of {list(CronPattern.values)}; got {pattern!r}",
             code="invalid_pattern",
         )
-    _validate_schedule_shape(schedule)
+    try:
+        validate_schedule(schedule)
+    except ScheduleValidationError as exc:
+        raise TypedCronError(str(exc), code=exc.code) from exc
 
     handler = get_handler(pattern)
     # Construct + validate the typed payload up front so we surface a clean

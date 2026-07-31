@@ -19,6 +19,7 @@ from django.db import transaction
 from rest_framework import status
 
 from .models import CronJob, CronJobSource
+from .schedule_validation import ScheduleValidationError, validate_schedule
 
 if TYPE_CHECKING:
     from apps.tenants.models import Tenant
@@ -125,6 +126,10 @@ def create_job(tenant: Tenant, data: dict, *, max_visible: int = 10) -> tuple[di
     name = (data.get("name") or "").strip()
     if not name:
         return {"detail": "Job name is required."}, status.HTTP_400_BAD_REQUEST
+    try:
+        validate_schedule(data.get("schedule"))
+    except ScheduleValidationError as exc:
+        return {"detail": str(exc)}, status.HTTP_400_BAD_REQUEST
 
     # Derive the visible-count exclusion from tenant_views.HIDDEN_SYSTEM_CRONS
     # so additions to the hidden set (e.g. core unearthing crons like Personal
@@ -185,6 +190,11 @@ def update_job(tenant: Tenant, job_name: str, patch: dict) -> tuple[dict, int]:
     row = CronJob.objects.filter(tenant=tenant, name=job_name).first()
     if not row:
         return {"detail": "Job not found."}, status.HTTP_404_NOT_FOUND
+    if "schedule" in patch:
+        try:
+            validate_schedule(patch["schedule"])
+        except ScheduleValidationError as exc:
+            return {"detail": str(exc)}, status.HTTP_400_BAD_REQUEST
 
     data = dict(row.data or {})
     for key, value in patch.items():

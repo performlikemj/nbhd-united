@@ -117,6 +117,25 @@ class CreateTypedCronTests(TestCase):
             )
         self.assertEqual(cm.exception.code, "invalid_schedule")
 
+    def test_dom_and_dow_schedule_raises_actionable_error(self):
+        with self.assertRaises(TypedCronError) as cm:
+            create_typed_cron(
+                tenant=self.tenant,
+                pattern=CronPattern.PURE_REMINDER,
+                typed_payload={"text": "x"},
+                name="unsafe-one-time-reminder",
+                schedule={
+                    "kind": "cron",
+                    "expr": "0 9 24 7 5",
+                    "tz": "Asia/Tokyo",
+                },
+            )
+
+        self.assertEqual(cm.exception.code, "invalid_schedule")
+        message = str(cm.exception)
+        self.assertIn("OR-ed", message)
+        self.assertIn("kind:'at'", message)
+
     def test_name_collision_raises_conflict(self):
         create_typed_cron(
             tenant=self.tenant,
