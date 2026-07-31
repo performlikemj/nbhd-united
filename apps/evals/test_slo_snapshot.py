@@ -41,6 +41,7 @@ from apps.evals.suites.slo_snapshot import (
     M_REPLY_P50,
     M_REPLY_P95,
     M_WAKE_P95,
+    MIN_SAMPLE_ERROR_RATE,
     MIN_SAMPLE_P50,
     MIN_SAMPLE_P95,
     build_weekly_digest,
@@ -343,6 +344,19 @@ class WakeLatencyTest(_ChatFixtureMixin, TestCase):
 
 
 class ErrorRateTest(_ChatFixtureMixin, TestCase):
+    def _finished_sample(self, tenant, *, now, total, errors):
+        created = now - timedelta(hours=1)
+        for _ in range(total - errors):
+            self._msg(tenant, created=created, replied=created + timedelta(seconds=1))
+        for _ in range(errors):
+            self._msg(
+                tenant,
+                created=created,
+                replied=created + timedelta(seconds=1),
+                status=AppChatMessage.Status.ERROR,
+                error="empty_response",
+            )
+
     def test_rate_math_pending_excluded_synthetic_excluded(self):
         now = timezone.now()
         real = _make_tenant(synthetic=False)
@@ -380,23 +394,50 @@ class ErrorRateTest(_ChatFixtureMixin, TestCase):
         self.assertEqual(result["errors"], 1)
         self.assertAlmostEqual(result["rate"], 0.25)
 
-    def test_error_rate_breach_flags_metric_through_suite(self):
+    def test_19_turns_with_one_error_is_skipped(self):
         now = timezone.now()
         real = _make_tenant(synthetic=False)
-        created = now - timedelta(hours=1)
-        # 1 error of 2 finished turns → 0.5, far over the 0.05 default ceiling.
-        self._msg(real, created=created, replied=created + timedelta(seconds=1))
-        self._msg(
+        self._finished_sample(
             real,
-            created=created,
-            replied=created + timedelta(seconds=1),
-            status=AppChatMessage.Status.ERROR,
-            error="empty_response",
+            now=now,
+            total=MIN_SAMPLE_ERROR_RATE - 1,
+            errors=1,
         )
 
         run = run_slo_snapshot_suite(now=now)
         metric = run.results.get(case_id=M_ERROR_RATE)
-        self.assertAlmostEqual(float(metric.score), 0.5)
+        self.assertTrue(metric.passed)
+        self.assertIsNone(metric.score)
+        self.assertTrue(metric.details.get("skipped"))
+        self.assertEqual(
+            metric.details.get("reason"),
+            f"insufficient sample: {MIN_SAMPLE_ERROR_RATE - 1}<{MIN_SAMPLE_ERROR_RATE} turns",
+        )
+        self.assertEqual(metric.details.get("total"), MIN_SAMPLE_ERROR_RATE - 1)
+        self.assertEqual(metric.details.get("errors"), 1)
+        self.assertEqual(metric.details.get("floor"), MIN_SAMPLE_ERROR_RATE)
+
+    def test_20_turns_with_one_error_is_measured_pass_at_threshold(self):
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        self._finished_sample(real, now=now, total=MIN_SAMPLE_ERROR_RATE, errors=1)
+
+        run = run_slo_snapshot_suite(now=now)
+        metric = run.results.get(case_id=M_ERROR_RATE)
+        self.assertFalse(metric.details.get("skipped"))
+        self.assertAlmostEqual(float(metric.score), 0.05)
+        self.assertAlmostEqual(float(metric.threshold), 0.05)
+        self.assertTrue(metric.passed)
+
+    def test_20_turns_with_two_errors_is_measured_fail(self):
+        now = timezone.now()
+        real = _make_tenant(synthetic=False)
+        self._finished_sample(real, now=now, total=MIN_SAMPLE_ERROR_RATE, errors=2)
+
+        run = run_slo_snapshot_suite(now=now)
+        metric = run.results.get(case_id=M_ERROR_RATE)
+        self.assertFalse(metric.details.get("skipped"))
+        self.assertAlmostEqual(float(metric.score), 0.1)
         self.assertFalse(metric.passed)
         run.refresh_from_db()
         self.assertEqual(run.status, EvalRun.Status.FAIL)
