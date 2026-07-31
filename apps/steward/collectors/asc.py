@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import time
 from datetime import datetime
@@ -9,18 +11,16 @@ import httpx
 from django.conf import settings
 from django.utils import timezone
 
+from apps.steward.collectors.status import collector_failed, collector_succeeded
 from apps.steward.models import (
+    AscVersionSnapshot,
+    CollectorStatus,
     EvidenceEvent,
     EvidenceSource,
-    Expectation,
     ReleaseTrain,
     TrackedItem,
 )
-from apps.steward.services import (
-    EvidenceIngestInput,
-    ingest_evidence_batch,
-    stored_evidence_fingerprint,
-)
+from apps.steward.services import EvidenceIngestInput, ingest_evidence_batch
 from apps.steward.trains import PHASE_ORDER, advance_train
 
 logger = logging.getLogger(__name__)
@@ -30,12 +30,14 @@ ASC_BUNDLE_ID = "org.neighborhoodunited.app"
 ASC_TIMEOUT_SECONDS = 15.0
 ASC_JWT_TTL_SECONDS = 14 * 60
 ASC_JWT_REFRESH_SKEW_SECONDS = 60
+ASC_MAX_PAGES = 3
 _PHASED_LIVE_STATES = frozenset(
     {
         "PENDING_DEVELOPER_RELEASE",
         "PROCESSING_FOR_APP_STORE",
         "PENDING_APPLE_RELEASE",
         "READY_FOR_SALE",
+        "READY_FOR_DISTRIBUTION",
     }
 )
 
@@ -46,6 +48,11 @@ _jwt_cache: dict[str, Any] = {
     "issuer_id": None,
 }
 _app_id_cache: str | None = None
+
+
+def _fingerprint_hash(*parts: object) -> str:
+    material = json.dumps(parts, separators=(",", ":"), sort_keys=True)
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
 
 def _credentials() -> tuple[str, str, str] | None:
@@ -149,116 +156,151 @@ def _included_by_type(payload: dict[str, Any], resource_type: str) -> dict[str, 
     }
 
 
-def _version_inputs(payload: dict[str, Any], *, collected_at: datetime) -> list[EvidenceIngestInput]:
+def _version_pages(client: httpx.Client, app_id: str) -> tuple[dict[str, Any], bool]:
+    path: str = f"/v1/apps/{app_id}/appStoreVersions"
+    params: dict[str, Any] | None = {
+        "filter[platform]": "IOS",
+        "limit": 200,
+        "include": "build,appStoreVersionPhasedRelease",
+        "fields[appStoreVersions]": ("appVersionState,appStoreState,versionString,build,appStoreVersionPhasedRelease"),
+        "fields[builds]": "version,processingState",
+        "fields[appStoreVersionPhasedReleases]": "phasedReleaseState,currentDayNumber",
+    }
+    versions: list[dict[str, Any]] = []
+    included: list[dict[str, Any]] = []
+    truncated = False
+    for page_number in range(1, ASC_MAX_PAGES + 1):
+        payload = _response_json(client.get(path, params=params))
+        page_versions = payload.get("data")
+        if not isinstance(page_versions, list):
+            raise ValueError("App Store Connect versions response has an invalid shape.")
+        versions.extend(item for item in page_versions if isinstance(item, dict))
+        page_included = payload.get("included")
+        if isinstance(page_included, list):
+            included.extend(item for item in page_included if isinstance(item, dict))
+        links = payload.get("links")
+        next_link = links.get("next") if isinstance(links, dict) else None
+        if not isinstance(next_link, str) or not next_link:
+            break
+        if page_number == ASC_MAX_PAGES:
+            truncated = True
+            break
+        path = next_link
+        params = None
+    return {"data": versions, "included": included}, truncated
+
+
+def _canonical_string(value: object, *, allow_int: bool = False) -> str:
+    if isinstance(value, str):
+        return value
+    if allow_int and isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return ""
+
+
+def _version_changes(
+    payload: dict[str, Any],
+    *,
+    collected_at: datetime,
+) -> tuple[list[EvidenceIngestInput], list[AscVersionSnapshot]]:
     versions = payload.get("data")
     if not isinstance(versions, list):
         raise ValueError("App Store Connect versions response has an invalid shape.")
     builds = _included_by_type(payload, "builds")
     phased_releases = _included_by_type(payload, "appStoreVersionPhasedReleases")
-    inputs: list[EvidenceIngestInput] = []
+    snapshots_by_id: dict[str, AscVersionSnapshot] = {}
 
     for version in versions:
         if not isinstance(version, dict):
             continue
         version_id = version.get("id")
         attributes = version.get("attributes")
-        if not isinstance(version_id, str) or not isinstance(attributes, dict):
+        if not isinstance(version_id, str) or not version_id or not isinstance(attributes, dict):
             continue
-        state = attributes.get("appStoreState")
+        state = attributes.get("appVersionState")
+        if not isinstance(state, str):
+            state = attributes.get("appStoreState")
         version_string = attributes.get("versionString")
         if not isinstance(state, str) or not isinstance(version_string, str):
             continue
 
         build = builds.get(_relationship_id(version, "build") or "", {})
         build_attributes = build.get("attributes") if isinstance(build.get("attributes"), dict) else {}
-        build_number = build_attributes.get("version")
-        processing_state = build_attributes.get("processingState")
+        build_number = _canonical_string(build_attributes.get("version"), allow_int=True)
+        processing_state = _canonical_string(build_attributes.get("processingState"))
 
         phased = phased_releases.get(
             _relationship_id(version, "appStoreVersionPhasedRelease") or "",
             {},
         )
         phased_attributes = phased.get("attributes") if isinstance(phased.get("attributes"), dict) else {}
-        phased_state = phased_attributes.get("phasedReleaseState")
-        day_number = phased_attributes.get("currentDayNumber")
+        phased_state = ""
+        phased_day = None
+        if state in _PHASED_LIVE_STATES:
+            phased_state = _canonical_string(phased_attributes.get("phasedReleaseState"))
+            day_number = phased_attributes.get("currentDayNumber")
+            if isinstance(day_number, int) and not isinstance(day_number, bool) and day_number >= 0:
+                phased_day = day_number
 
-        base_payload: dict[str, Any] = {
-            "state": state,
-            "versionString": version_string,
-        }
-        if isinstance(build_number, (str, int)):
-            base_payload["buildNumber"] = build_number
-        if isinstance(processing_state, str):
-            base_payload["buildProcessingState"] = processing_state
-        if state in _PHASED_LIVE_STATES and isinstance(phased_state, str):
-            base_payload["phasedState"] = phased_state
-        if state in _PHASED_LIVE_STATES and isinstance(day_number, int):
-            base_payload["dayNumber"] = day_number
-
-        subject = f"nbhd-ios-{version_string}"
-        inputs.append(
-            EvidenceIngestInput(
-                source=EvidenceSource.ASC_VERSION_STATE,
-                subject=subject,
-                occurred_at=collected_at,
-                payload=base_payload,
-                fingerprint=f"asc:{version_id}:{state}",
-                trust=EvidenceEvent.Trust.AUTHENTICATED_API,
-                provenance=EvidenceEvent.Provenance.COLLECTOR,
-            )
+        snapshots_by_id[version_id] = AscVersionSnapshot(
+            version_id=version_id,
+            version_string=version_string,
+            app_state=state,
+            build_number=build_number,
+            build_processing_state=processing_state,
+            phased_state=phased_state,
+            phased_day=phased_day,
+            updated_at=collected_at,
         )
 
-        if state not in _PHASED_LIVE_STATES or not isinstance(phased_state, str):
+    existing = {
+        snapshot.version_id: snapshot for snapshot in AscVersionSnapshot.objects.filter(version_id__in=snapshots_by_id)
+    }
+    inputs: list[EvidenceIngestInput] = []
+    for version_id, snapshot in snapshots_by_id.items():
+        previous = existing.get(version_id)
+        state_tuple = snapshot.state_tuple()
+        if previous is not None and previous.state_tuple() == state_tuple:
             continue
-        phased_payload = {
-            **base_payload,
-            "phasedState": phased_state,
+        payload = {
+            "versionString": snapshot.version_string,
+            "state": snapshot.app_state,
+            "buildNumber": snapshot.build_number,
+            "buildProcessingState": snapshot.build_processing_state,
+            "phasedState": snapshot.phased_state,
+            "dayNumber": snapshot.phased_day,
         }
-        if isinstance(day_number, int):
-            phased_payload["dayNumber"] = day_number
-        phased_fingerprint = f"asc-phased:{version_id}:{phased_state}:{day_number or 0}"
         inputs.append(
             EvidenceIngestInput(
                 source=EvidenceSource.ASC_VERSION_STATE,
-                subject=subject,
+                subject=f"nbhd-ios-{snapshot.version_string}",
                 occurred_at=collected_at,
-                payload=phased_payload,
-                fingerprint=phased_fingerprint,
+                payload=payload,
+                fingerprint=f"asc-state:{_fingerprint_hash(version_id, state_tuple)}",
                 trust=EvidenceEvent.Trust.AUTHENTICATED_API,
                 provenance=EvidenceEvent.Provenance.COLLECTOR,
             )
         )
-        if (
-            phased_state == "COMPLETE"
-            and Expectation.objects.filter(
-                subject=f"{subject}-rollout",
-            )
-            .exclude(state=Expectation.State.RETIRED)
-            .exists()
-        ):
-            inputs.append(
-                EvidenceIngestInput(
-                    source=EvidenceSource.ASC_VERSION_STATE,
-                    subject=f"{subject}-rollout",
-                    occurred_at=collected_at,
-                    payload=phased_payload,
-                    fingerprint=f"asc-phased-rollout:{version_id}:{phased_state}:{day_number or 0}",
-                    trust=EvidenceEvent.Trust.AUTHENTICATED_API,
-                    provenance=EvidenceEvent.Provenance.COLLECTOR,
-                )
-            )
-    return inputs
+    return inputs, list(snapshots_by_id.values())
 
 
-def _new_inputs(inputs: list[EvidenceIngestInput]) -> list[EvidenceIngestInput]:
-    fingerprints = [stored_evidence_fingerprint(item.source, item.fingerprint) for item in inputs]
-    existing = set(
-        EvidenceEvent.objects.filter(fingerprint__in=fingerprints).values_list(
-            "fingerprint",
-            flat=True,
-        )
+def _upsert_snapshots(snapshots: list[AscVersionSnapshot]) -> None:
+    if not snapshots:
+        return
+    AscVersionSnapshot.objects.bulk_create(
+        snapshots,
+        update_conflicts=True,
+        update_fields=[
+            "version_string",
+            "app_state",
+            "build_number",
+            "build_processing_state",
+            "phased_state",
+            "phased_day",
+            "updated_at",
+        ],
+        unique_fields=["version_id"],
     )
-    return [item for item in inputs if stored_evidence_fingerprint(item.source, item.fingerprint) not in existing]
 
 
 def _advance_matching_train(
@@ -272,6 +314,7 @@ def _advance_matching_train(
     trains = ReleaseTrain.objects.filter(
         product=TrackedItem.Product.NBHD_IOS,
         version_string=version_string,
+        phase_changed_at__lte=evidence.occurred_at,
     ).exclude(phase__in=[ReleaseTrain.Phase.RELEASED, ReleaseTrain.Phase.ROLLED_BACK])
     for train in trains:
         if PHASE_ORDER.index(train.phase) >= target_index:
@@ -287,71 +330,91 @@ def _advance_matching_train(
 
 
 def collect_asc() -> dict[str, int]:
-    """Collect App Store version/build/phased state without tester or customer data."""
+    """Collect paginated App Store version/build/phased state without user data."""
+    collected_at = timezone.now()
     credentials = _credentials()
     if credentials is None:
         logger.info("Steward ASC collector disabled: App Store Connect credentials are incomplete")
+        collector_failed(
+            CollectorStatus.Collector.ASC,
+            attempted_at=collected_at,
+            error_class="not_configured",
+            detail="App Store Connect credentials incomplete",
+        )
         return {"versions": 0, "evidence": 0, "train_advances": 0}
     key_id, issuer_id, private_key = credentials
-    token = _asc_jwt(
-        key_id=key_id,
-        issuer_id=issuer_id,
-        private_key=private_key,
-    )
-    collected_at = timezone.now()
 
-    with httpx.Client(
-        base_url=ASC_API_BASE_URL,
-        timeout=ASC_TIMEOUT_SECONDS,
-        headers={"Authorization": f"Bearer {token}"},
-    ) as client:
-        app_id = _resolve_app_id(client)
-        # Latest build polling is deliberately metadata-only. The relationship
-        # include below attaches build number and processing state to versions.
-        _response_json(
-            client.get(
-                "/v1/builds",
-                params={
-                    "filter[app]": app_id,
-                    "sort": "-uploadedDate",
-                    "limit": 1,
-                    "fields[builds]": "version,processingState",
-                },
-            )
+    try:
+        token = _asc_jwt(
+            key_id=key_id,
+            issuer_id=issuer_id,
+            private_key=private_key,
         )
-        versions_payload = _response_json(
-            client.get(
-                f"/v1/apps/{app_id}/appStoreVersions",
-                params={
-                    "limit": 200,
-                    "include": "build,appStoreVersionPhasedRelease",
-                    "fields[appStoreVersions]": ("appStoreState,versionString,build,appStoreVersionPhasedRelease"),
-                    "fields[builds]": "version,processingState",
-                    "fields[appStoreVersionPhasedReleases]": ("phasedReleaseState,currentDayNumber"),
-                },
+        with httpx.Client(
+            base_url=ASC_API_BASE_URL,
+            timeout=ASC_TIMEOUT_SECONDS,
+            headers={"Authorization": f"Bearer {token}"},
+        ) as client:
+            app_id = _resolve_app_id(client)
+            _response_json(
+                client.get(
+                    "/v1/builds",
+                    params={
+                        "filter[app]": app_id,
+                        "sort": "-uploadedDate",
+                        "limit": 1,
+                        "fields[builds]": "version,processingState",
+                    },
+                )
             )
-        )
+            versions_payload, truncated = _version_pages(client, app_id)
 
-    inputs = _new_inputs(_version_inputs(versions_payload, collected_at=collected_at))
-    results = ingest_evidence_batch(inputs, now=collected_at)
-    advances = 0
-    targets = {
-        "WAITING_FOR_REVIEW": ReleaseTrain.Phase.SUBMITTED,
-        "IN_REVIEW": ReleaseTrain.Phase.IN_REVIEW,
-        "READY_FOR_SALE": ReleaseTrain.Phase.RELEASED,
-    }
-    for item, result in zip(inputs, results, strict=True):
-        state = item.payload.get("state")
-        target = targets.get(state)
-        if result.created and target is not None and item.fingerprint.startswith("asc:"):
-            advances += _advance_matching_train(
-                version_string=str(item.payload["versionString"]),
-                target_phase=target,
-                evidence=result.event,
-            )
-    versions = versions_payload.get("data")
+        inputs, snapshots = _version_changes(
+            versions_payload,
+            collected_at=collected_at,
+        )
+        results = ingest_evidence_batch(inputs, now=collected_at)
+        _upsert_snapshots(snapshots)
+        advances = 0
+        targets = {
+            "WAITING_FOR_REVIEW": ReleaseTrain.Phase.SUBMITTED,
+            "IN_REVIEW": ReleaseTrain.Phase.IN_REVIEW,
+            "READY_FOR_SALE": ReleaseTrain.Phase.RELEASED,
+            "READY_FOR_DISTRIBUTION": ReleaseTrain.Phase.RELEASED,
+        }
+        for item, result in zip(inputs, results, strict=True):
+            state = item.payload.get("state")
+            target = targets.get(state)
+            if result.created and target is not None:
+                advances += _advance_matching_train(
+                    version_string=str(item.payload["versionString"]),
+                    target_phase=target,
+                    evidence=result.event,
+                )
+    except Exception as exc:
+        collector_failed(
+            CollectorStatus.Collector.ASC,
+            attempted_at=collected_at,
+            error_class=type(exc).__name__,
+            detail="App Store Connect collection failed",
+        )
+        raise
+
+    if truncated:
+        collector_failed(
+            CollectorStatus.Collector.ASC,
+            attempted_at=collected_at,
+            error_class="truncated",
+            detail=f"pagination exceeded {ASC_MAX_PAGES} pages",
+        )
+    else:
+        collector_succeeded(
+            CollectorStatus.Collector.ASC,
+            attempted_at=collected_at,
+            detail=f"versions={len(snapshots)}",
+        )
     return {
-        "versions": len(versions) if isinstance(versions, list) else 0,
+        "versions": len(snapshots),
         "evidence": sum(result.created for result in results),
         "train_advances": advances,
     }

@@ -15,6 +15,7 @@ from apps.evals.suites.slo_snapshot import _metric_series
 from apps.steward.collectors.evals import collect_eval_evidence
 from apps.steward.models import (
     AlertState,
+    CollectorStatus,
     DigestRecord,
     EvidenceEvent,
     EvidenceSource,
@@ -151,7 +152,7 @@ def _trains(now: datetime) -> tuple[list[str], int]:
             .first()
         )
         upcoming = next_phase_for(train)
-        next_phase = upcoming.phase if upcoming is not None else "unknown"
+        next_phase = upcoming if upcoming is not None else "unknown"
         due = expectation.due_at.strftime("%Y-%m-%d") if expectation and expectation.due_at else "unknown"
         lines.append(f"- {train.product} {train.version_string}: {train.phase} ({age}d) — next: {next_phase} due {due}")
     return lines, len(trains)
@@ -315,7 +316,7 @@ def _repos(now: datetime) -> tuple[list[str], int]:
             "number",
         )[:3]:
             quiet_days = _age_days(now, pull_request.last_activity_at)
-            lines.append(f"  - #{pull_request.number} {_safe_text(pull_request.title, 50)} — {quiet_days}d quiet")
+            lines.append(f"  - #{pull_request.number} — {quiet_days}d quiet")
     return lines, len(repos)
 
 
@@ -339,7 +340,7 @@ def _changes(since: datetime) -> tuple[list[str], int]:
     return lines, len(events)
 
 
-def _integrity() -> tuple[list[str], int]:
+def _integrity(now: datetime) -> tuple[list[str], int]:
     items = TrackedItem.objects.filter(status__in=[TrackedItem.Status.ACTIVE, TrackedItem.Status.PARKED]).annotate(
         armed_expectations=Count(
             "expectations",
@@ -354,6 +355,30 @@ def _integrity() -> tuple[list[str], int]:
         else:
             issue = "parked with no revisit expectation"
         lines.append(f"- {_safe_text(item.title, 200)} — {issue}")
+    intervals = {
+        CollectorStatus.Collector.GITHUB: timedelta(minutes=30),
+        CollectorStatus.Collector.ASC: timedelta(hours=1),
+    }
+    statuses = {status.collector: status for status in CollectorStatus.objects.filter(collector__in=intervals)}
+    for collector, interval in intervals.items():
+        status = statuses.get(collector)
+        if status is None:
+            lines.append(f"- collector {collector}: never succeeded")
+            continue
+        if status.last_error_class == "not_configured":
+            lines.append(f"- collector {collector}: not_configured")
+            continue
+        if status.last_success_at is None:
+            lines.append(f"- collector {collector}: never succeeded")
+            continue
+        if status.last_success_at < now - 3 * interval:
+            lines.append(f"- collector {collector}: stale; last success {_age_label(now, status.last_success_at)}")
+            continue
+        if status.consecutive_failures:
+            lines.append(
+                f"- collector {collector}: {status.last_error_class or 'failed'} "
+                f"({status.consecutive_failures} consecutive)"
+            )
     return lines, len(lines)
 
 
@@ -362,7 +387,7 @@ def _omission_marker(omitted: int) -> str:
 
 
 def _minimum_section_block(title: str, lines: list[str], count: int) -> str:
-    return f"\n\n{title} ({count})\n{_omission_marker(len(lines))}"
+    return f"\n\n{title} ({count})\n{lines[0]}"
 
 
 def _render_section_block(
@@ -378,8 +403,8 @@ def _render_section_block(
     if len(lines) <= MAX_SECTION_LINES and len(all_lines) <= budget:
         return all_lines
 
-    kept: list[str] = []
-    for line in limited_lines:
+    kept: list[str] = [limited_lines[0]]
+    for line in limited_lines[1:]:
         proposed = [*kept, line]
         omitted = len(lines) - len(proposed)
         candidate = f"{heading}\n" + "\n".join(proposed) + f"\n{_omission_marker(omitted)}"
@@ -388,7 +413,12 @@ def _render_section_block(
         kept = proposed
 
     omitted = len(lines) - len(kept)
-    detail = "\n".join([*kept, _omission_marker(omitted)])
+    detail_lines = list(kept)
+    marker = _omission_marker(omitted)
+    candidate = f"{heading}\n" + "\n".join([*detail_lines, marker])
+    if omitted and len(candidate) <= budget:
+        detail_lines.append(marker)
+    detail = "\n".join(detail_lines)
     return f"{heading}\n{detail}"
 
 
@@ -428,12 +458,12 @@ def render_steward_daily_digest(
     stalled = _stalled(now)
     repos = _repos(now)
     changes = _changes(since)
-    integrity = _integrity()
+    integrity = _integrity(now)
 
     sections = [
         ("NEEDS YOU", *needs_you),
-        ("TRAINS", *trains),
         ("STALLED", *stalled),
+        ("TRAINS", *trains),
         ("SLO / EVALS", slo_evals, slo_evals_count),
         ("REPOS", *repos),
         ("CHANGES (24h)", *changes),

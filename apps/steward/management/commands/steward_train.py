@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 
 from apps.steward.models import EvidenceEvent, ReleaseTrain, TrackedItem
 from apps.steward.trains import advance_train, open_train
@@ -16,9 +17,12 @@ class Command(BaseCommand):
         actions.add_argument("--advance", nargs=2, metavar=("ID", "PHASE"))
         actions.add_argument("--list", action="store_true")
         parser.add_argument("--item", type=int, help="TrackedItem id to link when opening a train.")
+        parser.add_argument("--sha", help="40-character train head SHA to bind when advancing.")
 
     def handle(self, *args, **options):
         if options["list"]:
+            if options["sha"]:
+                raise CommandError("--sha can only be used with --advance.")
             for train in ReleaseTrain.objects.all():
                 self.stdout.write(
                     f"{train.id}\t{train.product}\t{train.version_string}\t{train.phase}\t"
@@ -27,6 +31,8 @@ class Command(BaseCommand):
             return
 
         if options["open"]:
+            if options["sha"]:
+                raise CommandError("--sha can only be used with --advance.")
             product, version = options["open"]
             if product not in TrackedItem.Product.values:
                 raise CommandError("Product is not a valid TrackedItem product.")
@@ -57,11 +63,19 @@ class Command(BaseCommand):
         except (ValueError, ReleaseTrain.DoesNotExist) as exc:
             raise CommandError("ReleaseTrain does not exist.") from exc
         try:
-            train = advance_train(
-                train,
-                phase,
-                provenance=EvidenceEvent.Provenance.MJ,
-            )
+            with transaction.atomic():
+                if options["sha"]:
+                    sha = options["sha"].strip().lower()
+                    if len(sha) != 40 or any(character not in "0123456789abcdef" for character in sha):
+                        raise CommandError("--sha must be exactly 40 hexadecimal characters.")
+                    train.head_sha = sha
+                    train.full_clean()
+                    train.save(update_fields=["head_sha", "updated_at"])
+                train = advance_train(
+                    train,
+                    phase,
+                    provenance=EvidenceEvent.Provenance.MJ,
+                )
         except ValidationError as exc:
             raise CommandError(str(exc)) from exc
         self.stdout.write(self.style.SUCCESS(f"advanced: {train.id} {train.phase}"))

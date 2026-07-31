@@ -8,6 +8,7 @@ from django.utils import timezone
 
 from apps.steward.digest import MAX_DIGEST_CHARS, render_steward_daily_digest
 from apps.steward.models import (
+    CollectorStatus,
     EvidenceEvent,
     EvidenceSource,
     Expectation,
@@ -45,7 +46,7 @@ class Phase2bDigestTests(TestCase):
             synced_at=now,
         )
 
-    def test_trains_then_stalled_and_repos_after_slo_evals(self):
+    def test_stalled_then_trains_and_repos_after_slo_evals_without_titles(self):
         now = timezone.now()
         train = open_train(
             product=TrackedItem.Product.NBHD_IOS,
@@ -111,7 +112,7 @@ class Phase2bDigestTests(TestCase):
 
         http_client.assert_not_called()
         requests_get.assert_not_called()
-        self.assertLess(text.index("TRAINS ("), text.index("STALLED ("))
+        self.assertLess(text.index("STALLED ("), text.index("TRAINS ("))
         self.assertLess(text.index("SLO / EVALS ("), text.index("REPOS ("))
         self.assertIn(
             "nbhd_ios 2.1.6: planned (2d) — next: integrating due",
@@ -121,7 +122,8 @@ class Phase2bDigestTests(TestCase):
             "nbhd-ios: 2 open PRs (2 stale>7d, 1 drafts>7d), dependabot: 1, main CI: failure",
             text,
         )
-        self.assertIn("#7 Stalehidden title — 9d quiet", text)
+        self.assertIn("#7 — 9d quiet", text)
+        self.assertNotIn("Stalehidden title", text)
         self.assertNotIn("Dependency bump must not be named", text)
         self.assertNotIn("\u202e", text)
         self.assertNotIn("\x1f", text)
@@ -163,3 +165,62 @@ class Phase2bDigestTests(TestCase):
         self.assertIn("TRAINS (30)", text)
         self.assertIn("REPOS (30)", text)
         self.assertIn("lines omitted", text)
+
+    def test_budget_floor_preserves_stall_identity_after_long_needs_you_and_trains(self):
+        now = timezone.now()
+        for index in range(10):
+            TrackedItem.objects.create(
+                product=TrackedItem.Product.PORTFOLIO,
+                kind=TrackedItem.Kind.BLOCKED_ON_MJ,
+                title=f"needs-{index}-" + ("x" * 180),
+                context="c" * 240,
+                status=TrackedItem.Status.BLOCKED,
+                provenance=EvidenceEvent.Provenance.MJ,
+                status_changed_at=now - timedelta(days=2),
+            )
+        for index in range(30):
+            open_train(
+                product=TrackedItem.Product.NBHD_IOS,
+                version_string=f"3.0.{index}",
+            )
+        Expectation.objects.create(
+            kind=Expectation.Kind.DEADLINE,
+            due_at=now - timedelta(days=1),
+            grace_s=3600,
+            evidence_source=EvidenceSource.MJ_ACK,
+            subject="adversarial-stall-subject",
+            state=Expectation.State.MISSED,
+            on_miss=Expectation.OnMiss.DIGEST,
+        )
+
+        text, _ = render_steward_daily_digest(now=now)
+
+        self.assertLessEqual(len(text), MAX_DIGEST_CHARS)
+        self.assertLess(text.index("NEEDS YOU ("), text.index("STALLED ("))
+        self.assertLess(text.index("STALLED ("), text.index("TRAINS ("))
+        self.assertIn("adversarial-stall-subject", text)
+
+    def test_integrity_renders_missing_not_configured_and_stale_collectors_without_repos(self):
+        now = timezone.now()
+        text, _ = render_steward_daily_digest(now=now)
+        self.assertIn("collector github: never succeeded", text)
+        self.assertIn("collector asc: never succeeded", text)
+        self.assertNotIn("REPOS (", text)
+
+        CollectorStatus.objects.create(
+            collector=CollectorStatus.Collector.GITHUB,
+            last_attempt_at=now,
+            last_error_class="not_configured",
+            consecutive_failures=1,
+        )
+        CollectorStatus.objects.create(
+            collector=CollectorStatus.Collector.ASC,
+            last_attempt_at=now,
+            last_success_at=now - timedelta(hours=4),
+        )
+
+        text, _ = render_steward_daily_digest(now=now)
+
+        self.assertIn("collector github: not_configured", text)
+        self.assertIn("collector asc: stale", text)
+        self.assertNotIn("REPOS (", text)

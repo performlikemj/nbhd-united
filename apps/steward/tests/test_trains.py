@@ -26,7 +26,7 @@ class ReleaseTrainTests(TestCase):
 
         expectation = Expectation.objects.get(subject=train_subject(train))
         self.assertEqual(expectation.kind, Expectation.Kind.DEADLINE)
-        self.assertEqual(expectation.evidence_source, EvidenceSource.GITHUB_STATE)
+        self.assertEqual(expectation.evidence_source, EvidenceSource.MJ_ACK)
         self.assertEqual(expectation.subject_item_id, None)
         self.assertEqual(expectation.grace_s, 6 * 60 * 60)
         self.assertEqual(expectation.on_miss, Expectation.OnMiss.DIGEST)
@@ -54,7 +54,7 @@ class ReleaseTrainTests(TestCase):
             state=Expectation.State.ARMED,
         )
         self.assertEqual(train.phase, ReleaseTrain.Phase.PUSHED)
-        self.assertEqual(current.evidence_source, EvidenceSource.CI_RUN)
+        self.assertEqual(current.evidence_source, EvidenceSource.MJ_ACK)
         self.assertEqual(current.due_at, now + timedelta(hours=2))
 
     def test_backward_transition_raises_without_retiring_expectation(self):
@@ -100,7 +100,6 @@ class ReleaseTrainTests(TestCase):
                 state=Expectation.State.ARMED,
             ).exists()
         )
-
         train = advance_train(
             train,
             ReleaseTrain.Phase.ROLLED_BACK,
@@ -113,6 +112,41 @@ class ReleaseTrainTests(TestCase):
                 state=Expectation.State.ARMED,
             ).exists()
         )
+
+    def test_rollback_requires_mj_and_a_phase_at_least_pushed(self):
+        planned = open_train(
+            product=TrackedItem.Product.NBHD_UNITED,
+            version_string="planned-rollback",
+        )
+        with self.assertRaises(ValidationError):
+            advance_train(
+                planned,
+                ReleaseTrain.Phase.ROLLED_BACK,
+                provenance=EvidenceEvent.Provenance.MJ,
+            )
+
+        pushed = open_train(
+            product=TrackedItem.Product.NBHD_UNITED,
+            version_string="collector-rollback",
+        )
+        pushed = advance_train(
+            pushed,
+            ReleaseTrain.Phase.PUSHED,
+            provenance=EvidenceEvent.Provenance.MJ,
+        )
+        with self.assertRaises(ValidationError):
+            advance_train(
+                pushed,
+                ReleaseTrain.Phase.ROLLED_BACK,
+                provenance=EvidenceEvent.Provenance.COLLECTOR,
+            )
+
+        rolled_back = advance_train(
+            pushed,
+            ReleaseTrain.Phase.ROLLED_BACK,
+            provenance=EvidenceEvent.Provenance.MJ,
+        )
+        self.assertEqual(rolled_back.phase, ReleaseTrain.Phase.ROLLED_BACK)
 
     def test_same_phase_is_a_noop(self):
         train = open_train(

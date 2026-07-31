@@ -45,10 +45,13 @@ class Phase2bCommandTests(TestCase):
             "--advance",
             str(train.pk),
             "pushed",
+            "--sha",
+            "a" * 40,
             stdout=StringIO(),
         )
         train.refresh_from_db()
         self.assertEqual(train.phase, ReleaseTrain.Phase.PUSHED)
+        self.assertEqual(train.head_sha, "a" * 40)
         output = StringIO()
         call_command("steward_train", "--list", stdout=output)
         self.assertIn("nbhd_ios\t2.1.6\tpushed", output.getvalue())

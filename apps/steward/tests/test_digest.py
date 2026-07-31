@@ -16,6 +16,7 @@ from apps.steward.digest import (
 )
 from apps.steward.models import (
     AlertState,
+    CollectorStatus,
     DigestRecord,
     EvidenceEvent,
     EvidenceSource,
@@ -163,7 +164,7 @@ class StewardDigestTests(TestCase):
         with patch("apps.steward.digest.MAX_SECTION_LINES", 100):
             text, _ = render_steward_daily_digest()
         self.assertLessEqual(len(text), MAX_DIGEST_CHARS)
-        self.assertRegex(text, r"… \+\d+ lines omitted$")
+        self.assertRegex(text, r"… \+\d+ lines omitted")
 
     def test_section_budgets_preserve_every_priority_section_under_pressure(self):
         now = timezone.now()
@@ -219,10 +220,19 @@ class StewardDigestTests(TestCase):
                 section.splitlines()[0],
                 rf"^{re.escape(heading)} \(\d+\)$",
             )
-            self.assertRegex(section, r"… \+\d+ lines omitted")
+            self.assertGreaterEqual(len(section.splitlines()), 2)
+            self.assertTrue(section.splitlines()[1].startswith("- "))
+        self.assertRegex(text, r"… \+\d+ lines omitted")
 
     def test_all_quiet_is_liveness_proof(self):
-        text, stats = render_steward_daily_digest()
+        now = timezone.now()
+        for collector in CollectorStatus.Collector.values:
+            CollectorStatus.objects.create(
+                collector=collector,
+                last_success_at=now,
+                last_attempt_at=now,
+            )
+        text, stats = render_steward_daily_digest(now=now)
         self.assertIn("ALL QUIET", text)
         self.assertIn("All quiet — 0 expectations armed, last sweep unknown.", text)
         self.assertEqual(sum(stats.values()), 0)

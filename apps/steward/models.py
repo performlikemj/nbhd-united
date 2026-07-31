@@ -115,6 +115,8 @@ class ReleaseTrain(models.Model):
     version_string = models.CharField(max_length=32)
     phase = models.CharField(max_length=24, choices=Phase.choices, default=Phase.PLANNED)
     phase_changed_at = models.DateTimeField(default=timezone.now)
+    head_sha = models.CharField(max_length=40, null=True, blank=True)
+    head_ref = models.CharField(max_length=120, null=True, blank=True)
     refs = models.JSONField(default=list, blank=True)
     tracked_item = models.ForeignKey(
         TrackedItem,
@@ -139,6 +141,10 @@ class ReleaseTrain(models.Model):
     def clean(self) -> None:
         super().clean()
         _validate_refs(self.refs)
+        if self.head_sha is not None and (
+            len(self.head_sha) != 40 or any(character not in "0123456789abcdef" for character in self.head_sha)
+        ):
+            raise ValidationError({"head_sha": "head_sha must be exactly 40 lowercase hexadecimal characters."})
         if self.tracked_item_id is not None and self.tracked_item.product != self.product:
             raise ValidationError({"tracked_item": "tracked item product must match the release train product."})
 
@@ -409,3 +415,45 @@ class RepoPullRequest(models.Model):
 
     def __str__(self) -> str:
         return f"{self.repo}#{self.number} ({self.state})"
+
+
+class AscVersionSnapshot(models.Model):
+    version_id = models.CharField(max_length=120, unique=True)
+    version_string = models.CharField(max_length=32)
+    app_state = models.CharField(max_length=60)
+    build_number = models.CharField(max_length=32, blank=True)
+    build_processing_state = models.CharField(max_length=60, blank=True)
+    phased_state = models.CharField(max_length=60, blank=True)
+    phased_day = models.PositiveSmallIntegerField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "steward_asc_version_snapshots"
+        ordering = ["version_string", "version_id"]
+
+    def state_tuple(self) -> tuple[str, str, str, str, str, int | None]:
+        return (
+            self.version_string,
+            self.app_state,
+            self.build_number,
+            self.build_processing_state,
+            self.phased_state,
+            self.phased_day,
+        )
+
+
+class CollectorStatus(models.Model):
+    class Collector(models.TextChoices):
+        GITHUB = "github", "GitHub"
+        ASC = "asc", "App Store Connect"
+
+    collector = models.CharField(max_length=16, choices=Collector.choices, unique=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_attempt_at = models.DateTimeField(default=timezone.now)
+    last_error_class = models.CharField(max_length=60, blank=True)
+    consecutive_failures = models.PositiveIntegerField(default=0)
+    detail = models.CharField(max_length=200, blank=True)
+
+    class Meta:
+        db_table = "steward_collector_statuses"
+        ordering = ["collector"]

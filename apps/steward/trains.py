@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import timedelta
 
 from django.core.exceptions import ValidationError
@@ -44,31 +43,25 @@ SLA_HOURS = {
 }
 
 
-@dataclass(frozen=True)
-class NextPhase:
-    phase: str
-    evidence_source: str
-
-
 _IOS_NEXT_PHASES = {
-    ReleaseTrain.Phase.PLANNED: NextPhase(ReleaseTrain.Phase.INTEGRATING, EvidenceSource.GITHUB_STATE),
-    ReleaseTrain.Phase.INTEGRATING: NextPhase(ReleaseTrain.Phase.VERIFIED_LOCAL, EvidenceSource.MJ_ACK),
-    ReleaseTrain.Phase.VERIFIED_LOCAL: NextPhase(ReleaseTrain.Phase.PUSHED, EvidenceSource.GITHUB_STATE),
-    ReleaseTrain.Phase.PUSHED: NextPhase(ReleaseTrain.Phase.CI_GREEN, EvidenceSource.CI_RUN),
-    ReleaseTrain.Phase.CI_GREEN: NextPhase(ReleaseTrain.Phase.TAGGED, EvidenceSource.GITHUB_STATE),
-    ReleaseTrain.Phase.TAGGED: NextPhase(ReleaseTrain.Phase.SUBMITTED, EvidenceSource.ASC_VERSION_STATE),
-    ReleaseTrain.Phase.SUBMITTED: NextPhase(ReleaseTrain.Phase.IN_REVIEW, EvidenceSource.ASC_VERSION_STATE),
-    ReleaseTrain.Phase.IN_REVIEW: NextPhase(ReleaseTrain.Phase.RELEASED, EvidenceSource.ASC_VERSION_STATE),
+    ReleaseTrain.Phase.PLANNED: ReleaseTrain.Phase.INTEGRATING,
+    ReleaseTrain.Phase.INTEGRATING: ReleaseTrain.Phase.VERIFIED_LOCAL,
+    ReleaseTrain.Phase.VERIFIED_LOCAL: ReleaseTrain.Phase.PUSHED,
+    ReleaseTrain.Phase.PUSHED: ReleaseTrain.Phase.CI_GREEN,
+    ReleaseTrain.Phase.CI_GREEN: ReleaseTrain.Phase.TAGGED,
+    ReleaseTrain.Phase.TAGGED: ReleaseTrain.Phase.SUBMITTED,
+    ReleaseTrain.Phase.SUBMITTED: ReleaseTrain.Phase.IN_REVIEW,
+    ReleaseTrain.Phase.IN_REVIEW: ReleaseTrain.Phase.RELEASED,
 }
 _DEFAULT_NEXT_PHASES = {
-    ReleaseTrain.Phase.PLANNED: NextPhase(ReleaseTrain.Phase.PUSHED, EvidenceSource.GITHUB_STATE),
-    ReleaseTrain.Phase.INTEGRATING: NextPhase(ReleaseTrain.Phase.PUSHED, EvidenceSource.GITHUB_STATE),
-    ReleaseTrain.Phase.VERIFIED_LOCAL: NextPhase(ReleaseTrain.Phase.PUSHED, EvidenceSource.GITHUB_STATE),
-    ReleaseTrain.Phase.PUSHED: NextPhase(ReleaseTrain.Phase.CI_GREEN, EvidenceSource.CI_RUN),
-    ReleaseTrain.Phase.CI_GREEN: NextPhase(ReleaseTrain.Phase.RELEASED, EvidenceSource.CI_RUN),
-    ReleaseTrain.Phase.TAGGED: NextPhase(ReleaseTrain.Phase.RELEASED, EvidenceSource.CI_RUN),
-    ReleaseTrain.Phase.SUBMITTED: NextPhase(ReleaseTrain.Phase.RELEASED, EvidenceSource.CI_RUN),
-    ReleaseTrain.Phase.IN_REVIEW: NextPhase(ReleaseTrain.Phase.RELEASED, EvidenceSource.CI_RUN),
+    ReleaseTrain.Phase.PLANNED: ReleaseTrain.Phase.PUSHED,
+    ReleaseTrain.Phase.INTEGRATING: ReleaseTrain.Phase.PUSHED,
+    ReleaseTrain.Phase.VERIFIED_LOCAL: ReleaseTrain.Phase.PUSHED,
+    ReleaseTrain.Phase.PUSHED: ReleaseTrain.Phase.CI_GREEN,
+    ReleaseTrain.Phase.CI_GREEN: ReleaseTrain.Phase.RELEASED,
+    ReleaseTrain.Phase.TAGGED: ReleaseTrain.Phase.RELEASED,
+    ReleaseTrain.Phase.SUBMITTED: ReleaseTrain.Phase.RELEASED,
+    ReleaseTrain.Phase.IN_REVIEW: ReleaseTrain.Phase.RELEASED,
 }
 
 
@@ -76,7 +69,7 @@ def train_subject(train: ReleaseTrain) -> str:
     return f"train:{train.product}:{train.version_string}"
 
 
-def next_phase_for(train: ReleaseTrain) -> NextPhase | None:
+def next_phase_for(train: ReleaseTrain) -> str | None:
     phases = _IOS_NEXT_PHASES if train.product == TrackedItem.Product.NBHD_IOS else _DEFAULT_NEXT_PHASES
     return phases.get(train.phase)
 
@@ -106,7 +99,7 @@ def _arm_next_expectation(train: ReleaseTrain, *, now) -> Expectation | None:
         kind=Expectation.Kind.DEADLINE,
         due_at=now + timedelta(hours=_sla_hours(train)),
         grace_s=6 * 60 * 60,
-        evidence_source=upcoming.evidence_source,
+        evidence_source=EvidenceSource.MJ_ACK,
         subject=train_subject(train),
         state=Expectation.State.ARMED,
         on_miss=Expectation.OnMiss.DIGEST,
@@ -163,7 +156,12 @@ def advance_train(
     locked = ReleaseTrain.objects.select_for_update().get(pk=train.pk)
     if locked.phase == new_phase:
         return locked
-    if new_phase != ReleaseTrain.Phase.ROLLED_BACK:
+    if new_phase == ReleaseTrain.Phase.ROLLED_BACK:
+        if provenance != EvidenceEvent.Provenance.MJ:
+            raise ValidationError({"provenance": "only MJ may roll back a release train."})
+        if PHASE_ORDER.index(locked.phase) < PHASE_ORDER.index(ReleaseTrain.Phase.PUSHED):
+            raise ValidationError({"phase": "release trains may roll back only from pushed or a later phase."})
+    else:
         if locked.phase == ReleaseTrain.Phase.ROLLED_BACK:
             raise ValidationError({"phase": "rolled-back release trains are terminal."})
         if PHASE_ORDER.index(new_phase) <= PHASE_ORDER.index(locked.phase):
