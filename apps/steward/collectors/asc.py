@@ -10,6 +10,8 @@ from typing import Any
 import httpx
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Case, Exists, IntegerField, OuterRef, Value, When
+from django.db.models.functions import Concat
 from django.utils import timezone
 
 from apps.steward.collectors.status import (
@@ -28,7 +30,7 @@ from apps.steward.models import (
     TrackedItem,
 )
 from apps.steward.services import EvidenceIngestInput, ingest_evidence_batch
-from apps.steward.trains import PHASE_ORDER, advance_train, train_evidence_epoch
+from apps.steward.trains import PHASE_ORDER, advance_train, phase_evidence_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -328,17 +330,43 @@ ASC_TRAIN_TARGETS = {
 
 def _recover_train_advances() -> int:
     advances = 0
+    candidate_events = EvidenceEvent.objects.annotate(
+        target_phase_position=Case(
+            *(
+                When(
+                    payload__state=state,
+                    then=Value(PHASE_ORDER.index(target_phase)),
+                )
+                for state, target_phase in ASC_TRAIN_TARGETS.items()
+            ),
+            default=Value(-1),
+            output_field=IntegerField(),
+        )
+    ).filter(
+        source=EvidenceSource.ASC_VERSION_STATE,
+        subject=Concat(Value("nbhd-ios-"), OuterRef("version_string")),
+        occurred_at__gte=OuterRef("phase_changed_at"),
+        target_phase_position__gt=OuterRef("phase_position"),
+    )
     trains = list(
         ReleaseTrain.objects.filter(
             product=TrackedItem.Product.NBHD_IOS,
         )
         .exclude(phase__in=[ReleaseTrain.Phase.RELEASED, ReleaseTrain.Phase.ROLLED_BACK])
+        .annotate(
+            phase_position=Case(
+                *(When(phase=phase, then=Value(position)) for position, phase in enumerate(PHASE_ORDER)),
+                output_field=IntegerField(),
+            )
+        )
+        .annotate(has_candidate_evidence=Exists(candidate_events))
+        .filter(has_candidate_evidence=True)
         .order_by("id")[:ASC_RECOVERY_MAX_TRAINS]
     )
     if not trains:
         return advances
     subjects = {f"nbhd-ios-{train.version_string}" for train in trains}
-    earliest_epoch = min(train_evidence_epoch(train) for train in trains)
+    earliest_epoch = min(phase_evidence_epoch(train) for train in trains)
     latest_events = {
         event.subject: event
         for event in EvidenceEvent.objects.filter(
@@ -351,7 +379,7 @@ def _recover_train_advances() -> int:
     }
     for train in trains:
         evidence = latest_events.get(f"nbhd-ios-{train.version_string}")
-        if evidence is None or evidence.occurred_at < train_evidence_epoch(train):
+        if evidence is None or evidence.occurred_at < phase_evidence_epoch(train):
             continue
         target_phase = ASC_TRAIN_TARGETS.get(evidence.payload.get("state"))
         if target_phase is None or PHASE_ORDER.index(target_phase) <= PHASE_ORDER.index(train.phase):

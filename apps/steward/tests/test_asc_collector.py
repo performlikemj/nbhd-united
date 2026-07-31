@@ -572,17 +572,92 @@ class ASCCollectorTests(TestCase):
         self.assertEqual(result["evidence"], 0)
         self.assertEqual(result["train_advances"], 1)
 
+    def test_recovery_uses_phase_epoch_after_ci_binding_change(self):
+        train = ReleaseTrain.objects.create(
+            product=TrackedItem.Product.NBHD_IOS,
+            version_string="epoch-target",
+        )
+        occurred_at = timezone.now()
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.ASC_VERSION_STATE,
+            subject="nbhd-ios-epoch-target",
+            occurred_at=occurred_at,
+            payload={"state": "WAITING_FOR_REVIEW"},
+            fingerprint="asc-phase-epoch-after-ci-binding-change",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+        train.head_sha = "a" * 40
+        with patch(
+            "apps.steward.models.timezone.now",
+            return_value=occurred_at + timedelta(minutes=1),
+        ):
+            train.save(update_fields=["head_sha"])
+
+        asc._recover_train_advances()
+
+        train.refresh_from_db()
+        self.assertEqual(train.phase, ReleaseTrain.Phase.SUBMITTED)
+
+    def test_recovery_selects_eligible_train_beyond_cap(self):
+        trains = [
+            open_train(
+                product=TrackedItem.Product.NBHD_IOS,
+                version_string=f"eligible-beyond-cap-{index}",
+            )
+            for index in range(21)
+        ]
+        target = trains[-1]
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.ASC_VERSION_STATE,
+            subject=f"nbhd-ios-{target.version_string}",
+            occurred_at=timezone.now(),
+            payload={"state": "WAITING_FOR_REVIEW"},
+            fingerprint="asc-eligible-beyond-cap",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+
+        advances = asc._recover_train_advances()
+
+        target.refresh_from_db()
+        trains[0].refresh_from_db()
+        self.assertEqual(target.phase, ReleaseTrain.Phase.SUBMITTED)
+        self.assertEqual(trains[0].phase, ReleaseTrain.Phase.PLANNED)
+        self.assertEqual(advances, 1)
+
     def test_recovery_sweep_caps_trains_and_uses_two_set_based_queries(self):
-        for index in range(21):
+        trains = [
             open_train(
                 product=TrackedItem.Product.NBHD_IOS,
                 version_string=f"bounded-{index}",
             )
+            for index in range(21)
+        ]
+        occurred_at = timezone.now()
+        EvidenceEvent.objects.bulk_create(
+            [
+                EvidenceEvent(
+                    source=EvidenceSource.ASC_VERSION_STATE,
+                    subject=f"nbhd-ios-{train.version_string}",
+                    occurred_at=occurred_at,
+                    payload={"state": "WAITING_FOR_REVIEW"},
+                    fingerprint=f"asc-bounded-{index}",
+                    trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+                    provenance=EvidenceEvent.Provenance.COLLECTOR,
+                )
+                for index, train in enumerate(trains)
+            ]
+        )
 
-        with self.assertNumQueries(2):
+        with (
+            patch("apps.steward.collectors.asc.advance_train") as advance,
+            self.assertNumQueries(2),
+        ):
             advances = asc._recover_train_advances()
 
-        self.assertEqual(advances, 0)
+        self.assertEqual(advances, 20)
+        self.assertEqual(advance.call_count, 20)
 
     @override_settings(**ASC_SETTINGS)
     @patch("jwt.encode", return_value="signed-test-jwt")

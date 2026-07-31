@@ -11,6 +11,9 @@ from typing import Any
 import httpx
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Case, CharField, Exists, F, OuterRef, Q, Value, When
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import Coalesce, Greatest
 from django.utils import timezone
 
 from apps.steward.collectors.status import (
@@ -34,7 +37,7 @@ from apps.steward.services import (
     ingest_evidence_batch,
     stored_evidence_fingerprint,
 )
-from apps.steward.trains import advance_train, train_evidence_epoch
+from apps.steward.trains import advance_train, ci_evidence_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -522,30 +525,69 @@ def _advance_ci_trains(
     when this collection window contains runs from exactly one default-branch workflow.
     """
     advances = 0
+    sole_workflow = next(iter(workflow_names)) if len(workflow_names) == 1 else None
     ambiguous = False
+    if sole_workflow is None:
+        ambiguous = (
+            ReleaseTrain.objects.filter(
+                product=product,
+                phase=ReleaseTrain.Phase.PUSHED,
+                head_sha__isnull=False,
+            )
+            .exclude(head_sha="")
+            .filter(Q(ci_workflow__isnull=True) | Q(ci_workflow=""))
+            .exists()
+        )
+
+    candidate_events = EvidenceEvent.objects.annotate(
+        evidence_head_sha=KeyTextTransform("head_sha", "payload"),
+        evidence_workflow=KeyTextTransform("workflow", "payload"),
+    ).filter(
+        source=EvidenceSource.CI_RUN,
+        subject=f"{repo}-main-ci",
+        occurred_at__gte=OuterRef("ci_epoch"),
+        payload__conclusion="success",
+        evidence_head_sha=OuterRef("head_sha"),
+        evidence_workflow=OuterRef("recovery_workflow"),
+    )
     trains = list(
         ReleaseTrain.objects.filter(
             product=product,
             phase=ReleaseTrain.Phase.PUSHED,
-        ).order_by("id")[:GITHUB_RECOVERY_MAX_TRAINS]
+            head_sha__isnull=False,
+        )
+        .exclude(head_sha="")
+        .annotate(
+            ci_epoch=Greatest(
+                F("phase_changed_at"),
+                Coalesce(F("ci_binding_changed_at"), F("phase_changed_at")),
+            ),
+            recovery_workflow=Case(
+                When(ci_workflow__isnull=True, then=Value(sole_workflow)),
+                When(ci_workflow="", then=Value(sole_workflow)),
+                default=F("ci_workflow"),
+                output_field=CharField(),
+            ),
+        )
+        .filter(recovery_workflow__isnull=False)
+        .annotate(has_candidate_evidence=Exists(candidate_events))
+        .filter(has_candidate_evidence=True)
+        .order_by("id")[:GITHUB_RECOVERY_MAX_TRAINS]
     )
     bindings: list[tuple[ReleaseTrain, str]] = []
     for train in trains:
-        if not train.head_sha:
-            continue
         if train.ci_workflow:
             workflow = train.ci_workflow
-        elif len(workflow_names) == 1:
-            workflow = next(iter(workflow_names))
+        elif sole_workflow is not None:
+            workflow = sole_workflow
         else:
-            ambiguous = True
             continue
         bindings.append((train, workflow))
 
     if not bindings:
         return advances, ambiguous
 
-    earliest_epoch = min(train_evidence_epoch(train) for train, _workflow in bindings)
+    earliest_epoch = min(ci_evidence_epoch(train) for train, _workflow in bindings)
     events = list(
         EvidenceEvent.objects.filter(
             source=EvidenceSource.CI_RUN,
@@ -573,7 +615,7 @@ def _advance_ci_trains(
 
     for train, workflow in bindings:
         evidence = latest_by_binding.get((train.head_sha or "", workflow))
-        if evidence is not None and evidence.occurred_at >= train_evidence_epoch(train):
+        if evidence is not None and evidence.occurred_at >= ci_evidence_epoch(train):
             advance_train(
                 train,
                 ReleaseTrain.Phase.CI_GREEN,

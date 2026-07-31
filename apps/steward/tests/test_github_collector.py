@@ -372,24 +372,91 @@ class GitHubCollectorTests(TestCase):
         self.assertEqual(train.phase, ReleaseTrain.Phase.PUSHED)
         self.assertEqual(result["train_advances"], 0)
 
+    def test_ci_recovery_selects_eligible_train_beyond_cap(self):
+        changed_at = timezone.now() - timedelta(minutes=1)
+        trains = []
+        for index in range(21):
+            train = self._pushed_train(
+                f"eligible-beyond-cap-{index}",
+                sha=f"{index:040x}",
+                changed_at=changed_at,
+            )
+            ReleaseTrain.objects.filter(pk=train.pk).update(ci_workflow="CI")
+            trains.append(train)
+        target = trains[-1]
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.CI_RUN,
+            subject="nbhd-united-main-ci",
+            occurred_at=timezone.now(),
+            payload={
+                "conclusion": "success",
+                "head_sha": target.head_sha,
+                "workflow": "CI",
+                "run_attempt": 1,
+            },
+            fingerprint="ci-eligible-beyond-cap",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+
+        advances, ambiguous = github._advance_ci_trains(
+            repo="nbhd-united",
+            product=TrackedItem.Product.NBHD_UNITED,
+            workflow_names=frozenset({"CI"}),
+        )
+
+        target.refresh_from_db()
+        trains[0].refresh_from_db()
+        self.assertEqual(target.phase, ReleaseTrain.Phase.CI_GREEN)
+        self.assertEqual(trains[0].phase, ReleaseTrain.Phase.PUSHED)
+        self.assertEqual(advances, 1)
+        self.assertFalse(ambiguous)
+
     def test_ci_recovery_caps_trains_and_uses_two_set_based_queries(self):
         changed_at = timezone.now() - timedelta(minutes=1)
+        trains = []
         for index in range(21):
-            self._pushed_train(
+            train = self._pushed_train(
                 f"bounded-{index}",
                 sha=f"{index:040x}",
                 changed_at=changed_at,
             )
+            ReleaseTrain.objects.filter(pk=train.pk).update(ci_workflow="CI")
+            trains.append(train)
+        occurred_at = timezone.now()
+        EvidenceEvent.objects.bulk_create(
+            [
+                EvidenceEvent(
+                    source=EvidenceSource.CI_RUN,
+                    subject="nbhd-united-main-ci",
+                    occurred_at=occurred_at,
+                    payload={
+                        "conclusion": "success",
+                        "head_sha": train.head_sha,
+                        "workflow": "CI",
+                        "run_attempt": 1,
+                    },
+                    fingerprint=f"ci-bounded-{index}",
+                    trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+                    provenance=EvidenceEvent.Provenance.COLLECTOR,
+                )
+                for index, train in enumerate(trains)
+            ]
+        )
 
-        with self.assertNumQueries(2):
+        with (
+            patch("apps.steward.collectors.github.advance_train") as advance,
+            self.assertNumQueries(2),
+        ):
             advances, ambiguous = github._advance_ci_trains(
                 repo="nbhd-united",
                 product=TrackedItem.Product.NBHD_UNITED,
                 workflow_names=frozenset({"CI"}),
             )
 
-        self.assertEqual(advances, 0)
+        self.assertEqual(advances, 20)
         self.assertFalse(ambiguous)
+        self.assertEqual(advance.call_count, 20)
 
     @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
     @patch("apps.steward.collectors.github.GITHUB_REPOS", TEST_REPOS)

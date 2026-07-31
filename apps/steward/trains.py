@@ -69,10 +69,14 @@ def train_subject(train: ReleaseTrain) -> str:
     return f"train:{train.product}:{train.version_string}"
 
 
-def train_evidence_epoch(train: ReleaseTrain) -> datetime:
+def phase_evidence_epoch(train: ReleaseTrain) -> datetime:
+    return train.phase_changed_at
+
+
+def ci_evidence_epoch(train: ReleaseTrain) -> datetime:
     if train.ci_binding_changed_at is None:
-        return train.phase_changed_at
-    return max(train.phase_changed_at, train.ci_binding_changed_at)
+        return phase_evidence_epoch(train)
+    return max(phase_evidence_epoch(train), train.ci_binding_changed_at)
 
 
 def next_phase_for(train: ReleaseTrain) -> str | None:
