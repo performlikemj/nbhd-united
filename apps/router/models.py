@@ -391,6 +391,41 @@ class ProactiveOutbound(models.Model):
         return f"ProactiveOutbound({self.channel}, tenant={self.tenant_id}, job={self.job_name or '-'})"
 
 
+class DeliveryAttempt(models.Model):
+    """Claims one degraded proactive-delivery occurrence before transport."""
+
+    class State(models.TextChoices):
+        CLAIMED = "claimed", "Transport not yet attempted"
+        SENT = "sent", "Transport confirmed acceptance"
+        FAILED = "failed", "Definitive failure; safe to retry"
+        AMBIGUOUS = "ambiguous", "Transport outcome unknown; do not retry"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "tenants.Tenant",
+        on_delete=models.CASCADE,
+        related_name="delivery_attempts",
+    )
+    occurrence_key = models.CharField(max_length=64, db_index=True)
+    job_name = models.CharField(max_length=128, blank=True, default="")
+    channel = models.CharField(max_length=16)
+    state = models.CharField(max_length=12, choices=State.choices, default=State.CLAIMED)
+    claimed_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    response_excerpt = models.CharField(max_length=500, blank=True, default="")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "occurrence_key"],
+                name="delivery_attempt_unique_tenant_occurrence",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"DeliveryAttempt({self.channel}, tenant={self.tenant_id}, state={self.state})"
+
+
 class LineOutboundMessage(models.Model):
     """Records LINE messages we've sent so quote-reply lookups can resolve
     a ``quotedMessageId`` on inbound webhook events back to the original

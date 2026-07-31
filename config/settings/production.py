@@ -154,6 +154,10 @@ SAUTAI_PLATFORM_SECRET = env("SAUTAI_PLATFORM_SECRET", default="")
 # match CRON_GHOST_SWEEP_TENANTS exactly (invariant §10).
 CRON_GHOST_SWEEP_TENANTS = env("CRON_GHOST_SWEEP_TENANTS", default="")
 
+# Proactive-delivery retry suppression. The Azure Container App env var name
+# intentionally matches the Django setting exactly (invariant §10).
+NBHD_DELIVERY_DEDUP = env.bool("NBHD_DELIVERY_DEDUP", default=False)
+
 # CORS — production uses the explicit allowlist from CORS_ALLOWED_ORIGINS in base.py.
 # Do NOT set CORS_ALLOW_ALL_ORIGINS here (that is dev-only).
 

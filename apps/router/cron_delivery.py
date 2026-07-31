@@ -6,10 +6,15 @@ the central Telegram bot or LINE Push API, depending on user preference.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from datetime import UTC, datetime
 
 import httpx
 from django.conf import settings
+from django.db import IntegrityError, transaction
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework import status as http_status
 from rest_framework.response import Response
@@ -26,6 +31,111 @@ RATE_LIMIT_PER_HOUR = 20
 
 # In-memory rate tracking (reset on process restart, which is fine)
 _rate_counts: dict[str, list[float]] = {}
+
+
+def degraded_occurrence_key(*, tenant_id, job_name: str, fired_at: datetime) -> str:
+    """Return the P0 receipt-hour identity for one proactive delivery."""
+    if timezone.is_naive(fired_at):
+        fired_at = fired_at.replace(tzinfo=UTC)
+    hour = fired_at.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    material = f"{tenant_id}|{job_name or ''}|{hour.isoformat()}"
+    return hashlib.sha256(material.encode()).hexdigest()
+
+
+def _claim_delivery_attempt(*, tenant, occurrence_key: str, job_name: str, channel: str):
+    """Claim a delivery key, or return the successful duplicate response."""
+    from apps.router.models import DeliveryAttempt
+
+    for _attempt in range(3):
+        try:
+            with transaction.atomic():
+                claimed = DeliveryAttempt.objects.create(
+                    tenant=tenant,
+                    occurrence_key=occurrence_key,
+                    job_name=(job_name or "")[:128],
+                    channel=channel,
+                )
+            return claimed, None
+        except IntegrityError:
+            # The insert is the concurrency primitive. Lock the winner only for
+            # inspection/release; the transport call happens after this commits.
+            with transaction.atomic():
+                prior = (
+                    DeliveryAttempt.objects.select_for_update()
+                    .filter(tenant=tenant, occurrence_key=occurrence_key)
+                    .first()
+                )
+                if prior is None:
+                    # A failed claimant may have released the row between our
+                    # unique violation and lookup. Retry the insert.
+                    continue
+                if prior.state != DeliveryAttempt.State.FAILED:
+                    logger.warning(
+                        "delivery_duplicate_suppressed tenant=%s occurrence=%s channel=%s prior_state=%s",
+                        str(tenant.id)[:8],
+                        occurrence_key[:12],
+                        channel,
+                        prior.state,
+                    )
+                    return None, Response(
+                        {
+                            "status": "duplicate_suppressed",
+                            "channel": channel,
+                            "prior_state": prior.state,
+                        }
+                    )
+
+                # A definitive failure is safe to retry. Delete and recreate
+                # while holding the row lock so only one retry takes ownership.
+                prior.delete()
+                claimed = DeliveryAttempt.objects.create(
+                    tenant=tenant,
+                    occurrence_key=occurrence_key,
+                    job_name=(job_name or "")[:128],
+                    channel=channel,
+                )
+                return claimed, None
+
+    raise RuntimeError("delivery claim changed repeatedly before it could be inspected")
+
+
+def _response_excerpt(response: Response | None) -> str:
+    if response is None:
+        return ""
+    data = getattr(response, "data", None)
+    try:
+        rendered = json.dumps(data, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        rendered = str(data)
+    return rendered[:500]
+
+
+def _resolve_delivery_attempt(attempt, *, state: str, response: Response | None = None, excerpt: str = "") -> None:
+    if attempt is None:
+        return
+
+    from apps.router.models import DeliveryAttempt
+
+    response_excerpt = (excerpt or _response_excerpt(response))[:500]
+    DeliveryAttempt.objects.filter(pk=attempt.pk, state=DeliveryAttempt.State.CLAIMED).update(
+        state=state,
+        resolved_at=timezone.now(),
+        response_excerpt=response_excerpt,
+    )
+    if state == DeliveryAttempt.State.AMBIGUOUS:
+        logger.error(
+            "delivery_outcome_ambiguous tenant=%s occurrence=%s channel=%s response=%s",
+            str(attempt.tenant_id)[:8],
+            attempt.occurrence_key[:12],
+            attempt.channel,
+            response_excerpt or "-",
+        )
+
+
+def _with_delivery_state(response: Response, state: str) -> Response:
+    """Attach transport certainty for the shared post-send resolver."""
+    response._nbhd_delivery_state = state
+    return response
 
 
 def _check_rate_limit(tenant_id: str) -> bool:
@@ -210,6 +320,8 @@ class CronDeliveryView(APIView):
     permission_classes = []
 
     def post(self, request, tenant_id):
+        received_at = timezone.now()
+
         # Auth
         try:
             validate_internal_runtime_request(
@@ -340,22 +452,47 @@ class CronDeliveryView(APIView):
         from apps.router.proactive_context import record_proactive_outbound
 
         job_name = request.headers.get("X-NBHD-Job-Name", "")
-        # The current runtime tool call carries job_name but no stable cron
-        # run/delivery identity. Do not add a public header in this persistence
-        # change; record_proactive_outbound uses its documented content fallback.
+        delivery_attempt = None
+        if getattr(settings, "NBHD_DELIVERY_DEDUP", False):
+            occurrence_key = degraded_occurrence_key(
+                tenant_id=tenant.id,
+                job_name=job_name,
+                fired_at=received_at,
+            )
+            delivery_attempt, duplicate_response = _claim_delivery_attempt(
+                tenant=tenant,
+                occurrence_key=occurrence_key,
+                job_name=job_name,
+                channel=channel,
+            )
+            if duplicate_response is not None:
+                return duplicate_response
+
+        # The current runtime carries job_name but no full schedule occurrence
+        # identity. P0's degraded receipt-hour claim above is intentionally
+        # private to delivery; structured-artifact persistence keeps its existing
+        # content fallback until the P1 runtime headers arrive.
         artifact_dedup_key = None
 
         # Route to appropriate channel
         if channel == "line":
             channel_user_id = tenant.user.line_user_id or ""
-            resp = self._send_via_line(
-                tenant_id=tid,
-                line_user_id=channel_user_id,
-                message_text=message_text,
-                # Store the quote-reply excerpt in placeholder space, not the
-                # rehydrated body we actually push.
-                excerpt_override=placeholder_message_text,
-            )
+            try:
+                resp = self._send_via_line(
+                    tenant_id=tid,
+                    line_user_id=channel_user_id,
+                    message_text=message_text,
+                    # Store the quote-reply excerpt in placeholder space, not the
+                    # rehydrated body we actually push.
+                    excerpt_override=placeholder_message_text,
+                )
+            except Exception as exc:
+                _resolve_delivery_attempt(
+                    delivery_attempt,
+                    state="ambiguous",
+                    excerpt=f"{type(exc).__name__}: {exc}",
+                )
+                raise
         elif channel == "app":
             # iOS-only user: there's no Telegram/LINE chat to send to — the
             # ProactiveOutbound row (the APNs push + the ?since= feed row it
@@ -370,36 +507,48 @@ class CronDeliveryView(APIView):
             # response on the row: a lost write returns a retryable 5xx and QStash
             # runs the cron again.
             channel_user_id = str(tenant.user_id)
-            row = record_proactive_outbound(
-                tenant=tenant,
-                channel=channel,
-                channel_user_id=channel_user_id,
-                # Placeholder-space at rest; record_proactive_outbound rehydrates
-                # only for the owner-facing iOS push it fires.
-                message_text=placeholder_message_text,
-                job_name=job_name,
-                # Parsed "View in Journal" deep-link (placeholder-space title);
-                # the ?since= feed rehydrates + renders it as a chip. None when
-                # the send carried no marker.
-                journal_link=journal_link,
-                quick_replies=quick_replies,
-                artifact_dedup_key=artifact_dedup_key,
-            )
+            try:
+                row = record_proactive_outbound(
+                    tenant=tenant,
+                    channel=channel,
+                    channel_user_id=channel_user_id,
+                    # Placeholder-space at rest; record_proactive_outbound rehydrates
+                    # only for the owner-facing iOS push it fires.
+                    message_text=placeholder_message_text,
+                    job_name=job_name,
+                    # Parsed "View in Journal" deep-link (placeholder-space title);
+                    # the ?since= feed rehydrates + renders it as a chip. None when
+                    # the send carried no marker.
+                    journal_link=journal_link,
+                    quick_replies=quick_replies,
+                    artifact_dedup_key=artifact_dedup_key,
+                )
+            except Exception as exc:
+                _resolve_delivery_attempt(
+                    delivery_attempt,
+                    state="ambiguous",
+                    excerpt=f"{type(exc).__name__}: {exc}",
+                )
+                raise
             if row is None:
                 logger.error(
                     "Cron delivery (app): ProactiveOutbound write failed for tenant %s — "
                     "nothing was delivered; returning 503 so the cron retries",
                     tid,
                 )
-                return Response(
+                response = Response(
                     {
                         "error": "app_delivery_not_recorded",
                         "detail": "Could not persist the app-feed row; nothing was delivered.",
                     },
                     status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
+                _resolve_delivery_attempt(delivery_attempt, state="failed", response=response)
+                return response
             _record_send(tid)
-            return Response({"status": "sent", "channel": "app"})
+            response = Response({"status": "sent", "channel": "app"})
+            _resolve_delivery_attempt(delivery_attempt, state="sent", response=response)
+            return response
         elif channel == "eval":
             # EXPLICIT EVAL-SINK TENANT: no Telegram, LINE, or APNs call is made
             # (record_proactive_outbound returns before the push dispatcher for
@@ -416,31 +565,41 @@ class CronDeliveryView(APIView):
             # write would be green theater — the exact failure the sink exists to
             # kill. A lost write returns a retryable 5xx instead.
             channel_user_id = str(tenant.user_id)
-            row = record_proactive_outbound(
-                tenant=tenant,
-                channel=channel,
-                channel_user_id=channel_user_id,
-                # Placeholder-space at rest; eval rows are never rehydrated or
-                # pushed anywhere.
-                message_text=placeholder_message_text,
-                job_name=job_name,
-                journal_link=journal_link,
-                quick_replies=quick_replies,
-                artifact_dedup_key=artifact_dedup_key,
-            )
+            try:
+                row = record_proactive_outbound(
+                    tenant=tenant,
+                    channel=channel,
+                    channel_user_id=channel_user_id,
+                    # Placeholder-space at rest; eval rows are never rehydrated or
+                    # pushed anywhere.
+                    message_text=placeholder_message_text,
+                    job_name=job_name,
+                    journal_link=journal_link,
+                    quick_replies=quick_replies,
+                    artifact_dedup_key=artifact_dedup_key,
+                )
+            except Exception as exc:
+                _resolve_delivery_attempt(
+                    delivery_attempt,
+                    state="ambiguous",
+                    excerpt=f"{type(exc).__name__}: {exc}",
+                )
+                raise
             if row is None:
                 logger.error(
                     "Cron delivery (eval): ProactiveOutbound write failed for tenant %s — "
                     "no evidence was recorded; returning 503 so the cron retries",
                     tid,
                 )
-                return Response(
+                response = Response(
                     {
                         "error": "eval_delivery_not_recorded",
                         "detail": "Could not persist the eval evidence row; nothing was recorded.",
                     },
                     status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
                 )
+                _resolve_delivery_attempt(delivery_attempt, state="failed", response=response)
+                return response
             _record_send(tid)
             # Counts + ids only — never the body (evals-directive INVARIANT #1).
             logger.info(
@@ -449,15 +608,25 @@ class CronDeliveryView(APIView):
                 (job_name or "-")[:64],
                 len(message_text),
             )
-            return Response({"status": "sent", "channel": "eval"})
+            response = Response({"status": "sent", "channel": "eval"})
+            _resolve_delivery_attempt(delivery_attempt, state="sent", response=response)
+            return response
         else:
             channel_user_id = str(tenant.user.telegram_chat_id or "")
-            resp = self._send_via_telegram(
-                tenant_id=tid,
-                chat_id=tenant.user.telegram_chat_id,
-                message_text=message_text,
-                parse_mode=parse_mode,
-            )
+            try:
+                resp = self._send_via_telegram(
+                    tenant_id=tid,
+                    chat_id=tenant.user.telegram_chat_id,
+                    message_text=message_text,
+                    parse_mode=parse_mode,
+                )
+            except Exception as exc:
+                _resolve_delivery_attempt(
+                    delivery_attempt,
+                    state="ambiguous",
+                    excerpt=f"{type(exc).__name__}: {exc}",
+                )
+                raise
 
         # Telegram/LINE only from here — the app and eval channels recorded,
         # counted and returned above (their row IS the delivery/evidence, so it
@@ -467,6 +636,15 @@ class CronDeliveryView(APIView):
         # runaway-loop throttle covers all channels uniformly.
         if 200 <= resp.status_code < 300:
             _record_send(tid)
+
+        from apps.router.models import DeliveryAttempt
+
+        delivery_state = getattr(
+            resp,
+            "_nbhd_delivery_state",
+            DeliveryAttempt.State.SENT if 200 <= resp.status_code < 300 else DeliveryAttempt.State.FAILED,
+        )
+        _resolve_delivery_attempt(delivery_attempt, state=delivery_state, response=resp)
 
         # Record the outbound for thread-continuity on the next inbound.
         # This is the deterministic replacement for the LLM-mediated
@@ -512,13 +690,19 @@ class CronDeliveryView(APIView):
         tenant_obj = Tenant.objects.filter(id=tenant_id).first()
         if tenant_obj is not None and suppresses_real_transport(tenant_obj):
             logger.error("eval-sink transport block: tenant=%s transport=telegram", tenant_obj.id)
-            return Response({"status": "blocked", "reason": "eval_sink"})
+            return _with_delivery_state(
+                Response({"status": "blocked", "reason": "eval_sink"}),
+                "failed",
+            )
         bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "")
         if not bot_token:
             logger.error("TELEGRAM_BOT_TOKEN not configured for cron delivery")
-            return Response(
-                {"error": "telegram_not_configured"},
-                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            return _with_delivery_state(
+                Response(
+                    {"error": "telegram_not_configured"},
+                    status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                ),
+                "failed",
             )
 
         api_base = f"https://api.telegram.org/bot{bot_token}"
@@ -562,17 +746,24 @@ class CronDeliveryView(APIView):
                             resp.status_code,
                             resp.text[:200],
                         )
-                        return Response(
-                            {"error": "telegram_send_failed", "detail": resp.text[:200]},
-                            status=http_status.HTTP_502_BAD_GATEWAY,
+                        state = "ambiguous" if sent_count or resp.status_code >= 500 else "failed"
+                        return _with_delivery_state(
+                            Response(
+                                {"error": "telegram_send_failed", "detail": resp.text[:200]},
+                                status=http_status.HTTP_502_BAD_GATEWAY,
+                            ),
+                            state,
                         )
                     sent_count += 1
 
         except httpx.HTTPError as exc:
             logger.exception("Cron delivery Telegram HTTP error for tenant %s", tenant_id)
-            return Response(
-                {"error": "telegram_send_failed", "detail": str(exc)[:200]},
-                status=http_status.HTTP_502_BAD_GATEWAY,
+            return _with_delivery_state(
+                Response(
+                    {"error": "telegram_send_failed", "detail": str(exc)[:200]},
+                    status=http_status.HTTP_502_BAD_GATEWAY,
+                ),
+                "ambiguous",
             )
 
         logger.info(
@@ -581,7 +772,10 @@ class CronDeliveryView(APIView):
             chat_id,
             sent_count,
         )
-        return Response({"status": "sent", "channel": "telegram", "chunks": sent_count})
+        return _with_delivery_state(
+            Response({"status": "sent", "channel": "telegram", "chunks": sent_count}),
+            "sent",
+        )
 
     def _send_via_line(
         self,
@@ -601,13 +795,19 @@ class CronDeliveryView(APIView):
         tenant_obj = Tenant.objects.filter(id=tenant_id).first()
         if tenant_obj is not None and suppresses_real_transport(tenant_obj):
             logger.error("eval-sink transport block: tenant=%s transport=line", tenant_obj.id)
-            return Response({"status": "blocked", "reason": "eval_sink"})
+            return _with_delivery_state(
+                Response({"status": "blocked", "reason": "eval_sink"}),
+                "failed",
+            )
         access_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "")
         if not access_token:
             logger.error("LINE_CHANNEL_ACCESS_TOKEN not configured for cron delivery")
-            return Response(
-                {"error": "line_not_configured"},
-                status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            return _with_delivery_state(
+                Response(
+                    {"error": "line_not_configured"},
+                    status=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+                ),
+                "failed",
             )
 
         import re
@@ -667,9 +867,13 @@ class CronDeliveryView(APIView):
                         from apps.router.line_webhook import _maybe_trip_monthly_quota
 
                         _maybe_trip_monthly_quota(resp.status_code, resp.text)
-                        return Response(
-                            {"error": "line_send_failed", "detail": resp.text[:200]},
-                            status=http_status.HTTP_502_BAD_GATEWAY,
+                        state = "ambiguous" if sent_count or resp.status_code >= 500 else "failed"
+                        return _with_delivery_state(
+                            Response(
+                                {"error": "line_send_failed", "detail": resp.text[:200]},
+                                status=http_status.HTTP_502_BAD_GATEWAY,
+                            ),
+                            state,
                         )
                     if tenant_obj:
                         try:
@@ -683,9 +887,12 @@ class CronDeliveryView(APIView):
 
         except httpx.HTTPError as exc:
             logger.exception("Cron delivery LINE HTTP error for tenant %s", tenant_id)
-            return Response(
-                {"error": "line_send_failed", "detail": str(exc)[:200]},
-                status=http_status.HTTP_502_BAD_GATEWAY,
+            return _with_delivery_state(
+                Response(
+                    {"error": "line_send_failed", "detail": str(exc)[:200]},
+                    status=http_status.HTTP_502_BAD_GATEWAY,
+                ),
+                "ambiguous",
             )
 
         logger.info(
@@ -694,7 +901,10 @@ class CronDeliveryView(APIView):
             line_user_id[:8] if line_user_id else "?",
             sent_count,
         )
-        return Response({"status": "sent", "channel": "line", "chunks": sent_count})
+        return _with_delivery_state(
+            Response({"status": "sent", "channel": "line", "chunks": sent_count}),
+            "sent",
+        )
 
 
 def _split_message(text: str, max_len: int = 4096) -> list[str]:
