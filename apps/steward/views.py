@@ -29,6 +29,13 @@ _EXTERNAL_EVIDENCE_SOURCES = frozenset(
         EvidenceSource.ASC_VERSION_STATE,
     }
 )
+_INTERNAL_EVIDENCE_SOURCES = frozenset(
+    {
+        EvidenceSource.GITHUB_STATE,
+        EvidenceSource.EVAL_RUN,
+        EvidenceSource.EVAL_SLO,
+    }
+)
 
 
 def _auth_error_response(exc: StewardAuthError) -> JsonResponse:
@@ -163,7 +170,7 @@ def evidence(request: HttpRequest) -> JsonResponse:
     source = body.get("source")
     if source not in EvidenceSource.values:
         return JsonResponse({"error": "source is not a valid Steward evidence source."}, status=400)
-    if source not in _EXTERNAL_EVIDENCE_SOURCES:
+    if source in _INTERNAL_EVIDENCE_SOURCES or source not in _EXTERNAL_EVIDENCE_SOURCES:
         return JsonResponse(
             {"error": "source is internal-only and cannot be submitted over HTTP."},
             status=403,

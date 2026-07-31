@@ -203,6 +203,10 @@ STEWARD_TELEGRAM_BOT_TOKEN = env("STEWARD_TELEGRAM_BOT_TOKEN", default="")
 STEWARD_TELEGRAM_CHAT_ID = env("STEWARD_TELEGRAM_CHAT_ID", default="")
 STEWARD_ALERT_EMAIL = env("STEWARD_ALERT_EMAIL", default="")
 STEWARD_DEADMAN_URL = env("STEWARD_DEADMAN_URL", default="")
+STEWARD_GITHUB_TOKEN = env("STEWARD_GITHUB_TOKEN", default="")
+STEWARD_ASC_KEY_ID = env("STEWARD_ASC_KEY_ID", default="")
+STEWARD_ASC_ISSUER_ID = env("STEWARD_ASC_ISSUER_ID", default="")
+STEWARD_ASC_PRIVATE_KEY = env("STEWARD_ASC_PRIVATE_KEY", default="").replace("\\n", "\n")
 
 # Core AI on-device model (iOS 27 bring-your-own model) delivery.
 # Django serves only the small JWT-gated manifest (GET /api/v1/coreai/model/manifest/);

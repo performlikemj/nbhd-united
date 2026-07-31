@@ -405,6 +405,10 @@ TASK_MAP = {
     "steward_sweep": "apps.steward.sweep.run_steward_sweep",
     # Daily facts-only PM digest; refreshes eval/SLO intake before delivery.
     "steward_daily_digest": "apps.steward.digest.run_steward_daily_digest",
+    # Read-only portfolio collectors; both are bounded and disabled when their
+    # dedicated credentials are absent.
+    "steward_collect_github": "apps.steward.tasks.steward_collect_github_task",
+    "steward_collect_asc": "apps.steward.tasks.steward_collect_asc_task",
 }
 
 

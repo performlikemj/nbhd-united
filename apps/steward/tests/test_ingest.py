@@ -117,7 +117,7 @@ class StewardIngestTests(TestCase):
         self.assertEqual(response.status_code, 400)
 
     def test_internal_sources_are_rejected_over_http(self):
-        for source in ("eval_run", "eval_slo", "mj_ack"):
+        for source in ("eval_run", "eval_slo", "github_state", "mj_ack"):
             with self.subTest(source=source):
                 response = self._post(
                     "/api/steward/evidence/",

@@ -97,6 +97,10 @@ SYSTEM_CRONS = [
     ("steward-sweep", "*/5 * * * *", "/api/cron/trigger/steward_sweep/"),
     # Daily at 22:35 UTC (07:35 JST) — facts-only portfolio PM digest.
     ("steward-daily-digest", "35 22 * * *", "/api/cron/trigger/steward_daily_digest/"),
+    # Every 30 minutes — bounded read-only GitHub portfolio state collection.
+    ("steward-collect-github", "*/30 * * * *", "/api/cron/trigger/steward_collect_github/"),
+    # Hourly at :18 — App Store Connect version/build/phased-release collection.
+    ("steward-collect-asc", "18 * * * *", "/api/cron/trigger/steward_collect_asc/"),
     # Every hour — retire spent kind:"at" rows after their late-fire grace so
     # their names can be reused. Uses QStash's default maintenance retries.
     ("expire-finished-at-crons", "0 * * * *", "/api/cron/trigger/expire_finished_at_crons/"),

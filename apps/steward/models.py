@@ -8,6 +8,7 @@ from django.utils import timezone
 class EvidenceSource(models.TextChoices):
     GATEWAY_HEARTBEAT = "gateway_heartbeat", "Gateway heartbeat"
     CI_RUN = "ci_run", "CI run"
+    GITHUB_STATE = "github_state", "GitHub state"
     ASC_VERSION_STATE = "asc_version_state", "App Store Connect version state"
     MJ_ACK = "mj_ack", "MJ acknowledgement"
     EVAL_RUN = "eval_run", "Eval run"
@@ -95,6 +96,63 @@ class TrackedItem(models.Model):
 
     def __str__(self) -> str:
         return f"{self.product}:{self.title} ({self.status})"
+
+
+class ReleaseTrain(models.Model):
+    class Phase(models.TextChoices):
+        PLANNED = "planned", "Planned"
+        INTEGRATING = "integrating", "Integrating"
+        VERIFIED_LOCAL = "verified_local", "Verified locally"
+        PUSHED = "pushed", "Pushed"
+        CI_GREEN = "ci_green", "CI green"
+        TAGGED = "tagged", "Tagged"
+        SUBMITTED = "submitted", "Submitted"
+        IN_REVIEW = "in_review", "In review"
+        RELEASED = "released", "Released"
+        ROLLED_BACK = "rolled_back", "Rolled back"
+
+    product = models.CharField(max_length=24, choices=TrackedItem.Product.choices)
+    version_string = models.CharField(max_length=32)
+    phase = models.CharField(max_length=24, choices=Phase.choices, default=Phase.PLANNED)
+    phase_changed_at = models.DateTimeField(default=timezone.now)
+    refs = models.JSONField(default=list, blank=True)
+    tracked_item = models.ForeignKey(
+        TrackedItem,
+        on_delete=models.PROTECT,
+        related_name="release_trains",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "steward_release_trains"
+        ordering = ["product", "version_string", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product", "version_string"],
+                name="steward_release_train_product_version_unique",
+            )
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        _validate_refs(self.refs)
+        if self.tracked_item_id is not None and self.tracked_item.product != self.product:
+            raise ValidationError({"tracked_item": "tracked item product must match the release train product."})
+
+    def save(self, *args, **kwargs) -> None:
+        if not self._state.adding:
+            previous_phase = type(self).objects.filter(pk=self.pk).values_list("phase", flat=True).first()
+            if previous_phase != self.phase and not getattr(self, "_phase_transition_allowed", False):
+                raise ValidationError(
+                    {"phase": "ReleaseTrain phase changes must use apps.steward.trains.advance_train()."}
+                )
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.product}:{self.version_string} ({self.phase})"
 
 
 class Expectation(models.Model):
@@ -316,3 +374,38 @@ class DigestRecord(models.Model):
         super().clean()
         if len(self.body) > 8192:
             raise ValidationError({"body": "body must be at most 8192 characters."})
+
+
+class RepoPullRequest(models.Model):
+    class State(models.TextChoices):
+        OPEN = "open", "Open"
+        MERGED = "merged", "Merged"
+        CLOSED = "closed", "Closed"
+
+    repo = models.CharField(max_length=60)
+    number = models.PositiveIntegerField()
+    title = models.CharField(max_length=140)
+    author = models.CharField(max_length=60)
+    draft = models.BooleanField(default=False)
+    state = models.CharField(max_length=12, choices=State.choices)
+    opened_at = models.DateTimeField()
+    last_activity_at = models.DateTimeField()
+    is_dependabot = models.BooleanField(default=False)
+    head_ref = models.CharField(max_length=120)
+    synced_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "steward_repo_pull_requests"
+        ordering = ["repo", "number"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["repo", "number"],
+                name="steward_repo_pull_request_repo_number_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["repo", "state", "last_activity_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.repo}#{self.number} ({self.state})"
