@@ -1451,6 +1451,258 @@ def scrub_thread_titles(request):
     )
 
 
+def _parse_internal_ops_body(request, allowed_fields: set[str]):
+    try:
+        body = json.loads(request.body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None, JsonResponse({"error": "Invalid JSON body"}, status=400)
+    if not isinstance(body, dict):
+        return None, JsonResponse({"error": "JSON body must be an object"}, status=400)
+
+    unknown = sorted(set(body) - allowed_fields)
+    if unknown:
+        return None, JsonResponse(
+            {
+                "error": "Unknown fields",
+                "fields": unknown,
+            },
+            status=400,
+        )
+
+    missing = sorted(allowed_fields - set(body))
+    if missing:
+        return None, JsonResponse(
+            {
+                "error": "Missing required fields",
+                "fields": missing,
+            },
+            status=400,
+        )
+    return body, None
+
+
+@csrf_exempt
+def repair_fuel_rows(request):
+    """Retire unmanaged-prefix CronJob rows for one tenant.
+
+    Auth: X-Deploy-Secret header.
+    URL: /api/cron/repair-fuel-rows/
+    Body: {"tenant_id": "<uuid>", "confirm": false}
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not deploy_secret or not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(service_role=True)
+
+    body, error = _parse_internal_ops_body(request, {"tenant_id", "confirm"})
+    if error:
+        return error
+    if not isinstance(body["confirm"], bool):
+        return JsonResponse({"error": "confirm must be a boolean"}, status=400)
+
+    from django.core.management.base import CommandError
+
+    from apps.cron.management.commands.repair_fuel_cron_rows import (
+        repair_fuel_cron_rows,
+    )
+
+    try:
+        result = repair_fuel_cron_rows(
+            tenant_id=body["tenant_id"],
+            confirm=body["confirm"],
+        )
+    except CommandError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    logger.info(
+        "repair_fuel_rows: completed (tenant_id=%s, confirm=%s, matched=%d, retired=%d, already_retired=%d)",
+        body["tenant_id"],
+        body["confirm"],
+        result["matched"],
+        result["retired"],
+        result["already_retired"],
+    )
+    return JsonResponse(
+        {
+            "ok": True,
+            "tenant_id": str(body["tenant_id"]),
+            "confirm": body["confirm"],
+            **result,
+        }
+    )
+
+
+@csrf_exempt
+def retire_quarantined_rows(request):
+    """Remove share-observed cron jobs by exact gateway ID.
+
+    Auth: X-Deploy-Secret header.
+    URL: /api/cron/retire-quarantined/
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not deploy_secret or not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(service_role=True)
+
+    fields = {"tenant_id", "name", "bucket", "limit", "confirm"}
+    body, error = _parse_internal_ops_body(request, fields)
+    if error:
+        return error
+    if not isinstance(body["name"], str) or not body["name"].strip():
+        return JsonResponse({"error": "name must be a non-empty string"}, status=400)
+    if not isinstance(body["bucket"], str) or body["bucket"] not in {"duplicate", "expired"}:
+        return JsonResponse({"error": "bucket must be duplicate or expired"}, status=400)
+    if isinstance(body["limit"], bool) or not isinstance(body["limit"], int):
+        return JsonResponse({"error": "limit must be an integer"}, status=400)
+    if not isinstance(body["confirm"], bool):
+        return JsonResponse({"error": "confirm must be a boolean"}, status=400)
+
+    from django.core.management.base import CommandError
+
+    from apps.cron.management.commands.retire_quarantined import (
+        retire_quarantined,
+    )
+
+    try:
+        result = retire_quarantined(
+            tenant_id=body["tenant_id"],
+            name=body["name"],
+            bucket=body["bucket"],
+            limit=body["limit"],
+            confirm=body["confirm"],
+        )
+    except CommandError as exc:
+        return JsonResponse({"error": str(exc)}, status=400)
+
+    logger.info(
+        "retire_quarantined_rows: completed (tenant_id=%s, name=%s, bucket=%s, confirm=%s, "
+        "matched=%d, removed=%d, failed=%d, remaining=%d)",
+        body["tenant_id"],
+        body["name"],
+        body["bucket"],
+        body["confirm"],
+        result["matched"],
+        result["removed"],
+        result["failed"],
+        result["remaining"],
+    )
+    return JsonResponse(
+        {
+            "ok": True,
+            "tenant_id": str(body["tenant_id"]),
+            "name": body["name"],
+            "bucket": body["bucket"],
+            "confirm": body["confirm"],
+            **{key: result[key] for key in ("matched", "removed", "failed", "remaining", "removed_ids")},
+        }
+    )
+
+
+@csrf_exempt
+def delete_registry_cron(request):
+    """Delete one managed registry row and its bound gateway job.
+
+    Auth: X-Deploy-Secret header.
+    URL: /api/cron/delete-registry-cron/
+    Body: {"tenant_id": "<uuid>", "name": "cron name"}
+    """
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not deploy_secret or not provided or provided != deploy_secret:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.tenants.middleware import set_rls_context
+
+    set_rls_context(service_role=True)
+
+    body, error = _parse_internal_ops_body(request, {"tenant_id", "name"})
+    if error:
+        return error
+    if not isinstance(body["name"], str) or not body["name"].strip():
+        return JsonResponse({"error": "name must be a non-empty string"}, status=400)
+
+    try:
+        tenant = Tenant.objects.get(pk=body["tenant_id"])
+    except (Tenant.DoesNotExist, ValueError, TypeError):
+        return JsonResponse({"error": "Cron job not found"}, status=404)
+
+    from apps.cron import postgres_canonical as pg
+    from apps.cron.gateway_client import GatewayError, cron_remove
+    from apps.cron.models import CronJob
+
+    row = CronJob.objects.filter(
+        tenant=tenant,
+        name=body["name"],
+        managed=True,
+    ).first()
+    if not row:
+        logger.info(
+            "delete_registry_cron: no match (tenant_id=%s, name=%s)",
+            body["tenant_id"],
+            body["name"],
+        )
+        return JsonResponse({"error": "Cron job not found"}, status=404)
+
+    deleted = {
+        "id": str(row.id),
+        "name": row.name,
+        "gateway_job_id": row.gateway_job_id or None,
+    }
+    gateway_job_id = row.gateway_job_id
+    payload, code = pg.delete_job(tenant, row.name)
+    if code != 204:
+        return JsonResponse(payload, status=code)
+
+    gateway_removal_attempted = bool(gateway_job_id)
+    gateway_removal_succeeded = False
+    if gateway_removal_attempted:
+        try:
+            cron_remove(tenant, job_id=gateway_job_id)
+        except GatewayError:
+            logger.warning(
+                "delete_registry_cron: bound gateway removal failed (tenant_id=%s, name=%s)",
+                body["tenant_id"],
+                body["name"],
+            )
+        else:
+            gateway_removal_succeeded = True
+
+    logger.info(
+        "delete_registry_cron: completed (tenant_id=%s, name=%s, gateway_removal_attempted=%s, "
+        "gateway_removal_succeeded=%s)",
+        body["tenant_id"],
+        body["name"],
+        gateway_removal_attempted,
+        gateway_removal_succeeded,
+    )
+    return JsonResponse(
+        {
+            "ok": True,
+            "tenant_id": str(tenant.id),
+            "deleted": deleted,
+            "gateway_removal_attempted": gateway_removal_attempted,
+            "gateway_removal_succeeded": gateway_removal_succeeded,
+        }
+    )
+
+
 @csrf_exempt
 @require_POST
 def broadcast_message(request):
