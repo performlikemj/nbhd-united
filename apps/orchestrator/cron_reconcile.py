@@ -251,7 +251,9 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         )
         return summary
 
-    desired_rows = list(CronJob.objects.filter(tenant=tenant, managed=True))
+    all_desired_rows = list(CronJob.objects.filter(tenant=tenant, managed=True))
+    desired_rows = [row for row in all_desired_rows if not _is_unmanaged_cron(row.name)]
+    skipped_unmanaged_desired = len(all_desired_rows) - len(desired_rows)
     desired_by_name: dict[str, dict] = {row.name: _row_to_cron_dict(row) for row in desired_rows}
     desired_rows_by_name: dict[str, CronJob] = {row.name: row for row in desired_rows}
 
@@ -491,7 +493,7 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
 
     logger.info(
         "regenerate_tenant_crons: tenant %s — added=%d removed=%d recreated=%d unchanged=%d "
-        "stuck_reaped=%d cap_reaped=%d at_pending=%d errors=%d",
+        "stuck_reaped=%d cap_reaped=%d at_pending=%d skipped_unmanaged_desired=%d errors=%d",
         str(tenant.id)[:8],
         summary["added"],
         summary["removed"],
@@ -500,6 +502,7 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         summary["stuck_reaped"],
         summary.get("cap_reaped", 0),
         summary["at_pending"],
+        skipped_unmanaged_desired,
         summary["errors"],
     )
     return summary
