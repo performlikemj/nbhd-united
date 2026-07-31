@@ -31,6 +31,17 @@ urlpatterns = [
     ),
     path("run-reseed-lessons/", views.run_reseed_lessons, name="cron-run-reseed-lessons"),
     path("scrub-thread-titles/", views.scrub_thread_titles, name="cron-scrub-thread-titles"),
+    path("repair-fuel-rows/", views.repair_fuel_rows, name="cron-repair-fuel-rows"),
+    path(
+        "retire-quarantined/",
+        views.retire_quarantined_rows,
+        name="cron-retire-quarantined",
+    ),
+    path(
+        "delete-registry-cron/",
+        views.delete_registry_cron,
+        name="cron-delete-registry-cron",
+    ),
     path("verify-gateway-tools/", views.verify_gateway_tools, name="cron-verify-gateway-tools"),
     path("register-system-crons/", views.register_system_crons, name="cron-register-system-crons"),
     path("backfill-welcomes/", views.backfill_welcomes, name="cron-backfill-welcomes"),

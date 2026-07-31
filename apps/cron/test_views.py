@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.cron.models import CronJob, CronJobSource
+from apps.cron.share_observer import ShareObservation
 from apps.crypto import audit, box
 from apps.crypto.keys import mint_and_wrap_dek
 from apps.router import enc_columns
@@ -333,6 +335,291 @@ class ScrubThreadTitlesCronTest(TestCase):
         self.assertEqual(target_thread.title, _SAFE_PIN_TITLE)
         self.assertEqual(other_thread.title, _RAW_PIN_TITLE)
         self.assertEqual(self._reveal_title(other_thread), _RAW_PIN_TITLE)
+
+
+@override_settings(DEPLOY_SECRET="test-deploy-secret")
+class CronOpsTriggerTest(TestCase):
+    def setUp(self):
+        self.client = APIClient()
+        user = User.objects.create_user(
+            username="cron-ops-trigger",
+            email="cron-ops-trigger@example.com",
+        )
+        self.tenant = Tenant.objects.create(
+            user=user,
+            status=Tenant.Status.ACTIVE,
+            container_id="oc-cron-ops-trigger",
+            container_fqdn="oc-cron-ops-trigger.internal",
+            postgres_cron_canonical=True,
+        )
+
+    def _post(self, path: str, body: dict, *, authenticated: bool = True):
+        headers = {"HTTP_X_DEPLOY_SECRET": "test-deploy-secret"} if authenticated else {}
+        return self.client.post(
+            path,
+            data=json.dumps(body),
+            content_type="application/json",
+            **headers,
+        )
+
+    def _observation(self, jobs: list[dict]) -> ShareObservation:
+        now = timezone.now()
+        return ShareObservation(
+            tenant_id=str(self.tenant.id),
+            jobs=tuple(jobs),
+            jobs_state={job["id"]: {} for job in jobs},
+            count=len(jobs),
+            digest="a" * 64,
+            mtime=now,
+            observed_at=now,
+        )
+
+    def test_auth_required_for_all_ops_triggers(self):
+        requests = (
+            (
+                "/api/cron/repair-fuel-rows/",
+                {"tenant_id": str(self.tenant.id), "confirm": False},
+            ),
+            (
+                "/api/cron/retire-quarantined/",
+                {
+                    "tenant_id": str(self.tenant.id),
+                    "name": "_fuel:welcome",
+                    "bucket": "duplicate",
+                    "limit": 1,
+                    "confirm": False,
+                },
+            ),
+            (
+                "/api/cron/delete-registry-cron/",
+                {"tenant_id": str(self.tenant.id), "name": "Reminder"},
+            ),
+        )
+
+        for path, body in requests:
+            with self.subTest(path=path):
+                response = self._post(path, body, authenticated=False)
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(response.json(), {"error": "Unauthorized"})
+
+    def test_unknown_fields_are_rejected_for_all_ops_triggers(self):
+        requests = (
+            (
+                "/api/cron/repair-fuel-rows/",
+                {"tenant_id": str(self.tenant.id), "confirm": False},
+            ),
+            (
+                "/api/cron/retire-quarantined/",
+                {
+                    "tenant_id": str(self.tenant.id),
+                    "name": "_fuel:welcome",
+                    "bucket": "duplicate",
+                    "limit": 1,
+                    "confirm": False,
+                },
+            ),
+            (
+                "/api/cron/delete-registry-cron/",
+                {"tenant_id": str(self.tenant.id), "name": "Reminder"},
+            ),
+        )
+
+        for path, body in requests:
+            with self.subTest(path=path):
+                response = self._post(path, {**body, "surprise": True})
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.json(),
+                    {"error": "Unknown fields", "fields": ["surprise"]},
+                )
+
+    def test_repair_fuel_rows_dry_run_reports_names_without_writing(self):
+        row = CronJob.objects.create(
+            tenant=self.tenant,
+            name="_fuel:welcome",
+            data={},
+            source=CronJobSource.SYSTEM,
+            managed=True,
+            enabled=True,
+        )
+
+        response = self._post(
+            "/api/cron/repair-fuel-rows/",
+            {"tenant_id": str(self.tenant.id), "confirm": False},
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            {key: response.json()[key] for key in ("matched", "retired", "already_retired")},
+            {"matched": 1, "retired": 0, "already_retired": 0},
+        )
+        self.assertEqual([item["name"] for item in response.json()["rows"]], ["_fuel:welcome"])
+        row.refresh_from_db()
+        self.assertTrue(row.enabled)
+        self.assertTrue(row.managed)
+
+    def test_repair_fuel_rows_confirm_retires_matches(self):
+        row = CronJob.objects.create(
+            tenant=self.tenant,
+            name="_sync:stale",
+            data={},
+            source=CronJobSource.AGENT,
+            managed=True,
+            enabled=True,
+        )
+
+        response = self._post(
+            "/api/cron/repair-fuel-rows/",
+            {"tenant_id": str(self.tenant.id), "confirm": True},
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["retired"], 1)
+        row.refresh_from_db()
+        self.assertFalse(row.enabled)
+        self.assertFalse(row.managed)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    @patch("apps.cron.share_observer.observe_share")
+    def test_retire_quarantined_dry_run_lists_without_removing(self, mock_observe, mock_gateway):
+        mock_observe.return_value = self._observation(
+            [
+                {"id": "job-1", "name": "_fuel:welcome"},
+                {"id": "other", "name": "Other"},
+            ]
+        )
+
+        response = self._post(
+            "/api/cron/retire-quarantined/",
+            {
+                "tenant_id": str(self.tenant.id),
+                "name": "_fuel:welcome",
+                "bucket": "duplicate",
+                "limit": 10,
+                "confirm": False,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            {key: response.json()[key] for key in ("matched", "removed", "failed", "remaining", "removed_ids")},
+            {
+                "matched": 1,
+                "removed": 0,
+                "failed": 0,
+                "remaining": 1,
+                "removed_ids": [],
+            },
+        )
+        mock_gateway.assert_not_called()
+
+    @patch("apps.cron.management.commands.retire_quarantined.time.sleep")
+    @patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={})
+    @patch("apps.cron.share_observer.observe_share")
+    def test_retire_quarantined_confirm_removes_exact_ids(
+        self,
+        mock_observe,
+        mock_gateway,
+        mock_sleep,
+    ):
+        mock_observe.return_value = self._observation(
+            [
+                {"id": "job-1", "name": "_fuel:welcome"},
+                {"id": "job-2", "name": "_fuel:welcome"},
+            ]
+        )
+
+        response = self._post(
+            "/api/cron/retire-quarantined/",
+            {
+                "tenant_id": str(self.tenant.id),
+                "name": "_fuel:welcome",
+                "bucket": "expired",
+                "limit": 2,
+                "confirm": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["removed_ids"], ["job-1", "job-2"])
+        self.assertEqual(
+            mock_gateway.call_args_list,
+            [
+                call(self.tenant, "cron.remove", {"jobId": "job-1"}),
+                call(self.tenant, "cron.remove", {"jobId": "job-2"}),
+            ],
+        )
+        mock_sleep.assert_called_once()
+
+    @patch("apps.cron.share_observer.observe_share")
+    def test_retire_quarantined_hard_cap_is_enforced_before_observation(self, mock_observe):
+        response = self._post(
+            "/api/cron/retire-quarantined/",
+            {
+                "tenant_id": str(self.tenant.id),
+                "name": "_fuel:welcome",
+                "bucket": "duplicate",
+                "limit": 101,
+                "confirm": True,
+            },
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "--limit must be between 1 and 100")
+        mock_observe.assert_not_called()
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool", return_value={})
+    def test_delete_registry_cron_deletes_managed_row_and_bound_gateway_id(self, mock_gateway):
+        row = CronJob.objects.create(
+            tenant=self.tenant,
+            name="Zombie Reminder",
+            gateway_job_id="gateway-job-1",
+            data={},
+            source=CronJobSource.USER,
+            managed=True,
+            enabled=True,
+        )
+
+        response = self._post(
+            "/api/cron/delete-registry-cron/",
+            {"tenant_id": str(self.tenant.id), "name": row.name},
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            response.json()["deleted"],
+            {
+                "id": str(row.id),
+                "name": "Zombie Reminder",
+                "gateway_job_id": "gateway-job-1",
+            },
+        )
+        self.assertTrue(response.json()["gateway_removal_succeeded"])
+        self.assertFalse(CronJob.objects.filter(pk=row.pk).exists())
+        mock_gateway.assert_called_once_with(
+            self.tenant,
+            "cron.remove",
+            {"jobId": "gateway-job-1"},
+        )
+
+    def test_delete_registry_cron_returns_404_when_no_managed_row_matches(self):
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="Unmanaged",
+            data={},
+            source=CronJobSource.AGENT,
+            managed=False,
+            enabled=True,
+        )
+
+        response = self._post(
+            "/api/cron/delete-registry-cron/",
+            {"tenant_id": str(self.tenant.id), "name": "Unmanaged"},
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json(), {"error": "Cron job not found"})
+        self.assertTrue(CronJob.objects.filter(tenant=self.tenant, name="Unmanaged").exists())
 
 
 class ExpireTrialsCronTest(TestCase):
