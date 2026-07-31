@@ -1256,6 +1256,7 @@ class RegenerateTenantCronsTest(TestCase):
                 "cap_reaped": 0,
                 "at_pending": 0,
                 "duplicates_reaped": 0,
+                "capped": False,
             },
         )
 

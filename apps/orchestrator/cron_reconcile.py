@@ -76,6 +76,12 @@ _AT_CRON_REAP_GRACE_MS = 60 * 60 * 1000  # 1 hour
 _AT_CRON_HARD_CAP = 50
 _AT_CRON_CATASTROPHIC_CAP = 200
 
+# Reconciliation mutation caps. A recreate is one logical operation even
+# though the gateway implements it as remove+add. Recreates also consume the
+# tighter removal budget because they include the destructive half.
+MAX_OPS_PER_PASS = 25
+MAX_REMOVES_PER_PASS = 10
+
 
 def _is_unmanaged_cron(job: dict | str) -> bool:
     """Return True if the reconciler must not own this gateway-side cron.
@@ -190,6 +196,80 @@ def _log_at_cron_cap_breach(tenant: Tenant, *, severity: str, summary: str, deta
         )
 
 
+def _log_reconcile_op_cap(
+    tenant: Tenant,
+    *,
+    planned_adds: int,
+    planned_removes: int,
+    planned_recreates: int,
+    selected_adds: int,
+    selected_removes: int,
+    selected_recreates: int,
+) -> None:
+    """Record a capped reconcile plan, deduped while unresolved."""
+    try:
+        from apps.platform_logs.models import PlatformIssueLog
+
+        if PlatformIssueLog.objects.filter(
+            tenant=tenant,
+            category=PlatformIssueLog.Category.OTHER,
+            tool_name="cron.reconcile",
+            resolved=False,
+        ).exists():
+            return
+        severity = (
+            PlatformIssueLog.Severity.HIGH
+            if planned_removes + planned_recreates > MAX_REMOVES_PER_PASS
+            else PlatformIssueLog.Severity.MEDIUM
+        )
+        PlatformIssueLog.objects.create(
+            tenant=tenant,
+            category=PlatformIssueLog.Category.OTHER,
+            severity=severity,
+            tool_name="cron.reconcile",
+            summary="Tenant cron reconcile plan exceeded per-pass operation caps",
+            detail=(
+                f"Planned adds={planned_adds}, removes={planned_removes}, "
+                f"recreates={planned_recreates}; selected adds={selected_adds}, "
+                f"removes={selected_removes}, recreates={selected_recreates}. "
+                f"Limits: total={MAX_OPS_PER_PASS}, removals={MAX_REMOVES_PER_PASS}. "
+                "Remaining work is deferred to subsequent reconcile passes."
+            ),
+        )
+    except Exception:
+        # Telemetry must never break the reconciler. Best-effort only.
+        logger.exception(
+            "regenerate_tenant_crons: failed to record operation-cap breach for tenant %s",
+            tenant.id,
+        )
+
+
+def _cap_reconcile_plan(
+    to_add: list[dict],
+    to_remove: list[dict],
+    to_recreate: list[tuple[str, dict, dict]],
+) -> tuple[list[dict], list[dict], list[tuple[str, dict, dict]], bool]:
+    """Return a stable, capped plan with adds selected before removals."""
+    stable_adds = sorted(to_add, key=lambda job: job.get("name") or "")
+    stable_removes = sorted(to_remove, key=lambda job: job.get("name") or "")
+    stable_recreates = sorted(to_recreate, key=lambda item: item[0])
+
+    selected_adds = stable_adds[:MAX_OPS_PER_PASS]
+    ops_remaining = MAX_OPS_PER_PASS - len(selected_adds)
+
+    selected_removes = stable_removes[: min(ops_remaining, MAX_REMOVES_PER_PASS)]
+    ops_remaining -= len(selected_removes)
+    removes_remaining = MAX_REMOVES_PER_PASS - len(selected_removes)
+
+    selected_recreates = stable_recreates[: min(ops_remaining, removes_remaining)]
+    capped = (
+        len(selected_adds) != len(stable_adds)
+        or len(selected_removes) != len(stable_removes)
+        or len(selected_recreates) != len(stable_recreates)
+    )
+    return selected_adds, selected_removes, selected_recreates, capped
+
+
 def _row_to_cron_dict(row) -> dict:
     """Render a ``CronJob`` row into the gateway-shape dict for ``cron.add``.
 
@@ -220,7 +300,7 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
       - Container-start hook (``RuntimeContainerStartedView``) — fires
         immediately after a container reports readiness
 
-    Returns a dict with ``{added, removed, unchanged, errors}`` for telemetry.
+    Returns a dict with ``{added, removed, unchanged, errors, capped}`` for telemetry.
     No-op if the tenant is not on the Postgres-canonical flow (returns
     zeros without touching the gateway).
     """
@@ -242,6 +322,7 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         "cap_reaped": 0,
         "at_pending": 0,
         "duplicates_reaped": 0,
+        "capped": False,
     }
 
     if not getattr(tenant, "postgres_cron_canonical", False):
@@ -273,7 +354,19 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         summary["errors"] += 1
         return summary
 
-    current_jobs = _extract_cron_jobs(list_result) or []
+    current_jobs = _extract_cron_jobs(list_result)
+    if current_jobs is None or any(
+        not isinstance(job, dict) or not isinstance(job.get("name"), str) or not job["name"] for job in current_jobs
+    ):
+        summary["errors"] += 1
+        logger.error(
+            "regenerate_tenant_crons: invalid cron.list observation for tenant %s "
+            "(response_type=%s) — aborting without mutations; errors=%d",
+            tenant.id,
+            type(list_result).__name__,
+            summary["errors"],
+        )
+        return summary
 
     # Pre-pass: reap same-name duplicates from the gateway. The historical
     # reconciler diffed by name only — ``current_managed = {name: job}``
@@ -367,6 +460,39 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
             )
 
     summary["unchanged"] = len(desired_by_name) - len(to_add) - len(to_recreate)
+
+    planned_adds = len(to_add)
+    planned_removes = len(to_remove)
+    planned_recreates = len(to_recreate)
+    to_add, to_remove, to_recreate, summary["capped"] = _cap_reconcile_plan(
+        to_add,
+        to_remove,
+        to_recreate,
+    )
+    if summary["capped"]:
+        logger.warning(
+            "regenerate_tenant_crons: tenant %s operation plan capped=true — "
+            "planned(add=%d remove=%d recreate=%d) selected(add=%d remove=%d recreate=%d) "
+            "limits(total=%d removes=%d)",
+            tenant.id,
+            planned_adds,
+            planned_removes,
+            planned_recreates,
+            len(to_add),
+            len(to_remove),
+            len(to_recreate),
+            MAX_OPS_PER_PASS,
+            MAX_REMOVES_PER_PASS,
+        )
+        _log_reconcile_op_cap(
+            tenant,
+            planned_adds=planned_adds,
+            planned_removes=planned_removes,
+            planned_recreates=planned_recreates,
+            selected_adds=len(to_add),
+            selected_removes=len(to_remove),
+            selected_recreates=len(to_recreate),
+        )
 
     # Janitor: reap ``kind:"at"`` jobs whose fire time is more than the grace
     # window in the past. Covers agent-crashed-mid-fire and
@@ -493,7 +619,8 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
 
     logger.info(
         "regenerate_tenant_crons: tenant %s — added=%d removed=%d recreated=%d unchanged=%d "
-        "stuck_reaped=%d cap_reaped=%d at_pending=%d skipped_unmanaged_desired=%d errors=%d",
+        "stuck_reaped=%d cap_reaped=%d at_pending=%d skipped_unmanaged_desired=%d "
+        "capped=%s errors=%d",
         str(tenant.id)[:8],
         summary["added"],
         summary["removed"],
@@ -503,6 +630,7 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         summary.get("cap_reaped", 0),
         summary["at_pending"],
         skipped_unmanaged_desired,
+        str(summary["capped"]).lower(),
         summary["errors"],
     )
     return summary
@@ -514,4 +642,6 @@ __all__ = [
     "_is_past_due_at_cron",
     "_pending_at_crons",
     "_row_to_cron_dict",
+    "MAX_OPS_PER_PASS",
+    "MAX_REMOVES_PER_PASS",
 ]
