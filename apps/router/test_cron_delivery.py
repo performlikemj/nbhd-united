@@ -1,16 +1,22 @@
 """Tests for cron delivery endpoint."""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, PropertyMock, patch
 from zoneinfo import ZoneInfo
 
+import httpx
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.cron.models import CronJob
 from apps.journal.models import Document
-from apps.router.cron_delivery import _rate_counts, _split_message
-from apps.router.models import ProactiveOutbound
+from apps.router.cron_delivery import (
+    _claim_delivery_attempt,
+    _rate_counts,
+    _split_message,
+    degraded_occurrence_key,
+)
+from apps.router.models import DeliveryAttempt, ProactiveOutbound
 from apps.tenants.models import Tenant
 from apps.tenants.test_utils import seed_internal_key
 
@@ -305,6 +311,238 @@ class CronDeliveryViewTest(TestCase):
         stored = ProactiveOutbound.objects.get(tenant=self.tenant)
         self.assertIsNone(stored.journal_link)
         self.assertIsNone(stored.quick_replies)
+
+
+@override_settings(
+    TELEGRAM_BOT_TOKEN="test-token",
+    LINE_CHANNEL_ACCESS_TOKEN="line-token",
+    NBHD_INTERNAL_API_KEY="test-key",
+    NBHD_DELIVERY_DEDUP=True,
+    NBHD_DISABLE_BACKGROUND_THREADS=True,
+)
+class DeliveryDedupTest(TestCase):
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+
+        User = get_user_model()
+        self.user = User.objects.create_user(username="delivery-dedup", password="pass")
+        self.user.telegram_chat_id = 12345
+        self.user.save(update_fields=["telegram_chat_id"])
+        self.tenant = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
+        seed_internal_key(self.tenant)
+        self.client = APIClient()
+        self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"
+        self.fired_at = datetime(2026, 7, 31, 3, 17, 42, tzinfo=ZoneInfo("UTC"))
+        _rate_counts.clear()
+
+    def _headers(self, job_name="hourly-heartbeat"):
+        return {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+            "HTTP_X_NBHD_JOB_NAME": job_name,
+        }
+
+    def _post(self, message="Remember to stretch.", job_name="hourly-heartbeat"):
+        with patch("apps.router.cron_delivery.timezone.now", return_value=self.fired_at):
+            return self.client.post(
+                self.url,
+                {"message": message},
+                format="json",
+                **self._headers(job_name),
+            )
+
+    def _successful_http(self, mock_client_cls):
+        mock_http = MagicMock()
+        mock_response = MagicMock()
+        mock_response.is_success = True
+        mock_response.status_code = 200
+        mock_response.text = ""
+        mock_response.json.return_value = {}
+        mock_http.post.return_value = mock_response
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+        return mock_http
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_duplicate_suppression_telegram(self, mock_client_cls):
+        mock_http = self._successful_http(mock_client_cls)
+
+        first = self._post()
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING") as logs:
+            duplicate = self._post()
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(duplicate.json()["status"], "duplicate_suppressed")
+        self.assertEqual(duplicate.json()["prior_state"], DeliveryAttempt.State.SENT)
+        self.assertEqual(mock_http.post.call_count, 1)
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(DeliveryAttempt.objects.get(tenant=self.tenant).state, DeliveryAttempt.State.SENT)
+        self.assertIn("delivery_duplicate_suppressed", logs.output[0])
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_duplicate_suppression_line(self, mock_client_cls):
+        self.user.telegram_chat_id = None
+        self.user.line_user_id = "Udedup-line"
+        self.user.save(update_fields=["telegram_chat_id", "line_user_id"])
+        mock_http = self._successful_http(mock_client_cls)
+
+        first = self._post()
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            duplicate = self._post()
+
+        self.assertEqual(first.json()["channel"], "line")
+        self.assertEqual(duplicate.json()["status"], "duplicate_suppressed")
+        self.assertEqual(mock_http.post.call_count, 1)
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 1)
+        attempt = DeliveryAttempt.objects.get(tenant=self.tenant)
+        self.assertEqual(attempt.channel, "line")
+        self.assertEqual(attempt.state, DeliveryAttempt.State.SENT)
+
+    @patch("apps.router.proactive_context._dispatch_ios_push")
+    def test_duplicate_suppression_app_inbox(self, mock_push):
+        from apps.router.models import DeviceToken
+
+        DeviceToken.objects.create(tenant=self.tenant, user=self.user, token="d" * 64)
+
+        first = self._post()
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            duplicate = self._post()
+
+        self.assertEqual(first.json()["channel"], "app")
+        self.assertEqual(duplicate.json()["status"], "duplicate_suppressed")
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(mock_push.call_count, 1)
+        attempt = DeliveryAttempt.objects.get(tenant=self.tenant)
+        self.assertEqual(attempt.channel, "app")
+        self.assertEqual(attempt.state, DeliveryAttempt.State.SENT)
+
+    def test_duplicate_suppression_eval_sink(self):
+        self.tenant.is_eval_sink = True
+        self.tenant.save(update_fields=["is_eval_sink"])
+
+        first = self._post()
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            duplicate = self._post()
+
+        self.assertEqual(first.json()["channel"], "eval")
+        self.assertEqual(duplicate.json()["status"], "duplicate_suppressed")
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 1)
+        attempt = DeliveryAttempt.objects.get(tenant=self.tenant)
+        self.assertEqual(attempt.channel, "eval")
+        self.assertEqual(attempt.state, DeliveryAttempt.State.SENT)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_failed_attempt_releases_claim(self, mock_client_cls):
+        mock_http = self._successful_http(mock_client_cls)
+
+        with override_settings(TELEGRAM_BOT_TOKEN=""):
+            failed = self._post()
+        failed_attempt = DeliveryAttempt.objects.get(tenant=self.tenant)
+        failed_attempt_id = failed_attempt.id
+
+        retried = self._post()
+
+        self.assertEqual(failed.status_code, 503)
+        self.assertEqual(failed_attempt.state, DeliveryAttempt.State.FAILED)
+        self.assertIsNotNone(failed_attempt.resolved_at)
+        self.assertEqual(retried.status_code, 200)
+        self.assertEqual(retried.json()["status"], "sent")
+        self.assertEqual(mock_http.post.call_count, 1)
+        retried_attempt = DeliveryAttempt.objects.get(tenant=self.tenant)
+        self.assertNotEqual(retried_attempt.id, failed_attempt_id)
+        self.assertEqual(retried_attempt.state, DeliveryAttempt.State.SENT)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_ambiguous_attempt_does_not_release_claim(self, mock_client_cls):
+        mock_http = MagicMock()
+        mock_http.post.side_effect = httpx.ReadTimeout("response timed out after handoff")
+        mock_http.__enter__ = MagicMock(return_value=mock_http)
+        mock_http.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_http
+
+        with self.assertLogs("apps.router.cron_delivery", level="ERROR") as first_logs:
+            ambiguous = self._post()
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            duplicate = self._post()
+
+        self.assertEqual(ambiguous.status_code, 502)
+        self.assertEqual(duplicate.status_code, 200)
+        self.assertEqual(duplicate.json()["status"], "duplicate_suppressed")
+        self.assertEqual(duplicate.json()["prior_state"], DeliveryAttempt.State.AMBIGUOUS)
+        self.assertEqual(mock_http.post.call_count, 1)
+        attempt = DeliveryAttempt.objects.get(tenant=self.tenant)
+        self.assertEqual(attempt.state, DeliveryAttempt.State.AMBIGUOUS)
+        self.assertIsNotNone(attempt.resolved_at)
+        self.assertIn("delivery_outcome_ambiguous", "\n".join(first_logs.output))
+
+    @override_settings(NBHD_DELIVERY_DEDUP=False)
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_flag_off_is_passthrough_without_attempt_records(self, mock_client_cls):
+        mock_http = self._successful_http(mock_client_cls)
+
+        first = self._post()
+        second = self._post()
+
+        self.assertEqual(first.json()["status"], "sent")
+        self.assertEqual(second.json()["status"], "sent")
+        self.assertEqual(mock_http.post.call_count, 2)
+        self.assertEqual(DeliveryAttempt.objects.filter(tenant=self.tenant).count(), 0)
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 2)
+
+    def test_degraded_key_is_stable_within_hour_and_changes_across_hours(self):
+        within_hour = self.fired_at + timedelta(minutes=41, seconds=17)
+        next_hour = self.fired_at + timedelta(hours=1)
+
+        key = degraded_occurrence_key(
+            tenant_id=self.tenant.id,
+            job_name="hourly-heartbeat",
+            fired_at=self.fired_at,
+        )
+
+        self.assertEqual(
+            key,
+            degraded_occurrence_key(
+                tenant_id=self.tenant.id,
+                job_name="hourly-heartbeat",
+                fired_at=within_hour,
+            ),
+        )
+        self.assertNotEqual(
+            key,
+            degraded_occurrence_key(
+                tenant_id=self.tenant.id,
+                job_name="hourly-heartbeat",
+                fired_at=next_hour,
+            ),
+        )
+
+    def test_unique_constraint_claim_race_suppresses_existing_claim(self):
+        occurrence_key = degraded_occurrence_key(
+            tenant_id=self.tenant.id,
+            job_name="hourly-heartbeat",
+            fired_at=self.fired_at,
+        )
+        winner = DeliveryAttempt.objects.create(
+            tenant=self.tenant,
+            occurrence_key=occurrence_key,
+            job_name="hourly-heartbeat",
+            channel="telegram",
+        )
+
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            claimed, duplicate = _claim_delivery_attempt(
+                tenant=self.tenant,
+                occurrence_key=occurrence_key,
+                job_name="hourly-heartbeat",
+                channel="telegram",
+            )
+
+        self.assertIsNone(claimed)
+        self.assertEqual(duplicate.data["status"], "duplicate_suppressed")
+        self.assertEqual(duplicate.data["prior_state"], DeliveryAttempt.State.CLAIMED)
+        self.assertEqual(DeliveryAttempt.objects.get(tenant=self.tenant).id, winner.id)
 
 
 @override_settings(
