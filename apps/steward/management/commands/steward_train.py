@@ -18,11 +18,18 @@ class Command(BaseCommand):
         actions.add_argument("--list", action="store_true")
         parser.add_argument("--item", type=int, help="TrackedItem id to link when opening a train.")
         parser.add_argument("--sha", help="40-character train head SHA to bind when advancing.")
+        parser.add_argument(
+            "--workflow",
+            help=(
+                "GitHub Actions workflow name to bind when advancing. Without a binding, "
+                "automatic CI advance requires exactly one default-branch workflow in the collection window."
+            ),
+        )
 
     def handle(self, *args, **options):
         if options["list"]:
-            if options["sha"]:
-                raise CommandError("--sha can only be used with --advance.")
+            if options["sha"] or options["workflow"]:
+                raise CommandError("--sha and --workflow can only be used with --advance.")
             for train in ReleaseTrain.objects.all():
                 self.stdout.write(
                     f"{train.id}\t{train.product}\t{train.version_string}\t{train.phase}\t"
@@ -31,8 +38,8 @@ class Command(BaseCommand):
             return
 
         if options["open"]:
-            if options["sha"]:
-                raise CommandError("--sha can only be used with --advance.")
+            if options["sha"] or options["workflow"]:
+                raise CommandError("--sha and --workflow can only be used with --advance.")
             product, version = options["open"]
             if product not in TrackedItem.Product.values:
                 raise CommandError("Product is not a valid TrackedItem product.")
@@ -71,6 +78,13 @@ class Command(BaseCommand):
                     train.head_sha = sha
                     train.full_clean()
                     train.save(update_fields=["head_sha", "updated_at"])
+                if options["workflow"] is not None:
+                    workflow = options["workflow"].strip()
+                    if not workflow or len(workflow) > 140:
+                        raise CommandError("--workflow must be between 1 and 140 characters.")
+                    train.ci_workflow = workflow
+                    train.full_clean()
+                    train.save(update_fields=["ci_workflow", "updated_at"])
                 train = advance_train(
                     train,
                     phase,

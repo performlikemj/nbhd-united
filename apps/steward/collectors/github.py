@@ -10,14 +10,16 @@ from typing import Any
 
 import httpx
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
 from apps.steward.collectors.status import collector_failed, collector_succeeded
 from apps.steward.models import (
-    AlertState,
     CollectorStatus,
     EvidenceEvent,
     EvidenceSource,
+    GithubRepoCursor,
+    GithubTagSnapshot,
     ReleaseTrain,
     RepoPullRequest,
 )
@@ -42,7 +44,8 @@ GITHUB_TIMEOUT_SECONDS = 15.0
 GITHUB_PER_PAGE = 100
 GITHUB_MAX_PAGES = 3
 GITHUB_MAX_RECONCILES = 20
-GITHUB_SOFT_DEADLINE_SECONDS = 240.0
+GITHUB_OVERALL_DEADLINE_SECONDS = 240.0
+GITHUB_REPO_DEADLINE_SECONDS = 90.0
 
 
 @dataclass(frozen=True)
@@ -56,8 +59,26 @@ class RepoSpec:
 class RepoCollection:
     mirrors: list[RepoPullRequest]
     inputs: list[EvidenceIngestInput]
+    tags: list[tuple[str, str]]
+    workflow_names: frozenset[str]
+    complete_through: datetime | None
+    newest_seen: datetime | None
+    consecutive_truncations: int
     truncated: bool
     detail: str
+
+
+@dataclass(frozen=True)
+class CollectionDeadline:
+    expires_at: float
+
+    def check(self) -> None:
+        if time.monotonic() >= self.expires_at:
+            raise CollectionDeadlineExceeded
+
+
+class CollectionDeadlineExceeded(Exception):
+    pass
 
 
 def _fingerprint_hash(*parts: object) -> str:
@@ -79,57 +100,80 @@ def _response_json(response: httpx.Response) -> Any:
     return response.json()
 
 
+def _checked_get(
+    client: httpx.Client,
+    deadline: CollectionDeadline,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+) -> httpx.Response:
+    deadline.check()
+    return client.get(path, params=params)
+
+
 def _bounded_list(
     client: httpx.Client,
+    deadline: CollectionDeadline,
     path: str,
     *,
     params: dict[str, Any],
     key: str | None = None,
     max_pages: int = GITHUB_MAX_PAGES,
-) -> list[dict[str, Any]]:
+) -> tuple[list[dict[str, Any]], bool]:
     items: list[dict[str, Any]] = []
     for page in range(1, min(max_pages, GITHUB_MAX_PAGES) + 1):
-        payload = _response_json(
-            client.get(
-                path,
-                params={
-                    **params,
-                    "per_page": GITHUB_PER_PAGE,
-                    "page": page,
-                },
+        try:
+            payload = _response_json(
+                _checked_get(
+                    client,
+                    deadline,
+                    path,
+                    params={
+                        **params,
+                        "per_page": GITHUB_PER_PAGE,
+                        "page": page,
+                    },
+                )
             )
-        )
+        except CollectionDeadlineExceeded:
+            return items, True
         page_items = payload.get(key, []) if key else payload
         if not isinstance(page_items, list):
             raise ValueError("GitHub list response has an invalid shape.")
         items.extend(item for item in page_items if isinstance(item, dict))
         if len(page_items) < GITHUB_PER_PAGE:
             break
-    return items
+    return items, False
 
 
 def _updated_prs_since(
     client: httpx.Client,
+    deadline: CollectionDeadline,
     path: str,
     *,
-    watermark: datetime | None,
-) -> tuple[list[dict[str, Any]], bool]:
+    complete_through: datetime | None,
+) -> tuple[list[dict[str, Any]], bool, bool]:
     items: list[dict[str, Any]] = []
     reached_watermark = False
     last_page_full = False
     for page in range(1, GITHUB_MAX_PAGES + 1):
-        page_items = _response_json(
-            client.get(
-                path,
-                params={
-                    "state": "all",
-                    "sort": "updated",
-                    "direction": "desc",
-                    "per_page": GITHUB_PER_PAGE,
-                    "page": page,
-                },
+        try:
+            page_items = _response_json(
+                _checked_get(
+                    client,
+                    deadline,
+                    path,
+                    params={
+                        "state": "all",
+                        "sort": "updated",
+                        "direction": "desc",
+                        "per_page": GITHUB_PER_PAGE,
+                        "page": page,
+                    },
+                )
             )
-        )
+        except CollectionDeadlineExceeded:
+            return items, True, True
         if not isinstance(page_items, list):
             raise ValueError("GitHub pull request response has an invalid shape.")
         last_page_full = len(page_items) == GITHUB_PER_PAGE
@@ -140,20 +184,13 @@ def _updated_prs_since(
                 updated_at = _parse_timestamp(item.get("updated_at"))
             except ValueError:
                 continue
-            if watermark is not None and updated_at <= watermark:
+            if complete_through is not None and updated_at <= complete_through:
                 reached_watermark = True
                 break
             items.append(item)
         if reached_watermark or not last_page_full:
             break
-    return items, bool(last_page_full and not reached_watermark)
-
-
-def _watermark_state(repo: str) -> AlertState:
-    state, _ = AlertState.objects.get_or_create(
-        fingerprint=f"github-pr-watermark:{repo}",
-    )
-    return state
+    return items, bool(last_page_full and not reached_watermark), False
 
 
 def _pr_state(payload: dict[str, Any]) -> str:
@@ -189,23 +226,46 @@ def _collect_repo(
     *,
     collected_at: datetime,
     existing_prs: dict[int, RepoPullRequest],
+    cursor: GithubRepoCursor,
+    deadline: CollectionDeadline,
 ) -> RepoCollection:
     base = f"/repos/{spec.owner}/{spec.repo}"
-    repo_info = _response_json(client.get(base))
+    detail_parts: list[str] = []
+    deadline_hit = False
+    history_finished = False
+    history_truncated = False
+    open_prs: list[dict[str, Any]] = []
+    recent_all: list[dict[str, Any]] = []
+    reconciled: list[dict[str, Any]] = []
+    runs: list[dict[str, Any]] = []
+    tags: list[tuple[str, str]] = []
+    reconcile_deferred = 0
+    reconcile_errors: list[str] = []
+
+    try:
+        repo_info = _response_json(_checked_get(client, deadline, base))
+    except CollectionDeadlineExceeded:
+        deadline_hit = True
+        repo_info = {}
     default_branch = str(repo_info.get("default_branch") or "main")
 
-    open_prs = _bounded_list(
-        client,
-        f"{base}/pulls",
-        params={"state": "open", "sort": "updated", "direction": "desc"},
-    )
-    watermark_state = _watermark_state(spec.repo)
-    recent_all, history_truncated = _updated_prs_since(
-        client,
-        f"{base}/pulls",
-        watermark=watermark_state.last_sent_at,
-    )
-    newest_update = watermark_state.last_sent_at
+    if not deadline_hit:
+        open_prs, deadline_hit = _bounded_list(
+            client,
+            deadline,
+            f"{base}/pulls",
+            params={"state": "open", "sort": "updated", "direction": "desc"},
+        )
+    if not deadline_hit:
+        recent_all, history_truncated, deadline_hit = _updated_prs_since(
+            client,
+            deadline,
+            f"{base}/pulls",
+            complete_through=cursor.complete_through,
+        )
+        history_finished = not deadline_hit
+
+    newest_update = cursor.newest_seen
     for payload in recent_all:
         try:
             updated_at = _parse_timestamp(payload.get("updated_at"))
@@ -224,14 +284,21 @@ def _collect_repo(
         key=lambda previous: (previous.synced_at, previous.number),
     )
     reconcile_deferred = max(0, len(reconcile_candidates) - GITHUB_MAX_RECONCILES)
-    reconciled: list[dict[str, Any]] = []
-    reconcile_errors: list[str] = []
-    for previous in reconcile_candidates[:GITHUB_MAX_RECONCILES]:
+    for previous in reconcile_candidates[:GITHUB_MAX_RECONCILES] if not deadline_hit else []:
         try:
-            payload = _response_json(client.get(f"{base}/pulls/{previous.number}"))
+            payload = _response_json(
+                _checked_get(
+                    client,
+                    deadline,
+                    f"{base}/pulls/{previous.number}",
+                )
+            )
             if not isinstance(payload, dict):
                 raise ValueError("GitHub pull request response has an invalid shape.")
             reconciled.append(payload)
+        except CollectionDeadlineExceeded:
+            deadline_hit = True
+            break
         except Exception as exc:
             reconcile_errors.append(type(exc).__name__)
             logger.warning(
@@ -278,11 +345,18 @@ def _collect_repo(
         for mirror, payload in merged_payloads
     ]
 
-    runs = _bounded_list(
-        client,
-        f"{base}/actions/runs",
-        params={"branch": default_branch},
-        key="workflow_runs",
+    if not deadline_hit:
+        runs, deadline_hit = _bounded_list(
+            client,
+            deadline,
+            f"{base}/actions/runs",
+            params={"branch": default_branch},
+            key="workflow_runs",
+        )
+    workflow_names = frozenset(
+        safe_text(str(run.get("name")), 140)
+        for run in runs
+        if run.get("head_branch") == default_branch and isinstance(run.get("name"), str) and run.get("name")
     )
     for run in runs:
         if run.get("status") != "completed" or run.get("head_branch") != default_branch:
@@ -306,7 +380,7 @@ def _collect_repo(
                 payload={
                     "conclusion": conclusion,
                     "head_sha": str(run.get("head_sha") or ""),
-                    "workflow": safe_text(str(run.get("name") or ""), 100),
+                    "workflow": safe_text(str(run.get("name") or ""), 140),
                     "run_attempt": run_attempt,
                 },
                 fingerprint=f"gh-ci:{_fingerprint_hash(spec.repo, run_id, run_attempt)}",
@@ -315,42 +389,46 @@ def _collect_repo(
             )
         )
 
-    tags = _bounded_list(client, f"{base}/tags", params={})
-    for tag in tags:
+    tag_payloads: list[dict[str, Any]] = []
+    if not deadline_hit:
+        tag_payloads, deadline_hit = _bounded_list(
+            client,
+            deadline,
+            f"{base}/tags",
+            params={},
+        )
+    for tag in tag_payloads:
         commit = tag.get("commit") if isinstance(tag.get("commit"), dict) else {}
         name = tag.get("name")
         sha = commit.get("sha")
         if not isinstance(name, str) or not name or not isinstance(sha, str):
             continue
-        inputs.append(
-            EvidenceIngestInput(
-                source=EvidenceSource.GITHUB_STATE,
-                subject=f"repo:{spec.repo}",
-                occurred_at=collected_at,
-                payload={
-                    "tag": safe_text(name, 100),
-                    "sha": sha,
-                },
-                fingerprint=f"gh-tag:{_fingerprint_hash(spec.repo, name, sha)}",
-                trust=EvidenceEvent.Trust.AUTHENTICATED_API,
-                provenance=EvidenceEvent.Provenance.COLLECTOR,
-            )
-        )
+        tags.append((name, sha))
 
-    if newest_update != watermark_state.last_sent_at:
-        watermark_state.last_sent_at = newest_update
-        watermark_state.save(update_fields=["last_sent_at"])
-    detail_parts = []
+    complete_through = cursor.complete_through
+    if history_finished and not history_truncated:
+        complete_through = newest_update
+    truncated = history_truncated or deadline_hit or bool(reconcile_deferred) or bool(reconcile_errors)
+    consecutive_truncations = cursor.consecutive_truncations + 1 if truncated else 0
     if history_truncated:
         detail_parts.append(f"{spec.repo}:history_truncated")
+    if deadline_hit:
+        detail_parts.append(f"{spec.repo}:deadline")
     if reconcile_deferred:
         detail_parts.append(f"{spec.repo}:reconcile_deferred={reconcile_deferred}")
     if reconcile_errors:
         detail_parts.append(f"{spec.repo}:reconcile_errors={len(reconcile_errors)}")
+    if consecutive_truncations >= 3:
+        detail_parts.append(f"{spec.repo}:consecutive_truncations={consecutive_truncations}")
     return RepoCollection(
         mirrors=list(mirrors_by_number.values()),
         inputs=inputs,
-        truncated=history_truncated or bool(reconcile_deferred) or bool(reconcile_errors),
+        tags=tags,
+        workflow_names=workflow_names,
+        complete_through=complete_through,
+        newest_seen=newest_update,
+        consecutive_truncations=consecutive_truncations,
+        truncated=truncated,
         detail=";".join(detail_parts),
     )
 
@@ -387,39 +465,161 @@ def _upsert_mirrors(mirrors: list[RepoPullRequest]) -> None:
     )
 
 
-def _ingest_repo_inputs(
-    inputs: list[EvidenceIngestInput],
+def _tag_inputs(
+    repo: str,
+    tags: list[tuple[str, str]],
     *,
     collected_at: datetime,
+) -> tuple[list[EvidenceIngestInput], list[GithubTagSnapshot]]:
+    names = [name for name, _sha in tags]
+    existing = {
+        snapshot.tag_name: snapshot
+        for snapshot in GithubTagSnapshot.objects.select_for_update().filter(
+            repo=repo,
+            tag_name__in=names,
+        )
+    }
+    inputs: list[EvidenceIngestInput] = []
+    snapshots: list[GithubTagSnapshot] = []
+    for name, sha in tags:
+        previous = existing.get(name)
+        revision = previous.revision if previous is not None else 0
+        if previous is not None and previous.sha != sha:
+            revision += 1
+        snapshots.append(
+            GithubTagSnapshot(
+                repo=repo,
+                tag_name=name,
+                sha=sha,
+                revision=revision,
+            )
+        )
+        if previous is not None and previous.sha == sha:
+            continue
+        inputs.append(
+            EvidenceIngestInput(
+                source=EvidenceSource.GITHUB_STATE,
+                subject=f"repo:{repo}",
+                occurred_at=collected_at,
+                payload={
+                    "tag": safe_text(name, 100),
+                    "sha": sha,
+                },
+                fingerprint=f"gh-tag:{_fingerprint_hash(repo, name, revision)}",
+                trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+                provenance=EvidenceEvent.Provenance.COLLECTOR,
+            )
+        )
+    return inputs, snapshots
+
+
+def _upsert_tag_snapshots(snapshots: list[GithubTagSnapshot]) -> None:
+    if not snapshots:
+        return
+    GithubTagSnapshot.objects.bulk_create(
+        snapshots,
+        update_conflicts=True,
+        update_fields=["sha", "revision", "updated_at"],
+        unique_fields=["repo", "tag_name"],
+    )
+
+
+def _advance_ci_trains(
+    *,
+    repo: str,
     product: str,
-) -> tuple[int, int]:
-    new_inputs = _new_inputs(inputs)
-    results = ingest_evidence_batch(new_inputs, now=collected_at)
+    workflow_names: frozenset[str],
+) -> tuple[int, bool]:
+    """Recover and apply CI transitions using the deterministic workflow binding rule.
+
+    A configured train workflow must match exactly. An unbound train advances only
+    when this collection window contains runs from exactly one default-branch workflow.
+    """
     advances = 0
-    for item, result in zip(new_inputs, results, strict=True):
-        if not result.created or item.source != EvidenceSource.CI_RUN or item.payload.get("conclusion") != "success":
+    ambiguous = False
+    trains = ReleaseTrain.objects.filter(
+        product=product,
+        phase=ReleaseTrain.Phase.PUSHED,
+    )
+    for train in trains:
+        if not train.head_sha:
             continue
-        head_sha = item.payload.get("head_sha")
-        if not isinstance(head_sha, str) or len(head_sha) != 40:
+        if train.ci_workflow:
+            workflow = train.ci_workflow
+        elif len(workflow_names) == 1:
+            workflow = next(iter(workflow_names))
+        else:
+            ambiguous = True
             continue
-        for train in ReleaseTrain.objects.filter(
-            product=product,
-            phase=ReleaseTrain.Phase.PUSHED,
-            head_sha=head_sha,
-            phase_changed_at__lte=item.occurred_at,
-        ):
+        events = EvidenceEvent.objects.filter(
+            source=EvidenceSource.CI_RUN,
+            subject=f"{repo}-main-ci",
+            occurred_at__gte=train.phase_changed_at,
+        ).order_by("-occurred_at", "-id")
+        evidence = next(
+            (
+                event
+                for event in events
+                if event.payload.get("conclusion") == "success"
+                and event.payload.get("head_sha") == train.head_sha
+                and event.payload.get("workflow") == workflow
+            ),
+            None,
+        )
+        if evidence is not None:
             advance_train(
                 train,
                 ReleaseTrain.Phase.CI_GREEN,
-                evidence=result.event,
+                evidence=evidence,
                 provenance=EvidenceEvent.Provenance.COLLECTOR,
             )
             advances += 1
-    return sum(result.created for result in results), advances
+    return advances, ambiguous
+
+
+@transaction.atomic
+def _persist_repo(
+    *,
+    spec: RepoSpec,
+    collection: RepoCollection,
+    collected_at: datetime,
+) -> tuple[int, int, str]:
+    tag_inputs, tag_snapshots = _tag_inputs(
+        spec.repo,
+        collection.tags,
+        collected_at=collected_at,
+    )
+    new_inputs = _new_inputs([*collection.inputs, *tag_inputs])
+    results = ingest_evidence_batch(new_inputs, now=collected_at)
+    _upsert_mirrors(collection.mirrors)
+    _upsert_tag_snapshots(tag_snapshots)
+    advances, ambiguous = _advance_ci_trains(
+        repo=spec.repo,
+        product=spec.product,
+        workflow_names=collection.workflow_names,
+    )
+    cursor, _ = GithubRepoCursor.objects.select_for_update().get_or_create(
+        repo=spec.repo,
+    )
+    cursor.complete_through = collection.complete_through
+    cursor.newest_seen = collection.newest_seen
+    cursor.consecutive_truncations = collection.consecutive_truncations
+    cursor.save(
+        update_fields=[
+            "complete_through",
+            "newest_seen",
+            "consecutive_truncations",
+            "updated_at",
+        ]
+    )
+    ambiguity_detail = ""
+    if ambiguous:
+        ambiguity_detail = f"{spec.repo}:ci_workflow_ambiguous={len(collection.workflow_names)}"
+    return sum(result.created for result in results), advances, ambiguity_detail
 
 
 def collect_github() -> dict[str, int]:
-    """Collect bounded read-only GitHub state with per-repository isolation."""
+    """Collect GitHub state with bounded HTTP work and atomic per-repo persistence."""
     collected_at = timezone.now()
     token = str(getattr(settings, "STEWARD_GITHUB_TOKEN", "") or "").strip()
     if not token:
@@ -433,6 +633,7 @@ def collect_github() -> dict[str, int]:
         return {"repos": 0, "pull_requests": 0, "evidence": 0, "train_advances": 0}
 
     started_at = time.monotonic()
+    overall_expires_at = started_at + GITHUB_OVERALL_DEADLINE_SECONDS
     totals = {
         "repos": 0,
         "pull_requests": 0,
@@ -441,6 +642,7 @@ def collect_github() -> dict[str, int]:
     }
     failures: list[str] = []
     truncations: list[str] = []
+    notices: list[str] = []
     try:
         with httpx.Client(
             base_url=GITHUB_API_BASE_URL,
@@ -451,28 +653,39 @@ def collect_github() -> dict[str, int]:
                 "X-GitHub-Api-Version": "2022-11-28",
             },
         ) as client:
-            for index, (owner, repo, product) in enumerate(GITHUB_REPOS):
-                if index and time.monotonic() - started_at >= GITHUB_SOFT_DEADLINE_SECONDS:
+            for owner, repo, product in GITHUB_REPOS:
+                repo_started_at = time.monotonic()
+                if repo_started_at >= overall_expires_at:
                     truncations.append(f"deadline_after={totals['repos']}")
                     break
                 totals["repos"] += 1
                 try:
                     existing_prs = {pr.number: pr for pr in RepoPullRequest.objects.filter(repo=repo)}
+                    cursor = GithubRepoCursor.objects.filter(repo=repo).first() or GithubRepoCursor(repo=repo)
+                    spec = RepoSpec(owner, repo, product)
                     collection = _collect_repo(
                         client,
-                        RepoSpec(owner, repo, product),
+                        spec,
                         collected_at=collected_at,
                         existing_prs=existing_prs,
+                        cursor=cursor,
+                        deadline=CollectionDeadline(
+                            min(
+                                overall_expires_at,
+                                repo_started_at + GITHUB_REPO_DEADLINE_SECONDS,
+                            )
+                        ),
                     )
-                    _upsert_mirrors(collection.mirrors)
-                    evidence, advances = _ingest_repo_inputs(
-                        collection.inputs,
+                    evidence, advances, ambiguity_detail = _persist_repo(
+                        spec=spec,
+                        collection=collection,
                         collected_at=collected_at,
-                        product=product,
                     )
                     totals["pull_requests"] += len(collection.mirrors)
                     totals["evidence"] += evidence
                     totals["train_advances"] += advances
+                    if ambiguity_detail:
+                        notices.append(ambiguity_detail)
                     if collection.truncated:
                         truncations.append(collection.detail or f"{repo}:truncated")
                 except Exception as exc:
@@ -496,19 +709,19 @@ def collect_github() -> dict[str, int]:
             CollectorStatus.Collector.GITHUB,
             attempted_at=collected_at,
             error_class=failures[0].split(":", 1)[1],
-            detail=";".join([*failures, *truncations]),
+            detail=";".join([*notices, *failures, *truncations]),
         )
     elif truncations:
         collector_failed(
             CollectorStatus.Collector.GITHUB,
             attempted_at=collected_at,
             error_class="truncated",
-            detail=";".join(truncations),
+            detail=";".join([*notices, *truncations]),
         )
     else:
         collector_succeeded(
             CollectorStatus.Collector.GITHUB,
             attempted_at=collected_at,
-            detail=f"repos={totals['repos']}",
+            detail=";".join([f"repos={totals['repos']}", *notices]),
         )
     return totals

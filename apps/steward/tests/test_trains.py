@@ -57,6 +57,24 @@ class ReleaseTrainTests(TestCase):
         self.assertEqual(current.evidence_source, EvidenceSource.MJ_ACK)
         self.assertEqual(current.due_at, now + timedelta(hours=2))
 
+    def test_advance_retires_satisfied_train_expectation(self):
+        train = open_train(
+            product=TrackedItem.Product.NBHD_IOS,
+            version_string="satisfied-nag",
+        )
+        expectation = Expectation.objects.get(subject=train_subject(train))
+        expectation.state = Expectation.State.SATISFIED
+        expectation.save(update_fields=["state"])
+
+        advance_train(
+            train,
+            ReleaseTrain.Phase.PUSHED,
+            provenance=EvidenceEvent.Provenance.MJ,
+        )
+
+        expectation.refresh_from_db()
+        self.assertEqual(expectation.state, Expectation.State.RETIRED)
+
     def test_backward_transition_raises_without_retiring_expectation(self):
         train = open_train(
             product=TrackedItem.Product.NBHD_UNITED,

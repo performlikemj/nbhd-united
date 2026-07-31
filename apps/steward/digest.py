@@ -371,7 +371,7 @@ def _integrity(now: datetime) -> tuple[list[str], int]:
         if status.last_success_at is None:
             lines.append(f"- collector {collector}: never succeeded")
             continue
-        if status.last_success_at < now - 3 * interval:
+        if status.last_success_at <= now - 3 * interval:
             lines.append(f"- collector {collector}: stale; last success {_age_label(now, status.last_success_at)}")
             continue
         if status.consecutive_failures:

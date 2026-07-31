@@ -142,6 +142,25 @@ class ASCCollectorTests(TestCase):
         context.__exit__.return_value = False
         return context, client
 
+    def _snapshot(
+        self,
+        *,
+        version_id="version-1",
+        version_string="2.1.6",
+        state="PREPARE_FOR_SUBMISSION",
+        build_number="41",
+        processing_state="PROCESSING",
+    ):
+        return AscVersionSnapshot.objects.create(
+            version_id=version_id,
+            version_string=version_string,
+            app_state=state,
+            build_number=build_number,
+            build_processing_state=processing_state,
+            phased_state="",
+            phased_day=None,
+        )
+
     @override_settings(
         STEWARD_ASC_KEY_ID="",
         STEWARD_ASC_ISSUER_ID="",
@@ -188,19 +207,60 @@ class ASCCollectorTests(TestCase):
         with patch("apps.steward.collectors.asc.httpx.Client", return_value=replay_context):
             replay = asc.collect_asc()
 
-        self.assertEqual((first["evidence"], second["evidence"], replay["evidence"]), (1, 1, 0))
+        self.assertEqual((first["evidence"], second["evidence"], replay["evidence"]), (0, 1, 0))
         snapshot = AscVersionSnapshot.objects.get(version_id="version-1")
         self.assertEqual(snapshot.build_number, "42")
         self.assertEqual(snapshot.build_processing_state, "VALID")
         events = list(EvidenceEvent.objects.filter(source=EvidenceSource.ASC_VERSION_STATE).order_by("id"))
-        self.assertEqual(len(events), 2)
-        self.assertEqual([event.payload["buildNumber"] for event in events], ["41", "42"])
+        self.assertEqual(len(events), 1)
+        self.assertEqual([event.payload["buildNumber"] for event in events], ["42"])
         self.assertTrue(all("version-1" not in event.fingerprint for event in events))
         self.assertTrue(all(len(event.fingerprint.rsplit(":", 1)[1]) == 24 for event in events))
+        status = CollectorStatus.objects.get(collector=CollectorStatus.Collector.ASC)
+        self.assertNotIn("baseline_established", status.detail)
+
+    @override_settings(**ASC_SETTINGS)
+    @patch("jwt.encode", return_value="signed-test-jwt")
+    def test_empty_snapshot_table_establishes_silent_baseline(self, _encode):
+        context, _ = self._client(versions_payload("WAITING_FOR_REVIEW"))
+
+        with patch("apps.steward.collectors.asc.httpx.Client", return_value=context):
+            result = asc.collect_asc()
+
+        self.assertEqual(result["evidence"], 0)
+        self.assertEqual(AscVersionSnapshot.objects.count(), 1)
+        self.assertFalse(EvidenceEvent.objects.exists())
+        status = CollectorStatus.objects.get(collector=CollectorStatus.Collector.ASC)
+        self.assertIn("baseline_established", status.detail)
+
+    @override_settings(**ASC_SETTINGS)
+    @patch("jwt.encode", return_value="signed-test-jwt")
+    def test_state_a_to_b_to_a_increments_revision_and_reemits(self, _encode):
+        payloads = [
+            versions_payload("WAITING_FOR_REVIEW"),
+            versions_payload("IN_REVIEW"),
+            versions_payload("WAITING_FOR_REVIEW"),
+        ]
+        results = []
+        for payload in payloads:
+            context, _ = self._client(payload)
+            with patch(
+                "apps.steward.collectors.asc.httpx.Client",
+                return_value=context,
+            ):
+                results.append(asc.collect_asc())
+
+        self.assertEqual([result["evidence"] for result in results], [0, 1, 1])
+        events = list(EvidenceEvent.objects.filter(source=EvidenceSource.ASC_VERSION_STATE).order_by("id"))
+        self.assertEqual([event.payload["state"] for event in events], ["IN_REVIEW", "WAITING_FOR_REVIEW"])
+        self.assertEqual(len({event.fingerprint for event in events}), 2)
+        snapshot = AscVersionSnapshot.objects.get(version_id="version-1")
+        self.assertEqual(snapshot.revision, 2)
 
     @override_settings(**ASC_SETTINGS)
     @patch("jwt.encode", return_value="signed-test-jwt")
     def test_state_transitions_advance_exact_matching_fresh_train_only(self, _encode):
+        self._snapshot()
         train = open_train(
             product=TrackedItem.Product.NBHD_IOS,
             version_string="2.1.6",
@@ -246,6 +306,7 @@ class ASCCollectorTests(TestCase):
     @override_settings(**ASC_SETTINGS)
     @patch("jwt.encode", return_value="signed-test-jwt")
     def test_app_version_state_wins_and_ready_for_distribution_releases(self, _encode):
+        self._snapshot(version_string="2.1.9")
         train = open_train(
             product=TrackedItem.Product.NBHD_IOS,
             version_string="2.1.9",
@@ -331,6 +392,108 @@ class ASCCollectorTests(TestCase):
         status = CollectorStatus.objects.get(collector=CollectorStatus.Collector.ASC)
         self.assertEqual(status.last_error_class, "truncated")
         self.assertIn("3 pages", status.detail)
+
+    @override_settings(**ASC_SETTINGS)
+    @patch("jwt.encode", return_value="signed-test-jwt")
+    def test_complete_poll_prunes_disappeared_versions_but_truncated_poll_does_not(self, _encode):
+        self._snapshot(version_id="disappeared", version_string="2.0.0")
+        first = versions_payload(
+            "WAITING_FOR_REVIEW",
+            version_id="v1",
+            next_link="https://asc.example/page-2",
+        )
+        second = versions_payload(
+            "IN_REVIEW",
+            version_id="v2",
+            version_string="2.1.7",
+            next_link="https://asc.example/page-3",
+        )
+        third = versions_payload(
+            "READY_FOR_SALE",
+            version_id="v3",
+            version_string="2.1.8",
+            next_link="https://asc.example/page-4",
+        )
+        truncated_context, _ = self._client(
+            first,
+            linked_pages={
+                "https://asc.example/page-2": second,
+                "https://asc.example/page-3": third,
+            },
+        )
+        with patch(
+            "apps.steward.collectors.asc.httpx.Client",
+            return_value=truncated_context,
+        ):
+            asc.collect_asc()
+        self.assertTrue(AscVersionSnapshot.objects.filter(version_id="disappeared").exists())
+
+        complete_context, _ = self._client(versions_payload("WAITING_FOR_REVIEW", version_id="v1"))
+        with patch(
+            "apps.steward.collectors.asc.httpx.Client",
+            return_value=complete_context,
+        ):
+            asc.collect_asc()
+        self.assertEqual(
+            set(AscVersionSnapshot.objects.values_list("version_id", flat=True)),
+            {"v1"},
+        )
+
+    @override_settings(**ASC_SETTINGS)
+    @patch("jwt.encode", return_value="signed-test-jwt")
+    def test_persistence_rolls_back_evidence_snapshot_and_pruning_together(self, _encode):
+        self._snapshot(version_id="existing", version_string="2.0.0")
+        context, _ = self._client(versions_payload("WAITING_FOR_REVIEW", version_id="new"))
+        with (
+            patch("apps.steward.collectors.asc.httpx.Client", return_value=context),
+            patch(
+                "apps.steward.collectors.asc._recover_train_advances",
+                side_effect=RuntimeError("crash after evidence"),
+            ),
+            self.assertRaises(RuntimeError),
+        ):
+            asc.collect_asc()
+
+        self.assertFalse(EvidenceEvent.objects.exists())
+        self.assertEqual(
+            set(AscVersionSnapshot.objects.values_list("version_id", flat=True)),
+            {"existing"},
+        )
+
+    @override_settings(**ASC_SETTINGS)
+    @patch("jwt.encode", return_value="signed-test-jwt")
+    def test_recovery_sweep_advances_from_previously_persisted_evidence(self, _encode):
+        self._snapshot(state="WAITING_FOR_REVIEW", build_number="42", processing_state="VALID")
+        train = open_train(
+            product=TrackedItem.Product.NBHD_IOS,
+            version_string="2.1.6",
+        )
+        occurred_at = timezone.now()
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.ASC_VERSION_STATE,
+            subject="nbhd-ios-2.1.6",
+            occurred_at=occurred_at,
+            payload={
+                "versionString": "2.1.6",
+                "state": "WAITING_FOR_REVIEW",
+                "buildNumber": "42",
+                "buildProcessingState": "VALID",
+                "phasedState": "",
+                "dayNumber": None,
+            },
+            fingerprint="asc-recovery-probe",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+        context, _ = self._client(versions_payload("WAITING_FOR_REVIEW"))
+
+        with patch("apps.steward.collectors.asc.httpx.Client", return_value=context):
+            result = asc.collect_asc()
+
+        train.refresh_from_db()
+        self.assertEqual(train.phase, ReleaseTrain.Phase.SUBMITTED)
+        self.assertEqual(result["evidence"], 0)
+        self.assertEqual(result["train_advances"], 1)
 
     @override_settings(**ASC_SETTINGS)
     @patch("jwt.encode", return_value="signed-test-jwt")

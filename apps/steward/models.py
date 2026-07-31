@@ -117,6 +117,7 @@ class ReleaseTrain(models.Model):
     phase_changed_at = models.DateTimeField(default=timezone.now)
     head_sha = models.CharField(max_length=40, null=True, blank=True)
     head_ref = models.CharField(max_length=120, null=True, blank=True)
+    ci_workflow = models.CharField(max_length=140, null=True, blank=True)
     refs = models.JSONField(default=list, blank=True)
     tracked_item = models.ForeignKey(
         TrackedItem,
@@ -425,6 +426,7 @@ class AscVersionSnapshot(models.Model):
     build_processing_state = models.CharField(max_length=60, blank=True)
     phased_state = models.CharField(max_length=60, blank=True)
     phased_day = models.PositiveSmallIntegerField(null=True, blank=True)
+    revision = models.PositiveIntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -442,6 +444,36 @@ class AscVersionSnapshot(models.Model):
         )
 
 
+class GithubRepoCursor(models.Model):
+    repo = models.CharField(max_length=60, unique=True)
+    complete_through = models.DateTimeField(null=True, blank=True)
+    newest_seen = models.DateTimeField(null=True, blank=True)
+    consecutive_truncations = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "steward_github_repo_cursors"
+        ordering = ["repo"]
+
+
+class GithubTagSnapshot(models.Model):
+    repo = models.CharField(max_length=60)
+    tag_name = models.TextField()
+    sha = models.CharField(max_length=64)
+    revision = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "steward_github_tag_snapshots"
+        ordering = ["repo", "tag_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["repo", "tag_name"],
+                name="steward_github_tag_repo_name_unique",
+            )
+        ]
+
+
 class CollectorStatus(models.Model):
     class Collector(models.TextChoices):
         GITHUB = "github", "GitHub"
@@ -452,6 +484,7 @@ class CollectorStatus(models.Model):
     last_attempt_at = models.DateTimeField(default=timezone.now)
     last_error_class = models.CharField(max_length=60, blank=True)
     consecutive_failures = models.PositiveIntegerField(default=0)
+    consecutive_truncations = models.PositiveIntegerField(default=0)
     detail = models.CharField(max_length=200, blank=True)
 
     class Meta:

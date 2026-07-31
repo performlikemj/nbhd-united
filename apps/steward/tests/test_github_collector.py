@@ -7,10 +7,11 @@ from django.test import TestCase, override_settings
 
 from apps.steward.collectors import github
 from apps.steward.models import (
-    AlertState,
     CollectorStatus,
     EvidenceEvent,
     EvidenceSource,
+    GithubRepoCursor,
+    GithubTagSnapshot,
     ReleaseTrain,
     RepoPullRequest,
     TrackedItem,
@@ -168,8 +169,12 @@ class GitHubCollectorTests(TestCase):
             if call.args[0].endswith("/pulls") and call.kwargs["params"]["state"] == "all"
         ]
         self.assertEqual(all_pages, [1, 2])
-        watermark = AlertState.objects.get(fingerprint="github-pr-watermark:nbhd-united")
-        self.assertEqual(watermark.last_sent_at, datetime.fromisoformat(TS2.replace("Z", "+00:00")))
+        cursor = GithubRepoCursor.objects.get(repo="nbhd-united")
+        self.assertEqual(
+            cursor.complete_through,
+            datetime.fromisoformat(TS2.replace("Z", "+00:00")),
+        )
+        self.assertEqual(cursor.newest_seen, cursor.complete_through)
 
     @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
     @patch("apps.steward.collectors.github.GITHUB_REPOS", TEST_REPOS)
@@ -254,6 +259,86 @@ class GitHubCollectorTests(TestCase):
 
     @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
     @patch("apps.steward.collectors.github.GITHUB_REPOS", TEST_REPOS)
+    def test_ci_workflow_binding_rejects_docs_run_and_unbound_ambiguity_is_reported(self):
+        occurred_at = datetime.fromisoformat(TS.replace("Z", "+00:00"))
+        bound = self._pushed_train(
+            "bound",
+            sha="a" * 40,
+            changed_at=occurred_at - timedelta(minutes=1),
+        )
+        ReleaseTrain.objects.filter(pk=bound.pk).update(ci_workflow="CI")
+
+        docs_context, _ = self._client(runs=[workflow_run(60, name="Docs")])
+        with patch(
+            "apps.steward.collectors.github.httpx.Client",
+            return_value=docs_context,
+        ):
+            github.collect_github()
+        bound.refresh_from_db()
+        self.assertEqual(bound.phase, ReleaseTrain.Phase.PUSHED)
+
+        unbound = self._pushed_train(
+            "ambiguous",
+            sha="b" * 40,
+            changed_at=occurred_at - timedelta(minutes=1),
+        )
+        ambiguous_context, _ = self._client(
+            runs=[
+                workflow_run(61, head_sha="b" * 40, name="CI"),
+                workflow_run(62, head_sha="b" * 40, name="Docs"),
+            ]
+        )
+        with patch(
+            "apps.steward.collectors.github.httpx.Client",
+            return_value=ambiguous_context,
+        ):
+            result = github.collect_github()
+
+        unbound.refresh_from_db()
+        self.assertEqual(unbound.phase, ReleaseTrain.Phase.PUSHED)
+        self.assertEqual(result["train_advances"], 0)
+        status = CollectorStatus.objects.get(collector=CollectorStatus.Collector.GITHUB)
+        self.assertIn("nbhd-united:ci_workflow_ambiguous=2", status.detail)
+
+    @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
+    @patch("apps.steward.collectors.github.GITHUB_REPOS", TEST_REPOS)
+    def test_ci_recovery_sweep_advances_from_previously_persisted_evidence(self):
+        occurred_at = datetime.fromisoformat(TS.replace("Z", "+00:00"))
+        train = self._pushed_train(
+            "recover",
+            sha="a" * 40,
+            changed_at=occurred_at - timedelta(minutes=1),
+        )
+        ReleaseTrain.objects.filter(pk=train.pk).update(ci_workflow="CI")
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.CI_RUN,
+            subject="nbhd-united-main-ci",
+            occurred_at=occurred_at,
+            payload={
+                "conclusion": "success",
+                "head_sha": "a" * 40,
+                "workflow": "CI",
+                "run_attempt": 1,
+            },
+            fingerprint="ci-recovery-probe",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+        context, _ = self._client(runs=[])
+
+        with patch(
+            "apps.steward.collectors.github.httpx.Client",
+            return_value=context,
+        ):
+            result = github.collect_github()
+
+        train.refresh_from_db()
+        self.assertEqual(train.phase, ReleaseTrain.Phase.CI_GREEN)
+        self.assertEqual(result["evidence"], 0)
+        self.assertEqual(result["train_advances"], 1)
+
+    @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
+    @patch("apps.steward.collectors.github.GITHUB_REPOS", TEST_REPOS)
     def test_ci_rerun_attempt_gets_distinct_evidence_and_missing_attempt_defaults_one(self):
         occurred_at = datetime.fromisoformat(TS.replace("Z", "+00:00"))
         train = self._pushed_train(
@@ -290,7 +375,7 @@ class GitHubCollectorTests(TestCase):
 
     @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
     @patch("apps.steward.collectors.github.GITHUB_REPOS", TEST_REPOS)
-    def test_long_tag_is_hashed_and_force_move_reemits(self):
+    def test_long_tag_a_to_b_to_a_uses_monotonic_revision(self):
         tag_name = "release/" + ("provider-controlled-" * 20)
         first_context, _ = self._client(tags=[{"name": tag_name, "commit": {"sha": "b" * 40}}])
         with patch("apps.steward.collectors.github.httpx.Client", return_value=first_context):
@@ -298,12 +383,137 @@ class GitHubCollectorTests(TestCase):
         second_context, _ = self._client(tags=[{"name": tag_name, "commit": {"sha": "c" * 40}}])
         with patch("apps.steward.collectors.github.httpx.Client", return_value=second_context):
             github.collect_github()
+        third_context, _ = self._client(tags=[{"name": tag_name, "commit": {"sha": "b" * 40}}])
+        with patch("apps.steward.collectors.github.httpx.Client", return_value=third_context):
+            github.collect_github()
 
         events = list(EvidenceEvent.objects.filter(source=EvidenceSource.GITHUB_STATE))
-        self.assertEqual(len(events), 2)
+        self.assertEqual(len(events), 3)
         self.assertTrue(all(len(event.fingerprint.rsplit(":", 1)[1]) == 24 for event in events))
         self.assertTrue(all(tag_name not in event.fingerprint for event in events))
-        self.assertNotEqual(events[0].fingerprint, events[1].fingerprint)
+        self.assertEqual(len({event.fingerprint for event in events}), 3)
+        snapshot = GithubTagSnapshot.objects.get(repo="nbhd-united")
+        self.assertEqual(snapshot.sha, "b" * 40)
+        self.assertEqual(snapshot.revision, 2)
+
+    @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
+    @patch("apps.steward.collectors.github.GITHUB_REPOS", TEST_REPOS)
+    def test_truncated_history_keeps_complete_cursor_until_tail_is_processed(self):
+        RepoPullRequest.objects.create(
+            repo="nbhd-united",
+            number=1,
+            title="existing",
+            author="mj",
+            draft=False,
+            state=RepoPullRequest.State.OPEN,
+            opened_at=datetime.fromisoformat(TS.replace("Z", "+00:00")),
+            last_activity_at=datetime.fromisoformat(TS.replace("Z", "+00:00")),
+            is_dependabot=False,
+            head_ref="feature-1",
+            synced_at=datetime.fromisoformat(TS.replace("Z", "+00:00")),
+        )
+        full_pages = {
+            page: [
+                pull_request(
+                    page * 1000 + number,
+                    state="closed",
+                    updated_at=TS2,
+                )
+                for number in range(100)
+            ]
+            for page in range(1, 4)
+        }
+        for _ in range(3):
+            context, _ = self._client(
+                open_prs=[pull_request(1)],
+                all_pages=full_pages,
+            )
+            with patch(
+                "apps.steward.collectors.github.httpx.Client",
+                return_value=context,
+            ):
+                github.collect_github()
+
+        cursor = GithubRepoCursor.objects.get(repo="nbhd-united")
+        self.assertIsNone(cursor.complete_through)
+        self.assertEqual(
+            cursor.newest_seen,
+            datetime.fromisoformat(TS2.replace("Z", "+00:00")),
+        )
+        self.assertEqual(cursor.consecutive_truncations, 3)
+        status = CollectorStatus.objects.get(collector=CollectorStatus.Collector.GITHUB)
+        self.assertEqual(status.consecutive_truncations, 3)
+        self.assertIn("consecutive_truncations=3", status.detail)
+
+        merged = pull_request(1, state="closed", merged_at=TS, updated_at=TS)
+        catchup_context, _ = self._client(
+            open_prs=[],
+            all_pages={1: [merged]},
+            individual={1: merged},
+        )
+        with patch(
+            "apps.steward.collectors.github.httpx.Client",
+            return_value=catchup_context,
+        ):
+            result = github.collect_github()
+
+        cursor.refresh_from_db()
+        self.assertEqual(cursor.complete_through, cursor.newest_seen)
+        self.assertEqual(cursor.consecutive_truncations, 0)
+        self.assertEqual(result["evidence"], 1)
+
+    @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
+    @patch("apps.steward.collectors.github.GITHUB_REPOS", TEST_REPOS)
+    def test_repo_deadline_is_checked_before_each_call_and_persists_partial_work(self):
+        context, client = self._client(open_prs=[pull_request(2)])
+        with (
+            patch(
+                "apps.steward.collectors.github.httpx.Client",
+                return_value=context,
+            ),
+            patch(
+                "apps.steward.collectors.github.time.monotonic",
+                side_effect=[0.0, 0.0, 1.0, 2.0, 91.0],
+            ),
+        ):
+            result = github.collect_github()
+
+        self.assertEqual(result["pull_requests"], 1)
+        self.assertTrue(RepoPullRequest.objects.filter(number=2).exists())
+        cursor = GithubRepoCursor.objects.get(repo="nbhd-united")
+        self.assertIsNone(cursor.complete_through)
+        self.assertEqual(cursor.consecutive_truncations, 1)
+        paths = [call.args[0] for call in client.get.call_args_list]
+        self.assertNotIn("/repos/owner/nbhd-united/actions/runs", paths)
+        self.assertNotIn("/repos/owner/nbhd-united/tags", paths)
+        status = CollectorStatus.objects.get(collector=CollectorStatus.Collector.GITHUB)
+        self.assertEqual(status.last_error_class, "truncated")
+        self.assertIn("nbhd-united:deadline", status.detail)
+
+    @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
+    @patch("apps.steward.collectors.github.GITHUB_REPOS", TEST_REPOS)
+    def test_repo_persistence_rolls_back_evidence_mirror_tag_and_cursor_together(self):
+        context, _ = self._client(
+            open_prs=[pull_request(3)],
+            runs=[workflow_run(80)],
+            tags=[{"name": "v1", "commit": {"sha": "c" * 40}}],
+        )
+        with (
+            patch(
+                "apps.steward.collectors.github.httpx.Client",
+                return_value=context,
+            ),
+            patch(
+                "apps.steward.collectors.github._advance_ci_trains",
+                side_effect=RuntimeError("crash after evidence"),
+            ),
+        ):
+            github.collect_github()
+
+        self.assertFalse(RepoPullRequest.objects.filter(number=3).exists())
+        self.assertFalse(EvidenceEvent.objects.exists())
+        self.assertFalse(GithubTagSnapshot.objects.exists())
+        self.assertFalse(GithubRepoCursor.objects.exists())
 
     @override_settings(STEWARD_GITHUB_TOKEN="github_pat_FAKE_TEST_ONLY")
     def test_repo_failure_isolated_and_soft_deadline_stops_between_repos(self):
@@ -335,7 +545,10 @@ class GitHubCollectorTests(TestCase):
         with (
             patch("apps.steward.collectors.github.GITHUB_REPOS", repos),
             patch("apps.steward.collectors.github.httpx.Client", return_value=context) as client_class,
-            patch("apps.steward.collectors.github.time.monotonic", side_effect=[0.0, 1.0, 241.0]),
+            patch(
+                "apps.steward.collectors.github.time.monotonic",
+                side_effect=[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 241.0],
+            ),
         ):
             result = github.collect_github()
 

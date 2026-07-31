@@ -224,3 +224,15 @@ class Phase2bDigestTests(TestCase):
         self.assertIn("collector github: not_configured", text)
         self.assertIn("collector asc: stale", text)
         self.assertNotIn("REPOS (", text)
+
+    def test_collector_is_stale_at_exactly_three_intervals(self):
+        now = timezone.now()
+        CollectorStatus.objects.create(
+            collector=CollectorStatus.Collector.GITHUB,
+            last_attempt_at=now,
+            last_success_at=now - timedelta(minutes=90),
+        )
+
+        text, _ = render_steward_daily_digest(now=now)
+
+        self.assertIn("collector github: stale", text)

@@ -87,8 +87,7 @@ def _retire_armed_expectations(train: ReleaseTrain) -> None:
     Expectation.objects.filter(
         subject=train_subject(train),
         owner=TRAIN_EXPECTATION_OWNER,
-        state__in=[Expectation.State.ARMED, Expectation.State.MISSED],
-    ).update(state=Expectation.State.RETIRED)
+    ).exclude(state=Expectation.State.RETIRED).update(state=Expectation.State.RETIRED)
 
 
 def _arm_next_expectation(train: ReleaseTrain, *, now) -> Expectation | None:
