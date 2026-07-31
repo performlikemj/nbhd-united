@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from django.core.exceptions import ValidationError
 from django.db import transaction
@@ -67,6 +67,12 @@ _DEFAULT_NEXT_PHASES = {
 
 def train_subject(train: ReleaseTrain) -> str:
     return f"train:{train.product}:{train.version_string}"
+
+
+def train_evidence_epoch(train: ReleaseTrain) -> datetime:
+    if train.ci_binding_changed_at is None:
+        return train.phase_changed_at
+    return max(train.phase_changed_at, train.ci_binding_changed_at)
 
 
 def next_phase_for(train: ReleaseTrain) -> str | None:

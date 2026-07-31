@@ -204,3 +204,23 @@ class ReleaseTrainTests(TestCase):
         train.phase = ReleaseTrain.Phase.PUSHED
         with self.assertRaises(ValidationError):
             train.save()
+
+    def test_programmatic_ci_binding_changes_stamp_the_latest_epoch(self):
+        train = open_train(
+            product=TrackedItem.Product.NBHD_UNITED,
+            version_string="binding-epoch",
+        )
+        sha_changed_at = timezone.now() + timedelta(minutes=1)
+        workflow_changed_at = sha_changed_at + timedelta(minutes=1)
+
+        train.head_sha = "a" * 40
+        with patch("apps.steward.models.timezone.now", return_value=sha_changed_at):
+            train.save(update_fields=["head_sha", "updated_at"])
+        train.refresh_from_db()
+        self.assertEqual(train.ci_binding_changed_at, sha_changed_at)
+
+        train.ci_workflow = "CI"
+        with patch("apps.steward.models.timezone.now", return_value=workflow_changed_at):
+            train.save(update_fields=["ci_workflow", "updated_at"])
+        train.refresh_from_db()
+        self.assertEqual(train.ci_binding_changed_at, workflow_changed_at)

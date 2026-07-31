@@ -118,6 +118,7 @@ class ReleaseTrain(models.Model):
     head_sha = models.CharField(max_length=40, null=True, blank=True)
     head_ref = models.CharField(max_length=120, null=True, blank=True)
     ci_workflow = models.CharField(max_length=140, null=True, blank=True)
+    ci_binding_changed_at = models.DateTimeField(null=True, blank=True)
     refs = models.JSONField(default=list, blank=True)
     tracked_item = models.ForeignKey(
         TrackedItem,
@@ -150,12 +151,31 @@ class ReleaseTrain(models.Model):
             raise ValidationError({"tracked_item": "tracked item product must match the release train product."})
 
     def save(self, *args, **kwargs) -> None:
+        binding_changed = self._state.adding and bool(self.head_sha or self.ci_workflow)
         if not self._state.adding:
-            previous_phase = type(self).objects.filter(pk=self.pk).values_list("phase", flat=True).first()
-            if previous_phase != self.phase and not getattr(self, "_phase_transition_allowed", False):
+            previous = type(self).objects.filter(pk=self.pk).values("phase", "head_sha", "ci_workflow").first()
+            if previous and previous["phase"] != self.phase and not getattr(self, "_phase_transition_allowed", False):
                 raise ValidationError(
                     {"phase": "ReleaseTrain phase changes must use apps.steward.trains.advance_train()."}
                 )
+            update_fields = kwargs.get("update_fields")
+            binding_changed = bool(
+                previous
+                and (
+                    ((update_fields is None or "head_sha" in update_fields) and previous["head_sha"] != self.head_sha)
+                    or (
+                        (update_fields is None or "ci_workflow" in update_fields)
+                        and previous["ci_workflow"] != self.ci_workflow
+                    )
+                )
+            )
+        if binding_changed:
+            self.ci_binding_changed_at = timezone.now()
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = {
+                    *kwargs["update_fields"],
+                    "ci_binding_changed_at",
+                }
         super().save(*args, **kwargs)
 
     def __str__(self) -> str:
@@ -427,6 +447,7 @@ class AscVersionSnapshot(models.Model):
     phased_state = models.CharField(max_length=60, blank=True)
     phased_day = models.PositiveSmallIntegerField(null=True, blank=True)
     revision = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
@@ -442,18 +463,6 @@ class AscVersionSnapshot(models.Model):
             self.phased_state,
             self.phased_day,
         )
-
-
-class GithubRepoCursor(models.Model):
-    repo = models.CharField(max_length=60, unique=True)
-    complete_through = models.DateTimeField(null=True, blank=True)
-    newest_seen = models.DateTimeField(null=True, blank=True)
-    consecutive_truncations = models.PositiveIntegerField(default=0)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        db_table = "steward_github_repo_cursors"
-        ordering = ["repo"]
 
 
 class GithubTagSnapshot(models.Model):
@@ -486,6 +495,7 @@ class CollectorStatus(models.Model):
     consecutive_failures = models.PositiveIntegerField(default=0)
     consecutive_truncations = models.PositiveIntegerField(default=0)
     detail = models.CharField(max_length=200, blank=True)
+    held_until = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = "steward_collector_statuses"

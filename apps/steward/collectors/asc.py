@@ -12,7 +12,13 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from apps.steward.collectors.status import collector_failed, collector_succeeded
+from apps.steward.collectors.status import (
+    acquire_collector_lease,
+    collector_failed,
+    collector_succeeded,
+    release_collector_lease,
+    set_persistence_timeouts,
+)
 from apps.steward.models import (
     AscVersionSnapshot,
     CollectorStatus,
@@ -22,7 +28,7 @@ from apps.steward.models import (
     TrackedItem,
 )
 from apps.steward.services import EvidenceIngestInput, ingest_evidence_batch
-from apps.steward.trains import PHASE_ORDER, advance_train
+from apps.steward.trains import PHASE_ORDER, advance_train, train_evidence_epoch
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +38,7 @@ ASC_TIMEOUT_SECONDS = 15.0
 ASC_JWT_TTL_SECONDS = 14 * 60
 ASC_JWT_REFRESH_SKEW_SECONDS = 60
 ASC_MAX_PAGES = 3
+ASC_RECOVERY_MAX_TRAINS = 20
 _PHASED_LIVE_STATES = frozenset(
     {
         "PENDING_DEVELOPER_RELEASE",
@@ -203,7 +210,7 @@ def _version_changes(
     payload: dict[str, Any],
     *,
     collected_at: datetime,
-) -> tuple[list[EvidenceIngestInput], list[AscVersionSnapshot]]:
+) -> tuple[list[EvidenceIngestInput], list[AscVersionSnapshot], list[str]]:
     versions = payload.get("data")
     if not isinstance(versions, list):
         raise ValueError("App Store Connect versions response has an invalid shape.")
@@ -259,10 +266,11 @@ def _version_changes(
         for snapshot in AscVersionSnapshot.objects.select_for_update().filter(version_id__in=snapshots_by_id)
     }
     inputs: list[EvidenceIngestInput] = []
+    changed_version_ids: list[str] = []
     for version_id, snapshot in snapshots_by_id.items():
         previous = existing.get(version_id)
         state_tuple = snapshot.state_tuple()
-        if previous is not None and previous.state_tuple() == state_tuple:
+        if previous is not None and previous.active and previous.state_tuple() == state_tuple:
             snapshot.revision = previous.revision
             continue
         snapshot.revision = previous.revision + 1 if previous is not None else 0
@@ -285,7 +293,8 @@ def _version_changes(
                 provenance=EvidenceEvent.Provenance.COLLECTOR,
             )
         )
-    return inputs, list(snapshots_by_id.values())
+        changed_version_ids.append(version_id)
+    return inputs, list(snapshots_by_id.values()), changed_version_ids
 
 
 def _upsert_snapshots(snapshots: list[AscVersionSnapshot]) -> None:
@@ -302,6 +311,7 @@ def _upsert_snapshots(snapshots: list[AscVersionSnapshot]) -> None:
             "phased_state",
             "phased_day",
             "revision",
+            "active",
             "updated_at",
         ],
         unique_fields=["version_id"],
@@ -318,27 +328,34 @@ ASC_TRAIN_TARGETS = {
 
 def _recover_train_advances() -> int:
     advances = 0
-    trains = ReleaseTrain.objects.filter(
-        product=TrackedItem.Product.NBHD_IOS,
-    ).exclude(phase__in=[ReleaseTrain.Phase.RELEASED, ReleaseTrain.Phase.ROLLED_BACK])
-    for train in trains:
-        events = EvidenceEvent.objects.filter(
-            source=EvidenceSource.ASC_VERSION_STATE,
-            subject=f"nbhd-ios-{train.version_string}",
-            occurred_at__gte=train.phase_changed_at,
-        ).order_by("-occurred_at", "-id")
-        candidates = [(ASC_TRAIN_TARGETS.get(event.payload.get("state")), event) for event in events]
-        candidates = [
-            (target, event)
-            for target, event in candidates
-            if target is not None and PHASE_ORDER.index(target) > PHASE_ORDER.index(train.phase)
-        ]
-        if not candidates:
-            continue
-        target_phase, evidence = max(
-            candidates,
-            key=lambda candidate: PHASE_ORDER.index(candidate[0]),
+    trains = list(
+        ReleaseTrain.objects.filter(
+            product=TrackedItem.Product.NBHD_IOS,
         )
+        .exclude(phase__in=[ReleaseTrain.Phase.RELEASED, ReleaseTrain.Phase.ROLLED_BACK])
+        .order_by("id")[:ASC_RECOVERY_MAX_TRAINS]
+    )
+    if not trains:
+        return advances
+    subjects = {f"nbhd-ios-{train.version_string}" for train in trains}
+    earliest_epoch = min(train_evidence_epoch(train) for train in trains)
+    latest_events = {
+        event.subject: event
+        for event in EvidenceEvent.objects.filter(
+            source=EvidenceSource.ASC_VERSION_STATE,
+            subject__in=subjects,
+            occurred_at__gte=earliest_epoch,
+        )
+        .order_by("subject", "-occurred_at", "-id")
+        .distinct("subject")
+    }
+    for train in trains:
+        evidence = latest_events.get(f"nbhd-ios-{train.version_string}")
+        if evidence is None or evidence.occurred_at < train_evidence_epoch(train):
+            continue
+        target_phase = ASC_TRAIN_TARGETS.get(evidence.payload.get("state"))
+        if target_phase is None or PHASE_ORDER.index(target_phase) <= PHASE_ORDER.index(train.phase):
+            continue
         advance_train(
             train,
             target_phase,
@@ -355,27 +372,50 @@ def _persist_collection(
     *,
     collected_at: datetime,
     truncated: bool,
-    baseline_mode: bool,
 ) -> tuple[list[AscVersionSnapshot], int, int]:
-    inputs, snapshots = _version_changes(
+    set_persistence_timeouts()
+    inputs, snapshots, changed_version_ids = _version_changes(
         payload,
         collected_at=collected_at,
     )
-    if baseline_mode:
-        inputs = []
     results = ingest_evidence_batch(inputs, now=collected_at)
-    _upsert_snapshots(snapshots)
+    collided_ids = {
+        version_id for version_id, result in zip(changed_version_ids, results, strict=True) if result.collision
+    }
+    for version_id in sorted(collided_ids):
+        logger.error(
+            "Steward ASC snapshot advance skipped after fingerprint collision version_id=%s",
+            version_id,
+        )
+    _upsert_snapshots([snapshot for snapshot in snapshots if snapshot.version_id not in collided_ids])
     if not truncated:
         returned_ids = [snapshot.version_id for snapshot in snapshots]
-        AscVersionSnapshot.objects.exclude(version_id__in=returned_ids).delete()
+        AscVersionSnapshot.objects.exclude(version_id__in=returned_ids).update(active=False)
     advances = _recover_train_advances()
     return snapshots, sum(result.created for result in results), advances
 
 
 def collect_asc() -> dict[str, int]:
-    """Collect paginated App Store version/build/phased state without user data."""
+    """Collect App Store state under an expiring single-run lease."""
     collected_at = timezone.now()
-    baseline_mode = not AscVersionSnapshot.objects.exists()
+    held_until = acquire_collector_lease(
+        CollectorStatus.Collector.ASC,
+        now=collected_at,
+    )
+    if held_until is None:
+        logger.info("Steward ASC collector skipped: lease already held")
+        return {"versions": 0, "evidence": 0, "train_advances": 0}
+    try:
+        return _collect_asc(collected_at=collected_at)
+    finally:
+        release_collector_lease(
+            CollectorStatus.Collector.ASC,
+            held_until,
+        )
+
+
+def _collect_asc(*, collected_at: datetime) -> dict[str, int]:
+    """Collect paginated App Store version/build/phased state without user data."""
     credentials = _credentials()
     if credentials is None:
         logger.info("Steward ASC collector disabled: App Store Connect credentials are incomplete")
@@ -417,7 +457,6 @@ def collect_asc() -> dict[str, int]:
             versions_payload,
             collected_at=collected_at,
             truncated=truncated,
-            baseline_mode=baseline_mode,
         )
     except Exception as exc:
         collector_failed(
@@ -433,23 +472,13 @@ def collect_asc() -> dict[str, int]:
             CollectorStatus.Collector.ASC,
             attempted_at=collected_at,
             error_class="truncated",
-            detail=";".join(
-                [
-                    f"pagination exceeded {ASC_MAX_PAGES} pages",
-                    *(["baseline_established"] if baseline_mode else []),
-                ]
-            ),
+            detail=f"pagination exceeded {ASC_MAX_PAGES} pages",
         )
     else:
         collector_succeeded(
             CollectorStatus.Collector.ASC,
             attempted_at=collected_at,
-            detail=";".join(
-                [
-                    f"versions={len(snapshots)}",
-                    *(["baseline_established"] if baseline_mode else []),
-                ]
-            ),
+            detail=f"versions={len(snapshots)}",
         )
     return {
         "versions": len(snapshots),
