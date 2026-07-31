@@ -317,7 +317,6 @@ class CronDeliveryViewTest(TestCase):
     TELEGRAM_BOT_TOKEN="test-token",
     LINE_CHANNEL_ACCESS_TOKEN="line-token",
     NBHD_INTERNAL_API_KEY="test-key",
-    NBHD_DELIVERY_DEDUP=True,
     NBHD_DISABLE_BACKGROUND_THREADS=True,
 )
 class DeliveryDedupTest(TestCase):
@@ -330,6 +329,9 @@ class DeliveryDedupTest(TestCase):
         self.user.save(update_fields=["telegram_chat_id"])
         self.tenant = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
         seed_internal_key(self.tenant)
+        dedup_gate = override_settings(NBHD_DELIVERY_DEDUP_TENANTS=str(self.tenant.id))
+        dedup_gate.enable()
+        self.addCleanup(dedup_gate.disable)
         self.client = APIClient()
         self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"
         self.fired_at = datetime(2026, 7, 31, 3, 17, 42, tzinfo=ZoneInfo("UTC"))
@@ -477,9 +479,60 @@ class DeliveryDedupTest(TestCase):
         self.assertIsNotNone(attempt.resolved_at)
         self.assertIn("delivery_outcome_ambiguous", "\n".join(first_logs.output))
 
-    @override_settings(NBHD_DELIVERY_DEDUP=False)
+    @override_settings(NBHD_DELIVERY_DEDUP_TENANTS="")
     @patch("apps.router.cron_delivery.httpx.Client")
-    def test_flag_off_is_passthrough_without_attempt_records(self, mock_client_cls):
+    def test_empty_gate_is_passthrough_without_attempt_records(self, mock_client_cls):
+        mock_http = self._successful_http(mock_client_cls)
+
+        first = self._post()
+        second = self._post()
+
+        self.assertEqual(first.json()["status"], "sent")
+        self.assertEqual(second.json()["status"], "sent")
+        self.assertEqual(mock_http.post.call_count, 2)
+        self.assertEqual(DeliveryAttempt.objects.filter(tenant=self.tenant).count(), 0)
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 2)
+
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_csv_gate_includes_and_excludes_tenants(self, mock_client_cls):
+        mock_http = self._successful_http(mock_client_cls)
+        other_tenant_id = "22222222-2222-2222-2222-222222222222"
+
+        with override_settings(NBHD_DELIVERY_DEDUP_TENANTS=other_tenant_id):
+            excluded_first = self._post()
+            excluded_second = self._post()
+        with override_settings(
+            NBHD_DELIVERY_DEDUP_TENANTS=f" {other_tenant_id}, {self.tenant.id} ",
+        ):
+            included_first = self._post()
+            with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+                included_second = self._post()
+
+        self.assertEqual(excluded_first.json()["status"], "sent")
+        self.assertEqual(excluded_second.json()["status"], "sent")
+        self.assertEqual(included_first.json()["status"], "sent")
+        self.assertEqual(included_second.json()["status"], "duplicate_suppressed")
+        self.assertEqual(mock_http.post.call_count, 3)
+        self.assertEqual(DeliveryAttempt.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 3)
+
+    @override_settings(NBHD_DELIVERY_DEDUP_TENANTS="*")
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_star_gate_enables_dedup_for_all_tenants(self, mock_client_cls):
+        mock_http = self._successful_http(mock_client_cls)
+
+        first = self._post()
+        with self.assertLogs("apps.router.cron_delivery", level="WARNING"):
+            duplicate = self._post()
+
+        self.assertEqual(first.json()["status"], "sent")
+        self.assertEqual(duplicate.json()["status"], "duplicate_suppressed")
+        self.assertEqual(mock_http.post.call_count, 1)
+        self.assertEqual(DeliveryAttempt.objects.filter(tenant=self.tenant).count(), 1)
+
+    @override_settings(NBHD_DELIVERY_DEDUP_TENANTS="not-a-uuid, ,still-not-a-uuid")
+    @patch("apps.router.cron_delivery.httpx.Client")
+    def test_malformed_gate_entries_are_ignored_safely(self, mock_client_cls):
         mock_http = self._successful_http(mock_client_cls)
 
         first = self._post()

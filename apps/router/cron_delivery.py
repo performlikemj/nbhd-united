@@ -42,6 +42,15 @@ def degraded_occurrence_key(*, tenant_id, job_name: str, fired_at: datetime) -> 
     return hashlib.sha256(material.encode()).hexdigest()
 
 
+def _delivery_dedup_enabled(tenant) -> bool:
+    configured = str(getattr(settings, "NBHD_DELIVERY_DEDUP_TENANTS", "") or "").strip()
+    if not configured:
+        return False
+    if configured == "*":
+        return True
+    return str(tenant.id) in {value.strip() for value in configured.split(",") if value.strip()}
+
+
 def _claim_delivery_attempt(*, tenant, occurrence_key: str, job_name: str, channel: str):
     """Claim a delivery key, or return the successful duplicate response."""
     from apps.router.models import DeliveryAttempt
@@ -453,7 +462,7 @@ class CronDeliveryView(APIView):
 
         job_name = request.headers.get("X-NBHD-Job-Name", "")
         delivery_attempt = None
-        if getattr(settings, "NBHD_DELIVERY_DEDUP", False):
+        if _delivery_dedup_enabled(tenant):
             occurrence_key = degraded_occurrence_key(
                 tenant_id=tenant.id,
                 job_name=job_name,
