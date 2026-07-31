@@ -656,6 +656,37 @@ class ASCCollectorTests(TestCase):
         self.assertEqual(advances, 1)
         self.assertEqual(train.phase, ReleaseTrain.Phase.SUBMITTED)
 
+    def test_recovery_prefers_furthest_phase_over_newest_event(self):
+        train = open_train(
+            product=TrackedItem.Product.NBHD_IOS,
+            version_string="furthest-over-newest",
+        )
+        older_at = timezone.now()
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.ASC_VERSION_STATE,
+            subject=f"nbhd-ios-{train.version_string}",
+            occurred_at=older_at,
+            payload={"state": "READY_FOR_DISTRIBUTION"},
+            fingerprint="asc-furthest-over-newest-released",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+        EvidenceEvent.objects.create(
+            source=EvidenceSource.ASC_VERSION_STATE,
+            subject=f"nbhd-ios-{train.version_string}",
+            occurred_at=older_at + timedelta(minutes=1),
+            payload={"state": "WAITING_FOR_REVIEW"},
+            fingerprint="asc-furthest-over-newest-submitted",
+            trust=EvidenceEvent.Trust.AUTHENTICATED_API,
+            provenance=EvidenceEvent.Provenance.COLLECTOR,
+        )
+
+        advances = asc._recover_train_advances()
+
+        train.refresh_from_db()
+        self.assertEqual(train.phase, ReleaseTrain.Phase.RELEASED)
+        self.assertEqual(advances, 1)
+
     def test_recovery_unmapped_events_cannot_starve_train_beyond_cap(self):
         trains = [
             open_train(
