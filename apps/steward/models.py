@@ -8,6 +8,7 @@ from django.utils import timezone
 class EvidenceSource(models.TextChoices):
     GATEWAY_HEARTBEAT = "gateway_heartbeat", "Gateway heartbeat"
     CI_RUN = "ci_run", "CI run"
+    GITHUB_STATE = "github_state", "GitHub state"
     ASC_VERSION_STATE = "asc_version_state", "App Store Connect version state"
     MJ_ACK = "mj_ack", "MJ acknowledgement"
     EVAL_RUN = "eval_run", "Eval run"
@@ -95,6 +96,90 @@ class TrackedItem(models.Model):
 
     def __str__(self) -> str:
         return f"{self.product}:{self.title} ({self.status})"
+
+
+class ReleaseTrain(models.Model):
+    class Phase(models.TextChoices):
+        PLANNED = "planned", "Planned"
+        INTEGRATING = "integrating", "Integrating"
+        VERIFIED_LOCAL = "verified_local", "Verified locally"
+        PUSHED = "pushed", "Pushed"
+        CI_GREEN = "ci_green", "CI green"
+        TAGGED = "tagged", "Tagged"
+        SUBMITTED = "submitted", "Submitted"
+        IN_REVIEW = "in_review", "In review"
+        RELEASED = "released", "Released"
+        ROLLED_BACK = "rolled_back", "Rolled back"
+
+    product = models.CharField(max_length=24, choices=TrackedItem.Product.choices)
+    version_string = models.CharField(max_length=32)
+    phase = models.CharField(max_length=24, choices=Phase.choices, default=Phase.PLANNED)
+    phase_changed_at = models.DateTimeField(default=timezone.now)
+    head_sha = models.CharField(max_length=40, null=True, blank=True)
+    head_ref = models.CharField(max_length=120, null=True, blank=True)
+    ci_workflow = models.CharField(max_length=140, null=True, blank=True)
+    ci_binding_changed_at = models.DateTimeField(null=True, blank=True)
+    refs = models.JSONField(default=list, blank=True)
+    tracked_item = models.ForeignKey(
+        TrackedItem,
+        on_delete=models.PROTECT,
+        related_name="release_trains",
+        null=True,
+        blank=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "steward_release_trains"
+        ordering = ["product", "version_string", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["product", "version_string"],
+                name="steward_release_train_product_version_unique",
+            )
+        ]
+
+    def clean(self) -> None:
+        super().clean()
+        _validate_refs(self.refs)
+        if self.head_sha is not None and (
+            len(self.head_sha) != 40 or any(character not in "0123456789abcdef" for character in self.head_sha)
+        ):
+            raise ValidationError({"head_sha": "head_sha must be exactly 40 lowercase hexadecimal characters."})
+        if self.tracked_item_id is not None and self.tracked_item.product != self.product:
+            raise ValidationError({"tracked_item": "tracked item product must match the release train product."})
+
+    def save(self, *args, **kwargs) -> None:
+        binding_changed = self._state.adding and bool(self.head_sha or self.ci_workflow)
+        if not self._state.adding:
+            previous = type(self).objects.filter(pk=self.pk).values("phase", "head_sha", "ci_workflow").first()
+            if previous and previous["phase"] != self.phase and not getattr(self, "_phase_transition_allowed", False):
+                raise ValidationError(
+                    {"phase": "ReleaseTrain phase changes must use apps.steward.trains.advance_train()."}
+                )
+            update_fields = kwargs.get("update_fields")
+            binding_changed = bool(
+                previous
+                and (
+                    ((update_fields is None or "head_sha" in update_fields) and previous["head_sha"] != self.head_sha)
+                    or (
+                        (update_fields is None or "ci_workflow" in update_fields)
+                        and previous["ci_workflow"] != self.ci_workflow
+                    )
+                )
+            )
+        if binding_changed:
+            self.ci_binding_changed_at = timezone.now()
+            if kwargs.get("update_fields") is not None:
+                kwargs["update_fields"] = {
+                    *kwargs["update_fields"],
+                    "ci_binding_changed_at",
+                }
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
+        return f"{self.product}:{self.version_string} ({self.phase})"
 
 
 class Expectation(models.Model):
@@ -316,3 +401,102 @@ class DigestRecord(models.Model):
         super().clean()
         if len(self.body) > 8192:
             raise ValidationError({"body": "body must be at most 8192 characters."})
+
+
+class RepoPullRequest(models.Model):
+    class State(models.TextChoices):
+        OPEN = "open", "Open"
+        MERGED = "merged", "Merged"
+        CLOSED = "closed", "Closed"
+
+    repo = models.CharField(max_length=60)
+    number = models.PositiveIntegerField()
+    title = models.CharField(max_length=140)
+    author = models.CharField(max_length=60)
+    draft = models.BooleanField(default=False)
+    state = models.CharField(max_length=12, choices=State.choices)
+    opened_at = models.DateTimeField()
+    last_activity_at = models.DateTimeField()
+    is_dependabot = models.BooleanField(default=False)
+    head_ref = models.CharField(max_length=120)
+    synced_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "steward_repo_pull_requests"
+        ordering = ["repo", "number"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["repo", "number"],
+                name="steward_repo_pull_request_repo_number_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=["repo", "state", "last_activity_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.repo}#{self.number} ({self.state})"
+
+
+class AscVersionSnapshot(models.Model):
+    version_id = models.CharField(max_length=120, unique=True)
+    version_string = models.CharField(max_length=32)
+    app_state = models.CharField(max_length=60)
+    build_number = models.CharField(max_length=32, blank=True)
+    build_processing_state = models.CharField(max_length=60, blank=True)
+    phased_state = models.CharField(max_length=60, blank=True)
+    phased_day = models.PositiveSmallIntegerField(null=True, blank=True)
+    revision = models.PositiveIntegerField(default=0)
+    active = models.BooleanField(default=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "steward_asc_version_snapshots"
+        ordering = ["version_string", "version_id"]
+
+    def state_tuple(self) -> tuple[str, str, str, str, str, int | None]:
+        return (
+            self.version_string,
+            self.app_state,
+            self.build_number,
+            self.build_processing_state,
+            self.phased_state,
+            self.phased_day,
+        )
+
+
+class GithubTagSnapshot(models.Model):
+    repo = models.CharField(max_length=60)
+    tag_name = models.TextField()
+    sha = models.CharField(max_length=64)
+    revision = models.PositiveIntegerField(default=0)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "steward_github_tag_snapshots"
+        ordering = ["repo", "tag_name"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["repo", "tag_name"],
+                name="steward_github_tag_repo_name_unique",
+            )
+        ]
+
+
+class CollectorStatus(models.Model):
+    class Collector(models.TextChoices):
+        GITHUB = "github", "GitHub"
+        ASC = "asc", "App Store Connect"
+
+    collector = models.CharField(max_length=16, choices=Collector.choices, unique=True)
+    last_success_at = models.DateTimeField(null=True, blank=True)
+    last_attempt_at = models.DateTimeField(default=timezone.now)
+    last_error_class = models.CharField(max_length=60, blank=True)
+    consecutive_failures = models.PositiveIntegerField(default=0)
+    consecutive_truncations = models.PositiveIntegerField(default=0)
+    detail = models.CharField(max_length=200, blank=True)
+    held_until = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = "steward_collector_statuses"
+        ordering = ["collector"]

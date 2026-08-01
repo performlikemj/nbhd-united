@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import math
-import unicodedata
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 
@@ -16,13 +15,23 @@ from apps.evals.suites.slo_snapshot import _metric_series
 from apps.steward.collectors.evals import collect_eval_evidence
 from apps.steward.models import (
     AlertState,
+    CollectorStatus,
     DigestRecord,
     EvidenceEvent,
     EvidenceSource,
     Expectation,
+    ReleaseTrain,
+    RepoPullRequest,
     TrackedItem,
 )
 from apps.steward.notify import send_digest
+from apps.steward.sanitize import safe_text as _safe_text
+from apps.steward.trains import (
+    TERMINAL_PHASES,
+    TRAIN_EXPECTATION_OWNER,
+    next_phase_for,
+    train_subject,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,14 +48,6 @@ _TERMINAL_EVAL_STATUSES = frozenset(
         EvalRun.Status.ERROR,
     }
 )
-
-
-def _safe_text(value: str, limit: int) -> str:
-    without_controls = "".join(character for character in value if unicodedata.category(character) not in {"Cc", "Cf"})
-    normalized = " ".join(without_controls.split())
-    if len(normalized) <= limit:
-        return normalized
-    return f"{normalized[: limit - 1]}…"
 
 
 def _age_days(now: datetime, then: datetime) -> int:
@@ -126,6 +127,35 @@ def _stalled(now: datetime) -> tuple[list[str], int]:
             alerted = f"; alerted {_age_label(now, expectation.last_alerted_at)}"
         lines.append(f"- {_safe_text(expectation.subject, MAX_RENDERED_SUBJECT_CHARS)} — {overdue} overdue{alerted}")
     return lines, len(expectations)
+
+
+def _trains(now: datetime) -> tuple[list[str], int]:
+    today = now.astimezone(UTC).date()
+    trains = list(
+        ReleaseTrain.objects.filter(
+            Q(phase__in=TERMINAL_PHASES, phase_changed_at__date=today) | ~Q(phase__in=TERMINAL_PHASES)
+        ).order_by("product", "version_string", "id")
+    )
+    lines: list[str] = []
+    for train in trains:
+        age = _age_days(now, train.phase_changed_at)
+        if train.phase in TERMINAL_PHASES:
+            lines.append(f"- {train.product} {train.version_string}: {train.phase} ({age}d)")
+            continue
+        expectation = (
+            Expectation.objects.filter(
+                subject=train_subject(train),
+                owner=TRAIN_EXPECTATION_OWNER,
+                state=Expectation.State.ARMED,
+            )
+            .order_by("-due_at", "-id")
+            .first()
+        )
+        upcoming = next_phase_for(train)
+        next_phase = upcoming if upcoming is not None else "unknown"
+        due = expectation.due_at.strftime("%Y-%m-%d") if expectation and expectation.due_at else "unknown"
+        lines.append(f"- {train.product} {train.version_string}: {train.phase} ({age}d) — next: {next_phase} due {due}")
+    return lines, len(trains)
 
 
 def _latest_unhealthy_suites(now: datetime) -> list[str]:
@@ -250,6 +280,46 @@ def _slo_and_evals(
     return lines, len(lines), suppression_total
 
 
+def _repos(now: datetime) -> tuple[list[str], int]:
+    repos = list(RepoPullRequest.objects.order_by("repo").values_list("repo", flat=True).distinct())
+    stale_before = now - timedelta(days=7)
+    lines: list[str] = []
+    for repo in repos:
+        open_prs = RepoPullRequest.objects.filter(
+            repo=repo,
+            state=RepoPullRequest.State.OPEN,
+        )
+        stale = open_prs.filter(last_activity_at__lt=stale_before)
+        stale_count = stale.count()
+        draft_count = stale.filter(draft=True).count()
+        dependabot_count = open_prs.filter(is_dependabot=True).count()
+        summary = (
+            f"- {repo}: {open_prs.count()} open PRs "
+            f"({stale_count} stale>7d, {draft_count} drafts>7d), "
+            f"dependabot: {dependabot_count}"
+        )
+        latest_ci = (
+            EvidenceEvent.objects.filter(
+                source=EvidenceSource.CI_RUN,
+                subject=f"{repo}-main-ci",
+            )
+            .order_by("-occurred_at", "-id")
+            .first()
+        )
+        if latest_ci is not None:
+            conclusion = latest_ci.payload.get("conclusion")
+            if isinstance(conclusion, str) and conclusion != "success":
+                summary += f", main CI: {_safe_text(conclusion, 32)}"
+        lines.append(summary)
+        for pull_request in stale.filter(is_dependabot=False).order_by(
+            "last_activity_at",
+            "number",
+        )[:3]:
+            quiet_days = _age_days(now, pull_request.last_activity_at)
+            lines.append(f"  - #{pull_request.number} — {quiet_days}d quiet")
+    return lines, len(repos)
+
+
 def _changes(since: datetime) -> tuple[list[str], int]:
     events = list(_trusted_changes_since(since).order_by("received_at", "id"))
     counts = Counter(event.source for event in events)
@@ -270,7 +340,7 @@ def _changes(since: datetime) -> tuple[list[str], int]:
     return lines, len(events)
 
 
-def _integrity() -> tuple[list[str], int]:
+def _integrity(now: datetime) -> tuple[list[str], int]:
     items = TrackedItem.objects.filter(status__in=[TrackedItem.Status.ACTIVE, TrackedItem.Status.PARKED]).annotate(
         armed_expectations=Count(
             "expectations",
@@ -285,6 +355,30 @@ def _integrity() -> tuple[list[str], int]:
         else:
             issue = "parked with no revisit expectation"
         lines.append(f"- {_safe_text(item.title, 200)} — {issue}")
+    intervals = {
+        CollectorStatus.Collector.GITHUB: timedelta(minutes=30),
+        CollectorStatus.Collector.ASC: timedelta(hours=1),
+    }
+    statuses = {status.collector: status for status in CollectorStatus.objects.filter(collector__in=intervals)}
+    for collector, interval in intervals.items():
+        status = statuses.get(collector)
+        if status is None:
+            lines.append(f"- collector {collector}: never succeeded")
+            continue
+        if status.last_error_class == "not_configured":
+            lines.append(f"- collector {collector}: not_configured")
+            continue
+        if status.last_success_at is None:
+            lines.append(f"- collector {collector}: never succeeded")
+            continue
+        if status.last_success_at <= now - 3 * interval:
+            lines.append(f"- collector {collector}: stale; last success {_age_label(now, status.last_success_at)}")
+            continue
+        if status.consecutive_failures:
+            lines.append(
+                f"- collector {collector}: {status.last_error_class or 'failed'} "
+                f"({status.consecutive_failures} consecutive)"
+            )
     return lines, len(lines)
 
 
@@ -293,7 +387,7 @@ def _omission_marker(omitted: int) -> str:
 
 
 def _minimum_section_block(title: str, lines: list[str], count: int) -> str:
-    return f"\n\n{title} ({count})\n{_omission_marker(len(lines))}"
+    return f"\n\n{title} ({count})\n{lines[0]}"
 
 
 def _render_section_block(
@@ -309,8 +403,8 @@ def _render_section_block(
     if len(lines) <= MAX_SECTION_LINES and len(all_lines) <= budget:
         return all_lines
 
-    kept: list[str] = []
-    for line in limited_lines:
+    kept: list[str] = [limited_lines[0]]
+    for line in limited_lines[1:]:
         proposed = [*kept, line]
         omitted = len(lines) - len(proposed)
         candidate = f"{heading}\n" + "\n".join(proposed) + f"\n{_omission_marker(omitted)}"
@@ -319,7 +413,12 @@ def _render_section_block(
         kept = proposed
 
     omitted = len(lines) - len(kept)
-    detail = "\n".join([*kept, _omission_marker(omitted)])
+    detail_lines = list(kept)
+    marker = _omission_marker(omitted)
+    candidate = f"{heading}\n" + "\n".join([*detail_lines, marker])
+    if omitted and len(candidate) <= budget:
+        detail_lines.append(marker)
+    detail = "\n".join(detail_lines)
     return f"{heading}\n{detail}"
 
 
@@ -354,20 +453,30 @@ def render_steward_daily_digest(
         since,
         last_delivered,
     )
+    needs_you = _needs_you(now)
+    trains = _trains(now)
+    stalled = _stalled(now)
+    repos = _repos(now)
+    changes = _changes(since)
+    integrity = _integrity(now)
 
     sections = [
-        ("NEEDS YOU", *_needs_you(now)),
-        ("STALLED", *_stalled(now)),
+        ("NEEDS YOU", *needs_you),
+        ("STALLED", *stalled),
+        ("TRAINS", *trains),
         ("SLO / EVALS", slo_evals, slo_evals_count),
-        ("CHANGES (24h)", *_changes(since)),
-        ("INTEGRITY", *_integrity()),
+        ("REPOS", *repos),
+        ("CHANGES (24h)", *changes),
+        ("INTEGRITY", *integrity),
     ]
     stats = {
-        "needs_you": sections[0][2],
-        "stalled": sections[1][2],
-        "slo_evals": sections[2][2],
-        "changes": sections[3][2],
-        "integrity": sections[4][2],
+        "needs_you": needs_you[1],
+        "trains": trains[1],
+        "stalled": stalled[1],
+        "slo_evals": slo_evals_count,
+        "repos": repos[1],
+        "changes": changes[1],
+        "integrity": integrity[1],
         "cooldown_suppressed_total": suppression_total,
     }
 

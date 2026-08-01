@@ -36,3 +36,30 @@ class StewardRegistrationTests(SimpleTestCase):
                 None,
             ),
         )
+
+    def test_collectors_are_allowlisted_and_registered(self):
+        self.assertEqual(
+            TASK_MAP["steward_collect_github"],
+            "apps.steward.tasks.steward_collect_github_task",
+        )
+        self.assertEqual(
+            TASK_MAP["steward_collect_asc"],
+            "apps.steward.tasks.steward_collect_asc_task",
+        )
+        crons = {name: (cron_expr, path, retries) for name, cron_expr, path, retries in iter_system_crons()}
+        self.assertEqual(
+            crons["steward-collect-github"],
+            (
+                "*/30 * * * *",
+                "/api/cron/trigger/steward_collect_github/",
+                None,
+            ),
+        )
+        self.assertEqual(
+            crons["steward-collect-asc"],
+            (
+                "18 * * * *",
+                "/api/cron/trigger/steward_collect_asc/",
+                None,
+            ),
+        )
