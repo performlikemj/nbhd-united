@@ -45,7 +45,7 @@ GITHUB_REPOS = [
     ("performlikemj", "nbhd-united", "nbhd_united"),
     ("performlikemj", "nbhd-ios", "nbhd_ios"),
     ("performlikemj", "sautai", "sautai"),
-    ("performlikemj", "loanarmy", "academy_watch"),
+    ("performlikemj", "the-academy-watch", "academy_watch"),
 ]
 GITHUB_API_BASE_URL = "https://api.github.com"
 GITHUB_TIMEOUT_SECONDS = 15.0
