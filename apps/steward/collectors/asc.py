@@ -35,7 +35,7 @@ from apps.steward.trains import PHASE_ORDER, advance_train, phase_evidence_epoch
 logger = logging.getLogger(__name__)
 
 ASC_API_BASE_URL = "https://api.appstoreconnect.apple.com"
-ASC_BUNDLE_ID = "org.neighborhoodunited.app"
+ASC_BUNDLE_ID = "org.hoodunited.nbhd"
 ASC_TIMEOUT_SECONDS = 15.0
 ASC_JWT_TTL_SECONDS = 14 * 60
 ASC_JWT_REFRESH_SKEW_SECONDS = 60
