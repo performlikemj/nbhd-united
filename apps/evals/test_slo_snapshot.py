@@ -790,8 +790,22 @@ class WeeklyDigestTaskGateTest(TestCase):
         self.assertEqual(response.json()["status"], "error")
 
 
+class WeeklyDigestGapSentinelTest(TestCase):
+    @override_settings(EVAL_EMAIL_ALERTS_ENABLED=False, PLATFORM_OWNER_EMAIL="owner@example.com")
+    def test_no_snapshot_gap_sentinel_stays_loud_when_legacy_alerts_disabled(self):
+        from apps.evals.tasks import weekly_slo_digest_task
+
+        mail.outbox = []
+        result = weekly_slo_digest_task()
+
+        self.assertEqual(result, {"sent": True})
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn("no snapshots", mail.outbox[0].subject.lower())
+        self.assertIn("not firing", mail.outbox[0].body.lower())
+
+
 class SloSnapshotTaskComputeFailureTest(TestCase):
-    @override_settings(PLATFORM_OWNER_EMAIL="owner@example.com")
+    @override_settings(EVAL_EMAIL_ALERTS_ENABLED=True, PLATFORM_OWNER_EMAIL="owner@example.com")
     def test_compute_exception_alerts_owner_before_reraising(self):
         from apps.evals.tasks import slo_snapshot_task
 

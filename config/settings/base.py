@@ -662,6 +662,11 @@ WELCOME_VIDEO_URL = env("WELCOME_VIDEO_URL", default="")
 # also exposed here so app code can read it via settings rather than os.environ.
 PLATFORM_OWNER_EMAIL = env("PLATFORM_OWNER_EMAIL", default="")
 
+# Legacy per-run eval failure/reaper emails. Steward's daily digest is now the
+# routine eval-health surface; production may opt these alerts back in without a
+# code change. Watcher-of-the-watcher email paths bypass this flag in alerting.py.
+EVAL_EMAIL_ALERTS_ENABLED = False
+
 # Eval system journey canaries (Wave B, docs/evals-wave-b-plan.md). The probes
 # target SYNTHETIC tenants by id (never a hardcoded UUID) — provisioning them is
 # a separate ops step. Both names are plumbed now; only eval-journey is

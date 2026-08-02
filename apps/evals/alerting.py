@@ -30,6 +30,45 @@ from apps.evals.models import EvalRun
 logger = logging.getLogger(__name__)
 
 SloDigestOutcome = Literal["sent", "skipped_no_owner", "failed"]
+_ALWAYS_LOUD_FAILURE_CASE_IDS = frozenset(
+    {
+        # The shared budget is exhausted or its operator kill-switch is active,
+        # making every tenant silent rather than one eval probe unhealthy.
+        "chat_roundtrip_global_cap",
+    }
+)
+
+
+def _legacy_alert_allowed(*, kind: str, run: EvalRun | None = None) -> bool:
+    """Apply the single mute policy for per-run failure and reaper emails."""
+    if getattr(settings, "EVAL_EMAIL_ALERTS_ENABLED", False):
+        return True
+
+    if run is not None:
+        try:
+            systemic_failure = run.results.filter(
+                passed=False,
+                case_id__in=_ALWAYS_LOUD_FAILURE_CASE_IDS,
+            ).exists()
+        except Exception:
+            # Classification uncertainty must not suppress a possible fleet-wide
+            # outage. The send helper remains best-effort below.
+            logger.exception(
+                "eval alert: systemic-failure classification failed; keeping alert loud suite=%s run=%s",
+                run.suite,
+                run.id,
+            )
+            return True
+        if systemic_failure:
+            logger.error(
+                "eval alert: systemic outage bypasses disabled legacy alerts suite=%s run=%s",
+                run.suite,
+                run.id,
+            )
+            return True
+
+    logger.info("%s: skipped because EVAL_EMAIL_ALERTS_ENABLED is false", kind)
+    return False
 
 
 def send_eval_failure_alert(run: EvalRun) -> bool:
@@ -50,6 +89,8 @@ def send_eval_failure_alert(run: EvalRun) -> bool:
     owner_email = getattr(settings, "PLATFORM_OWNER_EMAIL", "")
     if not owner_email:
         logger.warning("eval alert: PLATFORM_OWNER_EMAIL not set — %s failure alert skipped", run.suite)
+        return False
+    if not _legacy_alert_allowed(kind="eval alert", run=run):
         return False
     from apps.steward.gate import (
         record_sent,
@@ -112,6 +153,8 @@ def send_reaped_eval_runs_alert(runs: list[EvalRun]) -> bool:
     owner_email = getattr(settings, "PLATFORM_OWNER_EMAIL", "")
     if not owner_email:
         logger.warning("eval reaper alert: PLATFORM_OWNER_EMAIL not set — batch skipped")
+        return False
+    if not _legacy_alert_allowed(kind="eval reaper alert"):
         return False
     from apps.steward.gate import (
         record_sent,

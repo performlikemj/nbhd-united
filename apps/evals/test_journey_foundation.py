@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import secrets
+from datetime import timedelta
 from unittest.mock import patch
 
+from django.conf import settings
 from django.core import mail
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from apps.evals.alerting import send_eval_failure_alert
 from apps.evals.journey.targets import JourneyConfigError, resolve_journey_tenant
@@ -59,6 +62,7 @@ class ResolveJourneyTenantTest(TestCase):
             self.assertEqual(resolve_journey_tenant().id, synth.id)
 
 
+@override_settings(EVAL_EMAIL_ALERTS_ENABLED=True)
 class FailureAlertTest(TestCase):
     def _failed_run(self) -> EvalRun:
         run = open_run("journey", EvalRun.Trigger.SCHEDULED, image_tag="oc-1.2.3-abc")
@@ -134,6 +138,17 @@ class FailureAlertTest(TestCase):
         self.assertFalse(send_eval_failure_alert(run))
         self.assertEqual(len(mail.outbox), 0)
 
+    @override_settings(EVAL_EMAIL_ALERTS_ENABLED=False, PLATFORM_OWNER_EMAIL="owner@test.com")
+    def test_global_cap_systemic_outage_stays_loud_when_legacy_alerts_disabled(self):
+        from apps.evals.suites.journey_chat import CASE_GLOBAL_CAP
+
+        run = self._failed_run()
+        record(run, CASE_GLOBAL_CAP, EvalResult.Kind.JOURNEY, passed=False)
+
+        self.assertTrue(send_eval_failure_alert(run))
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn(CASE_GLOBAL_CAP, mail.outbox[0].body)
+
 
 class FinalizeTaskRunTest(TestCase):
     @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
@@ -145,7 +160,7 @@ class FinalizeTaskRunTest(TestCase):
         finalize_task_run(run)  # no raise
         self.assertEqual(len(mail.outbox), 0)
 
-    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    @override_settings(EVAL_EMAIL_ALERTS_ENABLED=True, PLATFORM_OWNER_EMAIL="owner@test.com")
     def test_nonpass_run_alerts_then_raises(self):
         run = open_run("journey", EvalRun.Trigger.SCHEDULED, image_tag=None)
         record(run, "c1", EvalResult.Kind.JOURNEY, passed=False)
@@ -155,3 +170,32 @@ class FinalizeTaskRunTest(TestCase):
             finalize_task_run(run)
         # Owner was alerted before the raise (best-effort, DLQ-visible failure).
         self.assertEqual(len(mail.outbox), 1)
+
+    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    def test_disabled_nonpass_finalizer_preserves_steward_evidence_without_burning_cooldown(self):
+        self.assertIs(settings.EVAL_EMAIL_ALERTS_ENABLED, False)
+        previous = open_run("journey", EvalRun.Trigger.SCHEDULED, image_tag=None)
+        record(previous, "c1", EvalResult.Kind.JOURNEY, passed=True)
+        previous.status = EvalRun.Status.PASS
+        previous.finished_at = timezone.now() - timedelta(minutes=2)
+        previous.save(update_fields=["status", "finished_at"])
+
+        run = open_run("journey", EvalRun.Trigger.SCHEDULED, image_tag=None)
+        record(run, "c1", EvalResult.Kind.JOURNEY, passed=False)
+        run.status = EvalRun.Status.FAIL
+        run.finished_at = timezone.now() - timedelta(minutes=1)
+        run.save(update_fields=["status", "finished_at"])
+        mail.outbox = []
+
+        with self.assertRaises(RuntimeError):
+            finalize_task_run(run)
+
+        self.assertEqual(len(mail.outbox), 0)
+        from apps.steward.collectors.evals import collect_eval_evidence
+        from apps.steward.models import AlertState, EvidenceEvent, EvidenceSource
+
+        self.assertFalse(AlertState.objects.filter(fingerprint="eval-email:journey:fail").exists())
+        self.assertEqual(collect_eval_evidence()["eval_run"], 1)
+        event = EvidenceEvent.objects.get(source=EvidenceSource.EVAL_RUN)
+        self.assertEqual(event.payload["run_id"], run.id)
+        self.assertEqual(event.payload["status"], EvalRun.Status.FAIL)

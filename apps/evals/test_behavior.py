@@ -887,7 +887,11 @@ class BehaviorTaskTest(TestCase):
         # 'error' and the exception propagates — the task must STILL email the
         # owner before re-raising, so "DLQ + owner alert" is true on this path too.
         with (
-            override_settings(EVAL_BEHAVIOR_TENANT_ID="", PLATFORM_OWNER_EMAIL="owner@test.com"),
+            override_settings(
+                EVAL_BEHAVIOR_TENANT_ID="",
+                EVAL_EMAIL_ALERTS_ENABLED=True,
+                PLATFORM_OWNER_EMAIL="owner@test.com",
+            ),
             self.assertRaises(BehaviorConfigError),
         ):
             eval_behavior_task(transport=BenignTransport(), judge=FakeJudge())

@@ -458,6 +458,7 @@ class EvalJourneyWakeTaskTest(TestCase):
             "EVAL_JOURNEY_PAT": self.pat,
             "DJANGO_BASE_URL": "https://cp.test",
             "PLATFORM_OWNER_EMAIL": "owner@test.com",
+            "EVAL_EMAIL_ALERTS_ENABLED": True,
         }
         base.update(extra)
         return override_settings(**base)

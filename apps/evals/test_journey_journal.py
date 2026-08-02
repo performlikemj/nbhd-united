@@ -180,7 +180,7 @@ class EvalJourneyJournalTaskTest(TestCase):
     def setUp(self):
         self.tenant = _synthetic_tenant()
 
-    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    @override_settings(EVAL_EMAIL_ALERTS_ENABLED=True, PLATFORM_OWNER_EMAIL="owner@test.com")
     def test_task_pass_path_no_alert(self):
         from django.core import mail
 
@@ -192,7 +192,7 @@ class EvalJourneyJournalTaskTest(TestCase):
         self.assertEqual(result["cases"], 1)
         self.assertEqual(len(mail.outbox), 0)  # no alert on a pass
 
-    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    @override_settings(EVAL_EMAIL_ALERTS_ENABLED=True, PLATFORM_OWNER_EMAIL="owner@test.com")
     def test_task_fail_path_alerts_and_raises(self):
         from django.core import mail
 

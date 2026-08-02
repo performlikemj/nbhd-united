@@ -278,7 +278,7 @@ class ReapStuckRunsTest(TestCase):
         # The reaped count is logged for greppability in Log Analytics.
         self.assertTrue(any("flipped 1 orphaned eval run" in m for m in log.output))
 
-    @override_settings(PLATFORM_OWNER_EMAIL="owner@test.com")
+    @override_settings(EVAL_EMAIL_ALERTS_ENABLED=True, PLATFORM_OWNER_EMAIL="owner@test.com")
     def test_reaper_batches_all_runs_into_one_email(self):
         from apps.evals.tasks import reap_stuck_eval_runs_task
 
@@ -293,6 +293,20 @@ class ReapStuckRunsTest(TestCase):
         self.assertIn("2 stuck eval run", mail.outbox[0].subject)
         self.assertIn(str(first.id), mail.outbox[0].body)
         self.assertIn(str(second.id), mail.outbox[0].body)
+
+    @override_settings(EVAL_EMAIL_ALERTS_ENABLED=False, PLATFORM_OWNER_EMAIL="owner@test.com")
+    def test_reaper_email_is_muted_without_burning_cooldown(self):
+        from apps.evals.tasks import reap_stuck_eval_runs_task
+        from apps.steward.models import AlertState
+
+        self._running_run(minutes_ago=45)
+        mail.outbox = []
+
+        result = reap_stuck_eval_runs_task()
+
+        self.assertEqual(result["reaped"], 1)
+        self.assertEqual(len(mail.outbox), 0)
+        self.assertFalse(AlertState.objects.filter(fingerprint="eval-email:reaper").exists())
 
     def test_reaper_registered_zero_arg_in_task_map(self):
         import inspect
