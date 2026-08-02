@@ -21,6 +21,7 @@ from apps.common.cache import bump_tag
 from .apple_client import (
     AppleInvalidGrant,
     AppleUnavailable,
+    apple_native_bundle_id,
     apple_native_readiness_error,
     apple_readiness_error,
     exchange_apple_code,
@@ -266,7 +267,7 @@ class AppleNativeView(AppleNativeReadinessMixin, AppleStrictParsingMixin, APIVie
             grant = verify_apple_id_token(
                 data["identity_token"],
                 nonce_hash,
-                {settings.APPLE_SIWA_BUNDLE_ID},
+                {apple_native_bundle_id()},
             )
         except AppleInvalidGrant as exc:
             logger.info(

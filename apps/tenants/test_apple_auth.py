@@ -122,6 +122,7 @@ class AppleFixtureMixin:
 
         with apple_client._unknown_kids_lock:
             apple_client._unknown_kids.clear()
+            apple_client._last_forced_jwks_refresh_at = None
         self.addCleanup(self.jwks_patch.stop)
         self.addCleanup(self.publish_patch.stop)
         self.addCleanup(cache.clear)
@@ -568,16 +569,64 @@ class ApplePhaseBTests(AppleFixtureMixin, TestCase):
 
         self.assertEqual(self.jwks.calls, [False, True])
 
-    def test_failed_unknown_kid_refresh_is_not_negative_cached(self):
+    def test_failed_unknown_kid_refresh_enters_cooldown_without_caching_first_probe(self):
+        from . import apple_client
+
         self.jwks.refresh_error = OSError("refresh failed")
         unknown_token = self.id_token(kid="unknown-kid")
         nonce_hash = __import__("hashlib").sha256(NONCE.encode()).hexdigest()
 
-        for _ in range(2):
-            with self.assertRaises(AppleUnavailable):
-                verify_apple_id_token(unknown_token, nonce_hash, {SERVICES_ID})
+        with self.assertRaises(AppleUnavailable):
+            verify_apple_id_token(unknown_token, nonce_hash, {SERVICES_ID})
+        with apple_client._unknown_kids_lock:
+            self.assertNotIn("unknown-kid", apple_client._unknown_kids)
 
-        self.assertEqual(self.jwks.calls, [False, True, False, True])
+        with self.assertRaises(AppleInvalidGrant):
+            verify_apple_id_token(unknown_token, nonce_hash, {SERVICES_ID})
+
+        self.assertEqual(self.jwks.calls, [False, True, False])
+
+    def test_novel_kids_share_one_forced_refresh_per_cooldown_window(self):
+        nonce_hash = __import__("hashlib").sha256(NONCE.encode()).hexdigest()
+
+        with self.assertRaises(AppleInvalidGrant):
+            verify_apple_id_token(
+                self.id_token(kid="novel-kid-one"),
+                nonce_hash,
+                {SERVICES_ID},
+            )
+        with self.assertRaises(AppleInvalidGrant) as second:
+            verify_apple_id_token(
+                self.id_token(kid="novel-kid-two"),
+                nonce_hash,
+                {SERVICES_ID},
+            )
+
+        self.assertEqual(second.exception.reason, "unknown_kid")
+        self.assertEqual(self.jwks.calls.count(True), 1)
+        self.assertEqual(self.jwks.calls, [False, True, False])
+
+    def test_empty_allowed_audiences_reject_before_jwks_lookup(self):
+        nonce_hash = __import__("hashlib").sha256(NONCE.encode()).hexdigest()
+
+        for allowed in (set(), {""}, {"", None}):
+            with self.subTest(allowed=allowed), self.assertRaises(AppleInvalidGrant) as rejected:
+                verify_apple_id_token(self.id_token(), nonce_hash, allowed)
+            self.assertEqual(rejected.exception.reason, "invalid_issuer_or_audience")
+
+        self.assertEqual(self.jwks.calls, [])
+
+    def test_falsy_present_issuer_and_audience_are_rejected(self):
+        nonce_hash = __import__("hashlib").sha256(NONCE.encode()).hexdigest()
+
+        for claim in ("iss", "aud"):
+            with self.subTest(claim=claim), self.assertRaises(AppleInvalidGrant) as rejected:
+                verify_apple_id_token(
+                    self.id_token(overrides={claim: ""}),
+                    nonce_hash,
+                    {SERVICES_ID},
+                )
+            self.assertEqual(rejected.exception.reason, "invalid_issuer_or_audience")
 
     def test_unicode_unknown_kid_fails_closed_without_type_error(self):
         unknown_token = self.id_token(kid="未知-kid")
@@ -611,12 +660,14 @@ class AppleRealJwksClientTests(SimpleTestCase):
 
         with apple_client._unknown_kids_lock:
             apple_client._unknown_kids.clear()
+            apple_client._last_forced_jwks_refresh_at = None
 
     def tearDown(self):
         from . import apple_client
 
         with apple_client._unknown_kids_lock:
             apple_client._unknown_kids.clear()
+            apple_client._last_forced_jwks_refresh_at = None
 
     def make_token(self):
         return jwt.encode(
@@ -1167,6 +1218,40 @@ class AppleNativeTests(AppleFixtureMixin, TestCase):
         )
         self.assertEqual(verified.audience, BUNDLE_ID)
 
+    def test_json_list_audience_is_rejected_on_web_and_native_lanes(self):
+        web_row, web_nonce = self.mint_transaction()
+        web, _ = self.post_complete(
+            web_row,
+            self.token_response(
+                nonce=web_nonce,
+                audience=[SERVICES_ID],
+            ),
+        )
+        native_row, native_nonce = self.mint_transaction(purpose="native_auth")
+        native = self.post_native(
+            native_row,
+            self.id_token(nonce=native_nonce, audience=[BUNDLE_ID]),
+        )
+
+        self.assertEqual(web.status_code, 400)
+        self.assertEqual(web.data, {"error": "invalid_grant"})
+        self.assertEqual(native.status_code, 400)
+        self.assertEqual(native.data, {"error": "invalid_grant"})
+        self.assertEqual(AppleRevocationOutbox.objects.count(), 0)
+
+    def test_padded_bundle_setting_is_normalized_for_readiness_and_verification(self):
+        user = self.make_user(email="bundle-whitespace@example.com")
+        self.make_identity(user)
+        row, nonce = self.mint_transaction(purpose="native_auth")
+
+        with self.settings(APPLE_SIWA_BUNDLE_ID=f"  {BUNDLE_ID}  "):
+            response = self.post_native(
+                row,
+                self.id_token(nonce=nonce, audience=BUNDLE_ID),
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+
     def test_known_subject_mints_working_jwts_provisions_and_never_rotates_web_grant(self):
         user = self.make_user(email="native-known@example.com")
         identity = self.make_identity(user, refresh_token="web-refresh-token")
@@ -1225,6 +1310,78 @@ class AppleNativeTests(AppleFixtureMixin, TestCase):
             ),
             before,
         )
+        self.assertEqual(AppleRevocationOutbox.objects.count(), 0)
+
+    def test_inactive_native_identity_is_rejected_without_tokens_or_outbox(self):
+        user = self.make_user(email="native-inactive@example.com", active=False)
+        self.make_identity(user)
+        row, nonce = self.mint_transaction(purpose="native_auth")
+
+        response = self.post_native(
+            row,
+            self.id_token(nonce=nonce, audience=BUNDLE_ID),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"error": "invalid_grant"})
+        self.assertNotIn("access", response.data)
+        self.assertNotIn("refresh", response.data)
+        self.assertEqual(AppleRevocationOutbox.objects.count(), 0)
+
+    def test_expired_native_transaction_is_not_consumed_or_outboxed(self):
+        row, nonce = self.mint_transaction(ttl=-1, purpose="native_auth")
+
+        response = self.post_native(
+            row,
+            self.id_token(nonce=nonce, audience=BUNDLE_ID),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"error": "invalid_grant"})
+        row.refresh_from_db()
+        self.assertIsNone(row.consumed_at)
+        self.assertEqual(AppleRevocationOutbox.objects.count(), 0)
+
+    def test_native_failure_paths_never_write_revocation_outbox(self):
+        user = self.make_user(email="native-failures@example.com")
+        self.make_identity(user)
+        cases = (
+            {"audience": SERVICES_ID},
+            {"audience": BUNDLE_ID, "nonce": "wrong-native-nonce"},
+            {"audience": BUNDLE_ID, "subject": "unknown-native-subject"},
+        )
+
+        for token_kwargs in cases:
+            row, nonce = self.mint_transaction(purpose="native_auth")
+            token_kwargs = {"nonce": nonce, **token_kwargs}
+            with self.subTest(token_kwargs=token_kwargs):
+                response = self.post_native(row, self.id_token(**token_kwargs))
+                self.assertEqual(response.status_code, 400)
+
+        self.assertEqual(AppleRevocationOutbox.objects.count(), 0)
+
+    def test_provisioning_exception_is_logged_and_tokens_still_returned(self):
+        user = self.make_user(email="native-provision-failure@example.com")
+        self.make_identity(user)
+        row, nonce = self.mint_transaction(purpose="native_auth")
+
+        with (
+            patch(
+                "apps.tenants.apple_views.ensure_tenant_provisioned",
+                side_effect=RuntimeError("provisioning failed"),
+            ) as provision,
+            self.assertLogs("apps.tenants.apple_views", level="ERROR") as captured,
+        ):
+            response = self.post_native(
+                row,
+                self.id_token(nonce=nonce, audience=BUNDLE_ID),
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(set(response.data), {"access", "refresh", "created"})
+        provision.assert_called_once_with(user)
+        self.assertIn("auth.apple.native.ensure_tenant_failed", "\n".join(captured.output))
+        self.assertFalse(Tenant.objects.filter(user=user).exists())
 
     def test_purpose_binding_and_default_begin_remains_web_usable(self):
         user = self.make_user(email="purpose@example.com")

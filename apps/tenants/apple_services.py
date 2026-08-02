@@ -159,6 +159,9 @@ def resolve_apple_auth(grant: AppleGrant) -> AppleAuthResolution:
         if not grant.email or not grant.email_verified:
             raise AppleResolutionRejected("invalid_grant", "email_not_verified")
         _email_policy(grant.email)
+        # Native identity-token-only grants deliberately carry no refresh
+        # token, making this sign-in-only guard load-bearing. Native create/link
+        # requires code exchange plus a per-audience grant schema (see playbook).
         if not grant.refresh_token:
             raise AppleResolutionRejected("invalid_grant", "missing_refresh_token")
 
@@ -209,6 +212,9 @@ def resolve_apple_native_auth(grant: AppleGrant) -> AppleAuthResolution:
 def link_apple_identity(user: User, grant: AppleGrant) -> None:
     """Link a fresh Apple grant to an authenticated, password-stepped-up user."""
 
+    # Native identity-token-only grants deliberately carry no refresh token,
+    # making this sign-in-only guard load-bearing. Native create/link requires
+    # code exchange plus a per-audience grant schema (see playbook).
     if not grant.refresh_token:
         raise AppleResolutionRejected("invalid_grant", "missing_refresh_token")
     ciphertext = encrypt_apple_refresh_token(grant.refresh_token)
