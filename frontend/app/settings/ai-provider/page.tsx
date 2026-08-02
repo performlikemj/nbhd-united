@@ -83,7 +83,7 @@ export default function AIProviderPage() {
 
   const fallbackModelName = useMemo(() => {
     const m = ACTIVE_MODELS.find((x) => x.model_id === DEFAULT_MODEL);
-    return m?.name ?? "DeepSeek V4 Pro";
+    return m?.name ?? "DeepSeek V4 Flash";
   }, []);
 
   const handleSelectModel = async (model: ModelUI) => {

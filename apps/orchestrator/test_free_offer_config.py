@@ -20,12 +20,18 @@ def _activate():
 
 
 class ResolveTenantModelsTest(TestCase):
-    def test_inactive_offer_uses_tier_primary(self):
+    def test_inactive_offer_uses_flash_tier_primary_and_preserves_explicit_pro(self):
         tenant = _tenant()
         models_config, entries, fallbacks = resolve_tenant_models(tenant)
-        self.assertEqual(models_config["primary"], DEEPSEEK_MODEL)
+        self.assertEqual(models_config["primary"], DEEPSEEK_FLASH_MODEL)
         self.assertNotIn(NEMOTRON_FREE_MODEL, entries)
         self.assertNotIn(NEMOTRON_FREE_MODEL, fallbacks)
+        self.assertEqual(effective_primary_model(tenant), DEEPSEEK_FLASH_MODEL)
+
+        tenant.preferred_model = DEEPSEEK_MODEL
+        tenant.save(update_fields=["preferred_model"])
+        models_config, _entries, _fallbacks = resolve_tenant_models(tenant)
+        self.assertEqual(models_config["primary"], DEEPSEEK_MODEL)
         self.assertEqual(effective_primary_model(tenant), DEEPSEEK_MODEL)
 
     def test_active_offer_is_primary_with_deepseek_fallback_first(self):

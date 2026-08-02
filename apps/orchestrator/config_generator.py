@@ -1020,13 +1020,12 @@ _BACKGROUND_TASKS_PROMPT = (
     "the morning briefing will read those and surface anything relevant.**\n"
 )
 
-# Model mapping by tier — DeepSeek V4 Pro is the chat primary as of
-# 2026-05-23. DeepSeek V4 Flash sits in the allowlist (`TIER_MODEL_CONFIGS`)
-# as the selectable lower-latency alternative (it replaced MiniMax M2.7 in
-# that slot on 2026-06-09); users who pick it via the settings UI keep
-# DeepSeek on the reasoning-shaped crons through `TIER_TASK_DEFAULTS` below.
+# Model mapping by tier — DeepSeek V4 Flash is the starter chat primary as of
+# 2026-08-02. DeepSeek V4 Pro remains in the allowlist (`TIER_MODEL_CONFIGS`)
+# as the selectable reasoning alternative; explicit user selections still win
+# in `resolve_tenant_models` below.
 TIER_MODELS: dict[str, dict[str, str]] = {
-    "starter": {"primary": DEEPSEEK_MODEL},
+    "starter": {"primary": DEEPSEEK_FLASH_MODEL},
 }
 
 TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
@@ -1045,10 +1044,11 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
 # well inside the per-turn timeout. DeepSeek V4 Pro — the reasoning "leader" —
 # was stamped here originally for its judgment, but on the cron path it
 # overshot the 60s turn ceiling and timed out (2026-06 incident); the leader
-# now stays reserved for the interactive chat session while the small worker
-# (Flash) handles scheduled legwork. Flash replaced Gemma as the worker default
-# on 2026-06-09 — cheaper ($0.065/$0.26 vs $0.12/$0.37 per 1M) and more capable,
-# same fast / non-reasoning profile, so it keeps the default per-turn timeout.
+# remains selectable for interactive chat while the small worker (Flash)
+# handles scheduled legwork and now also serves as the starter chat default.
+# Flash replaced Gemma as the worker default on 2026-06-09 — cheaper
+# ($0.065/$0.26 vs $0.12/$0.37 per 1M) and more capable, same fast /
+# non-reasoning profile, so it keeps the default per-turn timeout.
 # Every value MUST be a NON-BYO model so platform-initiated turns never burn a
 # tenant's Anthropic subscription.
 #
@@ -1116,7 +1116,7 @@ def resolve_tenant_models(tenant: Tenant) -> tuple[dict[str, str], dict[str, Any
     container about which model is live.
 
     Resolution order:
-      1. Tier primary (e.g. DeepSeek V4 Pro).
+      1. Tier primary (e.g. DeepSeek V4 Flash).
       2. Limited-time free offer overrides the rolling default when active, and
          joins the allowlist.
       3. BYO subscription extras extend the allowlist.
