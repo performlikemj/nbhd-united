@@ -203,8 +203,8 @@ export default function LandingPage() {
           <blockquote className="font-serif text-[clamp(1.5rem,3vw+0.5rem,3rem)] italic leading-snug text-slate-200">
             &ldquo;There are as many neurons in your brain as stars in the Milky
             Way. We carry a universe inside us.{" "}
-            <span className="text-c-pink">Neighborhood United</span> helps you
-            explore yours.&rdquo;
+            <span className="text-c-pink">Neighborhood United</span>{" "}
+            helps you explore yours.&rdquo;
           </blockquote>
           <div className="mt-16 flex items-center justify-center gap-6 opacity-30">
             <div className="h-px w-24 bg-gradient-to-r from-transparent to-slate-400" />
