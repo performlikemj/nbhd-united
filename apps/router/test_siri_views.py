@@ -40,7 +40,7 @@ def _make_tenant(user: User) -> Tenant:
 
 def _completion(content: str):
     """A chat_completion() return value: (response_json, model_used)."""
-    return ({"choices": [{"message": {"content": content}}]}, "openrouter/deepseek/deepseek-v4-flash")
+    return ({"choices": [{"message": {"content": content}}]}, "openrouter/deepseek/deepseek-v4-flash-0731")
 
 
 def _ok_drain_response(text: str = "agent reply"):

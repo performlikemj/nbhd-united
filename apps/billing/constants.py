@@ -31,14 +31,22 @@ DEEPSEEK_MODEL = "openrouter/deepseek/deepseek-v4-pro"
 DEEPSEEK_DISPLAY = "DeepSeek V4 Pro"
 DEEPSEEK_RATE = {"input": 0.435, "output": 0.87}
 
-# DeepSeek V4 Flash — the cheap/fast member of the DeepSeek family. Replaced
+# The unversioned DeepSeek V4 Flash id is no longer selectable (repointed to the
+# 0731 snapshot on 2026-08-02). Keep its constant + original rate so historical
+# UsageEvent rows continue to render with the name and price recorded at the
+# time; no runtime allowlist references this legacy id.
+DEEPSEEK_FLASH_LEGACY_MODEL = "openrouter/deepseek/deepseek-v4-flash"
+DEEPSEEK_FLASH_LEGACY_DISPLAY = "DeepSeek V4 Flash"
+DEEPSEEK_FLASH_LEGACY_RATE = {"input": 0.065, "output": 0.26}
+
+# DeepSeek V4 Flash 0731 — the cheap/fast member of the DeepSeek family. Replaced
 # MiniMax M2.7 as the low-latency "fast" slot on 2026-06-09. Also the pinned
 # HEARTBEAT_MODEL (see config_generator): cheaper than V4 Pro, faster than the
 # reasoning leader, more capable than the Gemma worker. Not a reasoning model,
 # so it keeps the default chat timeout.
-DEEPSEEK_FLASH_MODEL = "openrouter/deepseek/deepseek-v4-flash"
+DEEPSEEK_FLASH_MODEL = "openrouter/deepseek/deepseek-v4-flash-0731"
 DEEPSEEK_FLASH_DISPLAY = "DeepSeek V4 Flash"
-DEEPSEEK_FLASH_RATE = {"input": 0.065, "output": 0.26}
+DEEPSEEK_FLASH_RATE = {"input": 0.09, "output": 0.18}
 
 GEMMA_MODEL = "openrouter/google/gemma-4-31b-it"
 GEMMA_DISPLAY = "Gemma 4 31B"
@@ -117,6 +125,14 @@ MODEL_RATES: dict[str, dict[str, float]] = {
     DEEPSEEK_MODEL.removeprefix("openrouter/"): {
         **DEEPSEEK_RATE,
         "display_name": DEEPSEEK_DISPLAY,
+    },
+    DEEPSEEK_FLASH_LEGACY_MODEL: {
+        **DEEPSEEK_FLASH_LEGACY_RATE,
+        "display_name": DEEPSEEK_FLASH_LEGACY_DISPLAY,
+    },
+    DEEPSEEK_FLASH_LEGACY_MODEL.removeprefix("openrouter/"): {
+        **DEEPSEEK_FLASH_LEGACY_RATE,
+        "display_name": DEEPSEEK_FLASH_LEGACY_DISPLAY,
     },
     DEEPSEEK_FLASH_MODEL: {
         **DEEPSEEK_FLASH_RATE,
@@ -252,7 +268,7 @@ TIER_TOKEN_BUDGETS: dict[str, int] = {
 # Monthly cost budget in USD.  Enforcement compares
 # estimated_cost_this_month against this cap.
 TIER_COST_BUDGETS: dict[str, float] = {
-    "starter": 5.00,  # ~$5 of metered usage (DeepSeek V4 Flash @ $0.065/$0.26 per 1M)
+    "starter": 5.00,  # ~$5 of metered usage (DeepSeek V4 Flash @ $0.09/$0.18 per 1M)
 }
 
 # ── Prepaid credit top-ups ─────────────────────────────────────────────────
