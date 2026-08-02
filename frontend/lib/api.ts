@@ -435,6 +435,13 @@ export function fetchHorizons(): Promise<import("@/lib/types").HorizonsData> {
   return apiFetch<import("@/lib/types").HorizonsData>("/api/v1/dashboard/horizons/");
 }
 
+// First page of the existing cross-channel chat feed. Keep the response
+// unknown here so the welcome-card selector can fail closed if the iOS-owned
+// wire shape changes or a field is absent.
+export function fetchChatMessagesFirstPage(): Promise<unknown> {
+  return apiFetch<unknown>("/api/v1/chat/messages/");
+}
+
 // Journal current-status projection — live state derived from typed models
 // + the finance ledger (never a stale baked copy). See status_projection.py.
 export function fetchJournalStatus(): Promise<import("@/lib/types").JournalStatus> {
