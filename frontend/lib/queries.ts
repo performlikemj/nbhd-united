@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { isLoggedIn } from "@/lib/auth";
+import { getLiveQueryClient } from "@/lib/query-persist";
 import {
   AbsorbedItem,
   AuthUser,
@@ -478,9 +479,13 @@ export function useOnboardMutation() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: onboardTenant,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["me"] });
-      void queryClient.invalidateQueries({ queryKey: ["tenant"] });
+    onSuccess: (tenant) => {
+      const liveQueryClient = getLiveQueryClient() ?? queryClient;
+      liveQueryClient.setQueryData<AuthUser>(["me"], (me) =>
+        me ? { ...me, tenant } : me,
+      );
+      void liveQueryClient.invalidateQueries({ queryKey: ["me"] });
+      void liveQueryClient.invalidateQueries({ queryKey: ["tenant"] });
     },
   });
 }

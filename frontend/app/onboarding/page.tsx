@@ -11,7 +11,7 @@ import { SectionCardSkeleton } from "@/components/skeleton";
 import { useMeQuery } from "@/lib/queries";
 
 export default function OnboardingPage() {
-  const { data: me, isLoading } = useMeQuery();
+  const { data: me, isLoading, refetch: refetchMe } = useMeQuery();
   const tenant = me?.tenant;
   const hasTenant = Boolean(tenant);
   // Local-only outcome: linking is never an onboarding or authentication gate.
@@ -40,7 +40,13 @@ export default function OnboardingPage() {
 
   return (
     <OnboardingShell>
-      {scene === "persona" && <PersonaScene />}
+      {scene === "persona" && (
+        <PersonaScene
+          me={me}
+          hasTenant={hasTenant}
+          refetchMe={refetchMe}
+        />
+      )}
       {scene === "channel" && <ChannelScene onContinue={setChannelOutcome} />}
       {scene === "launch" && channelOutcome ? (
         <LaunchSequence outcome={channelOutcome} />

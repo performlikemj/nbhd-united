@@ -1,19 +1,48 @@
 "use client";
 
 import clsx from "clsx";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { useOnboardMutation, useMeQuery, usePersonasQuery } from "@/lib/queries";
+import { useOnboardMutation, usePersonasQuery } from "@/lib/queries";
 import type { PersonaOption } from "@/lib/api";
 import { clearInviteToken, peekInviteToken } from "@/lib/invite-token";
+import type { AuthUser } from "@/lib/types";
 
 const autoOnboardAttempted = new Set<string>();
+const FINISH_RETRY_INTERVAL_MS = 3_000;
+const FINISH_RETRY_TIMEOUT_MS = 30_000;
 
-export function PersonaScene() {
-  const { data: me } = useMeQuery();
+interface PersonaSceneProps {
+  me: AuthUser | undefined;
+  hasTenant: boolean;
+  refetchMe: () => Promise<unknown>;
+}
+
+export function PersonaScene({ me, hasTenant, refetchMe }: PersonaSceneProps) {
   const { data: personas } = usePersonasQuery();
   const { mutateAsync: onboardTenant, isPending, isSuccess } = useOnboardMutation();
   const [selected, setSelected] = useState("neighbor");
+  const [finishingTimedOut, setFinishingTimedOut] = useState(false);
+
+  const isFinishing = isSuccess && !hasTenant && !finishingTimedOut;
+
+  useEffect(() => {
+    if (!isFinishing) return;
+
+    const retryTimer = window.setInterval(() => {
+      void refetchMe().catch(() => {
+        // Keep retrying until the bounded finishing window expires.
+      });
+    }, FINISH_RETRY_INTERVAL_MS);
+    const timeoutTimer = window.setTimeout(() => {
+      setFinishingTimedOut(true);
+    }, FINISH_RETRY_TIMEOUT_MS);
+
+    return () => {
+      window.clearInterval(retryTimer);
+      window.clearTimeout(timeoutTimer);
+    };
+  }, [isFinishing, refetchMe]);
 
   const handleContinue = async () => {
     const userId = me?.id;
@@ -33,6 +62,25 @@ export function PersonaScene() {
       clearInviteToken();
     } catch {
       autoOnboardAttempted.delete(userId);
+      return;
+    }
+
+    // This observer belongs to the page that selects the onboarding scene.
+    // Awaiting it directly avoids relying on mutation invalidation crossing a
+    // QueryClient replacement during an auth-generation change.
+    try {
+      await refetchMe();
+    } catch {
+      // The bounded finishing-state retries below handle a transient failure.
+    }
+  };
+
+  const handleFinishRetry = async () => {
+    setFinishingTimedOut(false);
+    try {
+      await refetchMe();
+    } catch {
+      // Restarting the finishing state also restarts its bounded retry window.
     }
   };
 
@@ -85,14 +133,39 @@ export function PersonaScene() {
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={handleContinue}
-        disabled={isPending}
-        className="glow-purple rounded-full bg-[#7C6BF0] px-8 py-3 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
-      >
-        {isPending ? "Setting up..." : "Continue"}
-      </button>
+      {finishingTimedOut ? (
+        <div className="flex flex-col items-center gap-3" role="alert">
+          <p className="max-w-[360px] text-sm text-rose-text">
+            Setup finished, but we couldn&apos;t refresh your account yet.
+          </p>
+          <button
+            type="button"
+            onClick={handleFinishRetry}
+            className="glow-purple min-h-[44px] rounded-full bg-accent px-8 py-3 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-95"
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={handleContinue}
+          disabled={isPending || isSuccess}
+          className="glow-purple inline-flex min-h-[44px] items-center gap-2 rounded-full bg-accent px-8 py-3 text-sm font-semibold text-white transition-all hover:brightness-110 active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {isPending ? "Setting up..." : null}
+          {isFinishing ? (
+            <>
+              <span
+                aria-hidden="true"
+                className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white motion-reduce:animate-none"
+              />
+              Finishing setup…
+            </>
+          ) : null}
+          {!isPending && !isSuccess ? "Continue" : null}
+        </button>
+      )}
     </div>
   );
 }
