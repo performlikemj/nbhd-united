@@ -4,6 +4,7 @@ import clsx from "clsx";
 import { useState, useCallback } from "react";
 import { Sidebar } from "@/components/journal/sidebar";
 import { DocumentView } from "@/components/journal/document-view";
+import { WelcomeMessageCard } from "@/components/journal/welcome-message-card";
 import { useSidebarTreeQuery } from "@/lib/queries";
 import { fetchDocument } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
@@ -120,10 +121,11 @@ export default function JournalPage() {
       </div>
 
       {/* Main content */}
-      <div className="min-w-0 flex-1 overflow-hidden">
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <WelcomeMessageCard />
         <div
           key={`${activeKind}-${activeSlug}-${viewKey}`}
-          className="view-transition-enter h-full"
+          className="view-transition-enter min-h-0 flex-1"
         >
           <DocumentView
             kind={activeKind}

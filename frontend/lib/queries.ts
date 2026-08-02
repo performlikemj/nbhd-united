@@ -50,6 +50,7 @@ import {
   fetchAutomations,
   fetchCronJobs,
   fetchDashboard,
+  fetchChatMessagesFirstPage,
   fetchDocument,
   fetchDocuments,
   fetchIntegrations,
@@ -217,6 +218,7 @@ import {
   removeCircleMember,
   regenerateInviteCode,
 } from "@/lib/api";
+import { selectGreeting } from "@/lib/welcome-message";
 
 export function useMeQuery() {
   return useQuery({
@@ -258,6 +260,18 @@ export function useTenantQuery() {
       return 5000;
     },
     refetchIntervalInBackground: false,
+  });
+}
+
+export function useWelcomeMessageQuery() {
+  const { data: tenant } = useTenantQuery();
+
+  return useQuery({
+    queryKey: ["welcome-message", tenant?.id],
+    queryFn: async () => selectGreeting(await fetchChatMessagesFirstPage()),
+    staleTime: 60_000,
+    retry: false,
+    enabled: isLoggedIn() && tenant?.status === "active",
   });
 }
 
