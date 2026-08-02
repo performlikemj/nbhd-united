@@ -4,7 +4,13 @@ from django.test import TestCase
 
 from apps.tenants.services import create_tenant
 
-from .constants import ANTHROPIC_OPUS_MODEL, ANTHROPIC_SONNET_MODEL, DEEPSEEK_MODEL, MINIMAX_MODEL
+from .constants import (
+    ANTHROPIC_OPUS_MODEL,
+    ANTHROPIC_SONNET_MODEL,
+    DEEPSEEK_FLASH_MODEL,
+    DEEPSEEK_MODEL,
+    MINIMAX_MODEL,
+)
 from .services import (
     check_budget,
     extract_model_from_response,
@@ -172,11 +178,11 @@ class ResolveTenantPrimaryModelTest(TestCase):
         self.assertEqual(resolve_tenant_primary_model(self.tenant), DEEPSEEK_MODEL)
 
     def test_falls_back_to_tier_default_when_both_empty(self):
-        # TIER_MODELS["starter"]["primary"] is DeepSeek as of PR #684.
+        # Blank preferences track the current starter-tier primary.
         self.tenant.applied_model = ""
         self.tenant.preferred_model = ""
         self.tenant.save()
-        self.assertEqual(resolve_tenant_primary_model(self.tenant), DEEPSEEK_MODEL)
+        self.assertEqual(resolve_tenant_primary_model(self.tenant), DEEPSEEK_FLASH_MODEL)
 
 
 class ResolveModelForAttributionTest(TestCase):
