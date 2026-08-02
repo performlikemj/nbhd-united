@@ -59,12 +59,21 @@
     <p class="stars">&#10022; &middot; &middot; &#10023;</p>
     {% if confirmed %}
       <h1>You're unsubscribed.</h1>
-      <p>We won't send you any more campaign or marketing emails{% if display_name and display_name != "there" %}, {{ display_name }}{% endif %}.</p>
-      <p>Account and service notices (like password resets) will still reach you.</p>
+      {% if is_service %}
+        <p>We won't send you any more service or operational notice emails{% if display_name and display_name != "there" %}, {{ display_name }}{% endif %}.</p>
+        <p>Account-critical emails (like password resets) will still reach you.</p>
+      {% else %}
+        <p>We won't send you any more campaign or marketing emails{% if display_name and display_name != "there" %}, {{ display_name }}{% endif %}.</p>
+        <p>Account and service notices (like password resets) will still reach you.</p>
+      {% endif %}
       <p class="muted">Changed your mind? Reach out any time at <a href="https://neighborhoodunited.org">neighborhoodunited.org</a>.</p>
     {% else %}
       <h1>Unsubscribe?</h1>
-      <p>Stop receiving campaign and marketing emails from NBHD United{% if display_name and display_name != "there" %}, {{ display_name }}{% endif %}? Account and service notices (like password resets) will still reach you.</p>
+      {% if is_service %}
+        <p>Stop receiving service and operational notice emails from NBHD United{% if display_name and display_name != "there" %}, {{ display_name }}{% endif %}? Account-critical emails (like password resets) will still reach you.</p>
+      {% else %}
+        <p>Stop receiving campaign and marketing emails from NBHD United{% if display_name and display_name != "there" %}, {{ display_name }}{% endif %}? Account and service notices (like password resets) will still reach you.</p>
+      {% endif %}
       <form method="post" action="">
         <button type="submit">Unsubscribe</button>
       </form>

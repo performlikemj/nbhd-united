@@ -105,6 +105,21 @@ class User(AbstractUser):
         help_text="When the user unsubscribed (null if still subscribed).",
     )
 
+    # Service-notice opt-out — the operational sibling of ``email_opt_out``.
+    # Set by the same one-click unsubscribe view via a category-carrying
+    # token (category="service"). Governs service/operational notice emails
+    # (channel sunset, maintenance) only; independent of the marketing flag.
+    service_email_opt_out = models.BooleanField(
+        default=False,
+        help_text="True if the user unsubscribed from service/operational notice emails "
+        "(channel sunset, maintenance). Auth-critical emails (password reset) remain exempt.",
+    )
+    service_email_opt_out_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="When the user unsubscribed from service notices (null if still subscribed).",
+    )
+
     # Server read-cursor for the in-app chat, stamped by POST /api/v1/chat/read/.
     # Drives the server-authoritative APNs unread badge: an assistant reply or a
     # proactive/cron push after this instant is "unread". Null = never read (the
