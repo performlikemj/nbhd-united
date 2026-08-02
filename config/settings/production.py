@@ -115,6 +115,10 @@ DEFAULT_FROM_EMAIL = env(
     default="NBHD United <noreply@neighborhoodunited.org>",
 )
 
+# Steward's daily digest is the default eval-health surface. Set this to true/1
+# to restore legacy per-run failure and reaper emails without a deploy.
+EVAL_EMAIL_ALERTS_ENABLED = env.bool("EVAL_EMAIL_ALERTS_ENABLED", default=False)
+
 # Steward Phase 1. These names intentionally mirror the Azure Container App
 # env vars verbatim (invariant §10). Empty ingest secret is fail-closed at the
 # endpoint; empty delivery/dead-man values safely disable that optional channel.
