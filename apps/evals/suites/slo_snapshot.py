@@ -132,6 +132,9 @@ DIGEST_WINDOW_DAYS = 7
 # self-activating if the fleet ever earns a daily tail.
 MIN_SAMPLE_P50 = 10
 MIN_SAMPLE_P95 = 40
+# A rate below this denominator is too volatile to gate: at the current 5%
+# ceiling, one error in 16 turns reads as a breach despite being one observation.
+MIN_SAMPLE_ERROR_RATE = 20
 
 # The flagship journey canaries that treat a synthetic-tenant personal
 # budget-cap trip as a SOFT pass (journey_chat.py / journey_wake.py). That design
@@ -397,14 +400,10 @@ def compute_error_rate(now) -> dict | None:
     ``None``: a rate is undefined with no denominator, and zero traffic may itself
     mean a broken writer, so it is surfaced as a skip, not a passing 0.0.
 
-    DELIBERATELY UNFLOORED, unlike the reply percentiles. At this fleet's volume the
-    ceiling is effectively an any-error alarm: 1 error in 16 finished turns is 6.25%,
-    over the 5% threshold, so a single failure breaches and emails. That is kept on
-    purpose — errors are rare and DISCRETE, and at this size every one of them is a
-    genuine finding, so a one-error alarm is an alarm you want. (Percentile noise is
-    the opposite: it manufactures alarms from ordinary variance, which is why the reply
-    metrics get sample floors and this does not.) The 5% ceiling starts to mean what it
-    says as volume grows.
+    The caller records samples below ``MIN_SAMPLE_ERROR_RATE`` as skipped. At this
+    fleet's volume, 1 error in 16 finished turns is 6.25% and would breach the 5%
+    ceiling from a single observation; the floor keeps the rate from gating until
+    its denominator is large enough for the configured threshold to be meaningful.
     """
     since, until = _window(now)
     terminal = AppChatMessage.objects.filter(
@@ -648,6 +647,16 @@ def run_slo_snapshot_suite(*, trigger: str = EvalRun.Trigger.MANUAL, now=None) -
         err = compute_error_rate(now)
         if err is None:
             _record_skipped(run, M_ERROR_RATE, thr[M_ERROR_RATE], "no_finished_turns_24h")
+        elif err["total"] < MIN_SAMPLE_ERROR_RATE:
+            _record_skipped(
+                run,
+                M_ERROR_RATE,
+                thr[M_ERROR_RATE],
+                f"insufficient sample: {err['total']}<{MIN_SAMPLE_ERROR_RATE} turns",
+                errors=err["errors"],
+                total=err["total"],
+                floor=MIN_SAMPLE_ERROR_RATE,
+            )
         else:
             _record_measured(
                 run,
