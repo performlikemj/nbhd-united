@@ -63,7 +63,7 @@ _ESCALATE_SENTINEL = "[[ESCALATE]]"
 # with the reasoning model as a fallback. Overridable via settings — NOT a
 # per-tenant field (reuse the model already configured for the fleet).
 _DEFAULT_SIRI_FAST_MODELS = [
-    "openrouter/deepseek/deepseek-v4-flash",
+    "openrouter/deepseek/deepseek-v4-flash-0731",
     "openrouter/deepseek/deepseek-v4-pro",
 ]
 

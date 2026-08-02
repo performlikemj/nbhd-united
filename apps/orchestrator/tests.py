@@ -77,6 +77,23 @@ class ConfigGeneratorTest(TestCase):
         aliases = sorted(v.get("alias") for v in models.values())
         self.assertEqual(aliases, ["deepseek", "deepseek-flash", "gemma"])
 
+    def test_deepseek_flash_snapshot_and_legacy_rates(self):
+        from apps.billing.constants import (
+            DEEPSEEK_FLASH_LEGACY_MODEL,
+            DEEPSEEK_FLASH_MODEL,
+            MODEL_RATES,
+            canonical_model_id,
+        )
+
+        expected_rates = (
+            (DEEPSEEK_FLASH_MODEL, 0.09, 0.18),
+            (DEEPSEEK_FLASH_LEGACY_MODEL, 0.065, 0.26),
+        )
+        for model_id, input_rate, output_rate in expected_rates:
+            rate = MODEL_RATES[canonical_model_id(model_id)]
+            self.assertEqual(rate["input"], input_rate)
+            self.assertEqual(rate["output"], output_rate)
+
     def test_audio_model_defaults_to_whisper(self):
         self.tenant.model_tier = "starter"
         config = generate_openclaw_config(self.tenant)

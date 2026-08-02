@@ -544,7 +544,7 @@ COPILOT_LLM_ENABLED = env.bool("COPILOT_LLM_ENABLED", default=True)
 # NOT a per-tenant field. Override the ordered candidate list via env if needed.
 SIRI_FAST_MODELS = env.list(
     "SIRI_FAST_MODELS",
-    default=["openrouter/deepseek/deepseek-v4-flash", "openrouter/deepseek/deepseek-v4-pro"],
+    default=["openrouter/deepseek/deepseek-v4-flash-0731", "openrouter/deepseek/deepseek-v4-pro"],
 )
 
 # APNs (Apple Push Notification service) — token-based (.p8) auth. The push path
