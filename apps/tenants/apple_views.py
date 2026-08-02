@@ -21,11 +21,19 @@ from apps.common.cache import bump_tag
 from .apple_client import (
     AppleInvalidGrant,
     AppleUnavailable,
+    apple_native_bundle_id,
+    apple_native_readiness_error,
     apple_readiness_error,
     exchange_apple_code,
+    verify_apple_id_token,
 )
 from .apple_models import AppleAuthTransaction
-from .apple_serializers import AppleBeginSerializer, AppleCompleteSerializer, AppleLinkSerializer
+from .apple_serializers import (
+    AppleBeginSerializer,
+    AppleCompleteSerializer,
+    AppleLinkSerializer,
+    AppleNativeSerializer,
+)
 from .apple_services import (
     AppleResolutionRejected,
     AppleTransactionRejected,
@@ -33,10 +41,17 @@ from .apple_services import (
     enqueue_unpersisted_apple_grant,
     link_apple_identity,
     resolve_apple_auth,
+    resolve_apple_native_auth,
 )
 from .models import Tenant
 from .serializers import EmailTokenObtainPairSerializer
-from .throttling import AppleBeginMinuteThrottle, AppleCompleteMinuteThrottle, AppleLinkMinuteThrottle
+from .services import ensure_tenant_provisioned
+from .throttling import (
+    AppleBeginMinuteThrottle,
+    AppleCompleteMinuteThrottle,
+    AppleLinkMinuteThrottle,
+    AppleNativeMinuteThrottle,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +77,17 @@ class AppleReadinessMixin:
         return super().initial(request, *args, **kwargs)
 
 
+class AppleNativeReadinessMixin:
+    """Run native readiness before throttles, parsing, or database access."""
+
+    def initial(self, request, *args, **kwargs):
+        readiness_error = apple_native_readiness_error()
+        if readiness_error is not None:
+            logger.info("auth.apple.native.not_configured reason=%s", readiness_error)
+            raise AppleNotConfigured()
+        return super().initial(request, *args, **kwargs)
+
+
 class AppleStrictParsingMixin:
     """Collapse parser/media errors instead of returning DRF's default body."""
 
@@ -75,6 +101,7 @@ class AppleStrictParsingMixin:
 
 
 class AppleBeginView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
+    authentication_classes = []
     permission_classes = [AllowAny]
     throttle_classes = [AppleBeginMinuteThrottle]
 
@@ -98,6 +125,7 @@ class AppleBeginView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
             state=state_value,
             nonce_hash=hashlib.sha256(nonce.encode("utf-8")).hexdigest(),
             expires_at=now + timedelta(seconds=settings.APPLE_SIWA_TRANSACTION_TTL_SECONDS),
+            purpose=serializer.validated_data["purpose"],
         )
         logger.info("auth.apple.begin.success transaction_id=%s", row.id)
         return Response(
@@ -124,7 +152,11 @@ class AppleCompleteView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
         transaction_id = data["transaction_id"]
 
         try:
-            nonce_hash = consume_apple_transaction(transaction_id, data["state"])
+            nonce_hash = consume_apple_transaction(
+                transaction_id,
+                data["state"],
+                expected_purpose="web_auth",
+            )
         except AppleTransactionRejected as exc:
             logger.info(
                 "auth.apple.complete.invalid transaction_id=%s reason=%s",
@@ -204,6 +236,95 @@ class AppleCompleteView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
         )
 
 
+class AppleNativeView(AppleNativeReadinessMixin, AppleStrictParsingMixin, APIView):
+    authentication_classes = []
+    permission_classes = [AllowAny]
+    throttle_classes = [AppleNativeMinuteThrottle]
+
+    def post(self, request):
+        serializer = AppleNativeSerializer(data=request.data)
+        if not serializer.is_valid():
+            logger.info("auth.apple.native.invalid reason=malformed_request")
+            return _invalid_grant()
+        data = serializer.validated_data
+        transaction_id = data["transaction_id"]
+
+        try:
+            nonce_hash = consume_apple_transaction(
+                transaction_id,
+                data["state"],
+                expected_purpose="native_auth",
+            )
+        except AppleTransactionRejected as exc:
+            logger.info(
+                "auth.apple.native.invalid transaction_id=%s reason=%s",
+                transaction_id,
+                exc.reason,
+            )
+            return _invalid_grant()
+
+        try:
+            grant = verify_apple_id_token(
+                data["identity_token"],
+                nonce_hash,
+                {apple_native_bundle_id()},
+            )
+        except AppleInvalidGrant as exc:
+            logger.info(
+                "auth.apple.native.invalid transaction_id=%s reason=%s",
+                transaction_id,
+                exc.reason,
+            )
+            return _invalid_grant()
+        except AppleUnavailable as exc:
+            logger.warning(
+                "auth.apple.native.unavailable transaction_id=%s reason=%s",
+                transaction_id,
+                exc.reason,
+            )
+            return Response(
+                {"error": "apple_unavailable"},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            resolution = resolve_apple_native_auth(grant)
+        except AppleResolutionRejected as exc:
+            logger.info(
+                "auth.apple.native.invalid transaction_id=%s reason=%s",
+                transaction_id,
+                exc.reason,
+            )
+            return Response(
+                {"error": exc.error},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            ensure_tenant_provisioned(resolution.user)
+        except Exception:
+            logger.exception(
+                "auth.apple.native.ensure_tenant_failed user_id=%s",
+                resolution.user.id,
+            )
+
+        refresh = EmailTokenObtainPairSerializer.get_token(resolution.user)
+        logger.info(
+            "auth.apple.native.success transaction_id=%s user_id=%s created=%s",
+            transaction_id,
+            resolution.user.id,
+            resolution.created,
+        )
+        return Response(
+            {
+                "access": str(refresh.access_token),
+                "refresh": str(refresh),
+                "created": resolution.created,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
 class AppleLinkView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
     permission_classes = [IsAuthenticated]
     throttle_classes = [AppleLinkMinuteThrottle]
@@ -224,7 +345,11 @@ class AppleLinkView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
             return _invalid_grant()
 
         try:
-            nonce_hash = consume_apple_transaction(transaction_id, data["state"])
+            nonce_hash = consume_apple_transaction(
+                transaction_id,
+                data["state"],
+                expected_purpose="web_auth",
+            )
         except AppleTransactionRejected as exc:
             logger.info(
                 "auth.apple.link.invalid transaction_id=%s reason=%s",

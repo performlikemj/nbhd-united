@@ -28,6 +28,7 @@ APPLE_REVOKE_URL = "https://appleid.apple.com/auth/revoke"
 APPLE_HTTP_TIMEOUT_SECONDS = 5
 APPLE_CLIENT_SECRET_TTL_SECONDS = 300
 UNKNOWN_KID_TTL_SECONDS = 60
+FORCED_JWKS_REFRESH_COOLDOWN_SECONDS = 60
 
 
 class AppleInvalidGrant(Exception):
@@ -65,6 +66,7 @@ _jwks_client = jwt.PyJWKClient(
 )
 _unknown_kids: dict[str, float] = {}
 _unknown_kids_lock = threading.RLock()
+_last_forced_jwks_refresh_at: float | None = None
 
 
 def _canonical_redirect_uri(value: str) -> bool:
@@ -114,6 +116,24 @@ def apple_readiness_error() -> str | None:
         return "invalid_transaction_ttl"
     if not validate_apple_token_keyring():
         return "invalid_token_keyring"
+    return None
+
+
+def apple_native_bundle_id() -> str:
+    """Return the normalized native SIWA audience."""
+
+    value = getattr(settings, "APPLE_SIWA_BUNDLE_ID", "")
+    return value.strip() if isinstance(value, str) else ""
+
+
+def apple_native_readiness_error() -> str | None:
+    """Return readiness for native SIWA without affecting the web lane."""
+
+    readiness_error = apple_readiness_error()
+    if readiness_error is not None:
+        return readiness_error
+    if not apple_native_bundle_id():
+        return "missing_bundle_id"
     return None
 
 
@@ -191,6 +211,8 @@ def _signing_key_for_kid(kid: str):
     # Serialize the complete cached lookup -> refresh -> negative-cache
     # decision. Otherwise two simultaneous rotation requests can race so one
     # thread negatively caches a kid that the other just fetched successfully.
+    global _last_forced_jwks_refresh_at
+
     with _unknown_kids_lock:
         if _negative_kid_is_live(kid):
             raise AppleInvalidGrant("unknown_kid_cached")
@@ -203,10 +225,21 @@ def _signing_key_for_kid(kid: str):
             if _safe_string_compare(signing_key.key_id, kid):
                 return signing_key.key
 
-        # One forced refresh handles normal Apple key rotation. A successful,
-        # nonempty refresh that still lacks the key is the only leg eligible
-        # for negative caching. Malformed and unavailable sets remain
-        # immediately retryable and have their poisoned cache entry cleared.
+        # Apple pre-publishes rotated keys, so one forced refresh per process
+        # per minute handles normal rotation without letting novel attacker
+        # kids serialize every SIWA request behind live HTTPS under this lock.
+        now = time.monotonic()
+        if (
+            _last_forced_jwks_refresh_at is not None
+            and now - _last_forced_jwks_refresh_at < FORCED_JWKS_REFRESH_COOLDOWN_SECONDS
+        ):
+            _negative_cache_kid(kid)
+            raise AppleInvalidGrant("unknown_kid")
+        _last_forced_jwks_refresh_at = now
+
+        # A successful, nonempty refresh that still lacks the key is eligible
+        # for negative caching. Malformed and unavailable sets clear poisoned
+        # JWKS cache entries; the process-wide cooldown still bounds retries.
         refreshed_keys = _get_signing_keys(
             refresh=True,
             unavailable_reason="jwks_refresh_failed",
@@ -236,7 +269,15 @@ def _normalise_email(claim) -> str:
     return email
 
 
-def verify_apple_id_token(id_token: str, nonce_hash: str) -> AppleGrant:
+def verify_apple_id_token(
+    id_token: str,
+    nonce_hash: str,
+    allowed_audiences: set[str],
+) -> AppleGrant:
+    allowed_audiences = {audience for audience in allowed_audiences if isinstance(audience, str) and audience}
+    if not allowed_audiences:
+        raise AppleInvalidGrant("invalid_issuer_or_audience")
+
     try:
         header = jwt.get_unverified_header(id_token)
     except jwt.PyJWTError as exc:
@@ -252,14 +293,20 @@ def verify_apple_id_token(id_token: str, nonce_hash: str) -> AppleGrant:
             id_token,
             signing_key,
             algorithms=["RS256"],
-            audience=settings.APPLE_SIWA_SERVICES_ID,
-            issuer=APPLE_ISSUER,
-            options={"require": ["iss", "aud", "exp", "sub", "nonce"]},
+            options={
+                "require": ["iss", "aud", "exp", "sub", "nonce"],
+                "verify_aud": False,
+                "verify_iss": False,
+            },
         )
     except (jwt.PyJWTError, TypeError, ValueError, OverflowError) as exc:
         raise AppleInvalidGrant("invalid_id_token") from exc
 
-    if claims.get("iss") != APPLE_ISSUER or claims.get("aud") != settings.APPLE_SIWA_SERVICES_ID:
+    audience = claims.get("aud")
+    audience_allowed = False
+    for allowed in allowed_audiences:
+        audience_allowed |= _safe_string_compare(audience, allowed)
+    if not _safe_string_compare(claims.get("iss"), APPLE_ISSUER) or not audience_allowed:
         raise AppleInvalidGrant("invalid_issuer_or_audience")
     subject = claims.get("sub")
     if not isinstance(subject, str) or not subject.strip() or len(subject) > 255:
@@ -282,7 +329,7 @@ def verify_apple_id_token(id_token: str, nonce_hash: str) -> AppleGrant:
     return AppleGrant(
         subject=subject,
         issuer=APPLE_ISSUER,
-        audience=settings.APPLE_SIWA_SERVICES_ID,
+        audience=audience,
         email=email,
         email_verified=email_verified,
         email_is_relay=email.endswith("@privaterelay.appleid.com"),
@@ -334,7 +381,11 @@ def exchange_apple_code(code: str, nonce_hash: str) -> AppleGrant:
         except UnicodeEncodeError as exc:
             raise AppleInvalidGrant("invalid_refresh_token") from exc
 
-    verified = verify_apple_id_token(id_token, nonce_hash)
+    verified = verify_apple_id_token(
+        id_token,
+        nonce_hash,
+        {settings.APPLE_SIWA_SERVICES_ID},
+    )
     return AppleGrant(
         subject=verified.subject,
         issuer=verified.issuer,

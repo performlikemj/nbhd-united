@@ -42,12 +42,22 @@ class StrictRequestSerializer(serializers.Serializer):
 
 
 class AppleBeginSerializer(StrictRequestSerializer):
-    """The begin request is intentionally an empty JSON object."""
+    purpose = serializers.ChoiceField(
+        choices=("web_auth", "native_auth"),
+        default="web_auth",
+        required=False,
+    )
 
 
 class AppleCompleteSerializer(StrictRequestSerializer):
     transaction_id = StrictUUIDField()
     code = StrictCharField(max_length=1024, trim_whitespace=False)
+    state = StrictCharField(max_length=128, trim_whitespace=False)
+
+
+class AppleNativeSerializer(StrictRequestSerializer):
+    transaction_id = StrictUUIDField()
+    identity_token = StrictCharField(max_length=4096, trim_whitespace=False)
     state = StrictCharField(max_length=128, trim_whitespace=False)
 
 
