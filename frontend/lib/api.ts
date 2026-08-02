@@ -520,8 +520,12 @@ export function refuteInsight(id: string, note?: string): Promise<import("@/lib/
 }
 
 // Tenants
-export function fetchTenant(): Promise<Tenant> {
-  return apiFetch<Tenant>("/api/v1/tenants/me/");
+export async function fetchTenant(): Promise<Tenant> {
+  const me = await fetchMe();
+  if (!me.tenant) {
+    throw new Error("No tenant found. Complete onboarding first.");
+  }
+  return me.tenant;
 }
 
 // Entity registry — per-tenant PII placeholders with optional identity metadata.

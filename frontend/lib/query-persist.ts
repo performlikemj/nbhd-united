@@ -206,6 +206,11 @@ export function clearInMemoryQueryCache(): void {
   activeQueryClientRegistration?.client.clear();
 }
 
+/** Return the client currently owned by Providers, including replacements. */
+export function getLiveQueryClient(): QueryClient | null {
+  return activeQueryClientRegistration?.client ?? null;
+}
+
 export function clearPersistedCache(): void {
   if (typeof window === "undefined") return;
   cancelActiveFlush?.();
