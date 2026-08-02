@@ -225,6 +225,23 @@ class BackfillWelcomesTransitionRegressionTest(TestCase):
         mock_invoke.assert_called_once()
         self.assertEqual(mock_invoke.call_args.args[1], "cron.add")
 
+    def test_first_session_stamp_is_not_a_backfill_feature(self):
+        self.tenant.fuel_enabled = False
+        self.tenant.welcomes_sent = {"first_session": "2026-08-02T00:00:00+00:00"}
+        self.tenant.save(update_fields=["fuel_enabled", "welcomes_sent"])
+
+        with patch(
+            "apps.orchestrator.first_session_welcome.seed_first_session_welcome",
+            side_effect=AssertionError("fleet backfill must not seed first-session welcomes"),
+        ) as first_session:
+            response = self._post()
+
+        self.assertEqual(response.status_code, 200)
+        first_session.assert_not_called()
+        self.assertEqual(set(response.json()), {"tenants_walked", "fuel", "finance", "statuses"})
+        self.assertEqual(response.json()["fuel"], {})
+        self.assertEqual(response.json()["finance"], {})
+
 
 class CronAuthTest(TestCase):
     def setUp(self):

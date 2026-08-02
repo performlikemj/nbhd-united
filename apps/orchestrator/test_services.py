@@ -598,7 +598,7 @@ class RepairTenantProvisioningCommandTest(TestCase):
     def test_limit_applies_and_invokes_provision(self, mock_provision):
         out = StringIO()
         call_command("repair_tenant_provisioning", "--limit", "1", stdout=out)
-        mock_provision.assert_called_once_with(str(self.tenant.id))
+        mock_provision.assert_called_once_with(str(self.tenant.id), send_first_session_welcome=False)
 
 
 class CronTaskMapWiringTest(TestCase):

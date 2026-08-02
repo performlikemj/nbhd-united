@@ -638,6 +638,8 @@ class RetryProvisioningViewTest(TestCase):
 
     @patch("apps.tenants.views.publish_task")
     def test_retry_provisioning_returns_ready_for_active_tenant(self, mock_publish):
+        from apps.router.models import ProactiveOutbound
+
         tenant = create_tenant(display_name="Ready User", telegram_chat_id=607)
         tenant.status = Tenant.Status.ACTIVE
         tenant.container_id = "oc-ready"
@@ -650,6 +652,7 @@ class RetryProvisioningViewTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.data["ready"])
         mock_publish.assert_not_called()
+        self.assertFalse(ProactiveOutbound.objects.filter(tenant=tenant).exists())
 
     @patch("apps.tenants.views.publish_task", side_effect=RuntimeError("qstash down"))
     def test_retry_provisioning_publish_fail_sets_pending(self, _mock_publish):

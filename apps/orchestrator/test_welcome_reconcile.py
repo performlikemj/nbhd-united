@@ -32,6 +32,22 @@ def _make_active_tenant(*, suffix: int, fuel: bool = False, finance: bool = Fals
 
 
 class ReconcileWelcomesTaskTests(TestCase):
+    def test_first_session_stamp_is_not_a_reconcile_feature(self):
+        tenant = _make_active_tenant(suffix=7, fuel=False, finance=False)
+        tenant.welcomes_sent = {"first_session": "2026-08-02T00:00:00+00:00"}
+        tenant.save(update_fields=["welcomes_sent"])
+
+        with mock.patch(
+            "apps.orchestrator.first_session_welcome.seed_first_session_welcome",
+            side_effect=AssertionError("fleet reconcile must not seed first-session welcomes"),
+        ) as first_session:
+            totals = reconcile_welcomes_task()
+
+        first_session.assert_not_called()
+        self.assertEqual(set(totals), {"tenants", "fuel", "finance", "statuses"})
+        self.assertEqual(totals["fuel"], {})
+        self.assertEqual(totals["finance"], {})
+
     def test_walks_only_feature_enabled_tenants(self):
         _make_active_tenant(suffix=1, fuel=True, finance=False)
         _make_active_tenant(suffix=2, fuel=False, finance=True)
