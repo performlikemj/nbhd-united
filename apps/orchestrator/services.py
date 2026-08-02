@@ -161,10 +161,14 @@ def repair_stale_tenant_provisioning(
             # (e.g. from reactivation of a never-fully-provisioned tenant).
             # provision_tenant guards against status != PENDING/PROVISIONING, so
             # demote to PROVISIONING here so the repair path can proceed.
-            if tenant.status == Tenant.Status.ACTIVE:
+            was_active = tenant.status == Tenant.Status.ACTIVE
+            if was_active:
                 tenant.status = Tenant.Status.PROVISIONING
                 tenant.save(update_fields=["status", "updated_at"])
-            provision_tenant(tenant_id_str)
+            if was_active:
+                provision_tenant(tenant_id_str, send_first_session_welcome=False)
+            else:
+                provision_tenant(tenant_id_str)
             tenant.refresh_from_db()
 
             ready = bool(tenant.container_id and tenant.container_fqdn and tenant.status == Tenant.Status.ACTIVE)
@@ -213,7 +217,7 @@ def repair_stale_tenant_provisioning(
     return summary
 
 
-def provision_tenant(tenant_id: str) -> None:
+def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True) -> None:
     """Full provisioning flow for a new tenant."""
     tenant = Tenant.objects.select_related("user").get(id=tenant_id)
     user_id = str(tenant.user_id)
@@ -514,7 +518,17 @@ def provision_tenant(tenant_id: str) -> None:
     except Exception:
         logger.warning("Could not send welcome email for tenant %s", tenant_id, exc_info=True)
 
-    # 4d. Seed USER.md with the platform-managed envelope so the container
+    # 4d. Seed the app's first-session assistant greeting. The helper stamps
+    # before writing for at-most-once delivery across provisioning retries.
+    if send_first_session_welcome:
+        try:
+            from .first_session_welcome import seed_first_session_welcome
+
+            seed_first_session_welcome(tenant)
+        except Exception:
+            logger.warning("Could not seed first-session welcome for tenant %s", tenant_id, exc_info=True)
+
+    # 4e. Seed USER.md with the platform-managed envelope so the container
     # picks up profile + state on first boot. force=True bypasses debounce.
     try:
         from .workspace_envelope import push_user_md
@@ -525,11 +539,10 @@ def provision_tenant(tenant_id: str) -> None:
 
     # 5. Seed default cron jobs to Gateway (delayed for container warm-up)
     try:
-        from apps.cron.views import _schedule_qstash_task
+        from apps.cron.publish import publish_task
 
-        _schedule_qstash_task("seed_cron_jobs", str(tenant.id), delay_seconds=60)
+        publish_task("seed_cron_jobs", str(tenant.id), delay_seconds=60)
     except Exception:
-        # TODO: schedule with delay
         logger.warning(
             "Could not schedule cron job seeding for tenant %s",
             tenant_id,

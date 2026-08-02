@@ -31,7 +31,7 @@ _FAKE_PROVISION_RESULT = {
 }
 
 
-def _mock_provision_tenant(tenant_id: str) -> None:
+def _mock_provision_tenant(tenant_id: str, **_kwargs) -> None:
     """Side-effect: writes container fields + sets status=ACTIVE on the DB row,
     mimicking what the real provision_tenant does at step 4."""
     tenant = Tenant.objects.get(id=tenant_id)
@@ -70,9 +70,10 @@ class ActiveTenantEmptyContainerRepairTests(TestCase):
         """
         captured_status = {}
 
-        def _capturing_provision(tenant_id: str) -> None:
+        def _capturing_provision(tenant_id: str, **kwargs) -> None:
             t = Tenant.objects.get(id=tenant_id)
             captured_status["status_at_entry"] = t.status
+            captured_status["send_first_session_welcome"] = kwargs.get("send_first_session_welcome")
             _mock_provision_tenant(tenant_id)
 
         with patch(
@@ -85,6 +86,10 @@ class ActiveTenantEmptyContainerRepairTests(TestCase):
             captured_status.get("status_at_entry"),
             Tenant.Status.PROVISIONING,
             "provision_tenant should see PROVISIONING, not ACTIVE, so its status guard accepts the call",
+        )
+        self.assertFalse(
+            captured_status.get("send_first_session_welcome"),
+            "repairing an existing ACTIVE tenant must not enqueue a first-session greeting",
         )
 
     def test_repair_counts_active_empty_tenant_as_repaired(self):

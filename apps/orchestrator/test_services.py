@@ -43,7 +43,7 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.seed_cron_jobs",
         return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0},
     )
-    @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
+    @patch("apps.cron.publish.publish_task", return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
     @patch("apps.orchestrator.services.upload_config_to_file_share")
@@ -59,7 +59,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_upload_config,
         _mock_register_storage,
         _mock_create_file_share,
-        _mock_schedule_qstash,
+        mock_publish_task,
         _mock_seed_cron_jobs,
         _mock_assign_acr_role,
         _mock_assign_kv_role,
@@ -83,6 +83,8 @@ class OrchestratorServiceTest(TestCase):
         self.assertEqual(self.tenant.container_fqdn, "oc-tenant.internal.azurecontainerapps.io")
         self.assertEqual(self.tenant.managed_identity_id, "/identities/1")
         self.assertIsNotNone(self.tenant.provisioned_at)
+        mock_publish_task.assert_called_once_with("seed_cron_jobs", str(self.tenant.id), delay_seconds=60)
+        _mock_seed_cron_jobs.assert_not_called()
 
         # Phase 1b: per-tenant token is generated, stored in KV + DB, and
         # the per-tenant KV secret name is passed through to create_container_app.
@@ -111,7 +113,7 @@ class OrchestratorServiceTest(TestCase):
         "apps.orchestrator.services.seed_cron_jobs",
         return_value={"tenant_id": "seed", "jobs_total": 5, "created": 5, "errors": 0},
     )
-    @patch("apps.cron.views._schedule_qstash_task", create=True, return_value=None)
+    @patch("apps.cron.publish.publish_task", return_value=None)
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
     @patch("apps.orchestrator.services.upload_config_to_file_share")
@@ -127,7 +129,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_upload_config,
         _mock_register_storage,
         _mock_create_file_share,
-        _mock_schedule_qstash,
+        mock_publish_task,
         _mock_seed_cron_jobs,
         _mock_assign_acr_role,
         _mock_assign_kv_role,
@@ -138,6 +140,8 @@ class OrchestratorServiceTest(TestCase):
     ):
         provision_tenant(str(self.tenant.id))
         _mock_assign_kv_role.assert_not_called()
+        mock_publish_task.assert_called_once_with("seed_cron_jobs", str(self.tenant.id), delay_seconds=60)
+        _mock_seed_cron_jobs.assert_not_called()
 
     @override_settings(OPENCLAW_CONTAINER_SECRET_BACKEND="keyvault")
     @patch("apps.orchestrator.services._audit_and_log")
@@ -194,7 +198,7 @@ class OrchestratorServiceTest(TestCase):
     @patch("apps.orchestrator.services.assign_key_vault_role")
     @patch("apps.orchestrator.services.assign_acr_pull_role")
     @patch("apps.orchestrator.services.seed_cron_jobs", side_effect=RuntimeError("gateway down"))
-    @patch("apps.cron.views._schedule_qstash_task", create=True, side_effect=RuntimeError("qstash unavailable"))
+    @patch("apps.cron.publish.publish_task", side_effect=RuntimeError("qstash unavailable"))
     @patch("apps.orchestrator.services.create_tenant_file_share")
     @patch("apps.orchestrator.services.register_environment_storage")
     @patch("apps.orchestrator.services.upload_config_to_file_share")
@@ -210,7 +214,7 @@ class OrchestratorServiceTest(TestCase):
         _mock_upload_config,
         _mock_register_storage,
         _mock_create_file_share,
-        _mock_schedule_qstash,
+        mock_publish_task,
         _mock_seed_cron_jobs,
         _mock_assign_acr_role,
         _mock_assign_kv_role,
@@ -228,6 +232,8 @@ class OrchestratorServiceTest(TestCase):
         self.assertEqual(self.tenant.container_id, "oc-tenant")
         self.assertEqual(self.tenant.container_fqdn, "oc-tenant.internal.azurecontainerapps.io")
         self.assertIsNotNone(self.tenant.provisioned_at)
+        mock_publish_task.assert_called_once_with("seed_cron_jobs", str(self.tenant.id), delay_seconds=60)
+        _mock_seed_cron_jobs.assert_called_once_with(self.tenant)
 
     @patch("apps.orchestrator.services.create_container_app")
     def test_provision_skips_if_tenant_not_provisionable(self, mock_create_container, _mock_is_mock):
@@ -592,7 +598,7 @@ class RepairTenantProvisioningCommandTest(TestCase):
     def test_limit_applies_and_invokes_provision(self, mock_provision):
         out = StringIO()
         call_command("repair_tenant_provisioning", "--limit", "1", stdout=out)
-        mock_provision.assert_called_once_with(str(self.tenant.id))
+        mock_provision.assert_called_once_with(str(self.tenant.id), send_first_session_welcome=False)
 
 
 class CronTaskMapWiringTest(TestCase):
