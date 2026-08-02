@@ -564,6 +564,7 @@ APNS_USE_SANDBOX = env.bool("APNS_USE_SANDBOX", default=False)
 
 # Sign in with Apple (web Services ID popup flow).
 APPLE_SIWA_SERVICES_ID = env("APPLE_SIWA_SERVICES_ID", default="")
+APPLE_SIWA_BUNDLE_ID = env("APPLE_SIWA_BUNDLE_ID", default="")
 APPLE_SIWA_TEAM_ID = env("APPLE_SIWA_TEAM_ID", default="")
 APPLE_SIWA_KEY_ID = env("APPLE_SIWA_KEY_ID", default="")
 APPLE_SIWA_PRIVATE_KEY = env("APPLE_SIWA_PRIVATE_KEY", default="").replace("\\n", "\n")

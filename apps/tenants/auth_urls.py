@@ -1,7 +1,7 @@
 from django.urls import path
 from rest_framework_simplejwt.views import TokenRefreshView
 
-from .apple_views import AppleBeginView, AppleCompleteView, AppleLinkView
+from .apple_views import AppleBeginView, AppleCompleteView, AppleLinkView, AppleNativeView
 from .auth_views import (
     LogoutView,
     MeView,
@@ -40,5 +40,6 @@ urlpatterns = [
     # Sign in with Apple web popup flow
     path("apple/begin/", AppleBeginView.as_view(), name="auth-apple-begin"),
     path("apple/complete/", AppleCompleteView.as_view(), name="auth-apple-complete"),
+    path("apple/native/", AppleNativeView.as_view(), name="auth-apple-native"),
     path("apple/link/", AppleLinkView.as_view(), name="auth-apple-link"),
 ]

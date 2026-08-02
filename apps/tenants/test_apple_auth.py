@@ -35,11 +35,17 @@ from .apple_crypto import decrypt_apple_refresh_token, encrypt_apple_refresh_tok
 from .apple_models import AppleAuthTransaction, AppleRevocationOutbox, ExternalIdentity
 from .models import Tenant
 from .serializers import UserSerializer
-from .throttling import AppleBeginMinuteThrottle, AppleCompleteMinuteThrottle, AppleLinkMinuteThrottle
+from .throttling import (
+    AppleBeginMinuteThrottle,
+    AppleCompleteMinuteThrottle,
+    AppleLinkMinuteThrottle,
+    AppleNativeMinuteThrottle,
+)
 
 User = get_user_model()
 
 SERVICES_ID = "org.hoodunited.web"
+BUNDLE_ID = "org.hoodunited.nbhd"
 TEAM_ID = "TEAMID1234"
 KEY_ID = "KEYID12345"
 JWT_KID = "apple-rsa-key"
@@ -63,6 +69,7 @@ FERNET_KEY = Fernet.generate_key().decode()
 
 READY_SETTINGS = {
     "APPLE_SIWA_SERVICES_ID": SERVICES_ID,
+    "APPLE_SIWA_BUNDLE_ID": BUNDLE_ID,
     "APPLE_SIWA_TEAM_ID": TEAM_ID,
     "APPLE_SIWA_KEY_ID": KEY_ID,
     "APPLE_SIWA_PRIVATE_KEY": EC_PRIVATE_PEM,
@@ -119,12 +126,21 @@ class AppleFixtureMixin:
         self.addCleanup(self.publish_patch.stop)
         self.addCleanup(cache.clear)
 
-    def mint_transaction(self, *, state=STATE, nonce=NONCE, ttl=600, consumed=False):
+    def mint_transaction(
+        self,
+        *,
+        state=STATE,
+        nonce=NONCE,
+        ttl=600,
+        consumed=False,
+        purpose="web_auth",
+    ):
         row = AppleAuthTransaction.objects.create(
             state=state,
             nonce_hash=__import__("hashlib").sha256(nonce.encode()).hexdigest(),
             expires_at=timezone.now() + timedelta(seconds=ttl),
             consumed_at=timezone.now() if consumed else None,
+            purpose=purpose,
         )
         return row, nonce
 
@@ -137,12 +153,13 @@ class AppleFixtureMixin:
         email_verified="true",
         private_key=None,
         kid=JWT_KID,
+        audience=SERVICES_ID,
         overrides=None,
         remove=(),
     ):
         claims = {
             "iss": APPLE_ISSUER,
-            "aud": SERVICES_ID,
+            "aud": audience,
             "exp": int((datetime.now(UTC) + timedelta(minutes=5)).timestamp()),
             "sub": subject,
             "nonce": nonce,
@@ -172,6 +189,7 @@ class AppleFixtureMixin:
         remove_claims=(),
         private_key=None,
         kid=JWT_KID,
+        audience=SERVICES_ID,
     ):
         body = {
             "id_token": self.id_token(
@@ -183,6 +201,7 @@ class AppleFixtureMixin:
                 remove=remove_claims,
                 private_key=private_key,
                 kid=kid,
+                audience=audience,
             )
         }
         if refresh_token is not None:
@@ -197,6 +216,21 @@ class AppleFixtureMixin:
                 format="json",
             )
         return result, mocked
+
+    def post_native(self, row, identity_token, *, state=STATE, authorization=None):
+        headers = {}
+        if authorization is not None:
+            headers["HTTP_AUTHORIZATION"] = authorization
+        return self.client.post(
+            reverse("auth-apple-native"),
+            {
+                "transaction_id": str(row.id),
+                "identity_token": identity_token,
+                "state": state,
+            },
+            format="json",
+            **headers,
+        )
 
     def make_user(self, *, email="local@example.com", password="CorrectHorse123!", active=True):
         user = User.objects.create_user(
@@ -530,7 +564,7 @@ class ApplePhaseBTests(AppleFixtureMixin, TestCase):
 
         for _ in range(2):
             with self.assertRaisesMessage(Exception, "unknown_kid"):
-                verify_apple_id_token(unknown_token, nonce_hash)
+                verify_apple_id_token(unknown_token, nonce_hash, {SERVICES_ID})
 
         self.assertEqual(self.jwks.calls, [False, True])
 
@@ -541,7 +575,7 @@ class ApplePhaseBTests(AppleFixtureMixin, TestCase):
 
         for _ in range(2):
             with self.assertRaises(AppleUnavailable):
-                verify_apple_id_token(unknown_token, nonce_hash)
+                verify_apple_id_token(unknown_token, nonce_hash, {SERVICES_ID})
 
         self.assertEqual(self.jwks.calls, [False, True, False, True])
 
@@ -550,7 +584,7 @@ class ApplePhaseBTests(AppleFixtureMixin, TestCase):
         nonce_hash = __import__("hashlib").sha256(NONCE.encode()).hexdigest()
 
         with self.assertRaises(AppleInvalidGrant):
-            verify_apple_id_token(unknown_token, nonce_hash)
+            verify_apple_id_token(unknown_token, nonce_hash, {SERVICES_ID})
 
         self.assertEqual(self.jwks.calls, [False, True])
 
@@ -632,12 +666,12 @@ class AppleRealJwksClientTests(SimpleTestCase):
             ) as mocked_urlopen,
         ):
             with self.assertRaises(AppleUnavailable):
-                verify_apple_id_token(self.make_token(), nonce_hash)
+                verify_apple_id_token(self.make_token(), nonce_hash, {SERVICES_ID})
             self.assertIsNone(client.jwk_set_cache.get())
             with apple_client._unknown_kids_lock:
                 self.assertNotIn(JWT_KID, apple_client._unknown_kids)
 
-            grant = verify_apple_id_token(self.make_token(), nonce_hash)
+            grant = verify_apple_id_token(self.make_token(), nonce_hash, {SERVICES_ID})
 
         self.assertEqual(grant.subject, SUBJECT)
         self.assertEqual(mocked_urlopen.call_count, 2)
@@ -679,7 +713,7 @@ class AppleRealJwksClientTests(SimpleTestCase):
         def verify_worker():
             start.wait()
             try:
-                grant = verify_apple_id_token(self.make_token(), nonce_hash)
+                grant = verify_apple_id_token(self.make_token(), nonce_hash, {SERVICES_ID})
                 results.append(grant.subject)
             except BaseException as exc:
                 errors.append(exc)
@@ -1079,6 +1113,272 @@ class AppleExistingIdentityTests(AppleFixtureMixin, TestCase):
 
 
 @override_settings(**READY_SETTINGS)
+class AppleNativeTests(AppleFixtureMixin, TestCase):
+    def test_audience_matrix_accepts_only_the_lane_audience(self):
+        user = self.make_user(email="audience@example.com")
+        self.make_identity(user)
+
+        web_wrong_row, web_wrong_nonce = self.mint_transaction()
+        web_wrong, _ = self.post_complete(
+            web_wrong_row,
+            self.token_response(
+                nonce=web_wrong_nonce,
+                audience=BUNDLE_ID,
+                refresh_token=None,
+            ),
+        )
+        self.assertEqual(web_wrong.status_code, 400)
+        self.assertEqual(web_wrong.data, {"error": "invalid_grant"})
+
+        native_wrong_row, native_wrong_nonce = self.mint_transaction(purpose="native_auth")
+        native_wrong = self.post_native(
+            native_wrong_row,
+            self.id_token(nonce=native_wrong_nonce, audience=SERVICES_ID),
+        )
+        self.assertEqual(native_wrong.status_code, 400)
+        self.assertEqual(native_wrong.data, {"error": "invalid_grant"})
+
+        web_row, web_nonce = self.mint_transaction()
+        web_ok, _ = self.post_complete(
+            web_row,
+            self.token_response(nonce=web_nonce, refresh_token=None),
+        )
+        self.assertEqual(web_ok.status_code, 200, web_ok.content)
+
+        native_row, native_nonce = self.mint_transaction(purpose="native_auth")
+        native_ok = self.post_native(
+            native_row,
+            self.id_token(nonce=native_nonce, audience=BUNDLE_ID),
+        )
+        self.assertEqual(native_ok.status_code, 200, native_ok.content)
+
+        nonce_hash = __import__("hashlib").sha256(NONCE.encode()).hexdigest()
+        with self.assertRaises(AppleInvalidGrant) as rejected:
+            verify_apple_id_token(
+                self.id_token(audience=BUNDLE_ID),
+                nonce_hash,
+                {SERVICES_ID},
+            )
+        self.assertEqual(rejected.exception.reason, "invalid_issuer_or_audience")
+        verified = verify_apple_id_token(
+            self.id_token(audience=BUNDLE_ID),
+            nonce_hash,
+            {BUNDLE_ID},
+        )
+        self.assertEqual(verified.audience, BUNDLE_ID)
+
+    def test_known_subject_mints_working_jwts_provisions_and_never_rotates_web_grant(self):
+        user = self.make_user(email="native-known@example.com")
+        identity = self.make_identity(user, refresh_token="web-refresh-token")
+        original_ciphertext = identity.refresh_token_encrypted
+        original_audience = identity.audience
+        row, nonce = self.mint_transaction(purpose="native_auth")
+
+        response = self.post_native(
+            row,
+            self.id_token(
+                nonce=nonce,
+                email=user.email,
+                audience=BUNDLE_ID,
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(set(response.data), {"access", "refresh", "created"})
+        self.assertFalse(response.data["created"])
+        identity.refresh_from_db()
+        self.assertEqual(identity.refresh_token_encrypted, original_ciphertext)
+        self.assertEqual(identity.audience, original_audience)
+        self.assertTrue(Tenant.objects.filter(user=user).exists())
+
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {response.data['access']}")
+        me = self.client.get(reverse("auth-me"))
+        self.assertEqual(me.status_code, 200, me.content)
+        self.assertEqual(me.data["id"], str(user.id))
+        self.assertTrue(me.data["apple_linked"])
+
+    def test_unknown_subject_is_account_not_found_before_preview_gate_with_zero_writes(self):
+        row, nonce = self.mint_transaction(purpose="native_auth")
+        before = (
+            User.objects.count(),
+            ExternalIdentity.objects.count(),
+            Tenant.objects.count(),
+        )
+
+        with self.settings(PREVIEW_ACCESS_KEY="invite-only"):
+            response = self.post_native(
+                row,
+                self.id_token(
+                    nonce=nonce,
+                    subject="native-unknown-subject",
+                    audience=BUNDLE_ID,
+                ),
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"error": "account_not_found"})
+        self.assertEqual(
+            (
+                User.objects.count(),
+                ExternalIdentity.objects.count(),
+                Tenant.objects.count(),
+            ),
+            before,
+        )
+
+    def test_purpose_binding_and_default_begin_remains_web_usable(self):
+        user = self.make_user(email="purpose@example.com")
+        self.make_identity(user)
+
+        web_row, web_nonce = self.mint_transaction()
+        with patch("apps.tenants.apple_views.verify_apple_id_token") as verify:
+            native_rejected = self.post_native(
+                web_row,
+                self.id_token(nonce=web_nonce, audience=BUNDLE_ID),
+            )
+        self.assertEqual(native_rejected.status_code, 400)
+        verify.assert_not_called()
+        web_row.refresh_from_db()
+        self.assertIsNone(web_row.consumed_at)
+
+        native_row, native_nonce = self.mint_transaction(purpose="native_auth")
+        complete_rejected, apple_post = self.post_complete(
+            native_row,
+            self.token_response(nonce=native_nonce),
+        )
+        self.assertEqual(complete_rejected.status_code, 400)
+        apple_post.assert_not_called()
+        native_row.refresh_from_db()
+        self.assertIsNone(native_row.consumed_at)
+
+        begun = self.client.post(reverse("auth-apple-begin"), {}, format="json")
+        self.assertEqual(begun.status_code, 200, begun.content)
+        default_row = AppleAuthTransaction.objects.get(id=begun.data["transaction_id"])
+        self.assertEqual(default_row.purpose, "web_auth")
+        web_usable, _ = self.post_complete(
+            default_row,
+            self.token_response(nonce=begun.data["nonce"], refresh_token=None),
+            state=begun.data["state"],
+        )
+        self.assertEqual(web_usable.status_code, 200, web_usable.content)
+
+        from .apple_services import AppleTransactionRejected, consume_apple_transaction
+
+        direct_row, _ = self.mint_transaction(purpose="native_auth")
+        with self.assertRaises(AppleTransactionRejected) as mismatch:
+            consume_apple_transaction(
+                direct_row.id,
+                STATE,
+                expected_purpose="web_auth",
+            )
+        self.assertEqual(mismatch.exception.reason, "transaction_consumed")
+
+    def test_native_readiness_isolated_and_anonymous_views_ignore_bad_bearers(self):
+        with self.settings(APPLE_SIWA_BUNDLE_ID=""):
+            native = self.client.post(reverse("auth-apple-native"), {}, format="json")
+            begin = self.client.post(reverse("auth-apple-begin"), {}, format="json")
+            complete = self.client.post(reverse("auth-apple-complete"), {}, format="json")
+        self.assertEqual(native.status_code, 503)
+        self.assertEqual(native.data, {"error": "not_configured"})
+        self.assertEqual(begin.status_code, 200, begin.content)
+        self.assertEqual(complete.status_code, 400, complete.content)
+
+        expired_token = AccessToken()
+        expired_token["exp"] = int((timezone.now() - timedelta(minutes=1)).timestamp())
+        begin_with_bearer = self.client.post(
+            reverse("auth-apple-begin"),
+            {"purpose": "native_auth"},
+            format="json",
+            HTTP_AUTHORIZATION=f"Bearer {expired_token}",
+        )
+        self.assertEqual(begin_with_bearer.status_code, 200, begin_with_bearer.content)
+
+        user = self.make_user(email="bearer-immune@example.com")
+        self.make_identity(user)
+        row = AppleAuthTransaction.objects.get(id=begin_with_bearer.data["transaction_id"])
+        native_with_bearer = self.post_native(
+            row,
+            self.id_token(
+                nonce=begin_with_bearer.data["nonce"],
+                audience=BUNDLE_ID,
+            ),
+            state=begin_with_bearer.data["state"],
+            authorization="Bearer definitely-not-a-valid-jwt",
+        )
+        self.assertEqual(native_with_bearer.status_code, 200, native_with_bearer.content)
+
+    def test_native_nonce_uses_raw_nonce_sha256_and_request_is_strict(self):
+        user = self.make_user(email="native-nonce@example.com")
+        self.make_identity(user)
+        row, raw_nonce = self.mint_transaction(purpose="native_auth")
+        wrong = self.post_native(
+            row,
+            self.id_token(nonce="wrong-raw-nonce", audience=BUNDLE_ID),
+        )
+        self.assertEqual(wrong.status_code, 400)
+        self.assertEqual(wrong.data, {"error": "invalid_grant"})
+
+        good_row, good_nonce = self.mint_transaction(purpose="native_auth")
+        good = self.post_native(
+            good_row,
+            self.id_token(nonce=good_nonce, audience=BUNDLE_ID),
+        )
+        self.assertEqual(good.status_code, 200, good.content)
+        self.assertEqual(
+            good_row.nonce_hash,
+            __import__("hashlib").sha256(good_nonce.encode("utf-8")).hexdigest(),
+        )
+        self.assertNotEqual(good_row.nonce_hash, raw_nonce)
+
+        transaction_id = "00000000-0000-0000-0000-000000000000"
+        accepted = {
+            "transaction_id": transaction_id,
+            "identity_token": "x" * 4096,
+            "state": STATE,
+        }
+        from .apple_services import AppleTransactionRejected
+
+        with patch(
+            "apps.tenants.apple_views.consume_apple_transaction",
+            side_effect=AppleTransactionRejected("test_stop"),
+        ) as consume:
+            max_response = self.client.post(reverse("auth-apple-native"), accepted, format="json")
+        self.assertEqual(max_response.status_code, 400)
+        consume.assert_called_once()
+
+        for body in (
+            {**accepted, "identity_token": "x" * 4097},
+            {**accepted, "identity_token": 123},
+            {**accepted, "unexpected": "field"},
+        ):
+            with (
+                self.subTest(body_shape=set(body)),
+                patch("apps.tenants.apple_views.consume_apple_transaction") as consume,
+            ):
+                rejected = self.client.post(reverse("auth-apple-native"), body, format="json")
+            self.assertEqual(rejected.status_code, 400)
+            consume.assert_not_called()
+
+    def test_native_secret_material_never_appears_in_logs(self):
+        user = self.make_user(email="native-logs@example.com")
+        self.make_identity(user)
+        row, nonce = self.mint_transaction(
+            state="native-secret-state",
+            purpose="native_auth",
+        )
+        raw_token = self.id_token(nonce=nonce, audience=BUNDLE_ID)
+
+        with self.assertLogs("apps.tenants", level="INFO") as captured:
+            response = self.post_native(row, raw_token, state="native-secret-state")
+
+        self.assertEqual(response.status_code, 200, response.content)
+        logs = "\n".join(captured.output)
+        for secret in (raw_token, nonce, "native-secret-state"):
+            self.assertNotIn(secret, logs)
+        self.assertIn("auth.apple.native.success", logs)
+
+
+@override_settings(**READY_SETTINGS)
 class AppleLinkTests(AppleFixtureMixin, TestCase):
     def setUp(self):
         super().setUp()
@@ -1277,6 +1577,7 @@ class AppleThrottleAndLoggingTests(AppleFixtureMixin, TestCase):
     def test_throttle_rates_and_default_429_shape(self):
         self.assertEqual(AppleBeginMinuteThrottle.rate, "30/minute")
         self.assertEqual(AppleCompleteMinuteThrottle.rate, "10/minute")
+        self.assertEqual(AppleNativeMinuteThrottle.rate, "30/minute")
         self.assertEqual(AppleLinkMinuteThrottle.rate, "10/minute")
         with patch.object(AppleBeginMinuteThrottle, "rate", "1/minute"):
             first = self.client.post(
@@ -1567,6 +1868,41 @@ class AppleAtomicAndRaceTests(AppleFixtureMixin, TransactionTestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(observed, [False])
 
+    def test_native_verification_runs_after_consume_commit(self):
+        user = self.make_user(email="native-atomic@example.com")
+        self.make_identity(user, subject="native-atomic-subject")
+        Tenant.objects.create(user=user)
+        row, _ = self.mint_transaction(purpose="native_auth")
+        observed = []
+
+        def verify(*args, **kwargs):
+            observed.append(connection.in_atomic_block)
+            row.refresh_from_db()
+            self.assertIsNotNone(row.consumed_at)
+            return AppleGrant(
+                subject="native-atomic-subject",
+                issuer=APPLE_ISSUER,
+                audience=BUNDLE_ID,
+                email=user.email,
+                email_verified=True,
+                email_is_relay=False,
+                refresh_token=None,
+            )
+
+        with patch("apps.tenants.apple_views.verify_apple_id_token", side_effect=verify):
+            response = self.client.post(
+                reverse("auth-apple-native"),
+                {
+                    "transaction_id": str(row.id),
+                    "identity_token": "native-identity-token",
+                    "state": STATE,
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(observed, [False])
+
     def test_double_complete_has_exactly_one_winner(self):
         user = self.make_user(email="existing@example.com")
         self.make_identity(user)
@@ -1608,6 +1944,63 @@ class AppleAtomicAndRaceTests(AppleFixtureMixin, TransactionTestCase):
             first = threading.Thread(target=post_once)
             first.start()
             self.assertTrue(first_in_phase_b.wait(5))
+            second = threading.Thread(target=post_once)
+            second.start()
+            second.join(5)
+            release_first.set()
+            first.join(5)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        self.assertCountEqual(statuses, [200, 400])
+
+    def test_double_native_submit_has_exactly_one_winner(self):
+        user = self.make_user(email="native-race@example.com")
+        self.make_identity(user, subject="native-race-subject")
+        Tenant.objects.create(user=user)
+        row, _ = self.mint_transaction(purpose="native_auth")
+        first_in_verification = threading.Event()
+        release_first = threading.Event()
+        statuses: list[int] = []
+        errors: list[BaseException] = []
+
+        def verify(*args, **kwargs):
+            self.assertFalse(connection.in_atomic_block)
+            first_in_verification.set()
+            release_first.wait(5)
+            return AppleGrant(
+                subject="native-race-subject",
+                issuer=APPLE_ISSUER,
+                audience=BUNDLE_ID,
+                email=user.email,
+                email_verified=True,
+                email_is_relay=False,
+                refresh_token=None,
+            )
+
+        def post_once():
+            client = APIClient()
+            try:
+                result = client.post(
+                    reverse("auth-apple-native"),
+                    {
+                        "transaction_id": str(row.id),
+                        "identity_token": "native-identity-token",
+                        "state": STATE,
+                    },
+                    format="json",
+                )
+                statuses.append(result.status_code)
+            except BaseException as exc:
+                errors.append(exc)
+            finally:
+                connections.close_all()
+
+        with patch("apps.tenants.apple_views.verify_apple_id_token", side_effect=verify):
+            first = threading.Thread(target=post_once)
+            first.start()
+            self.assertTrue(first_in_verification.wait(5))
             second = threading.Thread(target=post_once)
             second.start()
             second.join(5)

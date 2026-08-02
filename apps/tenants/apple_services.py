@@ -52,7 +52,7 @@ def _find_identity_for_update(subject: str) -> ExternalIdentity | None:
     )
 
 
-def consume_apple_transaction(transaction_id, state: str) -> str:
+def consume_apple_transaction(transaction_id, state: str, *, expected_purpose: str) -> str:
     """Validate and consume one popup transaction under a row lock."""
 
     with transaction.atomic():
@@ -64,7 +64,7 @@ def consume_apple_transaction(transaction_id, state: str) -> str:
         if not hmac.compare_digest(state.encode("utf-8"), row.state.encode("utf-8")):
             raise AppleTransactionRejected("state_mismatch")
         now = timezone.now()
-        if row.consumed_at is not None:
+        if row.consumed_at is not None or row.purpose != expected_purpose:
             raise AppleTransactionRejected("transaction_consumed")
         if now >= row.expires_at:
             raise AppleTransactionRejected("transaction_expired")
@@ -194,6 +194,16 @@ def resolve_apple_auth(grant: AppleGrant) -> AppleAuthResolution:
                     break
 
         raise AppleResolutionRejected("invalid_grant", "identity_create_conflict")
+
+
+def resolve_apple_native_auth(grant: AppleGrant) -> AppleAuthResolution:
+    """Sign in an existing Apple subject without creating native accounts."""
+
+    with transaction.atomic():
+        identity = _find_identity_for_update(grant.subject)
+        if identity is None:
+            raise AppleResolutionRejected("account_not_found", "native_signin_only")
+        return AppleAuthResolution(_update_existing_identity(identity, grant), False)
 
 
 def link_apple_identity(user: User, grant: AppleGrant) -> None:

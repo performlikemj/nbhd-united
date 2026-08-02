@@ -163,6 +163,11 @@ class AppleCompleteMinuteThrottle(_AppleIpThrottle):
     rate = "10/minute"
 
 
+class AppleNativeMinuteThrottle(_AppleIpThrottle):
+    scope = "apple_native_minute"
+    rate = "30/minute"
+
+
 class AppleLinkMinuteThrottle(_UserScopedThrottle):
     scope = "apple_link_minute"
     rate = "10/minute"

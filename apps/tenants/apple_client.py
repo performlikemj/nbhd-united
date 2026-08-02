@@ -117,6 +117,18 @@ def apple_readiness_error() -> str | None:
     return None
 
 
+def apple_native_readiness_error() -> str | None:
+    """Return readiness for native SIWA without affecting the web lane."""
+
+    readiness_error = apple_readiness_error()
+    if readiness_error is not None:
+        return readiness_error
+    bundle_id = getattr(settings, "APPLE_SIWA_BUNDLE_ID", "")
+    if not isinstance(bundle_id, str) or not bundle_id.strip():
+        return "missing_bundle_id"
+    return None
+
+
 def generate_apple_client_secret() -> str:
     """Mint the five-minute ES256 client assertion Apple requires."""
 
@@ -236,7 +248,11 @@ def _normalise_email(claim) -> str:
     return email
 
 
-def verify_apple_id_token(id_token: str, nonce_hash: str) -> AppleGrant:
+def verify_apple_id_token(
+    id_token: str,
+    nonce_hash: str,
+    allowed_audiences: set[str],
+) -> AppleGrant:
     try:
         header = jwt.get_unverified_header(id_token)
     except jwt.PyJWTError as exc:
@@ -252,14 +268,20 @@ def verify_apple_id_token(id_token: str, nonce_hash: str) -> AppleGrant:
             id_token,
             signing_key,
             algorithms=["RS256"],
-            audience=settings.APPLE_SIWA_SERVICES_ID,
-            issuer=APPLE_ISSUER,
-            options={"require": ["iss", "aud", "exp", "sub", "nonce"]},
+            options={
+                "require": ["iss", "aud", "exp", "sub", "nonce"],
+                "verify_aud": False,
+                "verify_iss": False,
+            },
         )
     except (jwt.PyJWTError, TypeError, ValueError, OverflowError) as exc:
         raise AppleInvalidGrant("invalid_id_token") from exc
 
-    if claims.get("iss") != APPLE_ISSUER or claims.get("aud") != settings.APPLE_SIWA_SERVICES_ID:
+    audience = claims.get("aud")
+    audience_allowed = False
+    for allowed in allowed_audiences:
+        audience_allowed |= _safe_string_compare(audience, allowed)
+    if not _safe_string_compare(claims.get("iss"), APPLE_ISSUER) or not audience_allowed:
         raise AppleInvalidGrant("invalid_issuer_or_audience")
     subject = claims.get("sub")
     if not isinstance(subject, str) or not subject.strip() or len(subject) > 255:
@@ -282,7 +304,7 @@ def verify_apple_id_token(id_token: str, nonce_hash: str) -> AppleGrant:
     return AppleGrant(
         subject=subject,
         issuer=APPLE_ISSUER,
-        audience=settings.APPLE_SIWA_SERVICES_ID,
+        audience=audience,
         email=email,
         email_verified=email_verified,
         email_is_relay=email.endswith("@privaterelay.appleid.com"),
@@ -334,7 +356,11 @@ def exchange_apple_code(code: str, nonce_hash: str) -> AppleGrant:
         except UnicodeEncodeError as exc:
             raise AppleInvalidGrant("invalid_refresh_token") from exc
 
-    verified = verify_apple_id_token(id_token, nonce_hash)
+    verified = verify_apple_id_token(
+        id_token,
+        nonce_hash,
+        {settings.APPLE_SIWA_SERVICES_ID},
+    )
     return AppleGrant(
         subject=verified.subject,
         issuer=verified.issuer,
