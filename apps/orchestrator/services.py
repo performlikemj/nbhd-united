@@ -525,11 +525,10 @@ def provision_tenant(tenant_id: str) -> None:
 
     # 5. Seed default cron jobs to Gateway (delayed for container warm-up)
     try:
-        from apps.cron.views import _schedule_qstash_task
+        from apps.cron.publish import publish_task
 
-        _schedule_qstash_task("seed_cron_jobs", str(tenant.id), delay_seconds=60)
+        publish_task("seed_cron_jobs", str(tenant.id), delay_seconds=60)
     except Exception:
-        # TODO: schedule with delay
         logger.warning(
             "Could not schedule cron job seeding for tenant %s",
             tenant_id,
