@@ -4,7 +4,7 @@ Daily notes follow this format:
 
     # 2026-02-15
 
-    ## 09:30 — MJ
+    ## 09:30 — Alex
     Started working on the demo video edit.
     Energy: 7 | Mood: 😊
 
@@ -25,8 +25,7 @@ from typing import Any
 _ENTRY_HEADER_RE = re.compile(
     r"^##\s+"
     r"(?P<time>\d{1,2}:\d{2})"  # required time
-    r"(?:\s*—\s*|\s+)"  # separator
-    r"(?P<title>.+?)"  # author or "Section Title (Author)"
+    r"(?:(?:\s*—\s*|\s+)(?P<title>.+?))?"  # optional author or "Section Title (Author)"
     r"\s*$"
 )
 
@@ -34,6 +33,12 @@ _SECTION_PAREN_RE = re.compile(r"^(?P<section>.+?)\s*\((?P<author>[^)]+)\)$")
 _ENERGY_RE = re.compile(r"Energy:\s*(\d+)", re.IGNORECASE)
 _MOOD_RE = re.compile(r"Mood:\s*(\S+)", re.IGNORECASE)
 _SUBSECTION_RE = re.compile(r"^###\s+(.+)$")
+
+
+def format_author_suffix(author_label: str | None) -> str:
+    """Return a safe inline author suffix, or an empty string when unnamed."""
+    normalised = re.sub(r"\s+", " ", author_label or "").strip()
+    return f" — {normalised}" if normalised else ""
 
 
 def _normalise_author(raw: str) -> str:
@@ -56,7 +61,7 @@ def parse_daily_note(markdown: str) -> list[dict[str, Any]]:
         model instead.
 
     Each entry dict has keys:
-        time (str|None), author (str), content (str),
+        time (str|None), author (str), author_label (str), content (str),
         mood (str|None), energy (int|None),
         section (str|None), subsections (dict|None)
     """
@@ -85,20 +90,27 @@ def parse_daily_note(markdown: str) -> list[dict[str, Any]]:
         if m:
             _flush()
             time_str = m.group("time")
-            title = m.group("title").strip()
+            title = (m.group("title") or "").strip()
 
             # Check for "Section Title (Author)" pattern
             pm = _SECTION_PAREN_RE.match(title)
             if pm:
                 section = _slugify_section(pm.group("section"))
-                author = _normalise_author(pm.group("author"))
+                author_label = pm.group("author").strip()
+                author = _normalise_author(author_label)
+            elif title:
+                section = None
+                author_label = title
+                author = _normalise_author(title)
             else:
                 section = None
-                author = _normalise_author(title)
+                author_label = ""
+                author = "human"
 
             current = {
                 "time": time_str,
                 "author": author,
+                "author_label": author_label,
                 "content": "",
                 "mood": None,
                 "energy": None,
@@ -163,14 +175,17 @@ def serialise_entry(entry: dict[str, Any]) -> str:
 
     # Header
     time_part = entry.get("time") or ""
-    author_label = "Agent" if entry.get("author") == "agent" else (entry.get("author_label") or "MJ")
+    author_label = "Agent" if entry.get("author") == "agent" else entry.get("author_label") or ""
     section = entry.get("section")
 
     if section:
         section_title = section.replace("-", " ").title()
-        header = f"## {time_part} — {section_title} ({author_label})".strip()
+        if author_label:
+            header = f"## {time_part} — {section_title} ({author_label})".strip()
+        else:
+            header = f"## {time_part} — {section_title}".strip()
     else:
-        header = f"## {time_part} — {author_label}".strip()
+        header = f"## {time_part}{format_author_suffix(author_label)}".strip()
     # Clean up double spaces
     header = re.sub(r"\s+", " ", header).replace("## —", "##")
     parts.append(header)
@@ -223,13 +238,14 @@ def append_entry_markdown(
     mood: str | None = None,
     energy: int | None = None,
     date_str: str | None = None,
+    author_label: str | None = None,
 ) -> str:
     """Append a new entry to existing markdown, returning the updated doc.
 
     .. deprecated::
         Use ``apps.journal.services.append_log_to_note`` instead.
     """
-    author_label = "Agent" if author == "agent" else "MJ"
+    resolved_author_label = "Agent" if author == "agent" else author_label
     lines = []
 
     if not existing_md or not existing_md.strip():
@@ -237,7 +253,7 @@ def append_entry_markdown(
             lines.append(f"# {date_str}")
             lines.append("")
 
-    header = f"## {time} — {author_label}"
+    header = f"## {time}{format_author_suffix(resolved_author_label)}"
     lines.append(header)
     lines.append(content)
 
