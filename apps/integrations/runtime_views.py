@@ -4223,6 +4223,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
         # user would be promised a plan that never arrives. Surfacing it here
         # lets the tool tell them "sautai integration is not configured" instead.
         from apps.integrations.sautai_client import (
+            ASYNC_CONTRACT_REQUEST_DECISION_KEY,
             async_generation_state,
             build_sautai_generate_payload,
             sautai_async_contract_confirmed,
@@ -4274,7 +4275,8 @@ class RuntimeSautaiGeneratePlanView(APIView):
 
         try:
             # This remains destructive under the legacy 200 contract and
-            # becomes fill-only only after NBHD observes the server's first 202.
+            # becomes fill-only only after a valid 202 job survives one signed
+            # status decode.
             # Explicit replace_slots are not exposed by the NBHD tool contract.
             regenerate = _parse_bool(request.data.get("regenerate"), default=False)
             confirm_replace = _parse_bool(request.data.get("confirm_replace"), default=False)
@@ -4323,9 +4325,10 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 reason=confirmation_failure,
             )
 
-        # A durable marker written only after a real Sautai 202 is the cutover
-        # signal for both the shorter POST timeout and fill-only regeneration.
-        # Until then, preserve the legacy destructive confirmation behavior.
+        # One snapshot is the decision for this request: it controls both this
+        # confirmation branch and the worker's POST timeout after being written
+        # to the job below. The global signal flips only after a valid 202 plus
+        # one valid signed status poll, and reverts on a later legacy 200.
         async_contract_live = sautai_async_contract_confirmed()
 
         # Atomic coalesce: lock the tenant row so concurrent POSTs (the agent
@@ -4430,6 +4433,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
                     number_of_days=number_of_days,
                     user_prompt=user_prompt,
                     regenerate=regenerate,
+                    funnel={ASYNC_CONTRACT_REQUEST_DECISION_KEY: async_contract_live},
                 )
 
         # publish_task is a network call — enqueue AFTER the txn commits

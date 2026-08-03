@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 from django.test import TestCase
@@ -853,13 +853,27 @@ class SautaiGeneratePlanViewTests(TestCase):
         return self._post(confirmed)
 
     def _mark_async_contract_live(self) -> None:
+        from datetime import timedelta
+
+        from django.utils import timezone
+
         from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+        from .sautai_client import (
+            ASYNC_CONTRACT_CONFIRMED_KEY,
+            ASYNC_CONTRACT_EVENT_AT_KEY,
+            ASYNC_CONTRACT_EVENT_KEY,
+            ASYNC_CONTRACT_EVENT_VALIDATED,
+        )
 
         SautaiMealPlanJob.objects.create(
             tenant=self.tenant,
             week_start="2026-06-29",
             status=SautaiMealPlanJobStatus.READY,
-            funnel={"async_contract_confirmed": True},
+            funnel={
+                ASYNC_CONTRACT_CONFIRMED_KEY: True,
+                ASYNC_CONTRACT_EVENT_KEY: ASYNC_CONTRACT_EVENT_VALIDATED,
+                ASYNC_CONTRACT_EVENT_AT_KEY: (timezone.now() - timedelta(minutes=1)).isoformat(),
+            },
         )
 
     def test_requires_internal_auth(self):
@@ -1325,6 +1339,7 @@ class SautaiGeneratePlanViewTests(TestCase):
 
         job = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
         self.assertTrue(job.regenerate)
+        self.assertIs(job.funnel["async_contract_request_enabled"], True)
 
     def test_legacy_regenerate_requires_replace_confirmation_for_incomplete_plan(self):
         self.tenant.sautai_enabled = True
@@ -1429,6 +1444,49 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(SautaiMealPlanJob.objects.filter(tenant=self.tenant).count(), 1)
         mock_publish.assert_not_called()
 
+    def test_legacy_200_after_validated_flip_restores_replace_confirmation(self):
+        from datetime import date
+
+        from .models import SautaiMealPlanJobStatus
+        from .sautai_client import call_sautai_generate_plan, sautai_async_contract_confirmed
+
+        self.tenant.sautai_enabled = True
+        self.tenant.save(update_fields=["sautai_enabled"])
+        self._mark_async_contract_live()
+        self.assertTrue(sautai_async_contract_confirmed())
+
+        rollback_job = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start=date(2026, 7, 6),
+            funnel={"async_contract_request_enabled": True},
+        )
+        legacy_response = MagicMock()
+        legacy_response.status_code = 200
+        legacy_response.json.return_value = {
+            "plan": {"id": 41, "week_start": "2026-07-06"},
+            "complete": True,
+        }
+        with (
+            patch("apps.integrations.sautai_client.httpx.post", return_value=legacy_response),
+            patch("apps.integrations.sautai_notify.notify_sautai_plan_ready"),
+        ):
+            call_sautai_generate_plan(rollback_job)
+        self.assertFalse(sautai_async_contract_confirmed())
+
+        existing = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start="2026-07-13",
+            status=SautaiMealPlanJobStatus.READY,
+            result={"id": 42, "week_start": "2026-07-13"},
+        )
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            response = self._dispatch({"week_start": "2026-07-13", "regenerate": True})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "confirm_required")
+        self.assertEqual(response.json()["plan"], existing.result)
+        mock_publish.assert_not_called()
+
     def test_legacy_confirm_replace_creates_destructive_regeneration_job(self):
         from .models import SautaiMealPlanJob, SautaiMealPlanJobStatus
 
@@ -1453,6 +1511,7 @@ class SautaiGeneratePlanViewTests(TestCase):
         self.assertEqual(response.status_code, 201)
         replacement = SautaiMealPlanJob.objects.get(id=response.json()["job_id"])
         self.assertTrue(replacement.regenerate)
+        self.assertIs(replacement.funnel["async_contract_request_enabled"], False)
         mock_publish.assert_called_once_with("generate_sautai_meal_plan", str(replacement.id))
 
     def test_prompt_bearing_duplicate_returns_existing_plan(self):

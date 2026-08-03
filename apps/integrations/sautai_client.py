@@ -16,7 +16,6 @@ from uuid import UUID
 
 import httpx
 from django.conf import settings
-from django.db.models import Q
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -30,9 +29,10 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 # Transition safety: the server may still be synchronous, so the generate POST
-# keeps its original timeout byte-for-byte until a response proves the async
-# contract with HTTP 202. Later POSTs can then use the short acknowledgement
-# timeout; status/current calls are always bounded by the poll deadline.
+# keeps its original timeout byte-for-byte until a valid HTTP 202 acknowledgement
+# is followed by one valid signed status response. Later POSTs can then use the
+# short acknowledgement timeout; status/current calls are always bounded by the
+# poll deadline.
 REQUEST_TIMEOUT_SECONDS = 125.0
 ASYNC_GENERATE_TIMEOUT_SECONDS = 20.0
 GENERATION_STATUS_TIMEOUT_SECONDS = 10.0
@@ -43,6 +43,11 @@ SAUTAI_POLL_MAX_ATTEMPTS = SAUTAI_POLL_TIMEOUT_SECONDS // SAUTAI_POLL_DELAY_SECO
 SAUTAI_GENERATE_POLL_PENDING = "poll_pending"
 ASYNC_GENERATION_STATE_KEY = "_sautai_generation"
 ASYNC_CONTRACT_CONFIRMED_KEY = "async_contract_confirmed"
+ASYNC_CONTRACT_EVENT_KEY = "async_contract_capability"
+ASYNC_CONTRACT_EVENT_AT_KEY = "async_contract_capability_observed_at"
+ASYNC_CONTRACT_EVENT_VALIDATED = "validated"
+ASYNC_CONTRACT_EVENT_LEGACY = "legacy"
+ASYNC_CONTRACT_REQUEST_DECISION_KEY = "async_contract_request_enabled"
 SAUTAI_POLL_TIMEOUT_ERROR = (
     f"sautai_poll_timeout: generation did not finish within {SAUTAI_POLL_TIMEOUT_SECONDS} seconds"
 )
@@ -115,19 +120,47 @@ def clear_sautai_link(integration: Integration) -> None:
 
 
 def sautai_async_contract_confirmed() -> bool:
-    """Whether NBHD has observed a real async-generate ``202``.
+    """Return the latest validated/reverted server capability observation.
 
-    The marker is written only by the 202 branch. The result/final-status
-    fallbacks keep the signal durable across this code's own pre-marker rows,
-    without trusting a deploy flag or an additive legacy-200 response key. The
-    Sautai M2M origin is process-wide configuration, so one observed response
-    proves the server contract for subsequent tenants too.
+    A 202 alone is deliberately not evidence. A ``validated`` event is written
+    only after that acknowledgement decodes and the same remote job returns one
+    valid signed status payload. A later valid legacy 200 writes a ``legacy``
+    event, so rollback is immediate and durable. Event time is the generate
+    response observation time; an old async job that polls after a newer legacy
+    response therefore cannot accidentally undo the rollback.
     """
-    return SautaiMealPlanJob.objects.filter(
-        Q(funnel__contains={ASYNC_CONTRACT_CONFIRMED_KEY: True})
-        | Q(result__has_key=ASYNC_GENERATION_STATE_KEY)
-        | Q(funnel__generation_status__in=_SUCCESS_GENERATION_STATUSES)
-    ).exists()
+    latest: tuple[datetime, str, str] | None = None
+    events = SautaiMealPlanJob.objects.filter(funnel__has_key=ASYNC_CONTRACT_EVENT_KEY).values_list("id", "funnel")
+    for job_id, funnel in events.iterator():
+        if not isinstance(funnel, dict):
+            continue
+        event = funnel.get(ASYNC_CONTRACT_EVENT_KEY)
+        if event not in {ASYNC_CONTRACT_EVENT_VALIDATED, ASYNC_CONTRACT_EVENT_LEGACY}:
+            continue
+        observed_at = parse_datetime(str(funnel.get(ASYNC_CONTRACT_EVENT_AT_KEY) or ""))
+        if observed_at is None or timezone.is_naive(observed_at):
+            continue
+        candidate = (observed_at, str(job_id), event)
+        if latest is None or candidate[:2] > latest[:2]:
+            latest = candidate
+    return latest is not None and latest[2] == ASYNC_CONTRACT_EVENT_VALIDATED
+
+
+def sautai_request_uses_async_contract(job: SautaiMealPlanJob) -> bool:
+    """Return and persist the single capability decision for this POST.
+
+    Runtime admission writes the decision before enqueueing. Older queued rows
+    have no snapshot, so they conservatively retain the legacy contract rather
+    than consulting a second, possibly changed source halfway through a request.
+    """
+    funnel = job.funnel if isinstance(job.funnel, dict) else {}
+    decision = funnel.get(ASYNC_CONTRACT_REQUEST_DECISION_KEY)
+    if isinstance(decision, bool):
+        return decision
+    decision = False
+    job.funnel = {**funnel, ASYNC_CONTRACT_REQUEST_DECISION_KEY: decision}
+    job.save(update_fields=["funnel", "updated_at"])
+    return decision
 
 
 def async_generation_state(job: SautaiMealPlanJob) -> dict | None:
@@ -274,13 +307,15 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob, *, poll_generation: int | 
         regenerate=job.regenerate,
     )
 
+    async_contract_for_request = sautai_request_uses_async_contract(job)
+
     # Persist the linked numeric id used for this egress.
     job.addressed_by = SautaiMealPlanAddressedBy.LINKED_ID
     job.sautai_user_id = identity["sautai_user_id"]
     job.save(update_fields=["addressed_by", "sautai_user_id", "updated_at"])
 
     url = f"{base_url}/api/m2m/meal-plan/generate/"
-    request_timeout = ASYNC_GENERATE_TIMEOUT_SECONDS if sautai_async_contract_confirmed() else REQUEST_TIMEOUT_SECONDS
+    request_timeout = ASYNC_GENERATE_TIMEOUT_SECONDS if async_contract_for_request else REQUEST_TIMEOUT_SECONDS
     try:
         response = httpx.post(
             url,
@@ -305,11 +340,9 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob, *, poll_generation: int | 
             _fail(job, "invalid_response: malformed async generation acknowledgement")
             return
         job.result = {ASYNC_GENERATION_STATE_KEY: state}
-        funnel = job.funnel if isinstance(job.funnel, dict) else {}
-        job.funnel = {**funnel, ASYNC_CONTRACT_CONFIRMED_KEY: True}
         job.status = SautaiMealPlanJobStatus.PENDING
         job.error = ""
-        job.save(update_fields=["result", "funnel", "status", "error", "updated_at"])
+        job.save(update_fields=["result", "status", "error", "updated_at"])
         return SAUTAI_GENERATE_POLL_PENDING
 
     if response.status_code != 200:
@@ -353,11 +386,27 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob, *, poll_generation: int | 
         _fail(job, "invalid_response: missing plan")
         return
 
+    funnel = _funnel_from_response(body)
+    funnel[ASYNC_CONTRACT_REQUEST_DECISION_KEY] = async_contract_for_request
+    if async_contract_for_request:
+        observed_at = timezone.now().isoformat()
+        funnel.update(
+            {
+                ASYNC_CONTRACT_CONFIRMED_KEY: False,
+                ASYNC_CONTRACT_EVENT_KEY: ASYNC_CONTRACT_EVENT_LEGACY,
+                ASYNC_CONTRACT_EVENT_AT_KEY: observed_at,
+            }
+        )
+        logger.warning(
+            "call_sautai_generate_plan: valid legacy 200 reverted async capability for job %s",
+            str(job.id)[:8],
+        )
+
     _complete_sautai_job(
         job,
         plan=body["plan"],
         web_link=body.get("web_link"),
-        funnel=_funnel_from_response(body),
+        funnel=funnel,
     )
 
 
@@ -526,6 +575,13 @@ def _poll_sautai_generation(
         )
         return None
 
+    if not _record_validated_async_contract(
+        job,
+        state=state,
+        poll_generation=poll_generation,
+    ):
+        return None
+
     state.update(decoded)
     state.pop("last_error", None)
     remote_status = decoded["status"]
@@ -603,6 +659,46 @@ def _poll_cas_queryset(job: SautaiMealPlanJob, poll_generation: int):
         status=SautaiMealPlanJobStatus.GENERATING,
         **sautai_poll_generation_filter(poll_generation),
     )
+
+
+def _record_validated_async_contract(
+    job: SautaiMealPlanJob,
+    *,
+    state: dict,
+    poll_generation: int,
+) -> bool:
+    """Persist capability only after a decoded status response for this ack."""
+    funnel = job.funnel if isinstance(job.funnel, dict) else {}
+    request_decision = funnel.get(ASYNC_CONTRACT_REQUEST_DECISION_KEY)
+    if not isinstance(request_decision, bool):
+        # Pre-deployment queued rows had no admission snapshot. Treat their
+        # original POST conservatively as legacy until this poll validates it.
+        request_decision = False
+
+    next_funnel = {
+        **funnel,
+        ASYNC_CONTRACT_REQUEST_DECISION_KEY: request_decision,
+        ASYNC_CONTRACT_CONFIRMED_KEY: True,
+    }
+    if not request_decision and next_funnel.get(ASYNC_CONTRACT_EVENT_KEY) != ASYNC_CONTRACT_EVENT_VALIDATED:
+        acknowledged_at = parse_datetime(str(state.get("started_at") or ""))
+        if acknowledged_at is None or timezone.is_naive(acknowledged_at):
+            return False
+        next_funnel.update(
+            {
+                ASYNC_CONTRACT_EVENT_KEY: ASYNC_CONTRACT_EVENT_VALIDATED,
+                ASYNC_CONTRACT_EVENT_AT_KEY: acknowledged_at.isoformat(),
+            }
+        )
+
+    if next_funnel == funnel:
+        return True
+    updated = _poll_cas_queryset(job, poll_generation).update(funnel=next_funnel)
+    if not updated:
+        logger.info("record_validated_async_contract: stale lease skipped for job %s", str(job.id)[:8])
+        return False
+    job.funnel = next_funnel
+    return True
 
 
 def _persist_pending_generation(
@@ -726,6 +822,15 @@ def _finalize_async_generation(
         )
 
     funnel = dict(current.get("funnel") or {})
+    contract_funnel = job.funnel if isinstance(job.funnel, dict) else {}
+    for key in (
+        ASYNC_CONTRACT_REQUEST_DECISION_KEY,
+        ASYNC_CONTRACT_CONFIRMED_KEY,
+        ASYNC_CONTRACT_EVENT_KEY,
+        ASYNC_CONTRACT_EVENT_AT_KEY,
+    ):
+        if key in contract_funnel:
+            funnel[key] = contract_funnel[key]
     failed_slots = state.get("failed_slots") if isinstance(state.get("failed_slots"), list) else []
     funnel.update(
         {
@@ -736,7 +841,6 @@ def _finalize_async_generation(
             "plan_id": state.get("plan_id"),
             "week_start_date": state.get("week_start_date"),
             "regeneration": state.get("regeneration"),
-            ASYNC_CONTRACT_CONFIRMED_KEY: True,
         }
     )
     if timezone.now() >= deadline:
