@@ -91,9 +91,9 @@ def _ready_message(job: SautaiMealPlanJob) -> str:
     (``account_claimed is False``) the CTA is the claim link + plan count — the
     sautai funnel — instead of the plain web link. For a claimed/linked account
     the plain web link stays. If a plan already existed for the week and the user
-    had given fresh guidance we didn't regenerate on, add an honest nudge rather
-    than implying the plan is freshly tailored. If sautai reports missing days,
-    the push explicitly says the week could not be fully filled.
+    had given fresh guidance, preserve the legacy regenerate nudge or, for a
+    confirmed async job, explain fill-only semantics. If sautai reports failed
+    slots or missing days, the push says the week could not be fully filled.
     """
     plan = job.result if isinstance(job.result, dict) else {}
     funnel = job.funnel if isinstance(job.funnel, dict) else {}
@@ -101,8 +101,15 @@ def _ready_message(job: SautaiMealPlanJob) -> str:
 
     missing_days = funnel.get("missing_days")
     has_missing_days = isinstance(missing_days, list) and bool(missing_days)
+    failed_slot_count = funnel.get("failed_slot_count")
+    has_failed_slots = (
+        isinstance(failed_slot_count, int) and not isinstance(failed_slot_count, bool) and failed_slot_count > 0
+    )
     base = f"Your meal plan for the week of {week_start} is ready" if week_start else "Your meal plan is ready"
-    if has_missing_days:
+    if has_failed_slots:
+        slot_label = "meal slot" if failed_slot_count == 1 else "meal slots"
+        base += f", but {failed_slot_count} {slot_label} could not be filled"
+    elif has_missing_days:
         base += ", but some days could not be filled"
     text = f"{base} — powered by sautai."
 
@@ -120,10 +127,18 @@ def _ready_message(job: SautaiMealPlanJob) -> str:
         text += f" View it: {web_link}"
 
     if funnel.get("already_existed") and (job.user_prompt or "").strip() and not job.regenerate:
-        text += (
-            " (This was your existing plan for the week — ask me to regenerate it "
-            "if you want your latest notes applied.)"
-        )
+        from apps.integrations.sautai_client import ASYNC_CONTRACT_CONFIRMED_KEY
+
+        if funnel.get(ASYNC_CONTRACT_CONFIRMED_KEY) is True:
+            text += (
+                " (This was your existing plan for the week. Regeneration only fills gaps; "
+                "it leaves occupied meals untouched.)"
+            )
+        else:
+            text += (
+                " (This was your existing plan for the week — ask me to regenerate it "
+                "if you want your latest notes applied.)"
+            )
 
     return text
 

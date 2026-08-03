@@ -4046,10 +4046,11 @@ class RedditToolView(APIView):
 # ── sautai Phase 0 (nbhd-sautai-tools plugin, meal-plan generation) ──────
 #
 # PROXY-THROUGH-DJANGO, same shape as RedditToolView: the plugin never talks
-# to sautai directly (30-60s exceeds its 20s tool timeout, and a container-
+# to sautai directly (the platform secret stays server-side, and a container-
 # direct call would bypass the PII rehydrate/redact chokepoint). This view
-# only does the fast ack — job row + QStash enqueue; the actual sautai HTTP
-# call lives in apps.integrations.tasks.generate_sautai_meal_plan_task. See
+# only does the fast NBHD ack — job row + QStash enqueue; the sautai POST
+# (legacy synchronous during transition) and bounded post-202 status polling
+# live in apps.integrations.tasks. See
 # docs/sautai-phase0-contract.md.
 
 _SAUTAI_MAX_PROMPT_CHARS = 2000
@@ -4211,7 +4212,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
     A no-token call returns the exact explicit-week request and a short-lived
     confirmation token without side effects. A matching confirmed call is a
     fast ack (<20s): it creates a PENDING job and enqueues via QStash, which
-    does the slow (30-60s) sautai M2M request.
+    advances sautai's asynchronous generation job through bounded deliveries.
     """
 
     permission_classes = [AllowAny]
@@ -4236,7 +4237,10 @@ class RuntimeSautaiGeneratePlanView(APIView):
         # user would be promised a plan that never arrives. Surfacing it here
         # lets the tool tell them "sautai integration is not configured" instead.
         from apps.integrations.sautai_client import (
+            ASYNC_CONTRACT_REQUEST_DECISION_KEY,
+            async_generation_state,
             build_sautai_generate_payload,
+            sautai_async_contract_confirmed,
             sautai_identity,
             sautai_m2m_config,
         )
@@ -4284,9 +4288,10 @@ class RuntimeSautaiGeneratePlanView(APIView):
             )
 
         try:
-            # Phase 0.5: regenerate=true asks sautai to REPLACE an existing
-            # (user, week) plan honoring user_prompt instead of the idempotent
-            # stale return. Carried on the job → sent by the worker.
+            # This remains destructive under the legacy 200 contract and
+            # becomes fill-only only after a valid 202 job survives one signed
+            # status decode.
+            # Explicit replace_slots are not exposed by the NBHD tool contract.
             regenerate = _parse_bool(request.data.get("regenerate"), default=False)
             confirm_replace = _parse_bool(request.data.get("confirm_replace"), default=False)
         except ValueError as exc:
@@ -4334,6 +4339,12 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 reason=confirmation_failure,
             )
 
+        # One snapshot is the decision for this request: it controls both this
+        # confirmation branch and the worker's POST timeout after being written
+        # to the job below. The global signal flips only after a valid 202 plus
+        # one valid signed status poll, and reverts on a later legacy 200.
+        async_contract_live = sautai_async_contract_confirmed()
+
         # Atomic coalesce: lock the tenant row so concurrent POSTs (the agent
         # retrying after its OWN 20s tool-call timeout, while the first
         # request already created the job, is the realistic trigger — not
@@ -4359,37 +4370,66 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 .first()
             )
 
-            if regenerate and existing_ready is None:
-                # Rebuilding a nonexistent plan is just ordinary generation.
-                # Strip the destructive flag even if the caller supplied it.
-                regenerate = False
-            elif regenerate and not confirm_replace:
-                return Response(
-                    _sautai_existing_plan_payload(
-                        "confirm_required",
-                        existing_ready,
-                        "Show the current plan and ask the user to explicitly confirm replacing it before regenerating.",
-                    )
-                )
-            elif not regenerate and existing_ready is not None:
-                if _sautai_plan_is_incomplete(existing_ready):
-                    repairing_incomplete_plan = True
-                    repair_missing_days = _sautai_missing_days(existing_ready.funnel)
-                else:
-                    guidance = (
-                        "Surface the existing plan. The new guidance was not applied; offer regeneration and require "
-                        "explicit confirmation before replacing it."
-                        if user_prompt
-                        else "A plan already exists for this week. Surface the existing plan. Offer regeneration only "
-                        "if the user seems to want a new one, and require explicit confirmation before replacing it."
-                    )
+            if not async_contract_live:
+                if regenerate and existing_ready is None:
+                    # Rebuilding a nonexistent plan is just ordinary generation.
+                    # Strip the destructive flag even if the caller supplied it.
+                    regenerate = False
+                elif regenerate and not confirm_replace:
                     return Response(
                         _sautai_existing_plan_payload(
-                            "exists",
+                            "confirm_required",
                             existing_ready,
-                            guidance,
+                            "Show the current plan and ask the user to explicitly confirm replacing it before regenerating.",
                         )
                     )
+                elif not regenerate and existing_ready is not None:
+                    if _sautai_plan_is_incomplete(existing_ready):
+                        repairing_incomplete_plan = True
+                        repair_missing_days = _sautai_missing_days(existing_ready.funnel)
+                    else:
+                        guidance = (
+                            "Surface the existing plan. The new guidance was not applied; offer regeneration and require "
+                            "explicit confirmation before replacing it."
+                            if user_prompt
+                            else "A plan already exists for this week. Surface the existing plan. Offer regeneration only "
+                            "if the user seems to want a new one, and require explicit confirmation before replacing it."
+                        )
+                        return Response(
+                            _sautai_existing_plan_payload(
+                                "exists",
+                                existing_ready,
+                                guidance,
+                            )
+                        )
+            else:
+                if regenerate and existing_ready is None:
+                    # Filling gaps in a nonexistent plan is ordinary generation.
+                    regenerate = False
+                elif existing_ready is not None:
+                    if _sautai_plan_is_incomplete(existing_ready):
+                        repairing_incomplete_plan = True
+                        repair_missing_days = _sautai_missing_days(existing_ready.funnel)
+                    else:
+                        if regenerate:
+                            guidance = (
+                                "A complete plan already exists for this week. Regeneration is fill-only, so every occupied "
+                                "meal remains untouched. Surface the existing plan."
+                            )
+                        elif user_prompt:
+                            guidance = (
+                                "Surface the existing plan. The new guidance was not applied because regeneration only "
+                                "fills missing slots and leaves occupied meals untouched."
+                            )
+                        else:
+                            guidance = "A complete plan already exists for this week. Surface the existing plan."
+                        return Response(
+                            _sautai_existing_plan_payload(
+                                "exists",
+                                existing_ready,
+                                guidance,
+                            )
+                        )
 
             in_flight = (
                 SautaiMealPlanJob.objects.filter(
@@ -4407,6 +4447,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
                     number_of_days=number_of_days,
                     user_prompt=user_prompt,
                     regenerate=regenerate,
+                    funnel={ASYNC_CONTRACT_REQUEST_DECISION_KEY: async_contract_live},
                 )
 
         # publish_task is a network call — enqueue AFTER the txn commits
@@ -4418,15 +4459,24 @@ class RuntimeSautaiGeneratePlanView(APIView):
             # that has gone stale, its original publish_task may have been
             # swallowed on enqueue — and because EVERY later request coalesces
             # onto it, that (tenant, week) would be dead forever with no
-            # user-visible way out. Re-enqueue it (best-effort). The worker's
-            # atomic claim makes a redundant delivery harmless if the original
-            # DID land and the worker is merely slow; a GENERATING row is left
-            # alone (it is actively being worked).
+            # user-visible way out. Re-enqueue it (best-effort); the every-minute
+            # recovery cron is the guaranteed backstop. Generation-token claims
+            # make a redundant delivery harmless if the original DID land and
+            # the worker is merely slow; a GENERATING row is left alone here.
             if in_flight.status == SautaiMealPlanJobStatus.PENDING and (tz.now() - in_flight.updated_at) > timedelta(
                 minutes=3
             ):
                 try:
-                    publish_task("generate_sautai_meal_plan", str(in_flight.id))
+                    state = async_generation_state(in_flight)
+                    poll_generation = state.get("poll_generation") if isinstance(state, dict) else None
+                    if isinstance(poll_generation, int) and not isinstance(poll_generation, bool):
+                        publish_task(
+                            "generate_sautai_meal_plan",
+                            str(in_flight.id),
+                            poll_generation=poll_generation,
+                        )
+                    else:
+                        publish_task("generate_sautai_meal_plan", str(in_flight.id))
                 except Exception:
                     logger.warning("Failed to re-enqueue stale sautai job %s", in_flight.id)
 

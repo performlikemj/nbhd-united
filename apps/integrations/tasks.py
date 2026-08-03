@@ -6,6 +6,7 @@ import logging
 from datetime import timedelta
 
 import httpx
+from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
@@ -21,6 +22,8 @@ from .services import (
 logger = logging.getLogger(__name__)
 
 REFRESH_LEAD_MINUTES = 15
+SAUTAI_POLL_RECOVERY_STALE_SECONDS = 45
+SAUTAI_POLL_RECOVERY_BATCH_SIZE = 200
 
 
 def refresh_expiring_integrations_task() -> dict[str, int]:
@@ -109,8 +112,24 @@ def refresh_expiring_integrations_task() -> dict[str, int]:
     }
 
 
-def generate_sautai_meal_plan_task(job_id: str) -> None:
-    """Call sautai's M2M generate endpoint for a pending SautaiMealPlanJob.
+def _sautai_qstash_configured() -> bool:
+    return bool(getattr(settings, "QSTASH_TOKEN", "") and getattr(settings, "API_BASE_URL", ""))
+
+
+def _publish_sautai_poll(job_id, poll_generation: int, *, delay_seconds: int | None = None) -> None:
+    from apps.cron.publish import publish_task
+
+    publish_task(
+        "generate_sautai_meal_plan",
+        str(job_id),
+        poll_generation=poll_generation,
+        idempotency_key=f"sautai-poll-{job_id.hex}-{poll_generation}",
+        delay_seconds=delay_seconds,
+    )
+
+
+def generate_sautai_meal_plan_task(job_id: str, poll_generation: int | None = None) -> None:
+    """Advance one POST/poll/finalize step for a SautaiMealPlanJob.
 
     Idempotency is an ATOMIC claim, not a read-then-check: a PENDING/FAILED
     row transitions to GENERATING in one UPDATE (mirrors
@@ -121,20 +140,45 @@ def generate_sautai_meal_plan_task(job_id: str) -> None:
     ``create_meal_plan_for_user()`` is idempotent per (user, week) too, but
     that's a second line of defense, not a substitute for claiming first.
 
-    Failure paths in ``call_sautai_generate_plan`` always transition
-    GENERATING -> FAILED. A RETRYABLE failure (transport/503/5xx) then raises
-    ``RetryableSautaiError``, which this task deliberately does NOT catch — it
-    propagates so ``apps.cron.views.trigger_task`` returns 500 and QStash
-    redelivers, re-claiming the FAILED row. A TERMINAL failure (4xx / bad body /
-    no email / unconfigured) returns normally, so QStash does not retry it. See
-    docs/sautai-phase0-contract.md.
+    A sautai ``202`` or active status read returns the row to PENDING, then this
+    task publishes a distinct delivery delayed by 15 seconds. This is a
+    re-enqueue state machine, not a blocking sleep loop. POST transport/5xx
+    failures still raise ``RetryableSautaiError`` for QStash redelivery; terminal
+    failures return normally.
     """
     from apps.integrations.models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+    from apps.integrations.sautai_client import (
+        ASYNC_GENERATION_STATE_KEY,
+        SAUTAI_GENERATE_POLL_PENDING,
+        SAUTAI_POLL_DELAY_SECONDS,
+        async_generation_state,
+        call_sautai_generate_plan,
+        sautai_poll_generation_filter,
+    )
 
-    claimed = SautaiMealPlanJob.objects.filter(
-        id=job_id,
-        status__in=[SautaiMealPlanJobStatus.PENDING, SautaiMealPlanJobStatus.FAILED],
-    ).update(status=SautaiMealPlanJobStatus.GENERATING, error="", updated_at=timezone.now())
+    claimable = SautaiMealPlanJob.objects.filter(id=job_id)
+    if poll_generation is None:
+        # Initial POST deliveries may reclaim retryable legacy failures, but
+        # must never consume an async successor without its generation token.
+        claimable = claimable.filter(
+            status__in=[SautaiMealPlanJobStatus.PENDING, SautaiMealPlanJobStatus.FAILED]
+        ).exclude(result__has_key=ASYNC_GENERATION_STATE_KEY)
+    elif isinstance(poll_generation, int) and not isinstance(poll_generation, bool) and poll_generation > 0:
+        # The expected generation is part of the database claim. A redelivery
+        # that arrives after its successor was persisted can no longer fork the
+        # chain, even though the row has returned to PENDING.
+        claimable = claimable.filter(
+            status=SautaiMealPlanJobStatus.PENDING,
+            **sautai_poll_generation_filter(poll_generation),
+        )
+    else:
+        logger.warning(
+            "generate_sautai_meal_plan_task: invalid poll generation for job %s",
+            str(job_id)[:8],
+        )
+        return
+
+    claimed = claimable.update(status=SautaiMealPlanJobStatus.GENERATING, error="", updated_at=timezone.now())
     if not claimed:
         logger.info("generate_sautai_meal_plan_task: job %s not claimable — skipping", str(job_id)[:8])
         return
@@ -145,6 +189,149 @@ def generate_sautai_meal_plan_task(job_id: str) -> None:
         logger.warning("generate_sautai_meal_plan_task: job %s not found", str(job_id)[:8])
         return
 
-    from apps.integrations.sautai_client import call_sautai_generate_plan
+    action = call_sautai_generate_plan(job, poll_generation=poll_generation)
+    if action != SAUTAI_GENERATE_POLL_PENDING:
+        return
 
-    call_sautai_generate_plan(job)
+    state = async_generation_state(job)
+    successor_generation = state.get("poll_generation") if isinstance(state, dict) else None
+    if not isinstance(successor_generation, int) or isinstance(successor_generation, bool) or successor_generation <= 0:
+        SautaiMealPlanJob.objects.filter(id=job.id, status=SautaiMealPlanJobStatus.PENDING).update(
+            status=SautaiMealPlanJobStatus.FAILED,
+            error="invalid_response: malformed persisted generation state",
+            updated_at=timezone.now(),
+        )
+        return
+
+    # ``publish_task`` executes recursively when QStash is absent. Async poll
+    # continuations cannot use that fallback; fail honestly instead of leaving
+    # an eternal PENDING row. A transient publish exception is allowed to
+    # propagate, and the periodic recovery task advances the token and retries.
+    if not _sautai_qstash_configured():
+        SautaiMealPlanJob.objects.filter(
+            id=job.id,
+            status=SautaiMealPlanJobStatus.PENDING,
+            **sautai_poll_generation_filter(successor_generation),
+        ).update(
+            status=SautaiMealPlanJobStatus.FAILED,
+            error="sautai_poll_enqueue_unavailable: QStash is not configured",
+            updated_at=timezone.now(),
+        )
+        logger.warning("generate_sautai_meal_plan_task: async poll failed because QStash is not configured")
+        return
+
+    _publish_sautai_poll(
+        job.id,
+        successor_generation,
+        delay_seconds=SAUTAI_POLL_DELAY_SECONDS,
+    )
+
+
+def recover_sautai_generation_jobs_task() -> dict[str, int]:
+    """Recover dropped async successors and revoke abandoned poll leases.
+
+    The every-minute system cron is a durable backstop for the row-update →
+    QStash-publish crash window. Recovery advances ``poll_generation`` with a
+    database CAS before publishing, so any delayed old delivery is stale. Jobs
+    at or beyond their strict ten-minute deadline are terminalized instead.
+    """
+    from apps.integrations.models import SautaiMealPlanJob, SautaiMealPlanJobStatus
+    from apps.integrations.sautai_client import (
+        ASYNC_GENERATION_STATE_KEY,
+        SAUTAI_POLL_MAX_ATTEMPTS,
+        SAUTAI_POLL_TIMEOUT_ERROR,
+        async_generation_state,
+        sautai_poll_deadline,
+        sautai_poll_generation_filter,
+    )
+
+    now = timezone.now()
+    jobs = list(
+        SautaiMealPlanJob.objects.filter(
+            status__in=[SautaiMealPlanJobStatus.PENDING, SautaiMealPlanJobStatus.GENERATING],
+            result__has_key=ASYNC_GENERATION_STATE_KEY,
+        ).order_by("updated_at")[:SAUTAI_POLL_RECOVERY_BATCH_SIZE]
+    )
+    counts = {
+        "checked": 0,
+        "recovered": 0,
+        "published": 0,
+        "failed": 0,
+        "skipped": 0,
+        "publish_errors": 0,
+    }
+
+    for job in jobs:
+        counts["checked"] += 1
+        state = async_generation_state(job)
+        generation = state.get("poll_generation") if isinstance(state, dict) else None
+        attempts = state.get("poll_attempts") if isinstance(state, dict) else None
+        deadline = sautai_poll_deadline(state) if isinstance(state, dict) else None
+        valid_generation = isinstance(generation, int) and not isinstance(generation, bool) and generation > 0
+        valid_attempts = isinstance(attempts, int) and not isinstance(attempts, bool) and attempts >= 0
+
+        if not valid_generation or not valid_attempts or deadline is None:
+            updated = SautaiMealPlanJob.objects.filter(
+                id=job.id,
+                status=job.status,
+                result=job.result,
+            ).update(
+                status=SautaiMealPlanJobStatus.FAILED,
+                error="invalid_response: malformed persisted generation state",
+                updated_at=now,
+            )
+            counts["failed" if updated else "skipped"] += 1
+            continue
+
+        current = SautaiMealPlanJob.objects.filter(
+            id=job.id,
+            status=job.status,
+            updated_at=job.updated_at,
+            **sautai_poll_generation_filter(generation),
+        )
+        if now >= deadline or attempts >= SAUTAI_POLL_MAX_ATTEMPTS:
+            updated = current.update(
+                status=SautaiMealPlanJobStatus.FAILED,
+                error=SAUTAI_POLL_TIMEOUT_ERROR,
+                updated_at=now,
+            )
+            counts["failed" if updated else "skipped"] += 1
+            continue
+
+        age_seconds = (now - job.updated_at).total_seconds()
+        if age_seconds < SAUTAI_POLL_RECOVERY_STALE_SECONDS:
+            counts["skipped"] += 1
+            continue
+
+        if not _sautai_qstash_configured():
+            updated = current.update(
+                status=SautaiMealPlanJobStatus.FAILED,
+                error="sautai_poll_enqueue_unavailable: QStash is not configured",
+                updated_at=now,
+            )
+            counts["failed" if updated else "skipped"] += 1
+            continue
+
+        next_state = dict(state)
+        next_generation = generation + 1
+        next_state["poll_generation"] = next_generation
+        updated = current.update(
+            result={ASYNC_GENERATION_STATE_KEY: next_state},
+            status=SautaiMealPlanJobStatus.PENDING,
+            error="",
+            updated_at=now,
+        )
+        if not updated:
+            counts["skipped"] += 1
+            continue
+
+        counts["recovered"] += 1
+        try:
+            _publish_sautai_poll(job.id, next_generation)
+        except Exception:
+            counts["publish_errors"] += 1
+            logger.warning("Failed to recover sautai poll successor for job %s", job.id, exc_info=True)
+        else:
+            counts["published"] += 1
+
+    return counts

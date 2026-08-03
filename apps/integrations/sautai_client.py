@@ -10,9 +10,14 @@ never identify a user by email. See ``apps.integrations.runtime_views`` (proxy) 
 from __future__ import annotations
 
 import logging
+from datetime import date, datetime, timedelta
+from urllib.parse import urlsplit
+from uuid import UUID
 
 import httpx
 from django.conf import settings
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from .models import (
     Integration,
@@ -23,9 +28,32 @@ from .models import (
 
 logger = logging.getLogger(__name__)
 
-# sautai's generate call blocks 30-60s (Groq batch generation). The contract
-# requires the caller (this QStash task) to allow comfortably past that.
+# Transition safety: the server may still be synchronous, so the generate POST
+# keeps its original timeout byte-for-byte until a valid HTTP 202 acknowledgement
+# is followed by one valid signed status response. Later POSTs can then use the
+# short acknowledgement timeout; status/current calls are always bounded by the
+# poll deadline.
 REQUEST_TIMEOUT_SECONDS = 125.0
+ASYNC_GENERATE_TIMEOUT_SECONDS = 20.0
+GENERATION_STATUS_TIMEOUT_SECONDS = 10.0
+SAUTAI_POLL_DELAY_SECONDS = 15
+SAUTAI_POLL_TIMEOUT_SECONDS = 10 * 60
+SAUTAI_POLL_MAX_ATTEMPTS = SAUTAI_POLL_TIMEOUT_SECONDS // SAUTAI_POLL_DELAY_SECONDS
+
+SAUTAI_GENERATE_POLL_PENDING = "poll_pending"
+ASYNC_GENERATION_STATE_KEY = "_sautai_generation"
+ASYNC_CONTRACT_CONFIRMED_KEY = "async_contract_confirmed"
+ASYNC_CONTRACT_EVENT_KEY = "async_contract_capability"
+ASYNC_CONTRACT_EVENT_AT_KEY = "async_contract_capability_observed_at"
+ASYNC_CONTRACT_EVENT_VALIDATED = "validated"
+ASYNC_CONTRACT_EVENT_LEGACY = "legacy"
+ASYNC_CONTRACT_REQUEST_DECISION_KEY = "async_contract_request_enabled"
+SAUTAI_POLL_TIMEOUT_ERROR = (
+    f"sautai_poll_timeout: generation did not finish within {SAUTAI_POLL_TIMEOUT_SECONDS} seconds"
+)
+
+_ACTIVE_GENERATION_STATUSES = frozenset({"queued", "running"})
+_SUCCESS_GENERATION_STATUSES = frozenset({"completed", "completed_with_failures"})
 
 # The current-plan read + link resolve are fast synchronous calls a caller waits
 # on inside a 20s budget, so they get short timeouts.
@@ -91,6 +119,68 @@ def clear_sautai_link(integration: Integration) -> None:
     integration.save(update_fields=["sautai_user_id", "linked_at", "updated_at"])
 
 
+def sautai_async_contract_confirmed() -> bool:
+    """Return the latest validated/reverted server capability observation.
+
+    A 202 alone is deliberately not evidence. A ``validated`` event is written
+    only after that acknowledgement decodes and the same remote job returns one
+    valid signed status payload. A later valid legacy 200 writes a ``legacy``
+    event, so rollback is immediate and durable. Event time is the generate
+    response observation time; an old async job that polls after a newer legacy
+    response therefore cannot accidentally undo the rollback.
+    """
+    latest: tuple[datetime, str, str] | None = None
+    events = SautaiMealPlanJob.objects.filter(funnel__has_key=ASYNC_CONTRACT_EVENT_KEY).values_list("id", "funnel")
+    for job_id, funnel in events.iterator():
+        if not isinstance(funnel, dict):
+            continue
+        event = funnel.get(ASYNC_CONTRACT_EVENT_KEY)
+        if event not in {ASYNC_CONTRACT_EVENT_VALIDATED, ASYNC_CONTRACT_EVENT_LEGACY}:
+            continue
+        observed_at = parse_datetime(str(funnel.get(ASYNC_CONTRACT_EVENT_AT_KEY) or ""))
+        if observed_at is None or timezone.is_naive(observed_at):
+            continue
+        candidate = (observed_at, str(job_id), event)
+        if latest is None or candidate[:2] > latest[:2]:
+            latest = candidate
+    return latest is not None and latest[2] == ASYNC_CONTRACT_EVENT_VALIDATED
+
+
+def sautai_request_uses_async_contract(job: SautaiMealPlanJob) -> bool:
+    """Return and persist the single capability decision for this POST.
+
+    Runtime admission writes the decision before enqueueing. Older queued rows
+    have no snapshot, so they conservatively retain the legacy contract rather
+    than consulting a second, possibly changed source halfway through a request.
+    """
+    funnel = job.funnel if isinstance(job.funnel, dict) else {}
+    decision = funnel.get(ASYNC_CONTRACT_REQUEST_DECISION_KEY)
+    if isinstance(decision, bool):
+        return decision
+    decision = False
+    job.funnel = {**funnel, ASYNC_CONTRACT_REQUEST_DECISION_KEY: decision}
+    job.save(update_fields=["funnel", "updated_at"])
+    return decision
+
+
+def async_generation_state(job: SautaiMealPlanJob) -> dict | None:
+    result = job.result if isinstance(job.result, dict) else {}
+    state = result.get(ASYNC_GENERATION_STATE_KEY)
+    return state if isinstance(state, dict) else None
+
+
+def sautai_poll_generation_filter(poll_generation: int) -> dict:
+    """JSON lookup used by every database CAS for one poll generation."""
+    return {f"result__{ASYNC_GENERATION_STATE_KEY}__poll_generation": poll_generation}
+
+
+def sautai_poll_deadline(state: dict) -> datetime | None:
+    started_at = parse_datetime(str(state.get("started_at") or ""))
+    if started_at is None or timezone.is_naive(started_at):
+        return None
+    return started_at + timedelta(seconds=SAUTAI_POLL_TIMEOUT_SECONDS)
+
+
 def build_sautai_generate_payload(
     *,
     sautai_user_id: int,
@@ -99,7 +189,7 @@ def build_sautai_generate_payload(
     user_prompt: str,
     regenerate: bool,
 ) -> dict:
-    """Build the exact JSON body for sautai's meal-plan generate endpoint."""
+    """Build a generate request; NBHD never sends explicit ``replace_slots``."""
     payload: dict = {
         "sautai_user_id": sautai_user_id,
         "number_of_days": number_of_days,
@@ -113,30 +203,88 @@ def build_sautai_generate_payload(
     return payload
 
 
-def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
-    """POST to sautai's ``/api/m2m/meal-plan/generate/`` and persist the result.
+def call_sautai_generate_plan(job: SautaiMealPlanJob, *, poll_generation: int | None = None) -> str | None:
+    """Advance one bounded step of a sautai generation job.
 
-    On success: ``job.status=READY``, ``result``/``web_link``/``funnel`` stored,
-    then the meditation-style completion notify fires.
+    A new job POSTs ``generate/``. A legacy ``200`` body takes the unchanged
+    synchronous success path. A ``202`` acknowledgement is persisted on this
+    same NBHD row and returns :data:`SAUTAI_GENERATE_POLL_PENDING`; the task
+    schedules a later delivery, which performs one short status GET. No call
+    sleeps or loops in a worker.
 
-    On failure the job is always marked FAILED with a safe (never-traceback)
-    error, and the failure is classified so QStash retries only what can succeed:
-
-    - RETRYABLE (transport/timeout, ``503`` busy, any ``5xx``) → ``_fail`` then
-      raise :class:`RetryableSautaiError`, which propagates → ``trigger_task``
-      500 → QStash redelivers (3x), re-claiming the FAILED row each time.
-    - LINK REQUIRED (``403 code=link_required``) or STALE LINK
-      (``404 code=unknown_user``) → clear the local link and ``_fail`` with a
-      reconnect hint. Terminal — retrying the same dead link won't help.
-    - TERMINAL (other ``4xx``, non-JSON body, missing plan, no identity,
-      unconfigured) → ``_fail`` and return normally (200); no retry.
+    Active remote jobs return to local ``PENDING`` between polls so the task's
+    existing atomic PENDING→GENERATING claim remains the overlap guard. Remote
+    completion reads the materialized plan from ``current/`` and then uses the
+    same READY persistence/notification path as the old synchronous response.
     """
     tenant = job.tenant
+    result = job.result if isinstance(job.result, dict) else {}
+    state = None
+    if ASYNC_GENERATION_STATE_KEY in result:
+        state = async_generation_state(job)
+        if not isinstance(state, dict):
+            _fail(job, "invalid_response: malformed persisted generation state")
+            return
+        if (
+            not isinstance(poll_generation, int)
+            or isinstance(poll_generation, bool)
+            or state.get("poll_generation") != poll_generation
+        ):
+            logger.info("call_sautai_generate_plan: stale poll delivery skipped for job %s", str(job.id)[:8])
+            return None
+        deadline = sautai_poll_deadline(state)
+        if deadline is None:
+            _fail_generation(
+                job,
+                state,
+                "invalid_response: malformed persisted generation state",
+                poll_generation=poll_generation,
+            )
+            return None
+        if timezone.now() >= deadline:
+            _fail_generation(
+                job,
+                state,
+                SAUTAI_POLL_TIMEOUT_ERROR,
+                poll_generation=poll_generation,
+            )
+            return None
 
     identity, integration = sautai_identity(tenant)
     if not identity:
-        _fail(job, f"sautai_link_required: {SAUTAI_LINK_REQUIRED_DETAIL}")
+        if state is None:
+            _fail(job, f"sautai_link_required: {SAUTAI_LINK_REQUIRED_DETAIL}")
+        else:
+            _fail_generation(
+                job,
+                state,
+                f"sautai_link_required: {SAUTAI_LINK_REQUIRED_DETAIL}",
+                poll_generation=poll_generation,
+            )
         return
+
+    base_url, secret = sautai_m2m_config()
+    if not base_url or not secret:
+        if state is None:
+            _fail(job, "not_configured: SAUTAI_M2M_BASE_URL / SAUTAI_PLATFORM_SECRET missing")
+        else:
+            _fail_generation(
+                job,
+                state,
+                "not_configured: SAUTAI_M2M_BASE_URL / SAUTAI_PLATFORM_SECRET missing",
+                poll_generation=poll_generation,
+            )
+        return
+
+    if state is not None:
+        return _poll_sautai_generation(
+            job,
+            state=state,
+            poll_generation=poll_generation,
+            identity=identity,
+            integration=integration,
+            secret=secret,
+        )
 
     # Minimal structured payload only — never raw conversation (research doc
     # §Egress posture). Post-link calls send only the stored sautai_user_id;
@@ -159,10 +307,7 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
         regenerate=job.regenerate,
     )
 
-    base_url, secret = sautai_m2m_config()
-    if not base_url or not secret:
-        _fail(job, "not_configured: SAUTAI_M2M_BASE_URL / SAUTAI_PLATFORM_SECRET missing")
-        return
+    async_contract_for_request = sautai_request_uses_async_contract(job)
 
     # Persist the linked numeric id used for this egress.
     job.addressed_by = SautaiMealPlanAddressedBy.LINKED_ID
@@ -170,18 +315,35 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
     job.save(update_fields=["addressed_by", "sautai_user_id", "updated_at"])
 
     url = f"{base_url}/api/m2m/meal-plan/generate/"
+    request_timeout = ASYNC_GENERATE_TIMEOUT_SECONDS if async_contract_for_request else REQUEST_TIMEOUT_SECONDS
     try:
         response = httpx.post(
             url,
             json=payload,
             headers={"X-NBHD-Platform-Secret": secret},
-            timeout=REQUEST_TIMEOUT_SECONDS,
+            timeout=request_timeout,
         )
     except httpx.HTTPError as exc:
         # Transport/timeout is always worth a redelivery (sautai cold-starting
         # right after un-pause is the common case).
         logger.warning("call_sautai_generate_plan: request failed for job %s: %s", job.id, exc)
         _fail_retryable(job, f"request_failed: {exc}")
+
+    if response.status_code == 202:
+        try:
+            body = response.json()
+        except ValueError:
+            _fail(job, "invalid_response: sautai returned non-JSON acknowledgement")
+            return
+        state = _generation_state_from_ack(body, base_url=base_url)
+        if state is None:
+            _fail(job, "invalid_response: malformed async generation acknowledgement")
+            return
+        job.result = {ASYNC_GENERATION_STATE_KEY: state}
+        job.status = SautaiMealPlanJobStatus.PENDING
+        job.error = ""
+        job.save(update_fields=["result", "status", "error", "updated_at"])
+        return SAUTAI_GENERATE_POLL_PENDING
 
     if response.status_code != 200:
         detail = _safe_error_detail(response)
@@ -220,17 +382,518 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
         _fail(job, "invalid_response: sautai returned non-JSON body")
         return
 
-    plan = body.get("plan") if isinstance(body, dict) else None
-    if not isinstance(plan, dict):
+    if not isinstance(body, dict) or not isinstance(body.get("plan"), dict):
         _fail(job, "invalid_response: missing plan")
         return
 
-    job.result = plan
-    job.web_link = str(body.get("web_link") or "")[:500]
-    job.funnel = _funnel_from_response(body)
-    job.status = SautaiMealPlanJobStatus.READY
+    funnel = _funnel_from_response(body)
+    funnel[ASYNC_CONTRACT_REQUEST_DECISION_KEY] = async_contract_for_request
+    observed_at = timezone.now().isoformat()
+    funnel.update(
+        {
+            ASYNC_CONTRACT_CONFIRMED_KEY: False,
+            ASYNC_CONTRACT_EVENT_KEY: ASYNC_CONTRACT_EVENT_LEGACY,
+            ASYNC_CONTRACT_EVENT_AT_KEY: observed_at,
+        }
+    )
+    logger.warning(
+        "call_sautai_generate_plan: valid legacy 200 reverted async capability for job %s",
+        str(job.id)[:8],
+    )
+
+    _complete_sautai_job(
+        job,
+        plan=body["plan"],
+        web_link=body.get("web_link"),
+        funnel=funnel,
+    )
+
+
+def _generation_state_from_ack(body: object, *, base_url: str) -> dict | None:
+    """Decode the required 202 fields while ignoring unknown additive keys."""
+    if not isinstance(body, dict):
+        return None
+
+    raw_job_id = body.get("job_id")
+    status_url = body.get("status_url")
+    regeneration = body.get("regeneration")
+    if not isinstance(raw_job_id, str) or not isinstance(status_url, str) or not isinstance(regeneration, dict):
+        return None
+    try:
+        remote_job_id = str(UUID(raw_job_id))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    expected_path = f"/api/m2m/generation-jobs/{remote_job_id}/"
+    parsed_status_url = urlsplit(status_url)
+    if parsed_status_url.scheme not in {"http", "https"} or parsed_status_url.path != expected_path:
+        return None
+
+    requested = regeneration.get("requested")
+    mode = regeneration.get("mode")
+    replace_slots = regeneration.get("replace_slots")
+    if not isinstance(requested, bool) or not isinstance(mode, str) or not isinstance(replace_slots, list):
+        return None
+
+    # Never send the platform secret to a response-controlled origin. The
+    # contract fixes the path, so retain the acknowledged id and reconstruct
+    # the status URL against the configured sautai origin.
+    canonical_status_url = f"{base_url}/api/m2m/generation-jobs/{remote_job_id}/"
+    return {
+        "job_id": remote_job_id,
+        "status_url": canonical_status_url,
+        "status": "accepted",
+        "started_at": timezone.now().isoformat(),
+        "poll_attempts": 0,
+        "poll_generation": 1,
+        "regeneration": dict(regeneration),
+    }
+
+
+def _poll_sautai_generation(
+    job: SautaiMealPlanJob,
+    *,
+    state: dict,
+    poll_generation: int,
+    identity: dict,
+    integration: Integration | None,
+    secret: str,
+) -> str | None:
+    """Perform one status read and persist/re-enqueue/finalize its outcome."""
+    status_url = state.get("status_url")
+    deadline = sautai_poll_deadline(state)
+    attempts = state.get("poll_attempts", 0)
+    if (
+        not isinstance(status_url, str)
+        or not status_url
+        or deadline is None
+        or not isinstance(attempts, int)
+        or isinstance(attempts, bool)
+        or attempts < 0
+        or state.get("poll_generation") != poll_generation
+    ):
+        _fail_generation(
+            job,
+            state,
+            "invalid_response: malformed persisted generation state",
+            poll_generation=poll_generation,
+        )
+        return None
+
+    now = timezone.now()
+    remaining_seconds = (deadline - now).total_seconds()
+    if remaining_seconds <= 0 or attempts >= SAUTAI_POLL_MAX_ATTEMPTS:
+        _fail_generation(
+            job,
+            state,
+            SAUTAI_POLL_TIMEOUT_ERROR,
+            poll_generation=poll_generation,
+        )
+        return None
+
+    state = dict(state)
+    state["poll_attempts"] = attempts + 1
+    state["last_polled_at"] = now.isoformat()
+
+    try:
+        response = httpx.get(
+            status_url,
+            headers={"X-NBHD-Platform-Secret": secret},
+            timeout=min(GENERATION_STATUS_TIMEOUT_SECONDS, remaining_seconds),
+        )
+    except httpx.HTTPError as exc:
+        logger.warning("poll_sautai_generation: request failed for job %s: %s", job.id, exc)
+        if timezone.now() >= deadline:
+            _fail_generation(
+                job,
+                state,
+                SAUTAI_POLL_TIMEOUT_ERROR,
+                poll_generation=poll_generation,
+            )
+            return None
+        state["last_error"] = f"request_failed: {exc}"[:200]
+        return _persist_pending_generation(
+            job,
+            state,
+            deadline=deadline,
+            poll_generation=poll_generation,
+        )
+
+    if timezone.now() >= deadline:
+        _fail_generation(
+            job,
+            state,
+            SAUTAI_POLL_TIMEOUT_ERROR,
+            poll_generation=poll_generation,
+        )
+        return None
+
+    if response.status_code == 429 or response.status_code >= 500:
+        state["last_error"] = f"sautai_error_{response.status_code}: {_safe_error_detail(response)}"[:200]
+        return _persist_pending_generation(
+            job,
+            state,
+            deadline=deadline,
+            poll_generation=poll_generation,
+        )
+    if response.status_code != 200:
+        _fail_generation(
+            job,
+            state,
+            f"sautai_status_error_{response.status_code}: {_safe_error_detail(response)}",
+            poll_generation=poll_generation,
+        )
+        return None
+
+    try:
+        body = response.json()
+    except ValueError:
+        _fail_generation(
+            job,
+            state,
+            "invalid_response: sautai returned non-JSON generation status",
+            poll_generation=poll_generation,
+        )
+        return None
+
+    decoded = _decode_generation_status(body)
+    if decoded is None:
+        _fail_generation(
+            job,
+            state,
+            "invalid_response: malformed generation status",
+            poll_generation=poll_generation,
+        )
+        return None
+
+    if timezone.now() >= deadline:
+        _fail_generation(
+            job,
+            state,
+            SAUTAI_POLL_TIMEOUT_ERROR,
+            poll_generation=poll_generation,
+        )
+        return None
+
+    if not _record_validated_async_contract(
+        job,
+        state=state,
+        poll_generation=poll_generation,
+    ):
+        return None
+
+    state.update(decoded)
+    state.pop("last_error", None)
+    remote_status = decoded["status"]
+    if remote_status in _ACTIVE_GENERATION_STATUSES:
+        return _persist_pending_generation(
+            job,
+            state,
+            deadline=deadline,
+            poll_generation=poll_generation,
+        )
+    if remote_status == "failed":
+        failed_count = len(decoded["failed_slots"])
+        _fail_generation(
+            job,
+            state,
+            f"sautai_generation_failed: remote job failed with {failed_count} failed slot(s)",
+            poll_generation=poll_generation,
+        )
+        return None
+
+    return _finalize_async_generation(
+        job,
+        state=state,
+        deadline=deadline,
+        poll_generation=poll_generation,
+        identity=identity,
+        integration=integration,
+    )
+
+
+def _decode_generation_status(body: object) -> dict | None:
+    """Decode a status payload, tolerating unknown additive response keys."""
+    if not isinstance(body, dict):
+        return None
+    remote_status = body.get("status")
+    remaining_count = body.get("remaining_count")
+    failed_slots = body.get("failed_slots")
+    plan_id = body.get("plan_id")
+    week_start_date = body.get("week_start_date")
+    if (
+        remote_status not in _ACTIVE_GENERATION_STATUSES | _SUCCESS_GENERATION_STATUSES | {"failed"}
+        or not isinstance(remaining_count, int)
+        or isinstance(remaining_count, bool)
+        or remaining_count < 0
+        or not isinstance(failed_slots, list)
+        or not isinstance(plan_id, int)
+        or isinstance(plan_id, bool)
+        or plan_id <= 0
+        or not isinstance(week_start_date, str)
+    ):
+        return None
+    try:
+        date.fromisoformat(week_start_date)
+    except ValueError:
+        return None
+    if remote_status in _SUCCESS_GENERATION_STATUSES and remaining_count != 0:
+        return None
+    if remote_status == "completed" and failed_slots:
+        return None
+    if remote_status == "completed_with_failures" and not failed_slots:
+        return None
+
+    return {
+        "status": remote_status,
+        "remaining_count": remaining_count,
+        "failed_slots": failed_slots,
+        "plan_id": plan_id,
+        "week_start_date": week_start_date,
+    }
+
+
+def _poll_cas_queryset(job: SautaiMealPlanJob, poll_generation: int):
+    return SautaiMealPlanJob.objects.filter(
+        id=job.id,
+        status=SautaiMealPlanJobStatus.GENERATING,
+        **sautai_poll_generation_filter(poll_generation),
+    )
+
+
+def _record_validated_async_contract(
+    job: SautaiMealPlanJob,
+    *,
+    state: dict,
+    poll_generation: int,
+) -> bool:
+    """Persist capability only after a decoded status response for this ack."""
+    funnel = job.funnel if isinstance(job.funnel, dict) else {}
+    request_decision = funnel.get(ASYNC_CONTRACT_REQUEST_DECISION_KEY)
+    if not isinstance(request_decision, bool):
+        # Pre-deployment queued rows had no admission snapshot. Treat their
+        # original POST conservatively as legacy until this poll validates it.
+        request_decision = False
+
+    next_funnel = {
+        **funnel,
+        ASYNC_CONTRACT_REQUEST_DECISION_KEY: request_decision,
+        ASYNC_CONTRACT_CONFIRMED_KEY: True,
+    }
+    if not request_decision and next_funnel.get(ASYNC_CONTRACT_EVENT_KEY) != ASYNC_CONTRACT_EVENT_VALIDATED:
+        acknowledged_at = parse_datetime(str(state.get("started_at") or ""))
+        if acknowledged_at is None or timezone.is_naive(acknowledged_at):
+            return False
+        next_funnel.update(
+            {
+                ASYNC_CONTRACT_EVENT_KEY: ASYNC_CONTRACT_EVENT_VALIDATED,
+                ASYNC_CONTRACT_EVENT_AT_KEY: acknowledged_at.isoformat(),
+            }
+        )
+
+    if next_funnel == funnel:
+        return True
+    updated = _poll_cas_queryset(job, poll_generation).update(funnel=next_funnel)
+    if not updated:
+        logger.info("record_validated_async_contract: stale lease skipped for job %s", str(job.id)[:8])
+        return False
+    job.funnel = next_funnel
+    return True
+
+
+def _persist_pending_generation(
+    job: SautaiMealPlanJob,
+    state: dict,
+    *,
+    deadline: datetime,
+    poll_generation: int,
+) -> str | None:
+    if timezone.now() >= deadline:
+        _fail_generation(
+            job,
+            state,
+            SAUTAI_POLL_TIMEOUT_ERROR,
+            poll_generation=poll_generation,
+        )
+        return None
+
+    next_state = dict(state)
+    next_state["poll_generation"] = poll_generation + 1
+    result = {ASYNC_GENERATION_STATE_KEY: next_state}
+    updated = _poll_cas_queryset(job, poll_generation).update(
+        result=result,
+        status=SautaiMealPlanJobStatus.PENDING,
+        error="",
+        updated_at=timezone.now(),
+    )
+    if not updated:
+        logger.info("persist_pending_generation: stale lease skipped for job %s", str(job.id)[:8])
+        return None
+    job.result = result
+    job.status = SautaiMealPlanJobStatus.PENDING
     job.error = ""
-    job.save(update_fields=["result", "web_link", "funnel", "status", "error", "updated_at"])
+    return SAUTAI_GENERATE_POLL_PENDING
+
+
+def _fail_generation(
+    job: SautaiMealPlanJob,
+    state: dict,
+    message: str,
+    *,
+    poll_generation: int,
+) -> bool:
+    result = {ASYNC_GENERATION_STATE_KEY: state}
+    error = message[:480]
+    updated = _poll_cas_queryset(job, poll_generation).update(
+        result=result,
+        status=SautaiMealPlanJobStatus.FAILED,
+        error=error,
+        updated_at=timezone.now(),
+    )
+    if not updated:
+        logger.info("fail_generation: stale lease skipped for job %s", str(job.id)[:8])
+        return False
+    job.result = result
+    job.status = SautaiMealPlanJobStatus.FAILED
+    job.error = error
+    return True
+
+
+def _finalize_async_generation(
+    job: SautaiMealPlanJob,
+    *,
+    state: dict,
+    deadline: datetime,
+    poll_generation: int,
+    identity: dict,
+    integration: Integration | None,
+) -> str | None:
+    remaining_seconds = (deadline - timezone.now()).total_seconds()
+    if remaining_seconds <= 0:
+        _fail_generation(
+            job,
+            state,
+            SAUTAI_POLL_TIMEOUT_ERROR,
+            poll_generation=poll_generation,
+        )
+        return None
+
+    week_start_iso = job.week_start.isoformat() if job.week_start else state.get("week_start_date")
+    current = fetch_sautai_current_plan(
+        identity=identity,
+        week_start_iso=week_start_iso,
+        timeout_seconds=min(CURRENT_PLAN_TIMEOUT_SECONDS, remaining_seconds),
+    )
+    if timezone.now() >= deadline:
+        _fail_generation(
+            job,
+            state,
+            SAUTAI_POLL_TIMEOUT_ERROR,
+            poll_generation=poll_generation,
+        )
+        return None
+
+    outcome = current.get("outcome")
+    if outcome == "link_required":
+        failed = _fail_generation(
+            job,
+            state,
+            f"sautai_link_required: {SAUTAI_LINK_REQUIRED_DETAIL}",
+            poll_generation=poll_generation,
+        )
+        if failed and integration is not None:
+            clear_sautai_link(integration)
+        return None
+    if outcome == "not_configured":
+        _fail_generation(
+            job,
+            state,
+            "not_configured: SAUTAI_M2M_BASE_URL / SAUTAI_PLATFORM_SECRET missing",
+            poll_generation=poll_generation,
+        )
+        return None
+    if outcome != "ok":
+        state["last_error"] = str(current.get("detail") or outcome or "current_plan_unavailable")[:200]
+        return _persist_pending_generation(
+            job,
+            state,
+            deadline=deadline,
+            poll_generation=poll_generation,
+        )
+
+    funnel = dict(current.get("funnel") or {})
+    contract_funnel = job.funnel if isinstance(job.funnel, dict) else {}
+    for key in (
+        ASYNC_CONTRACT_REQUEST_DECISION_KEY,
+        ASYNC_CONTRACT_CONFIRMED_KEY,
+        ASYNC_CONTRACT_EVENT_KEY,
+        ASYNC_CONTRACT_EVENT_AT_KEY,
+    ):
+        if key in contract_funnel:
+            funnel[key] = contract_funnel[key]
+    failed_slots = state.get("failed_slots") if isinstance(state.get("failed_slots"), list) else []
+    funnel.update(
+        {
+            "generation_status": state.get("status"),
+            "remaining_count": state.get("remaining_count"),
+            "failed_slots": failed_slots,
+            "failed_slot_count": len(failed_slots),
+            "plan_id": state.get("plan_id"),
+            "week_start_date": state.get("week_start_date"),
+            "regeneration": state.get("regeneration"),
+        }
+    )
+    if timezone.now() >= deadline:
+        _fail_generation(
+            job,
+            state,
+            SAUTAI_POLL_TIMEOUT_ERROR,
+            poll_generation=poll_generation,
+        )
+        return None
+    _complete_sautai_job(
+        job,
+        plan=current["plan"],
+        web_link=current.get("web_link"),
+        funnel=funnel,
+        poll_generation=poll_generation,
+    )
+    return None
+
+
+def _complete_sautai_job(
+    job: SautaiMealPlanJob,
+    *,
+    plan: dict,
+    web_link: object,
+    funnel: dict,
+    poll_generation: int | None = None,
+) -> bool:
+    """Persist READY and fire the existing completion notification once."""
+    saved_web_link = str(web_link or "")[:500]
+    if poll_generation is None:
+        job.result = plan
+        job.web_link = saved_web_link
+        job.funnel = funnel
+        job.status = SautaiMealPlanJobStatus.READY
+        job.error = ""
+        job.save(update_fields=["result", "web_link", "funnel", "status", "error", "updated_at"])
+    else:
+        updated = _poll_cas_queryset(job, poll_generation).update(
+            result=plan,
+            web_link=saved_web_link,
+            funnel=funnel,
+            status=SautaiMealPlanJobStatus.READY,
+            error="",
+            updated_at=timezone.now(),
+        )
+        if not updated:
+            logger.info("complete_sautai_job: stale lease skipped for job %s", str(job.id)[:8])
+            return False
+        job.result = plan
+        job.web_link = saved_web_link
+        job.funnel = funnel
+        job.status = SautaiMealPlanJobStatus.READY
+        job.error = ""
 
     try:
         from apps.integrations.sautai_notify import notify_sautai_plan_ready
@@ -240,6 +903,7 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob) -> None:
         logger.warning(
             "call_sautai_generate_plan: notify failed for job %s (plan already ready)", job.id, exc_info=True
         )
+    return True
 
 
 def _funnel_from_response(body: dict) -> dict:
