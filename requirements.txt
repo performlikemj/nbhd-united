@@ -99,9 +99,9 @@ click==8.3.1
     #   typer
 cloudpathlib==0.23.0
     # via weasel
-composio==0.18.0
+composio==0.18.1
     # via -r requirements.in
-composio-client==1.42.0
+composio-client==1.43.0
     # via composio
 confection==1.3.3
     # via
@@ -114,6 +114,7 @@ croniter==6.2.4
     # via -r requirements.in
 cryptography==46.0.5
     # via
+    #   -r requirements.in
     #   azure-identity
     #   azure-keyvault-keys
     #   azure-storage-file-share
@@ -528,7 +529,7 @@ typer==0.24.1
     #   spacy
     #   transformers
     #   weasel
-typing-extensions==4.15.0
+typing-extensions==4.16.0
     # via
     #   azure-core
     #   azure-identity
