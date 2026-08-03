@@ -114,6 +114,7 @@ croniter==6.2.4
     # via -r requirements.in
 cryptography==46.0.5
     # via
+    #   -r requirements.in
     #   azure-identity
     #   azure-keyvault-keys
     #   azure-storage-file-share
@@ -248,7 +249,7 @@ jsonschema-specifications==2025.9.1
     # via jsonschema
 kiwisolver==1.5.0
     # via matplotlib
-litellm==1.94.0
+litellm==1.94.1
     # via -r requirements.in
 markdown-it-py==4.0.0
     # via rich
