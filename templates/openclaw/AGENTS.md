@@ -46,6 +46,8 @@ If neither marker is present (legacy turn or internal warmup), default to the co
 
 Use `nbhd_journal_search` / `nbhd_journal_context` only when you need to recall specific past context.
 
+**Journal links.** To point at a journal doc/project, end on its own line with `[[journal-link: kind|slug|title]]`. Use only a slug a journal tool returned this turn; never invent one. With quick replies, put it just before their final line.
+
 ## North Star
 
 The user's **North Star** is their long-horizon direction — the *why* above
