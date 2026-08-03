@@ -21,6 +21,7 @@ columns and the model-facing seams that must NOT rehydrate.
 from __future__ import annotations
 
 import secrets
+from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
@@ -226,6 +227,26 @@ class LineOutboundPseudonymizeTest(TestCase):
         )
         row = LineOutboundMessage.objects.get(line_message_id="n1")
         self.assertEqual(row.text_excerpt, "plain body")
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    def test_midmessage_journal_link_never_reaches_line_delivery(self, mock_send):
+        from apps.router.line_webhook import relay_ai_response_to_line
+
+        sent = relay_ai_response_to_line(
+            self.tenant,
+            "U_abc",
+            ("Here's the link:\n[[journal-link: daily|2026-07-13|Morning Report]]\nGood luck tomorrow."),
+        )
+
+        self.assertTrue(sent)
+        delivered_messages = mock_send.call_args.args[1]
+        self.assertNotIn("journal-link", str(delivered_messages))
+        self.assertIn("Here's the link:", str(delivered_messages))
+        self.assertIn("Good luck tomorrow.", str(delivered_messages))
+        self.assertEqual(
+            mock_send.call_args.kwargs["excerpt_override"],
+            "Here's the link:\nGood luck tomorrow.",
+        )
 
 
 @override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)

@@ -1,6 +1,7 @@
 """Tests for Phase 3 proxy features: rich responses, inline buttons, image delivery."""
 
 import re
+import uuid
 from unittest.mock import MagicMock
 
 from django.test import TestCase
@@ -103,3 +104,19 @@ class RichResponseIntegrationTest(TestCase):
         text = "Save both changes?\n[[quick-replies: Save both | Change something | No thanks]]"
         self.poller._send_rich_response(123, tenant, text)
         self.poller._send_markdown.assert_called_once_with(123, "Save both changes?")
+
+    def test_midmessage_journal_link_marker_stripped_never_leaks(self):
+        """The live Telegram poller strips marker-only lines regardless of
+        placement before passing text to its renderer."""
+        from apps.tenants.models import Tenant
+
+        tenant = MagicMock(spec=Tenant)
+        tenant.id = uuid.uuid4()
+        text = "Here's the link:\n[[journal-link: daily|2026-07-13|Morning Report]]\nGood luck tomorrow."
+
+        self.poller._send_rich_response(123, tenant, text)
+
+        self.poller._send_markdown.assert_called_once_with(
+            123,
+            "Here's the link:\nGood luck tomorrow.",
+        )

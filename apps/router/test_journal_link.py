@@ -83,25 +83,62 @@ class ExtractJournalLinkTest(SimpleTestCase):
         self.assertEqual(text, "")
         self.assertEqual(link["slug"], "2026-07-13")
 
-    # ── marker must be the LAST line ────────────────────────────────────────
+    # ── placement-tolerant marker lines ───────────────────────────────
 
-    def test_marker_mid_text_is_not_parsed(self):
+    def test_marker_inline_with_prose_is_not_parsed(self):
         original = "Before [[journal-link: daily|2026-07-13|Report]] and after."
         text, link = extract_journal_link(original)
         self.assertEqual(text, original)
         self.assertIsNone(link)
 
-    def test_marker_followed_by_more_prose_is_not_parsed(self):
-        original = "[[journal-link: daily|2026-07-13|Report]]\nOne more thing."
-        text, link = extract_journal_link(original)
-        self.assertEqual(text, original)
-        self.assertIsNone(link)
+    def test_marker_mid_message_is_stripped_and_parsed(self):
+        with self.assertLogs("apps.router.journal_link", level=logging.INFO) as cm:
+            text, link = extract_journal_link(
+                "Here's the link:\n[[journal-link: weekly|2026-W31|Weekly Review — W31]]\nGood luck tomorrow."
+            )
 
-    def test_marker_with_trailing_prose_on_same_line_not_parsed(self):
-        original = "x\n[[journal-link: daily|2026-07-13|Report]] please"
-        text, link = extract_journal_link(original)
-        self.assertEqual(text, original)
+        self.assertEqual(text, "Here's the link:\nGood luck tomorrow.")
+        self.assertEqual(
+            link,
+            {"kind": "weekly", "slug": "2026-W31", "title": "Weekly Review — W31"},
+        )
+        placement = [record for record in cm.records if record.reason == "nonfinal_placement"]
+        self.assertEqual(len(placement), 1)
+
+    def test_malformed_marker_with_trailing_prose_line_is_stripped(self):
+        with self.assertLogs("apps.router.journal_link", level=logging.WARNING) as cm:
+            text, link = extract_journal_link("x\n[[journal-link: daily|2026-07-13|Report]] please")
+        self.assertEqual(text, "x")
         self.assertIsNone(link)
+        self.assertEqual(cm.records[0].reason, "bad_syntax")
+
+    def test_multiple_markers_all_stripped_and_last_valid_wins(self):
+        with self.assertLogs("apps.router.journal_link", level=logging.INFO):
+            text, link = extract_journal_link(
+                "First.\n"
+                "[[journal-link: daily|2026-07-13|Morning Report]]\n"
+                "Second.\n"
+                "[[journal-link: goal|reconnect|Reconnect]]\n"
+                "Done."
+            )
+
+        self.assertEqual(text, "First.\nSecond.\nDone.")
+        self.assertEqual(link, {"kind": "goal", "slug": "reconnect", "title": "Reconnect"})
+
+    def test_single_backtick_wrapped_marker_is_stripped(self):
+        text, link = extract_journal_link("Saved.\n`[[journal-link: daily|2026-07-13|Report]]`")
+        self.assertEqual(text, "Saved.")
+        self.assertEqual(link, {"kind": "daily", "slug": "2026-07-13", "title": "Report"})
+
+    def test_same_line_triple_backtick_wrapped_marker_is_stripped(self):
+        text, link = extract_journal_link("Saved.\n```[[journal-link: daily|2026-07-13|Report]]```")
+        self.assertEqual(text, "Saved.")
+        self.assertEqual(link, {"kind": "daily", "slug": "2026-07-13", "title": "Report"})
+
+    def test_marker_removal_collapses_only_runs_of_three_newlines(self):
+        with self.assertLogs("apps.router.journal_link", level=logging.INFO):
+            text, _link = extract_journal_link("Before.\n\n[[journal-link: daily|2026-07-13|Report]]\n\nAfter.   \n")
+        self.assertEqual(text, "Before.\n\nAfter.")
 
     # ── malformed marker: stripped anyway, no link, telemetry logged ────────
 
@@ -212,6 +249,24 @@ class JournalLinkExistenceTest(TestCase):
         self.assertEqual(text, "Still saved the reply text.")
         self.assertIsNone(link)
         self.assertEqual(cm.records[0].reason, "missing_document")
+
+    def test_midmessage_missing_document_is_stripped_and_text_stays_intact(self):
+        with (
+            self.assertLogs("apps.router.journal_link", level=logging.INFO) as cm,
+            self.assertNumQueries(1),
+        ):
+            text, link = extract_journal_link(
+                "Here's the link:\n[[journal-link: weekly|2026-W99|Missing]]\nThe rest is still here.",
+                tenant_id=self.tenant.id,
+                channel="ios",
+            )
+
+        self.assertEqual(text, "Here's the link:\nThe rest is still here.")
+        self.assertIsNone(link)
+        self.assertEqual(
+            {record.reason for record in cm.records},
+            {"nonfinal_placement", "missing_document"},
+        )
 
     def test_reply_without_marker_does_not_query(self):
         with self.assertNumQueries(0):

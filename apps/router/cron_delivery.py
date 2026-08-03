@@ -399,8 +399,8 @@ class CronDeliveryView(APIView):
         # Strip the generic marker before every transport, but retain its labels
         # in placeholder space on ProactiveOutbound. The row is cross-channel:
         # even a Telegram/LINE delivery can later render pills in the iOS feed.
-        # This parser runs first, so when both supported markers are present the
-        # quick-replies line must be LAST and journal-link immediately before it.
+        # Quick-replies parsing stays first to preserve its final-line contract;
+        # journal-link extraction below is placement-tolerant on the remainder.
         from apps.router.journal_link import extract_journal_link
         from apps.router.quick_replies import extract_quick_replies
 
