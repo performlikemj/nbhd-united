@@ -1,6 +1,6 @@
 """Shared parser for the journal deep-link marker.
 
-The agent ends a reply with a marker on its OWN final line to attach a
+The agent includes a marker on its OWN line to attach a
 tappable "View in Journal" chip pointing at a specific journal document:
 
     [[journal-link: daily|2026-07-13|Morning Report]]
@@ -15,11 +15,12 @@ The three fields are ``kind|slug|title``:
   echoed / today's ISO date — never invented — because iOS navigates by it.
 * ``title`` — a short human-readable label for the chip.
 
-Mirrors :mod:`apps.router.quick_replies` in spirit: only the LAST line of a
-reply is recognized (ordinary prose that references the shape elsewhere passes
-through untouched), the marker name is case-insensitive, and any marker that IS
-shaped correctly but fails validation is still STRIPPED (never shown raw) and
-logged as a telemetry warning instead of raising — fail-open, never leak.
+Mirrors :mod:`apps.router.quick_replies` in spirit, but scans every line because
+journal-link markers must never be shown raw. Ordinary prose that references
+the shape inline still passes through untouched. The marker name is case-
+insensitive, every marker-only line is stripped, and malformed markers are
+logged as telemetry warnings instead of raising — fail-open, never leak. When
+more than one valid marker is present, the last valid one wins.
 
 Only the iOS app path turns the parsed link into a stored structured field
 (``AppChatMessage.journal_link`` / ``ProactiveOutbound.journal_link``);
@@ -57,9 +58,16 @@ MAX_SLUG_LEN = 128
 # iOS navigation contract.
 _SLUG_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
-# The whole trimmed final line must match — no leading/trailing prose on that
-# line — so a marker embedded mid-sentence is left as ordinary text.
-_JOURNAL_LINK_MARKER_RE = re.compile(r"^\[\[journal-link:\s*(.+)\]\]$", re.IGNORECASE)
+# The whole trimmed line must match — no leading/trailing prose on that line —
+# so a marker embedded mid-sentence remains ordinary text. A model sometimes
+# wraps the marker itself in inline/fenced backticks; those unambiguous same-line
+# variants are accepted too.
+_JOURNAL_LINK_MARKER_RE = re.compile(r"^\[\[journal-link:\s*(.*)\]\]$", re.IGNORECASE)
+_BACKTICK_WRAPPED_MARKER_RE = re.compile(
+    r"^(?P<ticks>`|```)\[\[journal-link:\s*(.*)\]\](?P=ticks)$",
+    re.IGNORECASE,
+)
+_JOURNAL_LINK_CANDIDATE_RE = re.compile(r"^(?:`|```)?\[\[journal-link:", re.IGNORECASE)
 
 
 def extract_journal_link(
@@ -68,70 +76,127 @@ def extract_journal_link(
     tenant_id=None,
     channel: str = "",
 ) -> tuple[str, dict | None]:
-    """Parse + strip a trailing ``[[journal-link: kind|slug|title]]`` marker.
+    """Parse + strip standalone ``[[journal-link: kind|slug|title]]`` lines.
 
     Returns ``(text_without_marker, journal_link)``. ``journal_link`` is
-    ``None`` when no marker is present (the marker must be the LAST line, after
-    trimming trailing whitespace — a marker anywhere else in the text is left
-    alone and ``text`` is returned unchanged). When present and valid it is a
-    ``{"kind", "slug", "title"}`` dict, all in PII-placeholder space.
+    ``None`` when no valid marker is present. Marker-only lines are recognized
+    anywhere in the reply (including single- or triple-backtick-wrapped forms),
+    removed from delivered text, and the last valid marker supplies a
+    ``{"kind", "slug", "title"}`` dict in PII-placeholder space. Inline prose
+    containing marker syntax is not a marker-only line and remains unchanged.
 
-    A marker that IS shaped correctly but fails validation (not exactly three
+    A malformed or invalid marker line (bad delimiters, not exactly three
     ``|``-separated fields, an unknown ``kind``, an empty / over-long / bad-
-    charset ``slug``, or an empty / over-long ``title``) is still stripped —
-    never shown to a user raw — but yields ``journal_link=None`` and logs a
-    telemetry warning (agent misuse signal) instead of raising. Production
-    callers supply ``tenant_id``; in that mode a single indexed existence
-    lookup also drops links to documents that are not present for the tenant.
-    Omitting ``tenant_id`` is parser-only mode for isolated validation tests.
+    charset ``slug``, or an empty / over-long ``title``) is still stripped and
+    telemetry-logged. Production callers supply ``tenant_id``; the winning
+    candidate then receives the same single indexed document-existence check,
+    and a missing document drops the link. Omitting ``tenant_id`` is parser-only
+    mode for isolated validation tests.
     """
     if not text:
         return text, None
 
-    stripped = text.rstrip()
-    if not stripped:
-        return text, None
+    lines = text.split("\n")
+    last_content_index = next(
+        (index for index in range(len(lines) - 1, -1, -1) if lines[index].strip()),
+        -1,
+    )
+    kept_lines: list[str] = []
+    valid_candidates: list[dict] = []
+    found_marker = False
 
-    lines = stripped.split("\n")
-    last_line = lines[-1].strip()
-    match = _JOURNAL_LINK_MARKER_RE.match(last_line)
-    if not match:
-        return text, None
+    for index, line in enumerate(lines):
+        sample = line.strip()
+        is_marker, payload = _marker_payload(sample)
+        if not is_marker:
+            kept_lines.append(line)
+            continue
 
-    remainder = "\n".join(lines[:-1]).rstrip()
-    # split on the FIRST two pipes only, so a title that itself contains a "|"
-    # survives intact (kind/slug can't contain one).
-    parts = match.group(1).split("|", 2)
-    if len(parts) != 3:
-        _log_malformed(tenant_id=tenant_id, channel=channel, reason="field_count", sample=last_line)
-        return remainder, None
-
-    kind, slug, title = (part.strip() for part in parts)
-    reason = _validation_error(kind, slug, title)
-    if reason:
-        _log_malformed(tenant_id=tenant_id, channel=channel, reason=reason, sample=last_line)
-        return remainder, None
-    if tenant_id is not None:
-        from apps.journal.models import Document
-
-        try:
-            exists = Document.objects.filter(
+        found_marker = True
+        if index != last_content_index:
+            _log_nonfinal_placement(
                 tenant_id=tenant_id,
-                kind=kind,
-                slug=slug,
-            ).exists()
-        except Exception:
-            logger.exception("journal_link: document existence check failed; dropping link")
-            return remainder, None
-        if not exists:
+                channel=channel,
+                sample=sample,
+            )
+
+        if payload is None:
             _log_malformed(
                 tenant_id=tenant_id,
                 channel=channel,
-                reason="missing_document",
-                sample=last_line,
+                reason="bad_syntax",
+                sample=sample,
             )
-            return remainder, None
-    return remainder, {"kind": kind, "slug": slug, "title": title}
+            continue
+
+        # Split on the FIRST two pipes only, so a title that itself contains a
+        # "|" survives intact (kind/slug can't contain one).
+        parts = payload.split("|", 2)
+        if len(parts) != 3:
+            _log_malformed(
+                tenant_id=tenant_id,
+                channel=channel,
+                reason="field_count",
+                sample=sample,
+            )
+            continue
+
+        kind, slug, title = (part.strip() for part in parts)
+        reason = _validation_error(kind, slug, title)
+        if reason:
+            _log_malformed(
+                tenant_id=tenant_id,
+                channel=channel,
+                reason=reason,
+                sample=sample,
+            )
+            continue
+        valid_candidates.append({"kind": kind, "slug": slug, "title": title, "sample": sample})
+
+    if not found_marker:
+        return text, None
+
+    remainder = re.sub(r"\n{3,}", "\n\n", "\n".join(kept_lines)).rstrip()
+    if not valid_candidates:
+        return remainder, None
+
+    winner = valid_candidates[-1]
+    if tenant_id is None:
+        return remainder, {key: winner[key] for key in ("kind", "slug", "title")}
+
+    from apps.journal.models import Document
+
+    try:
+        exists = Document.objects.filter(
+            tenant_id=tenant_id,
+            kind=winner["kind"],
+            slug=winner["slug"],
+        ).exists()
+    except Exception:
+        logger.exception("journal_link: document existence check failed; dropping link")
+        return remainder, None
+    if not exists:
+        _log_malformed(
+            tenant_id=tenant_id,
+            channel=channel,
+            reason="missing_document",
+            sample=winner["sample"],
+        )
+        return remainder, None
+    return remainder, {key: winner[key] for key in ("kind", "slug", "title")}
+
+
+def _marker_payload(line: str) -> tuple[bool, str | None]:
+    """Return ``(is_marker_line, payload)`` for a trimmed reply line."""
+    match = _JOURNAL_LINK_MARKER_RE.match(line)
+    if match:
+        return True, match.group(1)
+    match = _BACKTICK_WRAPPED_MARKER_RE.match(line)
+    if match:
+        return True, match.group(2)
+    if _JOURNAL_LINK_CANDIDATE_RE.match(line):
+        return True, None
+    return False, None
 
 
 def _validation_error(kind: str, slug: str, title: str) -> str | None:
@@ -154,6 +219,18 @@ def _log_malformed(*, tenant_id, channel: str, reason: str, sample: str) -> None
             "tenant_id": str(tenant_id) if tenant_id is not None else None,
             "channel": channel,
             "reason": reason,
+            "sample": sample[:200],
+        },
+    )
+
+
+def _log_nonfinal_placement(*, tenant_id, channel: str, sample: str) -> None:
+    logger.info(
+        "journal_link_marker_nonfinal",
+        extra={
+            "tenant_id": str(tenant_id) if tenant_id is not None else None,
+            "channel": channel,
+            "reason": "nonfinal_placement",
             "sample": sample[:200],
         },
     )

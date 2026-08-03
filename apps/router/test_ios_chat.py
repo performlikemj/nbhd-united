@@ -524,6 +524,28 @@ class IOSChatJournalLinkTest(TestCase):
         )
         self.assertNotIn("journal-link", poll.data["reply_text"])
 
+    def test_midmessage_link_with_final_quick_replies_extracts_both(self):
+        with self.assertLogs("apps.router.journal_link", level="INFO") as cm:
+            poll = self._ask(
+                "It's live on the card. Here's the link:\n"
+                "[[journal-link: daily|2026-07-13|Morning Report]]\n"
+                "Good luck tomorrow.\n"
+                "[[quick-replies: Open my journal | Thanks]]",
+                cid="jl-mid-quick",
+            )
+
+        self.assertEqual(
+            poll.data["reply_text"],
+            "It's live on the card. Here's the link:\nGood luck tomorrow.",
+        )
+        self.assertEqual(
+            poll.data["journal_link"],
+            {"kind": "daily", "slug": "2026-07-13", "title": "Morning Report"},
+        )
+        self.assertEqual(poll.data["quick_replies"], ["Open my journal", "Thanks"])
+        self.assertTrue(any(record.reason == "nonfinal_placement" for record in cm.records))
+        self.assertNotIn("journal-link", poll.data["reply_text"])
+
     def test_no_marker_journal_link_is_null(self):
         poll = self._ask("Just a normal reply, nothing special.")
         self.assertIsNone(poll.data["journal_link"])

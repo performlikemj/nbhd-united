@@ -2149,7 +2149,7 @@ def _clean_assistant_text_for_app(
       ``[[quick-replies: A | B | C]]`` marker (see
       ``apps.router.quick_replies.extract_quick_replies``), or ``None``.
     * ``journal_link`` — a ``{"kind", "slug", "title"}`` deep-link parsed from a
-      trailing ``[[journal-link: kind|slug|title]]`` marker (see
+      standalone ``[[journal-link: kind|slug|title]]`` line (see
       ``apps.router.journal_link.extract_journal_link``), or ``None``. ``title``
       is captured placeholder-space and rehydrated at the owner-facing seams.
 
@@ -2165,11 +2165,9 @@ def _clean_assistant_text_for_app(
 
     # Parse the trailing markers FIRST, off the raw reply, so every downstream
     # step (insight extraction, chart/MEDIA stripping, rehydration) operates on
-    # text that's already marker-free — the raw agent text is the only place the
-    # marker is guaranteed to still be the literal final line. Quick-replies
-    # first, then journal-link on the remainder: an agent that stacks both on
-    # separate trailing lines has each stripped in turn (the journal-link line
-    # becomes the last line once the quick-replies line above it is removed).
+    # text that's already marker-free. Quick-replies stays first so its existing
+    # final-line behavior is unchanged; journal-link then scans every remaining
+    # line, including when prose follows it.
     ai_text, quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="ios")
     ai_text, journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="ios")
 

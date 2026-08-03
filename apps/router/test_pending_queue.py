@@ -548,7 +548,9 @@ class PendingMessageTelegramTest(TestCase):
         tenant = _make_tenant(user)
 
         relay_ai_response_to_telegram(
-            tenant, 556, "Logged today's note.\n[[journal-link: daily|2026-07-13|Morning Report]]"
+            tenant,
+            556,
+            ("Logged today's note.\n[[journal-link: daily|2026-07-13|Morning Report]]\nGood luck tomorrow."),
         )
 
         send_calls = [c for c in mock_post.call_args_list if "sendMessage" in c.args[0]]
@@ -556,6 +558,7 @@ class PendingMessageTelegramTest(TestCase):
         bodies = " ".join(c.kwargs["json"]["text"] for c in send_calls)
         self.assertNotIn("journal-link", bodies)
         self.assertIn("Logged today's note.", bodies)
+        self.assertIn("Good luck tomorrow.", bodies)
 
 
 @override_settings(
