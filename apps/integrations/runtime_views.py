@@ -4032,10 +4032,10 @@ class RedditToolView(APIView):
 # ── sautai Phase 0 (nbhd-sautai-tools plugin, meal-plan generation) ──────
 #
 # PROXY-THROUGH-DJANGO, same shape as RedditToolView: the plugin never talks
-# to sautai directly (30-60s exceeds its 20s tool timeout, and a container-
+# to sautai directly (the platform secret stays server-side, and a container-
 # direct call would bypass the PII rehydrate/redact chokepoint). This view
-# only does the fast ack — job row + QStash enqueue; the actual sautai HTTP
-# call lives in apps.integrations.tasks.generate_sautai_meal_plan_task. See
+# only does the fast NBHD ack — job row + QStash enqueue; the sautai POST and
+# bounded status polling live in apps.integrations.tasks. See
 # docs/sautai-phase0-contract.md.
 
 _SAUTAI_MAX_PROMPT_CHARS = 2000
@@ -4197,7 +4197,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
     A no-token call returns the exact explicit-week request and a short-lived
     confirmation token without side effects. A matching confirmed call is a
     fast ack (<20s): it creates a PENDING job and enqueues via QStash, which
-    does the slow (30-60s) sautai M2M request.
+    advances sautai's asynchronous generation job through bounded deliveries.
     """
 
     permission_classes = [AllowAny]
@@ -4270,9 +4270,9 @@ class RuntimeSautaiGeneratePlanView(APIView):
             )
 
         try:
-            # Phase 0.5: regenerate=true asks sautai to REPLACE an existing
-            # (user, week) plan honoring user_prompt instead of the idempotent
-            # stale return. Carried on the job → sent by the worker.
+            # Regeneration is fill-only: it may fill missing requested slots,
+            # but never replaces an occupied meal. Explicit slot replacement is
+            # not exposed by the NBHD tool contract.
             regenerate = _parse_bool(request.data.get("regenerate"), default=False)
             confirm_replace = _parse_bool(request.data.get("confirm_replace"), default=False)
         except ValueError as exc:
@@ -4346,29 +4346,25 @@ class RuntimeSautaiGeneratePlanView(APIView):
             )
 
             if regenerate and existing_ready is None:
-                # Rebuilding a nonexistent plan is just ordinary generation.
-                # Strip the destructive flag even if the caller supplied it.
+                # Filling gaps in a nonexistent plan is ordinary generation.
                 regenerate = False
-            elif regenerate and not confirm_replace:
-                return Response(
-                    _sautai_existing_plan_payload(
-                        "confirm_required",
-                        existing_ready,
-                        "Show the current plan and ask the user to explicitly confirm replacing it before regenerating.",
-                    )
-                )
-            elif not regenerate and existing_ready is not None:
+            elif existing_ready is not None:
                 if _sautai_plan_is_incomplete(existing_ready):
                     repairing_incomplete_plan = True
                     repair_missing_days = _sautai_missing_days(existing_ready.funnel)
                 else:
-                    guidance = (
-                        "Surface the existing plan. The new guidance was not applied; offer regeneration and require "
-                        "explicit confirmation before replacing it."
-                        if user_prompt
-                        else "A plan already exists for this week. Surface the existing plan. Offer regeneration only "
-                        "if the user seems to want a new one, and require explicit confirmation before replacing it."
-                    )
+                    if regenerate:
+                        guidance = (
+                            "A complete plan already exists for this week. Regeneration is fill-only, so every occupied "
+                            "meal remains untouched. Surface the existing plan."
+                        )
+                    elif user_prompt:
+                        guidance = (
+                            "Surface the existing plan. The new guidance was not applied because regeneration only "
+                            "fills missing slots and leaves occupied meals untouched."
+                        )
+                    else:
+                        guidance = "A complete plan already exists for this week. Surface the existing plan."
                     return Response(
                         _sautai_existing_plan_payload(
                             "exists",

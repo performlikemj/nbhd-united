@@ -6,6 +6,7 @@ import logging
 from datetime import timedelta
 
 import httpx
+from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
 
@@ -110,7 +111,7 @@ def refresh_expiring_integrations_task() -> dict[str, int]:
 
 
 def generate_sautai_meal_plan_task(job_id: str) -> None:
-    """Call sautai's M2M generate endpoint for a pending SautaiMealPlanJob.
+    """Advance one POST/poll/finalize step for a SautaiMealPlanJob.
 
     Idempotency is an ATOMIC claim, not a read-then-check: a PENDING/FAILED
     row transitions to GENERATING in one UPDATE (mirrors
@@ -121,13 +122,11 @@ def generate_sautai_meal_plan_task(job_id: str) -> None:
     ``create_meal_plan_for_user()`` is idempotent per (user, week) too, but
     that's a second line of defense, not a substitute for claiming first.
 
-    Failure paths in ``call_sautai_generate_plan`` always transition
-    GENERATING -> FAILED. A RETRYABLE failure (transport/503/5xx) then raises
-    ``RetryableSautaiError``, which this task deliberately does NOT catch — it
-    propagates so ``apps.cron.views.trigger_task`` returns 500 and QStash
-    redelivers, re-claiming the FAILED row. A TERMINAL failure (4xx / bad body /
-    no email / unconfigured) returns normally, so QStash does not retry it. See
-    docs/sautai-phase0-contract.md.
+    A sautai ``202`` or active status read returns the row to PENDING, then this
+    task publishes a distinct delivery delayed by 15 seconds. This is a
+    re-enqueue state machine, not a blocking sleep loop. POST transport/5xx
+    failures still raise ``RetryableSautaiError`` for QStash redelivery; terminal
+    failures return normally.
     """
     from apps.integrations.models import SautaiMealPlanJob, SautaiMealPlanJobStatus
 
@@ -145,6 +144,36 @@ def generate_sautai_meal_plan_task(job_id: str) -> None:
         logger.warning("generate_sautai_meal_plan_task: job %s not found", str(job_id)[:8])
         return
 
-    from apps.integrations.sautai_client import call_sautai_generate_plan
+    from apps.integrations.sautai_client import (
+        ASYNC_GENERATION_STATE_KEY,
+        SAUTAI_GENERATE_POLL_PENDING,
+        SAUTAI_POLL_DELAY_SECONDS,
+        call_sautai_generate_plan,
+    )
 
-    call_sautai_generate_plan(job)
+    action = call_sautai_generate_plan(job)
+    if action != SAUTAI_GENERATE_POLL_PENDING:
+        return
+
+    # ``publish_task`` deliberately executes synchronously when QStash is not
+    # configured. That fallback would turn async polling into a tight recursive
+    # loop holding this worker, so leave the durable row PENDING instead. A real
+    # async deployment always carries both settings, and the runtime's stale-row
+    # recovery remains available if publishing is temporarily unavailable.
+    if not getattr(settings, "QSTASH_TOKEN", "") or not getattr(settings, "API_BASE_URL", ""):
+        logger.warning("generate_sautai_meal_plan_task: async poll pending but QStash is not configured")
+        return
+
+    state = job.result.get(ASYNC_GENERATION_STATE_KEY, {}) if isinstance(job.result, dict) else {}
+    attempt = state.get("poll_attempts", 0) if isinstance(state, dict) else 0
+    if not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 0:
+        attempt = 0
+
+    from apps.cron.publish import publish_task
+
+    publish_task(
+        "generate_sautai_meal_plan",
+        str(job.id),
+        idempotency_key=f"sautai-poll-{job.id.hex}-{attempt}",
+        delay_seconds=SAUTAI_POLL_DELAY_SECONDS,
+    )
