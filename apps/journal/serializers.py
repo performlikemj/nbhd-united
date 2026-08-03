@@ -32,6 +32,14 @@ def _validate_string_list(*, value, field_name: str, allow_empty: bool = True) -
     return cleaned
 
 
+def _normalize_week_rating(value: str) -> str:
+    normalized = "-".join(value.strip().lower().split())
+    if normalized not in WeeklyReview.WeekRating.values:
+        choices = ", ".join(WeeklyReview.WeekRating.values)
+        raise serializers.ValidationError(f"week_rating must be one of: {choices}.")
+    return normalized
+
+
 # ---------------------------------------------------------------------------
 # Legacy JournalEntry serializers (untouched)
 # ---------------------------------------------------------------------------
@@ -82,6 +90,10 @@ class JournalEntryRuntimeSerializer(serializers.ModelSerializer):
 
 
 class WeeklyReviewRuntimeSerializer(serializers.ModelSerializer):
+    # Override ModelSerializer's ChoiceField so common model-written variants
+    # can normalize before choice validation rejects them.
+    week_rating = serializers.CharField()
+
     class Meta:
         model = WeeklyReview
         fields = (
@@ -125,6 +137,9 @@ class WeeklyReviewRuntimeSerializer(serializers.ModelSerializer):
         if not normalized:
             raise serializers.ValidationError("mood_summary is required.")
         return normalized
+
+    def validate_week_rating(self, value: str) -> str:
+        return _normalize_week_rating(value)
 
     def validate_raw_text(self, value: str) -> str:
         normalized = value.strip()
@@ -268,6 +283,8 @@ def _build_weekly_review_raw_text(data: dict) -> str:
 class WeeklyReviewSerializer(serializers.ModelSerializer):
     """User-facing serializer (JWT auth). Excludes tenant and auto-generates raw_text."""
 
+    week_rating = serializers.CharField()
+
     class Meta:
         model = WeeklyReview
         fields = (
@@ -309,6 +326,9 @@ class WeeklyReviewSerializer(serializers.ModelSerializer):
         if not normalized:
             raise serializers.ValidationError("mood_summary is required.")
         return normalized
+
+    def validate_week_rating(self, value: str) -> str:
+        return _normalize_week_rating(value)
 
     def create(self, validated_data: dict) -> WeeklyReview:
         tenant = self.context["tenant"]

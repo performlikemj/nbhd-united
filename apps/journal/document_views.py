@@ -311,7 +311,16 @@ class DocumentDetailView(APIView):
     @tenant_cache(ttl=60, tag="journal")
     def get(self, request, kind: str, slug: str):
         tenant = _get_tenant(request.user)
-        _validate_slug(kind, slug)
+        try:
+            _validate_slug(kind, slug)
+        except serializers.ValidationError:
+            # A GET with a guessed identifier is a missing resource, even when
+            # the guess is not a valid persisted slug. Writes still surface
+            # malformed slugs as 400 validation errors.
+            return Response(
+                {"error": "not_found", "detail": "Document not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
         # Singletons (tasks, ideas, memory) auto-create on GET for convenience
         singleton_kinds = {"tasks", "ideas", "memory"}
         if kind in singleton_kinds:

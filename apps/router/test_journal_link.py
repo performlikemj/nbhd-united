@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from apps.router.journal_link import (
     MAX_TITLE_LEN,
@@ -165,6 +165,63 @@ class ExtractJournalLinkTest(SimpleTestCase):
         record = cm.records[0]
         self.assertEqual(record.tenant_id, "tenant-abc")
         self.assertEqual(record.channel, "telegram_drain")
+
+
+class JournalLinkExistenceTest(TestCase):
+    def setUp(self):
+        from apps.tenants.models import Tenant, User
+
+        user = User.objects.create_user(username="journal-link-existence", password="pass")
+        self.tenant = Tenant.objects.create(user=user, status="active")
+
+    def test_existing_document_emits_link_with_one_lookup(self):
+        from apps.journal.models import Document
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="weekly",
+            slug="2026-W28",
+            title="Week 28",
+            markdown="# Week 28",
+        )
+
+        with self.assertNumQueries(1):
+            text, link = extract_journal_link(
+                "Saved.\n[[journal-link: weekly|2026-W28|Week 28]]",
+                tenant_id=self.tenant.id,
+                channel="ios",
+            )
+
+        self.assertEqual(text, "Saved.")
+        self.assertEqual(
+            link,
+            {"kind": "weekly", "slug": "2026-W28", "title": "Week 28"},
+        )
+
+    def test_missing_document_drops_link_and_preserves_text(self):
+        with (
+            self.assertLogs("apps.router.journal_link", level=logging.WARNING) as cm,
+            self.assertNumQueries(1),
+        ):
+            text, link = extract_journal_link(
+                "Still saved the reply text.\n[[journal-link: weekly|2026-W99|Missing]]",
+                tenant_id=self.tenant.id,
+                channel="ios",
+            )
+
+        self.assertEqual(text, "Still saved the reply text.")
+        self.assertIsNone(link)
+        self.assertEqual(cm.records[0].reason, "missing_document")
+
+    def test_reply_without_marker_does_not_query(self):
+        with self.assertNumQueries(0):
+            text, link = extract_journal_link(
+                "No marker here.",
+                tenant_id=self.tenant.id,
+                channel="ios",
+            )
+        self.assertEqual(text, "No marker here.")
+        self.assertIsNone(link)
 
 
 class RehydrateJournalLinkTest(SimpleTestCase):

@@ -52,6 +52,17 @@ class CronDeliveryViewTest(TestCase):
             user=self.user,
             status=Tenant.Status.ACTIVE,
         )
+        Document.objects.bulk_create(
+            [
+                Document(
+                    tenant=self.tenant,
+                    kind=Document.Kind.DAILY,
+                    slug="2026-07-13",
+                    title="Morning Report",
+                    markdown="# 2026-07-13",
+                )
+            ]
+        )
         seed_internal_key(self.tenant)
         self.client = APIClient()
         self.url = f"/api/v1/integrations/runtime/{self.tenant.id}/send-to-user/"
@@ -675,6 +686,13 @@ class MorningBriefingJournalFallbackTest(TestCase):
     def test_marker_present_is_stored_as_parsed_without_fallback(self, mock_client_cls):
         self._configure_successful_telegram(mock_client_cls)
         self._create_today_document()
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug="2026-07-27",
+            title="Agent Title",
+            markdown="# 2026-07-27",
+        )
         message = "Briefing.\n[[journal-link: daily|2026-07-27|Agent Title]]"
 
         with (

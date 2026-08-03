@@ -2133,7 +2133,7 @@ class RuntimeDocumentView(APIView):
     authentication_classes = []
 
     def get(self, request, tenant_id):
-        from apps.journal.path_validation import canonical_singleton_slug, validate_kind_slug
+        from apps.journal.path_validation import VALID_KINDS, canonical_singleton_slug, validate_kind_slug
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
         if auth_failure is not None:
@@ -2171,25 +2171,39 @@ class RuntimeDocumentView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # General path-component validation — closes the auto-create-on-get path
-        # that previously seeded rows with NTFS-hostile kind/slug values.
+        # General path-component validation prevents reads from resolving
+        # NTFS-hostile kind/slug values that cannot map to workspace paths.
         validation_error = validate_kind_slug(kind, slug)
         if validation_error is not None:
             error_code, detail = validation_error
+            body = {"error": error_code, "detail": detail}
+            if error_code == "invalid_kind":
+                body["valid_kinds"] = sorted(VALID_KINDS)
             return Response(
-                {"error": error_code, "detail": detail},
+                body,
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        doc, _created = Document.objects.get_or_create(
+        doc = Document.objects.filter(
             tenant=tenant,
             kind=kind,
             slug=slug,
-            defaults={
-                "title": _default_title(kind, slug),
-                "markdown": _default_markdown(kind, slug, tenant=tenant),
-            },
-        )
+        ).first()
+        if doc is None:
+            available_slugs = list(
+                Document.objects.filter(tenant=tenant, kind=kind)
+                .order_by("-updated_at")
+                .values_list("slug", flat=True)[:20]
+            )
+            return Response(
+                {
+                    "exists": False,
+                    "kind": kind,
+                    "slug": slug,
+                    "available_slugs": available_slugs,
+                },
+                status=status.HTTP_200_OK,
+            )
 
         return Response(
             {

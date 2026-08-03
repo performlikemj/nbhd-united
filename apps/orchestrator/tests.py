@@ -702,6 +702,20 @@ class ConfigGeneratorTest(TestCase):
         )
         self.assertNotIn("## Right now", prompt)
 
+    def test_weekly_workflows_teach_iso_slug_discovery_and_rating_values(self):
+        jobs = build_cron_seed_jobs(self.tenant)
+        prompts = {
+            job["name"]: job["payload"]["message"]
+            for job in jobs
+            if job["name"] in {"Weekly Reflection", "Week Ahead Review"}
+        }
+
+        for prompt in prompts.values():
+            self.assertIn("2026-W28", prompt)
+            self.assertIn("available_slugs", prompt)
+            self.assertIn("kind='weekly' and no slug", prompt)
+        self.assertIn("`thumbs-up`, `meh`, or `thumbs-down`", prompts["Weekly Reflection"])
+
     # ── GWS skills ──────────────────────────────────────────────────
 
     def test_gws_skills_loaded_when_google_active(self):

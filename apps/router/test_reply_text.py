@@ -32,8 +32,21 @@ class ClampReplyTextTest(SimpleTestCase):
 
 class ReplyTextStorePathTest(TestCase):
     def setUp(self):
+        from apps.journal.models import Document
+
         self.user = User.objects.create_user(username="reply_clamp", password="pw")
         self.tenant = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
+        Document.objects.bulk_create(
+            [
+                Document(
+                    tenant=self.tenant,
+                    kind=Document.Kind.DAILY,
+                    slug="2026-07-15",
+                    title="Daily Note",
+                    markdown="# 2026-07-15",
+                )
+            ]
+        )
 
     @patch("apps.router.push_views.notify_app_reply_ready")
     def test_ios_drain_extracts_trailing_markers_before_clamp(self, _mock_notify):

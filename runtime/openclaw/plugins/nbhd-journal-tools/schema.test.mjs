@@ -58,6 +58,50 @@ test("no kind enum contains a value the server would reject", () => {
   }
 });
 
+test("runtime field validation errors are surfaced to the model", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalTenantId = process.env.NBHD_TENANT_ID;
+  const originalInternalKey = process.env.NBHD_INTERNAL_API_KEY;
+  const tools = {};
+  const api = {
+    pluginConfig: { apiBaseUrl: "https://nbhd.test" },
+    registerTool(def) { tools[def.name] = def; },
+    registerHook() {},
+    on() {},
+    logger: { info() {}, warn() {}, error() {}, debug() {} },
+  };
+  process.env.NBHD_TENANT_ID = "tenant-123";
+  process.env.NBHD_INTERNAL_API_KEY = "internal-key";
+
+  try {
+    register(api);
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 400,
+      async text() {
+        return JSON.stringify({ week_rating: ["week_rating must be one of: thumbs-up, thumbs-down, meh."] });
+      },
+    });
+
+    await assert.rejects(
+      tools["nbhd_weekly_review_create"].execute("call-1", {
+        week_start: "2026-07-20",
+        week_end: "2026-07-26",
+        week_rating: "great",
+        mood_summary: "Mixed",
+        raw_text: "Mixed week",
+      }),
+      /runtime_request_failed \(\{"week_rating":\["week_rating must be one of: thumbs-up, thumbs-down, meh\."\]\}\)/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalTenantId === undefined) delete process.env.NBHD_TENANT_ID;
+    else process.env.NBHD_TENANT_ID = originalTenantId;
+    if (originalInternalKey === undefined) delete process.env.NBHD_INTERNAL_API_KEY;
+    else process.env.NBHD_INTERNAL_API_KEY = originalInternalKey;
+  }
+});
+
 test("journal_query.window.kind keeps its TIME-WINDOW enum (must not be clobbered)", () => {
   const tools = collectTools();
   const wkind = tools["nbhd_journal_query"].parameters.properties.window.properties.kind;

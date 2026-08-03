@@ -689,6 +689,15 @@ class CronDeliveryAppChannelIsDurableTest(_TenantFixture):
 
     @patch("apps.router.proactive_context._dispatch_ios_push")
     def test_app_send_persists_row_then_returns_200(self, _push):
+        from apps.journal.models import Document
+
+        Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.DAILY,
+            slug="2026-07-14",
+            title="Morning Report",
+            markdown="# 2026-07-14",
+        )
         resp = self.client.post(
             self.url,
             {"message": "Morning:\n- one\n- two\n[[journal-link: daily|2026-07-14|Morning Report]]"},
