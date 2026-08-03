@@ -262,6 +262,17 @@ class SystemCronsWellFormednessTests(TestCase):
             "apps.router.pending_queue.reap_stale_app_chat_messages_task",
         )
 
+    def test_sautai_generation_recovery_is_registered_every_minute(self):
+        from apps.cron.views import TASK_MAP
+
+        entry = next(e for e in reg_cmd.SYSTEM_CRONS if e[0] == "recover-sautai-generation-jobs")
+        self.assertEqual(entry[1], "* * * * *")
+        self.assertEqual(entry[2], "/api/cron/trigger/recover_sautai_generation_jobs/")
+        self.assertEqual(
+            TASK_MAP["recover_sautai_generation_jobs"],
+            "apps.integrations.tasks.recover_sautai_generation_jobs_task",
+        )
+
     def test_finished_at_cron_retirement_is_scheduled_hourly(self):
         from apps.cron.views import TASK_MAP
 

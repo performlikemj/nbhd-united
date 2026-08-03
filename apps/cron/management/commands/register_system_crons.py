@@ -27,6 +27,14 @@ SYSTEM_CRONS = [
     ("cleanup-expired-telegram-tokens", "0 3 * * *", "/api/cron/trigger/cleanup_expired_telegram_tokens/"),
     # Daily at 04:00 UTC — refresh expiring OAuth integrations
     ("refresh-expiring-integrations", "0 4 * * *", "/api/cron/trigger/refresh_expiring_integrations/"),
+    # Every minute — recover Sautai async jobs whose delayed poll successor was
+    # dropped or whose worker died while holding a GENERATING lease. The task
+    # also terminalizes jobs at their strict ten-minute deadline.
+    (
+        "recover-sautai-generation-jobs",
+        "* * * * *",
+        "/api/cron/trigger/recover_sautai_generation_jobs/",
+    ),
     # Daily at 04:20 UTC — belt-and-braces reconcile of the system-cron
     # schedules THEMSELVES. Re-runs the same register/update/deregister core the
     # post-deploy register-system-crons call uses, so any registration drift

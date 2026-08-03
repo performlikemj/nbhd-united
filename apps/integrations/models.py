@@ -79,8 +79,8 @@ class SautaiMealPlanJob(models.Model):
 
     Created PENDING by ``RuntimeSautaiGeneratePlanView`` (fast, <20s — the
     plugin's own timeout), rendered by the async QStash task
-    ``generate_sautai_meal_plan_task`` through a short POST + delayed status
-    polls, which flips status to READY/FAILED and — on READY — fires the
+    ``generate_sautai_meal_plan_task`` through a transition-safe POST + delayed
+    post-202 status polls, which flips status to READY/FAILED and — on READY — fires the
     completion path (``notify_sautai_plan_ready`` -> ``record_proactive_outbound``
     -> APNs + ``?since=`` feed row). See docs/sautai-phase0-contract.md.
     """
@@ -107,8 +107,8 @@ class SautaiMealPlanJob(models.Model):
     # (may carry [PERSON_N] placeholders); rehydrated only at sautai egress in
     # the QStash task, never persisted rehydrated.
     user_prompt = models.TextField(blank=True, default="")
-    # When true, ask sautai to fill missing requested slots. Occupied meals are
-    # preserved; explicit replace_slots are not exposed by NBHD.
+    # Legacy 200: destructive replacement after explicit confirmation. Async
+    # 202: fill missing slots only; explicit replace_slots are not exposed.
     regenerate = models.BooleanField(default=False)
     # Snapshot the identity path used at egress so later Integration link changes
     # do not make the job's execution history unreconstructable. Raw email is

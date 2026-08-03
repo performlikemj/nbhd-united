@@ -100,6 +100,10 @@ TASK_MAP = {
     # job, this task does the slow 30-60s sautai M2M call). See
     # docs/sautai-phase0-contract.md.
     "generate_sautai_meal_plan": "apps.integrations.tasks.generate_sautai_meal_plan_task",
+    # Every-minute recovery for dropped async poll successors and abandoned
+    # GENERATING leases. The generation-token CAS makes duplicate recovery
+    # deliveries harmless.
+    "recover_sautai_generation_jobs": "apps.integrations.tasks.recover_sautai_generation_jobs_task",
     # Sweep PENDING action-gate rows past their 5-min expiry: flip to EXPIRED,
     # audit-log, and refresh the platform message so stale Approve/Deny buttons
     # are cleared. GatePollView expires lazily on poll, but abandoned actions

@@ -23,7 +23,7 @@ from apps.tenants.services import create_tenant
 
 from .models import Integration, SautaiMealPlanAddressedBy, SautaiMealPlanJob, SautaiMealPlanJobStatus
 from .sautai_client import call_sautai_generate_plan, fetch_sautai_current_plan
-from .tasks import generate_sautai_meal_plan_task
+from .tasks import generate_sautai_meal_plan_task, recover_sautai_generation_jobs_task
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures" / "m2m"
 
@@ -110,7 +110,9 @@ class CallSautaiGeneratePlanTests(TestCase):
             f"https://app.sautai.test/api/m2m/generation-jobs/{fixture['body']['job_id']}/",
         )
         self.assertEqual(state["poll_attempts"], 0)
+        self.assertEqual(state["poll_generation"], 1)
         self.assertEqual(state["regeneration"], fixture["body"]["regeneration"])
+        self.assertIs(job.funnel["async_contract_confirmed"], True)
         self.assertEqual(job.error, "")
         self.assertEqual(job.addressed_by, SautaiMealPlanAddressedBy.LINKED_ID)
         self.assertEqual(job.sautai_user_id, 501)
@@ -121,7 +123,24 @@ class CallSautaiGeneratePlanTests(TestCase):
         self.assertEqual(kwargs["json"]["sautai_user_id"], 501)
         self.assertNotIn("user_email", kwargs["json"])
         self.assertEqual(kwargs["json"]["week_start"], "2026-08-03")
-        self.assertLessEqual(kwargs["timeout"], 20)
+        # The first request must preserve the legacy server's exact budget. Its
+        # own 202 is the evidence that permits later short acknowledgement calls.
+        self.assertEqual(kwargs["timeout"], 125.0)
+
+    def test_post_timeout_shortens_only_after_a_real_202_was_observed(self):
+        fixture = _load_fixture("generate_ok.json")
+        first = self._job()
+        second = self._job()
+
+        with patch(
+            "apps.integrations.sautai_client.httpx.post",
+            side_effect=[_mock_response(fixture), _mock_response(fixture)],
+        ) as mock_post:
+            call_sautai_generate_plan(first)
+            call_sautai_generate_plan(second)
+
+        self.assertEqual(mock_post.call_args_list[0].kwargs["timeout"], 125.0)
+        self.assertEqual(mock_post.call_args_list[1].kwargs["timeout"], 20.0)
 
     def test_generate_user_created_fixture_uses_same_async_shape(self):
         from .sautai_client import ASYNC_GENERATION_STATE_KEY
@@ -141,7 +160,7 @@ class CallSautaiGeneratePlanTests(TestCase):
         job = self._job(week_start=date(2026, 8, 3))
 
         with (
-            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)),
+            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(fixture)) as mock_post,
             patch("apps.integrations.sautai_notify.notify_sautai_plan_ready") as mock_notify,
         ):
             action = call_sautai_generate_plan(job)
@@ -152,6 +171,7 @@ class CallSautaiGeneratePlanTests(TestCase):
         self.assertEqual(job.result, fixture["body"]["plan"])
         self.assertEqual(job.web_link, fixture["body"]["web_link"])
         self.assertEqual(job.funnel["complete"], fixture["body"]["complete"])
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], 125.0)
         mock_notify.assert_called_once()
 
     def test_invalid_secret_marks_job_failed_with_safe_error(self):
@@ -244,13 +264,14 @@ class CallSautaiGeneratePlanTests(TestCase):
         timeout = {"status_code": 524, "body": {"status": "error", "code": "timeout", "detail": "upstream"}}
         job = self._job()
         with (
-            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(timeout)),
+            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(timeout)) as mock_post,
             self.assertRaisesRegex(RetryableSautaiError, "sautai_error_524"),
         ):
             call_sautai_generate_plan(job)
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
         self.assertIn("sautai_error_524", job.error)
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], 125.0)
 
     def test_transport_error_marks_failed_and_raises_retryable(self):
         import httpx
@@ -277,6 +298,7 @@ class CallSautaiGeneratePlanTests(TestCase):
         self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
         self.assertIn("400", job.error)
 
+    @override_settings(QSTASH_TOKEN="qstash-test", API_BASE_URL="https://nbhd.test")
     def test_redelivery_after_retryable_failure_reclaims_and_succeeds(self):
         # The whole point of raising: delivery 1 (503) fails the job and raises;
         # QStash redelivers; delivery 2 re-claims the FAILED row and succeeds.
@@ -294,7 +316,10 @@ class CallSautaiGeneratePlanTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
 
-        with patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(ok)):
+        with (
+            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(ok)),
+            patch("apps.cron.publish.publish_task"),
+        ):
             generate_sautai_meal_plan_task(str(job.id))
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.PENDING)
@@ -319,6 +344,20 @@ class AsyncSautaiGenerationTests(TestCase):
         job.refresh_from_db()
         return job
 
+    def _claim_poll(self, job: SautaiMealPlanJob) -> int:
+        from .sautai_client import ASYNC_GENERATION_STATE_KEY, sautai_poll_generation_filter
+
+        state = job.result[ASYNC_GENERATION_STATE_KEY]
+        generation = state["poll_generation"]
+        claimed = SautaiMealPlanJob.objects.filter(
+            id=job.id,
+            status=SautaiMealPlanJobStatus.PENDING,
+            **sautai_poll_generation_filter(generation),
+        ).update(status=SautaiMealPlanJobStatus.GENERATING)
+        self.assertEqual(claimed, 1)
+        job.refresh_from_db()
+        return generation
+
     def test_running_status_updates_same_row_and_requests_another_poll(self):
         from .sautai_client import ASYNC_GENERATION_STATE_KEY, SAUTAI_GENERATE_POLL_PENDING
 
@@ -334,11 +373,12 @@ class AsyncSautaiGenerationTests(TestCase):
                 "future_addition": {"safe": True},
             },
         }
+        poll_generation = self._claim_poll(job)
         with (
             patch("apps.integrations.sautai_client.httpx.get", return_value=_mock_response(running)) as mock_get,
             patch("apps.integrations.sautai_client.httpx.post") as mock_post,
         ):
-            action = call_sautai_generate_plan(job)
+            action = call_sautai_generate_plan(job, poll_generation=poll_generation)
 
         job.refresh_from_db()
         self.assertEqual(action, SAUTAI_GENERATE_POLL_PENDING)
@@ -366,12 +406,13 @@ class AsyncSautaiGenerationTests(TestCase):
         }
         current = _load_fixture("current_ok.json")
         current["body"]["future_addition"] = {"ignored": True}
+        poll_generation = self._claim_poll(job)
         with (
             patch("apps.integrations.sautai_client.httpx.get", return_value=_mock_response(completed)),
             patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(current)),
             patch("apps.integrations.sautai_notify.notify_sautai_plan_ready") as mock_notify,
         ):
-            action = call_sautai_generate_plan(job)
+            action = call_sautai_generate_plan(job, poll_generation=poll_generation)
 
         job.refresh_from_db()
         self.assertIsNone(action)
@@ -396,6 +437,7 @@ class AsyncSautaiGenerationTests(TestCase):
                 "week_start_date": "2026-08-03",
             },
         }
+        poll_generation = self._claim_poll(job)
         with (
             patch("apps.integrations.sautai_client.httpx.get", return_value=_mock_response(completed)),
             patch(
@@ -404,7 +446,7 @@ class AsyncSautaiGenerationTests(TestCase):
             ),
             patch("apps.integrations.sautai_notify.notify_sautai_plan_ready"),
         ):
-            call_sautai_generate_plan(job)
+            call_sautai_generate_plan(job, poll_generation=poll_generation)
 
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.READY)
@@ -426,11 +468,12 @@ class AsyncSautaiGenerationTests(TestCase):
                 "week_start_date": "2026-08-03",
             },
         }
+        poll_generation = self._claim_poll(job)
         with (
             patch("apps.integrations.sautai_client.httpx.get", return_value=_mock_response(failed)),
             patch("apps.integrations.sautai_notify.notify_sautai_plan_ready") as mock_notify,
         ):
-            action = call_sautai_generate_plan(job)
+            action = call_sautai_generate_plan(job, poll_generation=poll_generation)
 
         job.refresh_from_db()
         self.assertIsNone(action)
@@ -449,15 +492,132 @@ class AsyncSautaiGenerationTests(TestCase):
         state["started_at"] = (timezone.now() - timedelta(minutes=10, seconds=1)).isoformat()
         job.result = {ASYNC_GENERATION_STATE_KEY: state}
         job.save(update_fields=["result", "updated_at"])
+        poll_generation = self._claim_poll(job)
 
         with patch("apps.integrations.sautai_client.httpx.get") as mock_get:
-            action = call_sautai_generate_plan(job)
+            action = call_sautai_generate_plan(job, poll_generation=poll_generation)
 
         job.refresh_from_db()
         self.assertIsNone(action)
         self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
         self.assertIn("sautai_poll_timeout", job.error)
         mock_get.assert_not_called()
+
+    def test_completed_with_failures_and_remaining_work_fails_closed(self):
+        job = self._acknowledged_job()
+        contradictory = {
+            "status_code": 200,
+            "body": {
+                "status": "completed_with_failures",
+                "remaining_count": 1,
+                "failed_slots": [{"day": "Tuesday", "meal_type": "Lunch"}],
+                "plan_id": 1,
+                "week_start_date": "2026-08-03",
+                "future_addition": "ignored",
+            },
+        }
+        poll_generation = self._claim_poll(job)
+
+        with (
+            patch("apps.integrations.sautai_client.httpx.get", return_value=_mock_response(contradictory)),
+            patch("apps.integrations.sautai_client.httpx.post") as mock_post,
+            patch("apps.integrations.sautai_notify.notify_sautai_plan_ready") as mock_notify,
+        ):
+            call_sautai_generate_plan(job, poll_generation=poll_generation)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+        self.assertIn("malformed generation status", job.error)
+        mock_post.assert_not_called()
+        mock_notify.assert_not_called()
+
+    def test_status_io_cannot_run_past_the_strict_deadline(self):
+        from django.utils import timezone
+
+        from .sautai_client import ASYNC_GENERATION_STATE_KEY
+
+        job = self._acknowledged_job()
+        base = timezone.now()
+        state = job.result[ASYNC_GENERATION_STATE_KEY]
+        state["started_at"] = (base - timedelta(seconds=599)).isoformat()
+        job.result = {ASYNC_GENERATION_STATE_KEY: state}
+        job.save(update_fields=["result", "updated_at"])
+        poll_generation = self._claim_poll(job)
+        completed = {
+            "status_code": 200,
+            "body": {
+                "status": "completed",
+                "remaining_count": 0,
+                "failed_slots": [],
+                "plan_id": 1,
+                "week_start_date": "2026-08-03",
+            },
+        }
+
+        with (
+            patch(
+                "apps.integrations.sautai_client.timezone.now",
+                side_effect=[base, base, base + timedelta(seconds=2), base + timedelta(seconds=2)],
+            ),
+            patch("apps.integrations.sautai_client.httpx.get", return_value=_mock_response(completed)) as mock_get,
+            patch("apps.integrations.sautai_client.httpx.post") as mock_post,
+        ):
+            call_sautai_generate_plan(job, poll_generation=poll_generation)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+        self.assertIn("sautai_poll_timeout", job.error)
+        self.assertEqual(mock_get.call_args.kwargs["timeout"], 1.0)
+        mock_post.assert_not_called()
+
+    def test_current_plan_io_uses_remaining_budget_and_fails_after_deadline(self):
+        from django.utils import timezone
+
+        from .sautai_client import ASYNC_GENERATION_STATE_KEY
+
+        job = self._acknowledged_job()
+        base = timezone.now()
+        state = job.result[ASYNC_GENERATION_STATE_KEY]
+        state["started_at"] = (base - timedelta(seconds=595)).isoformat()
+        job.result = {ASYNC_GENERATION_STATE_KEY: state}
+        job.save(update_fields=["result", "updated_at"])
+        poll_generation = self._claim_poll(job)
+        completed = {
+            "status_code": 200,
+            "body": {
+                "status": "completed",
+                "remaining_count": 0,
+                "failed_slots": [],
+                "plan_id": 1,
+                "week_start_date": "2026-08-03",
+            },
+        }
+        current = _load_fixture("current_ok.json")
+
+        with (
+            patch(
+                "apps.integrations.sautai_client.timezone.now",
+                side_effect=[
+                    base,
+                    base,
+                    base,
+                    base,
+                    base,
+                    base + timedelta(seconds=6),
+                    base + timedelta(seconds=6),
+                ],
+            ),
+            patch("apps.integrations.sautai_client.httpx.get", return_value=_mock_response(completed)),
+            patch("apps.integrations.sautai_client.httpx.post", return_value=_mock_response(current)) as mock_post,
+            patch("apps.integrations.sautai_notify.notify_sautai_plan_ready") as mock_notify,
+        ):
+            call_sautai_generate_plan(job, poll_generation=poll_generation)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+        self.assertIn("sautai_poll_timeout", job.error)
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], 5.0)
+        mock_notify.assert_not_called()
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -598,12 +758,14 @@ class GenerateSautaiMealPlanTaskTests(TestCase):
             generate_sautai_meal_plan_task(str(job.id))
             job.refresh_from_db()
             self.assertEqual(job.status, SautaiMealPlanJobStatus.PENDING, job.error)
+            first_generation = mock_publish.call_args_list[0].kwargs["poll_generation"]
 
-            generate_sautai_meal_plan_task(str(job.id))
+            generate_sautai_meal_plan_task(str(job.id), poll_generation=first_generation)
             job.refresh_from_db()
             self.assertEqual(job.status, SautaiMealPlanJobStatus.PENDING)
+            second_generation = mock_publish.call_args_list[1].kwargs["poll_generation"]
 
-            generate_sautai_meal_plan_task(str(job.id))
+            generate_sautai_meal_plan_task(str(job.id), poll_generation=second_generation)
 
         job.refresh_from_db()
         self.assertEqual(job.status, SautaiMealPlanJobStatus.READY)
@@ -612,9 +774,176 @@ class GenerateSautaiMealPlanTaskTests(TestCase):
         second_publish = mock_publish.call_args_list[1]
         self.assertEqual(first_publish.args[:2], ("generate_sautai_meal_plan", str(job.id)))
         self.assertEqual(first_publish.kwargs["delay_seconds"], 15)
-        self.assertTrue(first_publish.kwargs["idempotency_key"].endswith("-0"))
-        self.assertTrue(second_publish.kwargs["idempotency_key"].endswith("-1"))
+        self.assertEqual(first_publish.kwargs["poll_generation"], 1)
+        self.assertEqual(second_publish.kwargs["poll_generation"], 2)
+        self.assertTrue(first_publish.kwargs["idempotency_key"].endswith("-1"))
+        self.assertTrue(second_publish.kwargs["idempotency_key"].endswith("-2"))
         mock_notify.assert_called_once()
+
+    @override_settings(
+        QSTASH_TOKEN="qstash-test",
+        API_BASE_URL="https://nbhd.test",
+        SAUTAI_M2M_BASE_URL="https://app.sautai.test",
+        SAUTAI_PLATFORM_SECRET="test-secret",
+    )
+    def test_serial_redelivery_cannot_fork_the_poll_chain(self):
+        from .sautai_client import ASYNC_GENERATION_STATE_KEY
+
+        ack = _mock_response(_load_fixture("generate_ok.json"))
+        running = _mock_response(
+            {
+                "status_code": 200,
+                "body": {
+                    "status": "running",
+                    "remaining_count": 2,
+                    "failed_slots": [],
+                    "plan_id": 1,
+                    "week_start_date": "2026-08-03",
+                },
+            }
+        )
+        job = SautaiMealPlanJob.objects.create(tenant=self.tenant, week_start=date(2026, 8, 3))
+
+        with (
+            patch("apps.integrations.sautai_client.httpx.post", return_value=ack),
+            patch("apps.integrations.sautai_client.httpx.get", return_value=running) as mock_get,
+            patch("apps.cron.publish.publish_task") as mock_publish,
+        ):
+            generate_sautai_meal_plan_task(str(job.id))
+            first_generation = mock_publish.call_args.kwargs["poll_generation"]
+            generate_sautai_meal_plan_task(str(job.id), poll_generation=first_generation)
+
+            job.refresh_from_db()
+            self.assertEqual(job.result[ASYNC_GENERATION_STATE_KEY]["poll_generation"], 2)
+            self.assertEqual(mock_publish.call_count, 2)
+
+            # The original delivery arrives again after the row returned to
+            # PENDING. Its generation no longer matches, so it cannot poll or
+            # publish another branch.
+            generate_sautai_meal_plan_task(str(job.id), poll_generation=first_generation)
+
+        self.assertEqual(mock_get.call_count, 1)
+        self.assertEqual(mock_publish.call_count, 2)
+
+    @override_settings(
+        QSTASH_TOKEN="",
+        API_BASE_URL="",
+        SAUTAI_M2M_BASE_URL="https://app.sautai.test",
+        SAUTAI_PLATFORM_SECRET="test-secret",
+    )
+    def test_async_ack_without_qstash_fails_instead_of_remaining_pending(self):
+        job = SautaiMealPlanJob.objects.create(tenant=self.tenant)
+        with patch(
+            "apps.integrations.sautai_client.httpx.post",
+            return_value=_mock_response(_load_fixture("generate_ok.json")),
+        ):
+            generate_sautai_meal_plan_task(str(job.id))
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+        self.assertIn("QStash is not configured", job.error)
+
+    @override_settings(
+        QSTASH_TOKEN="qstash-test",
+        API_BASE_URL="https://nbhd.test",
+        SAUTAI_M2M_BASE_URL="https://app.sautai.test",
+        SAUTAI_PLATFORM_SECRET="test-secret",
+    )
+    def test_dropped_successor_is_recovered_with_a_new_generation(self):
+        from django.utils import timezone
+
+        from .sautai_client import ASYNC_GENERATION_STATE_KEY
+
+        job = SautaiMealPlanJob.objects.create(tenant=self.tenant)
+        with (
+            patch(
+                "apps.integrations.sautai_client.httpx.post",
+                return_value=_mock_response(_load_fixture("generate_ok.json")),
+            ),
+            patch("apps.integrations.tasks._publish_sautai_poll", side_effect=RuntimeError("dropped")),
+            self.assertRaisesRegex(RuntimeError, "dropped"),
+        ):
+            generate_sautai_meal_plan_task(str(job.id))
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.PENDING)
+        self.assertEqual(job.result[ASYNC_GENERATION_STATE_KEY]["poll_generation"], 1)
+        SautaiMealPlanJob.objects.filter(id=job.id).update(updated_at=timezone.now() - timedelta(seconds=46))
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            counts = recover_sautai_generation_jobs_task()
+
+        job.refresh_from_db()
+        self.assertEqual(counts["recovered"], 1)
+        self.assertEqual(counts["published"], 1)
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.PENDING)
+        self.assertEqual(job.result[ASYNC_GENERATION_STATE_KEY]["poll_generation"], 2)
+        self.assertEqual(mock_publish.call_args.kwargs["poll_generation"], 2)
+
+    @override_settings(
+        QSTASH_TOKEN="qstash-test",
+        API_BASE_URL="https://nbhd.test",
+        SAUTAI_M2M_BASE_URL="https://app.sautai.test",
+        SAUTAI_PLATFORM_SECRET="test-secret",
+    )
+    def test_recovery_revokes_a_stale_generating_lease(self):
+        from django.utils import timezone
+
+        from .sautai_client import ASYNC_GENERATION_STATE_KEY
+
+        job = SautaiMealPlanJob.objects.create(tenant=self.tenant)
+        with patch(
+            "apps.integrations.sautai_client.httpx.post",
+            return_value=_mock_response(_load_fixture("generate_ok.json")),
+        ):
+            call_sautai_generate_plan(job)
+        SautaiMealPlanJob.objects.filter(id=job.id).update(
+            status=SautaiMealPlanJobStatus.GENERATING,
+            updated_at=timezone.now() - timedelta(seconds=46),
+        )
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            counts = recover_sautai_generation_jobs_task()
+
+        job.refresh_from_db()
+        self.assertEqual(counts["recovered"], 1)
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.PENDING)
+        self.assertEqual(job.result[ASYNC_GENERATION_STATE_KEY]["poll_generation"], 2)
+        self.assertEqual(mock_publish.call_args.kwargs["poll_generation"], 2)
+
+    @override_settings(
+        QSTASH_TOKEN="qstash-test",
+        API_BASE_URL="https://nbhd.test",
+        SAUTAI_M2M_BASE_URL="https://app.sautai.test",
+        SAUTAI_PLATFORM_SECRET="test-secret",
+    )
+    def test_recovery_terminalizes_a_job_past_the_strict_deadline(self):
+        from django.utils import timezone
+
+        from .sautai_client import ASYNC_GENERATION_STATE_KEY
+
+        job = SautaiMealPlanJob.objects.create(tenant=self.tenant)
+        with patch(
+            "apps.integrations.sautai_client.httpx.post",
+            return_value=_mock_response(_load_fixture("generate_ok.json")),
+        ):
+            call_sautai_generate_plan(job)
+        job.refresh_from_db()
+        state = job.result[ASYNC_GENERATION_STATE_KEY]
+        state["started_at"] = (timezone.now() - timedelta(minutes=10, seconds=1)).isoformat()
+        SautaiMealPlanJob.objects.filter(id=job.id).update(
+            result={ASYNC_GENERATION_STATE_KEY: state},
+            updated_at=timezone.now() - timedelta(seconds=46),
+        )
+
+        with patch("apps.cron.publish.publish_task") as mock_publish:
+            counts = recover_sautai_generation_jobs_task()
+
+        job.refresh_from_db()
+        self.assertEqual(counts["failed"], 1)
+        self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+        self.assertIn("sautai_poll_timeout", job.error)
+        mock_publish.assert_not_called()
 
 
 # ═════════════════════════════════════════════════════════════════════
@@ -1119,11 +1448,31 @@ class SautaiReadyMessageTests(TestCase):
             web_link="https://sautai.com/plan",
             user_prompt="high protein",
             regenerate=False,
-            funnel={"account_claimed": True, "already_existed": True},
+            funnel={
+                "account_claimed": True,
+                "already_existed": True,
+                "async_contract_confirmed": True,
+            },
         )
         msg = _ready_message(job)
         self.assertIn("regeneration only fills gaps", msg.lower())
         self.assertIn("occupied meals untouched", msg.lower())
+
+    def test_legacy_already_existed_guidance_keeps_original_regenerate_nudge(self):
+        from .sautai_notify import _ready_message
+
+        job = self._job(
+            web_link="https://sautai.com/plan",
+            user_prompt="high protein",
+            regenerate=False,
+            funnel={"account_claimed": True, "already_existed": True},
+        )
+        msg = _ready_message(job)
+        self.assertIn(
+            "This was your existing plan for the week — ask me to regenerate it if you want your latest notes applied.",
+            msg,
+        )
+        self.assertNotIn("fills gaps", msg.lower())
 
     def test_regenerated_plan_has_no_stale_nudge(self):
         from .sautai_notify import _ready_message
