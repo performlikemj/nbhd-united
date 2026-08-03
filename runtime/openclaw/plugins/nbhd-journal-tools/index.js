@@ -77,6 +77,24 @@ function renderPayload(payload) {
   };
 }
 
+function compactErrorDetail(payload) {
+  const normalized = asObject(payload);
+  const detail = normalized.detail;
+  if (typeof detail === "string" && detail.trim()) return detail.trim();
+
+  const value = detail !== undefined
+    ? detail
+    : Object.fromEntries(Object.entries(normalized).filter(([key]) => key !== "error"));
+  if (value === undefined || value === null) return "";
+  if (typeof value === "object" && Object.keys(value).length === 0) return "";
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
 async function callRuntime(api, { path, method = "GET", query, body, extraHeaders }) {
   const runtime = getRuntimeConfig(api);
   const url = buildUrl(runtime.apiBaseUrl, path, query);
@@ -119,7 +137,10 @@ async function callRuntime(api, { path, method = "GET", query, body, extraHeader
     if (!response.ok) {
       const normalized = asObject(payload);
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
-      const detail = asTrimmedString(normalized.detail);
+      // DRF commonly returns field errors at the top level, e.g.
+      // {week_rating: ["..."]}, rather than under `detail`. Preserve that
+      // compact validation payload so the model can correct and retry.
+      const detail = compactErrorDetail(normalized);
       const detailSuffix = detail ? ` (${detail})` : "";
       throw new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}`);
     }
@@ -150,7 +171,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_document_get",
       description:
-        "Get a document by kind and slug. Works for any document type: daily notes, goals, tasks, ideas, projects, memory, weekly/monthly reviews. Returns the full markdown content.",
+        "Get a document by kind and slug. Works for any document type: daily notes, goals, tasks, ideas, projects, memory, weekly/monthly reviews. Weekly slugs are ISO weeks such as 2026-W28. Omit slug first to discover available_slugs, then retry with an exact slug. Returns the full markdown content when it exists.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -162,7 +183,7 @@ export default function register(api) {
           },
           slug: {
             type: "string",
-            description: "Document slug. For daily notes: YYYY-MM-DD. For singleton docs (tasks, ideas, memory): use the kind name. For projects: project-name.",
+            description: "Document slug. For daily notes: YYYY-MM-DD. For weekly reviews: ISO week such as 2026-W28. For singleton docs (tasks, ideas, memory): use the kind name. For projects: project-name. Omit to list available slugs on a miss.",
           },
         },
         required: ["kind"],

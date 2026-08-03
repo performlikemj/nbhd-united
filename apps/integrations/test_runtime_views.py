@@ -561,6 +561,28 @@ class RuntimeIntegrationViewsTest(TestCase):
         self.assertEqual(WeeklyReview.objects.count(), 1)
         self.assertEqual(WeeklyReview.objects.first().tenant, self.tenant)
 
+    def test_runtime_weekly_review_normalizes_case_and_spaces(self):
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/weekly-reviews/",
+            data={
+                "week_start": "2026-02-06",
+                "week_end": "2026-02-12",
+                "mood_summary": "Strong finish",
+                "top_wins": [],
+                "top_challenges": [],
+                "lessons": [],
+                "week_rating": "  Thumbs Up  ",
+                "intentions_next_week": [],
+                "raw_text": "Review summary",
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json()["review"]["week_rating"], "thumbs-up")
+        self.assertEqual(WeeklyReview.objects.get().week_rating, "thumbs-up")
+
     def test_runtime_weekly_review_rejects_invalid_rating(self):
         response = self.client.post(
             f"/api/v1/integrations/runtime/{self.tenant.id}/weekly-reviews/",
@@ -2112,6 +2134,17 @@ class RuntimeDocumentSingletonSlugTest(TestCase):
 
         return Document.objects.filter(tenant=self.tenant, kind="goal")
 
+    def _create_document(self, *, kind: str, slug: str):
+        from apps.journal.models import Document
+
+        return Document.objects.create(
+            tenant=self.tenant,
+            kind=kind,
+            slug=slug,
+            title=slug,
+            markdown=f"# {slug}",
+        )
+
     def test_get_goal_slug_omitted_uses_canonical_goals(self):
         resp = self.client.get(self._url() + "?kind=goal", **self._headers())
         self.assertEqual(resp.status_code, 200, resp.content)
@@ -2175,6 +2208,7 @@ class RuntimeDocumentSingletonSlugTest(TestCase):
 
     def test_non_singleton_kind_slug_preserved(self):
         # weekly is intentionally multi-instance — slug must NOT be coerced.
+        self._create_document(kind="weekly", slug="2026-04-06")
         resp = self.client.get(self._url() + "?kind=weekly&slug=2026-04-06", **self._headers())
         self.assertEqual(resp.status_code, 200, resp.content)
         self.assertEqual(resp.json()["slug"], "2026-04-06")

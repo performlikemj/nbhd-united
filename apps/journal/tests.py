@@ -503,6 +503,12 @@ class WeeklyReviewAPITest(TestCase):
         self.assertEqual(resp.data["week_rating"], "thumbs-up")
         self.assertIn("id", resp.data)
 
+    def test_create_review_normalizes_case_and_hyphenated_rating(self):
+        resp = self._create_review(week_rating="Thumbs-Up")
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(resp.data["week_rating"], "thumbs-up")
+        self.assertEqual(WeeklyReview.objects.get(id=resp.data["id"]).week_rating, "thumbs-up")
+
     def test_list_reviews(self):
         self._create_review(week_start="2026-02-02", week_end="2026-02-08")
         self._create_review(week_start="2026-02-09", week_end="2026-02-15")
@@ -1136,6 +1142,21 @@ class DocumentAPITest(TestCase):
             ).exists()
         )
 
+    def test_get_guessed_weekly_slug_returns_404_not_validation_400(self):
+        resp = self.client.get("/api/v1/journal/documents/weekly/weekly_review_2026-07-04/")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(
+            resp.data,
+            {"error": "not_found", "detail": "Document not found."},
+        )
+        self.assertFalse(
+            Document.objects.filter(
+                tenant=self.tenant,
+                kind="weekly",
+                slug="weekly_review_2026-07-04",
+            ).exists()
+        )
+
     def test_get_existing_document(self):
         """GET for an existing document returns 200."""
         Document.objects.create(
@@ -1400,7 +1421,7 @@ class DocumentAPITest(TestCase):
 # ---------------------------------------------------------------------------
 
 
-@override_settings(NBHD_INTERNAL_API_KEY="test-key")
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
 class RuntimeDocumentAPITest(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="rtdocuser", password="pass")
@@ -1413,6 +1434,13 @@ class RuntimeDocumentAPITest(TestCase):
         }
 
     def test_get_document(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="daily",
+            slug="2026-02-16",
+            title="February 16",
+            markdown="# 2026-02-16\n\n## Morning Report\n",
+        )
         resp = self.client.get(
             f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
             {"kind": "daily", "slug": "2026-02-16"},
@@ -1422,6 +1450,42 @@ class RuntimeDocumentAPITest(TestCase):
         self.assertEqual(resp.data["kind"], "daily")
         self.assertEqual(resp.data["slug"], "2026-02-16")
         self.assertIn("Morning Report", resp.data["markdown"])
+
+    def test_get_missing_document_returns_available_slugs_without_creating(self):
+        slugs = [f"2026-W{week:02d}" for week in range(1, 23)]
+        for slug in slugs:
+            Document.objects.create(
+                tenant=self.tenant,
+                kind="weekly",
+                slug=slug,
+                title=f"Weekly Review — {slug}",
+                markdown=f"# {slug}",
+            )
+
+        guessed_slug = "weekly_review_2026-07-04"
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+            {"kind": "weekly", "slug": guessed_slug},
+            **self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.data,
+            {
+                "exists": False,
+                "kind": "weekly",
+                "slug": guessed_slug,
+                "available_slugs": list(reversed(slugs))[:20],
+            },
+        )
+        self.assertFalse(
+            Document.objects.filter(
+                tenant=self.tenant,
+                kind="weekly",
+                slug=guessed_slug,
+            ).exists()
+        )
 
     def test_put_document(self):
         resp = self.client.put(
@@ -1565,6 +1629,7 @@ class RuntimeDocumentAPITest(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.data["error"], "invalid_kind")
+        self.assertEqual(resp.data["valid_kinds"], sorted(Document.Kind.values))
 
     def test_append_rejects_colon_slug(self):
         resp = self.client.post(

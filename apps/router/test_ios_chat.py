@@ -479,8 +479,28 @@ class IOSChatJournalLinkTest(TestCase):
     that iOS renders as a "View in Journal" chip."""
 
     def setUp(self):
+        from apps.journal.models import Document
+
         self.user = _make_user()
         self.tenant = _make_tenant(self.user)
+        Document.objects.bulk_create(
+            [
+                Document(
+                    tenant=self.tenant,
+                    kind=Document.Kind.DAILY,
+                    slug="2026-07-13",
+                    title="Morning Report",
+                    markdown="# 2026-07-13",
+                ),
+                Document(
+                    tenant=self.tenant,
+                    kind=Document.Kind.GOAL,
+                    slug="reconnect",
+                    title="Reconnect",
+                    markdown="# Reconnect",
+                ),
+            ]
+        )
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
 

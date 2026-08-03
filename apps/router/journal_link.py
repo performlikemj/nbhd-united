@@ -80,7 +80,10 @@ def extract_journal_link(
     ``|``-separated fields, an unknown ``kind``, an empty / over-long / bad-
     charset ``slug``, or an empty / over-long ``title``) is still stripped —
     never shown to a user raw — but yields ``journal_link=None`` and logs a
-    telemetry warning (agent misuse signal) instead of raising.
+    telemetry warning (agent misuse signal) instead of raising. Production
+    callers supply ``tenant_id``; in that mode a single indexed existence
+    lookup also drops links to documents that are not present for the tenant.
+    Omitting ``tenant_id`` is parser-only mode for isolated validation tests.
     """
     if not text:
         return text, None
@@ -108,6 +111,26 @@ def extract_journal_link(
     if reason:
         _log_malformed(tenant_id=tenant_id, channel=channel, reason=reason, sample=last_line)
         return remainder, None
+    if tenant_id is not None:
+        from apps.journal.models import Document
+
+        try:
+            exists = Document.objects.filter(
+                tenant_id=tenant_id,
+                kind=kind,
+                slug=slug,
+            ).exists()
+        except Exception:
+            logger.exception("journal_link: document existence check failed; dropping link")
+            return remainder, None
+        if not exists:
+            _log_malformed(
+                tenant_id=tenant_id,
+                channel=channel,
+                reason="missing_document",
+                sample=last_line,
+            )
+            return remainder, None
     return remainder, {"kind": kind, "slug": slug, "title": title}
 
 
