@@ -178,6 +178,25 @@ class CallSautaiGeneratePlanTests(TestCase):
         second.refresh_from_db()
         self.assertIs(second.funnel["async_contract_request_enabled"], True)
 
+    def test_worker_uses_admission_snapshot_without_second_global_read(self):
+        from .sautai_client import ASYNC_CONTRACT_REQUEST_DECISION_KEY
+
+        job = self._job(funnel={ASYNC_CONTRACT_REQUEST_DECISION_KEY: True})
+        with (
+            patch(
+                "apps.integrations.sautai_client.sautai_async_contract_confirmed",
+                side_effect=AssertionError("worker re-read global capability after admission"),
+            ) as global_capability,
+            patch(
+                "apps.integrations.sautai_client.httpx.post",
+                return_value=_mock_response(_load_fixture("generate_ok.json")),
+            ) as mock_post,
+        ):
+            call_sautai_generate_plan(job)
+
+        global_capability.assert_not_called()
+        self.assertEqual(mock_post.call_args.kwargs["timeout"], 20.0)
+
     def test_malformed_202_does_not_flip_or_shorten_the_next_post(self):
         from .sautai_client import sautai_async_contract_confirmed
 
@@ -462,6 +481,72 @@ class AsyncSautaiGenerationTests(TestCase):
         mock_post.assert_not_called()
         self.assertEqual(mock_get.call_args.kwargs["timeout"], 10)
 
+    def test_capability_recording_waits_for_http_json_and_contract_validation(self):
+        from .sautai_client import sautai_async_contract_confirmed
+
+        non_json = MagicMock()
+        non_json.status_code = 200
+        non_json.json.side_effect = ValueError("not json")
+        invalid_responses = (
+            (
+                "http",
+                _mock_response({"status_code": 401, "body": {"code": "invalid_secret"}}),
+            ),
+            ("json", non_json),
+            ("contract", _mock_response({"status_code": 200, "body": {"status": "running"}})),
+        )
+
+        for validation_layer, response in invalid_responses:
+            with self.subTest(validation_layer=validation_layer):
+                job = self._acknowledged_job()
+                poll_generation = self._claim_poll(job)
+                with (
+                    patch("apps.integrations.sautai_client.httpx.get", return_value=response),
+                    patch(
+                        "apps.integrations.sautai_client._record_validated_async_contract",
+                        side_effect=AssertionError("capability recorded before status validation"),
+                    ) as record_capability,
+                ):
+                    call_sautai_generate_plan(job, poll_generation=poll_generation)
+
+                record_capability.assert_not_called()
+                job.refresh_from_db()
+                self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
+                self.assertFalse(sautai_async_contract_confirmed())
+
+    def test_poll_401_and_transport_timeout_do_not_flip_capability(self):
+        import httpx
+
+        from .sautai_client import SAUTAI_GENERATE_POLL_PENDING, sautai_async_contract_confirmed
+
+        failures = (
+            (
+                "unauthorized",
+                {"return_value": _mock_response({"status_code": 401, "body": {"code": "invalid_secret"}})},
+                SautaiMealPlanJobStatus.FAILED,
+                None,
+            ),
+            (
+                "timeout",
+                {"side_effect": httpx.ReadTimeout("status poll timed out")},
+                SautaiMealPlanJobStatus.PENDING,
+                SAUTAI_GENERATE_POLL_PENDING,
+            ),
+        )
+
+        for failure, get_behavior, expected_status, expected_action in failures:
+            with self.subTest(failure=failure):
+                job = self._acknowledged_job()
+                poll_generation = self._claim_poll(job)
+                with patch("apps.integrations.sautai_client.httpx.get", **get_behavior):
+                    action = call_sautai_generate_plan(job, poll_generation=poll_generation)
+
+                job.refresh_from_db()
+                self.assertEqual(action, expected_action)
+                self.assertEqual(job.status, expected_status)
+                self.assertNotIn("async_contract_capability", job.funnel)
+                self.assertFalse(sautai_async_contract_confirmed())
+
     def test_validated_flip_then_legacy_200_reverts_capability(self):
         from .sautai_client import sautai_async_contract_confirmed
 
@@ -511,6 +596,46 @@ class AsyncSautaiGenerationTests(TestCase):
         ) as next_post:
             call_sautai_generate_plan(after_revert)
         self.assertEqual(next_post.call_args.kwargs["timeout"], 125.0)
+
+    def test_false_snapshot_late_legacy_200_reverts_concurrent_flip(self):
+        from .sautai_client import ASYNC_CONTRACT_REQUEST_DECISION_KEY, sautai_async_contract_confirmed
+
+        slow_legacy = SautaiMealPlanJob.objects.create(
+            tenant=self.tenant,
+            week_start=date(2026, 8, 10),
+            funnel={ASYNC_CONTRACT_REQUEST_DECISION_KEY: False},
+        )
+
+        validated = self._acknowledged_job()
+        running = {
+            "status_code": 200,
+            "body": {
+                "status": "running",
+                "remaining_count": 4,
+                "failed_slots": [],
+                "plan_id": 123,
+                "week_start_date": "2026-08-03",
+            },
+        }
+        poll_generation = self._claim_poll(validated)
+        with patch("apps.integrations.sautai_client.httpx.get", return_value=_mock_response(running)):
+            call_sautai_generate_plan(validated, poll_generation=poll_generation)
+        self.assertTrue(sautai_async_contract_confirmed())
+
+        with (
+            patch(
+                "apps.integrations.sautai_client.httpx.post",
+                return_value=_mock_response(_load_fixture("current_ok.json")),
+            ) as legacy_post,
+            patch("apps.integrations.sautai_notify.notify_sautai_plan_ready"),
+        ):
+            call_sautai_generate_plan(slow_legacy)
+
+        slow_legacy.refresh_from_db()
+        self.assertEqual(legacy_post.call_args.kwargs["timeout"], 125.0)
+        self.assertIs(slow_legacy.funnel[ASYNC_CONTRACT_REQUEST_DECISION_KEY], False)
+        self.assertEqual(slow_legacy.funnel["async_contract_capability"], "legacy")
+        self.assertFalse(sautai_async_contract_confirmed())
 
     def test_completed_fetches_current_and_uses_legacy_ready_path(self):
         job = self._acknowledged_job()
@@ -606,7 +731,7 @@ class AsyncSautaiGenerationTests(TestCase):
     def test_polling_stops_after_ten_minutes_without_network(self):
         from django.utils import timezone
 
-        from .sautai_client import ASYNC_GENERATION_STATE_KEY
+        from .sautai_client import ASYNC_GENERATION_STATE_KEY, sautai_async_contract_confirmed
 
         job = self._acknowledged_job()
         state = job.result[ASYNC_GENERATION_STATE_KEY]
@@ -622,6 +747,7 @@ class AsyncSautaiGenerationTests(TestCase):
         self.assertIsNone(action)
         self.assertEqual(job.status, SautaiMealPlanJobStatus.FAILED)
         self.assertIn("sautai_poll_timeout", job.error)
+        self.assertFalse(sautai_async_contract_confirmed())
         mock_get.assert_not_called()
 
     def test_completed_with_failures_and_remaining_work_fails_closed(self):

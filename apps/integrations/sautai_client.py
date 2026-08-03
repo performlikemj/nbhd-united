@@ -388,19 +388,18 @@ def call_sautai_generate_plan(job: SautaiMealPlanJob, *, poll_generation: int | 
 
     funnel = _funnel_from_response(body)
     funnel[ASYNC_CONTRACT_REQUEST_DECISION_KEY] = async_contract_for_request
-    if async_contract_for_request:
-        observed_at = timezone.now().isoformat()
-        funnel.update(
-            {
-                ASYNC_CONTRACT_CONFIRMED_KEY: False,
-                ASYNC_CONTRACT_EVENT_KEY: ASYNC_CONTRACT_EVENT_LEGACY,
-                ASYNC_CONTRACT_EVENT_AT_KEY: observed_at,
-            }
-        )
-        logger.warning(
-            "call_sautai_generate_plan: valid legacy 200 reverted async capability for job %s",
-            str(job.id)[:8],
-        )
+    observed_at = timezone.now().isoformat()
+    funnel.update(
+        {
+            ASYNC_CONTRACT_CONFIRMED_KEY: False,
+            ASYNC_CONTRACT_EVENT_KEY: ASYNC_CONTRACT_EVENT_LEGACY,
+            ASYNC_CONTRACT_EVENT_AT_KEY: observed_at,
+        }
+    )
+    logger.warning(
+        "call_sautai_generate_plan: valid legacy 200 reverted async capability for job %s",
+        str(job.id)[:8],
+    )
 
     _complete_sautai_job(
         job,
