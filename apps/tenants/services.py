@@ -17,8 +17,8 @@ from .models import Tenant, User
 
 logger = logging.getLogger(__name__)
 
-# Two weeks gives users time to build a working relationship with the assistant.
-TRIAL_DAYS = 14
+# One month (30 days) gives users time to build a working relationship with the assistant.
+TRIAL_DAYS = 30
 
 
 def ensure_tenant_provisioned(user: User) -> tuple[Tenant, bool, bool]:

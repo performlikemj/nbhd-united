@@ -126,7 +126,7 @@ function SignupPageInner() {
           </h2>
           <p className="mt-2 text-center text-sm text-white/45 leading-relaxed">
             Your private AI companion, in the{" "}
-            <span className="text-white/65">NBHD app</span>. 7-day free trial.
+            <span className="text-white/65">NBHD app</span>. 30-day free trial.
           </p>
 
           <form onSubmit={handleSubmit} className="mt-7 space-y-4">
