@@ -65,6 +65,20 @@ def _agents_md(tenant=None) -> str:
     return render_workspace_files("neighbor", tenant=tenant)["NBHD_AGENTS_MD"]
 
 
+class ConversationalReconcileGateTest(TestCase):
+    def test_happened_events_are_material_and_written_before_reply(self):
+        md = _agents_md()
+        self.assertIn("an interview/meeting/event that happened", md)
+        self.assertIn("BEFORE composing the reply, MUST call `nbhd_reconcile_scan", md)
+        self.assertIn("then MUST apply its indicated typed write(s)", md)
+
+    def test_routine_updates_do_not_ask_permission_and_are_reported(self):
+        md = _agents_md()
+        self.assertIn("Do not ask permission for routine state updates", md)
+        self.assertIn("ask only when the action is destructive or genuinely ambiguous", md)
+        self.assertIn('The reply MUST state what changed (e.g. *"Marked the Optiver interview task done."*)', md)
+
+
 class ReminderCapabilityListedTest(TestCase):
     def test_the_reminder_tool_is_named_in_the_base_template(self):
         self.assertIn(_REMINDER_TOOL, _agents_md())
