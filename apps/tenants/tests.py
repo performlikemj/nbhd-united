@@ -542,11 +542,11 @@ class OnboardTenantViewTest(TestCase):
         self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
         self.assertGreaterEqual(
             tenant.trial_ends_at,
-            before_signup + timedelta(days=14),
+            before_signup + timedelta(days=30),
         )
         self.assertLessEqual(
             tenant.trial_ends_at,
-            after_signup + timedelta(days=14),
+            after_signup + timedelta(days=30),
         )
         mock_publish.assert_called_once_with("provision_tenant", str(tenant.id))
         mock_seed.assert_called_once_with(tenant=tenant)

@@ -123,7 +123,7 @@ export default function SettingsBillingPage() {
               }`}>
                 <p className="text-sm font-medium text-ink">
                   {isTrialActive
-                    ? "Trial mode is active. You can still subscribe now to keep your assistant after 7 days."
+                    ? "Trial mode is active. You can still subscribe now to keep your assistant after your 30-day trial."
                     : isTrialExpired
                       ? "Your trial has ended. Subscribe to reactivate your assistant."
                       : "Your tenant is provisioned but you need an active subscription to use your agent."}
@@ -178,7 +178,7 @@ export default function SettingsBillingPage() {
             </div>
             <h3 className="mt-4 text-lg font-semibold text-ink">No subscription yet</h3>
             <p className="mt-2 max-w-sm text-sm text-ink-muted">
-              Complete onboarding to start your 7-day free trial, then subscribe for $12/mo.
+              Complete onboarding to start your 30-day free trial, then subscribe for $12/mo.
             </p>
             <div className="mt-6">
               <Link
