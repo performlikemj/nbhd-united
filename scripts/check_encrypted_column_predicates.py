@@ -185,7 +185,7 @@ _ALLOWLISTED_SITES: set[tuple[str, int, str]] = {
     # Lesson.galaxy_note — "active star" query: has a pinned galaxy note.
     ("apps/lessons/agent_context.py", 91, "galaxy_note"),
     # Lesson.text — duplicate-lesson guard before approving a new one.
-    ("apps/journal/extraction.py", 241, "text"),
+    ("apps/journal/extraction.py", 242, "text"),
     # Document.markdown — grounding-probe cron: is a topic reachable via
     # literal-phrase match.
     ("apps/orchestrator/grounding_probe.py", 85, "markdown"),

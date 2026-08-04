@@ -147,7 +147,7 @@ def _tutor_request(
     model = _tutoring_model()
     if tenant_id:
         try:
-            from apps.pii.egress import redact_known_value_fields
+            from apps.pii.egress import entity_legend_block, redact_known_value_fields
             from apps.tenants.models import Tenant
 
             tenant = Tenant.objects.filter(id=tenant_id).only("id", "pii_entity_map").first()
@@ -157,6 +157,20 @@ def _tutor_request(
                 seam="lesson_tutoring_prompt",
                 text_fields=frozenset({"content"}),
             )
+            messages = [dict(message) for message in messages]
+            legend_source = "\n".join(
+                message["content"] for message in messages if isinstance(message.get("content"), str)
+            )
+            legend_block = entity_legend_block(
+                tenant,
+                legend_source,
+                seam="lesson_tutoring_prompt",
+            )
+            if legend_block:
+                for message in reversed(messages):
+                    if isinstance(message.get("content"), str):
+                        message["content"] += legend_block
+                        break
         except Exception:
             logger.warning(
                 "pii_egress_guard_error tenant=%s seam=lesson_tutoring_prompt",

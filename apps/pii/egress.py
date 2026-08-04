@@ -9,13 +9,17 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
-from apps.pii.entity_registry import inverted_names_ci
+from apps.pii.entity_registry import get_metadata, inverted_names_ci, iter_normalized
 from apps.pii.redactor import _PLACEHOLDER_RE
 
 if TYPE_CHECKING:
     from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
+
+ENTITY_LEGEND_HEADER = "[Entity legend — placeholder-space, for context only]"
+_ENTITY_LEGEND_MAX_ENTRIES = 20
+_ENTITY_LEGEND_MAX_LINE_CHARS = 140
 
 
 @dataclass(frozen=True)
@@ -108,6 +112,80 @@ def redact_known_values(tenant: Tenant | None, text: str, *, seam: str) -> str:
             exc_info=True,
         )
         return text
+
+
+def build_entity_legend(tenant: Tenant | None, text: str) -> str:
+    """Describe placeholders present in ``text`` using safe registry metadata.
+
+    Relationship and notes fields are user-authored, so their combined text is
+    passed through the same known-value redactor as model-bound content. The
+    returned body has no framing header; callers use ``append_entity_legend``
+    (or ``entity_legend_block`` for structured prompts) to add it fail-open.
+    """
+    if not text or tenant is None:
+        return ""
+    entity_map = getattr(tenant, "pii_entity_map", None) or {}
+    if not entity_map:
+        return ""
+
+    present = {f"[{match.group(1)}_{match.group(2)}]" for match in _PLACEHOLDER_RE.finditer(text)}
+    if not present:
+        return ""
+
+    entries = dict(iter_normalized(entity_map))
+    matcher = _matcher_for_tenant(tenant)
+    ordered = sorted(
+        present,
+        key=lambda placeholder: (
+            int(placeholder.rsplit("_", 1)[1][:-1]),
+            placeholder,
+        ),
+    )
+
+    lines: list[str] = []
+    for placeholder in ordered:
+        meta = get_metadata(entries.get(placeholder))
+        relationship_value = meta.get("relationship")
+        notes_value = meta.get("notes")
+        relationship = " ".join(relationship_value.split()) if isinstance(relationship_value, str) else ""
+        notes = " ".join(notes_value.split()) if isinstance(notes_value, str) else ""
+        if not relationship and not notes:
+            continue
+
+        descriptor = _redact_known_values(
+            tenant,
+            "; ".join(part for part in (relationship, notes) if part),
+        )
+        assert matcher is None or matcher.pattern.search(descriptor) is None, (
+            "mapped raw value survived entity legend redaction"
+        )
+        lines.append(f"{placeholder}: {descriptor}"[:_ENTITY_LEGEND_MAX_LINE_CHARS].rstrip())
+        if len(lines) >= _ENTITY_LEGEND_MAX_ENTRIES:
+            break
+
+    return "\n".join(lines)
+
+
+def entity_legend_block(tenant: Tenant | None, text: str, *, seam: str) -> str:
+    """Return a framed entity legend block, logging and omitting on failure."""
+    try:
+        legend = build_entity_legend(tenant, text)
+    except Exception:
+        logger.warning(
+            "pii_egress_guard_error tenant=%s seam=%s",
+            getattr(tenant, "id", "?"),
+            f"legend:{seam}",
+            exc_info=True,
+        )
+        return ""
+    if not legend:
+        return ""
+    return f"\n\n{ENTITY_LEGEND_HEADER}\n{legend}"
+
+
+def append_entity_legend(tenant: Tenant | None, text: str, *, seam: str) -> str:
+    """Append a contextual entity legend without changing empty-legend text."""
+    return text + entity_legend_block(tenant, text, seam=seam)
 
 
 def redact_known_value_fields(

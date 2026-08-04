@@ -135,9 +135,10 @@ def _call_extraction_llm(
         system = EXTRACTION_SYSTEM
         user_message = f"Extract from this daily note:\n\n{content[:6000]}"
 
-    from apps.pii.egress import redact_known_values
+    from apps.pii.egress import append_entity_legend, redact_known_values
 
     user_message = redact_known_values(tenant, user_message, seam="journal_extraction_prompt")
+    user_message = append_entity_legend(tenant, user_message, seam="journal_extraction_prompt")
 
     data, _model_used = chat_completion(
         EXTRACTION_MODELS,

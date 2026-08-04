@@ -4,7 +4,10 @@ from unittest.mock import patch
 from django.test import SimpleTestCase
 
 from apps.pii.egress import (
+    ENTITY_LEGEND_HEADER,
     _compile_known_value_matcher,
+    append_entity_legend,
+    build_entity_legend,
     redact_known_value_fields,
     redact_known_values,
 )
@@ -109,3 +112,87 @@ class KnownValueEgressGuardTests(SimpleTestCase):
                 payload,
             )
         self.assertIn("pii_egress_guard_error tenant=tenant-a seam=recursive_failure", logs.output[0])
+
+
+class EntityLegendTests(SimpleTestCase):
+    def setUp(self):
+        _compile_known_value_matcher.cache_clear()
+
+    def test_only_present_tokens_with_metadata_are_included_in_numeric_order(self):
+        tenant = _tenant(
+            {
+                "[PERSON_10]": {"name": "Ten", "notes": "from work"},
+                "[PERSON_2]": {"name": "Two", "relationship": "neighbor"},
+                "[PERSON_1]": {"name": "One", "relationship": "friend"},
+                "[PERSON_3]": {"name": "Three"},
+            }
+        )
+        legend = build_entity_legend(
+            tenant,
+            "Ask [PERSON_10], [PERSON_3], and [PERSON_2]. [PERSON_2] knows.",
+        )
+        self.assertEqual(
+            legend,
+            "[PERSON_2]: neighbor\n[PERSON_10]: from work",
+        )
+
+    def test_relationship_and_notes_are_re_pseudonymized(self):
+        tenant = _tenant(
+            {
+                "[PERSON_1]": {
+                    "name": "Theo Smith",
+                    "relationship": "recruiter at Optiver",
+                    "notes": "introduced by Alice Jones",
+                },
+                "[PERSON_2]": {"name": "Alice Jones"},
+                "[ORG_1]": {"name": "Optiver"},
+            }
+        )
+        legend = build_entity_legend(tenant, "Follow up with [PERSON_1].")
+        self.assertEqual(
+            legend,
+            "[PERSON_1]: recruiter at [ORG_1]; introduced by [PERSON_2]",
+        )
+        self.assertNotIn("Optiver", legend)
+        self.assertNotIn("Alice Jones", legend)
+
+    def test_entry_and_line_caps_are_enforced(self):
+        entity_map = {
+            f"[PERSON_{number}]": {
+                "name": f"Mapped Name {number}",
+                "notes": f"context {number} " + ("x" * 200),
+            }
+            for number in reversed(range(1, 26))
+        }
+        tenant = _tenant(entity_map)
+        text = " ".join(f"[PERSON_{number}]" for number in reversed(range(1, 26)))
+        lines = build_entity_legend(tenant, text).splitlines()
+        self.assertEqual(len(lines), 20)
+        self.assertEqual(lines[0].split(":", 1)[0], "[PERSON_1]")
+        self.assertEqual(lines[-1].split(":", 1)[0], "[PERSON_20]")
+        self.assertTrue(all(len(line) <= 140 for line in lines))
+
+    def test_empty_legend_leaves_prompt_unchanged(self):
+        tenant = _tenant({"[PERSON_1]": {"name": "Theo Smith"}})
+        prompt = "Discuss [PERSON_1]."
+        self.assertEqual(
+            append_entity_legend(tenant, prompt, seam="unit_empty"),
+            prompt,
+        )
+
+    def test_failure_leaves_prompt_unchanged_and_logs_legend_seam(self):
+        tenant = _tenant({"[PERSON_1]": {"name": "Theo Smith", "relationship": "friend"}})
+        prompt = "Discuss [PERSON_1]."
+        with (
+            patch("apps.pii.egress.build_entity_legend", side_effect=RuntimeError("boom")),
+            self.assertLogs("apps.pii.egress", level="WARNING") as logs,
+        ):
+            self.assertEqual(
+                append_entity_legend(tenant, prompt, seam="unit_failure"),
+                prompt,
+            )
+        self.assertIn(
+            "pii_egress_guard_error tenant=tenant-a seam=legend:unit_failure",
+            logs.output[0],
+        )
+        self.assertNotIn(ENTITY_LEGEND_HEADER, prompt)
