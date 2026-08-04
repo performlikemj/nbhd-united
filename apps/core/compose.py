@@ -315,11 +315,16 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=N
     if not api_key:
         raise ComposeError("OPENROUTER_API_KEY not configured")
     target_seconds = _target_seconds_from_signals(signals)
-    from apps.pii.egress import redact_known_values
+    from apps.pii.egress import append_entity_legend, redact_known_values
 
     guarded_signals = redact_known_values(
         tenant,
         _format_signals(signals, target_seconds),
+        seam="meditation_compose_prompt",
+    )
+    guarded_signals = append_entity_legend(
+        tenant,
+        guarded_signals,
         seam="meditation_compose_prompt",
     )
     messages = [

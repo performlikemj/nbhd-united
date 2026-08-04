@@ -167,9 +167,10 @@ def _classify(content: str, threads, *, tenant: Tenant | None = None) -> list[di
         f"{content[:HINT_MAX_CONTENT_CHARS]}"
     )
 
-    from apps.pii.egress import redact_known_values
+    from apps.pii.egress import append_entity_legend, redact_known_values
 
     user_prompt = redact_known_values(tenant, user_prompt, seam="journal_agenda_hints_prompt")
+    user_prompt = append_entity_legend(tenant, user_prompt, seam="journal_agenda_hints_prompt")
 
     data, _model_used = chat_completion(
         HINT_MODELS,

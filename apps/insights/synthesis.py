@@ -359,9 +359,10 @@ def _call_synthesis_llm(context: dict[str, Any], *, tenant: Tenant | None = None
     reflection.
     """
     user_message = _format_context_for_prompt(context)
-    from apps.pii.egress import redact_known_values
+    from apps.pii.egress import append_entity_legend, redact_known_values
 
     user_message = redact_known_values(tenant, user_message, seam="insights_synthesis_prompt")
+    user_message = append_entity_legend(tenant, user_message, seam="insights_synthesis_prompt")
     data, _model_used = chat_completion(
         SYNTHESIS_MODELS,
         [

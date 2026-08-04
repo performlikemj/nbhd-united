@@ -12,7 +12,7 @@ from apps.insights.synthesis import _call_synthesis_llm
 from apps.journal.agenda_hints import _classify
 from apps.journal.extraction import _call_extraction_llm
 from apps.lessons.tutoring import _tutor_request
-from apps.pii.egress import KnownValueResponseGuardMixin
+from apps.pii.egress import ENTITY_LEGEND_HEADER, KnownValueResponseGuardMixin
 from apps.tenants.models import Tenant, User
 
 
@@ -20,7 +20,14 @@ def _tenant_stub():
     return SimpleNamespace(
         id="tenant-a",
         pk="tenant-a",
-        pii_entity_map={"[PERSON_1]": "Theo Smith", "[ORG_1]": "Optiver"},
+        pii_entity_map={
+            "[PERSON_1]": {
+                "name": "Theo Smith",
+                "relationship": "recruiter at Optiver",
+                "notes": "from work",
+            },
+            "[ORG_1]": "Optiver",
+        },
     )
 
 
@@ -29,28 +36,34 @@ def _completion(content="{}"):
 
 
 class BackgroundPromptGuardTests(SimpleTestCase):
+    def assert_has_entity_legend(self, prompt):
+        self.assertIn(ENTITY_LEGEND_HEADER, prompt)
+        self.assertIn("[PERSON_1]: recruiter at [ORG_1]; from work", prompt)
+        self.assertNotIn("Theo Smith", prompt)
+        self.assertNotIn("Optiver", prompt)
+
     @patch("apps.journal.extraction.chat_completion", return_value=_completion())
     def test_extraction_prompt_is_guarded(self, completion):
         _call_extraction_llm("Theo Smith joined Optiver", tenant=_tenant_stub())
         prompt = completion.call_args.args[1][1]["content"]
         self.assertIn("[PERSON_1]", prompt)
         self.assertIn("[ORG_1]", prompt)
-        self.assertNotIn("Theo Smith", prompt)
+        self.assert_has_entity_legend(prompt)
 
     @patch("apps.journal.agenda_hints.chat_completion", return_value=_completion('{"matches": []}'))
     def test_agenda_prompt_is_guarded(self, completion):
         thread = SimpleNamespace(kind="task", item_id="1", label="Theo Smith", context="Optiver")
         _classify("Theo Smith journal", [thread], tenant=_tenant_stub())
         prompt = completion.call_args.args[1][1]["content"]
-        self.assertNotIn("Theo Smith", prompt)
-        self.assertNotIn("Optiver", prompt)
+        self.assert_has_entity_legend(prompt)
 
     @patch("apps.insights.synthesis._format_context_for_prompt", return_value="Theo Smith at Optiver")
     @patch("apps.insights.synthesis.chat_completion", return_value=_completion("reflection"))
     def test_synthesis_prompt_is_guarded(self, completion, _format):
         _call_synthesis_llm({}, tenant=_tenant_stub())
         prompt = completion.call_args.args[1][1]["content"]
-        self.assertEqual(prompt, "[PERSON_1] at [ORG_1]")
+        self.assertTrue(prompt.startswith("[PERSON_1] at [ORG_1]"))
+        self.assert_has_entity_legend(prompt)
 
     @override_settings(OPENROUTER_API_KEY="test-key")
     @patch("apps.core.compose.render.validate_manifest", return_value=[])
@@ -59,8 +72,19 @@ class BackgroundPromptGuardTests(SimpleTestCase):
     def test_meditation_compose_prompt_is_guarded(self, completion, _normalize, _validate):
         compose.author_manifest({"additional_context": "Theo Smith at Optiver"}, tenant=_tenant_stub())
         prompt = completion.call_args.args[1][1]["content"]
-        self.assertNotIn("Theo Smith", prompt)
-        self.assertNotIn("Optiver", prompt)
+        self.assert_has_entity_legend(prompt)
+
+    @patch("apps.pii.egress.build_entity_legend", side_effect=RuntimeError("map unavailable"))
+    @patch("apps.journal.extraction.chat_completion", return_value=_completion())
+    def test_extraction_legend_failure_is_fail_open(self, completion, _legend):
+        with self.assertLogs("apps.pii.egress", level="WARNING") as logs:
+            _call_extraction_llm("Theo Smith joined Optiver", tenant=_tenant_stub())
+        prompt = completion.call_args.args[1][1]["content"]
+        self.assertEqual(prompt, "Extract from this daily note:\n\n[PERSON_1] joined [ORG_1]")
+        self.assertIn(
+            "pii_egress_guard_error tenant=tenant-a seam=legend:journal_extraction_prompt",
+            logs.output[0],
+        )
 
     @patch("apps.core.render.time.sleep")
     def test_gemini_tts_narration_is_guarded(self, _sleep):
@@ -80,6 +104,7 @@ class BackgroundPromptGuardTests(SimpleTestCase):
         prompt = generate.call_args.kwargs["contents"]
         self.assertNotIn("Theo Smith", prompt)
         self.assertNotIn("Optiver", prompt)
+        self.assertNotIn(ENTITY_LEGEND_HEADER, prompt)
 
 
 class _GuardedTestView(KnownValueResponseGuardMixin, APIView):
@@ -108,7 +133,14 @@ class ProviderAndRuntimeGuardTests(TestCase):
     def setUp(self):
         self.user = User.objects.create_user(username="phase2-guard")
         self.tenant = Tenant.objects.create(user=self.user)
-        self.tenant.pii_entity_map = {"[PERSON_1]": "Theo Smith", "[ORG_1]": "Optiver"}
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {
+                "name": "Theo Smith",
+                "relationship": "recruiter at Optiver",
+                "notes": "from work",
+            },
+            "[ORG_1]": "Optiver",
+        }
         self.tenant.save(update_fields=["pii_entity_map"])
 
     @override_settings(OPENROUTER_API_KEY="test-key")
@@ -122,7 +154,11 @@ class ProviderAndRuntimeGuardTests(TestCase):
             tenant_id=str(self.tenant.id),
         )
         prompt = post.call_args.kwargs["json"]["messages"][0]["content"]
-        self.assertEqual(prompt, "Coach [PERSON_1] at [ORG_1]")
+        self.assertTrue(prompt.startswith("Coach [PERSON_1] at [ORG_1]"))
+        self.assertIn(ENTITY_LEGEND_HEADER, prompt)
+        self.assertIn("[PERSON_1]: recruiter at [ORG_1]; from work", prompt)
+        self.assertNotIn("Theo Smith", prompt)
+        self.assertNotIn("Optiver", prompt)
 
     def test_runtime_mixin_guards_only_human_text_fields(self):
         request = APIRequestFactory().get("/")
