@@ -58,6 +58,12 @@ class RenderWorkspaceRulesTest(TestCase):
         self.assertIn("|unresolved", memory)
         self.assertIn("Never assert familiarity, deny", memory)
 
+    def test_memory_rule_requires_lookup_backed_check_claims(self):
+        memory = render_workspace_rules()["memory.md"]
+        self.assertIn("## Claims about checking", memory)
+        self.assertIn("only if you actually\ncalled a lookup tool THIS turn", memory)
+        self.assertIn("worst\nfailure mode", memory)
+
 
 class UpdateTenantConfigUploadsRulesTest(TestCase):
     """update_tenant_config() uploads rules to workspace/rules/."""
@@ -113,6 +119,8 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         )
         self.assertIn("## Redacted identities", memory_upload.args[2])
         self.assertIn("|unresolved", memory_upload.args[2])
+        self.assertIn("## Claims about checking", memory_upload.args[2])
+        self.assertIn("called a lookup tool THIS turn", memory_upload.args[2])
 
     @patch("apps.orchestrator.services.upload_config_to_file_share")
     @patch("apps.orchestrator.services.config_to_json", return_value="{}")
