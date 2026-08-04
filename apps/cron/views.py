@@ -90,6 +90,10 @@ TASK_MAP = {
     # send carries List-Unsubscribe headers. Zero-arg; fire via a QStash publish
     # to /api/cron/trigger/send_comeback_campaign/.
     "send_comeback_campaign": "apps.tenants.tasks.send_comeback_campaign_task",
+    # Targeted August 2026 comeback offer. The operator supplies the frozen
+    # tenant list in {"kwargs": {"tenant_ids": ["<uuid>", ...]}}; the task
+    # never discovers or widens the audience from live database state.
+    "send_comeback_2026_08_campaign": "apps.tenants.tasks.send_comeback_2026_08_campaign_task",
     # Operator-fired preview of the campaign emails — accepts
     # {"kwargs": {"kind": 1|2, "to": "<email>", "display_name": "..."}}
     # in the QStash body. Used pre-launch to sanity-check rendered HTML
