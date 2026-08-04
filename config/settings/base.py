@@ -207,6 +207,11 @@ STEWARD_GITHUB_TOKEN = env("STEWARD_GITHUB_TOKEN", default="")
 STEWARD_ASC_KEY_ID = env("STEWARD_ASC_KEY_ID", default="")
 STEWARD_ASC_ISSUER_ID = env("STEWARD_ASC_ISSUER_ID", default="")
 STEWARD_ASC_PRIVATE_KEY = env("STEWARD_ASC_PRIVATE_KEY", default="").replace("\\n", "\n")
+STEWARD_OPENROUTER_MGMT_KEY = env("STEWARD_OPENROUTER_MGMT_KEY", default="")
+STEWARD_OPENROUTER_CANARY_TENANT_ID = env(
+    "STEWARD_OPENROUTER_CANARY_TENANT_ID",
+    default="",
+)
 
 # Core AI on-device model (iOS 27 bring-your-own model) delivery.
 # Django serves only the small JWT-gated manifest (GET /api/v1/coreai/model/manifest/);

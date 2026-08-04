@@ -131,6 +131,11 @@ STEWARD_GITHUB_TOKEN = env("STEWARD_GITHUB_TOKEN", default="")
 STEWARD_ASC_KEY_ID = env("STEWARD_ASC_KEY_ID", default="")
 STEWARD_ASC_ISSUER_ID = env("STEWARD_ASC_ISSUER_ID", default="")
 STEWARD_ASC_PRIVATE_KEY = env("STEWARD_ASC_PRIVATE_KEY", default="").replace("\\n", "\n")
+STEWARD_OPENROUTER_MGMT_KEY = env("STEWARD_OPENROUTER_MGMT_KEY", default="")
+STEWARD_OPENROUTER_CANARY_TENANT_ID = env(
+    "STEWARD_OPENROUTER_CANARY_TENANT_ID",
+    default="",
+)
 
 # YardTalk one-time purchase + validation. The Price id is a Container App
 # config value; the HMAC key is a Key Vault-backed secretref.
