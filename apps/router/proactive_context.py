@@ -121,6 +121,9 @@ def record_proactive_outbound(
     smaller wrong than 500ing the cron tool call. Errors are logged.
     """
     try:
+        from apps.pii.egress import redact_known_values
+
+        message_text = redact_known_values(tenant, message_text, seam="proactive_outbound_storage")
         with transaction.atomic():
             from apps.router.structured_artifacts import (
                 externalize_large_structured_reply,

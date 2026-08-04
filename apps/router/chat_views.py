@@ -1168,6 +1168,15 @@ class ChatProgressEventView(APIView):
         # NEITHER (preserves the empty-phase 400 for the phase-narration path).
         partial_text, partial_seq = _parse_partial(request.data)
         has_partial = partial_text is not None and partial_seq is not None
+        if has_partial:
+            from apps.pii.egress import redact_known_values
+
+            guard_tenant = Tenant.objects.filter(pk=tenant_id).only("id", "pii_entity_map").first()
+            partial_text = redact_known_values(
+                guard_tenant,
+                partial_text,
+                seam="app_chat_partial_storage",
+            )
         if not phase and not has_partial:
             return Response({"error": "missing_fields"}, status=status.HTTP_400_BAD_REQUEST)
 
