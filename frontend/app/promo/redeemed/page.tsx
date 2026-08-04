@@ -38,7 +38,7 @@ const VARIANTS: Record<Status, Variant> = {
     glyphBg: "bg-[#7C6BF0]/20",
     glyphBorder: "border-[#7C6BF0]/30",
     glyphShadow: "shadow-[0_0_20px_rgba(124,107,240,0.3)]",
-    headline: "You're back on, for 14 days.",
+    headline: "You're back on — your assistant is waking up now.",
     body: (
       <>
         Your trial has been extended. The new end date is reflected on your

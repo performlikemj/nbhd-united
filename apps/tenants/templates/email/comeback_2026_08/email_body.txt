@@ -1,0 +1,41 @@
+{% autoescape off %}A FULL MONTH FREE. ONE TAP.
+
+No card, no checkout. Your month starts the moment you tap.
+
+  Start your free month:
+  {{ promo_url }}
+
+Why a month? We changed how trials work. Two weeks was never enough
+to feel what it's like to have an assistant that actually knows you —
+so now everyone gets a month. You left before we figured that out,
+which means you get the month too.
+
+NOW ON YOUR IPHONE
+Your assistant now lives in a proper iPhone app — not just a browser
+tab or a Telegram thread. It's the best way to use it now, and where
+new things land first. Download it, sign in, and pick up where you
+left off.
+
+  Download on the App Store:
+  https://apps.apple.com/us/app/nbhd/id6779158519
+
+AN ASSISTANT THAT GROWS WITH YOU
+Your assistant isn't a blank slate every time anymore. Through your
+conversations it develops its own personality, remembers what matters
+to you, and builds on it. That identity holds — it doesn't reset. The
+more it learns how you work and what you're reaching for, the more
+genuinely useful it gets. An assistant that grows with you, and helps
+you grow.
+
+Good through {{ valid_until|date:"F j, Y" }}.
+
+  Start your free month:
+  {{ promo_url }}
+
+— NBHD United
+neighborhoodunited.org
+
+No longer want these emails? Unsubscribe: {{ unsubscribe_url }}
+If the button doesn't open, paste this link into your browser:
+{{ promo_url }}
+{% endautoescape %}

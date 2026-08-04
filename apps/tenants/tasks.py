@@ -1,9 +1,26 @@
 """Tasks for tenant maintenance (executed via QStash)."""
 
-from django.utils import timezone
+import logging
+from collections import Counter
+from datetime import UTC, datetime
+from uuid import UUID
 
+from django.conf import settings
+from django.utils import timezone
+from django.utils.http import urlencode
+
+from .models import Tenant
+from .promo_models import PromoCampaign, PromoCampaignSend
+from .promo_signing import make_promo_token
 from .services import reset_daily_counters, reset_monthly_counters
 from .telegram_models import TelegramLinkToken
+
+logger = logging.getLogger(__name__)
+
+COMEBACK_2026_08_CODE = "comeback-2026-08"
+COMEBACK_2026_08_EXTENSION_DAYS = 30
+COMEBACK_2026_08_VALID_UNTIL = datetime(2026, 8, 31, 23, 59, 59, tzinfo=UTC)
+COMEBACK_2026_08_TEMPLATE_BASE = "email/comeback_2026_08/email"
 
 
 def reset_daily_counters_task():
@@ -182,3 +199,162 @@ def send_comeback_campaign_task() -> dict:
         stdout=buf,
     )
     return {"output": buf.getvalue()[-2000:]}
+
+
+def send_comeback_2026_08_campaign_task(tenant_ids: list[str]) -> dict:
+    """Send the August comeback offer only to an operator-supplied audience.
+
+    ``tenant_ids`` is the frozen targeting decision. This task deliberately
+    performs no live audience discovery: it fetches only those primary keys,
+    re-checks every safety/suppression condition immediately before delivery,
+    and claims a durable per-(campaign, user) marker before sending.
+
+    Fire through the generic QStash-signed trigger with this body::
+
+        {"kwargs": {"tenant_ids": ["<tenant-uuid>", "..."]}}
+    """
+    from apps.tenants.management.commands.send_promo_campaign import Command
+
+    if not isinstance(tenant_ids, list) or not tenant_ids:
+        raise ValueError("tenant_ids must be a non-empty list of tenant UUID strings")
+
+    normalized_ids: list[str] = []
+    seen_ids: set[str] = set()
+    duplicate_ids_ignored = 0
+    for value in tenant_ids:
+        try:
+            normalized = str(UUID(str(value)))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError(f"Invalid tenant UUID in tenant_ids: {value!r}") from exc
+        if normalized in seen_ids:
+            duplicate_ids_ignored += 1
+            continue
+        seen_ids.add(normalized)
+        normalized_ids.append(normalized)
+
+    tenants = {str(tenant.id): tenant for tenant in Tenant.objects.filter(id__in=normalized_ids).select_related("user")}
+    snapshot = {
+        "tenant_ids": normalized_ids,
+        "user_ids": [str(tenants[tenant_id].user_id) for tenant_id in normalized_ids if tenant_id in tenants],
+        "captured_at_count": len(normalized_ids),
+        "audience_mode": "targeted_tenant_ids",
+    }
+    campaign, created = PromoCampaign.objects.get_or_create(
+        code=COMEBACK_2026_08_CODE,
+        defaults={
+            "kind": PromoCampaign.Kind.TRIAL_EXTENSION,
+            "extension_days": COMEBACK_2026_08_EXTENSION_DAYS,
+            "valid_until": COMEBACK_2026_08_VALID_UNTIL,
+            "audience_snapshot": snapshot,
+        },
+    )
+
+    if not created:
+        expected_config = (
+            PromoCampaign.Kind.TRIAL_EXTENSION,
+            COMEBACK_2026_08_EXTENSION_DAYS,
+            COMEBACK_2026_08_VALID_UNTIL,
+        )
+        actual_config = (campaign.kind, campaign.extension_days, campaign.valid_until)
+        if actual_config != expected_config:
+            raise ValueError(
+                f"Existing {COMEBACK_2026_08_CODE} campaign configuration does not match the task constants"
+            )
+
+        frozen_ids = campaign.audience_snapshot.get("tenant_ids")
+        if not isinstance(frozen_ids, list) or set(frozen_ids) != set(normalized_ids):
+            raise ValueError(f"Existing {COMEBACK_2026_08_CODE} audience does not match the supplied tenant_ids")
+
+    sender = Command()
+    frontend_url = getattr(settings, "FRONTEND_URL", "https://neighborhoodunited.org").rstrip("/")
+    skip_reasons: Counter[str] = Counter()
+    sent = 0
+
+    def skip(tenant_id: str, reason: str) -> None:
+        skip_reasons[reason] += 1
+        logger.info(
+            "comeback_2026_08 tenant outcome — tenant=%s outcome=skipped reason=%s",
+            tenant_id,
+            reason,
+        )
+
+    for tenant_id in normalized_ids:
+        tenant = tenants.get(tenant_id)
+        if tenant is None:
+            skip(tenant_id, "tenant_not_found")
+            continue
+        if tenant.stripe_subscription_id:
+            skip(tenant_id, "stripe_subscription_id")
+            continue
+        if tenant.is_synthetic:
+            skip(tenant_id, "is_synthetic")
+            continue
+        if tenant.is_eval_sink:
+            skip(tenant_id, "is_eval_sink")
+            continue
+        if tenant.pending_deletion:
+            skip(tenant_id, "pending_deletion")
+            continue
+        if tenant.status not in (Tenant.Status.SUSPENDED, Tenant.Status.ACTIVE):
+            skip(tenant_id, "ineligible_status")
+            continue
+
+        user = tenant.user
+        if user.email_opt_out:
+            skip(tenant_id, "email_opt_out")
+            continue
+        if not user.email:
+            skip(tenant_id, "missing_email")
+            continue
+
+        send_marker, claimed = PromoCampaignSend.objects.get_or_create(
+            campaign=campaign,
+            user=user,
+        )
+        if not claimed:
+            skip(tenant_id, "already_sent")
+            continue
+
+        token = make_promo_token(campaign.code, user.id)
+        query = urlencode({"code": campaign.code, "token": token})
+        promo_url = f"{frontend_url}/promo/redeem?{query}"
+
+        try:
+            # Reuse the July command's exact rendering, unsubscribe URL, and
+            # List-Unsubscribe header behavior rather than creating a second
+            # marketing-email implementation.
+            sender._send_promo_email(
+                user,
+                promo_url=promo_url,
+                unsubscribe_url=sender._unsubscribe_url(user),
+                valid_until=campaign.valid_until,
+                template_base=COMEBACK_2026_08_TEMPLATE_BASE,
+            )
+        except Exception:
+            # A handled delivery failure is retryable on the next operator
+            # fire. Successful sends keep the claim, preventing duplicates.
+            send_marker.delete()
+            skip(tenant_id, "email_failed")
+            logger.exception(
+                "comeback_2026_08 email delivery failed — tenant=%s campaign=%s",
+                tenant_id,
+                campaign.code,
+            )
+            continue
+
+        sent += 1
+        logger.info(
+            "comeback_2026_08 tenant outcome — tenant=%s outcome=sent",
+            tenant_id,
+        )
+
+    result = {
+        "campaign": campaign.code,
+        "targeted": len(normalized_ids),
+        "sent": sent,
+        "skipped": sum(skip_reasons.values()),
+        "skip_reasons": dict(sorted(skip_reasons.items())),
+        "duplicate_ids_ignored": duplicate_ids_ignored,
+    }
+    logger.info("comeback_2026_08 campaign outcome counts — %s", result)
+    return result

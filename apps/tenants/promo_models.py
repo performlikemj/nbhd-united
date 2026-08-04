@@ -65,6 +65,42 @@ class PromoCampaign(models.Model):
         return f"PromoCampaign({self.code}, {self.kind})"
 
 
+class PromoCampaignSend(models.Model):
+    """A durable at-most-once email claim for one campaign recipient.
+
+    The row is created immediately before delivery. A handled delivery
+    failure deletes it so an operator re-fire can retry; a successful send
+    leaves it in place so duplicate QStash deliveries cannot email the same
+    user twice.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    campaign = models.ForeignKey(
+        PromoCampaign,
+        on_delete=models.CASCADE,
+        related_name="sends",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="promo_campaign_sends",
+    )
+    sent_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "promo_campaign_sends"
+        ordering = ["-sent_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["campaign", "user"],
+                name="promo_send_campaign_user_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"PromoCampaignSend({self.campaign.code}, user={self.user_id})"
+
+
 class PromoRedemption(models.Model):
     """One row per (campaign, user) on first redemption attempt.
 
