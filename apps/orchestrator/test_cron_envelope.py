@@ -1309,7 +1309,7 @@ class RedactUserMdEnvelopeTest(TestCase):
 
         self.assertIn("## Recent journal", out)
         self.assertNotIn("Voldemort", out)
-        self.assertIn("[PERSON_1]", out)
+        self.assertRegex(out, r"Lunch with \[PERSON_1(\|[^\]]*)?\] about the raid\.")
 
     def test_known_email_in_data_section_is_masked(self):
         """Emails already in the map are re-masked too (word-boundary regex)."""
@@ -1378,8 +1378,9 @@ class RedactUserMdEnvelopeTest(TestCase):
         first = render_managed_region(self.tenant)
         second = render_managed_region(self.tenant)
 
-        self.assertIn("[PERSON_1]", first)
-        self.assertIn("[PERSON_1]", second)
+        placeholder_sentence = r"Coffee with \[PERSON_1(\|[^\]]*)?\] and notes\."
+        self.assertRegex(first, placeholder_sentence)
+        self.assertRegex(second, placeholder_sentence)
         self.assertNotIn("[PERSON_2]", second)
         self.assertNotIn("[[", second)
         self.assertNotIn("Voldemort", second)
@@ -1398,4 +1399,4 @@ class RedactUserMdEnvelopeTest(TestCase):
         args, _ = mock_upload.call_args
         body = args[2]
         self.assertNotIn("Voldemort", body)
-        self.assertIn("[PERSON_1]", body)
+        self.assertRegex(body, r"Dinner with \[PERSON_1(\|[^\]]*)?\] downtown\.")
