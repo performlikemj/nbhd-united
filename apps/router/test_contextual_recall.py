@@ -88,6 +88,19 @@ class TestBuildSessionContext(TestCase):
         result = self.poller._build_session_context(self.tenant, "hello")
         self.assertEqual(result, "hello")
 
+    @patch("apps.lessons.services.generate_embedding", return_value=[0.0] * 1536)
+    def test_session_start_query_uses_tenant_guarded_embedding_seam(self, mock_embed):
+        self.tenant.pii_entity_map = {"[PERSON_1]": "Theo Smith"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        self.poller._build_session_context(self.tenant, "Ask Theo Smith")
+
+        mock_embed.assert_called_once_with(
+            "Ask Theo Smith",
+            tenant=self.tenant,
+            seam="session_start_query_embedding",
+        )
+
     def test_empty_goals_not_injected(self):
         Document.objects.create(tenant=self.tenant, kind=Document.Kind.GOAL, slug="goals", title="Goals", markdown="")
         result = self.poller._build_session_context(self.tenant, "hello")

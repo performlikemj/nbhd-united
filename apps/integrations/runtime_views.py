@@ -7,8 +7,6 @@ import hmac
 import json
 import logging
 import re
-
-logger = logging.getLogger(__name__)
 from datetime import date, datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -48,6 +46,7 @@ from apps.lessons.models import Lesson
 from apps.lessons.serializers import LessonSerializer
 from apps.lessons.services import search_lessons
 from apps.orchestrator.personas import get_persona
+from apps.pii.egress import KnownValueResponseGuardMixin
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn
 from apps.tenants.models import Tenant
 
@@ -72,6 +71,33 @@ from .services import (
     execute_reddit_tool,
     get_valid_provider_access_token,
     initiate_composio_connection,
+)
+
+logger = logging.getLogger(__name__)
+
+_JOURNAL_EGRESS_TEXT_FIELDS = frozenset(
+    {
+        "title",
+        "markdown",
+        "description",
+        "notes",
+        "snippet",
+        "excerpt",
+        "content",
+        "text",
+        "query",
+        "context",
+        "evidence",
+        "heading",
+        "body",
+        "template_name",
+    }
+)
+_LIFECYCLE_EGRESS_TEXT_FIELDS = frozenset({"title", "description", "notes", "evidence"})
+_LESSON_EGRESS_TEXT_FIELDS = frozenset({"title", "text", "context", "description", "snippet", "query"})
+_CRON_EGRESS_TEXT_FIELDS = frozenset({"text", "description", "message", "summary", "render_block"})
+_MISSION_EGRESS_TEXT_FIELDS = frozenset(
+    {"title", "mission_title", "description", "commitment", "my_commitment", "next_step", "text", "display_name"}
 )
 
 
@@ -519,11 +545,13 @@ def _build_note_payload(*, tenant: Tenant, note: DailyNote, include_sections: bo
     return payload
 
 
-class RuntimeJournalEntriesView(APIView):
+class RuntimeJournalEntriesView(KnownValueResponseGuardMixin, APIView):
     """Create/list runtime journal entries for a tenant."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "journal_entries_runtime_response"
+    pii_egress_text_fields = _JOURNAL_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -622,11 +650,13 @@ class RuntimeWeeklyReviewsView(APIView):
 # look unused at parse time. See ``feedback_local_reimport_pattern.md``.
 
 
-class RuntimeGoalListCreateView(APIView):
+class RuntimeGoalListCreateView(KnownValueResponseGuardMixin, APIView):
     """List or create goals for a tenant runtime."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "goal_list_create_runtime_response"
+    pii_egress_text_fields = _LIFECYCLE_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         from apps.journal.lifecycle_serializers import GoalSerializer
@@ -846,11 +876,13 @@ class RuntimeCurrentStatusView(APIView):
         )
 
 
-class RuntimeTaskListCreateView(APIView):
+class RuntimeTaskListCreateView(KnownValueResponseGuardMixin, APIView):
     """List or create tasks for a tenant runtime."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "task_list_create_runtime_response"
+    pii_egress_text_fields = _LIFECYCLE_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         from apps.journal.lifecycle_serializers import TaskSerializer
@@ -1346,11 +1378,13 @@ class RuntimeCalendarFreeBusyView(APIView):
 # ---------------------------------------------------------------------------
 
 
-class RuntimeDailyNotesView(APIView):
+class RuntimeDailyNotesView(KnownValueResponseGuardMixin, APIView):
     """GET raw markdown daily note (agent access). Backed by Document model."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "daily_note_runtime_response"
+    pii_egress_text_fields = _JOURNAL_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -1522,11 +1556,13 @@ def _upsert_markdown_section(md: str, heading: str, body: str) -> str:
     return upsert_markdown_section(md, heading, body)
 
 
-class RuntimeUserMemoryView(APIView):
+class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
     """GET/PUT raw markdown long-term memory (agent access). Backed by Document model."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "memory_runtime_response"
+    pii_egress_text_fields = _JOURNAL_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -1603,7 +1639,7 @@ class RuntimeUserMemoryView(APIView):
         )
 
 
-class RuntimeJournalContextView(APIView):
+class RuntimeJournalContextView(KnownValueResponseGuardMixin, APIView):
     """Combined context: recent daily notes, long-term memory, and backbone docs.
 
     Designed for agent session initialization.  The ``backbone`` key
@@ -1613,6 +1649,8 @@ class RuntimeJournalContextView(APIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "journal_context_runtime_response"
+    pii_egress_text_fields = _JOURNAL_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -1874,7 +1912,7 @@ class RuntimeSessionMarkProcessedView(APIView):
         )
 
 
-class RuntimeLessonCreateView(APIView):
+class RuntimeLessonCreateView(KnownValueResponseGuardMixin, APIView):
     """Create lessons captured by the assistant for a tenant.
 
     Lessons are auto-approved on creation (status="approved") — they join the
@@ -1885,6 +1923,8 @@ class RuntimeLessonCreateView(APIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "lesson_suggest_runtime_response"
+    pii_egress_text_fields = _LESSON_EGRESS_TEXT_FIELDS
 
     def post(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -1973,11 +2013,13 @@ class RuntimeLessonCreateView(APIView):
         )
 
 
-class RuntimeLessonSearchView(APIView):
+class RuntimeLessonSearchView(KnownValueResponseGuardMixin, APIView):
     """Search approved lessons for a tenant."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "lesson_search_runtime_response"
+    pii_egress_text_fields = _LESSON_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -2037,11 +2079,13 @@ class RuntimeLessonSearchView(APIView):
         )
 
 
-class RuntimeLessonPendingView(APIView):
+class RuntimeLessonPendingView(KnownValueResponseGuardMixin, APIView):
     """Get pending lessons for a tenant."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "lesson_pending_runtime_response"
+    pii_egress_text_fields = _LESSON_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -2126,11 +2170,13 @@ class RuntimeConstellationNotesView(APIView):
 # ---------------------------------------------------------------------------
 
 
-class RuntimeDocumentView(APIView):
+class RuntimeDocumentView(KnownValueResponseGuardMixin, APIView):
     """GET/PUT a document by kind+slug (agent access)."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "journal_document_runtime_response"
+    pii_egress_text_fields = _JOURNAL_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         from apps.journal.path_validation import VALID_KINDS, canonical_singleton_slug, validate_kind_slug
@@ -2289,11 +2335,13 @@ class RuntimeDocumentView(APIView):
         )
 
 
-class RuntimeJournalSearchView(APIView):
+class RuntimeJournalSearchView(KnownValueResponseGuardMixin, APIView):
     """Full-text search across all documents for a tenant."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "journal_search_runtime_response"
+    pii_egress_text_fields = _JOURNAL_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -2616,11 +2664,13 @@ class RuntimeMemorySyncView(APIView):
         )
 
 
-class RuntimeDocumentAppendView(APIView):
+class RuntimeDocumentAppendView(KnownValueResponseGuardMixin, APIView):
     """POST append content to a document (agent access)."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "journal_document_append_runtime_response"
+    pii_egress_text_fields = _JOURNAL_EGRESS_TEXT_FIELDS
 
     def post(self, request, tenant_id):
         from apps.journal.path_validation import canonical_singleton_slug, validate_kind_slug
@@ -3145,7 +3195,7 @@ def _reconcile_match_score(tokens: list[str], haystack: str) -> tuple[int, list[
     return len(matched), matched
 
 
-class RuntimeReconcileScanView(APIView):
+class RuntimeReconcileScanView(KnownValueResponseGuardMixin, APIView):
     """GET /api/v1/integrations/runtime/<tenant_id>/reconcile/scan/
 
     Given a one-sentence ``claim`` describing what the user just reported,
@@ -3161,6 +3211,10 @@ class RuntimeReconcileScanView(APIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "reconcile_scan_runtime_response"
+    pii_egress_text_fields = _LIFECYCLE_EGRESS_TEXT_FIELDS | frozenset(
+        {"before", "after", "reason", "claim", "statement", "excerpt", "matched_tokens"}
+    )
 
     def get(self, request, tenant_id):
         from apps.fuel.models import BodyWeightLog, Workout, WorkoutStatus
@@ -3445,7 +3499,7 @@ class RuntimeReconcileScanView(APIView):
         )
 
 
-class RuntimeCronPhase2SummaryView(APIView):
+class RuntimeCronPhase2SummaryView(KnownValueResponseGuardMixin, APIView):
     """POST /api/v1/integrations/runtime/<tenant_id>/cron-phase2-summary/
 
     DEPRECATED 2026-07-11: seed-prompt emission of the phase2 sync block was
@@ -3466,6 +3520,8 @@ class RuntimeCronPhase2SummaryView(APIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "cron_summary_runtime_response"
+    pii_egress_text_fields = _CRON_EGRESS_TEXT_FIELDS
 
     def post(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -4680,7 +4736,7 @@ class RuntimeSautaiCurrentPlanView(APIView):
 # ``feedback_local_reimport_pattern.md``).
 
 
-class _RuntimeCronCreateBase(APIView):
+class _RuntimeCronCreateBase(KnownValueResponseGuardMixin, APIView):
     """Common boilerplate for typed cron creation endpoints.
 
     Subclasses set ``pattern`` (CronPattern value) and ``_extract_payload``
@@ -4689,6 +4745,8 @@ class _RuntimeCronCreateBase(APIView):
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "cron_create_runtime_response"
+    pii_egress_text_fields = _CRON_EGRESS_TEXT_FIELDS
 
     pattern: str = ""
 
@@ -4920,12 +4978,14 @@ class RuntimeNeighborhoodContextView(APIView):
         return Response(friends_services.neighborhood_context(tenant, since=since))
 
 
-class RuntimeMissionsView(APIView):
+class RuntimeMissionsView(KnownValueResponseGuardMixin, APIView):
     """GET runtime/<tid>/missions/ — the tid's own Missions + crew projection, so
     the agent can nudge ITS OWN human toward showing up."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
+    pii_egress_seam = "friends_missions_runtime_response"
+    pii_egress_text_fields = _MISSION_EGRESS_TEXT_FIELDS
 
     def get(self, request, tenant_id):
         auth_failure = _internal_auth_or_401(request, tenant_id)

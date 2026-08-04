@@ -71,6 +71,26 @@ def _matcher_for_tenant(tenant: Tenant) -> _KnownValueMatcher | None:
     return _compile_known_value_matcher(tenant_key, digest, bindings)
 
 
+def _redact_known_values(tenant: Tenant | None, text: str) -> str:
+    if not text or tenant is None:
+        return text
+    matcher = _matcher_for_tenant(tenant)
+    if matcher is None:
+        return text
+
+    def replace(match: re.Match[str]) -> str:
+        return matcher.placeholders[match.group(0).casefold()]
+
+    parts: list[str] = []
+    last = 0
+    for placeholder_match in _PLACEHOLDER_RE.finditer(text):
+        parts.append(matcher.pattern.sub(replace, text[last : placeholder_match.start()]))
+        parts.append(placeholder_match.group(0))
+        last = placeholder_match.end()
+    parts.append(matcher.pattern.sub(replace, text[last:]))
+    return "".join(parts)
+
+
 def redact_known_values(tenant: Tenant | None, text: str, *, seam: str) -> str:
     """Replace mapped tenant values with canonical placeholders, fail-open.
 
@@ -78,24 +98,8 @@ def redact_known_values(tenant: Tenant | None, text: str, *, seam: str) -> str:
     interiors, skips values shorter than three characters, and uses a compiled
     per-tenant longest-first alternation cached by the entity-map hash.
     """
-    if not text or tenant is None:
-        return text
     try:
-        matcher = _matcher_for_tenant(tenant)
-        if matcher is None:
-            return text
-
-        def replace(match: re.Match[str]) -> str:
-            return matcher.placeholders[match.group(0).casefold()]
-
-        parts: list[str] = []
-        last = 0
-        for placeholder_match in _PLACEHOLDER_RE.finditer(text):
-            parts.append(matcher.pattern.sub(replace, text[last : placeholder_match.start()]))
-            parts.append(placeholder_match.group(0))
-            last = placeholder_match.end()
-        parts.append(matcher.pattern.sub(replace, text[last:]))
-        return "".join(parts)
+        return _redact_known_values(tenant, text)
     except Exception:
         logger.warning(
             "pii_egress_guard_error tenant=%s seam=%s",
@@ -118,7 +122,7 @@ def redact_known_value_fields(
 
         def walk(value: Any, redact_strings: bool = False) -> Any:
             if isinstance(value, str):
-                return redact_known_values(tenant, value, seam=seam) if redact_strings else value
+                return _redact_known_values(tenant, value) if redact_strings else value
             if isinstance(value, list):
                 return [walk(item, redact_strings) for item in value]
             if isinstance(value, dict):
@@ -134,3 +138,32 @@ def redact_known_value_fields(
             exc_info=True,
         )
         return payload
+
+
+class KnownValueResponseGuardMixin:
+    """DRF view mixin that guards allowlisted response fields before rendering."""
+
+    pii_egress_seam = "runtime_response"
+    pii_egress_text_fields: frozenset[str] = frozenset()
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        tenant_id = kwargs.get("tenant_id") or getattr(self, "kwargs", {}).get("tenant_id")
+        if tenant_id and hasattr(response, "data"):
+            try:
+                from apps.tenants.models import Tenant
+
+                tenant = Tenant.objects.filter(pk=tenant_id).only("id", "pii_entity_map").first()
+                response.data = redact_known_value_fields(
+                    tenant,
+                    response.data,
+                    seam=self.pii_egress_seam,
+                    text_fields=self.pii_egress_text_fields,
+                )
+            except Exception:
+                logger.warning(
+                    "pii_egress_guard_error tenant=%s seam=%s",
+                    tenant_id,
+                    self.pii_egress_seam,
+                    exc_info=True,
+                )
+        return super().finalize_response(request, response, *args, **kwargs)

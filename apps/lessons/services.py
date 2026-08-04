@@ -28,8 +28,11 @@ def _resolve_openai_api_key() -> str:
     return key
 
 
-def generate_embedding(text: str) -> list[float]:
+def generate_embedding(text: str, *, tenant: Tenant | None = None, seam: str = "embedding") -> list[float]:
     """Generate an OpenAI embedding vector for the provided text."""
+    from apps.pii.egress import redact_known_values
+
+    text = redact_known_values(tenant, text, seam=seam)
     response = requests.post(
         OPENAI_EMBEDDING_URL,
         json={"input": text, "model": EMBEDDING_MODEL},
@@ -136,14 +139,22 @@ def create_connections(lesson: Lesson) -> int:
 
 def process_approved_lesson(lesson: Lesson) -> None:
     """Compute embedding for approved lesson and link it to similar lessons."""
-    lesson.embedding = generate_embedding(lesson.text)
+    lesson.embedding = generate_embedding(
+        lesson.text,
+        tenant=lesson.tenant,
+        seam="lesson_index_embedding",
+    )
     lesson.save(update_fields=["embedding"])
     create_connections(lesson)
 
 
 def search_lessons(tenant: Tenant, query: str, limit: int = 10) -> QuerySet[Lesson]:
     """Search approved lessons by semantic similarity within a tenant."""
-    query_embedding = generate_embedding(query)
+    query_embedding = generate_embedding(
+        query,
+        tenant=tenant,
+        seam="lesson_search_query_embedding",
+    )
 
     similarity_expr = ExpressionWrapper(
         Value(1.0) - CosineDistance("embedding", query_embedding),

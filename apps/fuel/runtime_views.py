@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 
 from apps.common.llm_contracts import resolve_relative_date, today_in_tenant_tz
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.pii.egress import KnownValueResponseGuardMixin
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
@@ -33,6 +34,28 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _FuelResponseGuard(KnownValueResponseGuardMixin):
+    pii_egress_seam = "fuel_runtime_response"
+    pii_egress_text_fields = frozenset(
+        {
+            "name",
+            "objective",
+            "notes",
+            "goals",
+            "limitations",
+            "equipment",
+            "additional_context",
+            "detail",
+            "activity",
+            "exercise",
+            "skip_reason",
+            "reason",
+            "summary",
+        }
+    )
+
 
 _PROFILE_FIELDS = (
     "onboarding_status",
@@ -107,7 +130,7 @@ def _get_tenant_or_404(tenant_id: UUID) -> Tenant | Response:
         )
 
 
-class RuntimeLogWorkoutView(APIView):
+class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
     """POST: log a workout from the AI assistant."""
 
     permission_classes = [AllowAny]
@@ -218,7 +241,7 @@ class RuntimeLogWorkoutView(APIView):
         )
 
 
-class RuntimeWorkoutDetailView(APIView):
+class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
     """PATCH/DELETE a single workout from the AI assistant."""
 
     permission_classes = [AllowAny]
@@ -363,7 +386,7 @@ class RuntimeWorkoutDetailView(APIView):
         return Response({"deleted": True, **workout_info})
 
 
-class RuntimeWorkoutSkipView(APIView):
+class RuntimeWorkoutSkipView(_FuelResponseGuard, APIView):
     """POST: assistant marks a planned workout as skipped, with reason.
 
     Soft-state — preserves the row for adherence; distinct from DELETE.
@@ -401,7 +424,7 @@ class RuntimeWorkoutSkipView(APIView):
         )
 
 
-class RuntimeWorkoutCompleteView(APIView):
+class RuntimeWorkoutCompleteView(_FuelResponseGuard, APIView):
     """POST: assistant marks a workout as completed.
 
     Optional: notes, rpe, duration_minutes. Mirrors WorkoutCompleteView.
@@ -460,7 +483,7 @@ class RuntimeWorkoutCompleteView(APIView):
         )
 
 
-class RuntimeWorkoutSwapView(APIView):
+class RuntimeWorkoutSwapView(_FuelResponseGuard, APIView):
     """POST: assistant swaps scheduled_at + date of two workouts atomically.
 
     Body: {"a": <uuid>, "b": <uuid>}. Mirrors WorkoutSwapView.
@@ -514,7 +537,7 @@ class RuntimeWorkoutSwapView(APIView):
         )
 
 
-class RuntimeFuelSummaryView(APIView):
+class RuntimeFuelSummaryView(_FuelResponseGuard, APIView):
     """GET: recent workouts + weekly stats for AI context."""
 
     permission_classes = [AllowAny]
@@ -664,7 +687,7 @@ class RuntimeFuelSummaryView(APIView):
         )
 
 
-class RuntimeFuelProfileView(APIView):
+class RuntimeFuelProfileView(_FuelResponseGuard, APIView):
     """GET/PATCH: fitness profile for the AI assistant."""
 
     permission_classes = [AllowAny]
@@ -1382,7 +1405,7 @@ def _plan_start_metadata(plan: WorkoutPlan) -> dict[str, str | None]:
     }
 
 
-class RuntimeWorkoutPlanListCreateView(APIView):
+class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
     """GET: list plans. POST: create plan + expand into planned workouts."""
 
     permission_classes = [AllowAny]
@@ -1553,7 +1576,7 @@ class RuntimeWorkoutPlanListCreateView(APIView):
         return Response(result, status=status.HTTP_201_CREATED)
 
 
-class RuntimeWorkoutPlanDetailView(APIView):
+class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
     """GET/PATCH/DELETE a single workout plan."""
 
     permission_classes = [AllowAny]
