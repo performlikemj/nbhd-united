@@ -179,7 +179,7 @@ class RepoStateTests(SimpleTestCase):
             # Phase 2 / 4 (guard-introducing PR)
             ("apps/router/management/commands/audit_proactive_sync.py", 65, "parsed_items"),
             ("apps/lessons/agent_context.py", 91, "galaxy_note"),
-            ("apps/journal/extraction.py", 235, "text"),
+            ("apps/journal/extraction.py", 241, "text"),
             ("apps/orchestrator/grounding_probe.py", 85, "markdown"),
             ("apps/journal/migrations/0020_cleanup_nan_daily_stubs.py", 31, "markdown"),
             ("apps/pii/arbiter.py", 356, "pii_entity_map"),

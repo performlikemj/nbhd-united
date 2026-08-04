@@ -488,7 +488,15 @@ def _rate_limit_delay(err: str, attempt: int) -> float:
 
 
 def render_gemini_segment(
-    client, text: str, voice: str, model: str, style: str, dst: Path, *, attempts: int = TTS_ATTEMPTS
+    client,
+    text: str,
+    voice: str,
+    model: str,
+    style: str,
+    dst: Path,
+    *,
+    attempts: int = TTS_ATTEMPTS,
+    tenant=None,
 ) -> None:
     """Render one narration segment to ``dst`` (24k/mono wav with join fades).
 
@@ -501,6 +509,9 @@ def render_gemini_segment(
     """
     from google.genai import types
 
+    from apps.pii.egress import redact_known_values
+
+    text = redact_known_values(tenant, text, seam="meditation_gemini_tts")
     prompt = (
         "Read the following aloud in a soft, calm, slow, soothing "
         f"meditation-guide voice. {style}. Do not read these instructions aloud.\n\n"
@@ -598,6 +609,7 @@ def render_manifest_to_audio(
     *,
     voice: str,
     model: str,
+    tenant=None,
     api_key: str | None = None,
     concurrency: int = 4,
     deadline_seconds: float = DEFAULT_RENDER_DEADLINE_S,
@@ -662,7 +674,7 @@ def render_manifest_to_audio(
                 if mock:
                     _make_mock_speech(seg.text, wav)
                 else:
-                    render_gemini_segment(client, seg.text, voice, model, seg_style, wav)
+                    render_gemini_segment(client, seg.text, voice, model, seg_style, wav, tenant=tenant)
                 # Measure inside the try so a probe failure degrades, never aborts.
                 return index, wav, _measure(wav, fallback=estimate_speech_seconds(seg.text)), True, False
             except QuotaExceeded:

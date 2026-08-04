@@ -113,6 +113,18 @@ class TestEmbedDailyNote(TestCase):
             self.assertTrue(chunk.text.startswith(f"[{date.today()}]"))
 
     @patch("apps.lessons.services.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_known_values_are_guarded_in_stored_and_indexed_chunk(self, mock_embed):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "MJ"}, "[ORG_1]": {"name": "NBHD United"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        count = embed_daily_note(self.tenant, date.today())
+        self.assertGreater(count, 0)
+        stored = "\n".join(DocumentChunk.objects.filter(tenant=self.tenant).values_list("text", flat=True))
+        self.assertNotIn("NBHD United", stored)
+        self.assertIn("[ORG_1]", stored)
+        indexed_inputs = [call.args[0] for call in mock_embed.call_args_list]
+        self.assertEqual(indexed_inputs, list(DocumentChunk.objects.values_list("text", flat=True)))
+
+    @patch("apps.lessons.services.generate_embedding", return_value=FAKE_EMBEDDING)
     def test_idempotent_reembedding(self, mock_embed):
         count1 = embed_daily_note(self.tenant, date.today())
         count2 = embed_daily_note(self.tenant, date.today())

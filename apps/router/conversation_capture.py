@@ -126,6 +126,10 @@ def record_conversation_turn(
     """
     user_text = (user_text or "").strip()
     reply_text = (reply_text or "").strip()
+    if reply_text:
+        from apps.pii.egress import redact_known_values
+
+        reply_text = redact_known_values(tenant, reply_text, seam="conversation_turn_storage")
     if not user_text and not reply_text:
         return None
 

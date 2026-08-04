@@ -118,6 +118,8 @@ Reconciliation rules:
 def _call_extraction_llm(
     content: str,
     reconciliation_context: dict | None = None,
+    *,
+    tenant: Tenant | None = None,
 ) -> tuple[dict, dict]:
     """Call LLM via OpenRouter and return (parsed extraction JSON, usage dict).
 
@@ -132,6 +134,10 @@ def _call_extraction_llm(
     else:
         system = EXTRACTION_SYSTEM
         user_message = f"Extract from this daily note:\n\n{content[:6000]}"
+
+    from apps.pii.egress import redact_known_values
+
+    user_message = redact_known_values(tenant, user_message, seam="journal_extraction_prompt")
 
     data, _model_used = chat_completion(
         EXTRACTION_MODELS,
@@ -242,7 +248,7 @@ def _embedding_duplicate(tenant: Tenant, text: str) -> bool:
     from pgvector.django import CosineDistance
 
     try:
-        embedding = generate_embedding(text)
+        embedding = generate_embedding(text, tenant=tenant, seam="lesson_duplicate_query_embedding")
     except Exception:
         logger.warning("embedding_duplicate: embedding generation failed, skipping semantic check")
         return False
@@ -648,7 +654,11 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
 
     # Call LLM — one pass, returns both new items and (when reconciling) state deltas
     try:
-        extracted, usage = _call_extraction_llm(content, reconciliation_context=reconciliation_context)
+        extracted, usage = _call_extraction_llm(
+            content,
+            reconciliation_context=reconciliation_context,
+            tenant=tenant,
+        )
     except Exception:
         logger.exception("extraction: LLM call failed for tenant %s", str(tenant.id)[:8])
         return {"lessons": 0, "goals": 0, "tasks": 0, "task_actions": 0, "skipped": "llm_error"}

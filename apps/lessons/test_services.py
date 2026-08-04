@@ -48,6 +48,23 @@ class LessonServicesTests(TestCase):
         self.assertEqual(mock_post.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(result, [0.123456, 0.654321])
 
+    @override_settings(OPENAI_API_KEY="test-key")
+    @patch("apps.lessons.services.requests.post")
+    def test_index_and_query_embedding_inputs_are_symmetric_in_placeholder_space(self, mock_post: Mock) -> None:
+        mock_response = Mock()
+        mock_response.json.return_value = {"data": [{"embedding": [0.1, 0.2]}]}
+        mock_post.return_value = mock_response
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        generate_embedding("Lesson from Theo Smith", tenant=self.tenant, seam="lesson_index_embedding")
+        generate_embedding("Lesson from Theo Smith", tenant=self.tenant, seam="lesson_search_query_embedding")
+
+        indexed = mock_post.call_args_list[0].kwargs["json"]["input"]
+        queried = mock_post.call_args_list[1].kwargs["json"]["input"]
+        self.assertEqual(indexed, "Lesson from [PERSON_1]")
+        self.assertEqual(queried, indexed)
+
     def test_find_similar_lessons_with_pre_set_embeddings(self):
         source = Lesson.objects.create(
             tenant=self.tenant,

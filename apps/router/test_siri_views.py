@@ -610,6 +610,15 @@ class ChatProgressEventTest(TestCase):
         self.assertEqual(detail.data["partial_text"], "Thinking about")
         self.assertEqual(detail.data["partial_seq"], 1)
 
+    def test_partial_text_known_values_are_redacted_before_storage(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        self._pending()
+        resp = self._post({"client_msg_id": "p1", "text": "Thinking about Theo Smith", "seq": 1})
+        self.assertEqual(resp.status_code, 200, resp.content)
+        turn = AppChatMessage.objects.get(tenant=self.tenant, client_msg_id="p1")
+        self.assertEqual(turn.partial_text, "Thinking about [PERSON_1]")
+
     def test_text_only_post_without_phase_accepted(self):
         # A partial-carrying post has no phase; it must NOT hit the empty-phase
         # 400, and it must not clobber a live phase with an empty string.

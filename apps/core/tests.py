@@ -1816,7 +1816,8 @@ class ComposeMeditationServiceTests(TestCase):
         session = self._session()
         manifest = _valid_manifest()
 
-        def overlap_delivery(_signals, *, voice):
+        def overlap_delivery(_signals, *, voice, tenant=None):
+            del tenant
             services.compose_meditation(MeditationSession.objects.get(id=session.id))
             return manifest
 

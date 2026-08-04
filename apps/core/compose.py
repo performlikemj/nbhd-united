@@ -299,7 +299,7 @@ def _call_model(model_id: str, messages: list, api_key: str, body: dict) -> tupl
         return chat_completion(model_id, messages, api_key=api_key, timeout=_LLM_TIMEOUT_S, **body)
 
 
-def author_manifest(signals: dict, *, voice: str = "", model: str = "") -> dict:
+def author_manifest(signals: dict, *, voice: str = "", model: str = "", tenant=None) -> dict:
     """Author a validated render manifest from raw signals via the LLM chain.
 
     Tries each model in ``_compose_models`` in order; the first whose response
@@ -315,9 +315,16 @@ def author_manifest(signals: dict, *, voice: str = "", model: str = "") -> dict:
     if not api_key:
         raise ComposeError("OPENROUTER_API_KEY not configured")
     target_seconds = _target_seconds_from_signals(signals)
+    from apps.pii.egress import redact_known_values
+
+    guarded_signals = redact_known_values(
+        tenant,
+        _format_signals(signals, target_seconds),
+        seam="meditation_compose_prompt",
+    )
     messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": _format_signals(signals, target_seconds)},
+        {"role": "user", "content": guarded_signals},
     ]
     body = {
         "max_tokens": _MAX_OUTPUT_TOKENS,

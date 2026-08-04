@@ -2173,22 +2173,26 @@ def _clean_assistant_text_for_app(
     stored ``reply_text`` moves to placeholder space. Mirrors the relevant parts
     of ``relay_ai_response_to_telegram``."""
     from apps.insights.markers import INSIGHT_MARKER_RE
+    from apps.pii.egress import redact_known_values
     from apps.pii.redactor import rehydrate_text
     from apps.router.journal_link import extract_journal_link
     from apps.router.quick_replies import extract_quick_replies
 
-    # Parse the trailing markers FIRST, off the raw reply, so every downstream
+    # Re-establish placeholder-space before any persistence-derived metadata or
+    # marker extraction. This catches a model echo of a value it learned from a
+    # contaminated local tool result without minting a new entity.
+    ai_text = redact_known_values(tenant, ai_text, seam="ios_reply_storage")
+    entity_map = getattr(tenant, "pii_entity_map", None)
+    reply_redactions = placeholder_redactions(ai_text, entity_map)
+
+    # Parse the trailing markers off the guarded reply so quick-reply labels and
+    # journal-link titles remain placeholder-space at rest too.
     # step (insight extraction, chart/MEDIA stripping, rehydration) operates on
     # text that's already marker-free. Quick-replies stays first so its existing
     # final-line behavior is unchanged; journal-link then scans every remaining
     # line, including when prose follows it.
     ai_text, quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="ios")
     ai_text, journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="ios")
-
-    entity_map = getattr(tenant, "pii_entity_map", None)
-    # Capture transparency metadata before any table is moved so it describes
-    # the assistant's complete placeholder-space reply, including the artifact.
-    reply_redactions = placeholder_redactions(ai_text, entity_map)
 
     # Insight copy: rehydrate to real values and record insights with unchanged
     # real-name behaviour. The stored copy below strips the same wrappers.

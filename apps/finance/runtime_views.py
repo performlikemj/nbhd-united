@@ -13,6 +13,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.pii.egress import KnownValueResponseGuardMixin
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
@@ -29,6 +30,11 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _FinanceResponseGuard(KnownValueResponseGuardMixin):
+    pii_egress_seam = "finance_runtime_response"
+    pii_egress_text_fields = frozenset({"nickname", "description", "display_name", "account_name", "notes", "summary"})
 
 
 def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
@@ -66,7 +72,7 @@ def _parse_decimal(value, field_name: str) -> Decimal:
         raise ValueError(f"{field_name} must be a valid number") from exc
 
 
-class RuntimeFinanceAccountsView(APIView):
+class RuntimeFinanceAccountsView(_FinanceResponseGuard, APIView):
     """GET: list accounts. POST: create/update an account."""
 
     permission_classes = [AllowAny]
@@ -164,7 +170,7 @@ class RuntimeFinanceAccountsView(APIView):
         )
 
 
-class RuntimeFinanceTransactionsView(APIView):
+class RuntimeFinanceTransactionsView(_FinanceResponseGuard, APIView):
     """POST: record a payment or transaction."""
 
     permission_classes = [AllowAny]
@@ -467,7 +473,7 @@ class RuntimeFinancePayoffView(APIView):
         return Response({"results": results})
 
 
-class RuntimeFinanceSummaryView(APIView):
+class RuntimeFinanceSummaryView(_FinanceResponseGuard, APIView):
     """GET: current financial overview for AI context."""
 
     permission_classes = [AllowAny]

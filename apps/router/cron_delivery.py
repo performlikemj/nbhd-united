@@ -123,9 +123,14 @@ def _resolve_delivery_attempt(attempt, *, state: str, response: Response | None 
     if attempt is None:
         return
 
+    from apps.pii.egress import redact_known_values
     from apps.router.models import DeliveryAttempt
 
-    response_excerpt = (excerpt or _response_excerpt(response))[:500]
+    response_excerpt = redact_known_values(
+        attempt.tenant,
+        excerpt or _response_excerpt(response),
+        seam="cron_delivery_response_excerpt",
+    )[:500]
     DeliveryAttempt.objects.filter(pk=attempt.pk, state=DeliveryAttempt.State.CLAIMED).update(
         state=state,
         resolved_at=timezone.now(),

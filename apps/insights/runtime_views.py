@@ -33,6 +33,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.pii.egress import KnownValueResponseGuardMixin
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
@@ -261,10 +262,12 @@ class RuntimePillarBaselineView(APIView):
         return Response(baseline)
 
 
-class RuntimeInsightListView(APIView):
+class RuntimeInsightListView(KnownValueResponseGuardMixin, APIView):
     """Internal: list AssistantInsight rows for the tenant."""
 
     permission_classes = [AllowAny]
+    pii_egress_seam = "insights_list_runtime_response"
+    pii_egress_text_fields = frozenset({"statement", "response_note", "user_response_note", "title", "display_name"})
 
     def get(self, request, tenant_id):
         if err := _internal_auth_or_401(request, tenant_id):

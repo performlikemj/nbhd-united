@@ -141,7 +141,7 @@ def generate_weekly_reflection(tenant: Tenant, *, now: datetime | None = None) -
         return result
 
     try:
-        reply_text, usage = _call_synthesis_llm(context)
+        reply_text, usage = _call_synthesis_llm(context, tenant=tenant)
     except Exception:
         logger.exception("weekly_reflection: LLM call failed for tenant %s", str(tenant.id)[:8])
         result.skipped = "llm_error"
@@ -351,7 +351,7 @@ def _format_context_for_prompt(context: dict[str, Any]) -> str:
     return blob
 
 
-def _call_synthesis_llm(context: dict[str, Any]) -> tuple[str, dict]:
+def _call_synthesis_llm(context: dict[str, Any], *, tenant: Tenant | None = None) -> tuple[str, dict]:
     """Call OpenRouter for the synthesis. Returns (text, usage_dict).
 
     Tries DeepSeek V4 Pro first, then DeepSeek V4 Flash (see SYNTHESIS_MODELS)
@@ -359,6 +359,9 @@ def _call_synthesis_llm(context: dict[str, Any]) -> tuple[str, dict]:
     reflection.
     """
     user_message = _format_context_for_prompt(context)
+    from apps.pii.egress import redact_known_values
+
+    user_message = redact_known_values(tenant, user_message, seam="insights_synthesis_prompt")
     data, _model_used = chat_completion(
         SYNTHESIS_MODELS,
         [

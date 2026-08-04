@@ -145,6 +145,24 @@ def _tutor_request(
     tutoring turn.
     """
     model = _tutoring_model()
+    if tenant_id:
+        try:
+            from apps.pii.egress import redact_known_value_fields
+            from apps.tenants.models import Tenant
+
+            tenant = Tenant.objects.filter(id=tenant_id).only("id", "pii_entity_map").first()
+            messages = redact_known_value_fields(
+                tenant,
+                messages,
+                seam="lesson_tutoring_prompt",
+                text_fields=frozenset({"content"}),
+            )
+        except Exception:
+            logger.warning(
+                "pii_egress_guard_error tenant=%s seam=lesson_tutoring_prompt",
+                tenant_id,
+                exc_info=True,
+            )
     resp = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
         headers={

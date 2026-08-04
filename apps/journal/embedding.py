@@ -89,7 +89,14 @@ def embed_daily_note(tenant: Tenant, for_date: date) -> int:
     created = 0
     for i, chunk_text in enumerate(dated_chunks):
         try:
-            embedding = generate_embedding(chunk_text)
+            from apps.pii.egress import redact_known_values
+
+            guarded_chunk = redact_known_values(tenant, chunk_text, seam="journal_chunk_index_embedding")
+            embedding = generate_embedding(
+                guarded_chunk,
+                tenant=tenant,
+                seam="journal_chunk_index_embedding",
+            )
         except Exception:
             logger.exception("embed: failed to embed chunk %d for tenant %s", i, str(tenant.id)[:8])
             continue
@@ -98,7 +105,7 @@ def embed_daily_note(tenant: Tenant, for_date: date) -> int:
             tenant=tenant,
             document=doc,
             chunk_index=i,
-            text=chunk_text,
+            text=guarded_chunk,
             embedding=embedding,
             source_date=for_date,
         )

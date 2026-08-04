@@ -97,7 +97,7 @@ def run_agenda_hint_pass(tenant: Tenant, journal_content: str) -> dict[str, int]
         return summary
 
     try:
-        matches = _classify(journal_content, threads)
+        matches = _classify(journal_content, threads, tenant=tenant)
     except Exception:
         logger.exception(
             "agenda_hints: classifier call failed for tenant %s",
@@ -152,7 +152,7 @@ def run_agenda_hint_pass(tenant: Tenant, journal_content: str) -> dict[str, int]
     return summary
 
 
-def _classify(content: str, threads) -> list[dict]:
+def _classify(content: str, threads, *, tenant: Tenant | None = None) -> list[dict]:
     """Single LLM call. Raises on transport / parse failure — caller
     catches and logs."""
     threads_block = "\n".join(
@@ -166,6 +166,10 @@ def _classify(content: str, threads) -> list[dict]:
         "Journal text:\n"
         f"{content[:HINT_MAX_CONTENT_CHARS]}"
     )
+
+    from apps.pii.egress import redact_known_values
+
+    user_prompt = redact_known_values(tenant, user_prompt, seam="journal_agenda_hints_prompt")
 
     data, _model_used = chat_completion(
         HINT_MODELS,

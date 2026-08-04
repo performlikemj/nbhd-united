@@ -253,7 +253,7 @@ def compose_meditation(session: MeditationSession) -> None:
             return
         try:
             signals = gather_meditation_signals(session.tenant)
-            manifest = compose.author_manifest(signals, voice=session.voice)
+            manifest = compose.author_manifest(signals, voice=session.voice, tenant=session.tenant)
         except compose.ComposeError as exc:
             logger.warning("compose_meditation: session %s authoring failed: %s", sid[:8], str(exc)[:160])
             _fail(session, f"compose_error: {exc}")
@@ -488,6 +488,7 @@ def render_meditation(session: MeditationSession) -> None:
     try:
         result = render.render_manifest_to_audio(
             session.manifest,
+            tenant=session.tenant,
             voice=voice,
             model=model,
             api_key=api_key,

@@ -1160,7 +1160,11 @@ class TelegramPoller:
 
             from apps.lessons.services import generate_embedding
 
-            query_embedding = generate_embedding(message_text[:500])
+            query_embedding = generate_embedding(
+                message_text[:500],
+                tenant=tenant,
+                seam="session_start_query_embedding",
+            )
 
             # Search daily note chunks
             chunks = (
