@@ -812,7 +812,7 @@ class RedactToolResponseTest(TestCase):
         result = redact_tool_response(data, self.tenant)
 
         # Known person is still masked in tool text.
-        self.assertIn("[PERSON_1]", result["events"][0]["summary"])
+        self.assertIn("[PERSON_1|unresolved]", result["events"][0]["summary"])
         self.assertNotIn("Sarah Chen", result["events"][0]["summary"])
         # ID and structural fields preserved
         self.assertEqual(result["events"][0]["id"], "evt123")

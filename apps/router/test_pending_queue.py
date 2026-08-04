@@ -2795,8 +2795,9 @@ class ThreadRecapOnWakeTest(TestCase):
 
         content = self._posted_content(mock_post)
         self.assertIn("conversation-recap", content)
+        self.assertNotIn("the call with Priya went great", content)
         self.assertNotIn("Priya", content)
-        self.assertIn("[PERSON_5]", content)
+        self.assertRegex(content, r"\[PERSON_5(\|[^\]]*)?\]")
 
 
 @override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)

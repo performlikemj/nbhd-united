@@ -267,14 +267,14 @@ def rehydrate_journal_link(
     if not journal_link:
         return None
     title = journal_link.get("title") or ""
-    if entity_map and title:
-        try:
-            from apps.pii.redactor import rehydrate_text
+    from apps.router.reply_text import finalize_outbound_text
 
-            title = rehydrate_text(title, entity_map)
-        except Exception:
-            logger.exception("journal_link: title rehydrate failed (non-fatal, serving placeholder title)")
-            return dict(journal_link)
+    title = finalize_outbound_text(
+        title,
+        entity_map,
+        tenant_id=tenant_id,
+        channel=f"{channel}_journal_link",
+    )
 
     if len(title) > MAX_TITLE_LEN:
         # sample is the PLACEHOLDER-space title, never the rehydrated one — the

@@ -1186,6 +1186,10 @@ def _forward_buffered_telegram(tenant, msg, chat_timeout: float) -> None:
     if envelope_media(msg.payload):
         content = "[The user attached media that isn't available after wake — ask them to resend it.]\n" + content
 
+    from apps.pii.redactor import annotate_model_context
+
+    content = annotate_model_context(content, getattr(tenant, "pii_entity_map", None))
+
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     gateway_token = get_gateway_token_for_tenant(tenant)
     user_tz = tenant.user.timezone or "UTC"
@@ -1342,6 +1346,10 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                         timestamps=timestamps,
                         channel="line",
                     )
+
+                from apps.pii.redactor import annotate_model_context
+
+                content = annotate_model_context(content, getattr(tenant, "pii_entity_map", None))
 
                 result = _post_chat_completion_with_backoff(
                     url,

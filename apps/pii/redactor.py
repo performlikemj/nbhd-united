@@ -39,8 +39,11 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Matches placeholders like [PERSON_1], [EMAIL_ADDRESS_3]
-_PLACEHOLDER_RE = re.compile(r"\[([A-Z_]+)_(\d+)\]")
+# Matches bare and model-context-annotated placeholders, for example
+# ``[PERSON_1]`` and ``[PERSON_1|coworker at ORG_2]``.  The annotation is
+# deliberately part of the token so every placeholder-aware seam can treat the
+# two wire forms identically.
+_PLACEHOLDER_RE = re.compile(r"\[([A-Z_]+)_(\d+)(?:\|[^\]]*)?\]")
 
 # Rehydration variant that also accepts markdown-escaped placeholders.
 # The assistant sometimes writes ``\[PERSON_444\]`` in journal markdown so
@@ -48,7 +51,10 @@ _PLACEHOLDER_RE = re.compile(r"\[([A-Z_]+)_(\d+)\]")
 # or the escaped placeholder leaks to the owner verbatim (observed in prod
 # daily notes). Kept separate from ``_PLACEHOLDER_RE`` because detection /
 # metadata paths operate on redactor-emitted text, which is never escaped.
-_REHYDRATE_PLACEHOLDER_RE = re.compile(r"\\?\[([A-Z_]+)_(\d+)\\?\]")
+_REHYDRATE_PLACEHOLDER_RE = re.compile(r"\\?\[([A-Z_]+)_(\d+)(?:\|[^\]]*)?\\?\]")
+
+_RELATIONSHIP_ENTITY_TYPES = frozenset({"PERSON", "ORG", "PLACE", "LOCATION"})
+_MAX_PLACEHOLDER_ANNOTATION_CHARS = 80
 
 # A bare lift number, rep/set count, or number+unit token. Fitness logs are
 # the dominant false-positive source for the contextual (PERSON/LOCATION)
@@ -845,6 +851,55 @@ def _replace_known_only(
     return out
 
 
+def metadata_in_placeholder_space(metadata: str, entity_map: dict[str, Any]) -> str:
+    """Return a short metadata descriptor containing no known raw names.
+
+    Relationship text is user-curated and may itself mention another registry
+    entity (``"recruiter at Optiver"``).  Reuse the registry's deterministic
+    known-entity masking pass, then flatten nested bracket placeholders to bare
+    identifiers (``ORG_2``) so the outer annotated token remains parseable.
+    """
+    descriptor = " ".join(metadata.split())
+    if not descriptor:
+        return ""
+    descriptor = _replace_known_only(descriptor, _inverted_names_ci(entity_map), None)
+    descriptor = _PLACEHOLDER_RE.sub(lambda match: f"{match.group(1)}_{match.group(2)}", descriptor)
+    # Annotation delimiters cannot be nested.  Replace user-authored delimiter
+    # characters instead of escaping them into a second wire grammar.
+    descriptor = descriptor.replace("|", "/").replace("[", "").replace("]", "")
+    descriptor = " ".join(descriptor.split()).strip()
+    if len(descriptor) > _MAX_PLACEHOLDER_ANNOTATION_CHARS:
+        descriptor = descriptor[:_MAX_PLACEHOLDER_ANNOTATION_CHARS].rstrip()
+    return descriptor
+
+
+def annotate_model_context(text: str, entity_map: dict[str, Any] | None) -> str:
+    """Annotate identity placeholders for model-bound context without PII.
+
+    PERSON/ORG/PLACE tokens with a curated relationship carry that relationship
+    in placeholder space.  Tokens without one are explicitly ``unresolved``.
+    Existing annotations are refreshed idempotently from the current registry.
+    Other PII classes keep their historical bare form because a relationship is
+    not meaningful for an email address, card number, and so on.
+    """
+    if not text or "[" not in text:
+        return text
+
+    registry = entity_map or {}
+
+    def _annotate(match: re.Match) -> str:
+        entity_type, number = match.group(1), match.group(2)
+        if entity_type not in _RELATIONSHIP_ENTITY_TYPES:
+            return match.group(0)
+        placeholder = f"[{entity_type}_{number}]"
+        entry = registry.get(placeholder)
+        relationship = entry.get("relationship") if isinstance(entry, dict) else ""
+        descriptor = metadata_in_placeholder_space(relationship, registry) if isinstance(relationship, str) else ""
+        return f"[{entity_type}_{number}|{descriptor or 'unresolved'}]"
+
+    return _PLACEHOLDER_RE.sub(_annotate, text)
+
+
 class RedactionSession:
     """Maintains consistent entity numbering across multiple redact() calls.
 
@@ -862,7 +917,9 @@ class RedactionSession:
     ``mint`` controls whether unfamiliar text may coin NEW placeholders (see the
     MINT_* constants). Callers feeding AGENT-authored markdown (memory sync,
     galaxy co-pilot) pass ``mint='never'`` so machine structure can't mint junk;
-    the default ``'all'`` preserves the mint-everything behavior.
+    the default ``'all'`` preserves the mint-everything behavior. Model-bound
+    callers pass ``annotate=True`` to attach relationship/unresolved metadata;
+    storage-oriented callers keep the default bare wire form.
     """
 
     def __init__(
@@ -872,9 +929,11 @@ class RedactionSession:
         tier: str | None = None,
         allow_names: set[str] | None = None,
         mint: str = MINT_ALL,
+        annotate: bool = False,
     ):
         self.tenant = tenant
         self.allow_names = allow_names or set()
+        self.annotate = annotate
 
         # Mint policy for this session (see the MINT_* constants). Default
         # ``all`` preserves the historical mint-everything behavior for callers
@@ -931,7 +990,11 @@ class RedactionSession:
         # (headings, table rules, timestamps) is left verbatim. No mint, no write.
         if self.mint == MINT_NEVER:
             try:
-                return _replace_known_only(text, self._inverted_ci, self._denylist)
+                result = _replace_known_only(text, self._inverted_ci, self._denylist)
+                existing_map = getattr(self.tenant, "pii_entity_map", None) or {}
+                if self.annotate:
+                    return annotate_model_context(result, {**existing_map, **self.entity_map})
+                return result
             except Exception:
                 logger.exception("PII known-only replacement failed — returning original text")
                 return text
@@ -949,6 +1012,9 @@ class RedactionSession:
                 denylist=self._denylist,
                 mint=self.mint,
             )
+            existing_map = getattr(self.tenant, "pii_entity_map", None) or {}
+            if self.annotate:
+                return annotate_model_context(result, {**existing_map, **self.entity_map})
             return result
         except Exception:
             logger.exception("PII redaction failed — returning original text")
@@ -1381,7 +1447,8 @@ def redact_tool_response(data: Any, tenant: Tenant) -> Any:
         return data
 
     try:
-        return _redact_tool_value(data, tenant, policy, _TOOL_SKIP_KEYS)
+        redacted = _redact_tool_value(data, tenant, policy, _TOOL_SKIP_KEYS)
+        return _annotate_model_value(redacted, getattr(tenant, "pii_entity_map", None) or {}, _TOOL_SKIP_KEYS)
     except Exception:
         logger.exception("Tool response PII redaction failed — returning original")
         return data
@@ -1433,6 +1500,20 @@ def _redact_tool_value(
         return [_redact_tool_value(item, tenant, policy, skip_keys) for item in value]
     else:
         return value
+
+
+def _annotate_model_value(value: Any, entity_map: dict[str, Any], skip_keys: frozenset) -> Any:
+    """Recursively annotate already-redacted tool data at its model boundary."""
+    if isinstance(value, str):
+        return annotate_model_context(value, entity_map)
+    if isinstance(value, dict):
+        return {
+            key: (item if key in skip_keys else _annotate_model_value(item, entity_map, skip_keys))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_annotate_model_value(item, entity_map, skip_keys) for item in value]
+    return value
 
 
 # ---------------------------------------------------------------------------

@@ -276,14 +276,14 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None, user_text: Redac
             msg.user_text_enc,
             msg.user_text,
         )
-    reply_text = msg.reply_text
-    if reply_text and entity_map:
-        try:
-            from apps.pii.redactor import rehydrate_text
+    from apps.router.reply_text import finalize_outbound_text
 
-            reply_text = rehydrate_text(reply_text, entity_map)
-        except Exception:
-            logger.exception("chat_views: reply rehydrate failed (non-fatal)")
+    reply_text = finalize_outbound_text(
+        msg.reply_text,
+        entity_map,
+        tenant_id=msg.tenant_id,
+        channel="ios_detail",
+    )
     # One attachment per turn, typed off the stored file's extension. Shared
     # with the ?since= feed via AppChatMessage.attachment_flags so the two
     # rendering paths can't drift.
@@ -898,14 +898,14 @@ class ChatContextView(APIView):
         # The device has no entity map, so a raw ``[PERSON_1]`` would be
         # parroted to the user verbatim. Fail-open: a rehydration error
         # serves placeholder-space text rather than no context at all.
-        entity_map = getattr(tenant, "pii_entity_map", None)
-        if entity_map:
-            try:
-                from apps.pii.redactor import rehydrate_text
+        from apps.router.reply_text import finalize_outbound_text
 
-                context_md = rehydrate_text(context_md, entity_map)
-            except Exception:
-                logger.exception("chat context: PII rehydrate failed (non-fatal)")
+        context_md = finalize_outbound_text(
+            context_md,
+            getattr(tenant, "pii_entity_map", None),
+            tenant_id=tenant.id,
+            channel="ios_context",
+        )
 
         return _no_store(
             Response(

@@ -445,13 +445,16 @@ class CronDeliveryView(APIView):
                 # missing chip must never block the underlying delivery.
                 pass
 
-        # Rehydrate PII placeholders before sending to user (owner-facing egress).
+        # Final owner-facing integrity guard.
         entity_map = tenant.pii_entity_map
-        message_text = placeholder_message_text
-        if entity_map:
-            from apps.pii.redactor import rehydrate_text
+        from apps.router.reply_text import finalize_outbound_text
 
-            message_text = rehydrate_text(placeholder_message_text, entity_map)
+        message_text = finalize_outbound_text(
+            placeholder_message_text,
+            entity_map,
+            tenant_id=tenant.id,
+            channel=f"cron_{channel}",
+        )
 
         # Log-only instrumentation: ASCII chart leakage when no marker emitted.
         from apps.router.output_guards import log_ascii_chart_leak

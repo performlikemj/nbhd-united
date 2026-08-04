@@ -179,6 +179,8 @@ class PrivacyPlaceholdersSectionTests(TestCase):
         body = render_privacy_placeholders(tenant)
         self.assertIn("[PERSON_1]", body)
         self.assertIn("Preserve placeholders exactly as written", body)
+        self.assertIn("|unresolved", body)
+        self.assertIn("Never claim familiarity", body)
 
     def test_section_appears_in_managed_region_when_entity_map_populated(self):
         from apps.orchestrator.workspace_envelope import render_managed_region
@@ -283,6 +285,23 @@ class IdentityContextSubSectionTests(TestCase):
         body = render_privacy_placeholders(tenant)
         self.assertIn("`[PERSON_1]` — daughter — 4.5 years old, into Roblox", body)
         self.assertNotIn("Sarah", body)
+
+    def test_subsection_repseudonymizes_known_names_in_metadata(self):
+        tenant = self._tenant(
+            {
+                "[PERSON_1]": {
+                    "name": "Theo",
+                    "relationship": "recruiter at Optiver",
+                },
+                "[ORG_2]": {"name": "Optiver"},
+            }
+        )
+
+        body = render_privacy_placeholders(tenant)
+
+        self.assertIn("`[PERSON_1]` — recruiter at ORG_2", body)
+        self.assertNotIn("Theo", body)
+        self.assertNotIn("Optiver", body)
 
     def test_subsection_sorts_entries_by_placeholder_for_stable_diff(self):
         tenant = self._tenant(

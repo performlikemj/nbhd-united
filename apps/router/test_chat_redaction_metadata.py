@@ -103,7 +103,7 @@ class ChatRedactionMetadataTest(TestCase):
         self.assertEqual(row.user_text, "met Sautai for coffee")
         # What actually went to the container carried the placeholder, not the name.
         content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
-        self.assertIn(_KNOWN_PLACEHOLDER, content)
+        self.assertIn("[PERSON_5|unresolved]", content)
         self.assertNotIn(_KNOWN_NAME, content)
 
     @patch("apps.pii.redactor._detect_pii", return_value=[])

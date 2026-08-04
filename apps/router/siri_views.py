@@ -100,15 +100,14 @@ def _rehydrated_snapshot(tenant, *, max_chars: int) -> str:
     capped = max(CONTEXT_DIGEST_MIN_CHARS, min(max_chars, CONTEXT_DIGEST_MAX_CHARS))
     md = render_context_digest(tenant, max_chars=capped)
 
-    entity_map = getattr(tenant, "pii_entity_map", None)
-    if entity_map:
-        try:
-            from apps.pii.redactor import rehydrate_text
+    from apps.router.reply_text import finalize_outbound_text
 
-            md = rehydrate_text(md, entity_map)
-        except Exception:
-            logger.exception("siri: PII rehydrate failed (non-fatal)")
-    return md
+    return finalize_outbound_text(
+        md,
+        getattr(tenant, "pii_entity_map", None),
+        tenant_id=tenant.id,
+        channel="siri_snapshot",
+    )
 
 
 class SiriQuickStatusView(APIView):

@@ -57,7 +57,7 @@ _NAME_MAX_WORDS = 4  # "2-4 word Title Case name"
 _SENTINEL = "\n␞\n"
 
 # Any residual ``[TYPE_N]`` placeholder — scrubbed at the egress boundary.
-_PLACEHOLDER_RE = re.compile(r"\[[A-Z_]+_\d+\]")
+_PLACEHOLDER_RE = re.compile(r"\[[A-Z_]+_\d+(?:\|[^\]]*)?\]")
 
 
 def _cluster_label_model() -> str:
@@ -234,7 +234,7 @@ def _name_one_cluster(
     # class the prod audit flagged as a junk-mint source (copilot/memory-sync).
     # Known people are still masked; unfamiliar machine-derived strings no longer
     # coin new bindings before this egresses to the naming LLM.
-    session = RedactionSession(tenant=tenant, mint="never")
+    session = RedactionSession(tenant=tenant, mint="never", annotate=True)
 
     snippets = [_cap(m.text) for m in members if (m.text or "").strip()][:SNIPPETS_PER_CLUSTER]
     fields = [deterministic, *terms[:TERMS_PER_CLUSTER], *snippets]

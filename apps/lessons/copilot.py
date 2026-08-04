@@ -68,7 +68,7 @@ _RL_PER_MIN = 30  # max LLM-backed reflects per tenant per minute
 
 # Any residual ``[TYPE_N]`` placeholder — scrubbed at the egress boundary so a
 # token a rehydration map didn't cover can never reach the panel.
-_PLACEHOLDER_RE = re.compile(r"\[[A-Z_]+_\d+\]")
+_PLACEHOLDER_RE = re.compile(r"\[[A-Z_]+_\d+(?:\|[^\]]*)?\]")
 
 
 def _copilot_model() -> str:
@@ -493,7 +493,7 @@ def reflect(
     # lesson summaries, pinned notes) — the audit flagged this class as a
     # junk-mint source. Run replace-known-only so known people stay masked but no
     # NEW bindings are coined; the reflect line is rehydrated at egress anyway.
-    session = RedactionSession(tenant=tenant, mint="never")
+    session = RedactionSession(tenant=tenant, mint="never", annotate=True)
     redacted = _redact_context(ctx, session)
 
     source = "fallback"

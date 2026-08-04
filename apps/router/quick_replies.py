@@ -126,16 +126,17 @@ def rehydrate_quick_replies(
     """
     if not labels:
         return None
-    if not entity_map:
-        rehydrated = list(labels)
-    else:
-        try:
-            from apps.pii.redactor import rehydrate_text
+    from apps.router.reply_text import finalize_outbound_text
 
-            rehydrated = [rehydrate_text(label, entity_map) for label in labels]
-        except Exception:
-            logger.exception("quick_replies: label rehydrate failed (non-fatal, serving placeholder labels)")
-            return list(labels)
+    rehydrated = [
+        finalize_outbound_text(
+            label,
+            entity_map,
+            tenant_id=tenant_id,
+            channel=f"{channel}_quick_reply",
+        )
+        for label in labels
+    ]
 
     if any(len(label) > MAX_LABEL_LEN for label in rehydrated):
         # sample is the PLACEHOLDER-space labels arg, never `rehydrated` — the

@@ -151,7 +151,7 @@ class ClusterNamingTests(TestCase):
         self.assertIn("Sarah", label)
         self.assertNotIn("[PERSON_1]", label)
 
-    @patch("apps.lessons.cluster_naming._cluster_naming_request", return_value="[PERSON_9] Training")
+    @patch("apps.lessons.cluster_naming._cluster_naming_request", return_value="[PERSON_9|unresolved] Training")
     def test_unmapped_placeholder_is_scrubbed(self, _mock_req):
         self._mk(1, "gym session", ["fitness"])
         self._mk(1, "another gym session", ["fitness"])
@@ -159,7 +159,7 @@ class ClusterNamingTests(TestCase):
         name_clusters_for_tenant(str(self.tenant.id))
 
         label = Lesson.objects.filter(cluster_id=1).values_list("cluster_label", flat=True).first()
-        self.assertNotIn("[PERSON_9]", label)
+        self.assertNotIn("[PERSON_9", label)
         self.assertIn("Training", label)
 
     @override_settings(CLUSTER_LABEL_LLM_ENABLED=False)

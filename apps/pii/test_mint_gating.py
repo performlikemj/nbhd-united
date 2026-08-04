@@ -148,7 +148,7 @@ class ToolResponseMintValidatedTests(TestCase):
 
         tenant.refresh_from_db()
         self.assertEqual(set(tenant.pii_entity_map), {"[PERSON_1]"})  # no new mint
-        self.assertIn("[PERSON_1]", out["snippet"])
+        self.assertIn("[PERSON_1|unresolved]", out["snippet"])
         self.assertNotIn("Alice", out["snippet"])
 
     def test_without_hygiene_email_floor_mints(self):

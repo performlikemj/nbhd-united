@@ -757,12 +757,11 @@ def relay_ai_response_to_line(
     placeholder_excerpt = re.sub(r"\[\[[^\]]*\]\]", "", ai_text)
     placeholder_excerpt = re.sub(r"MEDIA:\S+", "", placeholder_excerpt).strip()
 
-    # Rehydrate PII placeholders before sending to user
+    # Final owner-facing integrity guard.
     entity_map = getattr(tenant, "pii_entity_map", None)
-    if entity_map:
-        from apps.pii.redactor import rehydrate_text
+    from apps.router.reply_text import finalize_outbound_text
 
-        ai_text = rehydrate_text(ai_text, entity_map)
+    ai_text = finalize_outbound_text(ai_text, entity_map, tenant_id=tenant.id, channel="line")
 
     # Log-only instrumentation: did the agent draw an ASCII chart instead of
     # emitting a [[chart:...]] marker? See apps/router/output_guards.py.

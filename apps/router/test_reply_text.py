@@ -13,6 +13,7 @@ from apps.router.reply_text import (
     DEFAULT_REPLY_TEXT_MAX_CHARS,
     REPLY_TEXT_TRUNCATION_SUFFIX,
     clamp_reply_text,
+    guard_outbound_placeholders,
 )
 from apps.tenants.models import Tenant, User
 
@@ -28,6 +29,53 @@ class ClampReplyTextTest(SimpleTestCase):
 
         self.assertEqual(len(result), DEFAULT_REPLY_TEXT_MAX_CHARS)
         self.assertTrue(result.endswith(REPLY_TEXT_TRUNCATION_SUFFIX))
+
+
+class OutboundPlaceholderGuardTest(TestCase):
+    def test_known_annotated_placeholder_rehydrates_and_logs_context(self):
+        entity_map = {"[PERSON_559]": {"name": "Theo", "relationship": "recruiter"}}
+
+        with patch("apps.router.reply_text.logger.warning") as warning:
+            result = guard_outbound_placeholders(
+                "Ask [PERSON_559|recruiter] today.",
+                entity_map,
+                tenant_id="tenant-1",
+                channel="telegram_drain",
+            )
+
+        self.assertEqual(result, "Ask Theo today.")
+        self.assertEqual(warning.call_args.args[0], "raw_outbound_placeholder_guard")
+        self.assertEqual(warning.call_args.kwargs["extra"]["tenant_id"], "tenant-1")
+        self.assertEqual(warning.call_args.kwargs["extra"]["channel"], "telegram_drain")
+        self.assertEqual(warning.call_args.kwargs["extra"]["resolved_count"], 1)
+
+    def test_unknown_placeholder_is_neutralized_and_logged(self):
+        with patch("apps.router.reply_text.logger.warning") as warning:
+            result = guard_outbound_placeholders(
+                "Ask [ORG_12] near [PLACE_4|unresolved].",
+                {},
+                tenant_id="tenant-2",
+                channel="ios_detail",
+            )
+
+        self.assertEqual(result, "Ask a redacted organization near a redacted place.")
+        self.assertNotRegex(result, r"\[(PERSON|ORG|PLACE)_\d+")
+        self.assertEqual(warning.call_args.kwargs["extra"]["neutralized_count"], 2)
+
+    def test_clean_text_is_untouched_without_queries_or_warning(self):
+        with (
+            patch("apps.router.reply_text.logger.warning") as warning,
+            self.assertNumQueries(0),
+        ):
+            result = guard_outbound_placeholders(
+                "Nothing redacted here.",
+                {"[PERSON_1]": {"name": "Alice"}},
+                tenant_id="tenant-3",
+                channel="line",
+            )
+
+        self.assertEqual(result, "Nothing redacted here.")
+        warning.assert_not_called()
 
 
 class ReplyTextStorePathTest(TestCase):
