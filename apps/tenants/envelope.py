@@ -284,6 +284,7 @@ def _render_identity_context(tenant: Tenant) -> str:
     privacy block tight on tenants who haven't filled in any metadata.
     """
     from apps.pii.entity_registry import get_metadata, iter_normalized
+    from apps.pii.redactor import metadata_in_placeholder_space
 
     entity_map = getattr(tenant, "pii_entity_map", None)
     if not entity_map:
@@ -302,6 +303,9 @@ def _render_identity_context(tenant: Tenant) -> str:
             descriptor = f"{relationship} — {notes}"
         else:
             descriptor = relationship or notes
+        descriptor = metadata_in_placeholder_space(descriptor, entity_map)
+        if not descriptor:
+            continue
         lines.append(f"- `{placeholder}` — {descriptor}")
 
     if not lines:

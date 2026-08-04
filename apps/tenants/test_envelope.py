@@ -286,6 +286,23 @@ class IdentityContextSubSectionTests(TestCase):
         self.assertIn("`[PERSON_1]` — daughter — 4.5 years old, into Roblox", body)
         self.assertNotIn("Sarah", body)
 
+    def test_subsection_repseudonymizes_known_names_in_metadata(self):
+        tenant = self._tenant(
+            {
+                "[PERSON_1]": {
+                    "name": "Theo",
+                    "relationship": "recruiter at Optiver",
+                },
+                "[ORG_2]": {"name": "Optiver"},
+            }
+        )
+
+        body = render_privacy_placeholders(tenant)
+
+        self.assertIn("`[PERSON_1]` — recruiter at ORG_2", body)
+        self.assertNotIn("Theo", body)
+        self.assertNotIn("Optiver", body)
+
     def test_subsection_sorts_entries_by_placeholder_for_stable_diff(self):
         tenant = self._tenant(
             {

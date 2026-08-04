@@ -851,15 +851,15 @@ def _replace_known_only(
     return out
 
 
-def _relationship_in_placeholder_space(relationship: str, entity_map: dict[str, Any]) -> str:
-    """Return a short relationship descriptor containing no known raw names.
+def metadata_in_placeholder_space(metadata: str, entity_map: dict[str, Any]) -> str:
+    """Return a short metadata descriptor containing no known raw names.
 
     Relationship text is user-curated and may itself mention another registry
     entity (``"recruiter at Optiver"``).  Reuse the registry's deterministic
     known-entity masking pass, then flatten nested bracket placeholders to bare
     identifiers (``ORG_2``) so the outer annotated token remains parseable.
     """
-    descriptor = " ".join(relationship.split())
+    descriptor = " ".join(metadata.split())
     if not descriptor:
         return ""
     descriptor = _replace_known_only(descriptor, _inverted_names_ci(entity_map), None)
@@ -894,7 +894,7 @@ def annotate_model_context(text: str, entity_map: dict[str, Any] | None) -> str:
         placeholder = f"[{entity_type}_{number}]"
         entry = registry.get(placeholder)
         relationship = entry.get("relationship") if isinstance(entry, dict) else ""
-        descriptor = _relationship_in_placeholder_space(relationship, registry) if isinstance(relationship, str) else ""
+        descriptor = metadata_in_placeholder_space(relationship, registry) if isinstance(relationship, str) else ""
         return f"[{entity_type}_{number}|{descriptor or 'unresolved'}]"
 
     return _PLACEHOLDER_RE.sub(_annotate, text)
