@@ -4,17 +4,19 @@ import Link from "next/link";
 import { FormEvent, useState } from "react";
 
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
-import { requestPasswordReset } from "@/lib/api";
+import { ApiNetworkError, requestPasswordReset } from "@/lib/api";
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [rateLimited, setRateLimited] = useState(false);
+  const [networkFailed, setNetworkFailed] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     setRateLimited(false);
+    setNetworkFailed(false);
     setLoading(true);
     try {
       await requestPasswordReset(email);
@@ -24,9 +26,12 @@ export default function ForgotPasswordPage() {
       // no email was sent — showing the "check your inbox" confirmation would
       // leave the user waiting for mail that never arrives. 429 is
       // existence-independent, so surfacing it doesn't reveal whether the
-      // account exists. Any other failure still falls through to the generic
+      // account exists. Network failures are also existence-independent and
+      // stay on the form; any other failure falls through to the generic
       // confirmation, preserving the no-enumeration guarantee.
-      if ((err as { status?: number } | null)?.status === 429) {
+      if (err instanceof ApiNetworkError) {
+        setNetworkFailed(true);
+      } else if ((err as { status?: number } | null)?.status === 429) {
         setRateLimited(true);
       } else {
         setSubmitted(true);
@@ -86,6 +91,13 @@ export default function ForgotPasswordPage() {
                   placeholder="you@example.com"
                 />
               </div>
+
+              {networkFailed && (
+                <p className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
+                  Couldn&apos;t reach the server. Check your connection and try
+                  again.
+                </p>
+              )}
 
               {rateLimited && (
                 <p className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
