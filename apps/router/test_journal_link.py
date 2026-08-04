@@ -283,9 +283,12 @@ class RehydrateJournalLinkTest(SimpleTestCase):
     def test_none_link(self):
         self.assertIsNone(rehydrate_journal_link(None, {"[PERSON_1]": "Alice"}))
 
-    def test_no_entity_map_returns_unchanged(self):
+    def test_no_entity_map_neutralizes_raw_entity_placeholder(self):
         link = {"kind": "goal", "slug": "g1", "title": "Call [PERSON_1]"}
-        self.assertEqual(rehydrate_journal_link(link, None), link)
+        self.assertEqual(
+            rehydrate_journal_link(link, None),
+            {"kind": "goal", "slug": "g1", "title": "Call a redacted person"},
+        )
 
     def test_title_rehydrated(self):
         link = {"kind": "goal", "slug": "g1", "title": "Reconnect with [PERSON_1]"}

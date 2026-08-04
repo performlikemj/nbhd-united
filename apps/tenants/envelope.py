@@ -220,10 +220,11 @@ _PRIVACY_PLACEHOLDERS_BODY = (
     "a real name / email / phone / location — even when context makes it obvious.\n"
     "- **Never combine placeholders with name fragments from other fields.** Each "
     "placeholder is a complete value.\n"
-    "- **Treat placeholders as the real values when reasoning** — `[PERSON_1]` *is* the "
-    "person; refer to them as `[PERSON_1]` in your reply.\n"
-    "- **Don't ask the user** what the real value is, and **don't mention or explain** "
-    "the placeholders — the restoration is invisible to them.\n"
+    "- An annotation such as `[PERSON_1|coworker]` is relationship context; reason "
+    "with that relationship while preserving the whole token.\n"
+    "- If a token says `|unresolved`, say plainly that the name is redacted on your "
+    "side with no relationship on file and ask who they are. Never claim familiarity, "
+    "deny knowledge, or base a decision on an unresolved token.\n"
     "\n"
     'Example — DO: "You got an email from [PERSON_1] about the demo." '
     'DON\'T: "You got an email from Ryota about the demo."'
@@ -311,8 +312,8 @@ def _render_identity_context(tenant: Tenant) -> str:
         "\n"
         "The following placeholders refer to specific people in the user's "
         "life. Use this metadata to disambiguate pronouns and references "
-        '("she", "they", "my daughter") — but still emit the '
-        "`[PERSON_X]` placeholder verbatim in your reply, never the "
-        "metadata below.\n"
+        '("she", "they", "my daughter"). In replies preserve the complete '
+        "placeholder token exactly as it appears in the current context; never "
+        "emit the metadata as a raw name.\n"
     )
     return header + "\n" + "\n".join(lines)

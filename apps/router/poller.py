@@ -383,12 +383,11 @@ class TelegramPoller:
         text, _quick_replies = extract_quick_replies(text, tenant_id=tenant.id, channel="telegram_poller")
         text, _journal_link = extract_journal_link(text, tenant_id=tenant.id, channel="telegram_poller")
 
-        # Rehydrate PII placeholders before sending to user
+        # Final owner-facing integrity guard.
         entity_map = getattr(tenant, "pii_entity_map", None)
-        if entity_map:
-            from apps.pii.redactor import rehydrate_text
+        from apps.router.reply_text import finalize_outbound_text
 
-            text = rehydrate_text(text, entity_map)
+        text = finalize_outbound_text(text, entity_map, tenant_id=tenant.id, channel="telegram_poller")
 
         # Log-only instrumentation: ASCII chart leakage when no marker emitted.
         from apps.router.output_guards import log_ascii_chart_leak

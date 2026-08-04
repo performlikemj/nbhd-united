@@ -51,6 +51,13 @@ class RenderWorkspaceRulesTest(TestCase):
         rules = render_workspace_rules()
         self.assertNotIn("workspaces.md", rules)
 
+    def test_memory_rule_carries_redacted_identity_honesty(self):
+        rules = render_workspace_rules()
+        memory = rules["memory.md"]
+        self.assertIn("## Redacted identities", memory)
+        self.assertIn("|unresolved", memory)
+        self.assertIn("Never assert familiarity, deny", memory)
+
 
 class UpdateTenantConfigUploadsRulesTest(TestCase):
     """update_tenant_config() uploads rules to workspace/rules/."""
@@ -101,6 +108,11 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             any("memory.md" in p for p in rules_paths),
             f"memory.md not found in uploaded rules: {rules_paths}",
         )
+        memory_upload = next(
+            call for call in mock_upload_workspace_file.call_args_list if call.args[1] == "workspace/rules/memory.md"
+        )
+        self.assertIn("## Redacted identities", memory_upload.args[2])
+        self.assertIn("|unresolved", memory_upload.args[2])
 
     @patch("apps.orchestrator.services.upload_config_to_file_share")
     @patch("apps.orchestrator.services.config_to_json", return_value="{}")

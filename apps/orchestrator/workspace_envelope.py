@@ -150,7 +150,7 @@ def render_managed_region(tenant: Tenant) -> str:
     # ``mint='never'`` matches memory_sync: re-mask KNOWN entities only, coin
     # nothing new. One session across all sections keeps a person mentioned in
     # two pillars on the same [PERSON_N] (seeded from ``tenant.pii_entity_map``).
-    session = RedactionSession(tenant=tenant, mint="never")
+    session = RedactionSession(tenant=tenant, mint="never", annotate=True)
 
     for section in all_sections():
         try:

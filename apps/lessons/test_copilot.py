@@ -194,7 +194,7 @@ class ReflectEndpointTests(TestCase):
         self.assertNotIn("[PERSON_1]", line)
 
     @override_settings(COPILOT_LLM_ENABLED=True)
-    @patch("apps.lessons.copilot._copilot_request", return_value="Ask [PERSON_9] what they think.")
+    @patch("apps.lessons.copilot._copilot_request", return_value="Ask [PERSON_9|unresolved] what they think.")
     def test_hallucinated_placeholder_is_scrubbed(self, _mock_req):
         # The model emitted a placeholder that maps to nothing — it must be
         # scrubbed at the egress boundary, never leaked to the panel.
@@ -204,7 +204,7 @@ class ReflectEndpointTests(TestCase):
             format="json",
         )
         line = resp.json()["line"]
-        self.assertNotIn("[PERSON_9]", line)
+        self.assertNotIn("[PERSON_9", line)
         self.assertIn("someone", line)
 
     def test_finalize_egress_rehydrates_live_and_scrubs(self):

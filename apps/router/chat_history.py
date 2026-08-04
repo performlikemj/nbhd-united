@@ -133,7 +133,7 @@ def decode_cursor(cursor: str | None) -> tuple[datetime, str]:
 # ---------------------------------------------------------------------------
 
 
-def _rehydrate(text, entity_map):
+def _rehydrate(text, entity_map, *, tenant_id=None, channel="ios_feed"):
     """Rehydrate ``[TYPE_N]`` placeholders for an owner-facing feed row.
 
     Assistant-authored text (``AppChatMessage.reply_text`` /
@@ -143,15 +143,14 @@ def _rehydrate(text, entity_map):
     real names (no placeholders present) and when the tenant has no map, so the
     dual-read is transparent in both directions. Fail-open: any error serves the
     text unchanged rather than dropping the row from the feed."""
-    if not text or not entity_map:
-        return text
-    try:
-        from apps.pii.redactor import rehydrate_text
+    from apps.router.reply_text import finalize_outbound_text
 
-        return rehydrate_text(text, entity_map)
-    except Exception:
-        logger.exception("chat_history: reply rehydrate failed (non-fatal)")
-        return text
+    return finalize_outbound_text(
+        text,
+        entity_map,
+        tenant_id=tenant_id,
+        channel=channel,
+    )
 
 
 def _row(
@@ -266,7 +265,7 @@ def _app_rows(m, main_thread_id, entity_map=None, *, user_text=None):
                 # died in the background).
                 created_at=m.replied_at or m.created_at,
                 role="assistant",
-                text=_rehydrate(m.reply_text, entity_map),
+                text=_rehydrate(m.reply_text, entity_map, tenant_id=m.tenant_id),
                 source="app",
                 thread_id=thread_id,
                 # Both halves of a device-originated turn carry the originating
@@ -308,7 +307,12 @@ def _conv_rows(t, main_thread_id, entity_map=None):
                 row_id=f"conv:{t.id}:0",
                 created_at=t.created_at,
                 role="user",
-                text=t.user_text,
+                text=_rehydrate(
+                    t.user_text,
+                    entity_map,
+                    tenant_id=t.tenant_id,
+                    channel="ios_feed_conversation_user",
+                ),
                 source=t.channel,  # "telegram" | "line"
                 thread_id=main_thread_id,
             )
@@ -319,7 +323,7 @@ def _conv_rows(t, main_thread_id, entity_map=None):
                 row_id=f"conv:{t.id}:1",
                 created_at=t.created_at,
                 role="assistant",
-                text=_rehydrate(t.reply_text, entity_map),
+                text=_rehydrate(t.reply_text, entity_map, tenant_id=t.tenant_id),
                 source=t.channel,
                 thread_id=main_thread_id,
             )
@@ -346,7 +350,7 @@ def _proactive_rows(p, main_thread_id, entity_map=None):
             row_id=f"cron:{p.id}",
             created_at=p.created_at,
             role="assistant",
-            text=_rehydrate(p.message_text, entity_map),
+            text=_rehydrate(p.message_text, entity_map, tenant_id=p.tenant_id),
             source="cron",
             thread_id=main_thread_id,
             quick_replies=rehydrate_quick_replies(

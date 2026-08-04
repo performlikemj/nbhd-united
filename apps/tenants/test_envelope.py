@@ -179,6 +179,8 @@ class PrivacyPlaceholdersSectionTests(TestCase):
         body = render_privacy_placeholders(tenant)
         self.assertIn("[PERSON_1]", body)
         self.assertIn("Preserve placeholders exactly as written", body)
+        self.assertIn("|unresolved", body)
+        self.assertIn("Never claim familiarity", body)
 
     def test_section_appears_in_managed_region_when_entity_map_populated(self):
         from apps.orchestrator.workspace_envelope import render_managed_region

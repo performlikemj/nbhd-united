@@ -52,7 +52,7 @@ def render_memory_files(tenant) -> dict[str, str]:
     # separators, headings, timestamps) — the audit's #1 junk-mint source. Run
     # replace-known-only so known people stay masked but no NEW bindings are
     # coined from machine structure.
-    session = RedactionSession(tenant=tenant, mint="never")
+    session = RedactionSession(tenant=tenant, mint="never", annotate=True)
 
     files: dict[str, str] = {}
     for doc in documents:

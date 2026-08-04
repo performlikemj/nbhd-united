@@ -1703,6 +1703,9 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
 
     line_user_id = batch[0].channel_user_id
     content, user_param, user_tz = _build_batch_chat_content(batch, line_user_id, channel="line")
+    from apps.pii.redactor import annotate_model_context
+
+    content = annotate_model_context(content, getattr(tenant, "pii_entity_map", None))
     # ``reply_token`` is intentionally NOT used: by the time the queue
     # drains, the LINE Reply API window (~1 min) is almost always
     # closed. We always Push.
@@ -1804,6 +1807,9 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
         raise ValueError(f"telegram drain: invalid chat_id {chat_id_str!r}")
 
     content, user_param, user_tz = _build_batch_chat_content(batch, chat_id_str, channel="telegram")
+    from apps.pii.redactor import annotate_model_context
+
+    content = annotate_model_context(content, getattr(tenant, "pii_entity_map", None))
 
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     from apps.cron.gateway_client import get_gateway_token_for_tenant
@@ -1907,6 +1913,13 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
     )
     if recap_block:
         content = recap_block + content
+
+    # Last model-bound seam: recap/proactive blocks may have come from older
+    # bare-placeholder rows, so refresh every entity token after assembling the
+    # complete turn.
+    from apps.pii.redactor import annotate_model_context
+
+    content = annotate_model_context(content, getattr(tenant, "pii_entity_map", None))
 
     url = f"https://{tenant.container_fqdn}/v1/chat/completions"
     from apps.cron.gateway_client import get_gateway_token_for_tenant
@@ -2111,10 +2124,11 @@ def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict]:
     entity_map = entity_map or {}
     out: list[dict] = []
     seen: set[str] = set()
-    # ``findall`` on _PLACEHOLDER_RE returns (type, num) group tuples, not the
-    # full token — iterate matches and take group(0) to get "[LOCATION_330]".
+    # Model replies may preserve an annotation (``[PERSON_1|coworker]``), but
+    # transparency metadata and the registry are keyed by the canonical bare
+    # placeholder.
     for match in _PLACEHOLDER_RE.finditer(text):
-        placeholder = match.group(0)
+        placeholder = f"[{match.group(1)}_{match.group(2)}]"
         if placeholder in seen:
             continue
         seen.add(placeholder)
@@ -2205,9 +2219,11 @@ def _clean_assistant_text_for_app(
     stored_text = externalized.stored_text
     journal_link = externalized.journal_link
 
-    # Rehydrate only after span-based externalization; placeholder expansion
-    # must never invalidate the detector's offsets.
-    push_text = rehydrate_text(stored_text, entity_map) if entity_map else stored_text
+    # Guard only after span-based externalization; placeholder expansion must
+    # never invalidate the detector's offsets.
+    from apps.router.reply_text import finalize_outbound_text
+
+    push_text = finalize_outbound_text(stored_text, entity_map, tenant_id=tenant.id, channel="ios_push")
     stored_text = clamp_reply_text(stored_text.strip())
     push_text = clamp_reply_text(push_text.strip())
 
@@ -2254,15 +2270,11 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
     ai_text, _quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="telegram_drain")
     ai_text, _journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="telegram_drain")
 
-    # Rehydrate PII placeholders before sending to user.
+    # Final owner-facing integrity guard.
     entity_map = getattr(tenant, "pii_entity_map", None)
-    if entity_map:
-        try:
-            from apps.pii.redactor import rehydrate_text
+    from apps.router.reply_text import finalize_outbound_text
 
-            ai_text = rehydrate_text(ai_text, entity_map)
-        except Exception:
-            logger.exception("drain_pending: PII rehydrate failed")
+    ai_text = finalize_outbound_text(ai_text, entity_map, tenant_id=tenant.id, channel="telegram_drain")
 
     text = ai_text
 
