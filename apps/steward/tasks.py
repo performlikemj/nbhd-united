@@ -11,3 +11,9 @@ def steward_collect_asc_task():
     from apps.steward.collectors.asc import collect_asc
 
     return collect_asc()
+
+
+def steward_collect_openrouter_task():
+    from apps.steward.collectors.openrouter import collect_openrouter
+
+    return collect_openrouter()

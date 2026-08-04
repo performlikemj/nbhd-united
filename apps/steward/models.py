@@ -13,6 +13,7 @@ class EvidenceSource(models.TextChoices):
     MJ_ACK = "mj_ack", "MJ acknowledgement"
     EVAL_RUN = "eval_run", "Eval run"
     EVAL_SLO = "eval_slo", "Eval SLO"
+    OPENROUTER_MODEL_HEALTH = "openrouter_model_health", "OpenRouter model health"
 
 
 REF_TYPES = frozenset(
@@ -483,10 +484,44 @@ class GithubTagSnapshot(models.Model):
         ]
 
 
+class OpenRouterModelDaily(models.Model):
+    class Scope(models.TextChoices):
+        ACCOUNT = "account", "Account"
+        CANARY = "canary", "Canary"
+        PROVIDER = "provider", "Provider"
+
+    date = models.DateField()
+    scope = models.CharField(max_length=16, choices=Scope.choices)
+    model = models.CharField(
+        max_length=200,
+        help_text="OpenRouter model slug, or provider name when scope=provider.",
+    )
+    finish_reason = models.CharField(max_length=64)
+    request_count = models.PositiveBigIntegerField()
+    avg_latency_ms = models.FloatField(null=True, blank=True)
+
+    class Meta:
+        db_table = "steward_openrouter_model_daily"
+        ordering = ["-date", "scope", "model", "finish_reason"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["date", "scope", "model", "finish_reason"],
+                name="steward_openrouter_daily_dimension_unique",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["scope", "model", "date"],
+                name="steward_or_scope_model_idx",
+            )
+        ]
+
+
 class CollectorStatus(models.Model):
     class Collector(models.TextChoices):
         GITHUB = "github", "GitHub"
         ASC = "asc", "App Store Connect"
+        OPENROUTER = "openrouter", "OpenRouter"
 
     collector = models.CharField(max_length=16, choices=Collector.choices, unique=True)
     last_success_at = models.DateTimeField(null=True, blank=True)

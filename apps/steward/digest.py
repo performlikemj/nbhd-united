@@ -280,6 +280,75 @@ def _slo_and_evals(
     return lines, len(lines), suppression_total
 
 
+def _openrouter_health(since: datetime) -> tuple[list[str], int]:
+    lines: list[str] = []
+    events = (
+        _trusted_changes_since(since)
+        .filter(source=EvidenceSource.OPENROUTER_MODEL_HEALTH)
+        .order_by("received_at", "id")
+    )
+    for event in events:
+        payload = event.payload
+        if not isinstance(payload, dict):
+            continue
+        kind = payload.get("kind")
+        scope = payload.get("scope")
+        baseline_days = payload.get("baseline_days")
+        severe = payload.get("severe")
+        if (
+            scope not in {"account", "canary", "provider"}
+            or not isinstance(baseline_days, int)
+            or isinstance(baseline_days, bool)
+            or baseline_days < 3
+            or not isinstance(severe, bool)
+        ):
+            continue
+        severity = " [severe]" if severe else ""
+        if kind == "tool_calls_share_drop":
+            model = payload.get("model")
+            current_pct = payload.get("current_pct")
+            baseline_pct = payload.get("baseline_pct")
+            drop_pts = payload.get("drop_pts")
+            if (
+                not isinstance(model, str)
+                or not model
+                or any(
+                    isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+                    for value in (current_pct, baseline_pct, drop_pts)
+                )
+            ):
+                continue
+            lines.append(
+                f"- {scope} {_safe_text(model, MAX_RENDERED_SUBJECT_CHARS)}: "
+                f"tool_calls {current_pct:.2f}% vs {baseline_pct:.2f}% "
+                f"{baseline_days}d baseline (drop {drop_pts:.2f}pts){severity}"
+            )
+        elif kind == "null_rate":
+            model = payload.get("model")
+            current_pct = payload.get("current_pct")
+            if (
+                not isinstance(model, str)
+                or not model
+                or isinstance(current_pct, bool)
+                or not isinstance(current_pct, (int, float))
+                or not math.isfinite(current_pct)
+            ):
+                continue
+            lines.append(
+                f"- {scope} {_safe_text(model, MAX_RENDERED_SUBJECT_CHARS)}: "
+                f"null finish_reason {current_pct:.2f}% (>0.50%){severity}"
+            )
+        elif kind == "new_provider":
+            provider = payload.get("provider")
+            if not isinstance(provider, str) or not provider:
+                continue
+            lines.append(
+                f"- account provider mix: new provider "
+                f"{_safe_text(provider, MAX_RENDERED_SUBJECT_CHARS)} vs {baseline_days}d baseline"
+            )
+    return lines, len(lines)
+
+
 def _repos(now: datetime) -> tuple[list[str], int]:
     repos = list(RepoPullRequest.objects.order_by("repo").values_list("repo", flat=True).distinct())
     stale_before = now - timedelta(days=7)
@@ -358,6 +427,7 @@ def _integrity(now: datetime) -> tuple[list[str], int]:
     intervals = {
         CollectorStatus.Collector.GITHUB: timedelta(minutes=30),
         CollectorStatus.Collector.ASC: timedelta(hours=1),
+        CollectorStatus.Collector.OPENROUTER: timedelta(days=1),
     }
     statuses = {status.collector: status for status in CollectorStatus.objects.filter(collector__in=intervals)}
     for collector, interval in intervals.items():
@@ -457,6 +527,7 @@ def render_steward_daily_digest(
     trains = _trains(now)
     stalled = _stalled(now)
     repos = _repos(now)
+    openrouter_health = _openrouter_health(since)
     changes = _changes(since)
     integrity = _integrity(now)
 
@@ -465,6 +536,7 @@ def render_steward_daily_digest(
         ("STALLED", *stalled),
         ("TRAINS", *trains),
         ("SLO / EVALS", slo_evals, slo_evals_count),
+        ("OPENROUTER", *openrouter_health),
         ("REPOS", *repos),
         ("CHANGES (24h)", *changes),
         ("INTEGRITY", *integrity),
@@ -474,6 +546,7 @@ def render_steward_daily_digest(
         "trains": trains[1],
         "stalled": stalled[1],
         "slo_evals": slo_evals_count,
+        "openrouter": openrouter_health[1],
         "repos": repos[1],
         "changes": changes[1],
         "integrity": integrity[1],

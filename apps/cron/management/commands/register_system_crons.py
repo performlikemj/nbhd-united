@@ -109,6 +109,8 @@ SYSTEM_CRONS = [
     ("steward-collect-github", "*/30 * * * *", "/api/cron/trigger/steward_collect_github/"),
     # Hourly at :18 — App Store Connect version/build/phased-release collection.
     ("steward-collect-asc", "18 * * * *", "/api/cron/trigger/steward_collect_asc/"),
+    # Daily at 00:25 UTC — previous-full-day OpenRouter model-health analytics.
+    ("steward-collect-openrouter", "25 0 * * *", "/api/cron/trigger/steward_collect_openrouter/"),
     # Every hour — retire spent kind:"at" rows after their late-fire grace so
     # their names can be reused. Uses QStash's default maintenance retries.
     ("expire-finished-at-crons", "0 * * * *", "/api/cron/trigger/expire_finished_at_crons/"),
