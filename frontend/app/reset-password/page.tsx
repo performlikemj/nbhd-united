@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { FormEvent, Suspense, useState } from "react";
 
 import { OnboardingShell } from "@/components/onboarding/onboarding-shell";
-import { confirmPasswordReset } from "@/lib/api";
+import { ApiNetworkError, confirmPasswordReset } from "@/lib/api";
 import { setTokens } from "@/lib/auth";
 
 function ResetPasswordInner() {
@@ -37,7 +37,9 @@ function ResetPasswordInner() {
       router.push("/journal");
     } catch (err) {
       setError(
-        err instanceof Error
+        err instanceof ApiNetworkError
+          ? "Couldn't reach the server. Check your connection and try again."
+          : err instanceof Error
           ? err.message
           : "Reset link is invalid or has expired.",
       );

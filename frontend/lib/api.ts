@@ -56,12 +56,26 @@ interface RefreshedTokens {
   refresh: string;
 }
 
+interface ApiFetchOptions {
+  anonymous?: boolean;
+  timeoutMs?: number;
+}
+
 let refreshFlight: RefreshFlight | null = null;
 
 export class AuthenticationSupersededError extends Error {
   constructor() {
     super("Authentication request was superseded.");
     this.name = "AuthenticationSupersededError";
+  }
+}
+
+export class ApiNetworkError extends Error {
+  constructor(
+    message = "Couldn't reach the server. Check your connection and try again.",
+  ) {
+    super(message);
+    this.name = "ApiNetworkError";
   }
 }
 
@@ -179,8 +193,40 @@ async function performRefreshAccessToken(
   return { access: data.access, refresh: nextRefresh };
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  let requestSession = captureAuthenticationSnapshot();
+async function apiFetch<T>(
+  path: string,
+  init?: RequestInit,
+  options: ApiFetchOptions = {},
+): Promise<T> {
+  const { anonymous = false, timeoutMs } = options;
+  const timeoutController = timeoutMs === undefined
+    ? undefined
+    : new AbortController();
+  const timeoutId = timeoutController
+    ? setTimeout(() => timeoutController.abort(), timeoutMs)
+    : undefined;
+
+  try {
+    return await apiFetchRequest<T>(
+      path,
+      init,
+      anonymous,
+      timeoutController,
+    );
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
+async function apiFetchRequest<T>(
+  path: string,
+  init: RequestInit | undefined,
+  anonymous: boolean,
+  timeoutController: AbortController | undefined,
+): Promise<T> {
+  let requestSession: AuthenticationSnapshot = anonymous
+    ? { authenticationEpoch: -1, access: null, refresh: null }
+    : captureAuthenticationSnapshot();
   let accessToken = requestSession.access;
 
   // Proactive refresh: if the token is expired or about to expire, await the
@@ -188,6 +234,7 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   // 401 → refresh → retry below still covers us.
   const proactiveRefresh = requestSession.refresh;
   if (
+    !anonymous &&
     accessToken &&
     proactiveRefresh &&
     isTokenExpiringSoon(accessToken)
@@ -217,17 +264,25 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     ...(init?.headers as Record<string, string> ?? {}),
   };
 
-  if (accessToken) {
+  if (anonymous) {
+    for (const name of Object.keys(headers)) {
+      if (name.toLowerCase() === "authorization") delete headers[name];
+    }
+  } else if (accessToken) {
     headers["Authorization"] = `Bearer ${accessToken}`;
   }
 
-  let response = await fetch(`${API_BASE}${path}`, {
+  // When timeoutMs is set, it owns the request signal.
+  const requestInit: RequestInit = {
     ...init,
     headers,
-  });
+    signal: timeoutController?.signal ?? init?.signal,
+  };
+
+  let response = await fetchApiResponse(path, requestInit);
 
   const reactiveRefresh = requestSession.refresh;
-  if (response.status === 401 && reactiveRefresh) {
+  if (!anonymous && response.status === 401 && reactiveRefresh) {
     try {
       assertAuthenticationSnapshotCurrent(requestSession);
       const refreshed = await getDedupedRefresh(
@@ -243,18 +298,20 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
       assertAuthenticationSnapshotCurrent(requestSession);
 
       headers["Authorization"] = `Bearer ${refreshed.access}`;
-      response = await fetch(`${API_BASE}${path}`, {
-        ...init,
-        headers,
-      });
+      response = await fetchApiResponse(path, requestInit);
     } catch (error) {
-      if (error instanceof AuthenticationSupersededError) throw error;
+      if (
+        error instanceof AuthenticationSupersededError ||
+        error instanceof ApiNetworkError
+      ) {
+        throw error;
+      }
       assertAuthenticationSnapshotCurrent(requestSession);
       // Fall through — response is still the original 401
     }
   }
 
-  if (response.status === 401) {
+  if (!anonymous && response.status === 401) {
     // A stale request may observe a 401 after another account has signed in.
     // That request must not clear or redirect the replacement session.
     assertAuthenticationSnapshotCurrent(requestSession);
@@ -302,6 +359,26 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+async function fetchApiResponse(
+  path: string,
+  init: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(`${API_BASE}${path}`, init);
+  } catch (error) {
+    if (
+      error instanceof TypeError ||
+      (typeof error === "object" &&
+        error !== null &&
+        "name" in error &&
+        error.name === "AbortError")
+    ) {
+      throw new ApiNetworkError();
+    }
+    throw error;
+  }
 }
 
 function assertRefreshStillCurrent(
@@ -380,10 +457,17 @@ export async function logout(): Promise<void> {
 }
 
 export async function requestPasswordReset(email: string): Promise<{ detail: string }> {
-  return apiFetch<{ detail: string }>("/api/v1/auth/password-reset/request/", {
-    method: "POST",
-    body: JSON.stringify({ email }),
-  });
+  return apiFetch<{ detail: string }>(
+    "/api/v1/auth/password-reset/request/",
+    {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    },
+    {
+      anonymous: true,
+      timeoutMs: 20_000,
+    },
+  );
 }
 
 export async function confirmPasswordReset(
@@ -396,6 +480,10 @@ export async function confirmPasswordReset(
     {
       method: "POST",
       body: JSON.stringify({ uid, token, new_password: newPassword }),
+    },
+    {
+      anonymous: true,
+      timeoutMs: 20_000,
     },
   );
 }
