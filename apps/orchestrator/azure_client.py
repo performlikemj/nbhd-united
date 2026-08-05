@@ -19,6 +19,17 @@ def _is_mock() -> bool:
     return os.environ.get("AZURE_MOCK", "false").lower() == "true"
 
 
+def is_mock() -> bool:
+    """Public alias for `_is_mock()`.
+
+    Callers outside this module that need to refuse outright under mock
+    mode (rather than silently letting a `[MOCK] ...` no-op fall through
+    to a "success" message) should use this instead of importing the
+    private name.
+    """
+    return _is_mock()
+
+
 # Credential and container client are cached per process. Both are
 # thread-safe and cache/refresh their AAD tokens internally; constructing
 # them per call re-ran the IMDS token exchange (1-3s) inside request-path
