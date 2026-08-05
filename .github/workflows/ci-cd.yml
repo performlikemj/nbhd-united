@@ -343,6 +343,7 @@ jobs:
           node --test runtime/openclaw/redact-stdout.test.mjs
           node --test runtime/openclaw/plugins/nbhd-routing-context/test.js
           node --test runtime/openclaw/plugins/nbhd-cron-enforcement/test.js
+          node --test runtime/openclaw/plugins/error-transport.test.js
 
       - name: Run suppress-chmod-eperm.js Layer 1 tests
         run: |

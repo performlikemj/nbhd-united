@@ -110,6 +110,34 @@ async function callIntegrationsApi(api, path, options = {}) {
   }
 }
 
+const TOOL_ERROR_DETAIL_MAX_CHARS = 2000;
+
+function clampErrorDetail(text) {
+  if (text.length <= TOOL_ERROR_DETAIL_MAX_CHARS) return text;
+  return `${text.slice(0, TOOL_ERROR_DETAIL_MAX_CHARS)}… [truncated]`;
+}
+
+function compactErrorDetail(payload) {
+  const normalized = asObject(payload);
+  const entries = Object.entries(normalized).filter(([key]) => key !== "error");
+  if (entries.length === 0) return "";
+
+  const detail = normalized.detail;
+  const detailIsOnlyKey = entries.length === 1 && detail !== undefined;
+  if (detailIsOnlyKey && typeof detail === "string") {
+    return detail.trim() ? clampErrorDetail(detail.trim()) : "";
+  }
+
+  const value = detailIsOnlyKey ? detail : Object.fromEntries(entries);
+  if (value === null || (typeof value === "object" && Object.keys(value).length === 0)) return "";
+
+  try {
+    return clampErrorDetail(JSON.stringify(value));
+  } catch {
+    return clampErrorDetail(String(value));
+  }
+}
+
 async function callRedditTool(api, { action, params = {} }) {
   const runtime = getRuntimeConfig(api);
   const url = `${runtime.apiBaseUrl}/api/v1/integrations/runtime/${encodeURIComponent(runtime.tenantId)}/reddit/tool/`;
@@ -144,14 +172,12 @@ async function callRedditTool(api, { action, params = {} }) {
     if (!response.ok) {
       const normalized = asObject(payload);
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
-      const detail = asTrimmedString(normalized.detail);
-      const providerStatus = normalized.provider_status;
+      // DRF commonly returns field errors at the top level, e.g.
+      // {week_rating: ["..."]}, rather than under `detail`. Preserve that
+      // compact validation payload so the model can correct and retry.
+      const detail = compactErrorDetail(normalized);
       const detailSuffix = detail ? ` (${detail})` : "";
-      const providerSuffix =
-        providerStatus !== undefined && providerStatus !== null
-          ? ` [provider_status=${providerStatus}]`
-          : "";
-      throw new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}${providerSuffix}`);
+      throw new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}`);
     }
 
     return asObject(payload);

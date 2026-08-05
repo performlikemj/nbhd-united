@@ -321,6 +321,173 @@ class RuntimeIntegrationViewsTest(TestCase):
         self.assertEqual(response.json()["error"], "provider_request_failed")
         self.assertEqual(response.json()["provider_status"], 403)
 
+    def _gmail_provider_failure(self, mock_broker, mock_list_messages, status_code, **response_kwargs):
+        """Drive the gmail runtime view into an httpx.HTTPStatusError with the given provider body."""
+        mock_broker.return_value = ProviderAccessToken(
+            access_token="access-token",
+            expires_at=None,
+            provider="google",
+            tenant_id=str(self.tenant.id),
+        )
+        req = httpx.Request("GET", "https://gmail.googleapis.com/gmail/v1/users/me/messages")
+        resp = httpx.Response(status_code, request=req, **response_kwargs)
+        mock_list_messages.side_effect = httpx.HTTPStatusError(
+            "provider failed",
+            request=req,
+            response=resp,
+        )
+
+        return self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/gmail/messages/",
+            **self._headers(),
+        )
+
+    @patch("apps.integrations.runtime_views.list_gmail_messages")
+    @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
+    def test_runtime_gmail_provider_error_passes_through_google_reason_and_message(
+        self, mock_broker, mock_list_messages
+    ):
+        long_message = "Insufficient Permission. " + ("x" * 400)
+        response = self._gmail_provider_failure(
+            mock_broker,
+            mock_list_messages,
+            403,
+            json={
+                "error": {
+                    "code": 403,
+                    "message": long_message,
+                    "status": "PERMISSION_DENIED",
+                    "errors": [{"reason": "insufficientPermissions"}],
+                }
+            },
+        )
+
+        self.assertEqual(response.status_code, 502)
+        body = response.json()
+        self.assertEqual(body["error"], "provider_request_failed")
+        self.assertEqual(body["provider_status"], 403)
+        self.assertEqual(body["provider_reason"], "PERMISSION_DENIED")
+        self.assertEqual(len(body["provider_message"]), 300)
+        self.assertEqual(body["provider_message"], long_message[:300])
+
+    @patch("apps.integrations.runtime_views.list_gmail_messages")
+    @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
+    def test_runtime_gmail_provider_error_falls_back_to_errors_reason(self, mock_broker, mock_list_messages):
+        response = self._gmail_provider_failure(
+            mock_broker,
+            mock_list_messages,
+            403,
+            json={
+                "error": {
+                    "code": 403,
+                    "message": "Request had insufficient authentication scopes.",
+                    "errors": [{"reason": "insufficientPermissions"}],
+                }
+            },
+        )
+
+        body = response.json()
+        self.assertEqual(body["provider_reason"], "insufficientPermissions")
+        self.assertEqual(body["provider_message"], "Request had insufficient authentication scopes.")
+
+    @patch("apps.integrations.runtime_views.list_gmail_messages")
+    @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
+    def test_runtime_gmail_provider_error_tolerates_non_json_body(self, mock_broker, mock_list_messages):
+        response = self._gmail_provider_failure(
+            mock_broker,
+            mock_list_messages,
+            503,
+            text="<html><body>Service Unavailable</body></html>",
+        )
+
+        self.assertEqual(response.status_code, 502)
+        body = response.json()
+        self.assertEqual(body["error"], "provider_request_failed")
+        self.assertEqual(body["provider_status"], 503)
+        self.assertNotIn("provider_reason", body)
+        self.assertNotIn("provider_message", body)
+
+    @patch("apps.integrations.runtime_views.list_gmail_messages")
+    @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
+    def test_runtime_gmail_provider_error_reads_flat_invalid_grant_shape(self, mock_broker, mock_list_messages):
+        response = self._gmail_provider_failure(
+            mock_broker,
+            mock_list_messages,
+            400,
+            json={
+                "error": "invalid_grant",
+                "error_description": "Token has been expired or revoked.",
+            },
+        )
+
+        self.assertEqual(response.status_code, 502)
+        body = response.json()
+        self.assertEqual(body["provider_status"], 400)
+        self.assertEqual(body["provider_reason"], "invalid_grant")
+        self.assertEqual(body["provider_message"], "Token has been expired or revoked.")
+
+    @patch("apps.integrations.runtime_views.list_gmail_messages")
+    @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
+    def test_runtime_gmail_provider_error_prose_goes_through_the_pii_chokepoint(self, mock_broker, mock_list_messages):
+        # This view's SUCCESS payload is explicitly passed through
+        # redact_tool_response. The provider-error branch returns before that
+        # line, so it has to redact its own provider-authored prose — otherwise
+        # an early return is a way around the documented chokepoint.
+        self.tenant.pii_entity_map = {"[EMAIL_ADDRESS_1]": "alice.johnson@acme.com"}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        response = self._gmail_provider_failure(
+            mock_broker,
+            mock_list_messages,
+            403,
+            json={
+                "error": {
+                    "code": 403,
+                    "message": "Delegation denied for alice.johnson@acme.com",
+                    "status": "PERMISSION_DENIED",
+                }
+            },
+        )
+
+        body = response.json()
+        self.assertEqual(body["provider_reason"], "PERMISSION_DENIED")
+        self.assertNotIn("alice.johnson@acme.com", body["provider_message"])
+        self.assertIn("EMAIL_ADDRESS_1", body["provider_message"])
+
+    @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
+    def test_runtime_gmail_not_connected_error_carries_user_action(self, mock_broker):
+        mock_broker.side_effect = IntegrationNotConnectedError("missing")
+
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/gmail/messages/",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(
+            response.json()["user_action"],
+            (
+                "Tell the user their Google account is not connected. They can connect it "
+                "in the NBHD app under Settings → Integrations → Google."
+            ),
+        )
+
+    @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
+    def test_runtime_gmail_scope_error_carries_user_action(self, mock_broker):
+        mock_broker.side_effect = IntegrationScopeError("scope missing")
+
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/gmail/messages/",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()["error"], "integration_scope_insufficient")
+        self.assertEqual(
+            response.json()["user_action"],
+            ("Tell the user to reconnect Google under Settings → Integrations and grant all requested permissions."),
+        )
+
     @patch("apps.integrations.runtime_views.list_calendar_events")
     @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
     def test_runtime_calendar_returns_events(self, mock_broker, mock_list_events):
@@ -828,6 +995,66 @@ class RedditViewTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 400)
+
+    # `_integration_error_response` is shared with the Google views. `user_action`
+    # is the line the model relays verbatim, so a Reddit failure that says
+    # "reconnect Google" actively misdirects the user — worse than saying nothing.
+
+    @patch("apps.integrations.runtime_views.initiate_composio_connection")
+    def test_connect_provider_config_error_names_reddit_not_google(self, mock_initiate):
+        from .services import IntegrationProviderConfigError
+
+        mock_initiate.side_effect = IntegrationProviderConfigError(
+            "No Composio auth_config_id configured for provider=reddit"
+        )
+
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/connect/",
+            data={"callback_url": "https://app.example.com/callback"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 503)
+        body = response.json()
+        self.assertEqual(body["error"], "provider_not_configured")
+        self.assertIn("Reddit", body["user_action"])
+        self.assertNotIn("Google", body["user_action"])
+
+    @patch("apps.integrations.runtime_views.complete_composio_connection")
+    def test_complete_inactive_error_names_reddit_not_google(self, mock_complete):
+        from .services import IntegrationInactiveError
+
+        mock_complete.side_effect = IntegrationInactiveError("Integration status is revoked for provider=reddit")
+
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/complete/",
+            data={"connection_request_id": "req-id-123"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 409)
+        body = response.json()
+        self.assertEqual(body["error"], "integration_inactive")
+        self.assertIn("Reddit", body["user_action"])
+        self.assertNotIn("Google", body["user_action"])
+
+    @patch("apps.integrations.runtime_views.execute_reddit_tool")
+    def test_tool_provider_config_error_names_reddit_not_google(self, mock_execute):
+        from .services import IntegrationProviderConfigError
+
+        mock_execute.side_effect = IntegrationProviderConfigError("COMPOSIO_API_KEY not configured")
+
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/tool/",
+            data={"action": "digest", "subreddit": "python"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertNotIn("Google", response.json()["user_action"])
 
 
 @override_settings(
