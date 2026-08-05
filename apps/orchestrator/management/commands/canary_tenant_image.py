@@ -27,7 +27,7 @@ from __future__ import annotations
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from apps.orchestrator.azure_client import update_container_image
+from apps.orchestrator.azure_client import get_container_client, is_mock, update_container_image
 
 
 class Command(BaseCommand):
@@ -51,6 +51,15 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if is_mock():
+            raise CommandError(
+                "Azure client is mocked (AZURE_MOCK=true) — running this command here "
+                'would print "Canary image deployed" without touching Azure at all. '
+                "This almost shipped a phantom canary. Run it from a shell/environment "
+                "where AZURE_MOCK is unset or false (production has real Azure creds; "
+                "local dev .env sets AZURE_MOCK=true on purpose) to actually deploy."
+            )
+
         container = options["container"]
         tag = options["tag"]
         repository = options["repository"]
@@ -70,9 +79,31 @@ class Command(BaseCommand):
         except Exception as exc:
             raise CommandError(f"update_container_image failed: {exc}") from exc
 
+        actual_image = self._read_deployed_image(container)
+        if actual_image != image:
+            raise CommandError(
+                f"Deploy did not take: requested {image!r}, but {container}'s openclaw "
+                f"container reads back as {actual_image!r} on Azure. Do not assume this "
+                "canary is live — check the Container App revision directly."
+            )
+
         self.stdout.write(self.style.SUCCESS(f"Canary image deployed to {container}"))
         self.stdout.write(
             "Tenant.container_image_tag NOT updated. The next normal "
             "apply-pending-configs run will reconcile this container back "
             "to the canonical fleet tag."
         )
+
+    def _read_deployed_image(self, container: str) -> str | None:
+        """Read back the live openclaw container image from Azure.
+
+        `update_container_image` blocks on the create-or-update poller
+        before returning, so the template `container_apps.get` returns
+        here already reflects the new image — no polling loop needed.
+        """
+        client = get_container_client()
+        app = client.container_apps.get(settings.AZURE_RESOURCE_GROUP, container)
+        for tpl_container in app.template.containers:
+            if tpl_container.name == "openclaw":
+                return tpl_container.image
+        return None
