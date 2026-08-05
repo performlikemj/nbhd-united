@@ -60,6 +60,7 @@ from .google_api import (
 from .internal_auth import InternalAuthError, validate_internal_runtime_request
 from .models import Integration, SautaiMealPlanJob, SautaiMealPlanJobStatus
 from .services import (
+    IntegrationAccessError,
     IntegrationInactiveError,
     IntegrationNotConnectedError,
     IntegrationProviderConfigError,
@@ -488,42 +489,197 @@ def _load_tenant_or_404(tenant_id: UUID) -> tuple[Tenant | None, Response | None
     return tenant, None
 
 
-def _integration_error_response(exc: Exception) -> Response:
-    if isinstance(exc, IntegrationNotConnectedError):
-        return Response(
-            {"error": "integration_not_connected", "detail": str(exc)},
-            status=status.HTTP_404_NOT_FOUND,
-        )
-    if isinstance(exc, IntegrationInactiveError):
-        return Response(
-            {"error": "integration_inactive", "detail": str(exc)},
-            status=status.HTTP_409_CONFLICT,
-        )
-    if isinstance(exc, IntegrationTokenDataError):
-        return Response(
-            {"error": "integration_token_invalid", "detail": str(exc)},
-            status=status.HTTP_409_CONFLICT,
-        )
-    if isinstance(exc, IntegrationProviderConfigError):
-        return Response(
-            {"error": "provider_not_configured", "detail": str(exc)},
-            status=status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-    if isinstance(exc, IntegrationRefreshError):
-        return Response(
-            {"error": "integration_refresh_failed", "detail": str(exc)},
-            status=status.HTTP_502_BAD_GATEWAY,
-        )
-    if isinstance(exc, IntegrationScopeError):
-        return Response(
-            {"error": "integration_scope_insufficient", "detail": str(exc)},
-            status=status.HTTP_409_CONFLICT,
-        )
+def _integration_error_response(exc: Exception, *, provider: str, tenant: Tenant) -> Response:
+    """Map an integration failure to a runtime error payload.
 
-    return Response(
-        {"error": "integration_access_failed"},
-        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-    )
+    ``user_action`` is the line the model relays to the user, so it MUST name
+    the provider that actually failed. This helper is shared by the Google
+    (Gmail/Calendar) views and the Composio-backed Reddit views, so ``provider``
+    is a required keyword: an omitted or wrong value sends a user whose Reddit
+    call failed off to reconnect Google. Pass the human-facing display name
+    ("Google", "Reddit") — it is interpolated into user-facing prose.
+
+    Wrapped provider HTTP failures enrich the existing integration payload with
+    redacted provider-authored context. ``tenant`` is required so no caller can
+    silently bypass that PII chokepoint.
+    """
+    if isinstance(exc, IntegrationNotConnectedError):
+        payload = {
+            "error": "integration_not_connected",
+            "detail": str(exc),
+            "user_action": (
+                f"Tell the user their {provider} account is not connected. They can connect it "
+                f"in the NBHD app under Settings → Integrations → {provider}."
+            ),
+        }
+        status_code = status.HTTP_404_NOT_FOUND
+    elif isinstance(exc, IntegrationInactiveError):
+        payload = {
+            "error": "integration_inactive",
+            "detail": str(exc),
+            "user_action": (
+                f"Tell the user their {provider} connection is inactive. Reconnecting {provider} "
+                "under Settings → Integrations should restore it."
+            ),
+        }
+        status_code = status.HTTP_409_CONFLICT
+    elif isinstance(exc, IntegrationTokenDataError):
+        payload = {
+            "error": "integration_token_invalid",
+            "detail": str(exc),
+            "user_action": (
+                f"Tell the user their {provider} connection is broken and they should reconnect "
+                f"{provider} under Settings → Integrations."
+            ),
+        }
+        status_code = status.HTTP_409_CONFLICT
+    elif isinstance(exc, IntegrationProviderConfigError):
+        payload = {
+            "error": "provider_not_configured",
+            "detail": str(exc),
+            "user_action": (
+                f"Tell the user {provider} integration is temporarily unavailable on the server "
+                "side; there is nothing to fix on their end."
+            ),
+        }
+        status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    elif isinstance(exc, IntegrationRefreshError):
+        payload = {
+            "error": "integration_refresh_failed",
+            "detail": str(exc),
+            "user_action": (
+                f"Tell the user their {provider} connection has expired and they need to reconnect "
+                f"{provider} under Settings → Integrations."
+            ),
+        }
+        status_code = status.HTTP_502_BAD_GATEWAY
+    elif isinstance(exc, IntegrationScopeError):
+        payload = {
+            "error": "integration_scope_insufficient",
+            "detail": str(exc),
+            "user_action": (
+                f"Tell the user to reconnect {provider} under Settings → Integrations and grant "
+                "all requested permissions."
+            ),
+        }
+        status_code = status.HTTP_409_CONFLICT
+    else:
+        payload = {
+            "error": "integration_access_failed",
+            "detail": str(exc),
+            "user_action": (
+                f"Tell the user their {provider} integration failed unexpectedly. They can retry, "
+                f"and reconnect {provider} under Settings → Integrations if the problem continues."
+            ),
+        }
+        status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+
+    cause = exc.__cause__
+    seen_causes: set[int] = set()
+    for _ in range(5):
+        if cause is None or id(cause) in seen_causes:
+            break
+        seen_causes.add(id(cause))
+        if isinstance(cause, httpx.HTTPStatusError):
+            provider_response = getattr(cause, "response", None)
+            if provider_response is not None:
+                payload.update(_provider_error_enrichment(provider_response, tenant))
+                break
+        cause = cause.__cause__
+
+    return Response(payload, status=status_code)
+
+
+_PROVIDER_MESSAGE_MAX_CHARS = 300
+
+
+def _provider_error_text(value: object, *, limit: int | None = None) -> str:
+    """Return a trimmed string (optionally truncated); '' for anything non-string."""
+    if not isinstance(value, str):
+        return ""
+    text = value.strip()
+    if limit is not None and len(text) > limit:
+        return text[:limit]
+    return text
+
+
+def _provider_error_enrichment(response, tenant: Tenant) -> dict:
+    """Best-effort provider reason/message extracted from an error body.
+
+    Enrichment must never turn an upstream failure into a new error. The two
+    free-text fields are provider-authored prose about the user's mailbox or
+    calendar, so they pass through ``redact_tool_response`` — the same PII
+    chokepoint used by these views' success payloads. Machine values are not
+    redacted.
+    """
+    try:
+        body = response.json() if response is not None else None
+        if not isinstance(body, dict):
+            return {}
+
+        error = body.get("error")
+        reason = ""
+        message = ""
+        if isinstance(error, dict):
+            # Google API shape: {"error": {"code", "message", "status", "errors": [...]}}
+            reason = _provider_error_text(error.get("status"), limit=_PROVIDER_MESSAGE_MAX_CHARS)
+            if not reason:
+                errors = error.get("errors")
+                if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                    reason = _provider_error_text(errors[0].get("reason"), limit=_PROVIDER_MESSAGE_MAX_CHARS)
+            message = _provider_error_text(
+                error.get("message"),
+                limit=_PROVIDER_MESSAGE_MAX_CHARS,
+            )
+        elif isinstance(error, str):
+            # OAuth/token shape: {"error": "invalid_grant", "error_description": "..."}
+            reason = _provider_error_text(error, limit=_PROVIDER_MESSAGE_MAX_CHARS)
+            message = _provider_error_text(
+                body.get("error_description"),
+                limit=_PROVIDER_MESSAGE_MAX_CHARS,
+            )
+
+        enriched = {}
+        if reason:
+            enriched["provider_reason"] = reason
+        if message:
+            enriched["provider_message"] = message
+        if not enriched:
+            return {}
+
+        from apps.pii.redactor import redact_tool_response
+
+        return redact_tool_response(enriched, tenant)
+    except Exception:  # noqa: BLE001 - enrichment must never mask the provider failure
+        logger.debug("provider error body enrichment failed", exc_info=True)
+        return {}
+
+
+def _provider_error_response(exc: httpx.HTTPStatusError, tenant: Tenant) -> Response:
+    """Map a provider HTTP failure to 502, passing through what the provider said.
+
+    ``provider_status`` alone is not actionable: the model needs the provider's
+    own reason/message to decide whether to retry, re-scope, or tell the user to
+    reconnect. Enrichment is strictly best effort — a provider body that is
+    missing, non-JSON, or shaped unexpectedly must never turn an upstream
+    failure into an error here.
+
+    The enriched fields are provider-authored prose about the user's mailbox or
+    calendar (a Google 403 routinely echoes the mailbox address), so they go
+    through ``redact_tool_response`` — the same PII chokepoint every one of
+    these views' SUCCESS payloads passes through. Returning early from an error
+    branch must not be a way around it. Only the two free-text fields are
+    redacted; ``error`` and ``provider_status`` are our own machine values.
+    """
+    provider_response = getattr(exc, "response", None)
+    payload = {
+        "error": "provider_request_failed",
+        "provider_status": (provider_response.status_code if provider_response is not None else None),
+    }
+
+    payload.update(_provider_error_enrichment(provider_response, tenant))
+
+    return Response(payload, status=status.HTTP_502_BAD_GATEWAY)
 
 
 def _build_note_payload(*, tenant: Tenant, note: DailyNote, include_sections: bool = False) -> dict:
@@ -1111,23 +1267,10 @@ class RuntimeGmailMessagesView(APIView):
                 query=query,
                 max_results=max_results,
             )
-        except (
-            IntegrationNotConnectedError,
-            IntegrationInactiveError,
-            IntegrationTokenDataError,
-            IntegrationProviderConfigError,
-            IntegrationRefreshError,
-            IntegrationScopeError,
-        ) as exc:
-            return _integration_error_response(exc)
+        except IntegrationAccessError as exc:
+            return _integration_error_response(exc, provider="Google", tenant=tenant)
         except httpx.HTTPStatusError as exc:
-            return Response(
-                {
-                    "error": "provider_request_failed",
-                    "provider_status": (exc.response.status_code if exc.response is not None else None),
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            return _provider_error_response(exc, tenant)
         except httpx.HTTPError:
             return Response(
                 {"error": "provider_request_failed"},
@@ -1191,23 +1334,10 @@ class RuntimeCalendarEventsView(APIView):
                 time_max=time_max,
                 max_results=max_results,
             )
-        except (
-            IntegrationNotConnectedError,
-            IntegrationInactiveError,
-            IntegrationTokenDataError,
-            IntegrationProviderConfigError,
-            IntegrationRefreshError,
-            IntegrationScopeError,
-        ) as exc:
-            return _integration_error_response(exc)
+        except IntegrationAccessError as exc:
+            return _integration_error_response(exc, provider="Google", tenant=tenant)
         except httpx.HTTPStatusError as exc:
-            return Response(
-                {
-                    "error": "provider_request_failed",
-                    "provider_status": (exc.response.status_code if exc.response is not None else None),
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            return _provider_error_response(exc, tenant)
         except httpx.HTTPError:
             return Response(
                 {"error": "provider_request_failed"},
@@ -1273,23 +1403,10 @@ class RuntimeGmailMessageDetailView(APIView):
                 include_thread=include_thread,
                 thread_limit=thread_limit,
             )
-        except (
-            IntegrationNotConnectedError,
-            IntegrationInactiveError,
-            IntegrationTokenDataError,
-            IntegrationProviderConfigError,
-            IntegrationRefreshError,
-            IntegrationScopeError,
-        ) as exc:
-            return _integration_error_response(exc)
+        except IntegrationAccessError as exc:
+            return _integration_error_response(exc, provider="Google", tenant=tenant)
         except httpx.HTTPStatusError as exc:
-            return Response(
-                {
-                    "error": "provider_request_failed",
-                    "provider_status": (exc.response.status_code if exc.response is not None else None),
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            return _provider_error_response(exc, tenant)
         except httpx.HTTPError:
             return Response(
                 {"error": "provider_request_failed"},
@@ -1340,23 +1457,10 @@ class RuntimeCalendarFreeBusyView(APIView):
                 time_min=time_min,
                 time_max=time_max,
             )
-        except (
-            IntegrationNotConnectedError,
-            IntegrationInactiveError,
-            IntegrationTokenDataError,
-            IntegrationProviderConfigError,
-            IntegrationRefreshError,
-            IntegrationScopeError,
-        ) as exc:
-            return _integration_error_response(exc)
+        except IntegrationAccessError as exc:
+            return _integration_error_response(exc, provider="Google", tenant=tenant)
         except httpx.HTTPStatusError as exc:
-            return Response(
-                {
-                    "error": "provider_request_failed",
-                    "provider_status": (exc.response.status_code if exc.response is not None else None),
-                },
-                status=status.HTTP_502_BAD_GATEWAY,
-            )
+            return _provider_error_response(exc, tenant)
         except httpx.HTTPError:
             return Response(
                 {"error": "provider_request_failed"},
@@ -3928,8 +4032,8 @@ class RedditConnectView(APIView):
 
         try:
             redirect_url, connection_request_id = initiate_composio_connection(tenant, "reddit", callback_url)
-        except IntegrationProviderConfigError as exc:
-            return _integration_error_response(exc)
+        except IntegrationAccessError as exc:
+            return _integration_error_response(exc, provider="Reddit", tenant=tenant)
         except Exception as exc:
             logger.exception("Reddit connect failed for tenant %s", tenant_id)
             return Response(
@@ -3970,8 +4074,8 @@ class RedditCompleteView(APIView):
 
         try:
             integration = complete_composio_connection(tenant, "reddit", connection_request_id)
-        except (IntegrationProviderConfigError, IntegrationInactiveError) as exc:
-            return _integration_error_response(exc)
+        except IntegrationAccessError as exc:
+            return _integration_error_response(exc, provider="Reddit", tenant=tenant)
         except Exception as exc:
             logger.exception("Reddit complete failed for tenant %s", tenant_id)
             return Response(
@@ -4071,6 +4175,13 @@ class RedditToolView(APIView):
 
         try:
             result = execute_reddit_tool(tenant, action, params)
+        # ORDER MATTERS: IntegrationAccessError subclasses RuntimeError. It
+        # MUST stay above the `except RuntimeError` arm below — put it after
+        # and this arm is unreachable dead code, and an integration failure
+        # gets mislabeled to the model as a 400 tool_error with no user_action,
+        # i.e. "you did something wrong" for a fault the user cannot fix.
+        except IntegrationAccessError as exc:
+            return _integration_error_response(exc, provider="Reddit", tenant=tenant)
         except ValueError as exc:
             return Response(
                 {"error": "invalid_action", "detail": str(exc)},
@@ -4083,8 +4194,6 @@ class RedditToolView(APIView):
                 {"error": "tool_error", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        except IntegrationProviderConfigError as exc:
-            return _integration_error_response(exc)
         except Exception as exc:
             logger.exception("Reddit tool execution failed for tenant %s action=%s", tenant_id, action)
             return Response(

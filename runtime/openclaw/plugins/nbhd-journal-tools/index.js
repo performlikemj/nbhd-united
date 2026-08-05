@@ -77,21 +77,31 @@ function renderPayload(payload) {
   };
 }
 
+const TOOL_ERROR_DETAIL_MAX_CHARS = 2000;
+
+function clampErrorDetail(text) {
+  if (text.length <= TOOL_ERROR_DETAIL_MAX_CHARS) return text;
+  return `${text.slice(0, TOOL_ERROR_DETAIL_MAX_CHARS)}… [truncated]`;
+}
+
 function compactErrorDetail(payload) {
   const normalized = asObject(payload);
-  const detail = normalized.detail;
-  if (typeof detail === "string" && detail.trim()) return detail.trim();
+  const entries = Object.entries(normalized).filter(([key]) => key !== "error");
+  if (entries.length === 0) return "";
 
-  const value = detail !== undefined
-    ? detail
-    : Object.fromEntries(Object.entries(normalized).filter(([key]) => key !== "error"));
-  if (value === undefined || value === null) return "";
-  if (typeof value === "object" && Object.keys(value).length === 0) return "";
+  const detail = normalized.detail;
+  const detailIsOnlyKey = entries.length === 1 && detail !== undefined;
+  if (detailIsOnlyKey && typeof detail === "string") {
+    return detail.trim() ? clampErrorDetail(detail.trim()) : "";
+  }
+
+  const value = detailIsOnlyKey ? detail : Object.fromEntries(entries);
+  if (value === null || (typeof value === "object" && Object.keys(value).length === 0)) return "";
 
   try {
-    return JSON.stringify(value);
+    return clampErrorDetail(JSON.stringify(value));
   } catch {
-    return String(value);
+    return clampErrorDetail(String(value));
   }
 }
 
@@ -130,7 +140,7 @@ async function callRuntime(api, { path, method = "GET", query, body, extraHeader
       try {
         payload = JSON.parse(raw);
       } catch {
-        payload = { raw };
+        payload = { detail: "upstream returned a non-JSON response body" };
       }
     }
 

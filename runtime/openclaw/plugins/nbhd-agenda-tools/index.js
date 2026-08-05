@@ -66,28 +66,64 @@ function getRuntimeConfig(api) {
   return { apiBaseUrl, tenantId, internalKey, requestTimeoutMs };
 }
 
+const TOOL_ERROR_DETAIL_MAX_CHARS = 2000;
+
+function clampErrorDetail(text) {
+  if (text.length <= TOOL_ERROR_DETAIL_MAX_CHARS) return text;
+  return `${text.slice(0, TOOL_ERROR_DETAIL_MAX_CHARS)}… [truncated]`;
+}
+
+function compactErrorDetail(payload) {
+  const normalized = asObject(payload);
+  const entries = Object.entries(normalized).filter(([key]) => key !== "error");
+  if (entries.length === 0) return "";
+
+  const detail = normalized.detail;
+  const detailIsOnlyKey = entries.length === 1 && detail !== undefined;
+  if (detailIsOnlyKey && typeof detail === "string") {
+    return detail.trim() ? clampErrorDetail(detail.trim()) : "";
+  }
+
+  const value = detailIsOnlyKey ? detail : Object.fromEntries(entries);
+  if (value === null || (typeof value === "object" && Object.keys(value).length === 0)) return "";
+
+  try {
+    return clampErrorDetail(JSON.stringify(value));
+  } catch {
+    return clampErrorDetail(String(value));
+  }
+}
+
 async function postJson(url, body, headers, timeoutMs) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const resp = await fetch(url, {
+    const response = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...headers },
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    const text = await resp.text();
-    let parsed = null;
-    try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      parsed = { raw: text };
+    const raw = await response.text();
+    let payload = {};
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = { detail: "upstream returned a non-JSON response body" };
+      }
     }
-    if (!resp.ok) {
-      const detail = parsed && (parsed.error || parsed.detail) ? `${parsed.error || parsed.detail}` : `HTTP ${resp.status}`;
-      throw new Error(`NBHD runtime ${resp.status}: ${detail}`);
+    if (!response.ok) {
+      const normalized = asObject(payload);
+      const code = asTrimmedString(normalized.error) || "runtime_request_failed";
+      // DRF commonly returns field errors at the top level, e.g.
+      // {week_rating: ["..."]}, rather than under `detail`. Preserve that
+      // compact validation payload so the model can correct and retry.
+      const detail = compactErrorDetail(normalized);
+      const detailSuffix = detail ? ` (${detail})` : "";
+      throw new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}`);
     }
-    return parsed;
+    return payload;
   } finally {
     clearTimeout(timeout);
   }

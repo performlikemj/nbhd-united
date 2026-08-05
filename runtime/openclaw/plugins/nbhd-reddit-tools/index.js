@@ -100,13 +100,47 @@ async function callIntegrationsApi(api, path, options = {}) {
     });
     const raw = await response.text();
     let payload = {};
-    try { payload = JSON.parse(raw); } catch { payload = { raw }; }
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = { detail: "upstream returned a non-JSON response body" };
+      }
+    }
     return { ok: response.ok, status: response.status, data: payload };
   } catch (error) {
     if (error && error.name === "AbortError") throw new Error(`Request timed out`);
     throw error;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+const TOOL_ERROR_DETAIL_MAX_CHARS = 2000;
+
+function clampErrorDetail(text) {
+  if (text.length <= TOOL_ERROR_DETAIL_MAX_CHARS) return text;
+  return `${text.slice(0, TOOL_ERROR_DETAIL_MAX_CHARS)}… [truncated]`;
+}
+
+function compactErrorDetail(payload) {
+  const normalized = asObject(payload);
+  const entries = Object.entries(normalized).filter(([key]) => key !== "error");
+  if (entries.length === 0) return "";
+
+  const detail = normalized.detail;
+  const detailIsOnlyKey = entries.length === 1 && detail !== undefined;
+  if (detailIsOnlyKey && typeof detail === "string") {
+    return detail.trim() ? clampErrorDetail(detail.trim()) : "";
+  }
+
+  const value = detailIsOnlyKey ? detail : Object.fromEntries(entries);
+  if (value === null || (typeof value === "object" && Object.keys(value).length === 0)) return "";
+
+  try {
+    return clampErrorDetail(JSON.stringify(value));
+  } catch {
+    return clampErrorDetail(String(value));
   }
 }
 
@@ -137,21 +171,19 @@ async function callRedditTool(api, { action, params = {} }) {
       try {
         payload = JSON.parse(raw);
       } catch {
-        payload = { raw };
+        payload = { detail: "upstream returned a non-JSON response body" };
       }
     }
 
     if (!response.ok) {
       const normalized = asObject(payload);
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
-      const detail = asTrimmedString(normalized.detail);
-      const providerStatus = normalized.provider_status;
+      // DRF commonly returns field errors at the top level, e.g.
+      // {week_rating: ["..."]}, rather than under `detail`. Preserve that
+      // compact validation payload so the model can correct and retry.
+      const detail = compactErrorDetail(normalized);
       const detailSuffix = detail ? ` (${detail})` : "";
-      const providerSuffix =
-        providerStatus !== undefined && providerStatus !== null
-          ? ` [provider_status=${providerStatus}]`
-          : "";
-      throw new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}${providerSuffix}`);
+      throw new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}`);
     }
 
     return asObject(payload);
@@ -194,11 +226,20 @@ export default function register(api) {
     },
     async execute(_id, _params) {
       const runtime = getRuntimeConfig(api);
-      const { ok, data } = await callIntegrationsApi(api,
+      const { ok, status: httpStatus, data } = await callIntegrationsApi(api,
         `/api/v1/integrations/runtime/${encodeURIComponent(runtime.tenantId)}/reddit/status/`
       );
       if (!ok) {
-        return renderText("Reddit is not connected. Use nbhd_reddit_connect to link your account.");
+        // A non-2xx here is a transport/auth/server failure, NOT the tenant's
+        // Reddit OAuth state — e.g. a stale internal key (401) or an
+        // unhandled exception (500). Flattening every failure to "not
+        // connected" hid those from the model. Surface the same
+        // compactErrorDetail-style envelope the other runtime tools use.
+        const normalized = asObject(data);
+        const code = asTrimmedString(normalized.error) || "runtime_request_failed";
+        const detail = compactErrorDetail(normalized);
+        const detailSuffix = detail ? ` (${detail})` : "";
+        throw new Error(`NBHD runtime error ${httpStatus}: ${code}${detailSuffix}`);
       }
       const connected = data.connected === true;
       const username = asTrimmedString(data.username || data.provider_email || "");
