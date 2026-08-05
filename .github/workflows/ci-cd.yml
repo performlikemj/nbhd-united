@@ -777,7 +777,7 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         working-directory: frontend
         env:
-          NEXT_PUBLIC_API_BASE_URL: https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io
+          NEXT_PUBLIC_API_BASE_URL: https://api.hoodunited.org
           NEXT_PUBLIC_APPLE_CLIENT_ID: ${{ vars.NEXT_PUBLIC_APPLE_CLIENT_ID }}
           NEXT_PUBLIC_APPLE_REDIRECT_URI: ${{ vars.NEXT_PUBLIC_APPLE_REDIRECT_URI }}
           # Constellation "exploration mode" — ON for all users. Remove this line to gate it dark again.
