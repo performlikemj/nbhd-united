@@ -104,15 +104,17 @@ async function postJson(url, body, headers, timeoutMs) {
       body: JSON.stringify(body),
       signal: controller.signal,
     });
-    const text = await response.text();
-    let parsed = null;
-    try {
-      parsed = text ? JSON.parse(text) : null;
-    } catch {
-      parsed = { raw: text };
+    const raw = await response.text();
+    let payload = {};
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = { detail: "upstream returned a non-JSON response body" };
+      }
     }
     if (!response.ok) {
-      const normalized = asObject(parsed);
+      const normalized = asObject(payload);
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
       // DRF commonly returns field errors at the top level, e.g.
       // {week_rating: ["..."]}, rather than under `detail`. Preserve that
@@ -121,7 +123,7 @@ async function postJson(url, body, headers, timeoutMs) {
       const detailSuffix = detail ? ` (${detail})` : "";
       throw new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}`);
     }
-    return parsed;
+    return payload;
   } finally {
     clearTimeout(timeout);
   }

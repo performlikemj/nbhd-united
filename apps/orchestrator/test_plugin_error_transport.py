@@ -53,6 +53,60 @@ PLUGIN_DIRS = [
     "nbhd-agenda-tools",
 ]
 
+# nbhd-* plugin directories that do NOT need the canonical NBHD-runtime
+# error-transport helper — verified by reading each file (2026-08-05). A
+# plugin belongs here only when it is provably outside this guard's scope:
+# either it makes no HTTP call at all, its HTTP call's result never reaches a
+# registered (model-facing) tool, or the call is to a THIRD PARTY rather than
+# the NBHD control-plane runtime (a different auth/error shape entirely — the
+# compactErrorDetail helper is written for the DRF envelope the NBHD runtime
+# returns, and doesn't fit anything else). Being here is not a blanket safety
+# claim; see the nbhd-image-gen entry.
+NON_HTTP_PLUGINS = {
+    # Hook-only (api.on), never api.registerTool — no HTTP call anywhere in
+    # the file, so there is no runtime response to mishandle.
+    "nbhd-cron-enforcement": "hook-only; no fetch/https call in the file",
+    "nbhd-doc-taint-guard": (
+        'hook-only; "web_fetch" is a string literal naming a DIFFERENT tool it inspects, not a call this plugin makes'
+    ),
+    "nbhd-routing-context": "hook-only; no fetch/https call in the file",
+    # Hook-only fire-and-forget telemetry to the NBHD runtime: the fetch
+    # response is awaited but its BODY is never read (`response.text()`/
+    # `.json()` is never called) — success or failure, no runtime response
+    # text can reach the model. Failures are swallowed into a local debug log.
+    "nbhd-activity-stream": "fire-and-forget progress POST; response body is never read; no registerTool",
+    "nbhd-stream-progress": "fire-and-forget partial-text POST; response body is never read; no registerTool",
+    # Also hook-only fire-and-forget telemetry, but its failure path DOES read
+    # response.text() into the Error it constructs. That Error only reaches
+    # `api.logger.error()` though — this plugin has no registerTool, so
+    # nothing it does is ever a model-visible tool result.
+    "nbhd-usage-reporter": (
+        "hook-only (no registerTool); reads response.text() on failure but only "
+        "logs it via api.logger.error() — never returned to the model"
+    ),
+    # registerTool present, but talks to Azure Blob/Cosmos via the official
+    # SDK clients, not fetch()/https to the NBHD runtime. Errors surfaced to
+    # the model are SDK exception `.message` text (clamped to 300 chars), not
+    # a raw parsed HTTP response body — a materially different, much narrower
+    # risk than what this guard polices.
+    "nbhd-site-publishing": "publishes via Azure SDK clients (not the NBHD runtime); errors are SDK .message text",
+    # registerTool present AND calls a real upstream (OpenAI) directly via
+    # Node's `https` module — no "fetch(" token, which is exactly why the old
+    # discovery predicate missed it. Outside this guard's scope for the same
+    # reason as nbhd-site-publishing: this guard's helper is written for the
+    # NBHD-runtime DRF envelope, and OpenAI's `{error:{message,type}}` shape
+    # isn't that. FIXED (2026-08-05, own regression test in
+    # error-transport.test.js): callOpenAIImagesAPI's JSON-parse-failure
+    # fallback used to do `reject(new Error(\`HTTP ${status}:
+    # ${data.slice(0, 200)}\`))`, forwarding up to 200 raw upstream bytes on a
+    # non-JSON OpenAI error. It now keeps only the status code and a
+    # content-free marker, same spirit as CANONICAL_PARSE_FALLBACK above. The
+    # JSON-parse SUCCESS path forwards OpenAI's own `error.message` — that's
+    # provider-authored prose about the request, not raw bytes or user data —
+    # left as-is, and covered by its own passing test case.
+    "nbhd-image-gen": "calls OpenAI directly via https.request(), not the NBHD runtime; own client, own error shape",
+}
+
 # The pattern the fix removed. Its reappearance anywhere in a plugin means the
 # error block regressed to reading only `detail`.
 NAIVE_PATTERN = "asTrimmedString(normalized.detail)"
@@ -108,6 +162,31 @@ CANONICAL_THROW = (
 )
 
 CANONICAL_CODE_LINE = '      const code = asTrimmedString(normalized.error) || "runtime_request_failed";\n'
+
+# The JSON.parse fallback for a non-JSON response body (an Azure proxy HTML
+# error page, a plain-text 502, etc). This used to be `payload = { raw };`,
+# which forwarded the raw upstream bytes straight into compactErrorDetail's
+# input — the ONE read path in the whole chain that is NOT gated by anything
+# resembling the Django-side redact_tool_response PII chokepoint, since the
+# bytes never touch a runtime view at all. The fix is a fixed, content-free
+# marker: zero bytes of the upstream body survive into the message the model
+# sees. Pinned (not just regex-anchored) so a plugin can carry it more than
+# once — nbhd-reddit-tools has two runtime-call functions and both need it.
+CANONICAL_PARSE_FALLBACK = (
+    "    const raw = await response.text();\n"
+    "    let payload = {};\n"
+    "    if (raw) {\n"
+    "      try {\n"
+    "        payload = JSON.parse(raw);\n"
+    "      } catch {\n"
+    '        payload = { detail: "upstream returned a non-JSON response body" };\n'
+    "      }\n"
+    "    }\n"
+)
+
+# The pattern the fix removed. Its reappearance anywhere in a plugin means a
+# non-JSON error body is once again forwarded verbatim to the model.
+OLD_RAW_FALLBACK_PATTERN = "{ raw }"
 
 
 def _plugin_path(plugin_dir: str) -> Path:
@@ -200,17 +279,51 @@ class PluginErrorTransportDriftTests(SimpleTestCase):
         # The helper is useless if the call site assembles the message
         # differently — e.g. the bespoke `[provider_status=...]` suffix
         # nbhd-google-tools used to append instead of serializing the envelope.
+        #
+        # nbhd-reddit-tools carries the error-code line TWICE: once in its
+        # canonical runtime-call function (callRedditTool) and once in
+        # nbhd_reddit_status, which builds the same compactErrorDetail-style
+        # message for a transport/auth failure instead of misreporting it as
+        # "not connected". Its throw construction proper still counts once —
+        # that call site uses its own `httpStatus` var, not `response.status`,
+        # so it doesn't match CANONICAL_THROW's pinned text.
         for plugin_dir, src in self.sources.items():
             with self.subTest(plugin=plugin_dir):
+                expected_code_lines = 2 if plugin_dir == "nbhd-reddit-tools" else 1
                 self.assertEqual(
                     src.count(CANONICAL_CODE_LINE),
-                    1,
-                    f"{plugin_dir}: expected exactly one canonical error-code line",
+                    expected_code_lines,
+                    f"{plugin_dir}: expected {expected_code_lines} canonical error-code line(s)",
                 )
                 self.assertEqual(
                     src.count(CANONICAL_THROW),
                     1,
                     f"{plugin_dir}: expected exactly one canonical throw construction",
+                )
+
+    def test_parse_fallback_is_canonical(self):
+        # The non-JSON-body fallback must be present verbatim. Not asserted at
+        # exactly-once (unlike CANONICAL_THROW, and CANONICAL_CODE_LINE outside
+        # nbhd-reddit-tools): reddit-tools carries two runtime-call functions
+        # (callIntegrationsApi, callRedditTool) and both must carry the fix.
+        for plugin_dir, src in self.sources.items():
+            with self.subTest(plugin=plugin_dir):
+                self.assertIn(
+                    CANONICAL_PARSE_FALLBACK,
+                    src,
+                    f"{plugin_dir}: canonical non-JSON-body parse fallback not found verbatim",
+                )
+
+    def test_parse_fallback_never_forwards_raw_body(self):
+        # The regression this fix exists to prevent: a hand-edit reverting the
+        # catch clause to forward the raw upstream bytes instead of the marker.
+        for plugin_dir, src in self.sources.items():
+            with self.subTest(plugin=plugin_dir):
+                self.assertNotIn(
+                    OLD_RAW_FALLBACK_PATTERN,
+                    src,
+                    f"{plugin_dir}: regressed to forwarding the raw non-JSON response body "
+                    "to the model — the redaction chokepoint never sees these bytes",
                 )
 
     def test_helper_is_defined_before_its_call_site(self):
@@ -241,19 +354,35 @@ class PluginErrorTransportDriftTests(SimpleTestCase):
         # PLUGIN_DIRS used to be a hand-maintained list that CLAIMED to be
         # exhaustive while nbhd-agenda-tools — a model-facing plugin that POSTs
         # to the runtime — sat outside it, still carrying the detail-dropping
-        # bug. A hand-maintained list cannot assert its own completeness, so
-        # derive the in-scope set from the tree instead: a plugin is in scope
-        # when it registers model-facing tools AND calls fetch(). Anything new
-        # that matches must be rolled out and listed, not silently skipped.
+        # bug. A hand-maintained list cannot assert its own completeness on its
+        # own, so this cross-checks it against the tree.
+        #
+        # The tree-derived set used to be source-token detection ("registerTool"
+        # AND "fetch(" both present) — a DEFAULT-EXCLUDE design. That missed
+        # nbhd-image-gen, which reaches OpenAI's Images API through Node's
+        # `https` module (no "fetch(" token in the file) yet still forwards a
+        # non-JSON-body slice to a model-visible tool result (see
+        # NON_HTTP_PLUGINS below) — a plugin using an imported/aliased HTTP
+        # client, or any client that never spells "fetch(", would have been
+        # silently excluded forever, no matter how it handled the runtime
+        # response.
+        #
+        # DEFAULT-INCLUDE instead: every nbhd-* plugin directory is presumed
+        # in scope and must carry the canonical helper, unless explicitly
+        # allowlisted in NON_HTTP_PLUGINS with a stated reason. A new plugin
+        # that talks to the NBHD runtime and is missing the helper now fails
+        # loudly by default; a plugin that's genuinely exempt must say so.
         discovered = sorted(
             path.parent.name
-            for path in _PLUGINS_DIR.glob("*/index.js")
-            if "registerTool" in path.read_text() and "fetch(" in path.read_text()
+            for path in _PLUGINS_DIR.glob("nbhd-*/index.js")
+            if path.parent.name not in NON_HTTP_PLUGINS
         )
         self.assertEqual(
             discovered,
             sorted(PLUGIN_DIRS),
             "a runtime-calling plugin is missing from PLUGIN_DIRS (or listed but no "
             "longer matches); roll the canonical helper into it and add it to both "
-            "this list and error-transport.test.js",
+            "this list and error-transport.test.js — or, if it genuinely never surfaces "
+            "an NBHD-runtime response body to the model, add it to NON_HTTP_PLUGINS with "
+            "a reason",
         )

@@ -92,7 +92,10 @@ function callOpenAIImagesAPI(apiKey, prompt, size, model) {
               const err = JSON.parse(data);
               reject(new Error(err.error?.message || `HTTP ${res.statusCode}`));
             } catch {
-              reject(new Error(`HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+              // Zero bytes of the upstream body may reach the model — see
+              // the same-spirit marker in the 13 canonical nbhd-* plugins
+              // (runtime/openclaw/plugins/error-transport.test.js).
+              reject(new Error(`HTTP ${res.statusCode}: upstream returned a non-JSON response body`));
             }
             return;
           }

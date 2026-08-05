@@ -37,6 +37,8 @@
 
 import { describe, it, after, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import https from "node:https";
+import fs from "node:fs";
 
 // ── Runtime config the plugins read ─────────────────────────────────────────
 // Every plugin resolves the base URL from `pluginConfig.apiBaseUrl` OR the env
@@ -56,6 +58,13 @@ process.env.NBHD_TENANT_ID = TENANT_ID;
 process.env.NBHD_INTERNAL_API_KEY = INTERNAL_KEY;
 
 const ORIGINAL_FETCH = globalThis.fetch;
+// nbhd-image-gen talks to OpenAI via Node's `https` module, not fetch() — its
+// own transport stub, kept alongside ORIGINAL_FETCH for the same
+// save/restore discipline. https.request is a singleton on the "node:https"
+// module object, so stubbing it here also reaches the plugin's own
+// `require("https")` (Node's CJS/ESM interop for core modules shares the
+// object).
+const ORIGINAL_HTTPS_REQUEST = https.request;
 const ORIGINAL_CONSOLE_LOG = console.log;
 
 after(() => {
@@ -64,6 +73,7 @@ after(() => {
     else process.env[key] = value;
   }
   globalThis.fetch = ORIGINAL_FETCH;
+  https.request = ORIGINAL_HTTPS_REQUEST;
   console.log = ORIGINAL_CONSOLE_LOG;
 });
 
@@ -71,6 +81,7 @@ after(() => {
 // leak a stubbed fetch into the next one.
 afterEach(() => {
   globalThis.fetch = ORIGINAL_FETCH;
+  https.request = ORIGINAL_HTTPS_REQUEST;
   console.log = ORIGINAL_CONSOLE_LOG;
 });
 
@@ -231,10 +242,13 @@ const CASE_C_BODY = JSON.stringify({ week_rating: ["This field is required."] })
 const CASE_D_STATUS = 500;
 const CASE_D_BODY = "";
 
-// E — non-JSON body. The transports fall back to `{ raw }`; the raw text must
-// survive into the message.
+// E — non-JSON body (e.g. an Azure proxy HTML error page). The transports
+// fall back to a fixed, content-free marker — the raw upstream bytes must
+// NEVER survive into the message, since they never pass through anything
+// resembling the Django-side redact_tool_response PII chokepoint.
 const CASE_E_STATUS = 502;
 const CASE_E_BODY = "<html>Bad Gateway</html>";
+const NON_JSON_BODY_MARKER = "upstream returned a non-JSON response body";
 
 // F — the Google provider envelope. `provider_status` used to ride along in a
 // bespoke `[provider_status=403]` suffix that dropped reason and message.
@@ -515,12 +529,16 @@ describe("D · empty body", () => {
 
 describe("E · non-JSON body", () => {
   for (const target of PLUGINS) {
-    it(`${label(target)} surfaces the raw upstream text`, async () => {
+    it(`${label(target)} replaces the raw upstream text with the content-free marker`, async () => {
       const message = await runCase(target, { status: CASE_E_STATUS, body: CASE_E_BODY });
 
       assert.ok(message.includes("NBHD runtime error 502"), message);
       assert.ok(message.includes("runtime_request_failed"), message);
-      assert.ok(message.includes("Bad Gateway"), message);
+      assert.ok(message.includes(NON_JSON_BODY_MARKER), message);
+      // The actual regression this case exists to catch: not one byte of the
+      // upstream body may reach the model.
+      assert.ok(!message.includes("Bad Gateway"), message);
+      assert.ok(!message.includes("<html>"), message);
     });
   }
 });
@@ -978,6 +996,169 @@ describe("S · transport-level fetch rejection", () => {
       assert.ok(!/timed out/.test(message), `misreported as a timeout: ${message}`);
     });
   }
+});
+
+// ── nbhd_reddit_status: transport failures vs. OAuth state ──────────────────
+// nbhd_reddit_status used to flatten EVERY non-2xx from the status endpoint —
+// a stale internal key (401), an unhandled exception (500) — to "Reddit is
+// not connected", indistinguishable from the tenant genuinely never having
+// connected Reddit. It must say "not connected" ONLY when the runtime
+// actually says so (a 200 with connected:false); any other failure surfaces
+// the same compactErrorDetail-style envelope the other runtime tools use.
+
+describe("nbhd_reddit_status distinguishes transport failures from OAuth state", () => {
+  const statusTarget = {
+    dir: "nbhd-reddit-tools",
+    tool: "nbhd_reddit_status",
+    params: {},
+  };
+
+  it("a 401 from a stale internal key surfaces the status/error, not 'not connected'", async () => {
+    const { message, threw } = await runWithResponse(statusTarget, () =>
+      errorResponse(401, JSON.stringify({ error: "internal_auth_failed", detail: "bad internal key" })),
+    );
+    assert.equal(threw, true, `an auth failure must propagate as an error: ${message}`);
+    assert.ok(message.includes("401"), message);
+    assert.ok(message.includes("internal_auth_failed"), message);
+    assert.ok(!message.toLowerCase().includes("not connected"), message);
+  });
+
+  it("a 500 with a non-JSON body surfaces the marker, not 'not connected'", async () => {
+    const { message, threw } = await runWithResponse(statusTarget, () =>
+      errorResponse(500, "<html>Internal Server Error</html>"),
+    );
+    assert.equal(threw, true, `a server failure must propagate as an error: ${message}`);
+    assert.ok(message.includes("500"), message);
+    assert.ok(message.includes(NON_JSON_BODY_MARKER), message);
+    assert.ok(!message.includes("<html>"), message);
+    assert.ok(!message.toLowerCase().includes("not connected"), message);
+  });
+
+  it("connected:false with a 200 still renders the friendly not-connected text", async () => {
+    const { message, threw } = await runWithResponse(statusTarget, () => ({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      headers: { get: () => null },
+      async text() {
+        return JSON.stringify({ connected: false, provider_email: "" });
+      },
+      async json() {
+        return { connected: false, provider_email: "" };
+      },
+    }));
+    assert.equal(threw, false, `a genuine not-connected state must not throw: ${message}`);
+    assert.ok(message.includes("Reddit is not connected"), message);
+    assert.ok(message.includes("nbhd_reddit_connect"), message);
+  });
+});
+
+// ── nbhd-image-gen: non-JSON OpenAI error body ───────────────────────────────
+// callOpenAIImagesAPI talks to OpenAI directly via Node's `https` module, not
+// fetch() — the exact reason the old plugin-discovery predicate ("fetch(" in
+// the file) missed this plugin entirely. Its JSON-parse-failure fallback used
+// to do `reject(new Error(\`HTTP ${status}: ${data.slice(0, 200)}\`))`,
+// forwarding up to 200 raw upstream bytes into the model-visible tool result
+// — the same vulnerability class as the other 13 plugins, via a different
+// HTTP client. This is its sibling regression guard, kept in THIS file
+// because .github/workflows/ci-cd.yml lists `node --test
+// runtime/openclaw/plugins/error-transport.test.js` explicitly rather than
+// globbing the plugins directory — a sibling test.js here would never run in
+// CI.
+
+const IMAGE_GEN_RATE_LIMIT_FILE = "/tmp/nbhd-image-gen-usage.json";
+const IMAGE_GEN_NON_JSON_MARKER = "upstream returned a non-JSON response body";
+
+function resetImageGenRateLimit() {
+  try {
+    fs.unlinkSync(IMAGE_GEN_RATE_LIMIT_FILE);
+  } catch (err) {
+    if (err.code !== "ENOENT") throw err;
+  }
+}
+
+/**
+ * Stub node:https.request for exactly one call, mimicking just enough of the
+ * real ClientRequest/IncomingMessage pair for callOpenAIImagesAPI's usage:
+ * `res.on('data'|'end', ...)` registered synchronously inside the response
+ * callback, `req.on('error'|'timeout', ...)`, `req.write()`, `req.end()`.
+ * Self-restoring: the second call in a test would hit the real network, so
+ * this puts ORIGINAL_HTTPS_REQUEST back the moment it's consumed.
+ */
+function stubHttpsRequestOnce(statusCode, responseBody) {
+  https.request = (_options, callback) => {
+    https.request = ORIGINAL_HTTPS_REQUEST;
+    const handlers = {};
+    const res = {
+      statusCode,
+      on(event, handler) {
+        handlers[event] = handler;
+        return res;
+      },
+    };
+    return {
+      on() {
+        return this;
+      },
+      write() {},
+      end() {
+        // The real request completes asynchronously; the ordering that
+        // matters here is synchronous-within-end(): callback(res) runs the
+        // caller's `res.on(...)` registrations before data/end fire.
+        callback(res);
+        if (handlers.data) handlers.data(Buffer.from(responseBody));
+        if (handlers.end) handlers.end();
+      },
+      destroy() {},
+    };
+  };
+}
+
+/** Load nbhd-image-gen, call nbhd_generate_image, and return its result text. */
+async function runImageGenCase({ status, body }) {
+  const previousKey = process.env.OPENAI_API_KEY;
+  process.env.OPENAI_API_KEY = "sk-test-error-transport";
+  resetImageGenRateLimit();
+  stubHttpsRequestOnce(status, body);
+  try {
+    const tools = await loadTools({ dir: "nbhd-image-gen" });
+    const tool = tools.get("nbhd_generate_image");
+    assert.ok(tool, "nbhd-image-gen: expected nbhd_generate_image to be registered");
+    // Unlike the other 13 plugins' execute(_id, params), this plugin's
+    // execute({ prompt, size }) destructures a SINGLE params object.
+    const result = await withQuietLogs(() => tool.execute({ prompt: "a red bicycle" }));
+    const text =
+      result && Array.isArray(result.content) && result.content[0] ? result.content[0].text : undefined;
+    assert.ok(typeof text === "string", `expected text content: ${JSON.stringify(result)}`);
+    return text;
+  } finally {
+    https.request = ORIGINAL_HTTPS_REQUEST;
+    if (previousKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousKey;
+    resetImageGenRateLimit();
+  }
+}
+
+describe("nbhd-image-gen replaces the raw non-JSON OpenAI error body with the marker", () => {
+  it("keeps the status code, drops every byte of the upstream body", async () => {
+    const text = await runImageGenCase({ status: 502, body: "<html>Bad Gateway</html>" });
+
+    assert.ok(text.includes("502"), text);
+    assert.ok(text.includes(IMAGE_GEN_NON_JSON_MARKER), text);
+    assert.ok(!text.includes("Bad Gateway"), text);
+    assert.ok(!text.includes("<html>"), text);
+  });
+
+  it("a well-formed OpenAI error envelope still surfaces error.message (provider prose, not user data — intentional, not a leak)", async () => {
+    const text = await runImageGenCase({
+      status: 400,
+      body: JSON.stringify({
+        error: { message: "Invalid value for 'size'.", type: "invalid_request_error" },
+      }),
+    });
+
+    assert.ok(text.includes("Invalid value for 'size'."), text);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════════════

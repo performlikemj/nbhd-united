@@ -171,7 +171,7 @@ async function callNbhdRuntimeRequest(api, { path, method = "GET", query, body }
       try {
         payload = JSON.parse(raw);
       } catch {
-        payload = { raw };
+        payload = { detail: "upstream returned a non-JSON response body" };
       }
     }
 

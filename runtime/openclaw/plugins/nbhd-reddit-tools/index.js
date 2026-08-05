@@ -100,7 +100,13 @@ async function callIntegrationsApi(api, path, options = {}) {
     });
     const raw = await response.text();
     let payload = {};
-    try { payload = JSON.parse(raw); } catch { payload = { raw }; }
+    if (raw) {
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        payload = { detail: "upstream returned a non-JSON response body" };
+      }
+    }
     return { ok: response.ok, status: response.status, data: payload };
   } catch (error) {
     if (error && error.name === "AbortError") throw new Error(`Request timed out`);
@@ -165,7 +171,7 @@ async function callRedditTool(api, { action, params = {} }) {
       try {
         payload = JSON.parse(raw);
       } catch {
-        payload = { raw };
+        payload = { detail: "upstream returned a non-JSON response body" };
       }
     }
 
@@ -220,11 +226,20 @@ export default function register(api) {
     },
     async execute(_id, _params) {
       const runtime = getRuntimeConfig(api);
-      const { ok, data } = await callIntegrationsApi(api,
+      const { ok, status: httpStatus, data } = await callIntegrationsApi(api,
         `/api/v1/integrations/runtime/${encodeURIComponent(runtime.tenantId)}/reddit/status/`
       );
       if (!ok) {
-        return renderText("Reddit is not connected. Use nbhd_reddit_connect to link your account.");
+        // A non-2xx here is a transport/auth/server failure, NOT the tenant's
+        // Reddit OAuth state — e.g. a stale internal key (401) or an
+        // unhandled exception (500). Flattening every failure to "not
+        // connected" hid those from the model. Surface the same
+        // compactErrorDetail-style envelope the other runtime tools use.
+        const normalized = asObject(data);
+        const code = asTrimmedString(normalized.error) || "runtime_request_failed";
+        const detail = compactErrorDetail(normalized);
+        const detailSuffix = detail ? ` (${detail})` : "";
+        throw new Error(`NBHD runtime error ${httpStatus}: ${code}${detailSuffix}`);
       }
       const connected = data.connected === true;
       const username = asTrimmedString(data.username || data.provider_email || "");

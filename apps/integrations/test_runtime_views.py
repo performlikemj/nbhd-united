@@ -16,6 +16,8 @@ from apps.tenants.test_utils import seed_internal_key
 
 from .models import Integration, SautaiMealPlanJob
 from .services import (
+    IntegrationAccessError,
+    IntegrationInactiveError,
     IntegrationNotConnectedError,
     IntegrationScopeError,
     ProviderAccessToken,
@@ -341,6 +343,86 @@ class RuntimeIntegrationViewsTest(TestCase):
             f"/api/v1/integrations/runtime/{self.tenant.id}/gmail/messages/",
             **self._headers(),
         )
+
+    def _gmail_refresh_failure(self, error_description: str):
+        """Drive the real token broker through a failed Google refresh."""
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider="google",
+            status=Integration.Status.ACTIVE,
+            scopes=[],
+            token_expires_at=None,
+        )
+        request = httpx.Request("POST", "https://oauth2.googleapis.com/token")
+        provider_response = httpx.Response(
+            400,
+            request=request,
+            json={
+                "error": "invalid_grant",
+                "error_description": error_description,
+            },
+        )
+
+        with (
+            patch(
+                "apps.integrations.services.load_tokens_from_key_vault",
+                return_value={"refresh_token": "rt-123"},
+            ),
+            patch(
+                "apps.integrations.services.get_provider_client_credentials",
+                return_value=("client-id", "client-secret"),
+            ),
+            patch("apps.integrations.services.httpx.post", return_value=provider_response),
+        ):
+            return self.client.get(
+                f"/api/v1/integrations/runtime/{self.tenant.id}/gmail/messages/",
+                **self._headers(),
+            )
+
+    def test_runtime_gmail_refresh_failure_carries_invalid_grant_enrichment(self):
+        response = self._gmail_refresh_failure("Token has been expired or revoked.")
+
+        self.assertEqual(response.status_code, 502)
+        body = response.json()
+        self.assertEqual(body["error"], "integration_refresh_failed")
+        self.assertEqual(body["provider_reason"], "invalid_grant")
+        self.assertEqual(body["provider_message"], "Token has been expired or revoked.")
+        self.assertIn("Google", body["user_action"])
+        self.assertEqual(
+            body["user_action"],
+            (
+                "Tell the user their Google connection has expired and they need to reconnect "
+                "Google under Settings → Integrations."
+            ),
+        )
+
+    def test_runtime_gmail_refresh_failure_enrichment_uses_pii_chokepoint(self):
+        raw_address = "alice.johnson@acme.com"
+        self.tenant.pii_entity_map = {"[EMAIL_ADDRESS_1]": raw_address}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        response = self._gmail_refresh_failure(f"Token for {raw_address} has been revoked.")
+
+        self.assertEqual(response.status_code, 502)
+        body = response.json()
+        self.assertNotIn(raw_address, body["provider_message"])
+        self.assertIn("EMAIL_ADDRESS_1", body["provider_message"])
+
+    @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
+    def test_runtime_gmail_integration_error_without_http_cause_is_not_enriched(self, mock_broker):
+        mock_broker.side_effect = IntegrationNotConnectedError("missing")
+
+        response = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/gmail/messages/",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 404)
+        body = response.json()
+        self.assertEqual(body["error"], "integration_not_connected")
+        self.assertEqual(body["detail"], "missing")
+        self.assertNotIn("provider_reason", body)
+        self.assertNotIn("provider_message", body)
 
     @patch("apps.integrations.runtime_views.list_gmail_messages")
     @patch("apps.integrations.runtime_views.get_valid_provider_access_token")
@@ -1040,6 +1122,26 @@ class RedditViewTests(TestCase):
         self.assertIn("Reddit", body["user_action"])
         self.assertNotIn("Google", body["user_action"])
 
+    @patch("apps.integrations.runtime_views.complete_composio_connection")
+    def test_complete_base_access_error_carries_reddit_remediation(self, mock_complete):
+        mock_complete.side_effect = IntegrationAccessError("Composio connection not active: INITIATED")
+
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/complete/",
+            data={"connection_request_id": "req-1"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 500)
+        body = response.json()
+        self.assertEqual(body["error"], "integration_access_failed")
+        self.assertNotEqual(body["error"], "complete_failed")
+        self.assertEqual(body["detail"], "Composio connection not active: INITIATED")
+        self.assertIn("user_action", body)
+        self.assertIn("Reddit", body["user_action"])
+        self.assertNotIn("Google", body["user_action"])
+
     @patch("apps.integrations.runtime_views.execute_reddit_tool")
     def test_tool_provider_config_error_names_reddit_not_google(self, mock_execute):
         from .services import IntegrationProviderConfigError
@@ -1055,6 +1157,24 @@ class RedditViewTests(TestCase):
 
         self.assertEqual(response.status_code, 503)
         self.assertNotIn("Google", response.json()["user_action"])
+
+    @patch("apps.integrations.runtime_views.execute_reddit_tool")
+    def test_tool_inactive_error_uses_reddit_integration_payload(self, mock_execute):
+        mock_execute.side_effect = IntegrationInactiveError("Reddit connection is inactive")
+
+        response = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/reddit/tool/",
+            data={"action": "digest", "subreddit": "python"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 409)
+        body = response.json()
+        self.assertEqual(body["error"], "integration_inactive")
+        self.assertNotEqual(body["error"], "tool_error")
+        self.assertIn("Reddit", body["user_action"])
+        self.assertNotIn("Google", body["user_action"])
 
 
 @override_settings(
