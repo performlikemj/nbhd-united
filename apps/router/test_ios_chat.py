@@ -945,12 +945,15 @@ class IOSChatDocumentTest(TestCase):
         # Container-path marker baked into the LLM-bound text; is_document set so
         # the row is a forced singleton (marker survives a cold-start burst).
         # Built via the shared attachment_marker helper — pins the exact
-        # untrusted-content framing, not just a bare path.
+        # untrusted-content framing, not just a bare path. QStash is unconfigured
+        # in tests, so async extraction is NOT enqueued and the marker keeps its
+        # original in-turn form (the agent reads the PDF itself).
         self.assertIn(
             attachment_marker("document", "/home/node/.openclaw/workspace/media/inbound/doc_test.pdf"),
             pmsg.payload["message_text"],
         )
         self.assertIn("UNTRUSTED DATA", pmsg.payload["message_text"])
+        self.assertNotIn("extraction is running in the background", pmsg.payload["message_text"])
         self.assertTrue(pmsg.payload["is_document"])
         # Bytes NEVER ride the payload, and the user-facing excerpt has no marker.
         self.assertNotIn("document", pmsg.payload)

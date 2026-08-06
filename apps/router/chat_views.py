@@ -24,6 +24,7 @@ import logging
 import uuid
 from datetime import timedelta
 
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -212,6 +213,47 @@ def invalidate_main_thread_cache(tenant_id) -> None:
 def _thread_user_param(thread: ChatThread) -> str:
     """OpenClaw ``user`` param for a thread → its own session, shared memory."""
     return f"thread:{thread.id}"
+
+
+def _enqueue_document_extraction(tenant, workspace_path: str, thread_id: str) -> bool:
+    """Publish the async PDF-extraction task; return whether it is really queued.
+
+    The return value drives the attachment marker. Only a genuinely queued task
+    earns the "extraction in progress, don't call the pdf tool" marker — if the
+    publish fails we fall back to the original in-turn marker, so the agent reads
+    the PDF itself (slow, but correct) instead of waiting on a follow-up that is
+    never coming.
+
+    Skipped outright when QStash is unconfigured (local dev): ``publish_task``
+    silently degrades to running the task INLINE, which would do the whole
+    download-extract-deliver round trip inside this request and push a turn at
+    the agent before the user's own message has even been enqueued.
+
+    Requires no ``claim_inbound_event`` (invariant 3): this is an internal
+    enqueue with no provider-supplied event id, exactly the case that invariant
+    carves out. The inbound event itself was already claimed upstream by the
+    chat ingress view.
+    """
+    if not (getattr(settings, "QSTASH_TOKEN", "") and getattr(settings, "API_BASE_URL", "")):
+        return False
+    try:
+        from apps.cron.publish import publish_task
+        from apps.router.pdf_extraction import extraction_dedup_id
+
+        publish_task(
+            "extract_inbound_document",
+            str(tenant.id),
+            workspace_path,
+            thread_id,
+            idempotency_key=extraction_dedup_id(str(tenant.id), workspace_path),
+        )
+        return True
+    except Exception:
+        logger.exception(
+            "enqueue_tenant_turn: PDF extraction publish failed for tenant %s — falling back to the in-turn pdf tool",
+            str(tenant.id)[:8],
+        )
+        return False
 
 
 def _resolve_thread(request, tenant) -> ChatThread | None:
@@ -463,17 +505,23 @@ def enqueue_tenant_turn(
             )
             image_marker = "[The user attached a photo but it couldn't be processed — ask them to resend it.]\n"
 
-    # Inbound PDF: same pattern as the photo above, but the marker is built by
-    # attachment_marker("document", ...) so the agent's built-in ``pdf`` tool
-    # reads the local file. The view enforces at most one attachment per turn,
-    # so image and document never both write attachment_path in the same call.
+    # Inbound PDF: same pattern as the photo above, but the read is moved OFF
+    # this turn. ``extract_inbound_document_task`` pulls the text layer
+    # server-side and delivers it as a follow-up turn, so the marker tells the
+    # agent to acknowledge now instead of blocking the whole queue on the
+    # in-turn ``pdf`` tool (the speed complaint this feature exists to fix —
+    # CONTINUITY_async_pdf_extraction.md). The ``pdf`` tool stays the fallback:
+    # the task says so explicitly when it can't produce text.
+    # The view enforces at most one attachment per turn, so image and document
+    # never both write attachment_path in the same call.
     document_marker = ""
     if document:
         try:
             container_path, workspace_path = store_inbound_document(str(tenant.id), document, document_ext)
             AppChatMessage.objects.filter(pk=turn.pk).update(attachment_path=workspace_path)
             turn.attachment_path = workspace_path
-            document_marker = attachment_marker("document", container_path)
+            extraction_queued = _enqueue_document_extraction(tenant, workspace_path, str(thread.id))
+            document_marker = attachment_marker("document", container_path, extraction_pending=extraction_queued)
         except Exception:
             logger.exception(
                 "enqueue_tenant_turn: document store failed for tenant %s — degrading to a text turn",

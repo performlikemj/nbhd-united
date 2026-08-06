@@ -950,6 +950,50 @@ def upload_workspace_file_binary(tenant_id: str, file_path: str, data: bytes) ->
     _put_share_file(tenant_id, file_path, data=data, ensure_dirs=True)
 
 
+def download_workspace_file_binary(tenant_id: str, file_path: str) -> bytes | None:
+    """Read a workspace file from the tenant's Azure File Share as RAW BYTES.
+
+    file_path is relative to the workspace root, e.g.
+    'workspace/media/inbound/doc_ab12cd34.pdf'. Returns the file's bytes, or
+    None if the file does not exist.
+
+    The binary twin of ``download_workspace_file``: that helper decodes UTF-8
+    with ``errors="replace"``, which silently corrupts every non-text byte — so
+    it can never be used to read back a stored PDF/image. Used by the async PDF
+    extraction task (``apps.router.tasks``).
+    """
+    share_name = f"ws-{str(tenant_id)[:20]}"
+
+    if _is_mock():
+        logger.info("[MOCK] Binary download of %s from file share %s", file_path, share_name)
+        return None
+
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.storage.fileshare import ShareFileClient
+
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(
+        settings.AZURE_RESOURCE_GROUP,
+        account_name,
+    )
+    account_key = keys.keys[0].value
+
+    file_client = ShareFileClient(
+        account_url=f"https://{account_name}.file.core.windows.net",
+        share_name=share_name,
+        file_path=file_path,
+        credential=account_key,
+    )
+    try:
+        return file_client.download_file().readall()
+    except ResourceNotFoundError:
+        return None
+
+
 def download_workspace_file(tenant_id: str, file_path: str) -> str | None:
     """Read a workspace file from the tenant's Azure File Share.
 
