@@ -221,6 +221,42 @@ def inverted_names_ci(
     return out
 
 
+def inverted_names_multimap(
+    entity_map: dict[str, Any] | None,
+) -> dict[str, list[tuple[str, str]]]:
+    """Return every name binding grouped by case-insensitive canonical key.
+
+    This is the ambiguity-aware sibling of ``inverted_names_ci``: each value
+    contains all ``(display_name, placeholder)`` entries ordered by placeholder
+    number ascending. Winner-take-all callers should stay on
+    ``inverted_names_ci``. Empty names are skipped.
+    """
+    out: dict[str, list[tuple[str, str]]] = {}
+    if not entity_map:
+        return out
+    for placeholder, entry in entity_map.items():
+        name = get_name(entry)
+        key = canonical_key(name)
+        if not key:
+            continue
+        out.setdefault(key, []).append((name.strip(), placeholder))
+    for entries in out.values():
+        entries.sort(key=lambda item: (_placeholder_num(item[1]), item[1]))
+    return out
+
+
+def same_name_collisions(
+    entity_map: dict[str, Any] | None,
+) -> dict[str, list[str]]:
+    """Return canonical names bound to more than one distinct placeholder."""
+    out: dict[str, list[str]] = {}
+    for key, entries in inverted_names_multimap(entity_map).items():
+        placeholders = list(dict.fromkeys(placeholder for _, placeholder in entries))
+        if len(placeholders) > 1:
+            out[key] = placeholders
+    return out
+
+
 def is_denied(denylist: dict[str, Any] | None, name: str) -> bool:
     """True when ``name`` is on the tenant's PII denylist.
 

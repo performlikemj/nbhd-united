@@ -25,9 +25,11 @@ from apps.pii.entity_registry import (
     get_name,
     inverted_names,
     inverted_names_ci,
+    inverted_names_multimap,
     is_denied,
     iter_normalized,
     normalize_denylist_key,
+    same_name_collisions,
     to_storage_value,
 )
 from apps.pii.redactor import rehydrate_text
@@ -247,6 +249,88 @@ class InvertedNamesCITests(TestCase):
         result = inverted_names_ci(m)
         # Documenting current behaviour, not asserting it as ideal:
         self.assertEqual(result["sautai"][1], "[NOT_A_PLACEHOLDER]")
+
+
+class InvertedNamesMultimapTests(TestCase):
+    def test_returns_all_collisions_ordered_by_placeholder_number(self):
+        m = {
+            "[PERSON_408]": "Alex",
+            "[PERSON_5]": "Alex",
+            "[PERSON_77]": "Alex",
+        }
+
+        self.assertEqual(
+            inverted_names_multimap(m),
+            {
+                "alex": [
+                    ("Alex", "[PERSON_5]"),
+                    ("Alex", "[PERSON_77]"),
+                    ("Alex", "[PERSON_408]"),
+                ]
+            },
+        )
+
+    def test_single_entries_match_inverted_names_ci(self):
+        m = {
+            "[PERSON_2]": "Alice",
+            "[PERSON_9]": {"name": "Bob"},
+        }
+
+        multimap = inverted_names_multimap(m)
+        self.assertEqual(
+            {key: entries[0] for key, entries in multimap.items()},
+            inverted_names_ci(m),
+        )
+
+    def test_empty_names_skipped(self):
+        m = {
+            "[PERSON_1]": "",
+            "[PERSON_2]": "   ",
+            "[PERSON_3]": {"relationship": "no-name"},
+            "[PERSON_4]": "Real",
+        }
+
+        self.assertEqual(
+            inverted_names_multimap(m),
+            {"real": [("Real", "[PERSON_4]")]},
+        )
+
+    def test_mixed_legacy_and_dict_shapes(self):
+        m = {
+            "[PERSON_4]": {"name": "Nana", "relationship": "grandmother"},
+            "[PERSON_1]": "Nana",
+        }
+
+        self.assertEqual(
+            inverted_names_multimap(m),
+            {"nana": [("Nana", "[PERSON_1]"), ("Nana", "[PERSON_4]")]},
+        )
+
+    def test_case_insensitivity_matches_inverted_names_ci(self):
+        m = {
+            "[PERSON_7]": "  STRASSE ",
+            "[PERSON_3]": "Straße",
+        }
+
+        multimap = inverted_names_multimap(m)
+        self.assertEqual(set(multimap), set(inverted_names_ci(m)))
+        self.assertEqual(
+            multimap["strasse"],
+            [("Straße", "[PERSON_3]"), ("STRASSE", "[PERSON_7]")],
+        )
+
+
+class SameNameCollisionsTests(TestCase):
+    def test_returns_only_names_with_distinct_placeholder_collisions(self):
+        m = {
+            "[PERSON_12]": "Alex",
+            "[PERSON_2]": {"name": " ALEX "},
+            "[PERSON_5]": "Blair",
+            "[PERSON_9]": "",
+        }
+
+        self.assertEqual(same_name_collisions(m), {"alex": ["[PERSON_2]", "[PERSON_12]"]})
+        self.assertEqual(same_name_collisions(None), {})
 
 
 class IsDeniedTests(TestCase):
