@@ -43,7 +43,9 @@ from __future__ import annotations
 import logging
 import re
 import time
+from dataclasses import dataclass
 from datetime import timedelta
+from enum import Enum
 from typing import Any
 
 import httpx
@@ -171,6 +173,56 @@ _OR_CREDIT_LIMIT_NEEDLES: tuple[str, ...] = (
 )
 
 
+class DeliveryState(str, Enum):  # noqa: UP042 - ratified public contract
+    SENT = "sent"
+    PARTIAL = "partial"
+    SUPPRESSED = "suppressed"
+    FAILED = "failed"
+    AMBIGUOUS = "ambiguous"
+
+
+@dataclass(frozen=True)
+class SendResult:
+    state: DeliveryState
+    delivered_chunks: int = 0
+    total_chunks: int = 0
+    detail: str = ""
+
+    def __bool__(self) -> bool:
+        return self.state in (DeliveryState.SENT, DeliveryState.PARTIAL)
+
+
+class Disposition(str, Enum):  # noqa: UP042 - ratified public contract
+    DELIVER = "deliver"
+    RETRY = "retry"
+    TERMINAL = "terminal"
+
+
+@dataclass(frozen=True)
+class DrainOutcome:
+    disposition: Disposition
+    delivery: DeliveryState
+    gateway_responded: bool
+    reason: str = ""
+    delivered_chunks: int = 0
+    total_chunks: int = 0
+
+    def __bool__(self) -> bool:
+        return self.gateway_responded
+
+
+def _drain_outcome_from_send_result(result: SendResult) -> DrainOutcome:
+    disposition = Disposition.RETRY if result.state is DeliveryState.FAILED else Disposition.DELIVER
+    return DrainOutcome(
+        disposition=disposition,
+        delivery=result.state,
+        gateway_responded=True,
+        reason=result.detail or ("relay_failed" if result.state is DeliveryState.FAILED else ""),
+        delivered_chunks=result.delivered_chunks,
+        total_chunks=result.total_chunks,
+    )
+
+
 def _looks_like_openrouter_credit_limit(resp) -> bool:
     """Return True when a chat-completion response indicates the tenant's
     OpenRouter sub-key has hit its spending limit.
@@ -210,7 +262,7 @@ def _handle_openrouter_credit_limit(
     *,
     channel: str,
     channel_user_id: str,
-) -> None:
+) -> str:
     """Trip the budget circuit breaker after OR rejected a chat call.
 
     1. Set ``estimated_cost_this_month`` to the tenant's effective cap so
@@ -252,7 +304,7 @@ def _handle_openrouter_credit_limit(
                 "OR credit-limit: tenant=%s is budget-exempt or holds credit — raised key ceiling, NOT hibernating",
                 str(tenant.id)[:8],
             )
-            return
+            return "ceiling_raised"
         except Exception:
             logger.exception(
                 "OR credit-limit: ceiling re-raise failed for tenant=%s; falling through to hibernate",
@@ -304,7 +356,7 @@ def _handle_openrouter_credit_limit(
                     channel_user_id,
                     str(tenant.id)[:8],
                 )
-                return
+                return "circuit_tripped"
             _send_telegram_markdown(chat_id_int, text)
     except Exception:
         logger.exception(
@@ -318,6 +370,7 @@ def _handle_openrouter_credit_limit(
         str(tenant.id)[:8],
         channel,
     )
+    return "circuit_tripped"
 
 
 def _resolve_chat_timeout(tenant: Tenant) -> float:
@@ -715,6 +768,7 @@ def _terminalize_failed_queue_rows(
     error: str,
     row_ids: list | None = None,
     require_missing_fqdn: bool = False,
+    send_apology: bool = True,
 ) -> tuple[Tenant | None, list[PendingMessage], bool]:
     """Atomically fail pending queue rows and correlated pending app turns.
 
@@ -780,14 +834,15 @@ def _terminalize_failed_queue_rows(
 
     # LINE/Telegram sends are external side effects, so they must not happen
     # until both model transitions have committed successfully.
-    for row in terminalized_rows:
-        if row.channel == PendingMessage.Channel.IOS:
-            continue
-        if error == "stale":
-            age_seconds = max(0.0, (committed_at - row.created_at).total_seconds())
-            _send_apology_for_stale_pending_message(locked_tenant, row, age_seconds)
-        else:
-            _send_apology_for_dropped_pending_message(locked_tenant, row)
+    if send_apology:
+        for row in terminalized_rows:
+            if row.channel == PendingMessage.Channel.IOS:
+                continue
+            if error == "stale":
+                age_seconds = max(0.0, (committed_at - row.created_at).total_seconds())
+                _send_apology_for_stale_pending_message(locked_tenant, row, age_seconds)
+            else:
+                _send_apology_for_dropped_pending_message(locked_tenant, row)
 
     return locked_tenant, terminalized_rows, fqdn_appeared
 
@@ -1038,50 +1093,104 @@ def drain_pending_messages_for_tenant_task(
     gateway_responded = False
     try:
         if channel == PendingMessage.Channel.LINE:
-            gateway_responded = _drain_line_batch(tenant, batch, chat_timeout)
+            outcome = _drain_line_batch(tenant, batch, chat_timeout)
         elif channel == PendingMessage.Channel.TELEGRAM:
-            gateway_responded = _drain_telegram_batch(tenant, batch, chat_timeout)
+            outcome = _drain_telegram_batch(tenant, batch, chat_timeout)
         elif channel == PendingMessage.Channel.IOS:
-            gateway_responded = _drain_ios_batch(tenant, batch, chat_timeout)
+            outcome = _drain_ios_batch(tenant, batch, chat_timeout)
         else:
             raise ValueError(f"Unknown channel: {channel!r}")
+        gateway_responded = outcome.gateway_responded
 
-        now = timezone.now()
-        for row in batch:
-            row.delivery_status = PendingMessage.Status.DELIVERED
-            row.delivered_at = now
-            row.delivery_in_flight_until = None
-            row.save(
-                update_fields=[
-                    "delivery_status",
-                    "delivered_at",
-                    "delivery_in_flight_until",
-                ]
-            )
-        delivered = batch_size
+        if outcome.disposition is Disposition.DELIVER:
+            if outcome.delivery is DeliveryState.PARTIAL:
+                logger.warning(
+                    "drain_pending: partial delivery for tenant %s channel=%s (%d/%d chunks); "
+                    "marking delivered to avoid duplicating chunks already seen",
+                    tenant_id[:8],
+                    channel,
+                    outcome.delivered_chunks,
+                    outcome.total_chunks,
+                )
+            elif outcome.delivery is DeliveryState.AMBIGUOUS:
+                logger.warning(
+                    "drain_pending: ambiguous delivery for tenant %s channel=%s; marking delivered because "
+                    "retrying risks a duplicate reply",
+                    tenant_id[:8],
+                    channel,
+                )
 
-        # Privacy hard-delete (docs/encryption-at-rest-directive.md §7, Phase 0
-        # PR-3): PendingMessage is a transient forwarding queue, but delivered
-        # rows were never removed — leaving payload + user_text as a permanent
-        # store of (redacted) user text. Every downstream use of these rows is
-        # complete by here: the _drain_*_batch helper above ran the OC POST,
-        # reply relay, conversation capture, iOS reply persistence (to
-        # AppChatMessage), and usage recording in the same call. Nothing past
-        # this point re-reads the rows — the stale-hibernation reconcile touches
-        # the Tenant; _has_more_pending queries PENDING rows only; the iOS
-        # client polls AppChatMessage, not this queue. We mark DELIVERED *first*
-        # (committed above) so a worker crash before the delete leaves a
-        # sweepable DELIVERED row rather than a PENDING one the reaper would
-        # re-POST (duplicate reply); the 14-day cleanup_stale_pending_messages
-        # cron sweeps any such residue.
-        try:
-            PendingMessage.objects.filter(id__in=[row.id for row in batch]).delete()
-        except Exception:
-            logger.exception(
-                "drain_pending: failed to hard-delete delivered batch for tenant %s "
-                "(rows remain DELIVERED; 14-day cleanup cron will sweep)",
+            now = timezone.now()
+            for row in batch:
+                row.delivery_status = PendingMessage.Status.DELIVERED
+                row.delivered_at = now
+                row.delivery_in_flight_until = None
+                row.save(
+                    update_fields=[
+                        "delivery_status",
+                        "delivered_at",
+                        "delivery_in_flight_until",
+                    ]
+                )
+            delivered = batch_size
+
+            # Privacy hard-delete (docs/encryption-at-rest-directive.md §7, Phase 0
+            # PR-3): PendingMessage is a transient forwarding queue, but delivered
+            # rows were never removed — leaving payload + user_text as a permanent
+            # store of (redacted) user text. Every downstream use of these rows is
+            # complete by here: the _drain_*_batch helper above ran the OC POST,
+            # reply relay, conversation capture, iOS reply persistence (to
+            # AppChatMessage), and usage recording in the same call. Nothing past
+            # this point re-reads the rows — the stale-hibernation reconcile touches
+            # the Tenant; _has_more_pending queries PENDING rows only; the iOS
+            # client polls AppChatMessage, not this queue. We mark DELIVERED *first*
+            # (committed above) so a worker crash before the delete leaves a
+            # sweepable DELIVERED row rather than a PENDING one the reaper would
+            # re-POST (duplicate reply); the 14-day cleanup_stale_pending_messages
+            # cron sweeps any such residue.
+            try:
+                PendingMessage.objects.filter(id__in=[row.id for row in batch]).delete()
+            except Exception:
+                logger.exception(
+                    "drain_pending: failed to hard-delete delivered batch for tenant %s "
+                    "(rows remain DELIVERED; 14-day cleanup cron will sweep)",
+                    tenant_id[:8],
+                )
+        elif outcome.disposition is Disposition.RETRY:
+            logger.warning(
+                "drain_pending: retrying batch of %d for tenant %s channel=%s reason=%s",
+                batch_size,
                 tenant_id[:8],
+                channel,
+                outcome.reason,
             )
+            for row in batch:
+                row.delivery_attempts += 1
+                row.delivery_in_flight_until = None
+                row.save(
+                    update_fields=[
+                        "delivery_attempts",
+                        "delivery_in_flight_until",
+                    ]
+                )
+            failed = batch_size
+        else:
+            _, terminalized_rows, _ = _terminalize_failed_queue_rows(
+                tenant=tenant,
+                tenant_id=tenant_id,
+                channel=channel,
+                channel_user_id=channel_user_id or "",
+                error=outcome.reason,
+                send_apology=False,
+            )
+            return {
+                "delivered": 0,
+                "failed": len(terminalized_rows),
+                "dropped": 0,
+                "skipped_in_flight": 0,
+                "terminal": outcome.reason,
+                "batch_size": batch_size,
+            }
 
     except Exception as exc:
         container_down = _delivery_failure_has_down_container(tenant, exc)
@@ -1282,6 +1391,9 @@ def drain_pending_messages_for_tenant_task(
         "dropped": 0,
         "skipped_in_flight": 0,
         "batch_size": batch_size,
+        "delivery": outcome.delivery.value,
+        "delivered_chunks": outcome.delivered_chunks,
+        "total_chunks": outcome.total_chunks,
     }
 
 
@@ -1675,7 +1787,7 @@ def _build_batch_chat_content(
     return content, user_param, user_tz
 
 
-def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> bool:
+def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> DrainOutcome:
     """Forward a deliverable LINE batch to the container as one OC turn.
 
     ``len(batch) == 1`` preserves the historical per-row shape verbatim
@@ -1697,7 +1809,12 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
     ``drain_pending_messages_for_tenant_task``.
     """
     if not batch:
-        return False
+        return DrainOutcome(
+            Disposition.DELIVER,
+            DeliveryState.FAILED,
+            gateway_responded=False,
+            reason="empty_batch",
+        )
 
     from apps.router.line_webhook import relay_ai_response_to_line
 
@@ -1736,24 +1853,43 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
     if _looks_like_openrouter_credit_limit(resp):
-        _handle_openrouter_credit_limit(tenant, channel="line", channel_user_id=line_user_id)
-        return False
+        credit_result = _handle_openrouter_credit_limit(tenant, channel="line", channel_user_id=line_user_id)
+        return DrainOutcome(
+            Disposition.RETRY if credit_result == "ceiling_raised" else Disposition.TERMINAL,
+            DeliveryState.FAILED,
+            gateway_responded=False,
+            reason="ceiling_raised" if credit_result == "ceiling_raised" else "budget_exhausted",
+        )
     resp.raise_for_status()
     result = resp.json()
 
     ai_text = _extract_ai_response(result)
-    if ai_text and line_user_id and not suppresses_real_transport(tenant):
+    send_result = SendResult(DeliveryState.SENT, detail="empty_ai_text")
+    if suppresses_real_transport(tenant):
+        send_result = SendResult(DeliveryState.SUPPRESSED, detail="eval_sink")
+    elif ai_text and line_user_id:
         try:
-            relay_ai_response_to_line(tenant, line_user_id, ai_text)
+            sent = relay_ai_response_to_line(tenant, line_user_id, ai_text)
+            send_result = SendResult(
+                DeliveryState.SENT if sent else DeliveryState.FAILED,
+                delivered_chunks=1 if sent else 0,
+                total_chunks=1,
+                detail="" if sent else "relay_failed",
+            )
         except Exception:
             logger.exception(
                 "drain_pending: failed to relay LINE response for tenant %s",
                 str(tenant.id)[:8],
             )
+            send_result = SendResult(
+                DeliveryState.AMBIGUOUS,
+                total_chunks=1,
+                detail="relay_exception",
+            )
 
     _capture_conversation_turn(tenant, "line", line_user_id, batch, ai_text)
     _record_usage_safe(tenant, result, message_count=len(batch))
-    return True
+    return _drain_outcome_from_send_result(send_result)
 
 
 def _capture_conversation_turn(
@@ -1787,7 +1923,7 @@ def _capture_conversation_turn(
         logger.exception("drain_pending: conversation capture failed (non-fatal)")
 
 
-def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> bool:
+def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> DrainOutcome:
     """Forward a deliverable Telegram batch to the container as one OC turn.
 
     Singleton vs coalesced behaviour mirrors ``_drain_line_batch``; see
@@ -1798,7 +1934,12 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
     ``_drain_line_batch`` for the liveness-signal contract.
     """
     if not batch:
-        return False
+        return DrainOutcome(
+            Disposition.DELIVER,
+            DeliveryState.FAILED,
+            gateway_responded=False,
+            reason="empty_batch",
+        )
 
     chat_id_str = batch[0].channel_user_id
     try:
@@ -1836,18 +1977,31 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
     if _looks_like_openrouter_credit_limit(resp):
-        _handle_openrouter_credit_limit(tenant, channel="telegram", channel_user_id=str(chat_id))
-        return False
+        credit_result = _handle_openrouter_credit_limit(tenant, channel="telegram", channel_user_id=str(chat_id))
+        return DrainOutcome(
+            Disposition.RETRY if credit_result == "ceiling_raised" else Disposition.TERMINAL,
+            DeliveryState.FAILED,
+            gateway_responded=False,
+            reason="ceiling_raised" if credit_result == "ceiling_raised" else "budget_exhausted",
+        )
     resp.raise_for_status()
     result = resp.json()
 
     ai_text = _extract_ai_response(result)
-    if ai_text and not suppresses_real_transport(tenant):
-        relay_ai_response_to_telegram(tenant, chat_id, ai_text)
+    if not ai_text:
+        logger.warning(
+            "drain_pending: empty Telegram AI response for tenant %s",
+            str(tenant.id)[:8],
+        )
+        send_result = SendResult(DeliveryState.SENT, detail="empty_ai_text")
+    elif suppresses_real_transport(tenant):
+        send_result = SendResult(DeliveryState.SUPPRESSED, detail="eval_sink")
+    else:
+        send_result = relay_ai_response_to_telegram(tenant, chat_id, ai_text)
 
     _capture_conversation_turn(tenant, "telegram", chat_id_str, batch, ai_text)
     _record_usage_safe(tenant, result, message_count=len(batch))
-    return True
+    return _drain_outcome_from_send_result(send_result)
 
 
 # ---------------------------------------------------------------------------
@@ -1858,7 +2012,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
 # ---------------------------------------------------------------------------
 
 
-def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> bool:
+def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float) -> DrainOutcome:
     """Forward a deliverable iOS/app batch to the container as one OC turn,
     then PERSIST the reply to ``AppChatMessage`` for the client to poll.
 
@@ -1870,7 +2024,12 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
     clients aren't stuck pending.
     """
     if not batch:
-        return False
+        return DrainOutcome(
+            Disposition.DELIVER,
+            DeliveryState.FAILED,
+            gateway_responded=False,
+            reason="empty_batch",
+        )
 
     thread_id = batch[0].channel_user_id
     content, user_param, user_tz = _build_batch_chat_content(batch, thread_id, channel="ios")
@@ -1941,9 +2100,21 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
     if _looks_like_openrouter_credit_limit(resp):
-        _handle_openrouter_credit_limit(tenant, channel="ios", channel_user_id=thread_id)
+        credit_result = _handle_openrouter_credit_limit(tenant, channel="ios", channel_user_id=thread_id)
+        if credit_result == "ceiling_raised":
+            return DrainOutcome(
+                Disposition.RETRY,
+                DeliveryState.FAILED,
+                gateway_responded=False,
+                reason="ceiling_raised",
+            )
         _store_ios_turn_error(tenant, batch, "budget_exhausted")
-        return False
+        return DrainOutcome(
+            Disposition.TERMINAL,
+            DeliveryState.FAILED,
+            gateway_responded=False,
+            reason="budget_exhausted",
+        )
     resp.raise_for_status()
     result = resp.json()
 
@@ -1962,7 +2133,13 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
     # that raised (container down) — a stale digest must never be pushed off a
     # turn that didn't actually happen. Fail-open, off the delivery path.
     _schedule_ios_digest_refresh(tenant)
-    return True
+    return DrainOutcome(
+        Disposition.DELIVER,
+        DeliveryState.SENT,
+        gateway_responded=True,
+        delivered_chunks=1,
+        total_chunks=1,
+    )
 
 
 def _schedule_ios_digest_refresh(tenant: Tenant) -> None:
@@ -2242,7 +2419,7 @@ def _clean_assistant_text_for_app(
 # ---------------------------------------------------------------------------
 
 
-def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) -> bool:
+def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) -> SendResult:
     """Format and deliver an AI assistant response to Telegram.
 
     Mirrors ``relay_ai_response_to_line``. Used by the queue drain task
@@ -2257,13 +2434,13 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
       - Markdown chunking + Telegram parse_mode fallback to plain text
     """
     if not ai_text or not chat_id:
-        return False
+        return SendResult(DeliveryState.FAILED, detail="no_text")
     if suppresses_real_transport(tenant):
         logger.error(
             "eval-sink transport block: tenant=%s transport=telegram",
             tenant.id,
         )
-        return False
+        return SendResult(DeliveryState.SUPPRESSED, detail="eval_sink")
 
     # Quick-reply buttons and the journal deep-link chip are iOS-only for now —
     # Telegram has no transport for either here, so just strip the markers
@@ -2368,10 +2545,10 @@ def relay_ai_response_to_telegram(tenant: Tenant, chat_id: int, ai_text: str) ->
         # Telegram's sendMessage requires non-empty text; use a middle-dot placeholder
         # (printable, survives strip()) so reply_markup is not silently dropped.
         if reply_markup:
-            return _send_telegram_markdown(chat_id, "·", reply_markup=reply_markup)
-        return True
+            return _send_telegram_html_chunks(chat_id, "·", reply_markup=reply_markup)
+        return SendResult(DeliveryState.SENT, detail="markers_only")
 
-    return _send_telegram_markdown(chat_id, text, reply_markup=reply_markup)
+    return _send_telegram_html_chunks(chat_id, text, reply_markup=reply_markup)
 
 
 # ---------------------------------------------------------------------------
@@ -2431,7 +2608,7 @@ def _split_telegram_message(text: str, max_len: int = _TG_MAX_LEN) -> list[str]:
     return [c for c in chunks if c]
 
 
-def _send_telegram_markdown(chat_id: int, text: str, reply_markup: dict | None = None) -> bool:
+def _send_telegram_html_chunks(chat_id: int, text: str, reply_markup: dict | None = None) -> SendResult:
     """Render the assistant's markdown to Telegram HTML and deliver it.
 
     The agent emits CommonMark/GFM; Telegram's legacy ``Markdown`` parse-mode
@@ -2445,19 +2622,20 @@ def _send_telegram_markdown(chat_id: int, text: str, reply_markup: dict | None =
     to the LAST chunk only, mirroring ``TelegramPoller._send_rich_response``.
     """
     if blocks_real_transport_for_identifier("telegram", chat_id):
-        return False
+        return SendResult(DeliveryState.SUPPRESSED, detail="eval_sink")
     base = _telegram_api_base()
     if not base:
         logger.warning("drain_pending: cannot send telegram message — no bot token")
-        return False
+        return SendResult(DeliveryState.FAILED, detail="no_bot_token")
 
     from apps.router.telegram_format import render_telegram_html, strip_telegram_html
 
     chunks = render_telegram_html(text)
     if not chunks:
-        return True
+        return SendResult(DeliveryState.FAILED, detail="empty_render")
 
-    overall = True
+    delivered_chunks = 0
+    ambiguous = False
     for i, chunk in enumerate(chunks):
         if i > 0:
             time.sleep(0.3)  # brief delay between chunks (matches poller)
@@ -2471,6 +2649,7 @@ def _send_telegram_markdown(chat_id: int, text: str, reply_markup: dict | None =
                 timeout=10,
             )
             if resp.is_success:
+                delivered_chunks += 1
                 continue
             if resp.status_code == 400:
                 # HTML rejected — retry as tag-free plain text (no markdown).
@@ -2482,19 +2661,36 @@ def _send_telegram_markdown(chat_id: int, text: str, reply_markup: dict | None =
                     json=plain_payload,
                     timeout=10,
                 )
-                overall = overall and plain.is_success
+                if plain.is_success:
+                    delivered_chunks += 1
                 continue
             logger.warning(
                 "drain_pending: sendMessage failed (%s): %s",
                 resp.status_code,
                 resp.text[:200],
             )
-            overall = False
         except Exception:
             logger.exception("drain_pending: sendMessage exception")
-            overall = False
+            ambiguous = True
 
-    return overall
+    total_chunks = len(chunks)
+    if ambiguous:
+        state = DeliveryState.AMBIGUOUS
+    elif delivered_chunks == total_chunks:
+        state = DeliveryState.SENT
+    elif delivered_chunks:
+        state = DeliveryState.PARTIAL
+    else:
+        state = DeliveryState.FAILED
+    return SendResult(
+        state,
+        delivered_chunks=delivered_chunks,
+        total_chunks=total_chunks,
+    )
+
+
+def _send_telegram_markdown(chat_id: int, text: str, reply_markup: dict | None = None) -> bool:
+    return bool(_send_telegram_html_chunks(chat_id, text, reply_markup=reply_markup))
 
 
 def _send_telegram_photo(chat_id: int, photo_path: str, tenant: Tenant) -> bool:
