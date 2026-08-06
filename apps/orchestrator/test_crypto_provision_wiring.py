@@ -316,6 +316,7 @@ class DeprovisionKekSoftDeleteTest(TestCase):
             update_fields=["status", "container_id", "container_fqdn", "managed_identity_id", "updated_at"]
         )
 
+    @patch("apps.orchestrator.services.begin_delete_recall_search_key")
     @patch("apps.orchestrator.services.begin_delete_kek")
     @patch("apps.orchestrator.services.delete_managed_identity")
     @patch("apps.orchestrator.services.delete_tenant_file_share")
@@ -326,6 +327,7 @@ class DeprovisionKekSoftDeleteTest(TestCase):
         _mock_delete_file_share,
         _mock_delete_identity,
         mock_begin_delete_kek,
+        mock_begin_delete_search_key,
         _mock_is_mock,
     ):
         deprovision_tenant(str(self.tenant.id))
@@ -333,7 +335,9 @@ class DeprovisionKekSoftDeleteTest(TestCase):
 
         self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
         mock_begin_delete_kek.assert_called_once_with(str(self.tenant.id))
+        mock_begin_delete_search_key.assert_called_once_with(self.tenant)
 
+    @patch("apps.orchestrator.services.begin_delete_recall_search_key")
     @patch("apps.orchestrator.services.begin_delete_kek", side_effect=RuntimeError("Key Vault throttled"))
     @patch("apps.orchestrator.services.delete_managed_identity")
     @patch("apps.orchestrator.services.delete_tenant_file_share")
@@ -344,6 +348,7 @@ class DeprovisionKekSoftDeleteTest(TestCase):
         _mock_delete_file_share,
         _mock_delete_identity,
         mock_begin_delete_kek,
+        mock_begin_delete_search_key,
         _mock_is_mock,
     ):
         # Must NOT raise — a KEK soft-delete failure has its own
@@ -354,6 +359,33 @@ class DeprovisionKekSoftDeleteTest(TestCase):
         self.tenant.refresh_from_db()
 
         mock_begin_delete_kek.assert_called_once_with(str(self.tenant.id))
+        mock_begin_delete_search_key.assert_called_once_with(self.tenant)
+        self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
+        self.assertEqual(self.tenant.container_id, "")
+        self.assertEqual(self.tenant.managed_identity_id, "")
+
+    @patch(
+        "apps.orchestrator.services.begin_delete_recall_search_key",
+        side_effect=RuntimeError("Key Vault throttled"),
+    )
+    @patch("apps.orchestrator.services.begin_delete_kek")
+    @patch("apps.orchestrator.services.delete_managed_identity")
+    @patch("apps.orchestrator.services.delete_tenant_file_share")
+    @patch("apps.orchestrator.services.delete_container_app")
+    def test_deprovision_tolerates_search_key_delete_failure(
+        self,
+        _mock_delete_container,
+        _mock_delete_file_share,
+        _mock_delete_identity,
+        mock_begin_delete_kek,
+        mock_begin_delete_search_key,
+        _mock_is_mock,
+    ):
+        deprovision_tenant(str(self.tenant.id))
+        self.tenant.refresh_from_db()
+
+        mock_begin_delete_kek.assert_called_once_with(str(self.tenant.id))
+        mock_begin_delete_search_key.assert_called_once_with(self.tenant)
         self.assertEqual(self.tenant.status, Tenant.Status.DELETED)
         self.assertEqual(self.tenant.container_id, "")
         self.assertEqual(self.tenant.managed_identity_id, "")
