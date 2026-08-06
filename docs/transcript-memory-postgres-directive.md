@@ -1,6 +1,6 @@
 # DIRECTIVE: Transcript memory on Postgres — the recall leg
 
-**Status:** First-pass design, awaiting adversarial review (codex). Author: Fable, 2026-08-06.
+**Status:** v1 REFUTED — codex adversarial review returned UNSOUND (4 blockers, verified against origin/main); see `transcript-memory-adversarial-review-2026-08-06.md`. The product goal, Postgres storage, hybrid search, and entity-map query translation survive; the data-boundary (iOS raw text), source-retention, deletion/rechunk, and embedding-provider layers are being redesigned in v2. Author: Fable, 2026-08-06.
 **Sibling doc:** `docs/assistant-context-continuity-directive.md` (the *push* leg: fresh digest + typed homes). This directive is the *pull* leg: retrieval over conversation history. Extend that doc's decisions; never contradict them. Its anchors convention applies here (resolve symbols via `git show origin/main:<path>`).
 
 **One-line summary:** Replace the corpse of OpenClaw's SQLite `memory_search` (disabled fleet-wide, PR #525, SQLite-on-SMB corruption — 23/26 tenants had 0-byte indexes) with per-tenant transcript search in Postgres: chunked, placeholder-space, hybrid FTS+pgvector, exposed as one read tool. The user-visible promise: **"we've talked about this before" always resolves** — the assistant can find when, on which channel, and what was said, without the user re-explaining.
