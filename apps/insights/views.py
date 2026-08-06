@@ -230,13 +230,14 @@ DEFAULT_BASELINE_WINDOW_WEEKS = 12
 MAX_BASELINE_WINDOW_WEEKS = 104
 
 
-def _serialize_insight(ins: AssistantInsight) -> dict[str, Any]:
-    return {
+def _serialize_insight(ins: AssistantInsight, *, owner_tenant=None) -> dict[str, Any]:
+    statement = ins.statement
+    payload = {
         "id": str(ins.id),
         "pillar": ins.pillar,
         "topic_id": str(ins.topic_id),
         "topic_slug": ins.topic.slug if ins.topic else None,
-        "statement": ins.statement,
+        "statement": statement,
         "evidence_refs": ins.evidence_refs,
         "confidence": ins.confidence,
         "status": ins.status,
@@ -245,6 +246,19 @@ def _serialize_insight(ins: AssistantInsight) -> dict[str, Any]:
         "last_refuted_at": ins.last_refuted_at.isoformat() if ins.last_refuted_at else None,
         "author_model_version": ins.author_model_version,
     }
+    if owner_tenant is not None:
+        from apps.pii.redactor import rehydrate_for_tenant
+        from apps.router.pending_queue import placeholder_redactions
+
+        # Reuse chat's pure metadata helper directly rather than duplicating its
+        # placeholder normalization and legacy/dict entity-map handling here.
+        redactions = placeholder_redactions(
+            statement,
+            getattr(owner_tenant, "pii_entity_map", None),
+        )
+        payload["statement"] = rehydrate_for_tenant(owner_tenant, statement)
+        payload["pii_receipts"] = {"statement": redactions}
+    return payload
 
 
 def _parse_int(value, *, default: int, lo: int, hi: int) -> int:
@@ -343,7 +357,7 @@ class InsightListView(APIView):
         return Response(
             {
                 "count": len(rows),
-                "insights": [_serialize_insight(r) for r in rows],
+                "insights": [_serialize_insight(r, owner_tenant=tenant) for r in rows],
             }
         )
 
@@ -443,7 +457,7 @@ class RecordInsightView(APIView):
             return err
 
         ins = _record_insight_impl(tenant=tenant, **cleaned)
-        return Response(_serialize_insight(ins), status=status.HTTP_201_CREATED)
+        return Response(_serialize_insight(ins, owner_tenant=tenant), status=status.HTTP_201_CREATED)
 
 
 def _append_user_response(ins: AssistantInsight, kind: str, note: str | None) -> None:
@@ -475,7 +489,7 @@ class ConfirmInsightView(APIView):
         ins.last_confirmed_at = timezone.now()
         _append_user_response(ins, "confirm", note)
         ins.save(update_fields=["status", "last_confirmed_at", "user_responses"])
-        return Response(_serialize_insight(ins))
+        return Response(_serialize_insight(ins, owner_tenant=tenant))
 
 
 class RefuteInsightView(APIView):
@@ -498,7 +512,7 @@ class RefuteInsightView(APIView):
         ins.last_refuted_at = timezone.now()
         _append_user_response(ins, "refute", note)
         ins.save(update_fields=["status", "last_refuted_at", "user_responses"])
-        return Response(_serialize_insight(ins))
+        return Response(_serialize_insight(ins, owner_tenant=tenant))
 
 
 # ── Phase 3: signals + voice prefs ────────────────────────────────────────

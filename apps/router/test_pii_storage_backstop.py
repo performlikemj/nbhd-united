@@ -2,6 +2,7 @@ from unittest.mock import patch
 
 from django.test import TestCase, override_settings
 
+from apps.insights.models import AssistantInsight
 from apps.router.conversation_capture import record_conversation_turn
 from apps.router.cron_delivery import _resolve_delivery_attempt
 from apps.router.models import DeliveryAttempt
@@ -43,6 +44,23 @@ class PIIStorageBackstopTests(TestCase):
                 {"placeholder": "[ORG_1]", "value": "Optiver"},
             ],
         )
+
+    @patch("apps.router.structured_artifacts.externalize_large_structured_reply")
+    def test_ios_cleaner_records_insight_in_placeholder_space(self, externalize):
+        externalize.side_effect = lambda **kwargs: type(
+            "Result", (), {"stored_text": kwargs["text"], "journal_link": kwargs["journal_link"]}
+        )()
+
+        _clean_assistant_text_for_app(
+            self.tenant,
+            "[[insight:journal/relationships]][PERSON_1] joined [ORG_1][[/insight]]",
+            artifact_dedup_key="turn-insight",
+        )
+
+        insight = AssistantInsight.objects.get(tenant=self.tenant)
+        self.assertEqual(insight.statement, "[PERSON_1] joined [ORG_1]")
+        self.assertNotIn("Theo Smith", insight.statement)
+        self.assertNotIn("Optiver", insight.statement)
 
     @patch("apps.router.conversation_capture.schedule_user_md_refresh")
     @patch("apps.router.conversation_capture._maybe_prune")

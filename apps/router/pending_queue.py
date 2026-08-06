@@ -2635,14 +2635,11 @@ def _clean_assistant_text_for_app(
       ``apps.router.journal_link.extract_journal_link``), or ``None``. ``title``
       is captured placeholder-space and rehydrated at the owner-facing seams.
 
-    Insight recording still runs on the rehydrated copy so ``AssistantInsight``
-    statements keep their existing real-value behaviour (insights have their own
-    owner-facing read seam — ``apps.insights.views.InsightListView``); only the
-    stored ``reply_text`` moves to placeholder space. Mirrors the relevant parts
-    of ``relay_ai_response_to_telegram``."""
+    Insight recording consumes the same placeholder-space copy as ``stored_text``;
+    owner insight reads rehydrate at their response boundary. Mirrors the relevant
+    parts of ``relay_ai_response_to_telegram``."""
     from apps.insights.markers import INSIGHT_MARKER_RE
     from apps.pii.egress import redact_known_values
-    from apps.pii.redactor import rehydrate_text
     from apps.router.journal_link import extract_journal_link
     from apps.router.quick_replies import extract_quick_replies
 
@@ -2662,13 +2659,12 @@ def _clean_assistant_text_for_app(
     ai_text, quick_replies = extract_quick_replies(ai_text, tenant_id=tenant.id, channel="ios")
     ai_text, journal_link = extract_journal_link(ai_text, tenant_id=tenant.id, channel="ios")
 
-    # Insight copy: rehydrate to real values and record insights with unchanged
-    # real-name behaviour. The stored copy below strips the same wrappers.
-    insight_text = rehydrate_text(ai_text, entity_map) if entity_map else ai_text
+    # Record insights from the guarded placeholder-space reply. Rehydration is
+    # owner-presentation behavior and must not run before AssistantInsight writes.
     try:
         from apps.insights.markers import extract_and_record_insights
 
-        extract_and_record_insights(insight_text, tenant=tenant)
+        extract_and_record_insights(ai_text, tenant=tenant)
     except Exception:
         logger.exception("insight marker extraction failed (ios drain)")
 

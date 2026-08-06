@@ -41,6 +41,7 @@ import re
 from apps.insights.models import AssistantInsight
 from apps.insights.pillars import Pillar
 from apps.insights.topic_resolver import resolve_topic
+from apps.pii.egress import redact_known_values
 
 logger = logging.getLogger(__name__)
 
@@ -170,11 +171,19 @@ def extract_and_record_insights_with_ids(
 
         try:
             topic = resolve_topic(marker_pillar, slug)
+            # Some owner delivery paths rehydrate before marker extraction. Guard
+            # only the persisted copy so storage stays placeholder-space while the
+            # returned statement keeps its owner-visible delivery behavior.
+            stored_statement = redact_known_values(
+                tenant,
+                statement,
+                seam="insight_marker_storage",
+            )
             insight = AssistantInsight.objects.create(
                 tenant=tenant,
                 pillar=marker_pillar,
                 topic=topic,
-                statement=statement,
+                statement=stored_statement,
                 status=AssistantInsight.Status.OPEN,
             )
             created_ids.append(str(insight.id))
