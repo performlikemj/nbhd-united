@@ -17,6 +17,8 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
+from apps.pii.egress import ENTITY_LEGEND_HEADER
+from apps.pii.redactor import RedactionOutcome
 from apps.router.models import AppChatMessage, PendingMessage
 from apps.tenants.models import Tenant, User
 from apps.tenants.test_utils import seed_internal_key
@@ -283,6 +285,9 @@ class SiriRespondTest(TestCase):
         self.tenant = _make_tenant(self.user)
         self.client = APIClient()
         self.client.force_authenticate(user=self.user)
+        detect_patcher = patch("apps.pii.redactor._detect_pii", return_value=[])
+        detect_patcher.start()
+        self.addCleanup(detect_patcher.stop)
 
     def test_requires_auth(self):
         resp = APIClient().post("/api/v1/siri/respond/", {"intent": "hi"}, format="json")
@@ -298,7 +303,7 @@ class SiriRespondTest(TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertEqual(resp.data["error"], "intent_too_long")
 
-    @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
     @patch("apps.common.openrouter.chat_completion", return_value=_completion("You have two tasks due today."))
     def test_fast_answer_returns_without_persisting(self, _cc, _snap):
         resp = self.client.post("/api/v1/siri/respond/", {"intent": "what's due?"}, format="json")
@@ -310,8 +315,81 @@ class SiriRespondTest(TestCase):
         self.assertEqual(AppChatMessage.objects.filter(tenant=self.tenant).count(), 0)
         self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 0)
 
+    @patch(
+        "apps.orchestrator.workspace_envelope.render_context_digest",
+        return_value="Dinner with Theo Smith is tonight.",
+    )
+    @patch(
+        "apps.pii.redactor.redact_user_message_checked",
+        return_value=RedactionOutcome(
+            text="Will [PERSON_1] join?",
+            confirmed=True,
+            reason="redacted",
+        ),
+    )
+    @patch(
+        "apps.common.openrouter.chat_completion",
+        return_value=_completion("[PERSON_1] is joining dinner."),
+    )
+    def test_model_request_is_placeholder_only_with_legend_and_owner_reply_rehydrated(
+        self,
+        mock_completion,
+        mock_redact,
+        _digest,
+    ):
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {
+                "name": "Theo Smith",
+                "relationship": "project lead",
+            }
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        resp = self.client.post(
+            "/api/v1/siri/respond/",
+            {"intent": "Will Theo Smith join?"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data["text"], "Theo Smith is joining dinner.")
+        messages = mock_completion.call_args.args[1]
+        self.assertEqual([message["role"] for message in messages], ["system", "user"])
+        for message in messages:
+            self.assertIn("[PERSON_1]", message["content"])
+            self.assertNotIn("Theo Smith", message["content"])
+        self.assertIn(ENTITY_LEGEND_HEADER, messages[-1]["content"])
+        self.assertIn("[PERSON_1]: project lead", messages[-1]["content"])
+        mock_redact.assert_called_once_with("Will Theo Smith join?", self.tenant)
+
+    @patch("apps.orchestrator.workspace_envelope.render_context_digest", return_value="STATE")
+    @patch(
+        "apps.pii.redactor.redact_user_message_checked",
+        side_effect=RuntimeError("redactor unavailable"),
+    )
+    @patch("apps.common.openrouter.chat_completion", return_value=_completion("Safe answer."))
+    def test_intent_redaction_exception_falls_back_to_known_values(
+        self,
+        mock_completion,
+        _mock_redact,
+        _digest,
+    ):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        resp = self.client.post(
+            "/api/v1/siri/respond/",
+            {"intent": "Call Theo Smith"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        outbound_intent = mock_completion.call_args.args[1][-1]["content"]
+        self.assertIn("Call [PERSON_1]", outbound_intent)
+        self.assertNotIn("Theo Smith", outbound_intent)
+
     @patch("apps.router.pending_queue.httpx.post")
-    @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
     @patch("apps.common.openrouter.chat_completion", return_value=_completion("[[ESCALATE]]"))
     def test_escalates_on_sentinel(self, _cc, _snap, mock_post):
         mock_post.return_value = _ok_drain_response()
@@ -333,7 +411,7 @@ class SiriRespondTest(TestCase):
         self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
 
     @patch("apps.router.pending_queue.httpx.post")
-    @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
     @patch("apps.common.openrouter.chat_completion", side_effect=RuntimeError("openrouter down"))
     def test_escalates_on_model_error(self, _cc, _snap, mock_post):
         mock_post.return_value = _ok_drain_response()
@@ -343,7 +421,7 @@ class SiriRespondTest(TestCase):
         self.assertTrue(AppChatMessage.objects.filter(tenant=self.tenant, client_msg_id="s2").exists())
 
     @patch("apps.router.pending_queue.httpx.post")
-    @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
     @patch("apps.common.openrouter.chat_completion", return_value=_completion("   "))
     def test_escalates_on_empty_reply(self, _cc, _snap, mock_post):
         mock_post.return_value = _ok_drain_response()
@@ -352,7 +430,7 @@ class SiriRespondTest(TestCase):
         self.assertTrue(resp.data["escalated"])
 
     @patch("apps.router.pending_queue.httpx.post")
-    @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
     @patch("apps.common.openrouter.chat_completion", return_value=_completion("[[ESCALATE]]"))
     def test_escalation_is_idempotent(self, _cc, _snap, mock_post):
         mock_post.return_value = _ok_drain_response()
@@ -368,7 +446,7 @@ class SiriRespondTest(TestCase):
         self.assertFalse(PendingMessage.objects.filter(tenant=self.tenant).exists())
 
     @patch("apps.router.chat_views.check_budget", return_value="over budget")
-    @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
     @patch("apps.common.openrouter.chat_completion", return_value=_completion("[[ESCALATE]]"))
     def test_escalation_budget_gated(self, _cc, _snap, _budget):
         resp = self.client.post("/api/v1/siri/respond/", {"intent": "deep", "client_msg_id": "b1"}, format="json")
@@ -380,14 +458,14 @@ class SiriRespondTest(TestCase):
         # Over budget → nothing enqueued, no container woken.
         self.assertEqual(PendingMessage.objects.filter(tenant=self.tenant).count(), 0)
 
-    @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
     @patch("apps.common.openrouter.chat_completion", return_value=_completion("[[ESCALATE]] needs the calendar tool"))
     def test_sentinel_with_trailing_reason_still_escalates(self, _cc, _snap):
         with patch("apps.router.pending_queue.httpx.post", return_value=_ok_drain_response()):
             resp = self.client.post("/api/v1/siri/respond/", {"intent": "x", "client_msg_id": "s4"}, format="json")
         self.assertTrue(resp.data["escalated"])
 
-    @patch("apps.router.siri_views._rehydrated_snapshot", return_value="STATE")
+    @patch("apps.router.siri_views._placeholder_snapshot", return_value="STATE")
     @patch("apps.common.openrouter.chat_completion", return_value=_completion("Sure, I can [[escalate]] help"))
     def test_midreply_mixedcase_sentinel_stripped_not_leaked(self, _cc, _snap):
         # A stray mixed-case sentinel NOT at the start → still an answer, but the
