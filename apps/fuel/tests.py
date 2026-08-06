@@ -1365,6 +1365,123 @@ class RuntimeFuelViewTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.data["recent_workouts"]), 1)
 
+    def test_get_workout_returns_full_detail(self):
+        from datetime import datetime
+
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Strength Builder",
+            start_date=date(2026, 4, 20),
+            weeks=2,
+            days_per_week=3,
+            schedule_json={},
+        )
+        slot = PlanSlot.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            week_index=0,
+            weekday=1,
+        )
+        detail_json = {
+            "exercises": [
+                {
+                    "name": "Bench Press",
+                    "sets": [
+                        {"type": "weighted_reps", "reps": 8, "weight": 75},
+                        {"type": "weighted_reps", "reps": 6, "weight": 80},
+                    ],
+                }
+            ],
+            "distance_km": 1.5,
+            "avg_hr": 142,
+            "peak_hr": 171,
+            "calories": 430,
+        }
+        scheduled_at = datetime(2026, 4, 21, 9, 30, tzinfo=UTC)
+        workout = Workout.objects.create(
+            tenant=self.tenant,
+            plan=plan,
+            slot=slot,
+            date=date(2026, 4, 21),
+            scheduled_at=scheduled_at,
+            status="done",
+            source="healthkit",
+            category="strength",
+            activity="Push Day",
+            duration_minutes=60,
+            rpe=8,
+            detail_json=detail_json,
+        )
+
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{workout.id}/",
+            **self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.data,
+            {
+                "id": str(workout.id),
+                "date": "2026-04-21",
+                "category": "strength",
+                "activity": "Push Day",
+                "duration_minutes": 60,
+                "rpe": 8,
+                "source": "healthkit",
+                "distance_km": 1.5,
+                "avg_hr": 142,
+                "peak_hr": 171,
+                "calories": 430,
+                "detail_json": detail_json,
+                "status": "done",
+                "scheduled_at": scheduled_at.isoformat(),
+                "plan_id": str(plan.id),
+                "slot_id": str(slot.id),
+            },
+        )
+
+    def test_get_workout_unknown_id_returns_404(self):
+        import uuid
+
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{uuid.uuid4()}/",
+            **self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.data, {"error": "workout_not_found"})
+
+    def test_get_workout_cross_tenant_id_returns_404(self):
+        other = create_tenant(display_name="Other Runtime", telegram_chat_id=800011)
+        workout = Workout.objects.create(
+            tenant=other,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Other Tenant Push",
+        )
+
+        resp = self.client.get(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{workout.id}/",
+            **self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.data, {"error": "workout_not_found"})
+
+    def test_get_workout_requires_internal_auth(self):
+        workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 4, 21),
+            category="strength",
+            activity="Push",
+        )
+
+        resp = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/workouts/{workout.id}/")
+
+        self.assertEqual(resp.status_code, 401)
+        self.assertEqual(resp.data["error"], "internal_auth_failed")
+
     def test_log_body_weight(self):
         resp = self.client.post(
             f"/api/v1/fuel/runtime/{self.tenant.id}/body-weight/",
