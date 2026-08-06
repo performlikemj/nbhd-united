@@ -103,7 +103,7 @@ def confirm_assistant_output(tenant: Tenant, text: str) -> ConfirmedRedaction | 
     return _mint_confirmed(scrubbed, "assistant-output-confirmed")
 
 
-def redaction_receipt(payload: dict) -> RedactionOutcome:
+def redaction_receipt(payload: dict | None) -> RedactionOutcome:
     """Read a queue/buffer receipt with rolling-deploy-safe defaults.
 
     The receipt deliberately does not duplicate text inside JSON; callers pair
@@ -125,6 +125,23 @@ def redaction_receipt(payload: dict) -> RedactionOutcome:
         confirmed=receipt.get("confirmed") is True,
         reason=reason,
     )
+
+
+def confirmed_from_receipt_row(
+    payload: dict | None,
+    stored_text: str,
+) -> ConfirmedRedaction | None:
+    """Mint confirmed row text only when its colocated receipt confirms it.
+
+    ``stored_text`` MUST be the text column written in the same transaction as
+    ``payload``'s receipt: ``PendingMessage.user_text`` or
+    ``BufferedMessage.user_text``. Keeping the pairing here prevents callers
+    from attaching a confirmed receipt to text from another source.
+    """
+    receipt = redaction_receipt(payload)
+    if receipt.confirmed is not True:
+        return None
+    return _mint_confirmed(stored_text, receipt.reason)
 
 
 # Matches bare and model-context-annotated placeholders, for example

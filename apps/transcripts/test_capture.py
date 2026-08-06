@@ -175,7 +175,9 @@ class CaptureTest(TestCase):
 
 
 class RecallCaptureCommandTest(TestCase):
-    def test_birthday_is_stamped_once_and_survives_disable_reenable(self):
+    def test_birthday_is_preserved_across_reenable_in_pre_purge_lifecycle(self):
+        # P1 has no 30-day purge; the lifecycle phase will pair that purge with
+        # C8's required post-purge birthday re-stamp.
         tenant = _tenant("birthday", enabled=False)
         out = StringIO()
 

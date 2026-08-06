@@ -121,9 +121,7 @@ def _capture_on_device_transcript(
 
     try:
         from apps.pii.redactor import (
-            RedactionOutcome,
             as_confirmed,
-            confirm_assistant_output,
             redact_user_message_checked,
         )
         from apps.transcripts.capture import (
@@ -170,7 +168,11 @@ def _capture_on_device_transcript(
 
         if reply_text:
             assistant_occurred_at = timezone.now()
-            confirmed_assistant = confirm_assistant_output(tenant, reply_text)
+            # Container replies are authored in placeholder space and only need
+            # known-value confirmation; this client-authored on-device reply was
+            # generated from raw input, so it requires the full checked redactor.
+            assistant_outcome = redact_user_message_checked(reply_text, tenant)
+            confirmed_assistant = as_confirmed(assistant_outcome)
             if confirmed_assistant is not None:
                 capture_transcript_event(
                     tenant=tenant,
@@ -190,11 +192,7 @@ def _capture_on_device_transcript(
                     source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
                     source_event_id=source_event_id,
                     channel=TranscriptEvent.Channel.IOS,
-                    outcome=RedactionOutcome(
-                        text="",
-                        confirmed=False,
-                        reason="assistant-confirm-failed",
-                    ),
+                    outcome=assistant_outcome,
                     turn_id=turn_id,
                     occurred_at=assistant_occurred_at,
                     thread_key=thread_key,

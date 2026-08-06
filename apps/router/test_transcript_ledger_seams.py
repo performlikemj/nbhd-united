@@ -14,7 +14,7 @@ from rest_framework.test import APIClient
 from apps.crypto import box
 from apps.crypto.keys import mint_and_wrap_dek
 from apps.orchestrator.azure_client import _MOCK_KEK_REGISTRY
-from apps.pii.redactor import RedactionOutcome, as_confirmed
+from apps.pii.redactor import DetectedEntity, RedactionOutcome, as_confirmed
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage
 from apps.router.pending_queue import (
     DeliveryState,
@@ -219,6 +219,49 @@ class RouterTranscriptLedgerTest(TestCase):
         self.assertEqual(quarantine.reason, "pre-receipt-row")
         self.assertTrue(quarantine.permanent_loss)
         self.assertFalse(any("text" in field.name for field in quarantine._meta.fields))
+
+    def test_pending_prepare_error_quarantines_user_and_assistant_before_delete(self):
+        tenant = self._tenant("prepare-error")
+        row = self._pending_row(tenant, PendingMessage.Channel.TELEGRAM, "prepare-error-update")
+
+        with patch(
+            "apps.transcripts.capture.encrypt_transcript_text",
+            side_effect=RuntimeError("key broker down"),
+        ):
+            result = self._drain(tenant, row)
+
+        self.assertEqual(result["delivered"], 1)
+        self.assertFalse(PendingMessage.objects.filter(pk=row.pk).exists())
+        self.assertFalse(TranscriptEvent.objects.filter(tenant=tenant).exists())
+        quarantines = list(TranscriptCaptureQuarantine.objects.filter(tenant=tenant))
+        self.assertEqual(len(quarantines), 2)
+        self.assertEqual({item.reason for item in quarantines}, {"capture-error"})
+        self.assertEqual(
+            {item.source_type for item in quarantines},
+            {
+                TranscriptEvent.SourceType.TELEGRAM_POLLER,
+                TranscriptEvent.SourceType.ASSISTANT_REPLY,
+            },
+        )
+        self.assertFalse(any("text" in field.name for field in quarantines[0]._meta.fields))
+
+    def test_pending_persist_error_retries_as_text_free_quarantine(self):
+        tenant = self._tenant("persist-error")
+        row = self._pending_row(tenant, PendingMessage.Channel.TELEGRAM, "persist-error-update")
+
+        with patch(
+            "apps.transcripts.capture.capture_transcript_event",
+            side_effect=RuntimeError("ledger write down"),
+        ):
+            result = self._drain(tenant, row)
+
+        self.assertEqual(result["delivered"], 1)
+        self.assertFalse(PendingMessage.objects.filter(pk=row.pk).exists())
+        self.assertFalse(TranscriptEvent.objects.filter(tenant=tenant).exists())
+        quarantines = list(TranscriptCaptureQuarantine.objects.filter(tenant=tenant))
+        self.assertEqual(len(quarantines), 2)
+        self.assertEqual({item.reason for item in quarantines}, {"capture-error"})
+        self.assertFalse(any("text" in field.name for field in quarantines[0]._meta.fields))
 
     def test_terminal_ledgers_user_only_and_retry_captures_nothing(self):
         terminal_tenant = self._tenant("terminal")
@@ -425,6 +468,87 @@ class RouterTranscriptLedgerTest(TestCase):
                 format="json",
             )
         self.assertEqual(response.status_code, 201)
+
+    def test_on_device_reply_uses_full_redaction_for_unmapped_pii(self):
+        tenant = self._tenant("ondevice-reply-pii")
+        client = APIClient()
+        client.force_authenticate(user=tenant.user)
+        raw_reply = "I spoke with Mallory Winters"
+        self.assertFalse(tenant.pii_entity_map)
+
+        def detect(text, *_args, **_kwargs):
+            if "Mallory Winters" not in text:
+                return []
+            start = text.index("Mallory Winters")
+            return [
+                DetectedEntity(
+                    "PERSON",
+                    start,
+                    start + len("Mallory Winters"),
+                    0.99,
+                )
+            ]
+
+        with (
+            patch("apps.pii.redactor._detect_pii", side_effect=detect) as ner,
+            patch("apps.router.conversation_capture.schedule_user_md_refresh"),
+        ):
+            response = client.post(
+                "/api/v1/chat/turns/",
+                {
+                    "text": "hello",
+                    "reply_text": raw_reply,
+                    "client_msg_id": "local-reply-pii",
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual([args[0] for args, _kwargs in ner.call_args_list], ["hello", raw_reply])
+        assistant = TranscriptEvent.objects.get(tenant=tenant, role=TranscriptEvent.Role.ASSISTANT)
+        table, column = TRANSCRIPT_EVENT_TEXT
+        captured = box.decrypt(tenant.id, table, column, assistant.text_enc).reveal()
+        self.assertRegex(captured, r"\[PERSON_\d+\]")
+        self.assertNotIn("Mallory Winters", captured)
+
+    def test_on_device_reply_redaction_failure_quarantines_with_repair_ref(self):
+        tenant = self._tenant("ondevice-reply-failure")
+        client = APIClient()
+        client.force_authenticate(user=tenant.user)
+        raw_reply = "Mallory Winters called"
+
+        with (
+            patch(
+                "apps.pii.redactor._detect_pii",
+                side_effect=[[], RuntimeError("NER down")],
+            ),
+            patch("apps.router.conversation_capture.schedule_user_md_refresh"),
+        ):
+            response = client.post(
+                "/api/v1/chat/turns/",
+                {
+                    "text": "hello",
+                    "reply_text": raw_reply,
+                    "client_msg_id": "local-reply-failure",
+                },
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 201, response.content)
+        turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id="local-reply-failure")
+        quarantine = TranscriptCaptureQuarantine.objects.get(
+            tenant=tenant,
+            source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+        )
+        self.assertEqual(quarantine.reason, "redaction-error")
+        self.assertEqual(quarantine.repair_ref, str(turn.id))
+        self.assertFalse(
+            TranscriptEvent.objects.filter(
+                tenant=tenant,
+                role=TranscriptEvent.Role.ASSISTANT,
+            ).exists()
+        )
+        self.assertFalse(any("text" in field.name for field in quarantine._meta.fields))
 
     def test_proactive_captures_once_and_encrypts_before_atomic(self):
         tenant = self._tenant("proactive")

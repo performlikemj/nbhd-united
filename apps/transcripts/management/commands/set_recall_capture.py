@@ -23,6 +23,8 @@ class Command(BaseCommand):
                 if tenant.recall_capture_birthday is None:
                     tenant.recall_capture_birthday = timezone.now()
                     update_fields.append("recall_capture_birthday")
+                # P1 has no purge yet. The lifecycle phase (P3/P4) owes C8's
+                # >30-day re-enable re-stamp and must ship it with the purge.
             else:
                 tenant.recall_capture_enabled = False
             tenant.save(update_fields=update_fields)

@@ -280,29 +280,30 @@ def _prepare_pending_transcript(
     if not getattr(tenant, "recall_capture_enabled", False) or not batch:
         return None
 
+    from apps.transcripts.capture import derive_turn_id, encrypt_transcript_text
+
+    source_type, payload_id_key = _pending_transcript_source(batch[0].channel)
+    ordered = sorted(batch, key=lambda row: (row.created_at, str(row.id)))
+    source_ids = [
+        str((row.payload.get(payload_id_key) if isinstance(row.payload, dict) else None) or row.id) for row in ordered
+    ]
+    turn_id = derive_turn_id(tenant.id, source_type, source_ids[0])
+    channel = batch[0].channel
+    thread_key = batch[0].channel_user_id if channel == PendingMessage.Channel.IOS else channel
+    assistant_occurred_at = timezone.now() if include_assistant and outcome.assistant_text else None
+
     try:
         from apps.pii.redactor import (
             RedactionOutcome,
-            as_confirmed,
             confirm_assistant_output,
+            confirmed_from_receipt_row,
             redaction_receipt,
         )
-        from apps.transcripts.capture import derive_turn_id, encrypt_transcript_text
 
-        source_type, payload_id_key = _pending_transcript_source(batch[0].channel)
-        ordered = sorted(batch, key=lambda row: (row.created_at, str(row.id)))
-        source_ids = [str((row.payload or {}).get(payload_id_key) or row.id) for row in ordered]
-        turn_id = derive_turn_id(tenant.id, source_type, source_ids[0])
         users = []
         for row, source_event_id in zip(ordered, source_ids, strict=True):
-            receipt = redaction_receipt(row.payload)
-            confirmed = as_confirmed(
-                RedactionOutcome(
-                    text=row.user_text or "",
-                    confirmed=receipt.confirmed,
-                    reason=receipt.reason,
-                )
-            )
+            confirmed = confirmed_from_receipt_row(row.payload, row.user_text or "")
+            receipt = redaction_receipt(row.payload) if confirmed is None else None
             users.append(
                 _PreparedPendingUserTranscript(
                     source_event_id=source_event_id,
@@ -314,9 +315,7 @@ def _prepare_pending_transcript(
 
         assistant_redaction = None
         assistant_quarantine = None
-        assistant_occurred_at = None
         if include_assistant and outcome.assistant_text:
-            assistant_occurred_at = timezone.now()
             confirmed_assistant = confirm_assistant_output(tenant, outcome.assistant_text)
             if confirmed_assistant is not None:
                 assistant_redaction = encrypt_transcript_text(tenant, confirmed_assistant)
@@ -332,11 +331,9 @@ def _prepare_pending_transcript(
             delivery_state = ""
         return _PreparedPendingTranscript(
             source_type=source_type,
-            channel=batch[0].channel,
+            channel=channel,
             turn_id=turn_id,
-            thread_key=(
-                batch[0].channel_user_id if batch[0].channel == PendingMessage.Channel.IOS else batch[0].channel
-            ),
+            thread_key=thread_key,
             primary_source_event_id=source_ids[0],
             users=tuple(users),
             assistant_redaction=assistant_redaction,
@@ -353,7 +350,30 @@ def _prepare_pending_transcript(
             str(tenant.id)[:8],
             batch[0].channel,
         )
-        return None
+        capture_error = RedactionOutcome(text="", confirmed=False, reason="capture-error")
+        return _PreparedPendingTranscript(
+            source_type=source_type,
+            channel=channel,
+            turn_id=turn_id,
+            thread_key=thread_key,
+            primary_source_event_id=source_ids[0],
+            users=tuple(
+                _PreparedPendingUserTranscript(
+                    source_event_id=source_event_id,
+                    occurred_at=row.created_at,
+                    quarantine=capture_error,
+                )
+                for row, source_event_id in zip(ordered, source_ids, strict=True)
+            ),
+            assistant_quarantine=(capture_error if include_assistant and outcome.assistant_text else None),
+            assistant_occurred_at=assistant_occurred_at,
+            delivery_state=(
+                outcome.delivery.value if outcome.delivery.value in {"sent", "partial", "failed", "ambiguous"} else ""
+            ),
+            delivered_chunks=outcome.delivered_chunks,
+            total_chunks=outcome.total_chunks,
+            model_response_ref=outcome.model_response_ref,
+        )
 
 
 def _persist_pending_transcript(tenant: Tenant, prepared: _PreparedPendingTranscript) -> None:
@@ -427,11 +447,41 @@ def _persist_pending_transcript_fail_open(
         with transaction.atomic():
             _persist_pending_transcript(tenant, prepared)
     except Exception:
-        logger.exception(
-            "drain_pending: transcript persistence failed tenant=%s channel=%s",
-            str(tenant.id)[:8],
-            prepared.channel,
-        )
+        try:
+            from apps.pii.redactor import RedactionOutcome
+            from apps.transcripts.capture import quarantine_transcript_event
+            from apps.transcripts.models import TranscriptEvent
+
+            capture_error = RedactionOutcome(text="", confirmed=False, reason="capture-error")
+            with transaction.atomic():
+                for user in prepared.users:
+                    quarantine_transcript_event(
+                        tenant=tenant,
+                        source_type=prepared.source_type,
+                        source_event_id=user.source_event_id,
+                        channel=prepared.channel,
+                        outcome=capture_error,
+                        turn_id=prepared.turn_id,
+                        occurred_at=user.occurred_at,
+                        thread_key=prepared.thread_key,
+                    )
+                if prepared.assistant_redaction is not None or prepared.assistant_quarantine is not None:
+                    quarantine_transcript_event(
+                        tenant=tenant,
+                        source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+                        source_event_id=prepared.primary_source_event_id,
+                        channel=prepared.channel,
+                        outcome=capture_error,
+                        turn_id=prepared.turn_id,
+                        occurred_at=prepared.assistant_occurred_at,
+                        thread_key=prepared.thread_key,
+                    )
+        except Exception:
+            logger.exception(
+                "drain_pending: transcript persistence failed tenant=%s channel=%s",
+                str(tenant.id)[:8],
+                prepared.channel,
+            )
 
 
 def _looks_like_openrouter_credit_limit(resp) -> bool:
@@ -980,6 +1030,8 @@ def _terminalize_failed_queue_rows(
     row_ids: list | None = None,
     require_missing_fqdn: bool = False,
     send_apology: bool = True,
+    # Intentionally None for stale-head, past-cap, and provisioning-timeout:
+    # no completed turn exists, so P1 excludes those FAILED, repairable rows.
     transcript_capture: _PreparedPendingTranscript | None = None,
 ) -> tuple[Tenant | None, list[PendingMessage], bool]:
     """Atomically fail pending queue rows and correlated pending app turns.

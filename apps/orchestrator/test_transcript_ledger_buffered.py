@@ -14,7 +14,11 @@ from apps.router.models import BufferedMessage
 from apps.router.pending_queue import DeliveryState, SendResult
 from apps.tenants.models import Tenant, User
 from apps.transcripts.enc_columns import TRANSCRIPT_EVENT_TEXT
-from apps.transcripts.models import TranscriptCaptureQuarantine, TranscriptEvent
+from apps.transcripts.models import (
+    TranscriptCaptureQuarantine,
+    TranscriptEvent,
+    TranscriptIndexOutbox,
+)
 
 
 @override_settings(
@@ -128,6 +132,74 @@ class BufferedTranscriptLedgerTest(TestCase):
         self.assertEqual(quarantine.source_event_id, str(row.id))
         self.assertEqual(quarantine.reason, "pre-receipt-row")
         self.assertTrue(quarantine.permanent_loss)
+
+    def test_line_batch_shares_one_turn_and_captures_one_assistant(self):
+        tenant = self._tenant("line-batch")
+        rows = [self._row(tenant, BufferedMessage.Channel.LINE) for _ in range(3)]
+        oldest = min(rows, key=lambda row: (row.created_at, str(row.id)))
+
+        with (
+            patch(
+                "apps.orchestrator.hibernation._post_chat_completion_with_backoff",
+                return_value=self._result(),
+            ),
+            patch(
+                "apps.cron.gateway_client.get_gateway_token_for_tenant",
+                return_value="gateway-token",
+            ),
+            patch("apps.router.line_webhook.relay_ai_response_to_line", return_value=True),
+        ):
+            result = deliver_buffered_messages_task(str(tenant.id))
+
+        self.assertEqual(result["delivered"], 3)
+        self.assertFalse(BufferedMessage.objects.filter(id__in=[row.id for row in rows]).exists())
+        users = list(TranscriptEvent.objects.filter(tenant=tenant, role=TranscriptEvent.Role.USER))
+        assistants = list(TranscriptEvent.objects.filter(tenant=tenant, role=TranscriptEvent.Role.ASSISTANT))
+        self.assertEqual(len(users), 3)
+        self.assertEqual(len(assistants), 1)
+        self.assertEqual({event.source_event_id for event in users}, {str(row.id) for row in rows})
+        self.assertEqual({event.turn_id for event in [*users, *assistants]}, {users[0].turn_id})
+        self.assertEqual(assistants[0].source_event_id, str(oldest.id))
+        self.assertEqual(TranscriptIndexOutbox.objects.filter(tenant=tenant).count(), 1)
+
+    def test_buffered_capture_error_quarantines_user_and_assistant_before_delete(self):
+        tenant = self._tenant("capture-error")
+        row = self._row(tenant, BufferedMessage.Channel.TELEGRAM)
+
+        with (
+            patch(
+                "apps.orchestrator.hibernation._post_chat_completion_with_backoff",
+                return_value=self._result(),
+            ),
+            patch(
+                "apps.cron.gateway_client.get_gateway_token_for_tenant",
+                return_value="gateway-token",
+            ),
+            patch(
+                "apps.router.pending_queue.relay_ai_response_to_telegram",
+                return_value=SendResult(DeliveryState.SENT, 1, 1),
+            ),
+            patch(
+                "apps.transcripts.capture.capture_transcript_event",
+                side_effect=RuntimeError("ledger write down"),
+            ),
+        ):
+            result = deliver_buffered_messages_task(str(tenant.id))
+
+        self.assertEqual(result["delivered"], 1)
+        self.assertFalse(BufferedMessage.objects.filter(pk=row.pk).exists())
+        self.assertFalse(TranscriptEvent.objects.filter(tenant=tenant).exists())
+        quarantines = list(TranscriptCaptureQuarantine.objects.filter(tenant=tenant))
+        self.assertEqual(len(quarantines), 2)
+        self.assertEqual({item.reason for item in quarantines}, {"capture-error"})
+        self.assertEqual(
+            {item.source_type for item in quarantines},
+            {
+                TranscriptEvent.SourceType.BUFFERED,
+                TranscriptEvent.SourceType.ASSISTANT_REPLY,
+            },
+        )
+        self.assertFalse(any("text" in field.name for field in quarantines[0]._meta.fields))
 
     def test_disabled_flag_skips_receipts_confirmation_and_ledger(self):
         tenant = self._tenant("disabled", enabled=False)

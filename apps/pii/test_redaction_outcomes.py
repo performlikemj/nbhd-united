@@ -8,6 +8,7 @@ from apps.pii.redactor import (
     RedactionOutcome,
     as_confirmed,
     confirm_assistant_output,
+    confirmed_from_receipt_row,
     redact_user_message,
     redact_user_message_checked,
     redaction_receipt,
@@ -69,6 +70,23 @@ class ConfirmedRedactionTest(SimpleTestCase):
         self.assertEqual(confirmed.text, "")
         self.assertIsNone(as_confirmed(RedactionOutcome("hello Alice", False, "redaction-error")))
         self.assertIsNone(as_confirmed(redaction_receipt({})))
+
+    def test_confirmed_from_receipt_row_owns_receipt_text_pairing(self):
+        confirmed = confirmed_from_receipt_row(
+            {"redaction": {"confirmed": True, "reason": "redacted"}},
+            "stored [PERSON_1]",
+        )
+
+        self.assertIsInstance(confirmed, ConfirmedRedaction)
+        self.assertEqual(confirmed.text, "stored [PERSON_1]")
+        self.assertEqual(confirmed.reason, "redacted")
+        self.assertIsNone(
+            confirmed_from_receipt_row(
+                {"redaction": {"confirmed": False, "reason": "redaction-error"}},
+                "raw Alice",
+            )
+        )
+        self.assertIsNone(confirmed_from_receipt_row(None, "legacy raw Alice"))
 
     def test_assistant_confirmation_scrubs_known_values(self):
         tenant = SimpleNamespace(
