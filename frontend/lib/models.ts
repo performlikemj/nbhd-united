@@ -33,7 +33,7 @@ export const MODELS: ModelUI[] = [
   },
   { model_id: "openrouter/deepseek/deepseek-v4-flash-0731", name: "DeepSeek V4 Flash", tagline: "Fast and efficient", intelligence: 7, input_rate: 0.09, output_rate: 0.18 },
   { model_id: "openrouter/deepseek/deepseek-v4-pro", name: "DeepSeek V4 Pro", tagline: "Reasoning + 1M context", intelligence: 8, input_rate: 0.435, output_rate: 0.87 },
-  { model_id: "openrouter/google/gemma-4-31b-it", name: "Gemma 4 31B", tagline: "Lightweight and affordable", intelligence: 6, input_rate: 0.12, output_rate: 0.37 },
+  { model_id: "openrouter/google/gemma-4-31b-it", name: "Gemma 4 31B", tagline: "Lightweight and affordable", intelligence: 6, input_rate: 0.10, output_rate: 0.34 },
   {
     // BYO Anthropic models use the canonical `anthropic/<model>` prefix.
     // CLI routing (so the tenant's Pro/Max subscription is billed instead

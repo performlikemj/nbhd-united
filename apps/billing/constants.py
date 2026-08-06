@@ -48,9 +48,14 @@ DEEPSEEK_FLASH_MODEL = "openrouter/deepseek/deepseek-v4-flash-0731"
 DEEPSEEK_FLASH_DISPLAY = "DeepSeek V4 Flash"
 DEEPSEEK_FLASH_RATE = {"input": 0.09, "output": 0.18}
 
+# Gemma 4 31B — the cheap vision-capable worker (default compose model, agenda
+# hint fallback), and the pinned `pdfModel` for platform-key tenants. The rate
+# below is OpenRouter's live catalog price, verified 2026-08-06; it must stay in
+# sync with the `cost` block config_generator.OPENROUTER_DECLARED_MODELS emits
+# for the same model — a test pins the two together.
 GEMMA_MODEL = "openrouter/google/gemma-4-31b-it"
 GEMMA_DISPLAY = "Gemma 4 31B"
-GEMMA_RATE = {"input": 0.12, "output": 0.37}
+GEMMA_RATE = {"input": 0.10, "output": 0.34}
 
 # ── Limited-time free offer ────────────────────────────────────────────────
 # NVIDIA Nemotron 3 Ultra, served as a $0 "free variant" on OpenRouter

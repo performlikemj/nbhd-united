@@ -307,6 +307,22 @@ class OpenclawSchemaShapeTest(TestCase):
         self.assertTrue(gemma["id"].strip())
         self.assertTrue(gemma["name"].strip())
 
+    def test_declared_gemma_cost_matches_the_billing_rate(self):
+        """The declared ``cost`` block and ``GEMMA_RATE`` must not drift apart.
+
+        The declaration is what the OpenClaw runtime reports a turn cost; the
+        billing constant is what ``record_usage`` actually charges the tenant.
+        Nothing reconciles the two, so a one-sided edit quotes one price and
+        bills another — invisibly, and only on the model that handles PDFs.
+        """
+        from apps.billing.constants import GEMMA_RATE
+
+        declared = _get(self.config, "models.providers.openrouter.models")
+        by_id = {m["id"]: m for m in declared}
+        gemma = by_id[GEMMA_MODEL.removeprefix("openrouter/")]
+        self.assertEqual(gemma["cost"]["input"], GEMMA_RATE["input"])
+        self.assertEqual(gemma["cost"]["output"], GEMMA_RATE["output"])
+
     def test_deepseek_chat_models_are_not_statically_declared(self):
         """Guard the deliberate scope of ``OPENROUTER_DECLARED_MODELS``.
 
