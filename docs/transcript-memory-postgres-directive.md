@@ -1,86 +1,70 @@
-# DIRECTIVE: Transcript memory on Postgres — the recall leg (v3)
+# DIRECTIVE: Transcript memory on Postgres — the recall leg (v4)
 
-**Status:** v3 — incorporates the round-2 adversarial review (`transcript-memory-adversarial-review-round2-2026-08-06.md`: 3 blockers, 7 majors, closure audit). Decisions #1 (documented-OpenAI embeddings) and #2 (retire memory-core at recall ship) are MJ-RATIFIED 2026-08-06 and now invariants. Under Claude-family review (Opus/Sonnet critics + adversarial verification). Author: Fable, 2026-08-06.
-**Siblings:** `assistant-context-continuity-directive.md` (push leg — extend, never contradict), `encryption-at-rest-directive.md` (at-rest contract this version now aligns with).
+**Status:** v4 — implementation-ready pending final MJ sign-off. Absorbs review round 3 (`transcript-memory-review-round3-claude-2026-08-06.md`: Opus+Sonnet critics, Opus adversarial verifier — 9 confirmed, 3 weakened-and-restated, 0 refuted, 5 critic fixes corrected). Rounds 1–2 (codex) in the sibling review docs. MJ-ratified: embeddings posture (documented-OpenAI, placeholder-space only), memory-core retirement at recall ship, **blind index from day one**, forward-only backfill default. Author: Fable, 2026-08-06.
+**Siblings:** `assistant-context-continuity-directive.md` (push leg), `encryption-at-rest-directive.md` (this version now conforms to its §4 blind-index mandate).
 
-**One-line summary:** A fail-closed, capture-time transcript ledger (`TranscriptEvent`) written under a durable per-turn transaction, chunked with real identity and transactional invalidation, text encrypted at rest with declared search residuals, searched hybrid FTS+vector, exposed as one provenance-only tool. **The privacy invariant is now mechanical: if redaction cannot be POSITIVELY confirmed, nothing is written — ever.**
+**One-line summary:** A fail-closed, capture-time transcript ledger (`TranscriptEvent`, ciphertext-only) written under a durable per-turn transaction spanning ALL conversation channels — including the hibernation wake path nobody remembered — chunked with two-cursor ordering and transactional invalidation, searched via per-tenant keyed blind FTS + vectors (declared residuals), exposed as one provenance-only, rate-capped tool.
 
-## 0. Round-2 findings → v3 responses
-
-| Round-2 finding | v3 response |
-|---|---|
-| B1: redactor fail-open; on-device iOS + Telegram-webhook seams raw | C1 fail-closed capture API + full seam matrix |
-| B2: capture ordering unimplementable beside current drains | C2 durable turn ledger (single transaction, stable turn_id, delivery tri-state) |
-| B3: at-rest undefined; "marginal exposure zero" false | C3 adopt `DocumentChunk` `text_enc` pattern + residuals ledger accounting |
-| M4: content-hash is not identity | C4 identity = (source_type, source_pk, revision) + turn_id; provider ids plumbed |
-| M5: FK joins don't remove chunk text/vectors | C5 chunk-row deletion + same-transaction invalidation outbox |
-| M6/M7: worker overclaimed; rechunk storms unbounded | C6 worker spec: serialized per-thread consumer, sequence cursor, radius/queue/retry caps, DLQ |
-| M8: hibernated-wake rollout unproven | C7 `*_manifest_ok`-style capability gate + endpoint-side flag rejection + wake test |
-| M9: disable/backfill semantics incomplete | C8 full lifecycle semantics; iOS backfill BLOCKED on fail-closed redactor |
-| M10: scale claims preceded evidence | C9 measured: canary (heaviest tenant) = 511 iOS msgs total / 338 per 30d / avg 122 chars → exact-scan suffices, no ANN v1 |
-| M11: same-name collisions | C10 deterministic refusal/disambiguation; notes prose banned from FTS expansion too |
-
-## 1. Product contract (unchanged from v2 except honesty upgrades)
-1. Recall from enablement forward ("memory has a birthday"); backfill only per §C8.
+## 1. Product contract
+1. Recall from enablement forward ("memory has a birthday"); backfill per C8 only.
 2. Provenance, never truth — typed stores authoritative; tool description verbatim from round-1 finding 9.
-3. Privacy floor is mechanical (C1), at-rest residuals are declared, not hand-waved (C3).
-4. Excerpts are data: role-labeled, framed historical, never instructions; top-k ≤ 5, ≤ 600 chars, daily cap 40 calls/tenant.
-Non-goals v1.0 unchanged (no OC-jsonl mining, no cross-tenant, no send-path reads).
+3. Privacy floor is mechanical (C1). At-rest: ciphertext text + HMAC'd blind word-index; embeddings are the sole declared plaintext-derived residual (frequency-safe rationale in C3).
+4. Excerpts are data: role-labeled, historically framed, never instructions; top-k ≤ 5, ≤ 600 chars, 40 calls/day/tenant enforced server-side (C11).
+Non-goals v1.0: OC-jsonl mining, cross-tenant anything, summarization-at-index, send-path reads, friends-message absorption (explicitly excluded: `FriendMessage.text` carries ANOTHER tenant's real names by design — indexing it breaks placeholder-space by construction).
 
-## 2. Architecture v3
+## 2. Architecture v4
 
-### C1 — Fail-closed capture API (the cornerstone)
-`capture_transcript_event(...) -> CaptureOutcome` where outcome ∈ {WRITTEN, QUARANTINED, SKIPPED_DISABLED}. The API accepts only `RedactionResult` objects that carry an explicit `confirmed_placeholder_space=True` produced by the redaction engine — `redact_user_message`'s fail-open fallback (returns original on error/disabled: `apps/pii/redactor.py:1132-1141`) can NEVER reach a write. On redaction failure: a **quarantine row** records (tenant, seam, turn_id, occurred_at, reason) with NO text; a repair queue re-attempts redaction from the durable raw source where one exists (iOS `AppChatMessage`); metrics count quarantines; a standing alert fires on quarantine rate > 1%.
-**Seam matrix (complete or the invariant is a lie):**
-| Seam | Redacted text source | Action |
+### C1 — Fail-closed capture: a TYPE, not a convention
+`capture_transcript_event()` accepts ONLY a `RedactionResult` value whose `confirmed_placeholder_space=True` was set by the redaction engine itself — never a bare string, never a boolean argument a caller can pass. Fail-open fallbacks (`redact_user_message` returns raw on error/disabled) are type-incapable of reaching a write. On unconfirmed: text-free quarantine row + repair queue + alert at >1% rate. Precedent exists in-repo: `redact_for_buffer` already drops text rather than persist raw.
+**Seam matrix (complete per three review rounds):**
+| Seam | Redacted source | Action |
 |---|---|---|
-| iOS queued (`_drain_ios_batch`) | `PendingMessage.user_text` (redacted at enqueue, `chat_views.py:484-553`) — but only trusted when the enqueue-time redaction outcome was recorded as confirmed | capture in C2 ledger |
-| iOS on-device (`ChatLocalTurnView.post`) | none today (stores raw) | invoke redaction at capture, fail-closed |
-| Telegram poller | post-redaction queue text (`poller.py:1490-1507`) | capture in C2 ledger |
-| Telegram webhook | RAW today (`views.py:355-403`) | invoke redaction at capture, fail-closed |
-| LINE webhook | post-redaction queue text (`line_webhook.py:1375-1386`) | capture in C2 ledger |
-| Assistant replies (all channels) | model output is placeholder-space by construction; still passes the confirm gate | capture at delivery-complete (C2) |
-| Proactive/cron sends (`ProactiveOutbound`) | same as assistant replies | capture at delivery-complete; recall must see what crons said |
-Prerequisite fix folded in: the enqueue path records its redaction outcome alongside `PendingMessage` so the drain can distinguish confirmed-redacted from fallback-raw rows (today it cannot — that distinction is the whole game).
+| iOS queued (`_drain_ios_batch`) | `PendingMessage.user_text` + NEW per-row redaction-outcome in `payload` (JSONField — no migration; absent key reads as unconfirmed → quarantine, which self-handles the rolling-deploy window) | ledger (C2) |
+| iOS on-device (`ChatLocalTurnView`) | none today | redact at capture, fail-closed |
+| Telegram poller | redacted queue text + outcome in payload | ledger (C2) |
+| Telegram webhook | RAW today | redact at capture, fail-closed |
+| LINE webhook | redacted queue text + outcome in payload | ledger (C2) |
+| **Hibernation buffered delivery** (`deliver_buffered_messages_task` — the round-3 blocker: POSTs + relays with zero capture, hard-deletes buffers) | `redact_for_buffer` output + NEW redaction-outcome recorded at buffer write (`wake_on_message.py`) — its bare `""`-on-failure cannot satisfy the type without it | ledger at relay-complete |
+| Assistant replies (all channels incl. buffered) | model output; passes the confirm gate | ledger at delivery-complete |
+| Proactive sends | `record_proactive_outbound` chokepoint (corrected producer list incl. journal/extraction, first_session_welcome) PLUS the `send_to_user` runtime endpoint for container-originated sends; OC-native modes that bypass both are enumerated at implementation and either wired or documented as gaps — no silent omissions | ledger at record time |
+| Operator one-off turns (`broadcast_single_tenant_task`) | EXCLUDED, documented: operator-authored, MJ-only, no queue row | — |
+Drive-by fix folded in: `PendingMessage.user_text` help_text is stale ("Raw user-facing excerpt") — corrected to describe redacted reality so implementers trust the source.
 
-### C2 — Durable turn ledger
-One transactional write per completed turn, keyed by stable `turn_id` (iOS `client_msg_id` / `PendingMessage.id` lineage), persisting: model-result reference, **delivery tri-state (SENT / FAILED / AMBIGUOUS)** per channel attempt, the turn's `TranscriptEvent` rows, and an **index-outbox** record — all BEFORE the pending queue row is deleted. Requires the channel delivery helpers to return delivery metadata instead of a bare boolean (small, honest API change), and fixes the LINE relay-exception swallow (`pending_queue.py:1744-1754`) so a failed delivery is never recorded as a delivered reply. Crash between external send and DB mark resolves to AMBIGUOUS → capture proceeds, duplicate-suppression on retry via turn_id idempotency. Indexing consumes the outbox asynchronously; outbox publish failure is repaired by a sweep cron (QStash, colon-free hash keys).
+### C2 — Durable turn ledger, and the delivery-truth fix that precedes it
+Root defect first (round-3, verifier-sharpened): the drain's outer task marks rows DELIVERED **unconditionally** once the gateway responded, then hard-deletes — annihilating budget-exhausted turns today. v4 makes the DELIVERED mark conditional on actual delivery results returned by the channel helpers (API change: helpers return delivery metadata, not a boolean; the LINE relay-exception swallow is fixed in the same motion). THEN the ledger: one `transaction.atomic()` per completed turn (stable `turn_id`) persisting model-result ref, per-attempt delivery state **SENT / PARTIAL(delivered_chunks/n) / FAILED / AMBIGUOUS** (Telegram is per-chunk; empty-render no longer reports success), the turn's `TranscriptEvent` rows, and the index-outbox record — all BEFORE queue-row deletion, all in the OUTER task (never beside the inner capture calls, which credit-limit paths return before). Latency: negligible, not free — the block is fewer round trips than today's N autocommit saves (verified R1), and no external send ever sits inside the transaction.
+**Stated loudly (was a parenthetical):** Telegram/LINE have no durable raw source after drain — a quarantined TG/LINE turn is PERMANENT capture loss. Accepted for v1.0, alarmed in telemetry, and the reason quarantine-rate alerting is not optional.
 
-### C3 — At-rest: encrypted text, declared residuals
-`TranscriptEvent.text` and chunk text stored as `text_enc` (same envelope as `DocumentChunk.text_enc`, `apps/journal/models.py:620-635`). The searchable derivatives — `tsv` and `embedding` — are computed app-side from placeholder-space plaintext at write time and are **declared disclosed residuals** in the encryption directive's residuals ledger (`encryption-at-rest-directive.md:225-230` already names embeddings as such): they survive key destruction and backups, they index pseudonymized tokens only, and their existence is documented as the price of search. No blind-index in v1.0; the encryption directive's keyed blind-FTS remains the upgrade path and nothing in this schema forecloses it. The v2 claim "marginal exposure zero" is retracted; the honest statement: **recall adds indefinite placeholder-space residuals for conversational text — same class as journal residuals today, new corpus.** MJ has ratified this posture via decision #1's reasoning; it is restated here so nobody discovers it later.
+### C3 — At-rest: ciphertext-only text, blind index, one declared residual
+- `TranscriptEvent.text_enc` and chunk `text_enc`: **NOT NULL ciphertext, no plaintext sibling column, no write-flag fallback** — a deliberate departure from the `DocumentChunk` dual-column dark-ship exemplar (which is a migration shape for legacy plaintext, not a greenfield pattern).
+- Word search: per-tenant keyed blind index per the encryption directive §4 — `search_blind tsvector` of `HMAC-SHA256(K_search, lexeme)[:12]` hex tokens, computed app-side pre-encryption; query terms HMAC'd with the same per-tenant key at search time. Frequency leak accepted per the directive's residual #3 rationale (tolerable BECAUSE tokens are keyed); `crypto_shred` of K_search renders the index permanently meaningless including in backups.
+- Embeddings: the sole plaintext-derived residual, declared in the residuals ledger; placeholder-space input only; documented-OpenAI posture (ratified) until a ZDR route is verified.
 
-### C4 — Identity
-`TranscriptEvent` identity: `(tenant, source_type, source_pk, revision)`; uniqueness constraint there, NOT on content hash (two "yes" turns are two events). `content_hash` is a version fingerprint only. `turn_id` groups user event + assistant reply. Provider ids plumbed where they exist (Telegram `update_id`, LINE `message.id` — added to queue payloads; small plumbing PR), else internal lineage ids. Raw provider user ids never stored on events — internal tenant-scoped opaque keys only.
+### C4 — Identity: the ledger IS the durable root
+`TranscriptEvent` uniqueness: `(tenant, source_type, source_event_id, revision)`; `turn_id` groups user+assistant. Source ids: iOS = `client_msg_id` (durable `AppChatMessage` lineage — the only seam with a raw repair source); Telegram = ingress `update_id`; LINE = ingress `webhook_event_id` (both already in hand at enqueue sites, riding `payload` — no QStash contract impact, verified R2); buffered = `BufferedMessage.id` captured before hard-delete; proactive = `ProactiveOutbound.id`. `content_hash` is a revision fingerprint, never identity. Raw provider user ids never stored on events.
 
-### C5 — Transactional invalidation
-Edit (new revision) or delete of an event: in the SAME transaction — retire affected chunk ROWS (text_enc + tsv + vector gone, not just membership joins), write invalidation-outbox entries for neighborhood rechunk. The rechunk worker consumes the outbox; a repair sweep catches stranded entries. No path exists where a deleted event's text survives in any derivative.
+### C5 — Transactional invalidation with version-independent reachability
+Edit/delete: same transaction retires chunk ROWS (text_enc + blind index + vector), writes invalidation-outbox entries. Reachability predicate is version-independent — membership join UNION `(tenant, thread_key, occurred_at range)` — so chunks stamped under older algorithm versions cannot escape retirement; serving refuses chunks older than the invalidation contract version.
 
-### C6 — Worker spec (right-sized, not overclaimed)
-Per-`(tenant, channel, thread_key)` serialized consumption; ordering cursor = event PK sequence (not `occurred_at`); coalescing key per thread; invalidation radius cap ±1 window; queue-depth cap with backpressure metric; retry ceiling → DLQ visible in telemetry; algorithm-version fence (chunks stamped, mixed-version threads rechunked lazily). Connection hygiene mirrors `encrypt_chat_history._update_with_retry` for the reconnect+GUC pattern ONLY — checkpointing, batching, and DLQ are this worker's own (the round-2 caveat is accepted: that helper is a pattern for one failure class, not an architecture).
+### C6 — Worker: two cursors, bounded storms
+**Consumption cursor = event PK sequence** (never skips late inserts). **Window composition order = (occurred_at, pk)** (chronology for chunk semantics; backdated on-device turns and backfill land correctly). Backfill runs as its own version-fenced pass, never appended to the live cursor. Per-(tenant, channel, thread_key) serialized consumption; coalescing; invalidation radius ±1 window; queue-depth cap; retry ceiling → DLQ; **flag-gated with drain-and-discard for disabled tenants** (a skip would poison the DLQ with routine disables). Connection hygiene mirrors `_update_with_retry` for reconnect+GUC only.
 
-### C7 — Rollout gates (proven, not hoped)
-Capability predicate `recall_manifest_ok` mirroring the existing `*_manifest_ok` pattern: config keys for recall are emitted ONLY when the tenant's image version advertises the capability (manifest `additionalProperties:false` on old images therefore never sees new keys — the wake crash-loop is structurally impossible, and a wake test proves it). Tool registration requires flag AND capability; the Django endpoint independently rejects flag-off tenants (defense in depth); rollback order: config keys cleared before image rollback. Order: image → config → indexing → tool.
+### C7 — Rollout: honest gates, written ordering
+`recall_manifest_ok` boolean per the existing pattern — which is MANUAL and unreconciled (its own help_text: "Nothing reconciles this field"), so the safety statement is three enforceable properties + one runbook rule: (1) config keys never emitted while the flag is false (config_generator test, mirroring the existing manifest-not-ok byte-identical test); (2) nothing in code auto-flips the flag; (3) the runtime endpoint independently rejects flag-off tenants; (RUNBOOK) fleet image coverage is verified BEFORE any fleet-wide flag flip — explicitly written because the `latest`-tag wake path skips image refresh, so hibernated tenants can wake stale. Wake test asserts (1) against an old-manifest fixture. Order: image → flag/config → indexing → tool. Rollback clears flags before image rollback.
 
-### C8 — Lifecycle semantics (complete)
-Flag on: capture begins (birthday recorded, shown to user). Flag off: capture stops immediately, tool hidden same config push; events AND chunks retained 30 days then purged; re-enable within 30d resumes with a documented gap, after 30d = new birthday. Tenant hard-delete cascades everything. **iOS historical backfill is BLOCKED until:** fail-closed redactor exists in prod, quarantine lineage is queryable, and a canary sample run reports a measured NER false-negative rate with an MJ-visible number. Forward-only is mandatory until then (ratified default). Telegram/LINE trailing-35d backfill allowed at enablement (same fail-closed gate).
+### C8 — Lifecycle
+Enable: birthday recorded and user-visible. Disable: capture stops, tool hidden, worker drains-and-discards that tenant's outbox; events+chunks retained 30d then purged; re-enable ≤30d resumes with documented gap, >30d new birthday. Hard-delete cascades all (deprovision-vs-hard-delete semantics per `deprovision_tenant` + `_do_hard_delete`, cited). **iOS historical backfill BLOCKED until:** fail-closed redactor live, quarantine lineage queryable, canary sample run reports a measured NER false-negative rate with an MJ-visible number (the round-3 reviewers' unanimous do-not-weaken). Telegram/LINE trailing-35d backfill allowed at enablement, same gate, own version fence.
 
-### C9 — Capacity: measured, and small
-Canary = heaviest tenant: **511 iOS messages total, 338/30d, avg 122 chars** (measured 2026-08-06). Fleet-wide corpus is O(10⁴) events; chunks O(10³). Consequences: exact cosine scan is fine (no ANN/HNSW in v1.0 — removes the plan-gate complexity until fleet chunks > 100k); embedding spend is measured pennies; batching still added for backfill politeness. Pre-rollout gate reduced to: `EXPLAIN ANALYZE` on a decoy-populated dataset at 10× current scale + one batch-embed benchmark. Cost table stays in the PR, not re-derived.
+### C9 — Capacity (measured) & C10 — Entity expansion & C11 — Caps
+- C9: canary (heaviest) = 511 iOS msgs total / 338 per 30d / avg 122 chars. Fleet corpus O(10⁴) events across ALL seams (multi-channel re-derivation before the EXPLAIN gate — the iOS-only number under-counts by design); exact cosine scan, no ANN v1.0; batch embed API is NEW code (benchmark it, don't assume).
+- C10: expansion = deterministic query redaction → placeholder set → blind-index tokens of placeholder + canonical-name lexemes only; note prose enters nothing. **Named prerequisite (shared with the sibling directive, built once):** an inverse multimap `canonical_key → [(placeholder, entry)...]` in entity_registry — the existing `inverted_names_ci` keeps one winner and silently drops same-name collisions, so the refusal behavior both directives specify is unbuildable without it. Same-name: refuse to guess; return per-entity tagged alias sets.
+- C11: 40 calls/day/tenant enforced by a per-tenant daily counter (small Postgres table, upsert-increment, checked in the runtime endpoint pre-execution — no existing counter to reuse, verified).
 
-### C10 — Entity expansion, bounded and unambiguous
-Query expansion: deterministic known-entity redaction of the query → placeholder set → FTS terms are placeholder tokens + canonical display-name lexemes ONLY. Note prose enters NEITHER embeddings NOR FTS terms (v2 banned the former; v3 bans both — notes are dossiers, search terms are labels). Merged placeholders expand as alias sets. Same-name distinct entities: expansion refuses to guess — it includes both alias sets tagged per entity, and the tool result labels which placeholder each hit contains (mirrors the sibling directive's same-name-fusion refusal).
+## 3. Implementation plan (phases, each canary-gated)
+1. **P0 prerequisites:** redaction-outcome recording (PendingMessage payload + buffer write), the DELIVERED-mark truth fix + LINE swallow fix (ships value standalone — it fixes today's annihilated-turn bug), inverse multimap primitive, K_search per-tenant key minting.
+2. **P1 ledger:** TranscriptEvent + turn transaction across all seams; quarantine + alerts; no search yet.
+3. **P2 index:** chunker worker (two cursors), blind index, embeddings, invalidation.
+4. **P3 tool:** endpoint + plugin tool + caps + AGENTS/rules updates + manifest gates; canary enablement = memory-core retirement (ratified).
+5. **P4 evals/telemetry:** round-2's battery; fleet ladder MJ → Kiho → all.
 
-### C11 — Invariants absorbed from ratified decisions
-1. Embeddings: documented-OpenAI on placeholder-space text only; move to OpenRouter-ZDR route when verified; entity notes never leave the database for any provider.
-2. memory-core: `experimental_memory_core_enabled` flips OFF at recall enablement on canary; the flag path is removed when fleet recall ships. Journal distillation stays.
-
-## 3. Declared tensions for the Claude-family review round
-1. Is the C1 seam matrix COMPLETE? (Hunt for ingress paths not listed: friends messages, operator one-off turns, eval harness traffic, migration imports.)
-2. C2's turn ledger sits on the hot drain path — bound its latency and its failure blast radius; is AMBIGUOUS handled sanely for every channel?
-3. C3 residuals: is "same class as journal residuals" honest, given conversational text is more sensitive than journal distillations?
-4. C4 plumbing: does adding provider ids to queue payloads break the QStash payload contracts or dedup anywhere?
-5. C8's 30-day retention-after-disable: defensible default, or should off mean purge-now?
-6. C9's no-ANN call: right at current scale — what's the regret if a tenant 100×es?
-
-## 4. Review protocol for this version (MJ-directed)
-Two independent Claude critics (Opus 5: mechanics C1–C6; Sonnet 5: lifecycle/rollout/ops C7–C11 + code-anchor verification). Fable arbitrates; a third Opus 5 subagent adversarially verifies each surviving finding (refute-or-confirm). Findings and verdicts land in this PR beside the codex rounds.
+## 4. Review trail
+Round 1 codex (UNSOUND: concept holes) → v2. Round 2 codex (UNSOUND: mechanics) → v3. Round 3 Claude family (Opus critic UNSOUND C1–C6 / Sonnet critic SOUND-WITH-CHANGES C7–C11 / Opus verifier: 9 confirmed, 0 refuted, 5 critic fixes corrected) → v4. All review docs in this directory ride the same PR.
