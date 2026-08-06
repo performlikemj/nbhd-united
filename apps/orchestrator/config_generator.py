@@ -16,6 +16,7 @@ from apps.billing.constants import (
     ANTHROPIC_SONNET_MODEL,
     DEEPSEEK_FLASH_MODEL,
     DEEPSEEK_MODEL,
+    GEMMA_DISPLAY,
     GEMMA_MODEL,
 )
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
@@ -1040,6 +1041,68 @@ TIER_MODEL_CONFIGS: dict[str, dict[str, Any]] = {
     },
 }
 
+# Models declared explicitly in the ROOT ``models.providers.openrouter`` block.
+#
+# OpenRouter models are normally resolved DYNAMICALLY on the chat path (the
+# openrouter extension's ``resolveDynamicModel``), and those dynamic results are
+# never written into ``models.json`` — the STATIC registry OpenClaw builds at
+# container start. Tools that look a model up SYNCHRONOUSLY in that registry
+# (the built-in ``pdf`` tool, via ``resolveModelFromRegistry``) therefore threw
+# ``Unknown model: openrouter/<slug>`` for every OpenRouter pin. That is what
+# broke PDF reads for every platform-key tenant (canary, 2026-08-06); capability
+# was never even consulted. Declaring a model here puts it in ``models.json``,
+# which is what the pdf tool queries.
+#
+# Ids are the BARE provider-local slug (no ``openrouter/`` prefix):
+# ``resolveModelFromRegistry`` splits the ref at the first ``/`` into
+# (provider, model) and looks the remainder up INSIDE the provider block. This
+# matches OpenClaw's own bundled entries (``moonshotai/kimi-k2.6`` et al. in
+# ``dist/provider-catalog-*.js::buildOpenrouterProvider``). Those bundled
+# entries are merged with — not replaced by — this list, keyed on id.
+#
+# SCOPE IS DELIBERATELY GEMMA-ONLY. For a provider whose plugin does not define
+# ``preferRuntimeResolvedModel`` (openrouter does not — across OpenClaw 2026.5.28
+# only openai-codex does), ``resolveModelWithRegistry`` returns a static registry
+# hit and NEVER calls ``resolveDynamicModel``. So a static entry silently
+# overrides live capability metadata on the CHAT path too. Declaring the DeepSeek
+# chat models here would freeze their ``reasoning`` / ``maxTokens`` /
+# ``compat.supportsTools`` at whatever we hardcode — and DeepSeek V4 Pro is the
+# tenant-selectable reasoning model, so a wrong ``reasoning`` flag is a silent
+# chat regression. Gemma is the one model we need for vision; keep this list
+# minimal and every value below truthful.
+#
+# Field names/shape from ``ModelDefinitionSchema`` (``dist/zod-schema.core-*.js``,
+# ``.strict()``): only ``id`` + ``name`` are required; ``input``, ``cost``,
+# ``contextWindow``, ``maxTokens``, ``reasoning`` are optional. ``cost`` is USD
+# per MILLION tokens (bundled Kimi K2.6 carries ``input: 0.8`` against
+# OpenRouter's published $0.80/M). No ``baseUrl`` is needed on the provider:
+# ``openrouter`` is in ``BUILT_IN_MODEL_PROVIDER_OVERLAY_IDS``, so
+# ``ModelProvidersSchema`` exempts it from the custom-provider baseUrl rule.
+OPENROUTER_DECLARED_MODELS: list[dict[str, Any]] = [
+    {
+        # Vision-capable, and the pdfModel pin for platform-key tenants.
+        "id": GEMMA_MODEL.removeprefix("openrouter/"),
+        "name": GEMMA_DISPLAY,
+        # Gemma is instruction-tuned, not a reasoning model.
+        "reasoning": False,
+        # OpenRouter's live catalog reports ["image", "text", "video"]. We
+        # declare only what we rely on — ``image`` is the flag the pdf tool
+        # checks before it hands page images to the model, rather than falling
+        # back to text-only extraction. Under-claiming is safe; over-claiming
+        # would route video work at a capability we have not exercised.
+        "input": ["text", "image"],
+        # OpenRouter live catalog, 2026-08-06. NOTE: apps/billing GEMMA_RATE
+        # still carries the older 0.12/0.37 — that constant bills tenants and is
+        # a separate change.
+        "cost": {"input": 0.10, "output": 0.34, "cacheRead": 0.0, "cacheWrite": 0.0},
+        "contextWindow": 262144,
+        # OpenClaw's own OPENROUTER_DEFAULT_MAX_TOKENS — what the dynamic path
+        # would have produced without live capability data. The pdf tool caps
+        # its request at 4096 regardless (``resolvePdfToolMaxTokens``).
+        "maxTokens": 8192,
+    },
+]
+
 # Per-task model defaults — stamp these onto specific cron jobs when the
 # tenant hasn't set a `task_model_preferences` override.
 #
@@ -1107,6 +1170,43 @@ def _byo_model_extras(tenant: Tenant) -> dict[str, dict[str, Any]]:
         extras[_OPUS_MODEL] = {"alias": "claude-opus"}
 
     return extras
+
+
+def _build_pdf_model_config(
+    *,
+    models_config: dict[str, str],
+    fallbacks_list: list[str],
+    primary_is_byo: bool,
+) -> dict[str, Any]:
+    """``agents.defaults.pdfModel`` — which model reads app-uploaded PDFs.
+
+    The pin is explicit rather than left to auto-resolution: the built-in
+    ``pdf`` tool only registers when OpenClaw can resolve a PDF-capable model,
+    and its availability check — unlike the ``image`` tool's — has NO "resolved
+    session model has vision" fast-path.
+
+    BYO-Anthropic primary → keep mirroring ``agents.defaults.model``. Anthropic
+    is a NATIVE-PDF provider in OpenClaw (``providerSupportsNativePdf``), so the
+    file goes to Claude whole — scanned PDFs included — billed to the tenant's
+    own subscription. Routing these tenants onto the platform OpenRouter key
+    would move their document reads to our bill AND drop them off the native
+    path onto local extraction.
+
+    Platform-key tenants → pin Gemma, the vision-capable model declared in
+    ``OPENROUTER_DECLARED_MODELS``. It covers both PDF shapes: OpenClaw extracts
+    a text layer locally via PDFium and hands back text, while a scanned /
+    image-only PDF needs the real vision capability.
+
+    Fallbacks are EMPTY here on purpose. Every other starter model is text-only,
+    and listing one would mean declaring it in the static registry too — which
+    for the DeepSeek chat models would override their live capability metadata
+    on the chat path (see ``OPENROUTER_DECLARED_MODELS``). A Gemma outage then
+    costs a failed PDF read; the alternative risks a wrong reasoning profile on
+    the tenant's main chat model.
+    """
+    if primary_is_byo:
+        return {"primary": models_config["primary"], "fallbacks": fallbacks_list}
+    return {"primary": GEMMA_MODEL, "fallbacks": []}
 
 
 def resolve_tenant_models(tenant: Tenant) -> tuple[dict[str, str], dict[str, Any], list[str]]:
@@ -1942,6 +2042,10 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     # byo_extras is recomputed here because it's also consumed further down for
     # BYO-specific plugin/feature gating, independent of model resolution.
     byo_extras = _byo_model_extras(tenant)
+    # The same test resolve_tenant_models applies when it decides to empty the
+    # fallback chain — a BYO-subscription primary routes to the tenant's own
+    # provider, and the PDF pin has to follow it there.
+    primary_is_byo = bool(byo_extras) and models_config["primary"] in byo_extras
 
     # Collect all configured plugins
     _plugin_defs = [
@@ -2199,30 +2303,26 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 },
                 # PDF tool model + size cap for app-uploaded PDFs (chat ingress →
                 # [Document attached: <path>] marker → built-in ``pdf`` tool).
-                # The ``pdf`` tool only registers when OpenClaw can resolve a
-                # PDF-capable model, and its availability check — unlike the
-                # ``image`` tool's — has NO "resolved session model has vision"
-                # fast-path (verified in the OpenClaw factory-plan source). So we
-                # pin pdfModel explicitly instead of relying on the default.
-                # Mirroring agents.defaults.model keeps the pin in-allowlist +
-                # schema-valid and reuses the tenant's paid OpenRouter routing.
                 #
-                # LIMITATION (platform-key tenants): the pinned model is the
-                # tenant's text model (DeepSeek), so ONLY text-layer PDFs work
-                # here — OpenClaw extracts their text locally via PDFium (no model
-                # vision needed). A scanned / image-only PDF (no text layer) hard-
-                # ERRORS: OpenClaw's extraction fallback throws "Model ... does not
-                # support images and PDF has no extractable text." (openclaw-tools
-                # source) because the pin short-circuits auto-resolution to a
-                # non-vision model. BYO-Anthropic tenants route to the native PDF
-                # path instead and DO handle scanned PDFs. Lifting the scanned-PDF
-                # limit fleet-wide needs an explicit vision-capable pdfModel — a
-                # documented follow-up, not wired here.
+                # The ``pdf`` tool resolves this pin against OpenClaw's STATIC
+                # model registry (``models.json``), not the dynamic chat-path
+                # resolver — so an ``openrouter/*`` pin only works if the model is
+                # declared under the root ``models.providers`` block. It is:
+                # ``OPENROUTER_DECLARED_MODELS``. Without that declaration every
+                # candidate throws ``Unknown model`` before capability is even
+                # checked, which is exactly how this broke fleet-wide.
+                #
+                # Platform-key tenants get Gemma (vision) — it handles text-layer
+                # PDFs via local PDFium extraction AND scanned/image-only ones.
+                # BYO-Anthropic tenants keep their own primary and the native
+                # Anthropic PDF path. See ``_build_pdf_model_config``.
+                #
                 # 10 MB matches MAX_APP_DOCUMENT_BYTES + the tool's own default.
-                "pdfModel": {
-                    "primary": models_config["primary"],
-                    "fallbacks": fallbacks_list,
-                },
+                "pdfModel": _build_pdf_model_config(
+                    models_config=models_config,
+                    fallbacks_list=fallbacks_list,
+                    primary_is_byo=primary_is_byo,
+                ),
                 "pdfMaxBytesMb": 10,
                 "models": model_entries,
                 "workspace": "/home/node/.openclaw/workspace",
@@ -2548,7 +2648,15 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         providers = models_section.setdefault("providers", {})
         providers["openrouter"] = {
             "baseUrl": "https://openrouter.ai/api/v1",
-            "models": [],
+            # Declared so the static registry can resolve them — see
+            # OPENROUTER_DECLARED_MODELS for why this list stays minimal.
+            # Emitted for BYO tenants too: it only extends the ``openrouter``
+            # provider's model list, and a BYO primary is ``anthropic/*``
+            # resolved through a different provider entirely, so there is
+            # nothing here that can shadow their chat models. Their OpenRouter
+            # cron/fallback models are untouched — we only ADD Gemma, and
+            # OpenClaw merges this list with its bundled catalog by id.
+            "models": [dict(m) for m in OPENROUTER_DECLARED_MODELS],
         }
 
     # OpenClaw 2026.5.2 retired the 60s default idle-token watchdog config

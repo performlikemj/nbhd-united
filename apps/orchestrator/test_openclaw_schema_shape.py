@@ -38,6 +38,13 @@ from typing import Any
 
 from django.test import TestCase
 
+from apps.billing.constants import (
+    ANTHROPIC_SONNET_MODEL,
+    DEEPSEEK_FLASH_MODEL,
+    DEEPSEEK_MODEL,
+    GEMMA_MODEL,
+)
+from apps.byo_models.models import BYOCredential
 from apps.tenants.services import create_tenant
 
 from .config_generator import generate_openclaw_config
@@ -214,22 +221,29 @@ class OpenclawSchemaShapeTest(TestCase):
 
     # ── PDF tool pin ──────────────────────────────────────────────────
 
-    def test_pdf_model_pinned_and_mirrors_chat_model(self):
+    def test_pdf_model_pinned_to_vision_model_for_platform_tenants(self):
         """The built-in ``pdf`` tool only registers when a PDF-capable model
         resolves, and its factory-availability check has NO "resolved session
         model has vision" fast-path (unlike the ``image`` tool). So we pin
-        ``agents.defaults.pdfModel`` — mirroring ``agents.defaults.model`` so the
-        pin is in-allowlist + schema-valid. If the pin ever silently drops (or
-        stops mirroring the chat model), the tool would stop registering
-        fleet-wide. Schema-shape verified against openclaw@2026.5.28
+        ``agents.defaults.pdfModel``.
+
+        The pin used to MIRROR ``agents.defaults.model``, which shipped broken:
+        the pdf tool resolves against the STATIC registry, DeepSeek was never
+        declared there, and every platform-key PDF died on ``Unknown model``.
+        The pin is now Gemma — declared in ``OPENROUTER_DECLARED_MODELS`` and
+        vision-capable, so text-layer AND scanned PDFs both work. Schema-shape
+        verified against openclaw@2026.5.28
         ``dist/zod-schema.agent-runtime-*.js`` (``pdfModel: AgentToolModel``,
         union of string | {primary, fallbacks, timeoutMs}) and
         ``dist/zod-schema-*.js`` (``pdfMaxBytesMb: number().positive()``).
         """
         pdf_model = _get(self.config, "agents.defaults.pdfModel")
-        chat_model = _get(self.config, "agents.defaults.model")
         self.assertIsNotNone(pdf_model, "agents.defaults.pdfModel missing — pdf tool won't register")
-        self.assertEqual(pdf_model, chat_model, "pdfModel must mirror agents.defaults.model")
+        self.assertEqual(pdf_model.get("primary"), GEMMA_MODEL)
+        # Empty on purpose — a text-only fallback would have to be declared in
+        # the static registry too, which would override the DeepSeek chat
+        # models' live capability metadata. See _build_pdf_model_config.
+        self.assertEqual(pdf_model.get("fallbacks"), [])
         # AgentToolModel shape: primary must be a non-empty string (this is what
         # flips OpenClaw's ``hasToolModelConfig`` → the tool becomes available).
         self.assertIsInstance(pdf_model.get("primary"), str)
@@ -237,6 +251,75 @@ class OpenclawSchemaShapeTest(TestCase):
 
         max_mb = _get(self.config, "agents.defaults.pdfMaxBytesMb")
         self.assertEqual(max_mb, 10)
+
+    def test_pdf_pin_is_declared_in_static_model_registry(self):
+        """The pin is only useful if the pdf tool can RESOLVE it.
+
+        ``resolveModelFromRegistry`` reads ``models.json``, which OpenClaw builds
+        from the root ``models.providers`` block plus its own bundled catalog —
+        dynamically-resolved OpenRouter models never land there. So whatever
+        ``pdfModel.primary`` points at must appear in this block, addressed by
+        its BARE provider-local slug (the ref is split at the first ``/`` into
+        provider + model, matching OpenClaw's own ``moonshotai/kimi-k2.6``
+        entries). And it must advertise ``image``, or scanned PDFs fall back to
+        text-only extraction and error out with no text layer.
+        """
+        declared = _get(self.config, "models.providers.openrouter.models")
+        self.assertIsInstance(declared, list)
+        by_id = {m["id"]: m for m in declared}
+
+        pdf_primary = _get(self.config, "agents.defaults.pdfModel.primary")
+        bare_slug = pdf_primary.removeprefix("openrouter/")
+        self.assertIn(
+            bare_slug,
+            by_id,
+            f"pdfModel.primary {pdf_primary!r} is not declared in models.providers.openrouter "
+            "— the pdf tool will throw 'Unknown model' for every PDF",
+        )
+
+        gemma = by_id[bare_slug]
+        self.assertIn("image", gemma["input"], "pdf model must advertise image input for scanned PDFs")
+        self.assertIn("text", gemma["input"])
+        # ModelDefinitionSchema is .strict() — an unknown key rejects the whole
+        # config at container load.
+        self.assertLessEqual(
+            set(gemma),
+            {
+                "id",
+                "name",
+                "api",
+                "baseUrl",
+                "reasoning",
+                "input",
+                "cost",
+                "contextWindow",
+                "contextTokens",
+                "maxTokens",
+                "params",
+                "agentRuntime",
+                "headers",
+                "compat",
+                "mediaInput",
+                "metadataSource",
+            },
+        )
+        # id + name are the only REQUIRED fields, both non-empty strings.
+        self.assertTrue(gemma["id"].strip())
+        self.assertTrue(gemma["name"].strip())
+
+    def test_deepseek_chat_models_are_not_statically_declared(self):
+        """Guard the deliberate scope of ``OPENROUTER_DECLARED_MODELS``.
+
+        For openrouter (no ``preferRuntimeResolvedModel`` hook in the plugin),
+        OpenClaw's ``resolveModelWithRegistry`` returns a static registry hit and
+        never calls ``resolveDynamicModel``. Declaring the DeepSeek chat models
+        here would freeze their ``reasoning``/``maxTokens`` metadata at whatever
+        we hardcode — a silent chat regression on the tenant-selectable
+        reasoning model. If a future change adds them, it must be deliberate.
+        """
+        declared_ids = {m["id"] for m in _get(self.config, "models.providers.openrouter.models")}
+        for model_id in (DEEPSEEK_MODEL, DEEPSEEK_FLASH_MODEL):
+            self.assertNotIn(model_id.removeprefix("openrouter/"), declared_ids)
 
     def test_generated_config_passes_write_validation_gate(self):
         """The exact write-time gate every config-to-share write funnels through
@@ -284,3 +367,56 @@ class OpenclawSchemaShapeTest(TestCase):
             "Either add them to the allowlist (after npm-pack-verifying the schema) "
             "or fix the typo.",
         )
+
+
+class ByoPdfModelPinTest(TestCase):
+    """A BYO-Anthropic primary must keep the native Anthropic PDF path.
+
+    Anthropic is a native-PDF provider in OpenClaw
+    (``providerSupportsNativePdf``): the file goes to Claude whole, scanned
+    pages included, billed to the tenant's own subscription. Re-pointing these
+    tenants at the platform Gemma pin would move their document reads onto the
+    platform OpenRouter key AND drop them from the native path onto local
+    extraction — strictly worse on both cost and capability.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(
+            display_name="ByoPdfPin",
+            telegram_chat_id=998878,
+        )
+        self.tenant.byo_models_enabled = True
+        self.tenant.preferred_model = ANTHROPIC_SONNET_MODEL
+        self.tenant.save(update_fields=["byo_models_enabled", "preferred_model"])
+        BYOCredential.objects.create(
+            tenant=self.tenant,
+            provider=BYOCredential.Provider.ANTHROPIC,
+            mode=BYOCredential.Mode.CLI_SUBSCRIPTION,
+            key_vault_secret_name="byo-anthropic-test",
+            status=BYOCredential.Status.VERIFIED,
+        )
+        self.config = generate_openclaw_config(self.tenant)
+
+    def test_byo_primary_keeps_its_own_model_for_pdf(self):
+        chat_primary = _get(self.config, "agents.defaults.model.primary")
+        pdf_model = _get(self.config, "agents.defaults.pdfModel")
+        self.assertEqual(chat_primary, ANTHROPIC_SONNET_MODEL, "fixture did not produce a BYO primary")
+        self.assertEqual(pdf_model.get("primary"), ANTHROPIC_SONNET_MODEL)
+        self.assertNotEqual(pdf_model.get("primary"), GEMMA_MODEL)
+        # resolve_tenant_models empties the fallback chain for a BYO primary so a
+        # billing failure surfaces instead of silently dropping to a metered
+        # model — the PDF pin inherits that.
+        self.assertEqual(pdf_model.get("fallbacks"), [])
+
+    def test_byo_tenant_still_gets_the_openrouter_declaration(self):
+        """Harmless for BYO tenants, and emitted for them anyway.
+
+        It only extends the ``openrouter`` provider's model list; a BYO primary
+        is ``anthropic/*``, resolved through a different provider entirely, so
+        there is nothing here that can shadow their chat models.
+        """
+        declared = _get(self.config, "models.providers.openrouter.models")
+        self.assertTrue(any(m["id"] == GEMMA_MODEL.removeprefix("openrouter/") for m in declared))
+
+    def test_byo_config_passes_write_validation_gate(self):
+        assert_config_writable(self.config)
