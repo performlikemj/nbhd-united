@@ -224,7 +224,6 @@ _ALLOWLISTED_SITES: set[tuple[str, int, str]] = {
     ("apps/fuel/views.py", 1349, "name"),
     # ── Phase 3 pre-existing TEST predicates (assert the plaintext dedup behavior
     # the product sites above implement; updated alongside feat/enc-p3-*-read). ──
-    ("apps/fuel/tests.py", 3014, "activity"),
     ("apps/fuel/tests.py", 4319, "name"),
     ("apps/fuel/tests.py", 4333, "name"),
     ("apps/fuel/tests.py", 4348, "name"),

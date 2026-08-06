@@ -3128,7 +3128,7 @@ class PlanReconcilerRaceTests(TestCase):
                 "3": {"activity": "Pull", "category": "strength"},
             },
         )
-        pull = Workout.objects.filter(plan=plan, activity="Pull").first()
+        pull = Workout.objects.filter(plan=plan, activity="Pull").first()  # guard: encrypted-predicate
         original_uuid = pull.id
 
         pull.edit_lock_until = self._tz_now() + timedelta(seconds=60)
