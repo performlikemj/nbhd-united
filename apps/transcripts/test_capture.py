@@ -7,8 +7,9 @@ from io import StringIO
 from unittest.mock import patch
 
 from django.core.management import call_command
-from django.db import transaction
-from django.test import TestCase, override_settings
+from django.db import connection, transaction
+from django.test import TestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.crypto import box
@@ -80,6 +81,25 @@ class CaptureTest(TestCase):
         self.assertEqual(TranscriptIndexOutbox.objects.filter(tenant=tenant, turn_id=event.turn_id).count(), 1)
         self.assertNotIn("text", {field.name for field in event._meta.fields})
 
+    def test_capture_sets_transaction_local_tenant_before_insert(self):
+        tenant = _tenant("capture-guc")
+        mint_and_wrap_dek(tenant)
+
+        with CaptureQueriesContext(connection) as queries:
+            capture_transcript_event(
+                **_capture_kwargs(tenant),
+                redaction=_confirmed(),
+            )
+
+        sql = [query["sql"] for query in queries]
+        guc_index = next(index for index, query in enumerate(sql) if "set_config('app.tenant_id'" in query)
+        insert_index = next(
+            index for index, query in enumerate(sql) if 'INSERT INTO "transcripts_transcriptevent"' in query
+        )
+        self.assertLess(guc_index, insert_index)
+        self.assertIn(str(tenant.id), sql[guc_index])
+        self.assertIn("true", sql[guc_index].lower())
+
     def test_unconfirmed_outcome_is_type_incapable_of_capture(self):
         tenant = _tenant("unconfirmed")
 
@@ -120,6 +140,32 @@ class CaptureTest(TestCase):
         self.assertEqual(row.reason, "redaction-error")
         self.assertFalse(any("text" in field.name for field in row._meta.fields))
         self.assertNotIn("raw Alice", repr(row.__dict__))
+
+    def test_quarantine_sets_local_tenant_inside_atomic_before_insert(self):
+        tenant = _tenant("quarantine-guc")
+        outcome = RedactionOutcome("raw Alice", False, "redaction-error")
+
+        with CaptureQueriesContext(connection) as queries:
+            quarantine_transcript_event(
+                tenant=tenant,
+                source_type=TranscriptEvent.SourceType.TELEGRAM_WEBHOOK,
+                source_event_id="update-guc-1",
+                channel=TranscriptEvent.Channel.TELEGRAM,
+                outcome=outcome,
+            )
+
+        sql = [query["sql"] for query in queries]
+        savepoint_index = next(index for index, query in enumerate(sql) if query.startswith("SAVEPOINT"))
+        guc_index = next(index for index, query in enumerate(sql) if "set_config('app.tenant_id'" in query)
+        insert_index = next(
+            index for index, query in enumerate(sql) if 'INSERT INTO "transcripts_transcriptcapturequarantine"' in query
+        )
+        release_index = next(index for index, query in enumerate(sql) if query.startswith("RELEASE SAVEPOINT"))
+        self.assertLess(savepoint_index, guc_index)
+        self.assertLess(guc_index, insert_index)
+        self.assertLess(insert_index, release_index)
+        self.assertIn(str(tenant.id), sql[guc_index])
+        self.assertIn("true", sql[guc_index].lower())
 
     def test_capture_and_outbox_are_idempotent(self):
         tenant = _tenant("idempotent")
@@ -172,6 +218,37 @@ class CaptureTest(TestCase):
 
         self.assertIsNotNone(event)
         encrypt_mock.assert_not_called()
+
+
+class TransactionLocalTenantContextTest(TransactionTestCase):
+    def setUp(self):
+        mock_patcher = patch("apps.orchestrator.azure_client._is_mock", return_value=True)
+        mock_patcher.start()
+        self.addCleanup(mock_patcher.stop)
+        self.addCleanup(_MOCK_KEK_REGISTRY.clear)
+
+    def test_capture_tenant_context_lasts_for_outer_transaction_only(self):
+        tenant = _tenant("transaction-scope")
+        mint_and_wrap_dek(tenant)
+        prepared = encrypt_transcript_text(tenant, _confirmed())
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT set_config('app.tenant_id', '', false)")
+
+        with transaction.atomic():
+            capture_transcript_event(
+                **_capture_kwargs(tenant),
+                redaction=prepared,
+            )
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT current_setting('app.tenant_id', true)")
+                in_transaction = cursor.fetchone()[0]
+
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT current_setting('app.tenant_id', true)")
+            after_transaction = cursor.fetchone()[0]
+
+        self.assertEqual(in_transaction, str(tenant.id))
+        self.assertIn(after_transaction, ("", None))
 
 
 class RecallCaptureCommandTest(TestCase):
@@ -229,6 +306,7 @@ class QuarantineAlertTest(TestCase):
         )
 
         with (
+            CaptureQueriesContext(connection) as queries,
             patch("apps.transcripts.alerts.should_send", side_effect=[now, None]),
             patch("apps.transcripts.alerts.send_mail", return_value=1) as send_mail,
             patch("apps.transcripts.alerts.record_sent"),
@@ -241,6 +319,10 @@ class QuarantineAlertTest(TestCase):
         suppressed.assert_called_once()
         self.assertIn("above 1%", send_mail.call_args.kwargs["subject"])
         self.assertIn("Quarantines: 1", send_mail.call_args.kwargs["message"])
+        guc_queries = [query["sql"] for query in queries if "set_config('app.tenant_id'" in query["sql"]]
+        self.assertEqual(len(guc_queries), 2)
+        self.assertTrue(all(str(tenant.id) in query for query in guc_queries))
+        self.assertTrue(all("true" in query.lower() for query in guc_queries))
 
     def test_any_permanent_loss_fires_loud_alert(self):
         tenant = _tenant("permanent-alert")

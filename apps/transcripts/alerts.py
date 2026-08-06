@@ -7,6 +7,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import connection, transaction
 from django.db.models import Count
 from django.utils import timezone
 
@@ -57,15 +58,27 @@ def _send_alert(*, fingerprint: str, cooldown: timedelta, subject: str, body: st
 def check_quarantine_alerts(tenant) -> None:
     """Check the trailing-24h rate and permanent-loss conditions for a tenant."""
     since = timezone.now() - timedelta(hours=24)
-    quarantines = TranscriptCaptureQuarantine.objects.filter(
-        tenant=tenant,
-        created_at__gte=since,
-    )
-    quarantine_count = quarantines.count()
-    event_count = TranscriptEvent.objects.filter(
-        tenant=tenant,
-        captured_at__gte=since,
-    ).count()
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('app.tenant_id', %s, true)",
+                [str(tenant.id)],
+            )
+        quarantines = TranscriptCaptureQuarantine.objects.filter(
+            tenant=tenant,
+            created_at__gte=since,
+        )
+        quarantine_count = quarantines.count()
+        event_count = TranscriptEvent.objects.filter(
+            tenant=tenant,
+            captured_at__gte=since,
+        ).count()
+        permanent_by_source = list(
+            quarantines.filter(permanent_loss=True)
+            .values("source_type")
+            .annotate(count=Count("id"))
+            .order_by("source_type")
+        )
     denominator = quarantine_count + event_count
 
     if denominator >= 20 and quarantine_count * 100 > denominator:
@@ -82,12 +95,6 @@ def check_quarantine_alerts(tenant) -> None:
             ),
         )
 
-    permanent_by_source = list(
-        quarantines.filter(permanent_loss=True)
-        .values("source_type")
-        .annotate(count=Count("id"))
-        .order_by("source_type")
-    )
     for item in permanent_by_source:
         source_type = item["source_type"]
         _send_alert(
