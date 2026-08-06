@@ -75,7 +75,7 @@ class Migration(migrations.Migration):
                     models.TextField(
                         blank=True,
                         default="",
-                        help_text="Raw user-facing excerpt for logging (truncated).",
+                        help_text="Redacted user-facing excerpt used for coalescing and logging.",
                     ),
                 ),
                 ("created_at", models.DateTimeField(auto_now_add=True)),

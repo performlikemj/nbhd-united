@@ -16,6 +16,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from django.utils import timezone
 
+from apps.pii.redactor import RedactionOutcome
 from apps.router.models import BufferedMessage
 from apps.router.wake_on_message import (
     ACK_FRESH,
@@ -189,12 +190,23 @@ class BufferWriteRedactsAndMinimizesTest(TestCase):
             "source": {"userId": "U_secret_line_id", "type": "user"},
             "message": {"type": "text", "id": "m1", "text": "hi Alice"},
         }
-        with patch("apps.pii.redactor.redact_user_message", side_effect=lambda text, tenant: text):
+        with patch(
+            "apps.pii.redactor.redact_user_message_checked",
+            return_value=RedactionOutcome("hi Alice", False, "test-noop"),
+        ):
             handle_hibernated_message(tenant, "line", raw_event, "hi Alice")
 
         row = BufferedMessage.objects.filter(tenant=tenant).latest("created_at")
         # Only the minimal envelope — no raw source/message fields.
-        self.assertEqual(row.payload, {"schema": "min-v1", "channel": "line", "is_voice": False})
+        self.assertEqual(
+            row.payload,
+            {
+                "schema": "min-v1",
+                "channel": "line",
+                "is_voice": False,
+                "redaction": {"confirmed": False, "reason": "test-noop"},
+            },
+        )
         self.assertNotIn("U_secret_line_id", str(row.payload))
         # user_text redacted: raw name gone, placeholder present.
         self.assertNotIn("Alice", row.user_text)
@@ -219,13 +231,24 @@ class BufferWriteRedactsAndMinimizesTest(TestCase):
                 "from": {"id": 44556677, "first_name": "Bob", "last_name": "Lee", "username": "bob_x"},
             },
         }
-        with patch("apps.pii.redactor.redact_user_message", side_effect=lambda text, tenant: text):
+        with patch(
+            "apps.pii.redactor.redact_user_message_checked",
+            return_value=RedactionOutcome("call me", False, "test-noop"),
+        ):
             handle_hibernated_message(tenant, "telegram", raw_update, "call me")
 
         row = BufferedMessage.objects.filter(tenant=tenant).latest("created_at")
         self.assertEqual(
             row.payload,
-            {"schema": "min-v1", "channel": "telegram", "is_voice": False, "is_image": False, "chat_id": 44556677},
+            {
+                "schema": "min-v1",
+                "channel": "telegram",
+                "is_voice": False,
+                "is_image": False,
+                "provider_event_id": 5,
+                "chat_id": 44556677,
+                "redaction": {"confirmed": False, "reason": "test-noop"},
+            },
         )
         for pii in ("Bob", "Lee", "bob_x"):
             self.assertNotIn(pii, str(row.payload))

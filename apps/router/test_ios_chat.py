@@ -834,7 +834,7 @@ class IOSChatImageTest(TestCase):
         self.assertEqual(second.status_code, 200, second.content)  # replay, not 400
         mock_store.assert_called_once()  # not re-stored
 
-    @patch("apps.pii.redactor.redact_user_message", return_value="REDACTED")
+    @patch("apps.pii.redactor._redact_user_message", return_value="REDACTED")
     @patch("apps.router.pending_queue.httpx.post")
     def test_coalesce_excerpt_is_redacted(self, mock_post, _mock_redact):
         # The queue-row excerpt feeds the coalesced-batch rebuild, so it must be

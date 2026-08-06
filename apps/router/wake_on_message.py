@@ -65,13 +65,20 @@ def handle_hibernated_message(
     # same at-rest posture. ``user_text`` stays untruncated (redacted) so the
     # hibernated-drain coalesce path can stitch full user texts together
     # (apologies + log lines slice locally where they need a short excerpt).
-    from apps.router.buffer_envelope import build_buffer_envelope, redact_for_buffer
+    from apps.router.buffer_envelope import build_buffer_envelope, redact_for_buffer_checked
+
+    redaction = redact_for_buffer_checked(tenant, user_text or "")
+    buffer_payload = build_buffer_envelope(channel, payload)
+    buffer_payload["redaction"] = {
+        "confirmed": redaction.confirmed,
+        "reason": redaction.reason,
+    }
 
     BufferedMessage.objects.create(
         tenant=tenant,
         channel=channel,
-        payload=build_buffer_envelope(channel, payload),
-        user_text=redact_for_buffer(tenant, user_text or ""),
+        payload=buffer_payload,
+        user_text=redaction.text,
     )
 
     # Update last_message_at even while hibernated

@@ -536,11 +536,12 @@ def enqueue_tenant_turn(
     # AppChatMessage.user_text (persisted above) and the display excerpt stay
     # verbatim so the iOS ?since= feed shows exactly what the user typed.
     # Outbound rehydration is already wired in the drain path, so [PERSON_N]
-    # placeholders round-trip. redact_user_message swallows its own errors
-    # and returns the original text, so it never blocks delivery.
-    from apps.pii.redactor import redact_user_message
+    # placeholders round-trip. The checked wrapper preserves fail-open delivery
+    # text while recording whether redaction genuinely completed for this row.
+    from apps.pii.redactor import redact_user_message_checked
 
-    redacted_text = redact_user_message(text, tenant)
+    redaction = redact_user_message_checked(text, tenant)
+    redacted_text = redaction.text
     # Per-turn transparency metadata: which of the user's real values were
     # obfuscated behind placeholders before this turn reached the assistant.
     # redact_user_message has already minted+persisted any new bindings onto
@@ -576,6 +577,10 @@ def enqueue_tenant_turn(
         "user_timezone": user_tz,
         "client_msg_id": client_msg_id,
         "thread_id": str(thread.id),
+        "redaction": {
+            "confirmed": redaction.confirmed,
+            "reason": redaction.reason,
+        },
     }
     if image:
         # Force a singleton batch: a coalesced batch (cold-start burst) rebuilds

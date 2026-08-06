@@ -20,6 +20,7 @@ from apps.router.buffer_envelope import (
     envelope_media,
     envelope_telegram_chat_id,
     redact_for_buffer,
+    redact_for_buffer_checked,
 )
 
 
@@ -36,7 +37,15 @@ class BuildBufferEnvelopeTelegramTest(SimpleTestCase):
         }
         env = build_buffer_envelope("telegram", update)
         self.assertEqual(
-            env, {"schema": SCHEMA, "channel": "telegram", "is_voice": False, "is_image": False, "chat_id": 12345}
+            env,
+            {
+                "schema": SCHEMA,
+                "channel": "telegram",
+                "is_voice": False,
+                "is_image": False,
+                "provider_event_id": 42,
+                "chat_id": 12345,
+            },
         )
         # No raw PII field survived into the envelope.
         flat = str(env)
@@ -81,12 +90,21 @@ class BuildBufferEnvelopeLineTest(SimpleTestCase):
     def test_text_event_extracts_no_pii(self):
         event = {
             "type": "message",
+            "webhookEventId": "line-event-1",
             "replyToken": "tok",
             "source": {"userId": "U_secret_line_id", "type": "user"},
             "message": {"type": "text", "id": "m1", "text": "meet Bob at 5"},
         }
         env = build_buffer_envelope("line", event)
-        self.assertEqual(env, {"schema": SCHEMA, "channel": "line", "is_voice": False})
+        self.assertEqual(
+            env,
+            {
+                "schema": SCHEMA,
+                "channel": "line",
+                "is_voice": False,
+                "webhook_event_id": "line-event-1",
+            },
+        )
         for pii in ("U_secret_line_id", "Bob", "meet"):
             self.assertNotIn(pii, str(env))
 
@@ -176,3 +194,28 @@ class RedactForBufferTest(SimpleTestCase):
         mock_mint.assert_called_once()
         mock_reuse.assert_called_once()
         self.assertEqual(out, "masked-2")
+
+    def test_checked_disabled_result_stays_unconfirmed_after_reuse_pass(self):
+        from apps.pii.redactor import RedactionOutcome
+
+        tenant = self._tenant({"[PERSON_1]": "Alice"})
+        with patch(
+            "apps.pii.redactor.redact_user_message_checked",
+            return_value=RedactionOutcome("hi Alice", False, "redaction-disabled"),
+        ):
+            outcome = redact_for_buffer_checked(tenant, "hi Alice")
+
+        self.assertEqual(outcome.text, "hi [PERSON_1]")
+        self.assertFalse(outcome.confirmed)
+        self.assertEqual(outcome.reason, "redaction-disabled")
+
+    def test_checked_total_failure_drops_text_and_is_unconfirmed(self):
+        with (
+            patch("apps.pii.redactor.redact_user_message_checked", side_effect=RuntimeError("NER down")),
+            patch("apps.pii.redactor.redact_known_entities", side_effect=RuntimeError("map down")),
+        ):
+            outcome = redact_for_buffer_checked(self._tenant({}), "raw secret")
+
+        self.assertEqual(outcome.text, "")
+        self.assertFalse(outcome.confirmed)
+        self.assertEqual(outcome.reason, "buffer-redaction-error")
