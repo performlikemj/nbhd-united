@@ -68,6 +68,13 @@ azure-storage-file-share
 azure-keyvault-secrets
 azure-keyvault-keys>=4.9,<5
 
+# PDF text extraction (async server-side read of app-uploaded documents, so the
+# slow in-turn OpenClaw `pdf` tool no longer blocks the assistant's queue).
+# Pure Python, zero transitive dependencies — pinned exactly, and BOTH this file
+# and requirements.txt are hand-edited: pip-compile on macOS strips the
+# platform-specific pins this Linux-deployed lockfile needs.
+pypdf==6.14.2
+
 # Charts (server-side rendering for chat channels)
 matplotlib
 

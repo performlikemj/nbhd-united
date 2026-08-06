@@ -454,6 +454,18 @@ def is_inbound_document_path(path: str | None) -> bool:
     return path.rsplit("/", 1)[-1].startswith(_DOC_FILENAME_PREFIX)
 
 
+def container_media_path(workspace_path: str) -> str:
+    """Map a share-relative workspace path to the path OpenClaw sees.
+
+    The share is mounted into the container at ``_CONTAINER_WORKSPACE_ROOT``, so
+    anything we hand the agent by path must be translated. ``_store_inbound_media``
+    does this inline for the file it just wrote; this is the same mapping for
+    paths DERIVED from a stored file (the async extraction artifacts in
+    ``pdf_extraction``), so the two can never drift.
+    """
+    return f"{_CONTAINER_WORKSPACE_ROOT}/{workspace_path}"
+
+
 def store_inbound_document(tenant_id: str, data: bytes, ext: str) -> tuple[str, str]:
     """Write document bytes to the tenant's share as ``doc_<hash>.<ext>``.
 
@@ -483,7 +495,20 @@ _UNTRUSTED_CONTENT_NOTICE = (
 )
 
 
-def attachment_marker(kind: str, container_path: str) -> str:
+# Inserted into a document marker when server-side extraction has been enqueued
+# for that file (``apps.router.pdf_extraction``). It steers the agent away from
+# the in-turn ``pdf`` tool — the slow read that made the user stare at a spinner
+# — while explicitly keeping that tool as the escape hatch, because the async
+# path legitimately gives up on a scanned/image-only PDF and says so in a
+# follow-up turn. Kept free of ``]`` so the whole marker stays one bracket pair.
+_EXTRACTION_PENDING_NOTICE = (
+    "text extraction is running in the background — acknowledge that you received the file "
+    "and will read it in a moment, but do NOT call the pdf tool for it. The extracted text "
+    "arrives as a follow-up message; if extraction fails you will be told to use the pdf tool then"
+)
+
+
+def attachment_marker(kind: str, container_path: str, *, extraction_pending: bool = False) -> str:
     """Build the LLM-bound marker for a stored inbound photo/document.
 
     ``kind`` is ``"photo"`` (read by the agent's built-in ``image`` tool) or
@@ -494,11 +519,22 @@ def attachment_marker(kind: str, container_path: str) -> str:
     ``f"[Photo attached: ...]"``/``f"[Document attached: ...]"`` at a call
     site; that is exactly how the two channels drift apart.
 
+    ``extraction_pending`` (documents only) marks a file whose text is being
+    extracted server-side, so the agent acknowledges instead of blocking the turn
+    on the ``pdf`` tool. It is a per-CHANNEL capability, not a drift: only the
+    iOS ingress enqueues extraction today, and the Telegram poller never reaches
+    the document branch at all (``poller._extract_document_text`` drops PDFs).
+    A channel that has not enqueued extraction must NOT pass this flag — the
+    agent would wait for a follow-up that never comes.
+
     The whole marker is a single ``[...]`` pair with no nested ``]``, so
     ``error_messages.strip_internal_framing`` can still peel it off a
     dropped-message-apology excerpt in one regex match.
     """
     if kind not in ("photo", "document"):
         raise ValueError(f"attachment_marker: kind must be 'photo' or 'document', got {kind!r}")
+    if extraction_pending and kind != "document":
+        raise ValueError("attachment_marker: extraction_pending applies to documents only")
     label = "Photo" if kind == "photo" else "Document"
-    return f"[{label} attached: {container_path} — {_UNTRUSTED_CONTENT_NOTICE}]\n"
+    pending = f"{_EXTRACTION_PENDING_NOTICE} — " if extraction_pending else ""
+    return f"[{label} attached: {container_path} — {pending}{_UNTRUSTED_CONTENT_NOTICE}]\n"

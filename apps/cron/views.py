@@ -241,6 +241,13 @@ TASK_MAP = {
     "weekly_slo_digest": "apps.evals.tasks.weekly_slo_digest_task",
     # Media cleanup (daily)
     "cleanup_inbound_media": "apps.router.tasks.cleanup_inbound_media_task",
+    # Async PDF text extraction (on-demand, published by the iOS chat ingress
+    # right after an app-uploaded document is stored). Moves the text-layer read
+    # off the agent's turn so the assistant can acknowledge immediately and
+    # deliver the content as a follow-up. Idempotent — state is a done-marker
+    # file on the tenant share, so a QStash redelivery is a no-op.
+    # See CONTINUITY_async_pdf_extraction.md.
+    "extract_inbound_document": "apps.router.tasks.extract_inbound_document_task",
     # LINE Push monthly quota — daily poll + on-demand handler dispatch.
     # poll_line_quota refreshes the singleton state and emits transitions;
     # dispatch_line_quota_handler runs the user-facing fan-out (idempotent
