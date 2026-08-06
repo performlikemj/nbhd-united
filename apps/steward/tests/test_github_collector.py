@@ -20,8 +20,9 @@ from apps.steward.models import (
 from apps.steward.trains import advance_train, open_train
 
 TEST_REPOS = [("owner", "nbhd-united", TrackedItem.Product.NBHD_UNITED)]
-TS = "2026-07-30T12:00:00Z"
-TS2 = "2026-07-30T13:00:00Z"
+_BASE = timezone.now() - timedelta(days=2)
+TS = _BASE.strftime("%Y-%m-%dT%H:%M:%SZ")
+TS2 = (_BASE + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class FakeResponse:
