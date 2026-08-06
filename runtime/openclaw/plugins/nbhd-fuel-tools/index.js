@@ -211,6 +211,41 @@ export default function register(api) {
     { optional: true },
   );
 
+  // ── Get Workout ────────────────────────────────────────────────────
+  api.registerTool(wrap({
+      name: "nbhd_fuel_get_workout",
+      description:
+        "Retrieve the full details of a single workout, including exercises, sets, reps, and metrics. Use a workout_id returned by nbhd_fuel_summary or nbhd_fuel_audit when the user asks what they did in that specific workout.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          workout_id: {
+            type: "string",
+            description: "UUID of the workout to retrieve (from nbhd_fuel_summary or nbhd_fuel_audit).",
+          },
+        },
+        required: ["workout_id"],
+      },
+      async execute(_id, params) {
+        try {
+          const input = asObject(params);
+          const workoutId = asTrimmedString(input.workout_id);
+          if (!workoutId) throw new Error("workout_id is required");
+
+          const payload = await callRuntime(api, {
+            path: fuelPath(api, `/workouts/${encodeURIComponent(workoutId)}/`),
+            method: "GET",
+          });
+          return renderPayload(payload);
+        } catch (error) {
+          return renderPayload({ error: error.message });
+        }
+      },
+    }),
+    { optional: true },
+  );
+
   // ── Log Workout ─────────────────────────────────────────────────────
   api.registerTool(wrap({
       name: "nbhd_fuel_log_workout",

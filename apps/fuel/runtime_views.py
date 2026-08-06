@@ -48,6 +48,7 @@ class _FuelResponseGuard(KnownValueResponseGuardMixin):
             "equipment",
             "additional_context",
             "detail",
+            "detail_json",
             "activity",
             "exercise",
             "skip_reason",
@@ -72,6 +73,25 @@ _PROFILE_FIELDS = (
 
 def _serialize_profile(profile: FuelProfile) -> dict:
     return {f: getattr(profile, f) for f in _PROFILE_FIELDS}
+
+
+def _serialize_workout_summary_card(workout: Workout) -> dict:
+    entry = {
+        "id": str(workout.id),
+        "date": str(workout.date),
+        "category": workout.category,
+        "activity": workout.activity,
+        "duration_minutes": workout.duration_minutes,
+        "rpe": workout.rpe,
+        "source": workout.source,
+    }
+    # Measured metrics (HealthKit imports and any logged actuals) so the
+    # assistant can coach off real data, not just labels.
+    detail = workout.detail_json if isinstance(workout.detail_json, dict) else {}
+    for key in ("distance_km", "avg_hr", "peak_hr", "calories"):
+        if isinstance(detail.get(key), int | float):
+            entry[key] = detail[key]
+    return entry
 
 
 def _edit_locked_response(workout: Workout) -> Response | None:
@@ -242,7 +262,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
 
 
 class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
-    """PATCH/DELETE a single workout from the AI assistant."""
+    """GET/PATCH/DELETE a single workout from the AI assistant."""
 
     permission_classes = [AllowAny]
 
@@ -259,6 +279,23 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         except Workout.DoesNotExist:
             return None, None, Response({"error": "workout_not_found"}, status=status.HTTP_404_NOT_FOUND)
         return tenant, workout, None
+
+    def get(self, request, tenant_id, workout_id):
+        _tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
+        if err:
+            return err
+
+        payload = {
+            **_serialize_workout_summary_card(workout),
+            "detail_json": workout.detail_json,
+            "status": workout.status,
+            "scheduled_at": workout.scheduled_at.isoformat() if workout.scheduled_at else None,
+        }
+        if workout.plan_id:
+            payload["plan_id"] = str(workout.plan_id)
+        if workout.slot_id:
+            payload["slot_id"] = str(workout.slot_id)
+        return Response(payload)
 
     def patch(self, request, tenant_id, workout_id):
         from django.db import transaction
@@ -552,24 +589,7 @@ class RuntimeFuelSummaryView(_FuelResponseGuard, APIView):
         tenant = tenant_or_resp
 
         recent = Workout.objects.filter(tenant=tenant, status="done").order_by("-date", "-created_at")[:20]
-        recent_data = []
-        for w in recent:
-            entry = {
-                "id": str(w.id),
-                "date": str(w.date),
-                "category": w.category,
-                "activity": w.activity,
-                "duration_minutes": w.duration_minutes,
-                "rpe": w.rpe,
-                "source": w.source,
-            }
-            # Measured metrics (HealthKit imports and any logged actuals)
-            # so the assistant can coach off real data, not just labels.
-            detail = w.detail_json if isinstance(w.detail_json, dict) else {}
-            for key in ("distance_km", "avg_hr", "peak_hr", "calories"):
-                if isinstance(detail.get(key), int | float):
-                    entry[key] = detail[key]
-            recent_data.append(entry)
+        recent_data = [_serialize_workout_summary_card(workout) for workout in recent]
 
         planned = Workout.objects.filter(tenant=tenant, status="planned").order_by("date")[:10]
         planned_data = [
@@ -2102,6 +2122,8 @@ def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list, a
             "or DELETE today's workout (e.g. swap an exercise, change weights), find "
             "the matching workout_id in next_14d_workouts[i].id (match by date) and "
             "call nbhd_fuel_update_workout or nbhd_fuel_delete_workout directly. "
+            "To inspect its full exercises, sets, reps, and metrics first, call "
+            "nbhd_fuel_get_workout with that workout_id. "
             "Workout IDs are already in this response — do NOT call nbhd_fuel_summary "
             "just to retrieve them."
         )
@@ -2129,7 +2151,7 @@ def _audit_guidance(today_plan: dict, fuel_crons: list, duplicate_fires: list, a
             "is the source of truth. Do NOT treat today as unplanned or propose a fresh "
             "workout over it: deliver the planned session, or acknowledge it if a row is "
             "already done/skipped (check each row's status). Workout IDs are inline for "
-            "nbhd_fuel_update_workout / nbhd_fuel_delete_workout — do NOT call "
+            "nbhd_fuel_get_workout / nbhd_fuel_update_workout / nbhd_fuel_delete_workout — do NOT call "
             "nbhd_fuel_summary just to retrieve them."
         )
     else:

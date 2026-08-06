@@ -194,7 +194,6 @@ class RepoStateTests(SimpleTestCase):
             ("apps/fuel/runtime_views.py", 1460, "name"),
             ("apps/fuel/views.py", 1349, "name"),
             # Phase 3 — pre-existing test predicates
-            ("apps/fuel/tests.py", 3014, "activity"),
             ("apps/fuel/tests.py", 4319, "name"),
             ("apps/fuel/tests.py", 4333, "name"),
             ("apps/fuel/tests.py", 4348, "name"),
