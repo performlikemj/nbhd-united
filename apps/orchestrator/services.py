@@ -39,6 +39,7 @@ from .azure_client import (
 from .config_generator import build_cron_seed_jobs, config_to_json, generate_openclaw_config
 from .config_security import audit_config_security
 from .personas import render_workspace_files
+from .recall_search_key import begin_delete_recall_search_key
 
 logger = logging.getLogger(__name__)
 
@@ -1257,6 +1258,19 @@ def deprovision_tenant(tenant_id: str) -> None:
         except Exception:
             logger.warning(
                 "KEK soft-delete failed for tenant %s; recoverable in Key Vault, retry manually",
+                tenant_id,
+                exc_info=True,
+            )
+
+        # 2d. Soft-delete the standalone recall blind-index key under the same
+        # recovery-window semantics as the KEK. Keep this failure-isolated from
+        # the KEK delete so a transient failure on either resource does not
+        # prevent attempting the other or block the rest of deprovision.
+        try:
+            begin_delete_recall_search_key(tenant)
+        except Exception:
+            logger.warning(
+                "Recall search-key soft-delete failed for tenant %s; recoverable in Key Vault, retry manually",
                 tenant_id,
                 exc_info=True,
             )
