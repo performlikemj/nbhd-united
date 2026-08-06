@@ -124,6 +124,30 @@ def record_proactive_outbound(
         from apps.pii.egress import redact_known_values
 
         message_text = redact_known_values(tenant, message_text, seam="proactive_outbound_storage")
+        transcript_redaction = None
+        transcript_quarantine = None
+        if getattr(tenant, "recall_capture_enabled", False):
+            try:
+                from apps.pii.redactor import RedactionOutcome, confirm_assistant_output
+                from apps.transcripts.capture import encrypt_transcript_text
+
+                confirmed = confirm_assistant_output(tenant, message_text)
+                if confirmed is not None:
+                    # Key-broker work must complete before the outbound write
+                    # transaction opens.
+                    transcript_redaction = encrypt_transcript_text(tenant, confirmed)
+                else:
+                    transcript_quarantine = RedactionOutcome(
+                        text="",
+                        confirmed=False,
+                        reason="assistant-confirm-failed",
+                    )
+            except Exception:
+                logger.exception(
+                    "Proactive transcript preparation failed tenant=%s channel=%s",
+                    str(getattr(tenant, "id", "?"))[:8],
+                    channel,
+                )
         with transaction.atomic():
             from apps.router.structured_artifacts import (
                 externalize_large_structured_reply,
@@ -160,6 +184,58 @@ def record_proactive_outbound(
                 # deterministic model-facing offer set below.
                 quick_replies=quick_replies,
             )
+            if transcript_redaction is not None or transcript_quarantine is not None:
+                try:
+                    # Savepoint isolation preserves the pre-existing outbound row
+                    # semantics if transcript persistence has an unexpected bug.
+                    with transaction.atomic():
+                        from apps.transcripts.capture import (
+                            capture_transcript_event,
+                            derive_turn_id,
+                            quarantine_transcript_event,
+                        )
+                        from apps.transcripts.models import TranscriptEvent
+
+                        source_event_id = str(row.id)
+                        turn_id = derive_turn_id(
+                            tenant.id,
+                            TranscriptEvent.SourceType.PROACTIVE,
+                            source_event_id,
+                        )
+                        event_channel = (
+                            TranscriptEvent.Channel.IOS if channel == ProactiveOutbound.Channel.APP else channel
+                        )
+                        occurred_at = timezone.now()
+                        if transcript_redaction is not None:
+                            capture_transcript_event(
+                                tenant=tenant,
+                                source_type=TranscriptEvent.SourceType.PROACTIVE,
+                                source_event_id=source_event_id,
+                                role=TranscriptEvent.Role.ASSISTANT,
+                                channel=event_channel,
+                                turn_id=turn_id,
+                                occurred_at=occurred_at,
+                                redaction=transcript_redaction,
+                                thread_key=channel,
+                                delivery_state="",
+                            )
+                        else:
+                            quarantine_transcript_event(
+                                tenant=tenant,
+                                source_type=TranscriptEvent.SourceType.PROACTIVE,
+                                source_event_id=source_event_id,
+                                channel=event_channel,
+                                outcome=transcript_quarantine,
+                                turn_id=turn_id,
+                                occurred_at=occurred_at,
+                                thread_key=channel,
+                            )
+                except Exception:
+                    logger.exception(
+                        "Proactive transcript persistence failed tenant=%s channel=%s",
+                        str(getattr(tenant, "id", "?"))[:8],
+                        channel,
+                    )
     except Exception:
         logger.exception(
             "Failed to record ProactiveOutbound (tenant=%s channel=%s job=%s)",

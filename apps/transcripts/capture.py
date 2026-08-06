@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
-from uuid import UUID
+from uuid import UUID, uuid5
 
 from django.db import transaction
 
@@ -24,8 +24,20 @@ _PERMANENT_LOSS_SOURCES = frozenset(
         TranscriptEvent.SourceType.TELEGRAM_POLLER,
         TranscriptEvent.SourceType.TELEGRAM_WEBHOOK,
         TranscriptEvent.SourceType.LINE,
+        TranscriptEvent.SourceType.BUFFERED,
     }
 )
+
+# Stable forever: changing this namespace would split retried/redelivered turns.
+TRANSCRIPTS_TURN_NS = UUID("95f19ca5-3aef-47e8-8d8a-a24ea394ed93")
+
+
+def derive_turn_id(tenant_id, seam: str, primary_source_event_id: str) -> UUID:
+    """Return the deterministic identity for one source turn."""
+    return uuid5(
+        TRANSCRIPTS_TURN_NS,
+        f"{tenant_id}:{seam}:{primary_source_event_id}",
+    )
 
 
 @dataclass(frozen=True)

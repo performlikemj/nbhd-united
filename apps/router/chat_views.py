@@ -108,6 +108,106 @@ def _parse_occurred_at(raw: object) -> timezone.datetime | None:
     return parsed
 
 
+def _capture_on_device_transcript(
+    tenant: Tenant,
+    turn: AppChatMessage,
+    *,
+    user_text: str,
+    reply_text: str,
+) -> None:
+    """Fail-closed capture for a completed local-model turn."""
+    if not getattr(tenant, "recall_capture_enabled", False):
+        return
+
+    try:
+        from apps.pii.redactor import (
+            RedactionOutcome,
+            as_confirmed,
+            confirm_assistant_output,
+            redact_user_message_checked,
+        )
+        from apps.transcripts.capture import (
+            capture_transcript_event,
+            derive_turn_id,
+            quarantine_transcript_event,
+        )
+        from apps.transcripts.models import TranscriptEvent
+
+        source_event_id = turn.client_msg_id
+        turn_id = derive_turn_id(
+            tenant.id,
+            TranscriptEvent.SourceType.IOS_ONDEVICE,
+            source_event_id,
+        )
+        thread_key = str(turn.thread_id)
+        repair_ref = str(turn.id)
+        user_outcome = redact_user_message_checked(user_text, tenant)
+        confirmed_user = as_confirmed(user_outcome)
+        if confirmed_user is not None:
+            capture_transcript_event(
+                tenant=tenant,
+                source_type=TranscriptEvent.SourceType.IOS_ONDEVICE,
+                source_event_id=source_event_id,
+                role=TranscriptEvent.Role.USER,
+                channel=TranscriptEvent.Channel.IOS,
+                turn_id=turn_id,
+                occurred_at=turn.created_at,
+                redaction=confirmed_user,
+                thread_key=thread_key,
+            )
+        else:
+            quarantine_transcript_event(
+                tenant=tenant,
+                source_type=TranscriptEvent.SourceType.IOS_ONDEVICE,
+                source_event_id=source_event_id,
+                channel=TranscriptEvent.Channel.IOS,
+                outcome=user_outcome,
+                turn_id=turn_id,
+                occurred_at=turn.created_at,
+                thread_key=thread_key,
+                repair_ref=repair_ref,
+            )
+
+        if reply_text:
+            assistant_occurred_at = timezone.now()
+            confirmed_assistant = confirm_assistant_output(tenant, reply_text)
+            if confirmed_assistant is not None:
+                capture_transcript_event(
+                    tenant=tenant,
+                    source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+                    source_event_id=source_event_id,
+                    role=TranscriptEvent.Role.ASSISTANT,
+                    channel=TranscriptEvent.Channel.IOS,
+                    turn_id=turn_id,
+                    occurred_at=assistant_occurred_at,
+                    redaction=confirmed_assistant,
+                    thread_key=thread_key,
+                    delivery_state=TranscriptEvent.DeliveryState.SENT,
+                )
+            else:
+                quarantine_transcript_event(
+                    tenant=tenant,
+                    source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+                    source_event_id=source_event_id,
+                    channel=TranscriptEvent.Channel.IOS,
+                    outcome=RedactionOutcome(
+                        text="",
+                        confirmed=False,
+                        reason="assistant-confirm-failed",
+                    ),
+                    turn_id=turn_id,
+                    occurred_at=assistant_occurred_at,
+                    thread_key=thread_key,
+                    repair_ref=repair_ref,
+                )
+    except Exception:
+        logger.exception(
+            "chat_local_turn: transcript capture failed tenant=%s turn=%s",
+            str(tenant.id)[:8],
+            str(turn.id)[:8],
+        )
+
+
 # How many messages a thread-history GET returns by default.
 _HISTORY_LIMIT = 50
 
@@ -1052,6 +1152,12 @@ class ChatLocalTurnView(APIView):
             # so an outbox-delayed turn lands on the day it happened.
             AppChatMessage.objects.filter(pk=turn.pk).update(created_at=occurred_at)
             turn.refresh_from_db()
+        _capture_on_device_transcript(
+            tenant,
+            turn,
+            user_text=user_text,
+            reply_text=reply_text,
+        )
         ChatThread.objects.filter(id=thread.id).update(last_active_at=now)
 
         # Same debounced USER.md push a captured Telegram/LINE turn triggers,

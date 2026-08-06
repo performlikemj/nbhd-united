@@ -92,8 +92,10 @@ def _normalize_cron_delivery_for_ios(job: dict) -> dict:
 
     NOTE: this is the BACKSTOP for crons Django pushes. A cron the agent creates by
     calling raw ``cron.add`` INSIDE its container never transits this path — that
-    requires the wrapping-plugin guard (deferred). See ``cron_reconcile.py``'s
-    "creation-time enforcement" note.
+    requires the wrapping-plugin guard (deferred). Container-originated delivery
+    on that OC-native path is also a documented transcript-capture gap because it
+    bypasses Django recording. See ``cron_reconcile.py``'s "creation-time
+    enforcement" note.
     """
     if not isinstance(job, dict):
         return job
