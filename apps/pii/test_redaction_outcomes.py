@@ -4,7 +4,10 @@ from unittest.mock import patch
 from django.test import SimpleTestCase
 
 from apps.pii.redactor import (
+    ConfirmedRedaction,
     RedactionOutcome,
+    as_confirmed,
+    confirm_assistant_output,
     redact_user_message,
     redact_user_message_checked,
     redaction_receipt,
@@ -55,3 +58,31 @@ class RedactionOutcomeTest(SimpleTestCase):
         )
         self.assertFalse(outcome.confirmed)
         self.assertEqual(outcome.reason, "redacted")
+
+
+class ConfirmedRedactionTest(SimpleTestCase):
+    def test_as_confirmed_mints_only_for_literal_confirmed_outcome(self):
+        receipt = redaction_receipt({"redaction": {"confirmed": True, "reason": "redacted"}})
+        confirmed = as_confirmed(receipt)
+
+        self.assertIsInstance(confirmed, ConfirmedRedaction)
+        self.assertEqual(confirmed.text, "")
+        self.assertIsNone(as_confirmed(RedactionOutcome("hello Alice", False, "redaction-error")))
+        self.assertIsNone(as_confirmed(redaction_receipt({})))
+
+    def test_assistant_confirmation_scrubs_known_values(self):
+        tenant = SimpleNamespace(
+            id="tenant-confirm",
+            pii_entity_map={"[PERSON_1]": {"name": "Theo Smith"}},
+        )
+
+        confirmed = confirm_assistant_output(tenant, "Ask Theo Smith tomorrow")
+
+        self.assertIsInstance(confirmed, ConfirmedRedaction)
+        self.assertEqual(confirmed.text, "Ask [PERSON_1] tomorrow")
+
+    @patch("apps.pii.egress._redact_known_values", side_effect=RuntimeError("boom"))
+    def test_assistant_confirmation_refuses_to_mint_on_scrub_failure(self, _scrub):
+        tenant = SimpleNamespace(id="tenant-confirm", pii_entity_map={"[PERSON_1]": "Theo Smith"})
+
+        self.assertIsNone(confirm_assistant_output(tenant, "Theo Smith"))

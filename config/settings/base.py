@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     "apps.yardtalk",
     "apps.orchestrator",
     "apps.router",
+    "apps.transcripts",
     "apps.integrations",
     "apps.journal",
     "apps.automations",

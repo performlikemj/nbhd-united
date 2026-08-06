@@ -18,15 +18,15 @@ TWO-REGIME POSTURE (PR8): the default posture is anon-API lockdown — RLS bare
 (enabled, NO policies) on every owned public table, so the Supabase Data API
 (anon/authenticated, which have zero grants anyway) can read nothing, and the
 audited accessor in apps/friends/access.py is the real cross-tenant boundary.
-The exception is the four friends backstop tables — the three
+The exceptions are the four friends backstop tables — the three
 highest-blast-radius cross-tenant tables (``shared_lessons``,
 ``lesson_share_grants``, ``friend_messages``, added by friends.0008) plus the
 private "My sky" table (``friend_sky_memberships``, added by friends.0011 /
 BN-PR6): they carry real FORCE-RLS tenant policies (a deliberate DB backstop,
 kept enabled by disable_rls's RLS_KEEP_ENABLED). Those policies name
-``app_user`` (never ``public``), so they never re-expose the anon API. The
-runtime guard below therefore ALLOWS exactly those named policies on exactly
-those four tables and still forbids everything else.
+``app_user`` (never ``public``), so they never re-expose the anon API — plus
+the three tenant-scoped transcript ledger tables, which use the same named-role
+posture. The runtime guard below allows only these named policies.
 """
 
 from __future__ import annotations
@@ -120,13 +120,19 @@ class PublicSchemaLockdownStaticGuard(SimpleTestCase):
 class PublicSchemaLockdownRuntimeGuard(TestCase):
     """Asserts the post-migrate state of the test database."""
 
-    # The friends DB backstop (friends.0008 + friends.0011) is the ONE sanctioned
-    # exception to the "no policies on public.*" rule: named, app_user-scoped
-    # policies on the three highest-blast-radius cross-tenant tables plus the
-    # self-scoped "My sky" table. Any policy outside this allowlist — or any of
-    # these policies targeting `public` — still fails.
+    # Named, app_user-scoped FORCE-RLS backstops are the sanctioned exceptions
+    # to the "no policies on public.*" rule. Any policy outside this allowlist
+    # — or any of these policies targeting `public` — still fails.
     ALLOWED_POLICY_TABLES = frozenset(
-        {"shared_lessons", "lesson_share_grants", "friend_messages", "friend_sky_memberships"}
+        {
+            "shared_lessons",
+            "lesson_share_grants",
+            "friend_messages",
+            "friend_sky_memberships",
+            "transcripts_transcriptevent",
+            "transcripts_transcriptcapturequarantine",
+            "transcripts_transcriptindexoutbox",
+        }
     )
 
     def test_no_policies_on_public_schema(self):
@@ -150,7 +156,7 @@ class PublicSchemaLockdownRuntimeGuard(TestCase):
             [],
             "Unexpected policies on public.* after migrations run. Migration 0058 "
             "drops every existing policy; the only sanctioned policies are the "
-            "friends backstop (friends.0008 + friends.0011) on "
+            "explicit FORCE-RLS backstops on "
             f"{sorted(self.ALLOWED_POLICY_TABLES)} scoped to a named role. If you "
             "need another real RLS policy add it via a migration with a named "
             "role (never `TO public`) and extend this allowlist. Found: " + repr(offenders),

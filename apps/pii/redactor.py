@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from apps.pii.config import ADDRESS_CONTEXT_LABELS, DEBERTA_LABEL_MAP, LABEL_SCORE_OVERRIDES, TIER_POLICIES
@@ -47,6 +47,60 @@ class RedactionOutcome:
     text: str
     confirmed: bool
     reason: str
+
+
+_CONFIRMED_REDACTION_TOKEN = object()
+
+
+@dataclass(frozen=True)
+class ConfirmedRedaction:
+    """Placeholder-space text carrying module-issued provenance.
+
+    The private token is intentionally identity-checked at persistence seams.
+    A caller cannot obtain a valid value by setting a boolean or by constructing
+    this dataclass with an arbitrary token.
+    """
+
+    text: str
+    reason: str
+    _provenance: object = field(repr=False, compare=False)
+
+
+def _mint_confirmed(text: str, reason: str) -> ConfirmedRedaction:
+    """Mint a confirmation inside an engine-controlled gate."""
+    return ConfirmedRedaction(
+        text=text,
+        reason=reason,
+        _provenance=_CONFIRMED_REDACTION_TOKEN,
+    )
+
+
+def as_confirmed(outcome: RedactionOutcome) -> ConfirmedRedaction | None:
+    """Re-enter the provenance-bearing path from an engine-written receipt."""
+    if not isinstance(outcome, RedactionOutcome) or outcome.confirmed is not True:
+        return None
+    return _mint_confirmed(outcome.text, outcome.reason)
+
+
+def confirm_assistant_output(tenant: Tenant, text: str) -> ConfirmedRedaction | None:
+    """Scrub known entity values from model output, then confirm it for capture.
+
+    Assistant text is authored in placeholder space, but model output can still
+    echo a mapped real value. The existing deterministic known-value scrub is
+    called directly so an internal failure refuses to mint instead of taking its
+    public fail-open compatibility path.
+    """
+    try:
+        from apps.pii.egress import _redact_known_values
+
+        scrubbed = _redact_known_values(tenant, text)
+    except Exception:
+        logger.exception(
+            "Assistant output confirmation failed tenant=%s",
+            getattr(tenant, "id", "?"),
+        )
+        return None
+    return _mint_confirmed(scrubbed, "assistant-output-confirmed")
 
 
 def redaction_receipt(payload: dict) -> RedactionOutcome:
