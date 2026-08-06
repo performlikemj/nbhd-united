@@ -70,6 +70,9 @@ def _telegram_envelope(update: dict) -> dict:
         "is_voice": bool(msg.get("voice")),
         "is_image": bool(msg.get("photo")),
     }
+    provider_event_id = update.get("update_id")
+    if provider_event_id is not None:
+        env["provider_event_id"] = provider_event_id
     chat_id = chat.get("id")
     if chat_id is not None:
         env["chat_id"] = chat_id
@@ -100,11 +103,15 @@ def _line_envelope(event: dict) -> dict:
     message = event.get("message") if isinstance(event, dict) else None
     message = message if isinstance(message, dict) else {}
     mtype = (message.get("type") or "").lower()
-    return {
+    env = {
         "schema": SCHEMA,
         "channel": "line",
         "is_voice": mtype in {"audio", "voice"},
     }
+    webhook_event_id = event.get("webhookEventId")
+    if webhook_event_id is not None:
+        env["webhook_event_id"] = webhook_event_id
+    return env
 
 
 def envelope_is_minimal(payload) -> bool:
@@ -197,3 +204,39 @@ def redact_for_buffer(tenant, text: str) -> str:
         except Exception:
             logger.exception("reuse-only buffer redaction also failed — dropping text to avoid storing raw")
             return ""
+
+
+def redact_for_buffer_checked(tenant, text: str):
+    """Fail-closed buffer redaction with an honest completion receipt."""
+    from apps.pii.redactor import RedactionOutcome
+
+    if not text or not text.strip():
+        return RedactionOutcome(text=text or "", confirmed=False, reason="empty-input")
+    try:
+        from apps.pii.redactor import redact_known_entities, redact_user_message_checked
+
+        outcome = redact_user_message_checked(text, tenant)
+        redacted = redact_known_entities(tenant, outcome.text)
+        return RedactionOutcome(
+            text=redacted,
+            confirmed=outcome.confirmed,
+            reason=outcome.reason,
+        )
+    except Exception:
+        logger.exception("buffer redaction failed — falling back to reuse-only masking")
+        try:
+            from apps.pii.redactor import redact_known_entities
+
+            redacted = redact_known_entities(tenant, text)
+            return RedactionOutcome(
+                text=redacted,
+                confirmed=False,
+                reason="buffer-reuse-only",
+            )
+        except Exception:
+            logger.exception("reuse-only buffer redaction also failed — dropping text to avoid storing raw")
+            return RedactionOutcome(
+                text="",
+                confirmed=False,
+                reason="buffer-redaction-error",
+            )

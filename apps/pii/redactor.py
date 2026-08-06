@@ -39,6 +39,40 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+@dataclass(frozen=True)
+class RedactionOutcome:
+    """Text plus an engine-issued confirmation that redaction completed."""
+
+    text: str
+    confirmed: bool
+    reason: str
+
+
+def redaction_receipt(payload: dict) -> RedactionOutcome:
+    """Read a queue/buffer receipt with rolling-deploy-safe defaults.
+
+    The receipt deliberately does not duplicate text inside JSON; callers pair
+    this outcome with the row's ``user_text``. Legacy or malformed rows can
+    never be mistaken for positively confirmed placeholder-space text.
+    """
+    if not isinstance(payload, dict) or "redaction" not in payload:
+        return RedactionOutcome(text="", confirmed=False, reason="pre-receipt-row")
+
+    receipt = payload.get("redaction")
+    if not isinstance(receipt, dict):
+        return RedactionOutcome(text="", confirmed=False, reason="invalid-receipt")
+
+    reason = receipt.get("reason")
+    if not isinstance(reason, str) or not reason:
+        reason = "invalid-receipt"
+    return RedactionOutcome(
+        text="",
+        confirmed=receipt.get("confirmed") is True,
+        reason=reason,
+    )
+
+
 # Matches bare and model-context-annotated placeholders, for example
 # ``[PERSON_1]`` and ``[PERSON_1|coworker at ORG_2]``.  The annotation is
 # deliberately part of the token so every placeholder-aware seam can treat the
@@ -1126,19 +1160,41 @@ def redact_user_message(
     Returns the redacted text. Updates tenant.pii_entity_map in the DB
     if new entities are discovered.
     """
+    return redact_user_message_checked(
+        text,
+        tenant,
+        allow_user_name=allow_user_name,
+        mint=mint,
+    ).text
+
+
+def redact_user_message_checked(
+    text: str,
+    tenant: Tenant,
+    *,
+    allow_user_name: bool = True,
+    mint: str = MINT_ALL,
+) -> RedactionOutcome:
+    """Redact a user message and report whether the engine completed.
+
+    Disabled-policy and exception paths retain the existing fail-open text
+    behavior, but are explicitly unconfirmed so downstream persistence cannot
+    mistake the original string for placeholder-space text.
+    """
     if not text or not text.strip():
-        return text
+        return RedactionOutcome(text=text, confirmed=False, reason="empty-input")
 
     tier = getattr(tenant, "model_tier", "starter")
     policy = TIER_POLICIES.get(tier, TIER_POLICIES["starter"])
     if not policy.get("enabled", False):
-        return text
+        return RedactionOutcome(text=text, confirmed=False, reason="redaction-disabled")
 
     try:
-        return _redact_user_message(text, tenant, policy, allow_user_name=allow_user_name, mint=mint)
+        redacted = _redact_user_message(text, tenant, policy, allow_user_name=allow_user_name, mint=mint)
     except Exception:
         logger.exception("User message PII redaction failed — returning original")
-        return text
+        return RedactionOutcome(text=text, confirmed=False, reason="redaction-error")
+    return RedactionOutcome(text=redacted, confirmed=True, reason="redacted")
 
 
 def _redact_user_message(

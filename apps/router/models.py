@@ -161,7 +161,7 @@ class PendingMessage(models.Model):
     user_text = models.TextField(
         blank=True,
         default="",
-        help_text="Raw user-facing excerpt for logging (truncated).",
+        help_text="Redacted user-facing excerpt used for coalescing and logging.",
     )
     created_at = models.DateTimeField(auto_now_add=True)
     delivered_at = models.DateTimeField(null=True, blank=True)

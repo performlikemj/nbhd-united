@@ -117,12 +117,15 @@ def record_conversation_turn(
     channel_user_id: str,
     user_text: str,
     reply_text: str = "",
+    source_payload: dict | None = None,
 ) -> ConversationTurn | None:
     """Persist one captured conversation turn. Fail-open — never raises.
 
     A turn with neither user nor reply text is dropped (nothing to record).
     On success, opportunistically prunes expired rows and schedules a debounced
     USER.md refresh so the digest is fresh before the next cron fires.
+    ``source_payload`` carries seam metadata for the P1 capture gate; this P0
+    deliberately does not alter today's ConversationTurn write behavior.
     """
     user_text = (user_text or "").strip()
     reply_text = (reply_text or "").strip()

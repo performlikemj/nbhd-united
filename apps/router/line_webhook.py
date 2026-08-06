@@ -1285,6 +1285,7 @@ class LineWebhookView(View):
             reply_token=reply_token,
             is_voice=msg_type == "audio",
             raw_user_text=raw_user_text,
+            webhook_event_id=event.get("webhookEventId"),
         )
 
     def _send_onboarding_reply(self, line_user_id: str, reply) -> None:
@@ -1346,6 +1347,7 @@ class LineWebhookView(View):
         reply_token: str | None = None,
         is_voice: bool = False,
         raw_user_text: str | None = None,
+        webhook_event_id: str | None = None,
     ) -> None:
         """Pre-process the message and enqueue it on the per-tenant
         serialization queue.
@@ -1378,12 +1380,14 @@ class LineWebhookView(View):
         # the NER detector misfire on the structural markers. Mirrors the
         # Telegram poller seam (poller.py:_forward_to_container). Outbound
         # rehydration is already wired (line 657), so [PERSON_N] placeholders
-        # round-trip. ``redact_user_message`` swallows its own errors and
-        # returns the original text, so redaction never blocks delivery.
-        from apps.pii.redactor import redact_user_message
+        # round-trip. The checked wrapper preserves fail-open delivery text and
+        # records whether the redactor genuinely completed for this queue row.
+        from apps.pii.redactor import redact_user_message_checked
 
-        message_text = redact_user_message(message_text, tenant)
-        raw_user_text = redact_user_message(raw_user_text, tenant)
+        message_redaction = redact_user_message_checked(message_text, tenant)
+        message_text = message_redaction.text
+        raw_redaction = redact_user_message_checked(raw_user_text, tenant)
+        raw_user_text = raw_redaction.text
 
         lang = tenant.user.language or "en"
 
@@ -1438,6 +1442,11 @@ class LineWebhookView(View):
                 "user_timezone": user_tz,
                 "is_voice": bool(is_voice),
                 "reply_token": reply_token,
+                "redaction": {
+                    "confirmed": raw_redaction.confirmed,
+                    "reason": raw_redaction.reason,
+                },
+                "webhook_event_id": webhook_event_id,
             },
             user_text_excerpt=raw_user_text,
         )
@@ -1534,6 +1543,7 @@ class LineWebhookView(View):
             line_user_id,
             tenant,
             f'[User tapped button: "{data}"]',
+            webhook_event_id=event.get("webhookEventId"),
         )
 
     @staticmethod

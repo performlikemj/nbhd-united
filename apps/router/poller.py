@@ -53,7 +53,7 @@ class TelegramPoller:
         self._running = False
         self._backoff = 1
         self._http: httpx.Client | None = None
-        self._pending_messages: dict[int, str] = {}  # chat_id → message awaiting container update
+        self._pending_messages: dict[int, tuple[str, int | str | None]] = {}
         self._update_in_progress: set[int] = set()  # chat_ids currently being updated
 
     # ------------------------------------------------------------------
@@ -596,14 +596,26 @@ class TelegramPoller:
             logger.exception("Voice transcription error")
             return None
 
-    def _delayed_forward(self, chat_id: int, tenant: Tenant, message_text: str, delay: int = 15) -> None:
+    def _delayed_forward(
+        self,
+        chat_id: int,
+        tenant: Tenant,
+        message_text: str,
+        delay: int = 15,
+        provider_event_id: int | str | None = None,
+    ) -> None:
         """Wait for container restart, then forward the pending message.
 
         Runs in a background thread to avoid blocking the poller loop.
         """
         time.sleep(delay)
         self._send_typing(chat_id)
-        self._forward_to_container(chat_id, tenant, message_text)
+        self._forward_to_container(
+            chat_id,
+            tenant,
+            message_text,
+            provider_event_id=provider_event_id,
+        )
 
     def _download_photo(self, message: dict) -> str | None:
         """Download the largest photo from a Telegram message and return as base64 data URL.
@@ -802,6 +814,7 @@ class TelegramPoller:
 
     def _handle_update(self, update: dict) -> None:
         """Core routing logic for a single update."""
+        provider_event_id = update.get("update_id")
         # Handle /start TOKEN for account linking
         link_response = handle_start_command(update)
         if link_response:
@@ -887,7 +900,8 @@ class TelegramPoller:
                     self._send_message(chat_id, "✅ Updating now! I'll be back in about a minute...")
 
                     # Do the actual update + forward in background (Azure takes 45-90s)
-                    pending_text = self._pending_messages.pop(chat_id, None)
+                    pending = self._pending_messages.pop(chat_id, None)
+                    pending_text, pending_event_id = pending or (None, None)
 
                     def _do_update():
                         try:
@@ -909,7 +923,13 @@ class TelegramPoller:
                                     # the ``[System: just updated…]`` framing.
                                     context_msg = f"[System: just updated. User's message from before the update:]\n{pending_text}"
                                     self._send_typing(chat_id)
-                                    self._forward_to_container(chat_id, tenant, context_msg, raw_user_text=pending_text)
+                                    self._forward_to_container(
+                                        chat_id,
+                                        tenant,
+                                        context_msg,
+                                        raw_user_text=pending_text,
+                                        provider_event_id=pending_event_id,
+                                    )
                                 else:
                                     # Container didn't come up in time — tell user, let them resend
                                     self._send_message(chat_id, "✅ Update complete! You can send your message again.")
@@ -924,10 +944,16 @@ class TelegramPoller:
                     if reply_text:
                         self._send_message(chat_id, reply_text)
                     # Forward pending message to current container
-                    pending_text = self._pending_messages.pop(chat_id, None)
+                    pending = self._pending_messages.pop(chat_id, None)
+                    pending_text, pending_event_id = pending or (None, None)
                     if pending_text:
                         self._send_typing(chat_id)
-                        self._forward_to_container(chat_id, tenant, pending_text)
+                        self._forward_to_container(
+                            chat_id,
+                            tenant,
+                            pending_text,
+                            provider_event_id=pending_event_id,
+                        )
 
                 return
 
@@ -976,6 +1002,7 @@ class TelegramPoller:
                     tenant,
                     f'[User tapped button: "{button_value}"]',
                     raw_user_text=button_value,
+                    provider_event_id=provider_event_id,
                 )
                 return
 
@@ -1051,7 +1078,7 @@ class TelegramPoller:
         if update_action:
             if update_action["action"] == "ask_user":
                 # Store the pending message so we can forward it after update
-                self._pending_messages[chat_id] = message_text
+                self._pending_messages[chat_id] = (message_text, provider_event_id)
                 self._send_message(
                     chat_id,
                     update_action["text"],
@@ -1063,7 +1090,7 @@ class TelegramPoller:
                 self._send_typing(chat_id)
                 threading.Thread(
                     target=self._delayed_forward,
-                    args=(chat_id, tenant, message_text, 15),
+                    args=(chat_id, tenant, message_text, 15, provider_event_id),
                     daemon=True,
                 ).start()
                 return
@@ -1105,7 +1132,14 @@ class TelegramPoller:
         # ``had_photo`` (not just a successful upload) forces a singleton: both
         # the "[Photo attached: …]" and the ">5 MB" fallback markers live only
         # in message_text and must survive a cold-start coalesce.
-        self._forward_to_container(chat_id, tenant, message_text, raw_user_text=raw_user_text, is_image=had_photo)
+        self._forward_to_container(
+            chat_id,
+            tenant,
+            message_text,
+            raw_user_text=raw_user_text,
+            is_image=had_photo,
+            provider_event_id=provider_event_id,
+        )
 
     # ── Contextual recall ──────────────────────────────────────────────────
 
@@ -1448,6 +1482,7 @@ class TelegramPoller:
         message_text: str,
         raw_user_text: str | None = None,
         is_image: bool = False,
+        provider_event_id: int | str | None = None,
     ) -> None:
         """Pre-process the message and enqueue it on the per-tenant
         serialization queue.
@@ -1491,20 +1526,23 @@ class TelegramPoller:
         # ``message_text`` (photo prefix + session-recall context, if any)
         # and the apology excerpt, but NOT the proactive/datetime/chat
         # markers added afterwards (running the NER detector over those
-        # structural markers makes it misfire). ``redact_user_message``
+        # structural markers makes it misfire). The checked redactor
         # mints/reuses ``[PERSON_N]`` placeholders against the tenant's
         # ``pii_entity_map``; outbound rehydration is already wired in the
-        # relay path so the user still sees the real values. Fail-open:
-        # ``redact_user_message`` swallows its own errors and returns the
-        # original text, so redaction never blocks delivery.
-        from apps.pii.redactor import redact_user_message
+        # relay path so the user still sees the real values. Its text remains
+        # fail-open while the outcome records whether redaction completed.
+        from apps.pii.redactor import redact_user_message_checked
 
-        message_text = redact_user_message(message_text, tenant)
+        message_redaction = redact_user_message_checked(message_text, tenant)
+        message_text = message_redaction.text
         # When raw_user_text was not provided by the caller it was aliased to
         # the same string as message_text (above). In that case reuse the
         # already-redacted message_text rather than running a second identical
         # DeBERTa NER pass over the same content.
-        raw_user_text = message_text if _raw_aliases_message else redact_user_message(raw_user_text, tenant)
+        raw_redaction = (
+            message_redaction if _raw_aliases_message else redact_user_message_checked(raw_user_text, tenant)
+        )
+        raw_user_text = raw_redaction.text
 
         user_tz = tenant.user.timezone or "UTC"
 
@@ -1558,6 +1596,11 @@ class TelegramPoller:
             "message_text": message_text,
             "user_param": user_param,
             "user_timezone": user_tz,
+            "provider_event_id": provider_event_id,
+            "redaction": {
+                "confirmed": raw_redaction.confirmed,
+                "reason": raw_redaction.reason,
+            },
         }
         if is_image:
             # Force a singleton batch: the [Photo attached: <path>] marker lives

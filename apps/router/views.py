@@ -204,6 +204,13 @@ def telegram_webhook(request):
     from apps.router.inbound_dedup import claim_inbound_event
 
     update_id = update.get("update_id")
+    capture_source_payload = {
+        "provider_event_id": update_id,
+        "redaction": {
+            "confirmed": False,
+            "reason": "seam-unredacted",
+        },
+    }
     if update_id and not claim_inbound_event(f"tg:{update_id}"):
         logger.info("Telegram webhook: skipping duplicate update %s", update_id)
         return HttpResponse("ok")
@@ -401,6 +408,7 @@ def telegram_webhook(request):
                 channel_user_id=str(chat_id),
                 user_text=raw_user_text,
                 reply_text=clean_reply_for_capture(tenant, _extract_ai_response(result)),
+                source_payload=capture_source_payload,
             )
         except Exception:
             logger.exception("telegram_webhook: conversation capture failed (non-fatal)")
