@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from django.db import models
@@ -1155,7 +1156,14 @@ def _buffered_telegram_chat_id(tenant, msg):
         return None
 
 
-def _forward_buffered_telegram(tenant, msg, chat_timeout: float) -> None:
+@dataclass(frozen=True)
+class _BufferedForwardResult:
+    ai_text: str
+    relay_result: object
+    model_response_ref: str = ""
+
+
+def _forward_buffered_telegram(tenant, msg, chat_timeout: float) -> _BufferedForwardResult:
     """Forward one buffered Telegram row to the container and relay the reply.
 
     Converges on the live poller drain (``pending_queue._drain_telegram_batch``)
@@ -1210,9 +1218,167 @@ def _forward_buffered_telegram(tenant, msg, chat_timeout: float) -> None:
         timeout=chat_timeout,
     )
 
-    ai_text = _extract_ai_response(result)
+    ai_text = _extract_ai_response(result) or ""
+    from apps.router.pending_queue import DeliveryState, SendResult
+
+    relay_result = SendResult(DeliveryState.SENT, detail="empty_ai_text")
     if ai_text:
-        relay_ai_response_to_telegram(tenant, chat_id, ai_text)
+        relay_result = relay_ai_response_to_telegram(tenant, chat_id, ai_text)
+    model_response_ref = str(result.get("id") or "") if isinstance(result, dict) else ""
+    return _BufferedForwardResult(ai_text, relay_result, model_response_ref)
+
+
+def _capture_buffered_transcripts(
+    tenant,
+    rows,
+    channel: str,
+    forward_result: _BufferedForwardResult,
+) -> None:
+    """Capture relay-complete buffered turns without affecting delivery flow."""
+    if not getattr(tenant, "recall_capture_enabled", False):
+        return
+
+    ordered = sorted(rows, key=lambda row: (row.created_at, str(row.id)))
+    if not ordered:
+        return
+    primary_source_event_id = str(ordered[0].id)
+    assistant_occurred_at = timezone.now() if forward_result.ai_text else None
+    turn_id = None
+
+    try:
+        from apps.pii.redactor import (
+            RedactionOutcome,
+            confirm_assistant_output,
+            confirmed_from_receipt_row,
+            redaction_receipt,
+        )
+        from apps.router.pending_queue import DeliveryState
+        from apps.transcripts.capture import (
+            capture_transcript_event,
+            derive_turn_id,
+            quarantine_transcript_event,
+        )
+        from apps.transcripts.models import TranscriptEvent
+
+        delivery_state = getattr(forward_result.relay_result, "state", DeliveryState.FAILED)
+        delivery_value = getattr(delivery_state, "value", "failed")
+        if delivery_value not in {"sent", "partial", "failed", "ambiguous"}:
+            delivery_value = ""
+        delivered_chunks = int(getattr(forward_result.relay_result, "delivered_chunks", 0) or 0)
+        total_chunks = int(getattr(forward_result.relay_result, "total_chunks", 0) or 0)
+
+        assistant_confirmed = None
+        assistant_quarantine = None
+        if forward_result.ai_text:
+            assistant_confirmed = confirm_assistant_output(tenant, forward_result.ai_text)
+            if assistant_confirmed is None:
+                assistant_quarantine = RedactionOutcome(
+                    text="",
+                    confirmed=False,
+                    reason="assistant-confirm-failed",
+                )
+
+        turn_id = derive_turn_id(
+            tenant.id,
+            TranscriptEvent.SourceType.BUFFERED,
+            primary_source_event_id,
+        )
+        for msg in ordered:
+            source_event_id = str(msg.id)
+            confirmed = confirmed_from_receipt_row(msg.payload, msg.user_text or "")
+            receipt = redaction_receipt(msg.payload) if confirmed is None else None
+            if confirmed is not None:
+                capture_transcript_event(
+                    tenant=tenant,
+                    source_type=TranscriptEvent.SourceType.BUFFERED,
+                    source_event_id=source_event_id,
+                    role=TranscriptEvent.Role.USER,
+                    channel=channel,
+                    turn_id=turn_id,
+                    occurred_at=msg.created_at,
+                    redaction=confirmed,
+                    thread_key=channel,
+                )
+            else:
+                quarantine_transcript_event(
+                    tenant=tenant,
+                    source_type=TranscriptEvent.SourceType.BUFFERED,
+                    source_event_id=source_event_id,
+                    channel=channel,
+                    outcome=receipt,
+                    turn_id=turn_id,
+                    occurred_at=msg.created_at,
+                    thread_key=channel,
+                )
+
+        if assistant_confirmed is not None:
+            capture_transcript_event(
+                tenant=tenant,
+                source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+                source_event_id=primary_source_event_id,
+                role=TranscriptEvent.Role.ASSISTANT,
+                channel=channel,
+                turn_id=turn_id,
+                occurred_at=assistant_occurred_at,
+                redaction=assistant_confirmed,
+                thread_key=channel,
+                delivery_state=delivery_value,
+                delivered_chunks=delivered_chunks,
+                total_chunks=total_chunks,
+                model_response_ref=forward_result.model_response_ref,
+            )
+        elif assistant_quarantine is not None:
+            quarantine_transcript_event(
+                tenant=tenant,
+                source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+                source_event_id=primary_source_event_id,
+                channel=channel,
+                outcome=assistant_quarantine,
+                turn_id=turn_id,
+                occurred_at=assistant_occurred_at,
+                thread_key=channel,
+            )
+    except Exception:
+        try:
+            from apps.pii.redactor import RedactionOutcome
+            from apps.transcripts.capture import derive_turn_id, quarantine_transcript_event
+            from apps.transcripts.models import TranscriptEvent
+
+            if turn_id is None:
+                turn_id = derive_turn_id(
+                    tenant.id,
+                    TranscriptEvent.SourceType.BUFFERED,
+                    primary_source_event_id,
+                )
+            capture_error = RedactionOutcome(text="", confirmed=False, reason="capture-error")
+            for msg in ordered:
+                quarantine_transcript_event(
+                    tenant=tenant,
+                    source_type=TranscriptEvent.SourceType.BUFFERED,
+                    source_event_id=str(msg.id),
+                    channel=channel,
+                    outcome=capture_error,
+                    turn_id=turn_id,
+                    occurred_at=msg.created_at,
+                    thread_key=channel,
+                )
+            if forward_result.ai_text:
+                quarantine_transcript_event(
+                    tenant=tenant,
+                    source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+                    source_event_id=primary_source_event_id,
+                    channel=channel,
+                    outcome=capture_error,
+                    turn_id=turn_id,
+                    occurred_at=assistant_occurred_at,
+                    thread_key=channel,
+                )
+        except Exception:
+            logger.exception(
+                "deliver_buffered: transcript capture failed tenant=%s channel=%s",
+                str(tenant.id)[:8],
+                channel,
+            )
 
 
 def deliver_buffered_messages_task(tenant_id: str) -> dict:
@@ -1371,10 +1537,39 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
                 # and PII rehydration all apply (no reply_token: buffered
                 # delivery happens long after the webhook reply window).
                 ai_text = result.get("choices", [{}])[0].get("message", {}).get("content", "")
-                if ai_text and line_user_id:
-                    from apps.router.line_webhook import relay_ai_response_to_line
+                from apps.router.pending_queue import DeliveryState, SendResult
 
-                    relay_ai_response_to_line(tenant, line_user_id, ai_text)
+                relay_result = SendResult(DeliveryState.SENT, detail="empty_ai_text")
+                if ai_text:
+                    sent = False
+                    if line_user_id:
+                        from apps.router.line_webhook import relay_ai_response_to_line
+
+                        sent = relay_ai_response_to_line(tenant, line_user_id, ai_text)
+                    relay_result = SendResult(
+                        DeliveryState.SENT if sent else DeliveryState.FAILED,
+                        delivered_chunks=int(bool(sent)),
+                        total_chunks=1,
+                        detail="" if sent else "relay_failed",
+                    )
+
+                forward_result = _BufferedForwardResult(
+                    ai_text=ai_text or "",
+                    relay_result=relay_result,
+                    model_response_ref=(str(result.get("id") or "") if isinstance(result, dict) else ""),
+                )
+                if not relay_result:
+                    logger.warning(
+                        "deliver_buffered: relay failed tenant=%s channel=line rows=%d",
+                        tenant_id[:8],
+                        batch_size,
+                    )
+                _capture_buffered_transcripts(
+                    tenant,
+                    line_batch,
+                    BufferedMessage.Channel.LINE,
+                    forward_result,
+                )
 
                 now = timezone.now()
                 for row in line_batch:
@@ -1471,7 +1666,18 @@ def deliver_buffered_messages_task(tenant_id: str) -> dict:
             continue
 
         try:
-            _forward_buffered_telegram(tenant, msg, chat_timeout)
+            forward_result = _forward_buffered_telegram(tenant, msg, chat_timeout)
+            if not forward_result.relay_result:
+                logger.warning(
+                    "deliver_buffered: relay failed tenant=%s channel=telegram rows=1",
+                    tenant_id[:8],
+                )
+            _capture_buffered_transcripts(
+                tenant,
+                [msg],
+                BufferedMessage.Channel.TELEGRAM,
+                forward_result,
+            )
 
             msg.delivered = True
             msg.delivered_at = timezone.now()

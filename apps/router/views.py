@@ -33,6 +33,108 @@ from .services import (
 logger = logging.getLogger(__name__)
 
 
+def _capture_telegram_webhook_transcript(
+    tenant: Tenant,
+    *,
+    update_id: object,
+    raw_user_text: str,
+    result: object,
+) -> None:
+    """Fail-closed capture for the live Telegram webhook path."""
+    if not getattr(tenant, "recall_capture_enabled", False):
+        return
+
+    try:
+        from apps.pii.redactor import (
+            RedactionOutcome,
+            as_confirmed,
+            confirm_assistant_output,
+            redact_user_message_checked,
+        )
+        from apps.router.pending_queue import _extract_ai_response
+        from apps.transcripts.capture import (
+            capture_transcript_event,
+            derive_turn_id,
+            quarantine_transcript_event,
+        )
+        from apps.transcripts.models import TranscriptEvent
+
+        source_event_id = str(update_id or "")
+        turn_id = derive_turn_id(
+            tenant.id,
+            TranscriptEvent.SourceType.TELEGRAM_WEBHOOK,
+            source_event_id,
+        )
+        occurred_at = timezone.now()
+        user_outcome = redact_user_message_checked(raw_user_text, tenant)
+        confirmed_user = as_confirmed(user_outcome)
+        if confirmed_user is not None:
+            capture_transcript_event(
+                tenant=tenant,
+                source_type=TranscriptEvent.SourceType.TELEGRAM_WEBHOOK,
+                source_event_id=source_event_id,
+                role=TranscriptEvent.Role.USER,
+                channel=TranscriptEvent.Channel.TELEGRAM,
+                turn_id=turn_id,
+                occurred_at=occurred_at,
+                redaction=confirmed_user,
+                thread_key="telegram",
+            )
+        else:
+            quarantine_transcript_event(
+                tenant=tenant,
+                source_type=TranscriptEvent.SourceType.TELEGRAM_WEBHOOK,
+                source_event_id=source_event_id,
+                channel=TranscriptEvent.Channel.TELEGRAM,
+                outcome=user_outcome,
+                turn_id=turn_id,
+                occurred_at=occurred_at,
+                thread_key="telegram",
+            )
+
+        assistant_text = _extract_ai_response(result)
+        if assistant_text:
+            assistant_occurred_at = timezone.now()
+            confirmed_assistant = confirm_assistant_output(tenant, assistant_text)
+            if confirmed_assistant is not None:
+                capture_transcript_event(
+                    tenant=tenant,
+                    source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+                    source_event_id=source_event_id,
+                    role=TranscriptEvent.Role.ASSISTANT,
+                    channel=TranscriptEvent.Channel.TELEGRAM,
+                    turn_id=turn_id,
+                    occurred_at=assistant_occurred_at,
+                    redaction=confirmed_assistant,
+                    thread_key="telegram",
+                    # The webhook response asks Telegram to send this reply; no
+                    # transport success is observable inside this request.
+                    delivery_state="",
+                    model_response_ref=(str(result.get("id") or "") if isinstance(result, dict) else ""),
+                )
+            else:
+                quarantine_transcript_event(
+                    tenant=tenant,
+                    source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+                    source_event_id=source_event_id,
+                    channel=TranscriptEvent.Channel.TELEGRAM,
+                    outcome=RedactionOutcome(
+                        text="",
+                        confirmed=False,
+                        reason="assistant-confirm-failed",
+                    ),
+                    turn_id=turn_id,
+                    occurred_at=assistant_occurred_at,
+                    thread_key="telegram",
+                )
+    except Exception:
+        logger.exception(
+            "telegram_webhook: transcript capture failed tenant=%s update=%s",
+            str(tenant.id)[:8],
+            str(update_id)[:32],
+        )
+
+
 def _coerce_non_negative_int(value: object) -> int:
     if isinstance(value, bool):
         return 0
@@ -395,6 +497,12 @@ def telegram_webhook(request):
 
     if result:
         _record_usage_from_openclaw_result(tenant, result)
+        _capture_telegram_webhook_transcript(
+            tenant,
+            update_id=update_id,
+            raw_user_text=raw_user_text,
+            result=result,
+        )
         # Capture the turn for the USER.md "Conversation so far" digest so
         # isolated crons see it. Webhook mode is latent in prod (single-revision
         # poller) but covered per the all-channels rule. Fail-open.

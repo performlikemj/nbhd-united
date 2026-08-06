@@ -574,6 +574,15 @@ class Tenant(models.Model):
         default=False,
         help_text="Label non-main iOS chat content in the shared conversation digest with its source thread",
     )
+    recall_capture_enabled = models.BooleanField(
+        default=False,
+        help_text="Capture transcript memory from its birthday forward; disabled by default.",
+    )
+    recall_capture_birthday = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Memory has a birthday: recall includes only content captured from this moment forward.",
+    )
     situational_context_enabled = models.BooleanField(
         default=False,
         help_text="Capture and render structured current-situation signals for this tenant",

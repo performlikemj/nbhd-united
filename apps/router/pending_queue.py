@@ -206,12 +206,19 @@ class DrainOutcome:
     reason: str = ""
     delivered_chunks: int = 0
     total_chunks: int = 0
+    assistant_text: str = ""
+    model_response_ref: str = ""
 
     def __bool__(self) -> bool:
         return self.gateway_responded
 
 
-def _drain_outcome_from_send_result(result: SendResult) -> DrainOutcome:
+def _drain_outcome_from_send_result(
+    result: SendResult,
+    *,
+    assistant_text: str = "",
+    model_response_ref: str = "",
+) -> DrainOutcome:
     disposition = Disposition.RETRY if result.state is DeliveryState.FAILED else Disposition.DELIVER
     return DrainOutcome(
         disposition=disposition,
@@ -220,7 +227,261 @@ def _drain_outcome_from_send_result(result: SendResult) -> DrainOutcome:
         reason=result.detail or ("relay_failed" if result.state is DeliveryState.FAILED else ""),
         delivered_chunks=result.delivered_chunks,
         total_chunks=result.total_chunks,
+        assistant_text=assistant_text,
+        model_response_ref=model_response_ref,
     )
+
+
+@dataclass(frozen=True)
+class _PreparedPendingUserTranscript:
+    source_event_id: str
+    occurred_at: Any
+    redaction: Any | None = None
+    quarantine: Any | None = None
+
+
+@dataclass(frozen=True)
+class _PreparedPendingTranscript:
+    source_type: str
+    channel: str
+    turn_id: Any
+    thread_key: str
+    primary_source_event_id: str
+    users: tuple[_PreparedPendingUserTranscript, ...]
+    assistant_redaction: Any | None = None
+    assistant_quarantine: Any | None = None
+    assistant_occurred_at: Any | None = None
+    delivery_state: str = ""
+    delivered_chunks: int = 0
+    total_chunks: int = 0
+    model_response_ref: str = ""
+
+
+def _pending_transcript_source(channel: str) -> tuple[str, str]:
+    from apps.transcripts.models import TranscriptEvent
+
+    if channel == PendingMessage.Channel.IOS:
+        return TranscriptEvent.SourceType.IOS_QUEUED, "client_msg_id"
+    if channel == PendingMessage.Channel.TELEGRAM:
+        return TranscriptEvent.SourceType.TELEGRAM_POLLER, "provider_event_id"
+    if channel == PendingMessage.Channel.LINE:
+        return TranscriptEvent.SourceType.LINE, "webhook_event_id"
+    raise ValueError(f"Unknown transcript channel: {channel!r}")
+
+
+def _prepare_pending_transcript(
+    tenant: Tenant,
+    batch: list[PendingMessage],
+    outcome: DrainOutcome,
+    *,
+    include_assistant: bool,
+) -> _PreparedPendingTranscript | None:
+    """Confirm and encrypt a queue turn before its durable write transaction."""
+    if not getattr(tenant, "recall_capture_enabled", False) or not batch:
+        return None
+
+    from apps.transcripts.capture import derive_turn_id, encrypt_transcript_text
+
+    source_type, payload_id_key = _pending_transcript_source(batch[0].channel)
+    ordered = sorted(batch, key=lambda row: (row.created_at, str(row.id)))
+    source_ids = [
+        str((row.payload.get(payload_id_key) if isinstance(row.payload, dict) else None) or row.id) for row in ordered
+    ]
+    turn_id = derive_turn_id(tenant.id, source_type, source_ids[0])
+    channel = batch[0].channel
+    thread_key = batch[0].channel_user_id if channel == PendingMessage.Channel.IOS else channel
+    assistant_occurred_at = timezone.now() if include_assistant and outcome.assistant_text else None
+
+    try:
+        from apps.pii.redactor import (
+            RedactionOutcome,
+            confirm_assistant_output,
+            confirmed_from_receipt_row,
+            redaction_receipt,
+        )
+
+        users = []
+        for row, source_event_id in zip(ordered, source_ids, strict=True):
+            confirmed = confirmed_from_receipt_row(row.payload, row.user_text or "")
+            receipt = redaction_receipt(row.payload) if confirmed is None else None
+            users.append(
+                _PreparedPendingUserTranscript(
+                    source_event_id=source_event_id,
+                    occurred_at=row.created_at,
+                    redaction=(encrypt_transcript_text(tenant, confirmed) if confirmed is not None else None),
+                    quarantine=receipt if confirmed is None else None,
+                )
+            )
+
+        assistant_redaction = None
+        assistant_quarantine = None
+        if include_assistant and outcome.assistant_text:
+            confirmed_assistant = confirm_assistant_output(tenant, outcome.assistant_text)
+            if confirmed_assistant is not None:
+                assistant_redaction = encrypt_transcript_text(tenant, confirmed_assistant)
+            else:
+                assistant_quarantine = RedactionOutcome(
+                    text="",
+                    confirmed=False,
+                    reason="assistant-confirm-failed",
+                )
+
+        delivery_state = outcome.delivery.value
+        if delivery_state not in {"sent", "partial", "failed", "ambiguous"}:
+            delivery_state = ""
+        return _PreparedPendingTranscript(
+            source_type=source_type,
+            channel=channel,
+            turn_id=turn_id,
+            thread_key=thread_key,
+            primary_source_event_id=source_ids[0],
+            users=tuple(users),
+            assistant_redaction=assistant_redaction,
+            assistant_quarantine=assistant_quarantine,
+            assistant_occurred_at=assistant_occurred_at,
+            delivery_state=delivery_state,
+            delivered_chunks=outcome.delivered_chunks,
+            total_chunks=outcome.total_chunks,
+            model_response_ref=outcome.model_response_ref,
+        )
+    except Exception:
+        logger.exception(
+            "drain_pending: transcript preparation failed tenant=%s channel=%s",
+            str(tenant.id)[:8],
+            batch[0].channel,
+        )
+        capture_error = RedactionOutcome(text="", confirmed=False, reason="capture-error")
+        return _PreparedPendingTranscript(
+            source_type=source_type,
+            channel=channel,
+            turn_id=turn_id,
+            thread_key=thread_key,
+            primary_source_event_id=source_ids[0],
+            users=tuple(
+                _PreparedPendingUserTranscript(
+                    source_event_id=source_event_id,
+                    occurred_at=row.created_at,
+                    quarantine=capture_error,
+                )
+                for row, source_event_id in zip(ordered, source_ids, strict=True)
+            ),
+            assistant_quarantine=(capture_error if include_assistant and outcome.assistant_text else None),
+            assistant_occurred_at=assistant_occurred_at,
+            delivery_state=(
+                outcome.delivery.value if outcome.delivery.value in {"sent", "partial", "failed", "ambiguous"} else ""
+            ),
+            delivered_chunks=outcome.delivered_chunks,
+            total_chunks=outcome.total_chunks,
+            model_response_ref=outcome.model_response_ref,
+        )
+
+
+def _persist_pending_transcript(tenant: Tenant, prepared: _PreparedPendingTranscript) -> None:
+    """Write a prepared queue turn inside its caller's durable transaction."""
+    from apps.transcripts.capture import capture_transcript_event, quarantine_transcript_event
+    from apps.transcripts.models import TranscriptEvent
+
+    for user in prepared.users:
+        if user.redaction is not None:
+            capture_transcript_event(
+                tenant=tenant,
+                source_type=prepared.source_type,
+                source_event_id=user.source_event_id,
+                role=TranscriptEvent.Role.USER,
+                channel=prepared.channel,
+                turn_id=prepared.turn_id,
+                occurred_at=user.occurred_at,
+                redaction=user.redaction,
+                thread_key=prepared.thread_key,
+            )
+        else:
+            quarantine_transcript_event(
+                tenant=tenant,
+                source_type=prepared.source_type,
+                source_event_id=user.source_event_id,
+                channel=prepared.channel,
+                outcome=user.quarantine,
+                turn_id=prepared.turn_id,
+                occurred_at=user.occurred_at,
+                thread_key=prepared.thread_key,
+            )
+
+    if prepared.assistant_redaction is not None:
+        capture_transcript_event(
+            tenant=tenant,
+            source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+            source_event_id=prepared.primary_source_event_id,
+            role=TranscriptEvent.Role.ASSISTANT,
+            channel=prepared.channel,
+            turn_id=prepared.turn_id,
+            occurred_at=prepared.assistant_occurred_at,
+            redaction=prepared.assistant_redaction,
+            thread_key=prepared.thread_key,
+            delivery_state=prepared.delivery_state,
+            delivered_chunks=prepared.delivered_chunks,
+            total_chunks=prepared.total_chunks,
+            model_response_ref=prepared.model_response_ref,
+        )
+    elif prepared.assistant_quarantine is not None:
+        quarantine_transcript_event(
+            tenant=tenant,
+            source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+            source_event_id=prepared.primary_source_event_id,
+            channel=prepared.channel,
+            outcome=prepared.assistant_quarantine,
+            turn_id=prepared.turn_id,
+            occurred_at=prepared.assistant_occurred_at,
+            thread_key=prepared.thread_key,
+        )
+
+
+def _persist_pending_transcript_fail_open(
+    tenant: Tenant,
+    prepared: _PreparedPendingTranscript | None,
+) -> None:
+    if prepared is None:
+        return
+    try:
+        # A savepoint keeps an unexpected ledger failure from poisoning the
+        # surrounding delivery-state transaction.
+        with transaction.atomic():
+            _persist_pending_transcript(tenant, prepared)
+    except Exception:
+        try:
+            from apps.pii.redactor import RedactionOutcome
+            from apps.transcripts.capture import quarantine_transcript_event
+            from apps.transcripts.models import TranscriptEvent
+
+            capture_error = RedactionOutcome(text="", confirmed=False, reason="capture-error")
+            with transaction.atomic():
+                for user in prepared.users:
+                    quarantine_transcript_event(
+                        tenant=tenant,
+                        source_type=prepared.source_type,
+                        source_event_id=user.source_event_id,
+                        channel=prepared.channel,
+                        outcome=capture_error,
+                        turn_id=prepared.turn_id,
+                        occurred_at=user.occurred_at,
+                        thread_key=prepared.thread_key,
+                    )
+                if prepared.assistant_redaction is not None or prepared.assistant_quarantine is not None:
+                    quarantine_transcript_event(
+                        tenant=tenant,
+                        source_type=TranscriptEvent.SourceType.ASSISTANT_REPLY,
+                        source_event_id=prepared.primary_source_event_id,
+                        channel=prepared.channel,
+                        outcome=capture_error,
+                        turn_id=prepared.turn_id,
+                        occurred_at=prepared.assistant_occurred_at,
+                        thread_key=prepared.thread_key,
+                    )
+        except Exception:
+            logger.exception(
+                "drain_pending: transcript persistence failed tenant=%s channel=%s",
+                str(tenant.id)[:8],
+                prepared.channel,
+            )
 
 
 def _looks_like_openrouter_credit_limit(resp) -> bool:
@@ -769,6 +1030,9 @@ def _terminalize_failed_queue_rows(
     row_ids: list | None = None,
     require_missing_fqdn: bool = False,
     send_apology: bool = True,
+    # Intentionally None for stale-head, past-cap, and provisioning-timeout:
+    # no completed turn exists, so P1 excludes those FAILED, repairable rows.
+    transcript_capture: _PreparedPendingTranscript | None = None,
 ) -> tuple[Tenant | None, list[PendingMessage], bool]:
     """Atomically fail pending queue rows and correlated pending app turns.
 
@@ -831,6 +1095,8 @@ def _terminalize_failed_queue_rows(
             row.delivery_status = PendingMessage.Status.FAILED
             row.delivered_at = committed_at
             row.delivery_in_flight_until = None
+
+        _persist_pending_transcript_fail_open(locked_tenant, transcript_capture)
 
     # LINE/Telegram sends are external side effects, so they must not happen
     # until both model transitions have committed successfully.
@@ -1120,18 +1386,26 @@ def drain_pending_messages_for_tenant_task(
                     channel,
                 )
 
+            transcript_capture = _prepare_pending_transcript(
+                tenant,
+                batch,
+                outcome,
+                include_assistant=True,
+            )
             now = timezone.now()
-            for row in batch:
-                row.delivery_status = PendingMessage.Status.DELIVERED
-                row.delivered_at = now
-                row.delivery_in_flight_until = None
-                row.save(
-                    update_fields=[
-                        "delivery_status",
-                        "delivered_at",
-                        "delivery_in_flight_until",
-                    ]
-                )
+            with transaction.atomic():
+                for row in batch:
+                    row.delivery_status = PendingMessage.Status.DELIVERED
+                    row.delivered_at = now
+                    row.delivery_in_flight_until = None
+                    row.save(
+                        update_fields=[
+                            "delivery_status",
+                            "delivered_at",
+                            "delivery_in_flight_until",
+                        ]
+                    )
+                _persist_pending_transcript_fail_open(tenant, transcript_capture)
             delivered = batch_size
 
             # Privacy hard-delete (docs/encryption-at-rest-directive.md §7, Phase 0
@@ -1175,6 +1449,12 @@ def drain_pending_messages_for_tenant_task(
                 )
             failed = batch_size
         else:
+            transcript_capture = _prepare_pending_transcript(
+                tenant,
+                batch,
+                outcome,
+                include_assistant=False,
+            )
             _, terminalized_rows, _ = _terminalize_failed_queue_rows(
                 tenant=tenant,
                 tenant_id=tenant_id,
@@ -1182,6 +1462,7 @@ def drain_pending_messages_for_tenant_task(
                 channel_user_id=channel_user_id or "",
                 error=outcome.reason,
                 send_apology=False,
+                transcript_capture=transcript_capture,
             )
             return {
                 "delivered": 0,
@@ -1889,7 +2170,11 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
 
     _capture_conversation_turn(tenant, "line", line_user_id, batch, ai_text)
     _record_usage_safe(tenant, result, message_count=len(batch))
-    return _drain_outcome_from_send_result(send_result)
+    return _drain_outcome_from_send_result(
+        send_result,
+        assistant_text=ai_text or "",
+        model_response_ref=_model_response_ref(result),
+    )
 
 
 def _capture_conversation_turn(
@@ -2001,7 +2286,11 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
 
     _capture_conversation_turn(tenant, "telegram", chat_id_str, batch, ai_text)
     _record_usage_safe(tenant, result, message_count=len(batch))
-    return _drain_outcome_from_send_result(send_result)
+    return _drain_outcome_from_send_result(
+        send_result,
+        assistant_text=ai_text or "",
+        model_response_ref=_model_response_ref(result),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2139,6 +2428,8 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
         gateway_responded=True,
         delivered_chunks=1,
         total_chunks=1,
+        assistant_text=ai_text or "",
+        model_response_ref=_model_response_ref(result),
     )
 
 
@@ -2784,6 +3075,14 @@ def _extract_ai_response(result: Any) -> str | None:
     except (IndexError, KeyError, TypeError):
         return None
     return None
+
+
+def _model_response_ref(result: Any) -> str:
+    """Extract the gateway response id without assuming a non-dict shape."""
+    if not isinstance(result, dict):
+        return ""
+    value = result.get("id", "")
+    return str(value) if value is not None else ""
 
 
 def _record_usage_safe(tenant: Tenant, result: Any, *, message_count: int = 1) -> None:
