@@ -84,13 +84,8 @@ def _siri_fast_models() -> list[str]:
     return [m for m in models if m]
 
 
-def _rehydrated_snapshot(tenant, *, max_chars: int) -> str:
-    """Compact current-state digest, PII-rehydrated to real values.
-
-    Same source/shape as ``ChatContextView`` (the on-device tier) so Tier 0/1/2
-    share one notion of "what's going on". Fail-open on rehydrate error: serving
-    placeholder-space text is better than serving none.
-    """
+def _snapshot(tenant, *, max_chars: int) -> str:
+    """Render the compact current-state digest shared by every Siri tier."""
     from apps.orchestrator.workspace_envelope import (
         CONTEXT_DIGEST_MAX_CHARS,
         CONTEXT_DIGEST_MIN_CHARS,
@@ -98,7 +93,12 @@ def _rehydrated_snapshot(tenant, *, max_chars: int) -> str:
     )
 
     capped = max(CONTEXT_DIGEST_MIN_CHARS, min(max_chars, CONTEXT_DIGEST_MAX_CHARS))
-    md = render_context_digest(tenant, max_chars=capped)
+    return render_context_digest(tenant, max_chars=capped)
+
+
+def _rehydrated_snapshot(tenant, *, max_chars: int) -> str:
+    """Render an owner-facing digest with real entity values for Tier 0."""
+    md = _snapshot(tenant, max_chars=max_chars)
 
     from apps.router.reply_text import finalize_outbound_text
 
@@ -108,6 +108,34 @@ def _rehydrated_snapshot(tenant, *, max_chars: int) -> str:
         tenant_id=tenant.id,
         channel="siri_snapshot",
     )
+
+
+def _placeholder_snapshot(tenant, *, max_chars: int) -> str:
+    """Render a model-bound digest and scrub raw-at-rest known values."""
+    from apps.pii.egress import redact_known_values
+
+    return redact_known_values(
+        tenant,
+        _snapshot(tenant, max_chars=max_chars),
+        seam="siri_state",
+    )
+
+
+def _placeholder_intent(tenant, intent: str) -> str:
+    """Redact a spoken ask for model egress, with a deterministic fallback."""
+    from apps.pii.egress import redact_known_values
+    from apps.pii.redactor import redact_user_message_checked
+
+    try:
+        outcome = redact_user_message_checked(intent, tenant)
+    except Exception:
+        logger.warning("siri respond: intent redaction failed; using known-values guard", exc_info=True)
+    else:
+        if outcome.reason != "redaction-error":
+            return outcome.text
+        logger.warning("siri respond: intent redaction unconfirmed; using known-values guard")
+
+    return redact_known_values(tenant, intent, seam="siri_intent")
 
 
 class SiriQuickStatusView(APIView):
@@ -178,16 +206,20 @@ class SiriRespondView(APIView):
         if len(intent) > _MAX_ASK_CHARS:
             return Response({"error": "intent_too_long"}, status=status.HTTP_400_BAD_REQUEST)
 
-        snapshot = _rehydrated_snapshot(tenant, max_chars=_SIRI_CONTEXT_CHARS)
+        snapshot = _placeholder_snapshot(tenant, max_chars=_SIRI_CONTEXT_CHARS)
+        model_intent = _placeholder_intent(tenant, intent)
 
-        answer = self._fast_answer(intent, snapshot)
+        answer = self._fast_answer(tenant, model_intent, snapshot)
         if answer is not None:
-            return _no_store(Response({"answered": True, "escalated": False, "text": answer}))
+            from apps.pii.redactor import rehydrate_for_tenant
+
+            owner_answer = rehydrate_for_tenant(tenant, answer)
+            return _no_store(Response({"answered": True, "escalated": False, "text": owner_answer}))
 
         # Could not answer fast → escalate to the full tenant agent (Tier 3).
         return self._escalate(request, tenant, intent)
 
-    def _fast_answer(self, intent: str, snapshot: str) -> str | None:
+    def _fast_answer(self, tenant, intent: str, snapshot: str) -> str | None:
         """Return the spoken answer, or None to signal escalation.
 
         None on: the escalate sentinel, an empty/blank model reply, or any
@@ -195,10 +227,17 @@ class SiriRespondView(APIView):
         to the full agent rather than erroring the user.
         """
         from apps.common.openrouter import chat_completion
+        from apps.pii.egress import entity_legend_block
+
+        legend = entity_legend_block(
+            tenant,
+            f"{snapshot}\n{intent}",
+            seam="siri_prompt",
+        )
 
         messages = [
             {"role": "system", "content": _SIRI_SYSTEM + snapshot},
-            {"role": "user", "content": intent},
+            {"role": "user", "content": intent + legend},
         ]
         try:
             data, _model = chat_completion(_siri_fast_models(), messages, timeout=8, max_tokens=300)
