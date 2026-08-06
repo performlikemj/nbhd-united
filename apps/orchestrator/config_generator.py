@@ -1091,9 +1091,9 @@ OPENROUTER_DECLARED_MODELS: list[dict[str, Any]] = [
         # back to text-only extraction. Under-claiming is safe; over-claiming
         # would route video work at a capability we have not exercised.
         "input": ["text", "image"],
-        # OpenRouter live catalog, 2026-08-06. NOTE: apps/billing GEMMA_RATE
-        # still carries the older 0.12/0.37 — that constant bills tenants and is
-        # a separate change.
+        # OpenRouter live catalog, 2026-08-06. In sync with apps/billing
+        # GEMMA_RATE (the constant that bills tenants); a test pins the two
+        # together, so update both or neither.
         "cost": {"input": 0.10, "output": 0.34, "cacheRead": 0.0, "cacheWrite": 0.0},
         "contextWindow": 262144,
         # OpenClaw's own OPENROUTER_DEFAULT_MAX_TOKENS — what the dynamic path
@@ -1114,8 +1114,9 @@ OPENROUTER_DECLARED_MODELS: list[dict[str, Any]] = [
 # remains selectable for interactive chat while the small worker (Flash)
 # handles scheduled legwork and now also serves as the starter chat default.
 # Flash replaced Gemma as the worker default on 2026-06-09 — cheaper
-# ($0.065/$0.26 vs $0.12/$0.37 per 1M) and more capable, same fast /
-# non-reasoning profile, so it keeps the default per-turn timeout.
+# ($0.065/$0.26 vs $0.12/$0.37 per 1M, both rates as they stood on that date)
+# and more capable, same fast / non-reasoning profile, so it keeps the default
+# per-turn timeout.
 # Every value MUST be a NON-BYO model so platform-initiated turns never burn a
 # tenant's Anthropic subscription.
 #

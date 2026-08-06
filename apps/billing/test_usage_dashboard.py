@@ -15,6 +15,7 @@ from .constants import (
     ANTHROPIC_SONNET_MODEL,
     DEEPSEEK_FLASH_DISPLAY,
     DEEPSEEK_MODEL,
+    GEMMA_RATE,
     MODEL_RATES,
 )
 from .models import UsageRecord
@@ -563,6 +564,15 @@ class ConstantsTest(TestCase):
             if rate["input"] == 0 and rate["output"] == 0:
                 continue
             self.assertGreater(rate["output"], rate["input"])
+
+    def test_gemma_rate_matches_openrouter_live_pricing(self):
+        """Pinned to OpenRouter's published price (verified 2026-08-06).
+
+        Gemma is the pdfModel pin and the default compose model, so it carries
+        real per-tenant spend. A drift here silently over- or under-bills every
+        future turn, and nothing else in the system reconciles it.
+        """
+        self.assertEqual(GEMMA_RATE, {"input": 0.10, "output": 0.34})
 
 
 @override_settings(
