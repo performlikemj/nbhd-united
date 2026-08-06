@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID, uuid5
 
-from django.db import transaction
+from django.db import connection, transaction
 
 from apps.crypto import box
 from apps.pii.redactor import (
@@ -111,6 +111,11 @@ def capture_transcript_event(
         raise TypeError("redaction must be ConfirmedRedaction or EncryptedText")
 
     with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('app.tenant_id', %s, true)",
+                [str(tenant.id)],
+            )
         event, _created = TranscriptEvent.objects.get_or_create(
             tenant=tenant,
             source_type=source_type,
@@ -158,29 +163,35 @@ def quarantine_transcript_event(
     if outcome.confirmed is True:
         raise ValueError("confirmed outcomes must use capture_transcript_event")
 
-    row, created = TranscriptCaptureQuarantine.objects.get_or_create(
-        tenant=tenant,
-        source_type=source_type,
-        source_event_id=source_event_id,
-        defaults={
-            "turn_id": turn_id,
-            "channel": channel,
-            "thread_key": thread_key,
-            "occurred_at": occurred_at,
-            "reason": outcome.reason,
-            "repair_ref": repair_ref,
-            "permanent_loss": source_type in _PERMANENT_LOSS_SOURCES,
-        },
-    )
-    if created:
-        tenant_id = tenant.id
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('app.tenant_id', %s, true)",
+                [str(tenant.id)],
+            )
+        row, created = TranscriptCaptureQuarantine.objects.get_or_create(
+            tenant=tenant,
+            source_type=source_type,
+            source_event_id=source_event_id,
+            defaults={
+                "turn_id": turn_id,
+                "channel": channel,
+                "thread_key": thread_key,
+                "occurred_at": occurred_at,
+                "reason": outcome.reason,
+                "repair_ref": repair_ref,
+                "permanent_loss": source_type in _PERMANENT_LOSS_SOURCES,
+            },
+        )
+        if created:
+            tenant_id = tenant.id
 
-        def alert_after_commit() -> None:
-            from apps.tenants.models import Tenant
+            def alert_after_commit() -> None:
+                from apps.tenants.models import Tenant
 
-            from .alerts import check_quarantine_alerts
+                from .alerts import check_quarantine_alerts
 
-            check_quarantine_alerts(Tenant.objects.get(pk=tenant_id))
+                check_quarantine_alerts(Tenant.objects.get(pk=tenant_id))
 
-        transaction.on_commit(alert_after_commit)
+            transaction.on_commit(alert_after_commit)
     return row
