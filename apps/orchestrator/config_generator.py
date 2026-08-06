@@ -2445,6 +2445,20 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         }
 
+        # OpenClaw's bundled document-extract extension is not part of
+        # _active_plugins, but provides the built-in pdf tool's PDFium text-layer
+        # and page-rendering extractors. A non-empty plugins.allow excludes it
+        # unless named explicitly; this disabled all PDF extraction fleet-wide
+        # for tenants with active NBHD plugins (2026-08-06 canary: "PDF extraction
+        # disabled or unavailable: enable the document-extract plugin to process
+        # application/pdf files."). The entry also satisfies our config validator.
+        # bundledDiscovery: "compat" below does not cover this path:
+        # resolveExplicitAllowedDocumentExtractorPluginIds reads raw plugins.allow
+        # and short-circuits before bundled-discovery compat can apply, so this
+        # explicit allow entry is required.
+        plugin_config["allow"].append("document-extract")
+        plugin_config["entries"]["document-extract"] = {"enabled": True}
+
         # OpenClaw built-in active-memory plugin — bundled with OC core,
         # not an NBHD plugin, so it's not part of _active_plugins and
         # doesn't need plugin_config["allow"] entries (bundledDiscovery
