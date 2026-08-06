@@ -125,8 +125,9 @@ class ConfigGeneratorTest(TestCase):
 
         self.assertEqual(
             sorted(config["plugins"]["allow"]),
-            ["nbhd-google-tools", "nbhd-journal-tools"],
+            ["document-extract", "nbhd-google-tools", "nbhd-journal-tools"],
         )
+        self.assertEqual(config["plugins"]["entries"]["document-extract"], {"enabled": True})
         self.assertTrue(config["plugins"]["entries"]["nbhd-google-tools"]["enabled"])
         self.assertTrue(config["plugins"]["entries"]["nbhd-journal-tools"]["enabled"])
         paths = config["plugins"]["load"]["paths"]
@@ -172,7 +173,7 @@ class ConfigGeneratorTest(TestCase):
         ):
             config = generate_openclaw_config(self.tenant)
 
-        self.assertEqual(config["plugins"]["allow"], ["nbhd-google-tools"])
+        self.assertEqual(config["plugins"]["allow"], ["nbhd-google-tools", "document-extract"])
         self.assertNotIn("nbhd-journal-tools", config["plugins"]["entries"])
 
     def test_doc_taint_guard_plugin_ships_by_default(self):
