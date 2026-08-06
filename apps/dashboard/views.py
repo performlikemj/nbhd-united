@@ -245,6 +245,7 @@ class HorizonsView(APIView):
                 "title": g.title,
                 "slug": f"typed:{g.id}",
                 "markdown": g.description or "",
+                "pii_receipts": g.pii_receipts or {},
                 "created_at": g.created_at,
                 "updated_at": g.updated_at,
             }
@@ -275,6 +276,12 @@ class HorizonsView(APIView):
             key=lambda g: g["updated_at"],
             reverse=True,
         )[:20]
+
+        from apps.pii.redactor import rehydrate_for_tenant
+
+        for goal in goals:
+            goal["title"] = rehydrate_for_tenant(tenant, goal["title"] or "")
+            goal["markdown"] = rehydrate_for_tenant(tenant, goal["markdown"] or "")
 
         # 2. Pending goal/task extractions (exclude expired). Purpose
         # hypotheses render as their own North Star card below, not here.
@@ -447,6 +454,7 @@ class HorizonsView(APIView):
                         "slug": g["slug"],
                         "preview": _clean_markdown_preview(g["markdown"] or ""),
                         "markdown": g["markdown"] or "",
+                        "pii_receipts": g.get("pii_receipts") or {},
                         "created_at": g["created_at"].isoformat(),
                         "updated_at": g["updated_at"].isoformat(),
                     }

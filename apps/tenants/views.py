@@ -1136,7 +1136,7 @@ class EntityRegistryListView(APIView):
     }
 
     def get(self, request):
-        from apps.pii.entity_registry import iter_normalized
+        from apps.pii.entity_registry import coerce
 
         try:
             tenant = request.user.tenant
@@ -1144,7 +1144,10 @@ class EntityRegistryListView(APIView):
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
         entries = []
-        for placeholder, entry in iter_normalized(tenant.pii_entity_map):
+        for placeholder, raw_entry in (tenant.pii_entity_map or {}).items():
+            if isinstance(raw_entry, dict) and raw_entry.get("retired"):
+                continue
+            entry = coerce(raw_entry)
             entries.append(
                 {
                     "placeholder": placeholder,
@@ -1444,31 +1447,45 @@ class EntityRegistryItemView(APIView):
         )
 
     def delete(self, request, placeholder: str):
+        from apps.pii.entity_registry import coerce, normalize_denylist_key
+
         try:
             tenant = request.user.tenant
         except Tenant.DoesNotExist:
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Serialize the read-modify-write per tenant so a concurrent redactor
-        # mint (full-dict overwrite) cannot resurrect the deleted entry.
+        # Keep the binding for historical rehydration, but retire + deny it so
+        # future redaction cannot reuse or re-mint the value.
         with transaction.atomic():
             locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
             entity_map = dict((locked.pii_entity_map if locked else None) or {})
+            denylist = dict((locked.pii_denylist if locked else None) or {})
             if placeholder not in entity_map:
                 return Response(
                     {"detail": f"Unknown placeholder: {placeholder}"},
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
-            del entity_map[placeholder]
-            Tenant.objects.filter(pk=tenant.pk).update(pii_entity_map=entity_map)
+            now = timezone.now().isoformat()
+            retired = coerce(entity_map[placeholder])
+            retired["retired"] = True
+            retired["retired_at"] = now
+            entity_map[placeholder] = retired
+            key = normalize_denylist_key(retired.get("name", ""))
+            if key and key not in denylist:
+                denylist[key] = {"reason": "owner-delete-retired", "decided_at": now}
+            Tenant.objects.filter(pk=tenant.pk).update(
+                pii_entity_map=entity_map,
+                pii_denylist=denylist,
+            )
         tenant.pii_entity_map = entity_map
+        tenant.pii_denylist = denylist
 
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
 class EntityRegistryBulkDeleteView(APIView):
-    """Bulk-delete entity-registry bindings in a single request.
+    """Bulk-retire entity-registry bindings in a single request.
 
     Backs the People settings page's "Delete N selected" action. Deleting
     hundreds of bindings via sequential single-entry DELETEs is slow and
@@ -1477,22 +1494,16 @@ class EntityRegistryBulkDeleteView(APIView):
 
     Body: ``{"placeholders": ["[PERSON_1]", ...], "deny": false}``.
 
-    When ``deny`` is true, each deleted entry's name is ALSO added to the
-    tenant's pii_denylist. Deletion alone does NOT stop future redaction —
-    the redactor's NER pass re-mints a fresh ``[TYPE_N]`` for the same real
-    name on the next inbound message unless the value is on the denylist
-    (see apps/pii/redactor.py and the PIIDenylistListView docstring). So
-    ``deny=true`` is the "actually stop obfuscating this value" lever;
-    deleting the row without denying just re-mints the value under a new
-    placeholder and breaks rehydration of any stored text still referencing
-    the old one.
+    ``deny`` is retained for wire compatibility. Retirement always deny-lists
+    the value because a retired binding must never be reused; the map entry is
+    retained so historical placeholders continue to rehydrate.
     """
 
     permission_classes = [IsAuthenticated]
     _MAX_BATCH = 1000
 
     def post(self, request):
-        from apps.pii.entity_registry import get_name, normalize_denylist_key
+        from apps.pii.entity_registry import coerce, get_name, normalize_denylist_key
 
         try:
             tenant = request.user.tenant
@@ -1522,8 +1533,6 @@ class EntityRegistryBulkDeleteView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        deny = bool(body.get("deny", False))
-
         deleted: list[str] = []
         not_found: list[str] = []
         denied: list[str] = []
@@ -1544,26 +1553,23 @@ class EntityRegistryBulkDeleteView(APIView):
                 if placeholder not in entity_map:
                     not_found.append(placeholder)
                     continue
-                entry = entity_map.pop(placeholder)
+                entry = entity_map[placeholder]
                 deleted.append(placeholder)
-                if deny:
-                    # get_name reads both the dict and legacy bare-string
-                    # entry shapes; normalize_denylist_key casefold+strips
-                    # to the canonical denylist key. Skip empties and keep
-                    # existing denylist entries untouched (only genuinely
-                    # new keys are added and reported in ``denied``).
-                    key = normalize_denylist_key(get_name(entry))
-                    if key and key not in denylist:
-                        denylist[key] = {"reason": "bulk-delete", "decided_at": now}
-                        denied.append(key)
+                retired = coerce(entry)
+                retired["retired"] = True
+                retired["retired_at"] = now
+                entity_map[placeholder] = retired
+                key = normalize_denylist_key(get_name(entry))
+                if key and key not in denylist:
+                    denylist[key] = {"reason": "bulk-delete-retired", "decided_at": now}
+                    denied.append(key)
 
-            update_fields = {"pii_entity_map": entity_map}
-            if deny:
-                update_fields["pii_denylist"] = denylist
-            Tenant.objects.filter(pk=tenant.pk).update(**update_fields)
+            Tenant.objects.filter(pk=tenant.pk).update(
+                pii_entity_map=entity_map,
+                pii_denylist=denylist,
+            )
         tenant.pii_entity_map = entity_map
-        if deny:
-            tenant.pii_denylist = denylist
+        tenant.pii_denylist = denylist
 
         return Response(
             {"deleted": deleted, "not_found": not_found, "denied": denied},
@@ -1621,6 +1627,8 @@ class PIIReviewQueueView(APIView):
 
         unreviewed: list[dict] = []
         for placeholder, raw in (tenant.pii_entity_map or {}).items():
+            if isinstance(raw, dict) and raw.get("retired"):
+                continue
             if not placeholder.startswith(_REVIEW_PREFIXES):
                 continue
             entry = coerce(raw)

@@ -180,6 +180,41 @@ class ApplySubtaskCreateTest(TestCase):
         self.assertEqual(subtask.parent_task_id, parent.id)
         self.assertEqual(subtask.pillar, "fuel")
         self.assertEqual(subtask.title, "Cardio set")
+        self.assertEqual(subtask.pii_receipts["title"], {"state": "bypass"})
+
+    def test_flag_on_subtask_and_evidence_use_background_authoring(self):
+        tenant = _make_tenant("sub-placeholder@x.test")
+        tenant.layer1_placeholder_writes = True
+        tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        parent = Task.objects.create(tenant=tenant, title="Parent")
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            subtask_action = apply_subtask_create(
+                tenant=tenant,
+                parent_task_id=str(parent.id),
+                title="Call Alice",
+                source_date=date(2026, 5, 24),
+            )
+            transition_action = apply_task_action(
+                tenant=tenant,
+                task_id=str(parent.id),
+                action="complete",
+                evidence="Alice confirmed it",
+                source_date=date(2026, 5, 24),
+            )
+
+        subtask = Task.objects.get(id=subtask_action.task_id)
+        self.assertEqual(subtask.title, "Call [PERSON_1]")
+        self.assertEqual(subtask.pii_receipts["title"]["state"], "placeholder")
+        self.assertEqual(transition_action.evidence, "[PERSON_1] confirmed it")
+        self.assertEqual(
+            transition_action.before_state["pii_receipts"]["evidence"]["state"],
+            "placeholder",
+        )
 
     def test_unknown_parent_silently_skipped(self):
         tenant = _make_tenant("sub2@x.test")

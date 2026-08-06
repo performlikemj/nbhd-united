@@ -29,6 +29,7 @@ class _RehydrateTitleDescriptionMixin:
                 value = data.get(field)
                 if value:
                     data[field] = rehydrate_for_tenant(tenant, value)
+            data["pii_receipts"] = getattr(instance, "pii_receipts", {}) or {}
         return data
 
 

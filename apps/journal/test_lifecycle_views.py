@@ -8,6 +8,8 @@ rejects (409) markdown writes to flag-on tasks/goal docs instead of losing them.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -155,6 +157,30 @@ class TaskGoalListCreateTests(TestCase):
         self.assertEqual(resp.data["status"], Task.Status.OPEN)
         task = Task.objects.get(id=resp.data["id"])
         self.assertEqual(task.tenant_id, self.tenant.id)
+        self.assertEqual(task.title, "Pay loan")
+        self.assertEqual(task.pii_receipts["title"], {"state": "bypass"})
+
+    def test_flag_on_create_stores_placeholder_and_owner_receipt(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            resp = self.client.post(
+                "/api/v1/journal/tasks/",
+                {"title": "Call Alice"},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 201)
+        task = Task.objects.get(id=resp.data["id"])
+        self.assertEqual(task.title, "Call [PERSON_1]")
+        self.assertEqual(resp.data["title"], "Call Alice")
+        self.assertEqual(task.pii_receipts["title"]["state"], "placeholder")
+        self.assertEqual(
+            resp.data["pii_receipts"]["title"]["redactions"],
+            [{"placeholder": "[PERSON_1]", "value": "Alice"}],
+        )
 
     def test_create_task_requires_title(self):
         resp = self.client.post("/api/v1/journal/tasks/", {"pillar": "gravity"}, format="json")
@@ -194,6 +220,15 @@ class TaskGoalListCreateTests(TestCase):
         self.assertEqual(titles, ["Call the Dentist"])
         # Every result carries the stable UUID id the EntityQuery keys on.
         self.assertIn("id", resp.data[0])
+
+    def test_task_search_real_name_finds_placeholder_stored_row(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        Task.objects.create(tenant=self.tenant, title="Call [PERSON_1]")
+
+        resp = self.client.get("/api/v1/journal/tasks/?q=ALICE")
+
+        self.assertEqual([task["title"] for task in resp.data], ["Call Alice"])
 
     def test_list_tasks_q_no_match_returns_empty(self):
         Task.objects.create(tenant=self.tenant, title="Call the Dentist")
@@ -269,6 +304,15 @@ class TaskGoalListCreateTests(TestCase):
         resp = self.client.get("/api/v1/journal/goals/?q=marathon")
         self.assertEqual([g["title"] for g in resp.data], ["Run a Marathon"])
         self.assertIn("id", resp.data[0])
+
+    def test_goal_search_real_name_finds_placeholder_stored_row(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        Goal.objects.create(tenant=self.tenant, title="Support [PERSON_1]")
+
+        resp = self.client.get("/api/v1/journal/goals/?q=alice")
+
+        self.assertEqual([goal["title"] for goal in resp.data], ["Support Alice"])
 
     def test_list_goals_q_scoped_to_tenant(self):
         Goal.objects.create(tenant=self.tenant, title="Save for a house")

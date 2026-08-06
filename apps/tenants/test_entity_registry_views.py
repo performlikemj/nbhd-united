@@ -187,7 +187,7 @@ class EntityRegistryDeleteTests(TestCase):
     def setUp(self):
         self.client = APIClient()
 
-    def test_deletes_entry(self):
+    def test_tombstones_entry_keeps_rehydration_and_hides_listing(self):
         user, tenant = _make_user_with_tenant(
             entity_map={
                 "[PERSON_1]": "Alice",
@@ -198,9 +198,17 @@ class EntityRegistryDeleteTests(TestCase):
         resp = self.client.delete("/api/v1/tenants/settings/entity-registry/%5BPERSON_1%5D/")
         self.assertEqual(resp.status_code, 204)
         tenant.refresh_from_db()
-        self.assertNotIn("[PERSON_1]", tenant.pii_entity_map)
+        self.assertTrue(tenant.pii_entity_map["[PERSON_1]"]["retired"])
+        self.assertIn("alice", tenant.pii_denylist)
         # Other entries preserved
         self.assertIn("[PERSON_2]", tenant.pii_entity_map)
+
+        from apps.pii.redactor import redact_known_entities, rehydrate_for_tenant
+
+        self.assertEqual(rehydrate_for_tenant(tenant, "Hello [PERSON_1]"), "Hello Alice")
+        self.assertEqual(redact_known_entities(tenant, "Hello Alice"), "Hello Alice")
+        listing = self.client.get("/api/v1/tenants/settings/entity-registry/")
+        self.assertEqual([entry["name"] for entry in listing.json()["entries"]], ["Bob"])
 
     def test_returns_404_for_unknown_placeholder(self):
         user, _ = _make_user_with_tenant(entity_map={"[PERSON_1]": "Alice"})

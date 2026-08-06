@@ -158,7 +158,8 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
     Only exact ``[TYPE_N]`` / ``\\[TYPE_N\\]`` tokens are substituted — never the
     raw value — so a junk value that also occurs as ordinary prose is untouched.
     """
-    from apps.journal.models import Document, DocumentChunk, Goal, Task
+    from apps.journal.models import Document, DocumentChunk
+    from apps.pii.store_registry import registered_stores
 
     inner_to_name: dict[str, str] = {}
     for placeholder, name in ph_to_name.items():
@@ -179,29 +180,49 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
 
     healed = 0
 
-    # (model, [text fields]) — each row is counted once no matter how many of
+    # (model, [text fields], receipts field) — each row is counted once no matter how many of
     # its fields changed. ``__contains="["`` narrows to rows that could hold a
     # token ('[' is literal in Postgres LIKE).
-    text_targets = (
-        (Document, ("markdown", "title")),
-        (Task, ("title", "description")),
-        (Goal, ("title", "description")),
-        (DocumentChunk, ("text",)),
-    )
+    text_targets = [
+        (Document, ("markdown", "title"), None),
+        (DocumentChunk, ("text",), None),
+    ]
+    for store in registered_stores():
+        if store.json_paths:
+            # TODO(P3/W2): add receipt-aware JSON-path healing before registering
+            # the first nested placeholder-bearing surface.
+            raise NotImplementedError(f"JSON-path healing is not implemented for {store.model_label}")
+        text_targets.append((store.model, store.flat_fields, store.receipts_field))
 
-    for model, fields in text_targets:
+    for model, fields, receipts_field in text_targets:
         bracket_q = Q()
         for field in fields:
             bracket_q |= Q(**{f"{field}__contains": "["})
-        rows = model.objects.filter(tenant=tenant).filter(bracket_q).only("id", *fields)
+        only_fields = ["id", *fields]
+        if receipts_field:
+            only_fields.append(receipts_field)
+        rows = model.objects.filter(tenant=tenant).filter(bracket_q).only(*only_fields)
         for row in rows:
             changed_fields = []
+            receipts = dict(getattr(row, receipts_field, {}) or {}) if receipts_field else {}
             for field in fields:
                 current = getattr(row, field)
                 healed_value = _sub(current)
                 if healed_value != current:
                     setattr(row, field, healed_value)
                     changed_fields.append(field)
+                    receipt = receipts.get(field)
+                    if isinstance(receipt, dict) and isinstance(receipt.get("redactions"), list):
+                        next_receipt = dict(receipt)
+                        next_receipt["redactions"] = [
+                            item
+                            for item in receipt["redactions"]
+                            if not isinstance(item, dict) or item.get("placeholder") not in ph_to_name
+                        ]
+                        receipts[field] = next_receipt
+            if receipts_field and receipts != (getattr(row, receipts_field, {}) or {}):
+                setattr(row, receipts_field, receipts)
+                changed_fields.append(receipts_field)
             if changed_fields:
                 # Deliberately omit auto_now ``updated_at`` — a hygiene rewrite
                 # isn't a user edit and shouldn't reorder the owner's timeline.

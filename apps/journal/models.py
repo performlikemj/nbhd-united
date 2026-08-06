@@ -306,6 +306,7 @@ class Goal(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="goals")
     title = models.CharField(max_length=256)
     description = models.TextField(blank=True, default="")
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
     # ``enc_columns.GOAL_TITLE`` / ``GOAL_DESCRIPTION``. See PendingExtraction.text_enc.
     title_enc = models.BinaryField(null=True)
@@ -477,6 +478,7 @@ class Task(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="tasks")
     title = models.CharField(max_length=256)
     description = models.TextField(blank=True, default="")
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
     # ``enc_columns.TASK_TITLE`` / ``TASK_DESCRIPTION``. See PendingExtraction.text_enc.
     title_enc = models.BinaryField(null=True)

@@ -118,7 +118,16 @@ class SweepTenantTests(_TenantMixin, TestCase):
             title="Entry",
             markdown="Deployed django on 2026-05-30 with no token.",
         )
-        self.task = Task.objects.create(tenant=self.tenant, title="Pay [ACCOUNT_105]")
+        self.task = Task.objects.create(
+            tenant=self.tenant,
+            title="Pay [ACCOUNT_105]",
+            pii_receipts={
+                "title": {
+                    "state": "placeholder",
+                    "redactions": [{"placeholder": "[ACCOUNT_105]", "value": "2026-05-30"}],
+                }
+            },
+        )
         self.goal = Goal.objects.create(
             tenant=self.tenant,
             title="Goal",
@@ -161,6 +170,7 @@ class SweepTenantTests(_TenantMixin, TestCase):
         # Task / Goal / DocumentChunk healed.
         self.task.refresh_from_db()
         self.assertEqual(self.task.title, "Pay 2026-05-30")
+        self.assertEqual(self.task.pii_receipts["title"]["redactions"], [])
         self.goal.refresh_from_db()
         self.assertEqual(self.goal.description, "Ref django here")
         self.chunk.refresh_from_db()
