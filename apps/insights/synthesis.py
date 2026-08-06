@@ -286,6 +286,9 @@ def _build_context(tenant: Tenant, *, now: datetime) -> dict[str, Any]:
             }
         )
 
+    # Legacy rows contain real names while new marker rows contain placeholders.
+    # Until migration, synthesis's "do not repeat" matching can degrade across
+    # that mixed-space boundary; v1 deliberately accepts the residual.
     recent_insights = list(
         AssistantInsight.objects.filter(
             tenant=tenant,

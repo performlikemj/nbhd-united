@@ -68,6 +68,17 @@ class ExtractAndRecordInsightsTests(TestCase):
         self.assertEqual(rows[0]["status"], "open")
         self.assertEqual(rows[0]["pillar"], "gravity")
 
+    def test_rehydrated_delivery_text_is_redacted_again_for_storage_only(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        text = "[[insight:journal/relationships]]Theo Smith checks in weekly[[/insight]]"
+
+        out = extract_and_record_insights(text, tenant=self.tenant)
+
+        self.assertEqual(out, "Theo Smith checks in weekly")
+        insight = AssistantInsight.objects.get(tenant=self.tenant)
+        self.assertEqual(insight.statement, "[PERSON_1] checks in weekly")
+
     def test_multiple_markers_in_one_reply(self):
         text = (
             "[[insight:debt]]carrying 8 lines, 20+ year payoff[[/insight]] and "

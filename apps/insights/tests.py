@@ -650,6 +650,32 @@ class Phase2EndpointTests(TestCase):
         self.assertEqual(body["statement"], "Debt is trending up.")
         self.assertEqual(AssistantInsight.objects.filter(tenant=self.tenant).count(), 1)
 
+    def test_user_record_response_rehydrates_statement_with_receipt(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+
+        resp = self.jwt_client.post(
+            "/api/v1/insights/insights/record/",
+            data={
+                "pillar": "gravity",
+                "topic": "debt",
+                "statement": "[PERSON_1] is reducing debt.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 201)
+        body = resp.json()
+        self.assertEqual(body["statement"], "Theo Smith is reducing debt.")
+        self.assertEqual(
+            body["pii_receipts"]["statement"],
+            [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}],
+        )
+        self.assertEqual(
+            AssistantInsight.objects.get(id=body["id"]).statement,
+            "[PERSON_1] is reducing debt.",
+        )
+
     def test_record_auto_proposes_new_topic(self):
         resp = self.jwt_client.post(
             "/api/v1/insights/insights/record/",
@@ -779,6 +805,95 @@ class Phase2EndpointTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["count"], 1)
+
+    def test_owner_list_confirm_refute_rehydrate_with_receipts(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        ins = AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="[PERSON_1] checks the balance weekly.",
+        )
+
+        list_resp = self.jwt_client.get("/api/v1/insights/insights/?pillar=gravity")
+        self.assertEqual(list_resp.status_code, 200)
+        listed = list_resp.json()["insights"][0]
+        self.assertEqual(listed["statement"], "Theo Smith checks the balance weekly.")
+        self.assertEqual(
+            listed["pii_receipts"]["statement"],
+            [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}],
+        )
+
+        confirm_resp = self.jwt_client.post(
+            f"/api/v1/insights/insights/{ins.id}/confirm/",
+            data={},
+            format="json",
+        )
+        self.assertEqual(confirm_resp.status_code, 200)
+        self.assertEqual(confirm_resp.json()["statement"], "Theo Smith checks the balance weekly.")
+        self.assertEqual(
+            confirm_resp.json()["pii_receipts"]["statement"],
+            [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}],
+        )
+
+        refute_resp = self.jwt_client.post(
+            f"/api/v1/insights/insights/{ins.id}/refute/",
+            data={},
+            format="json",
+        )
+        self.assertEqual(refute_resp.status_code, 200)
+        self.assertEqual(refute_resp.json()["statement"], "Theo Smith checks the balance weekly.")
+        self.assertEqual(
+            refute_resp.json()["pii_receipts"]["statement"],
+            [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}],
+        )
+
+    def test_runtime_list_create_confirm_refute_stay_placeholder_space(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        ins = AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="[PERSON_1] checks the balance weekly.",
+        )
+
+        list_resp = self.client.get(
+            f"/api/v1/insights/runtime/{self.tenant.id}/insights/?pillar=gravity",
+            **self._runtime_headers(),
+        )
+        listed = list_resp.json()["insights"][0]
+        self.assertEqual(listed["statement"], "[PERSON_1] checks the balance weekly.")
+        self.assertNotIn("pii_receipts", listed)
+
+        create_resp = self.client.post(
+            f"/api/v1/insights/runtime/{self.tenant.id}/insights/record/",
+            data={"pillar": "gravity", "topic": "debt", "statement": "[PERSON_1] pays early."},
+            content_type="application/json",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(create_resp.status_code, 201)
+        self.assertEqual(create_resp.json()["statement"], "[PERSON_1] pays early.")
+        self.assertNotIn("pii_receipts", create_resp.json())
+
+        confirm_resp = self.client.post(
+            f"/api/v1/insights/runtime/{self.tenant.id}/insights/{ins.id}/confirm/",
+            data={},
+            content_type="application/json",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(confirm_resp.json()["statement"], "[PERSON_1] checks the balance weekly.")
+        self.assertNotIn("pii_receipts", confirm_resp.json())
+
+        refute_resp = self.client.post(
+            f"/api/v1/insights/runtime/{self.tenant.id}/insights/{ins.id}/refute/",
+            data={},
+            content_type="application/json",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(refute_resp.json()["statement"], "[PERSON_1] checks the balance weekly.")
+        self.assertNotIn("pii_receipts", refute_resp.json())
 
     # ── confirm / refute ───────────────────────────────────────────────
     def test_confirm_flips_status(self):
