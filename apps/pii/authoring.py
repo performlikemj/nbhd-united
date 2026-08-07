@@ -81,10 +81,14 @@ def resolve_receipt_values(receipts: Any, entity_map: dict | None) -> dict[str, 
     """Resolve new and legacy receipt shapes against the current entity map.
 
     Persisted receipt values are never trusted: a renamed live binding wins
-    over an embedded W1c canary value. A placeholder the live map cannot
-    resolve (unbound or tombstoned) emits NO ``value`` key at all rather than
-    an explicit null — an absent key and a null both decode to "unknown"
-    downstream, and omitting it keeps a stale embedded value from surviving.
+    over an embedded W1c canary value. Only a placeholder with NO live binding
+    omits the ``value`` key entirely rather than emitting an explicit null — an
+    absent key and a null both decode to "unknown" downstream, and omitting it
+    keeps a stale embedded value from surviving.
+
+    A retired (tombstoned) binding still resolves to its name, deliberately:
+    the binding stays for rehydration, so the receipt matches what the owner is
+    actually shown.
     """
     if not isinstance(receipts, dict):
         return {}
