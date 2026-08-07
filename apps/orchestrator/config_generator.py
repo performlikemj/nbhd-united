@@ -206,17 +206,21 @@ def _build_cron_message(
 _TYPED_LIFECYCLE_SWAPS: tuple[tuple[str, str], ...] = (
     # ── Write-side: tasks ───────────────────────────────────────────────
     (
+        # This key is the one that actually occurs in the live prompt corpus
+        # (``_HEARTBEAT_CHECKIN_PROMPT``), so guidance hung here reaches real
+        # generated prompts. ``TypedLifecycleDeleteGuidanceTest`` renders the
+        # real cron message and fails if either half of that stops being true.
         "`nbhd_document_append` (kind='tasks', slug='tasks')",
         "`nbhd_task_create` (typed lifecycle — captures status + due_date as a queryable row; "
-        "use `nbhd_task_complete` to mark done later)",
+        "use `nbhd_task_complete` to mark done later). Never call `nbhd_task_delete` from a cron "
+        "turn: deletion is permanent and requires the user's explicit confirmation in conversation, "
+        "which an automated turn cannot obtain — complete, skip or defer stale items instead, and "
+        "leave anything that looks like junk for the user to confirm",
     ),
     (
         "`nbhd_document_set` with kind='tasks', slug='tasks'",
         "`nbhd_task_create` for new actionable items (or `nbhd_task_update`/`nbhd_task_complete` "
-        "for existing tasks). Do not write goal/task content into Document anymore. Never call "
-        "`nbhd_task_delete` from a cron turn: deletion is permanent and requires the user's explicit "
-        "confirmation in conversation, which an automated turn cannot obtain — complete, skip or "
-        "defer stale items instead, and leave anything that looks like junk for the user to confirm",
+        "for existing tasks). Do not write goal/task content into Document anymore",
     ),
     # ── Write-side: goals ───────────────────────────────────────────────
     (

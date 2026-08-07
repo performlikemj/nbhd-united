@@ -1185,7 +1185,7 @@ class RuntimeTaskListCreateView(KnownValueResponseGuardMixin, APIView):
         )
 
 
-def _task_descendant_ids(tenant, task) -> set:
+def _task_descendant_ids(task, *, tenant=None) -> set:
     """Every task that CASCADEs away when ``task`` is deleted, at any depth.
 
     ``Task.parent_task`` is a self-FK with ``on_delete=CASCADE``, so deleting a
@@ -1194,13 +1194,21 @@ def _task_descendant_ids(tenant, task) -> set:
     prompt that understates what it destroys is worse than none. Walks breadth
     first, bounded by ``seen``: nothing in the schema forbids a ``parent_task``
     cycle, and an unbounded walk over one would hang the request.
+
+    ``tenant=None`` walks UNSCOPED — every child row regardless of owner. The
+    runtime connection carries ``app.service_role``, so an unscoped walk really
+    does see other tenants' rows; the delete path uses that to compare against
+    the tenant-scoped walk and refuse rather than destroy a stranger's data.
     """
     from apps.journal.models import Task
 
     seen: set = set()
     frontier = [task.id]
     while frontier:
-        children = set(Task.objects.filter(tenant=tenant, parent_task_id__in=frontier).values_list("id", flat=True))
+        qs = Task.objects.filter(parent_task_id__in=frontier)
+        if tenant is not None:
+            qs = qs.filter(tenant=tenant)
+        children = set(qs.values_list("id", flat=True))
         children -= seen
         children.discard(task.id)
         if not children:
@@ -1208,6 +1216,20 @@ def _task_descendant_ids(tenant, task) -> set:
         seen |= children
         frontier = list(children)
     return seen
+
+
+def _task_pending_action_count(task_ids) -> int:
+    """``PendingTaskAction`` rows that CASCADE away with these tasks.
+
+    ``PendingTaskAction.task`` is ``on_delete=CASCADE`` (apps/journal/models.py),
+    so deleting a task also destroys its action-audit trail. Internal
+    bookkeeping rather than user prose, which is why it is surfaced as a bare
+    count and kept out of the hint sentence — but a preview that omits it would
+    be describing less than the delete actually does.
+    """
+    from apps.journal.models import PendingTaskAction
+
+    return PendingTaskAction.objects.filter(task_id__in=list(task_ids)).count()
 
 
 def _task_delete_confirmation_hint(subtask_count: int) -> str:
@@ -1219,7 +1241,8 @@ def _task_delete_confirmation_hint(subtask_count: int) -> str:
     else:
         scope = ""
     return (
-        f"Ask the user to explicitly confirm deleting this task{scope}, then retry with confirm=true. "
+        f"Ask the user to explicitly confirm deleting this task{scope}, then retry with confirm=true "
+        f"AND expected_subtask_count={subtask_count} — the exact number you just showed the user. "
         "Deletion is permanent — there is no undo and no archived state. If the user only wants the "
         "task off their list, nbhd_task_complete / nbhd_task_skip / nbhd_task_defer keep the record."
     )
@@ -1253,6 +1276,17 @@ class RuntimeTaskDetailView(APIView):
         )
 
     def patch(self, request, tenant_id, task_id):
+        """Partial update, serialized against a concurrent delete.
+
+        A PATCH that read the row before a delete committed used to RESURRECT
+        it: ``serializer.save()`` issues an UPDATE with no ``update_fields``, and
+        Django falls through to an INSERT when that UPDATE matches zero rows —
+        and ``Task.id`` has a client-side ``uuid4`` default, so the INSERT
+        succeeds and the "deleted" task reappears with all its old content. The
+        save therefore re-reads under ``select_for_update()`` inside the same
+        transaction as the write: the racing PATCH blocks on the delete's lock,
+        then finds nothing and 404s.
+        """
         from apps.journal.lifecycle_serializers import TaskSerializer
         from apps.journal.models import Task
 
@@ -1268,19 +1302,48 @@ class RuntimeTaskDetailView(APIView):
         if task is None:
             return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+        # Authoring runs BEFORE the transaction opens: it is the PII path, which
+        # may reach a detector outside this process, and invariants §8 forbids
+        # external calls inside ``atomic()`` (app_user idles out at 60s).
         authored_data, receipts = _author_runtime_lifecycle_input(
             tenant,
             request.data,
             seam="journal.runtime.task.patch",
             receipts=task.pii_receipts,
         )
-        serializer = TaskSerializer(task, data=authored_data, partial=True, context={"tenant": tenant})
-        serializer.is_valid(raise_exception=True)
-        serializer.save(pii_receipts=receipts)
+        with transaction.atomic():
+            task = Task.objects.select_for_update().filter(tenant=tenant, id=task_id).first()
+            if task is None:
+                return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
+            serializer = TaskSerializer(task, data=authored_data, partial=True, context={"tenant": tenant})
+            serializer.is_valid(raise_exception=True)
+            serializer.save(pii_receipts=receipts)
         return Response(
             {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},
             status=status.HTTP_200_OK,
         )
+
+    @staticmethod
+    def _delete_preview_payload(task, *, subtask_count: int, pending_action_count: int) -> dict:
+        """The ``confirmation_required`` body — phase 1, and the 409 on a stale count."""
+        # Deliberately the runtime serializer with no ``rehydrate`` flag: the
+        # title stays in placeholder space, which is what the model already has,
+        # so the confirmation surfaces nothing new about the owner. See
+        # _RehydrateTitleDescriptionMixin.
+        from apps.journal.lifecycle_serializers import TaskSerializer
+
+        preview = TaskSerializer(task).data
+        return {
+            "status": "confirmation_required",
+            "task": {
+                "id": preview["id"],
+                "title": preview["title"],
+                "status": preview["status"],
+            },
+            "subtask_count": subtask_count,
+            "pending_action_count": pending_action_count,
+            "hint": _task_delete_confirmation_hint(subtask_count),
+        }
 
     def delete(self, request, tenant_id, task_id):
         """Two-phase hard delete: describe the damage, then destroy it on an explicit confirm.
@@ -1291,12 +1354,16 @@ class RuntimeTaskDetailView(APIView):
         persuasive user sentence away from being ignored; a server that refuses
         to act without ``confirm: true`` is not.
 
-        Phase 1 (no confirm) MUST stay side-effect free — it is the last thing
-        standing between a misread sentence and permanent data loss.
-        ``RuntimeTaskDeleteHandshakeTest`` in
-        ``apps/integrations/test_runtime_task_delete.py`` pins that.
+        Phase 1 (no confirm) is side-effect free — it is the last thing standing
+        between a misread sentence and permanent data loss.
+
+        Phase 2 is BOUND to the preview the user actually saw: it must carry
+        ``expected_subtask_count``, and the server recomputes the real count
+        under the row lock and refuses with 409 ``count_changed`` if they differ.
+        Without that binding the two phases are only related by the model's
+        intent — a subtask added between preview and confirm would be destroyed
+        by a "yes" that was given before it existed.
         """
-        from apps.journal.lifecycle_serializers import TaskSerializer
         from apps.journal.models import Task
 
         auth_failure = _internal_auth_or_401(request, tenant_id)
@@ -1311,43 +1378,88 @@ class RuntimeTaskDetailView(APIView):
         if blocked is not None:
             return blocked
 
-        task = Task.objects.filter(tenant=tenant, id=task_id).first()
-        if task is None:
-            return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
-
-        # Computed once and reused for both the preview and the receipt, so the
-        # number the user agreed to and the number reported deleted cannot drift.
-        subtask_count = len(_task_descendant_ids(tenant, task))
-
         # Only a real JSON ``true`` proceeds. A string "true", a form post, a
         # missing body — everything else falls back to the preview. Failing
         # closed costs one extra round trip; failing open costs the user's data.
         body = request.data if isinstance(request.data, dict) else {}
         if body.get("confirm") is not True:
-            # Deliberately the runtime serializer with no ``rehydrate`` flag:
-            # the title stays in placeholder space, which is what the model
-            # already has, so the confirmation surfaces nothing new about the
-            # owner. See _RehydrateTitleDescriptionMixin.
-            preview = TaskSerializer(task).data
+            task = Task.objects.filter(tenant=tenant, id=task_id).first()
+            if task is None:
+                return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
+            descendants = _task_descendant_ids(task, tenant=tenant)
             return Response(
-                {
-                    "status": "confirmation_required",
-                    "task": {
-                        "id": preview["id"],
-                        "title": preview["title"],
-                        "status": preview["status"],
-                    },
-                    "subtask_count": subtask_count,
-                    "hint": _task_delete_confirmation_hint(subtask_count),
-                },
+                self._delete_preview_payload(
+                    task,
+                    subtask_count=len(descendants),
+                    pending_action_count=_task_pending_action_count({task.id} | descendants),
+                ),
                 status=status.HTTP_200_OK,
             )
 
-        deleted_id = str(task.id)
-        task.delete()
-        logger.info("journal_task_delete tenant=%s subtasks=%s", str(tenant.id)[:8], subtask_count)
+        # Confirm leg. The row is locked for the whole read-check-delete
+        # sequence so a racing PATCH cannot resurrect it (see ``patch``) and the
+        # counts cannot shift between the check and the delete.
+        with transaction.atomic():
+            task = Task.objects.select_for_update().filter(tenant=tenant, id=task_id).first()
+            if task is None:
+                return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+            scoped = _task_descendant_ids(task, tenant=tenant)
+            unscoped = _task_descendant_ids(task)
+            if unscoped != scoped:
+                # Someone else's row hangs off this task. The ORM CASCADE does
+                # not care about the tenant filter we used to count, so going
+                # ahead would silently destroy a stranger's data and report a
+                # number that excluded it. Refuse loudly instead.
+                logger.error(
+                    "journal_task_delete_integrity tenant=%s unscoped=%s scoped=%s",
+                    str(tenant.id)[:8],
+                    len(unscoped),
+                    len(scoped),
+                )
+                return Response(
+                    {
+                        "error": "integrity_error",
+                        "detail": (
+                            "This task has subtasks that do not belong to this tenant, so deleting it "
+                            "would destroy data outside it. Refusing. Report this to support."
+                        ),
+                    },
+                    status=status.HTTP_409_CONFLICT,
+                )
+
+            subtask_count = len(scoped)
+            cascade_ids = {task.id} | scoped
+            pending_action_count = _task_pending_action_count(cascade_ids)
+
+            # ``True`` is an int in Python, so bools are excluded explicitly —
+            # ``expected_subtask_count: true`` must not satisfy a count of 1.
+            expected = body.get("expected_subtask_count")
+            if isinstance(expected, bool) or not isinstance(expected, int) or expected != subtask_count:
+                payload = self._delete_preview_payload(
+                    task,
+                    subtask_count=subtask_count,
+                    pending_action_count=pending_action_count,
+                )
+                payload["reason"] = "count_changed"
+                return Response(payload, status=status.HTTP_409_CONFLICT)
+
+            deleted_id = str(task.id)
+            task.delete()
+
+        logger.info(
+            "journal_task_delete tenant=%s subtasks=%s pending_actions=%s",
+            str(tenant.id)[:8],
+            subtask_count,
+            pending_action_count,
+        )
         return Response(
-            {"status": "deleted", "id": deleted_id, "subtasks_deleted": subtask_count},
+            {
+                "status": "deleted",
+                "id": deleted_id,
+                "subtasks_deleted": subtask_count,
+                "pending_actions_deleted": pending_action_count,
+            },
             status=status.HTTP_200_OK,
         )
 

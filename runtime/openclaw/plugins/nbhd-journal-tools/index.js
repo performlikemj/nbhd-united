@@ -1912,7 +1912,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_task_delete",
       description:
-        "DESTRUCTIVE — permanently delete a task. There is no undo and no archive. Any subtasks are deleted with it. TWO-PHASE, required: (1) call with confirm omitted or false — this changes nothing and returns the task plus its subtask_count; (2) show the user exactly what would be deleted, including the subtask count, and get their explicit yes IN CONVERSATION; (3) only then call again with confirm=true. Never pass confirm=true on your own initiative, never in the same message where you first proposed the deletion, and never to 'clean up' tasks the user did not name. If the user only wants a task off their list, use nbhd_task_complete / nbhd_task_skip / nbhd_task_defer instead — those keep the record.",
+        "DESTRUCTIVE — permanently delete a task. There is no undo and no archive. Any subtasks are deleted with it. TWO-PHASE, required: (1) call with confirm omitted or false — this changes nothing and returns the task plus its subtask_count and pending_action_count; (2) show the user exactly what would be deleted, including the subtask count, and get their explicit yes IN CONVERSATION; (3) only then call again with confirm=true AND expected_subtask_count set to the exact subtask_count you showed the user. If someone added a subtask in between, the server rejects the call with reason='count_changed' and a fresh preview — show the user the NEW numbers and ask again; do not simply retry with the new count. Never pass confirm=true on your own initiative, never in the same message where you first proposed the deletion, and never to 'clean up' tasks the user did not name. If the user only wants a task off their list, use nbhd_task_complete / nbhd_task_skip / nbhd_task_defer instead — those keep the record.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1923,6 +1923,11 @@ export default function register(api) {
             description:
               "Defaults to false. Set true ONLY after the user has explicitly confirmed this exact deletion in conversation. False (or omitted) returns a preview and deletes nothing.",
           },
+          expected_subtask_count: {
+            type: "integer",
+            description:
+              "Required with confirm=true: the exact subtask_count from the preview you showed the user. The server refuses the delete if the real count no longer matches, so the user can never be held to a 'yes' they gave about a different set of tasks.",
+          },
         },
         required: ["task_id"],
       },
@@ -1930,13 +1935,20 @@ export default function register(api) {
         const input = asObject(params);
         const taskId = asTrimmedString(input.task_id);
         if (!taskId) throw new Error("task_id is required");
+        // Explicit strict-boolean coercion: anything the model passes that
+        // isn't a real `true` is sent as false, so a stringy "true" cannot
+        // sneak past the preview phase.
+        const body = { confirm: input.confirm === true };
+        // Forwarded only when it is a real integer — a string "3" must not
+        // masquerade as agreement to a count. Absent/invalid means the server
+        // answers with a fresh preview rather than deleting.
+        if (Number.isInteger(input.expected_subtask_count)) {
+          body.expected_subtask_count = input.expected_subtask_count;
+        }
         const payload = await callRuntime(api, {
           path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/`),
           method: "DELETE",
-          // Explicit strict-boolean coercion: anything the model passes that
-          // isn't a real `true` is sent as false, so a stringy "true" cannot
-          // sneak past the preview phase.
-          body: { confirm: input.confirm === true },
+          body,
         });
         return renderPayload(payload);
       },

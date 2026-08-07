@@ -93,6 +93,7 @@ touched a specific document this turn; don't decorate every reply with it.
 | `nbhd_task_complete` | `task_id` | Mark done (status=done, completed_at=now) — updates source of truth instead of adding stale "✅" prose. |
 | `nbhd_task_skip` | `task_id` | Mark skipped — the user decided not to do it. |
 | `nbhd_task_defer` | `task_id` | Mark deferred — the user is postponing it. |
+| `nbhd_task_delete` | `task_id` | **DESTRUCTIVE, no undo.** Subtasks cascade. Two-phase: call without `confirm` to get `subtask_count` + `pending_action_count`, show the user, get an explicit yes, then call again with `confirm=true` and `expected_subtask_count` set to the number you showed. A `count_changed` 409 means the set moved — re-ask, don't retry. Prefer complete/skip/defer. |
 | `nbhd_task_list` | none | List tasks; filter by `status` (open/in_progress/done/skipped/deferred), `pillar`, `parent_goal_id`, `due_before`, `due_after`. |
 | `nbhd_task_get` | `task_id` | Fetch one task with full details. |
 
