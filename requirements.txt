@@ -33,7 +33,6 @@ azure-common==1.1.28
     # via
     #   azure-mgmt-authorization
     #   azure-mgmt-containerinstance
-    #   azure-mgmt-costmanagement
     #   azure-mgmt-msi
 azure-core==1.39.0
     # via
@@ -63,7 +62,7 @@ azure-mgmt-core==1.6.0
     #   azure-mgmt-costmanagement
     #   azure-mgmt-msi
     #   azure-mgmt-storage
-azure-mgmt-costmanagement==4.0.1
+azure-mgmt-costmanagement==5.0.0
     # via -r requirements.in
 azure-mgmt-msi==7.1.0
     # via -r requirements.in
@@ -538,6 +537,7 @@ typing-extensions==4.16.0
     #   azure-keyvault-keys
     #   azure-keyvault-secrets
     #   azure-mgmt-appcontainers
+    #   azure-mgmt-costmanagement
     #   azure-mgmt-msi
     #   azure-mgmt-storage
     #   azure-storage-file-share

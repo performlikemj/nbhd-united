@@ -60,7 +60,7 @@ composio>=0.18.1
 azure-identity
 azure-mgmt-containerinstance
 azure-mgmt-appcontainers
-azure-mgmt-costmanagement>=4.0
+azure-mgmt-costmanagement>=5.0.0
 azure-mgmt-msi
 azure-mgmt-authorization
 azure-mgmt-storage
