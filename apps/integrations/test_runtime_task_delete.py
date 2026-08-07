@@ -459,3 +459,53 @@ class RuntimeTaskPatchDeleteRaceTest(TestCase):
         self.assertEqual(resp.json()["task"]["title"], "Updated title")
         self.task.refresh_from_db()
         self.assertEqual(self.task.title, "Updated title")
+
+    def test_sequential_patches_on_different_fields_keep_both_receipts(self):
+        """Patching title must not drop the receipt description earned earlier.
+
+        A receipt records how a field's text was authored. Lose one and the
+        field's stored text no longer has a record of its bindings, so
+        rehydration has nothing correct to consult.
+        """
+        self.assertEqual(self._patch({"description": "Some description"}).status_code, 200)
+        self.assertEqual(self._patch({"title": "New title"}).status_code, 200)
+
+        self.task.refresh_from_db()
+        self.assertIn("description", self.task.pii_receipts)
+        self.assertIn("title", self.task.pii_receipts)
+
+    def test_a_concurrent_patch_receipt_is_not_clobbered(self):
+        """The real interleaving: A reads, B commits, A writes.
+
+        A touches only ``title``. If A's receipt payload were seeded from the
+        snapshot it read BEFORE B committed, A's write would restore that stale
+        map wholesale and erase B's ``description`` receipt — leaving B's
+        description TEXT in place with A's stale receipt beside it. The two then
+        disagree, and rehydration resolves the wrong binding. A must merge its
+        one authored field onto the row as B left it.
+        """
+        task_id = self.task.id
+        b_receipt = {"state": "placeholder", "mapping": {"[PERSON_9]": "written-by-b"}}
+
+        def commit_b_mid_request(*args, **kwargs):
+            # Runs after A's existence check and before A opens its transaction.
+            Task.objects.filter(id=task_id).update(
+                description="[PERSON_9] handles the renewal",
+                pii_receipts={"description": b_receipt},
+            )
+            return ({"title": "Written by A"}, {"title": {"state": "bypass"}})
+
+        with patch(
+            "apps.integrations.runtime_views._author_runtime_lifecycle_input",
+            side_effect=commit_b_mid_request,
+        ):
+            resp = self._patch({"title": "Written by A"})
+
+        self.assertEqual(resp.status_code, 200)
+        self.task.refresh_from_db()
+        # A's own field landed.
+        self.assertEqual(self.task.title, "Written by A")
+        self.assertEqual(self.task.pii_receipts["title"], {"state": "bypass"})
+        # B's field — text AND receipt — survived intact and still agree.
+        self.assertEqual(self.task.description, "[PERSON_9] handles the renewal")
+        self.assertEqual(self.task.pii_receipts["description"], b_receipt)

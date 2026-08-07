@@ -1298,23 +1298,33 @@ class RuntimeTaskDetailView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
-        task = Task.objects.filter(tenant=tenant, id=task_id).first()
-        if task is None:
+        if not Task.objects.filter(tenant=tenant, id=task_id).exists():
             return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         # Authoring runs BEFORE the transaction opens: it is the PII path, which
         # may reach a detector outside this process, and invariants §8 forbids
         # external calls inside ``atomic()`` (app_user idles out at 60s).
-        authored_data, receipts = _author_runtime_lifecycle_input(
+        #
+        # Seeded with NO existing receipts on purpose, so ``authored_receipts``
+        # holds ONLY the fields this request actually authored. Seeding it from
+        # a pre-lock read instead would write that stale snapshot back over a
+        # concurrent PATCH's receipt for a field this request never touched:
+        # the other request's text would survive while its receipt was replaced
+        # by ours, and a receipt that disagrees with its text rehydrates the
+        # wrong binding — the user sees someone else's name.
+        authored_data, authored_receipts = _author_runtime_lifecycle_input(
             tenant,
             request.data,
             seam="journal.runtime.task.patch",
-            receipts=task.pii_receipts,
         )
         with transaction.atomic():
             task = Task.objects.select_for_update().filter(tenant=tenant, id=task_id).first()
             if task is None:
                 return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
+            # Merge onto the CURRENT row, read under the lock — untouched fields
+            # keep whatever receipt they have now, not whatever they had when
+            # this request started.
+            receipts = {**(task.pii_receipts or {}), **authored_receipts}
             serializer = TaskSerializer(task, data=authored_data, partial=True, context={"tenant": tenant})
             serializer.is_valid(raise_exception=True)
             serializer.save(pii_receipts=receipts)
