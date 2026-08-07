@@ -178,6 +178,23 @@ def canonical_key(name: str) -> str:
     return name.casefold().strip()
 
 
+def retire_bindings_for_key(entity_map: dict, canonical: str, *, now_iso: str) -> tuple[dict, list[str]]:
+    """Return a copied map with every active canonical-name match retired."""
+    updated_map = dict(entity_map)
+    newly_retired: list[str] = []
+    for placeholder, entry in entity_map.items():
+        if canonical_key(get_name(entry)) != canonical:
+            continue
+        if isinstance(entry, dict) and entry.get("retired"):
+            continue
+        retired = coerce(entry)
+        retired["retired"] = True
+        retired["retired_at"] = now_iso
+        updated_map[placeholder] = retired
+        newly_retired.append(placeholder)
+    return updated_map, newly_retired
+
+
 def _placeholder_num(placeholder: str) -> int:
     """Parse the numeric suffix from ``[ETYPE_N]``. Returns 0 for
     malformed placeholders so they sort first and lose canonical-pick

@@ -1783,7 +1783,7 @@ class PIIDenylistListView(APIView):
         return Response({"entries": entries})
 
     def post(self, request):
-        from apps.pii.entity_registry import normalize_denylist_key
+        from apps.pii.entity_registry import normalize_denylist_key, retire_bindings_for_key
 
         try:
             tenant = request.user.tenant
@@ -1816,18 +1816,30 @@ class PIIDenylistListView(APIView):
         with transaction.atomic():
             locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
             denylist = dict((locked.pii_denylist if locked else None) or {})
+            entity_map = dict((locked.pii_entity_map if locked else None) or {})
+            now_iso = timezone.now().isoformat()
             denylist[key] = {
                 "reason": "manual",
-                "decided_at": timezone.now().isoformat(),
+                "decided_at": now_iso,
             }
-            Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
+            entity_map, retired_placeholders = retire_bindings_for_key(
+                entity_map,
+                key,
+                now_iso=now_iso,
+            )
+            Tenant.objects.filter(pk=tenant.pk).update(
+                pii_denylist=denylist,
+                pii_entity_map=entity_map,
+            )
         tenant.pii_denylist = denylist
+        tenant.pii_entity_map = entity_map
 
         return Response(
             {
                 "key": key,
                 "reason": denylist[key]["reason"],
                 "decided_at": denylist[key]["decided_at"],
+                "retired": len(retired_placeholders),
             },
             status=status.HTTP_201_CREATED,
         )
@@ -1860,6 +1872,7 @@ class PIIDenylistItemView(APIView):
                     status=status.HTTP_404_NOT_FOUND,
                 )
 
+            # Un-ignore never restores retired bindings; restoration is a separate future action.
             del denylist[key]
             Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
         tenant.pii_denylist = denylist
@@ -1884,7 +1897,7 @@ class PIIDenylistBulkView(APIView):
     _MAX_BATCH = 1000
 
     def post(self, request):
-        from apps.pii.entity_registry import normalize_denylist_key
+        from apps.pii.entity_registry import normalize_denylist_key, retire_bindings_for_key
 
         try:
             tenant = request.user.tenant
@@ -1935,11 +1948,24 @@ class PIIDenylistBulkView(APIView):
         with transaction.atomic():
             locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
             denylist = dict((locked.pii_denylist if locked else None) or {})
+            entity_map = dict((locked.pii_entity_map if locked else None) or {})
             denylist.update(new_entries)
-            Tenant.objects.filter(pk=tenant.pk).update(pii_denylist=denylist)
+            retired_count = 0
+            for key in new_entries:
+                entity_map, retired_placeholders = retire_bindings_for_key(
+                    entity_map,
+                    key,
+                    now_iso=now,
+                )
+                retired_count += len(retired_placeholders)
+            Tenant.objects.filter(pk=tenant.pk).update(
+                pii_denylist=denylist,
+                pii_entity_map=entity_map,
+            )
         tenant.pii_denylist = denylist
+        tenant.pii_entity_map = entity_map
 
         return Response(
-            {"added": added, "skipped": skipped},
+            {"added": added, "skipped": skipped, "retired": retired_count},
             status=status.HTTP_200_OK,
         )
