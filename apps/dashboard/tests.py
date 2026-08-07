@@ -117,6 +117,34 @@ class HorizonsViewAssistantInsightsTests(TestCase):
             status=status,
         )
 
+    def test_goal_receipts_resolve_against_the_live_map(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Live Alice"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        Goal.objects.create(
+            tenant=self.tenant,
+            title="Help [PERSON_1] and [PERSON_404]",
+            description="body",
+            status=Goal.Status.ACTIVE,
+            pii_receipts={
+                "title": {
+                    "state": "placeholder",
+                    "redactions": [
+                        {"placeholder": "[PERSON_1]", "value": "Stale Alice"},
+                        {"placeholder": "[PERSON_404]", "value": "Stale Ghost"},
+                    ],
+                }
+            },
+        )
+
+        resp = self.client.get("/api/v1/dashboard/horizons/")
+
+        self.assertEqual(resp.status_code, 200)
+        goal = next(g for g in resp.json()["goals"] if g["pii_receipts"])
+        redactions = goal["pii_receipts"]["title"]["redactions"]
+        self.assertEqual(redactions[0], {"placeholder": "[PERSON_1]", "value": "Live Alice"})
+        self.assertEqual(redactions[1], {"placeholder": "[PERSON_404]"})
+        self.assertNotIn("Stale Ghost", str(resp.json()))
+
     def test_horizons_includes_assistant_insights_field(self):
         resp = self.client.get("/api/v1/dashboard/horizons/")
         self.assertEqual(resp.status_code, 200)

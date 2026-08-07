@@ -123,10 +123,25 @@ def _classify(entity_map: dict[str, Any], max_entries: int) -> tuple[dict[str, i
     deterministic (dict insertion order) so a run and its dry-run agree, and a
     huge legacy map can't blow the per-run budget.
     """
-    summary = {"examined": 0, "junk": 0, "healed_rows": 0, "denied": 0, "deleted": 0, "skipped": 0}
+    summary = {
+        "examined": 0,
+        "junk": 0,
+        "healed_rows": 0,
+        "denied": 0,
+        "deleted": 0,
+        "skipped": 0,
+        "retired_skipped": 0,
+    }
     junk: dict[str, dict[str, str]] = {}
     for placeholder, entry in list(entity_map.items())[:max_entries]:
         summary["examined"] += 1
+        if isinstance(entry, dict) and entry.get("retired"):
+            # Owner-deleted real entities stay bound for rehydration. Junk
+            # healing would write their real values back into Layer-1 stores.
+            # Counted apart from `skipped` so retirement volume stays readable
+            # against ordinary keepers.
+            summary["retired_skipped"] += 1
+            continue
         name = get_name(entry)
         verdict, reason = classify_entry(placeholder, name)
         if verdict == "junk":
@@ -149,6 +164,78 @@ def _build_heal_regex(inners: list[str]) -> re.Pattern[str] | None:
         return None
     alternation = "|".join(re.escape(inner) for inner in inners)
     return re.compile(r"\\?\[(" + alternation + r")\\?\]")
+
+
+def _json_path_parts(path: str) -> tuple[str, ...]:
+    """Parse dotted registry paths; ``[]``/``[*]`` are wildcard aliases."""
+    normalized = path.replace("[*]", ".*").replace("[]", ".*")
+    return tuple(part for part in normalized.split(".") if part)
+
+
+def _heal_json_value(value: Any, parts: tuple[str, ...], substitute) -> tuple[Any, bool]:
+    """Copy-on-write rewrite of string leaves selected by one JSON path."""
+    if not parts:
+        if not isinstance(value, str):
+            return value, False
+        healed = substitute(value)
+        return healed, healed != value
+
+    head, *tail_list = parts
+    tail = tuple(tail_list)
+    if head == "*":
+        if isinstance(value, dict):
+            next_value = value
+            changed = False
+            for key, child in value.items():
+                healed_child, child_changed = _heal_json_value(child, tail, substitute)
+                if child_changed:
+                    if not changed:
+                        next_value = dict(value)
+                    next_value[key] = healed_child
+                    changed = True
+            return next_value, changed
+        if isinstance(value, list):
+            next_value = value
+            changed = False
+            for index, child in enumerate(value):
+                healed_child, child_changed = _heal_json_value(child, tail, substitute)
+                if child_changed:
+                    if not changed:
+                        next_value = list(value)
+                    next_value[index] = healed_child
+                    changed = True
+            return next_value, changed
+        return value, False
+
+    if isinstance(value, dict) and head in value:
+        healed_child, changed = _heal_json_value(value[head], tail, substitute)
+        if changed:
+            next_value = dict(value)
+            next_value[head] = healed_child
+            return next_value, True
+        return value, False
+    if isinstance(value, list) and head.isdigit():
+        index = int(head)
+        if 0 <= index < len(value):
+            healed_child, changed = _heal_json_value(value[index], tail, substitute)
+            if changed:
+                next_value = list(value)
+                next_value[index] = healed_child
+                return next_value, True
+    return value, False
+
+
+def _without_healed_redactions(receipt: Any, ph_to_name: dict[str, str]) -> Any:
+    """Drop healed placeholder items from either receipt generation's shape."""
+    if not isinstance(receipt, dict) or not isinstance(receipt.get("redactions"), list):
+        return receipt
+    next_receipt = dict(receipt)
+    next_receipt["redactions"] = [
+        item
+        for item in receipt["redactions"]
+        if not isinstance(item, dict) or item.get("placeholder") not in ph_to_name
+    ]
+    return next_receipt
 
 
 def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
@@ -180,28 +267,30 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
 
     healed = 0
 
-    # (model, [text fields], receipts field) — each row is counted once no matter how many of
-    # its fields changed. ``__contains="["`` narrows to rows that could hold a
-    # token ('[' is literal in Postgres LIKE).
-    text_targets = [
-        (Document, ("markdown", "title"), None),
-        (DocumentChunk, ("text",), None),
+    # (model, flat fields, dotted JSON paths, receipts field) — each row is
+    # counted once no matter how many selected values changed. Flat-field
+    # ``__contains="["`` predicates narrow stores that have no JSON paths.
+    targets = [
+        (Document, ("markdown", "title"), (), None),
+        (DocumentChunk, ("text",), (), None),
     ]
     for store in registered_stores():
-        if store.json_paths:
-            # TODO(P3/W2): add receipt-aware JSON-path healing before registering
-            # the first nested placeholder-bearing surface.
-            raise NotImplementedError(f"JSON-path healing is not implemented for {store.model_label}")
-        text_targets.append((store.model, store.flat_fields, store.receipts_field))
+        targets.append((store.model, store.flat_fields, store.json_paths, store.receipts_field))
 
-    for model, fields, receipts_field in text_targets:
-        bracket_q = Q()
-        for field in fields:
-            bracket_q |= Q(**{f"{field}__contains": "["})
-        only_fields = ["id", *fields]
+    for model, fields, json_paths, receipts_field in targets:
+        json_parts = [_json_path_parts(path) for path in json_paths]
+        json_parts = [parts for parts in json_parts if parts]
+        json_fields = tuple(dict.fromkeys(parts[0] for parts in json_parts))
+        only_fields = list(dict.fromkeys(["id", *fields, *json_fields]))
         if receipts_field:
             only_fields.append(receipts_field)
-        rows = model.objects.filter(tenant=tenant).filter(bracket_q).only(*only_fields)
+        rows = model.objects.filter(tenant=tenant)
+        if not json_parts:
+            bracket_q = Q()
+            for field in fields:
+                bracket_q |= Q(**{f"{field}__contains": "["})
+            rows = rows.filter(bracket_q)
+        rows = rows.only(*only_fields)
         for row in rows:
             changed_fields = []
             receipts = dict(getattr(row, receipts_field, {}) or {}) if receipts_field else {}
@@ -211,14 +300,21 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
                 if healed_value != current:
                     setattr(row, field, healed_value)
                     changed_fields.append(field)
-                    receipt = receipts.get(field)
-                    if isinstance(receipt, dict) and isinstance(receipt.get("redactions"), list):
-                        next_receipt = dict(receipt)
-                        next_receipt["redactions"] = [
-                            item
-                            for item in receipt["redactions"]
-                            if not isinstance(item, dict) or item.get("placeholder") not in ph_to_name
-                        ]
+                    current_receipt = receipts.get(field)
+                    next_receipt = _without_healed_redactions(current_receipt, ph_to_name)
+                    if next_receipt != current_receipt:
+                        receipts[field] = next_receipt
+            for parts in json_parts:
+                field, *nested_parts = parts
+                current = getattr(row, field)
+                healed_value, changed = _heal_json_value(current, tuple(nested_parts), _sub)
+                if changed:
+                    setattr(row, field, healed_value)
+                    if field not in changed_fields:
+                        changed_fields.append(field)
+                    current_receipt = receipts.get(field)
+                    next_receipt = _without_healed_redactions(current_receipt, ph_to_name)
+                    if next_receipt != current_receipt:
                         receipts[field] = next_receipt
             if receipts_field and receipts != (getattr(row, receipts_field, {}) or {}):
                 setattr(row, receipts_field, receipts)
@@ -235,7 +331,8 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
 def sweep_tenant(tenant: Any, *, dry_run: bool = False, max_entries: int = DEFAULT_MAX_ENTRIES) -> dict[str, int]:
     """Heal → deny → delete every deterministic-junk binding for one tenant.
 
-    Returns ``{examined, junk, healed_rows, denied, deleted, skipped}``. On
+    Returns ``{examined, junk, healed_rows, denied, deleted, skipped,
+    retired_skipped}``. On
     ``dry_run`` it classifies and reports counts without touching anything.
 
     The real path classifies UNDER the row lock (from the freshly re-read map)
@@ -251,7 +348,15 @@ def sweep_tenant(tenant: Any, *, dry_run: bool = False, max_entries: int = DEFAU
     with transaction.atomic():
         locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
         if locked is None:
-            return {"examined": 0, "junk": 0, "healed_rows": 0, "denied": 0, "deleted": 0, "skipped": 0}
+            return {
+                "examined": 0,
+                "junk": 0,
+                "healed_rows": 0,
+                "denied": 0,
+                "deleted": 0,
+                "skipped": 0,
+                "retired_skipped": 0,
+            }
 
         entity_map = dict(locked.pii_entity_map or {})
         denylist = dict(locked.pii_denylist or {})
@@ -310,6 +415,7 @@ def sweep_all_tenants(
         "denied": 0,
         "deleted": 0,
         "skipped": 0,
+        "retired_skipped": 0,
         "errors": 0,
     }
 
@@ -330,14 +436,14 @@ def sweep_all_tenants(
             totals["errors"] += 1
             logger.exception("pii_junk_sweep failed for tenant=%s", tenant.pk)
             continue
-        for field in ("examined", "junk", "healed_rows", "denied", "deleted", "skipped"):
-            totals[field] += result[field]
+        for field in ("examined", "junk", "healed_rows", "denied", "deleted", "skipped", "retired_skipped"):
+            totals[field] += result.get(field, 0)
         if result["junk"]:
             totals["tenants_with_junk"] += 1
 
     logger.info(
         "pii_junk_sweep complete tenants_seen=%d tenants_with_junk=%d examined=%d junk=%d "
-        "healed_rows=%d denied=%d deleted=%d errors=%d",
+        "healed_rows=%d denied=%d deleted=%d retired_skipped=%d errors=%d",
         totals["tenants_seen"],
         totals["tenants_with_junk"],
         totals["examined"],
@@ -345,6 +451,7 @@ def sweep_all_tenants(
         totals["healed_rows"],
         totals["denied"],
         totals["deleted"],
+        totals["retired_skipped"],
         totals["errors"],
     )
     return totals

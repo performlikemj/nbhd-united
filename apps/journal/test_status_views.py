@@ -276,6 +276,34 @@ class JournalStatusEndpointTests(TestCase):
         self.assertEqual(by_nick["Paid Loan"]["period_status"], "paid")
         self.assertEqual(by_nick["Unpaid Loan"]["period_status"], "unpaid")
 
+    def test_receipts_resolve_against_the_live_map_and_omit_unresolved_values(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Live Alice"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        Task.objects.create(
+            tenant=self.tenant,
+            title="Call [PERSON_1] and [PERSON_404]",
+            status=Task.Status.OPEN,
+            pii_receipts={
+                "title": {
+                    "state": "placeholder",
+                    "redactions": [
+                        {"placeholder": "[PERSON_1]", "value": "Stale Alice"},
+                        {"placeholder": "[PERSON_404]", "value": "Stale Ghost"},
+                    ],
+                }
+            },
+        )
+
+        self.client.force_authenticate(user=self.user)
+        resp = self.client.get("/api/v1/journal/status/")
+
+        self.assertEqual(resp.status_code, 200)
+        redactions = resp.data["open_tasks"][0]["pii_receipts"]["title"]["redactions"]
+        self.assertEqual(redactions[0], {"placeholder": "[PERSON_1]", "value": "Live Alice"})
+        self.assertEqual(redactions[1], {"placeholder": "[PERSON_404]"})
+        self.assertNotIn("Stale Alice", str(resp.data))
+        self.assertNotIn("Stale Ghost", str(resp.data))
+
     def test_tenant_isolation(self):
         other_user = User.objects.create_user(username="other", password="x")
         other_tenant = Tenant.objects.create(

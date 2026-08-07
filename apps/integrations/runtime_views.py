@@ -826,8 +826,29 @@ def _reauthor_runtime_lifecycle_instance(instance, *, seam):
     from apps.pii.authoring import author_text
 
     receipts = dict(instance.pii_receipts or {})
+    # Status transitions (complete/skip/defer/achieve/abandon) don't touch the
+    # text, so a field that already carries a receipt and still matches the row
+    # on disk has nothing to re-learn — skipping it keeps a full NER inference
+    # off every transition. Comparing against the STORED value (not just the
+    # receipt's existence) means a caller that edited the instance in memory
+    # first still gets authored, rather than a receipt that no longer describes
+    # the text. Flag-off-era `bypass` receipts are deliberately NOT upgraded on
+    # the way past: the A7 migration fence already covers them, since anything
+    # whose state isn't `placeholder` migrates.
+    #
+    # Only worth the lookup with the flag ON — flag-off author_text is a cheap
+    # bypass passthrough, so the SELECT would cost the whole fleet more than it
+    # saves to spare the canary an inference.
+    flag_on = getattr(instance.tenant, "layer1_placeholder_writes", False)
+    stored = (
+        (type(instance)._default_manager.filter(pk=instance.pk).values("title", "description").first() or {})
+        if flag_on
+        else {}
+    )
     changed_fields = []
     for field in ("title", "description"):
+        if flag_on and receipts.get(field) and stored.get(field) == getattr(instance, field):
+            continue
         authored = author_text(instance.tenant, getattr(instance, field), seam=seam, writer="runtime", field=field)
         if authored.text != getattr(instance, field):
             setattr(instance, field, authored.text)

@@ -180,7 +180,7 @@ class ApplySubtaskCreateTest(TestCase):
         self.assertEqual(subtask.parent_task_id, parent.id)
         self.assertEqual(subtask.pillar, "fuel")
         self.assertEqual(subtask.title, "Cardio set")
-        self.assertEqual(subtask.pii_receipts["title"], {"state": "bypass"})
+        self.assertEqual(subtask.pii_receipts["title"], {"state": "bypass", "writer": "background"})
 
     def test_flag_on_subtask_and_evidence_use_background_authoring(self):
         tenant = _make_tenant("sub-placeholder@x.test")

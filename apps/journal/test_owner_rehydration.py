@@ -304,22 +304,33 @@ class LifecycleSerializerRehydrationTests(TestCase):
         self.client.force_authenticate(user=self.user)
 
     def test_task_detail_rehydrates_title_and_description(self):
-        receipt = {
+        legacy_receipt = {
             "state": "placeholder",
-            "redactions": [{"placeholder": "[PERSON_1]", "value": "Sarah"}],
+            "redactions": [{"placeholder": "[PERSON_1]", "value": "Stale Sarah"}],
+        }
+        current_receipt = {
+            "state": "placeholder",
+            "redactions": [{"placeholder": "[LOCATION_330]"}],
         }
         task = Task.objects.create(
             tenant=self.tenant,
             title="Call [PERSON_1]",
             description="about [LOCATION_330]",
             status=Task.Status.OPEN,
-            pii_receipts={"title": receipt},
+            pii_receipts={"title": legacy_receipt, "description": current_receipt},
         )
         resp = self.client.get(f"/api/v1/journal/tasks/{task.id}/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["title"], "Call Sarah")
         self.assertEqual(resp.data["description"], "about july")
-        self.assertEqual(resp.data["pii_receipts"]["title"], receipt)
+        self.assertEqual(
+            resp.data["pii_receipts"]["title"]["redactions"],
+            [{"placeholder": "[PERSON_1]", "value": "Sarah"}],
+        )
+        self.assertEqual(
+            resp.data["pii_receipts"]["description"]["redactions"],
+            [{"placeholder": "[LOCATION_330]", "value": "july"}],
+        )
 
     def test_goal_detail_rehydrates_title(self):
         goal = Goal.objects.create(tenant=self.tenant, title="Support [PERSON_1]", status=Goal.Status.ACTIVE)

@@ -175,7 +175,7 @@ class TaskLinkageTest(TestCase):
         task = Task.objects.get(id=result["task_id"])
         self.assertEqual(task.tenant_id, self.a.id)  # the caller's OWN task
         self.assertEqual(task.related_ref["object_id"], str(self.mission.id))
-        self.assertEqual(task.pii_receipts["title"], {"state": "bypass"})
+        self.assertEqual(task.pii_receipts["title"], {"state": "bypass", "writer": "background"})
         self.assertTrue(SharedGoalUpdate.objects.filter(shared_goal=self.mission, kind="task_added").exists())
 
     def test_flag_on_mission_task_stores_placeholder_and_receipt(self):

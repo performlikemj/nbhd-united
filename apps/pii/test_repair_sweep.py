@@ -8,6 +8,7 @@ from django.test import TestCase
 
 from apps.journal.models import PendingTaskAction, Task
 from apps.pii.authoring import AuthoredText
+from apps.pii.redactor import RedactionOutcome
 from apps.pii.repair_sweep import _check_rate_alert, repair_tenant
 from apps.tenants.models import Tenant, User
 
@@ -93,6 +94,41 @@ class RepairSweepTests(TestCase):
         self.assertEqual(unconfirmed.title, "repaired")
         self.assertEqual(residual.title, "stable residual")
 
+    def test_runtime_residual_row_is_reauthored_as_background_and_stays_residual(self):
+        raw = "Dana Whitfield is on the list"
+        task = Task.objects.create(
+            tenant=self.tenant,
+            title=raw,
+            pii_receipts={
+                "title": {
+                    "state": "residual",
+                    "writer": "runtime",
+                    "residual_spans": {"count": 1, "kinds": {"PERSON": 1}},
+                }
+            },
+        )
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text=raw, confirmed=True, reason="redacted"),
+            ),
+            patch(
+                "apps.pii.authoring._residual_summary",
+                return_value={"count": 1, "kinds": {"PERSON": 1}},
+            ),
+            patch("apps.pii.alerts.record_live_write_outcome"),
+        ):
+            result = repair_tenant(self.tenant, alert=False)
+
+        task.refresh_from_db()
+        self.assertEqual(task.title, raw)
+        self.assertEqual(task.pii_receipts["title"]["state"], "residual")
+        self.assertEqual(task.pii_receipts["title"]["writer"], "background")
+        self.assertEqual(result["fields_attempted"], 1)
+        self.assertEqual(result["residual"], 1)
+        self.assertEqual(result["fields_repaired"], 0)
+        self.assertEqual(result["errors"], 0)
+
     def test_row_save_error_is_counted_and_sweep_continues(self):
         poison = Task.objects.create(
             id=UUID(int=1),
@@ -129,6 +165,52 @@ class RepairSweepTests(TestCase):
         self.assertEqual(result["fields_repaired"], 1)
         self.assertEqual(poison.title, "poison")
         self.assertEqual(good.title, "fixed good")
+
+    def test_reauthor_truncation_prevents_poison_row_from_wedging_sweep(self):
+        task = Task.objects.create(
+            tenant=self.tenant,
+            title="repair me",
+            pii_receipts={"title": {"state": "unconfirmed"}},
+        )
+        over_limit = "x" * 250 + "[PERSON_123456789]" + "tail"
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text=over_limit, confirmed=True, reason="redacted"),
+            ),
+            patch("apps.pii.authoring._residual_summary", return_value={"count": 0, "kinds": {}}),
+            patch("apps.pii.alerts.record_live_write_outcome"),
+        ):
+            first = repair_tenant(self.tenant, alert=False)
+            second = repair_tenant(self.tenant, alert=False)
+
+        task.refresh_from_db()
+        self.assertEqual(task.title, "x" * 250)
+        self.assertLessEqual(len(task.title), Task._meta.get_field("title").max_length)
+        self.assertNotIn("[PERSON_", task.title)
+        self.assertEqual(task.pii_receipts["title"]["writer"], "background")
+        self.assertEqual(first["errors"], 0)
+        self.assertEqual(first["fields_repaired"], 1)
+        self.assertEqual(second["fields_attempted"], 0)
+
+    def test_sweep_repairs_do_not_pollute_live_write_counters(self):
+        Task.objects.create(
+            tenant=self.tenant,
+            title="Alice task",
+            pii_receipts={"title": {"state": "unconfirmed", "reason": "redaction-error"}},
+        )
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text="still broken", confirmed=False, reason="redaction-error"),
+            ),
+            patch("apps.pii.alerts.record_live_write_outcome") as record_live,
+        ):
+            result = repair_tenant(self.tenant, alert=False)
+
+        self.assertEqual(result["fields_attempted"], 1)
+        self.assertEqual(result["unconfirmed"], 1)
+        record_live.assert_not_called()
 
     def test_synthetic_error_rate_above_one_percent_fires_metadata_only_alert(self):
         with patch("apps.transcripts.alerts._send_alert", return_value=True) as send_alert:
