@@ -43,9 +43,12 @@ def _placeholder_kind(placeholder: str) -> str:
 
 # Fields only a human can put on a binding: relationship/notes come from the
 # console's manual add-or-edit, reviewed_at is stamped when the user saw the
-# binding in the tier-2 review queue and chose to KEEP it. The detector's mint
-# writes none of them.
-_CURATION_FIELDS = ("relationship", "notes", "reviewed_at")
+# binding in the tier-2 review queue and chose to KEEP it, and updated_at is
+# written by every console write path (apps/tenants/views.py passes
+# ``updated_at=now`` on add, merge and edit). The detector's mint writes NONE of
+# them — it calls ``to_storage_value(original)`` with the name alone — so any of
+# these four is proof a human touched this binding.
+_CURATION_FIELDS = ("relationship", "notes", "reviewed_at", "updated_at")
 
 
 def _is_user_curated(entry: object) -> bool:

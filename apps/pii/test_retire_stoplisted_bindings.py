@@ -24,9 +24,11 @@ class IsNeverANameTests(SimpleTestCase):
             "calendar",
             "Calendar",
             "CALENDAR",
-            "quick wins",
+            "quick wins",  # phrase path — 'quick' alone is a surname
             "Quick Wins",
             "morning briefing",
+            "Daily Briefing",
+            "evening check-in",  # normalizes to the "evening check in" phrase
             "heartbeat check-in",  # hyphen tokenizes to ['heartbeat','check','in']
             "google calendar",
             "calendar status",
@@ -49,6 +51,13 @@ class IsNeverANameTests(SimpleTestCase):
             "Sarah",
             "",
             "   ",
+            # Surname-shaped words that were demoted to the phrase list: alone
+            # they are names again, so they must never be retired.
+            "Quick",
+            "Daily",
+            "Morning",
+            "Evening",
+            "Breezy",
         ]:
             self.assertFalse(is_never_a_name(text), f"{text!r} must not be never-a-name")
 
@@ -65,7 +74,7 @@ class IsNeverANameTests(SimpleTestCase):
         # strip protection a user created by hand.
         from apps.pii.redactor import _is_common_word_span
 
-        for text in ["mar", "Jan", "jun", "Sun", "can"]:
+        for text in ["mar", "Jan", "jun", "Sun", "can", "Thu", "mon", "main", "jul", "sep"]:
             self.assertTrue(
                 _is_common_word_span(text.lower(), True),
                 f"{text!r} should still be dropped at detection",
@@ -85,7 +94,7 @@ class RetireStoplistedMapTests(SimpleTestCase):
     def test_retires_only_person_and_location_matches(self):
         entity_map = {
             "[PERSON_1]": "Calendar",
-            "[PERSON_2]": {"name": "quick wins", "updated_at": "2026-01-01T00:00:00+00:00"},
+            "[PERSON_2]": {"name": "quick wins", "arbiter_judged_at": "2026-01-01T00:00:00+00:00"},
             "[LOCATION_3]": {"name": "Japanese"},
             "[PERSON_4]": {"name": "Marcus Delgado"},
             "[PERSON_5]": {"name": "Quick Delgado"},
@@ -99,7 +108,9 @@ class RetireStoplistedMapTests(SimpleTestCase):
         for placeholder in ("[PERSON_1]", "[PERSON_2]", "[LOCATION_3]"):
             self.assertTrue(updated[placeholder]["retired"], placeholder)
             self.assertEqual(updated[placeholder]["retired_at"], self.NOW)
-        self.assertEqual(updated["[PERSON_2]"]["updated_at"], "2026-01-01T00:00:00+00:00")
+        # arbiter_judged_at is an INTERNAL stamp, not user curation — it must not
+        # protect a binding from the sweep, and it survives the retire.
+        self.assertEqual(updated["[PERSON_2]"]["arbiter_judged_at"], "2026-01-01T00:00:00+00:00")
         self.assertEqual(updated["[PERSON_4]"], {"name": "Marcus Delgado"})
         self.assertEqual(updated["[PERSON_5]"], {"name": "Quick Delgado"})
         self.assertEqual(updated["[EMAIL_ADDRESS_6]"], {"name": "calendar"})
@@ -121,10 +132,13 @@ class RetireStoplistedMapTests(SimpleTestCase):
         # hold a stoplist-word binding on purpose. relationship / notes /
         # reviewed_at are fields only a human writes — never sweep them.
         entity_map = {
-            "[PERSON_1]": {"name": "Quick", "relationship": "neighbour"},
+            "[PERSON_1]": {"name": "Nvidia", "relationship": "neighbour"},
             "[PERSON_2]": {"name": "Calendar", "notes": "the band"},
             "[PERSON_3]": {"name": "Gmail", "reviewed_at": "2026-08-01T00:00:00+00:00"},
-            "[PERSON_4]": {"name": "Calendar"},
+            # updated_at is written by every console write path and never by the
+            # detector's mint, so it marks a hand-added binding.
+            "[PERSON_4]": {"name": "Houthis", "updated_at": "2026-08-01T00:00:00+00:00"},
+            "[PERSON_5]": {"name": "Calendar"},
         }
 
         updated, by_key = _retire_stoplisted(entity_map, now_iso=self.NOW)
@@ -132,8 +146,8 @@ class RetireStoplistedMapTests(SimpleTestCase):
         # Only the uncurated duplicate retires; the curated same-name binding
         # survives even though its canonical key matched.
         self.assertEqual(by_key, {"calendar": 1})
-        self.assertTrue(updated["[PERSON_4]"]["retired"])
-        for placeholder in ("[PERSON_1]", "[PERSON_2]", "[PERSON_3]"):
+        self.assertTrue(updated["[PERSON_5]"]["retired"])
+        for placeholder in ("[PERSON_1]", "[PERSON_2]", "[PERSON_3]", "[PERSON_4]"):
             self.assertNotIn("retired", updated[placeholder], placeholder)
 
     def test_report_label_flattens_markdown_fragment_keys(self):

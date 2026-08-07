@@ -1235,6 +1235,44 @@ class MintGuardUnitTest(TestCase):
             results = [DetectedEntity(etype, 0, len(text), 0.95)]
             self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
 
+    def test_surname_shaped_words_survive_alone_but_drop_as_template_phrases(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # "Quick", "Daily", "Morning", "Evening", "Breezy" are real surnames, so
+        # a bare span carrying one MUST keep redacting...
+        for text in ["Quick", "Daily", "Morning", "Evening", "Breezy"]:
+            results = [DetectedEntity("PERSON", 0, len(text), 0.95)]
+            self.assertEqual(len(_filter_results(results, text, set())), 1, f"{text!r} should survive")
+
+        # ...while the template phrase they usually appear in still drops. The
+        # phrase match is on normalized tokens, so markdown noise and hyphens
+        # ("Quick Wins\n-", "evening check-in") still hit.
+        for text in [
+            "Quick Wins",
+            "quick wins\n-",
+            "Morning Briefing",
+            "morning briefings",
+            "Daily Briefing",
+            "evening check-in",
+        ]:
+            results = [DetectedEntity("PERSON", 0, len(text), 0.95)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
+    def test_collision_word_may_not_combine_with_fleet_vocabulary(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # A name-collision word mixed with fleet-evidence vocabulary is a
+        # PERSON, not an imperative — even at sentence start.
+        for text in ["Mark Quick", "Mark Calendar", "Grace Google", "Will Japanese"]:
+            results = [DetectedEntity("PERSON", 0, len(text), 0.95)]
+            self.assertEqual(len(_filter_results(results, text, set())), 1, f"{text!r} should survive")
+
+        # All-collision and collision+LEGACY-console spans keep their existing
+        # dropped behavior at sentence start ("Mark task" is an imperative).
+        for text in ["Mark", "Will Grace", "Mark task"]:
+            results = [DetectedEntity("PERSON", 0, len(text), 0.95)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
     def test_demonym_guard_drops_nationality_adjectives(self):
         from apps.pii.redactor import DetectedEntity, _filter_results
 

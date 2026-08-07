@@ -503,24 +503,31 @@ _COMMON_WORD_STOPLIST = frozenset(
         "bst",
         "ist",
         "aest",
-        # ---------------------------------------------------------------
-        # Fleet evidence (cross-tenant ignore analysis, 2026-08-08): words
-        # that two or more tenants explicitly marked "not PII" and that are
-        # implausible as a personal name. Name-SHAPED denies from the same
-        # data (max, mar, theo, la, moon, spark, claude) are deliberately
-        # absent — under-redacting a real name is the failure mode here.
-        # ---------------------------------------------------------------
+    }
+)
+
+# ---------------------------------------------------------------------------
+# Fleet evidence (cross-tenant ignore analysis, 2026-08-08): words that two or
+# more tenants explicitly marked "not PII" and that are implausible as a
+# personal name. Name-SHAPED denies from the same data (max, mar, theo, la,
+# moon, spark, claude) are deliberately absent — under-redacting a real name is
+# the failure mode here, and so are the surname-shaped words (quick, daily,
+# morning, evening, breezy), which moved to _FLEET_PHRASE_STOPLIST below.
+#
+# Kept SEPARATE from _COMMON_WORD_STOPLIST on purpose: the sentence-start
+# name-collision escape in _is_common_word_span may combine with the legacy
+# console vocabulary ("Mark task" is an imperative) but must NEVER combine with
+# this set — "Mark Calendar" is a person, not a template phrase.
+# ---------------------------------------------------------------------------
+_FLEET_WORD_STOPLIST = frozenset(
+    {
         # Assistant/app template vocabulary minted as PERSON (830 live
         # "calendar" bindings fleet-wide, 345 "quick wins").
         "nbhd",
         "calendar",
-        "quick",
         "wins",
         "briefing",
         "briefings",
-        "morning",
-        "evening",
-        "daily",
         "weekly",
         "status",
         "schedule",
@@ -554,12 +561,33 @@ _COMMON_WORD_STOPLIST = frozenset(
         "overcast",
         "totemo",
         "playoff",
-        "breezy",
         "drizzle",
         # Interjection / food / group nouns from the canary incident set.
         "hmm",
         "gyoza",
         "houthis",
+        # Markdown/list scaffolding words that ride along in template spans.
+        "reply",
+        "section",
+    }
+)
+
+# Multi-word template phrases matched as a WHOLE span, mirroring
+# ``_FITNESS_PHRASES``. These exist because their distinctive token is
+# surname-shaped and unsafe to stoplist bare: "Quick", "Daily", "Morning",
+# "Evening" and "Breezy" are all real surnames, so a lone span carrying one must
+# keep redacting while the template phrase it usually appears in does not.
+#
+# Matching is on the NORMALIZED token string (``_phrase_key``), not the raw
+# span, so punctuation and markdown noise still hit: "Quick Wins\n-" and
+# "evening check-in" both normalize onto an entry here.
+_FLEET_PHRASE_STOPLIST = frozenset(
+    {
+        "quick wins",
+        "morning briefing",
+        "morning briefings",
+        "daily briefing",
+        "evening check in",  # normalized form of "evening check-in"
     }
 )
 
@@ -689,30 +717,54 @@ def _at_sentence_start(text: str, start: int) -> bool:
 
 
 # Tokens that stay stoplisted for DETECTION but must never drive a destructive
-# retire. Each is a real given/family name somewhere in the tenant base (Jan,
-# Jun, Mar/María del Mar, Sun 孫, Can) that only earned its stoplist slot as a
+# retire. Each is a real given/family name somewhere in the tenant base — Jan,
+# Jun, Mar (María del Mar), Sun (孫), Can (Turkish), Thu (Vietnamese, extremely
+# common), Mon, Main, Jul, Sep — that only earned its stoplist slot as a
 # month/weekday abbreviation or an ops noun. Dropping a fresh detection for one
 # of these is recoverable — the user re-adds the contact. Retiring the binding
 # is not: it silently removes protection a user may have created by hand, so
 # ``is_never_a_name`` (the backfill predicate) refuses them.
-_RETIRE_EXEMPT_TOKENS = frozenset({"jan", "jun", "mar", "sun", "can"})
+_RETIRE_EXEMPT_TOKENS = frozenset({"jan", "jun", "mar", "sun", "can", "thu", "mon", "main", "jul", "sep"})
+
+
+def _phrase_key(text: str) -> str:
+    """Normalized token string used for whole-span phrase matching.
+
+    "Quick Wins\\n-" and "evening check-in" collapse to "quick wins" and
+    "evening check in", so a template phrase still matches through markdown
+    noise, hyphens, and stray punctuation.
+    """
+    return " ".join(_span_tokens(text.casefold()))
 
 
 def _is_fleet_stoplisted_token(token: str) -> bool:
     """True for a token that is never a personal name on ANY tenant.
 
-    Single source of truth for the fleet stoplists (common words + demonyms).
-    The name-collision set is NOT consulted here: those words ARE real names and
-    are only suppressed positionally, by :func:`_is_common_word_span`.
+    Single source of truth for the fleet stoplists (legacy console vocabulary +
+    the fleet-evidence set + demonyms). The name-collision set is NOT consulted
+    here: those words ARE real names, suppressed only positionally by
+    :func:`_is_common_word_span`.
     """
-    return token in _COMMON_WORD_STOPLIST or token in _DEMONYM_STOPLIST
+    return token in _COMMON_WORD_STOPLIST or token in _FLEET_WORD_STOPLIST or token in _DEMONYM_STOPLIST
+
+
+def _is_fleet_stoplisted_span(tokens: list[str]) -> bool:
+    """True when a token list is fleet junk: a known template phrase, or every
+    token stoplisted. The one rule shared by the detection filter and the retire
+    backfill, so the two can never drift.
+    """
+    if not tokens:
+        return False
+    if " ".join(tokens) in _FLEET_PHRASE_STOPLIST:
+        return True
+    return all(_is_fleet_stoplisted_token(token) for token in tokens)
 
 
 def is_never_a_name(text: str) -> bool:
-    """True when EVERY alphabetic token of ``text`` is fleet-stoplisted.
+    """True when ``text`` is fleet junk: a template phrase, or all-stoplisted.
 
-    The public form of the all-tokens rule, shared by the detection filter and
-    the ``retire_stoplisted_bindings`` backfill so the "what counts as junk"
+    The public form of the rule, shared by the detection filter and the
+    ``retire_stoplisted_bindings`` backfill so the "what counts as junk"
     decision can never drift between what we stop minting and what we retire.
 
     Three properties the callers depend on: a span with any non-stoplisted token
@@ -726,26 +778,33 @@ def is_never_a_name(text: str) -> bool:
         return False
     if any(token in _RETIRE_EXEMPT_TOKENS for token in tokens):
         return False
-    return all(_is_fleet_stoplisted_token(token) for token in tokens)
+    return _is_fleet_stoplisted_span(tokens)
 
 
 def _is_common_word_span(matched_lower: str, at_sentence_start: bool) -> bool:
-    """True when every token of a span is a stoplisted common word.
+    """True when a span is console/template vocabulary rather than a name.
 
-    General stoplist words always count; name-collision words count only when
-    the span opens the sentence. Requiring ALL tokens to be stoplisted keeps a
-    real name that merely begins with a collision word ("Max Verstappen").
+    Two independent ways to qualify:
+
+    - Fleet junk (:func:`_is_fleet_stoplisted_span`) — a known template phrase,
+      or every token stoplisted. Position-independent.
+    - The sentence-start escape for :data:`_NAME_COLLISION_STOPLIST` words,
+      which ARE real names and so only suppress in imperative position ("Mark
+      task…" vs "…met Mark").
+
+    The escape deliberately combines ONLY with the legacy console vocabulary. A
+    span mixing a collision word with the fleet-evidence or demonym sets is a
+    PERSON — "Mark Calendar" and "Grace Google" are people, so they survive
+    while "Mark task" (both legacy) still drops.
     """
     tokens = _span_tokens(matched_lower)
     if not tokens:
         return False
-    for token in tokens:
-        if _is_fleet_stoplisted_token(token):
-            continue
-        if at_sentence_start and token in _NAME_COLLISION_STOPLIST:
-            continue
+    if _is_fleet_stoplisted_span(tokens):
+        return True
+    if not at_sentence_start:
         return False
-    return True
+    return all(token in _COMMON_WORD_STOPLIST or token in _NAME_COLLISION_STOPLIST for token in tokens)
 
 
 def _is_degenerate_span(text: str) -> bool:
@@ -1196,7 +1255,11 @@ class RedactionSession:
         self._denylist: dict[str, Any] = {}
         if tenant is not None:
             existing_map = getattr(tenant, "pii_entity_map", None) or {}
-            self._inverted_ci = _inverted_names_ci(existing_map)
+            # Retired bindings are excluded: a tombstoned entity must stop being
+            # substituted into agent-authored text (mint='never') and must not be
+            # reused as a mint target. Counters still seed from the FULL map, so a
+            # retired placeholder's number is never reissued.
+            self._inverted_ci = _inverted_names_ci(existing_map, include_retired=False)
             self._type_counters = _seed_counters_from_map(existing_map)
             # Never number below the tenant's monotonic high-water mark, so a
             # session mint can't reuse a suffix freed by an earlier deletion.
@@ -1324,7 +1387,11 @@ def redact_known_entities(tenant: Tenant | None, text: str) -> str:
     if not existing_map:
         return text
     denylist = getattr(tenant, "pii_denylist", None) or {}
-    inverted_ci = _inverted_names_ci(existing_map)
+    # Retired bindings are skipped for the same reason denylisted ones are: the
+    # user (or the stoplist backfill) declared the name is not PII for them, so
+    # it must stop being masked. Rehydration of text already carrying the
+    # placeholder is unaffected — that path keys by placeholder, not by name.
+    inverted_ci = _inverted_names_ci(existing_map, include_retired=False)
     return _replace_known_only(text, inverted_ci, denylist)
 
 
@@ -1410,7 +1477,13 @@ def _redact_user_message(
     # placeholder. The value tuple carries the display name (for regex
     # building) and the canonical placeholder (lowest-numbered if the
     # map has legacy duplicates from before this fix).
-    inverted_ci = _inverted_names_ci(existing_map)
+    #
+    # Retired bindings are excluded here and in the post-detection known-entity
+    # check below, so retiring a binding actually STOPS substitution — the
+    # symmetric partner of the denylist skip a few lines down. Without this the
+    # retire backfill would be cosmetic: Step 1 never consults ``_filter_results``,
+    # so a retired "calendar" binding would keep masking the word forever.
+    inverted_ci = _inverted_names_ci(existing_map, include_retired=False)
     out = text
     # Longest names first so "Jay Haughton" matches before "Jay".
     for original, placeholder in sorted(
@@ -1571,7 +1644,10 @@ def _redact_user_message(
 
         # Case-insensitive view of the locked map so a name already present
         # collapses onto its existing placeholder instead of minting a dup.
-        locked_inverted_ci = _inverted_names_ci(locked_map)
+        # Retired bindings are excluded: a tombstone is not a reuse target, so a
+        # name that genuinely comes back mints a FRESH placeholder rather than
+        # resurrecting the retired one (directive A9).
+        locked_inverted_ci = _inverted_names_ci(locked_map, include_retired=False)
 
         merged = dict(locked_map)
         for start, end, etype, original, score in to_mint:

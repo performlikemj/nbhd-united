@@ -204,10 +204,31 @@ def _placeholder_num(placeholder: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def is_retired(entry: Any) -> bool:
+    """True when a binding has been retired (tombstoned).
+
+    A retired binding still REHYDRATES — old messages that already carry its
+    placeholder keep resolving — but it must stop driving new substitution and
+    must not be reused as a mint target. Mirrors the inline check in
+    ``apps.pii.authoring._redact_active_known_values``, which has always had
+    this semantic; this is the shared spelling of it.
+    """
+    return isinstance(entry, dict) and bool(entry.get("retired"))
+
+
 def inverted_names_ci(
     entity_map: dict[str, Any] | None,
+    *,
+    include_retired: bool = True,
 ) -> dict[str, tuple[str, str]]:
     """Case-insensitive variant of ``inverted_names``.
+
+    ``include_retired=False`` drops tombstoned bindings, which is what every
+    SUBSTITUTION and MINT-REUSE caller wants: a retired binding must stop
+    replacing the name it was minted for. The default keeps retired entries so
+    scan-style callers (egress leak detection, console lookup) are unchanged —
+    they ask "does the map know this name", not "should this name be masked".
+    Rehydration never routes through here; it keys by placeholder.
 
     Returns ``canonical_key -> (display_name, placeholder)`` so that
     "Sautai", "sautai", and " Sautai " all resolve to the same
@@ -223,6 +244,8 @@ def inverted_names_ci(
     if not entity_map:
         return out
     for placeholder, entry in entity_map.items():
+        if not include_retired and is_retired(entry):
+            continue
         name = get_name(entry)
         key = canonical_key(name)
         if not key:

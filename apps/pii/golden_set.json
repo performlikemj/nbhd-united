@@ -156,6 +156,17 @@
     "expect": "clean"
   },
   {
+    "id": "control-090",
+    "pillar": "control",
+    "text": "Mark Quick called about the lease",
+    "expect": [
+      {
+        "span": "Mark Quick",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
     "id": "control-001",
     "pillar": "control",
     "text": "Email my coach at jordan.rivera@example.com about the deload.",
