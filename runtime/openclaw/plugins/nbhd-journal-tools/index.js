@@ -1904,6 +1904,46 @@ export default function register(api) {
     { optional: true },
   );
 
+  // The only destructive tool in this plugin. The server enforces the
+  // two-phase handshake (it refuses to delete without `confirm: true`), so a
+  // model that skips the preview cannot cause data loss — but the description
+  // still spells the contract out, because the preview is what gives the user
+  // the subtask count they are actually consenting to.
+  api.registerTool(wrap({
+      name: "nbhd_task_delete",
+      description:
+        "DESTRUCTIVE — permanently delete a task. There is no undo and no archive. Any subtasks are deleted with it. TWO-PHASE, required: (1) call with confirm omitted or false — this changes nothing and returns the task plus its subtask_count; (2) show the user exactly what would be deleted, including the subtask count, and get their explicit yes IN CONVERSATION; (3) only then call again with confirm=true. Never pass confirm=true on your own initiative, never in the same message where you first proposed the deletion, and never to 'clean up' tasks the user did not name. If the user only wants a task off their list, use nbhd_task_complete / nbhd_task_skip / nbhd_task_defer instead — those keep the record.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          task_id: { type: "string", description: "Task UUID." },
+          confirm: {
+            type: "boolean",
+            description:
+              "Defaults to false. Set true ONLY after the user has explicitly confirmed this exact deletion in conversation. False (or omitted) returns a preview and deletes nothing.",
+          },
+        },
+        required: ["task_id"],
+      },
+      async execute(_id, params) {
+        const input = asObject(params);
+        const taskId = asTrimmedString(input.task_id);
+        if (!taskId) throw new Error("task_id is required");
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, `/tasks/${encodeURIComponent(taskId)}/`),
+          method: "DELETE",
+          // Explicit strict-boolean coercion: anything the model passes that
+          // isn't a real `true` is sent as false, so a stringy "true" cannot
+          // sneak past the preview phase.
+          body: { confirm: input.confirm === true },
+        });
+        return renderPayload(payload);
+      },
+    }),
+    { optional: true },
+  );
+
   api.registerTool(wrap({
       name: "nbhd_task_list",
       description:

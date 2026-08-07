@@ -1185,8 +1185,48 @@ class RuntimeTaskListCreateView(KnownValueResponseGuardMixin, APIView):
         )
 
 
+def _task_descendant_ids(tenant, task) -> set:
+    """Every task that CASCADEs away when ``task`` is deleted, at any depth.
+
+    ``Task.parent_task`` is a self-FK with ``on_delete=CASCADE``, so deleting a
+    parent silently takes the whole subtree — not just its direct children.
+    Counting one level would understate the blast radius, and a confirmation
+    prompt that understates what it destroys is worse than none. Walks breadth
+    first, bounded by ``seen``: nothing in the schema forbids a ``parent_task``
+    cycle, and an unbounded walk over one would hang the request.
+    """
+    from apps.journal.models import Task
+
+    seen: set = set()
+    frontier = [task.id]
+    while frontier:
+        children = set(Task.objects.filter(tenant=tenant, parent_task_id__in=frontier).values_list("id", flat=True))
+        children -= seen
+        children.discard(task.id)
+        if not children:
+            break
+        seen |= children
+        frontier = list(children)
+    return seen
+
+
+def _task_delete_confirmation_hint(subtask_count: int) -> str:
+    """Agent-facing instruction for the un-confirmed phase of a task delete."""
+    if subtask_count == 1:
+        scope = " (and its 1 subtask, which is deleted with it)"
+    elif subtask_count:
+        scope = f" (and its {subtask_count} subtasks, which are deleted with it)"
+    else:
+        scope = ""
+    return (
+        f"Ask the user to explicitly confirm deleting this task{scope}, then retry with confirm=true. "
+        "Deletion is permanent — there is no undo and no archived state. If the user only wants the "
+        "task off their list, nbhd_task_complete / nbhd_task_skip / nbhd_task_defer keep the record."
+    )
+
+
 class RuntimeTaskDetailView(APIView):
-    """Get or update a single task."""
+    """Get, update, or delete a single task."""
 
     permission_classes = [AllowAny]
     authentication_classes = []
@@ -1239,6 +1279,75 @@ class RuntimeTaskDetailView(APIView):
         serializer.save(pii_receipts=receipts)
         return Response(
             {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},
+            status=status.HTTP_200_OK,
+        )
+
+    def delete(self, request, tenant_id, task_id):
+        """Two-phase hard delete: describe the damage, then destroy it on an explicit confirm.
+
+        The only irreversible tool on this surface — there is no archived status
+        and no undo, so the STRUCTURAL handshake is the safety mechanism, not the
+        tool description. A prompt-only "always confirm" instruction is one
+        persuasive user sentence away from being ignored; a server that refuses
+        to act without ``confirm: true`` is not.
+
+        Phase 1 (no confirm) MUST stay side-effect free — it is the last thing
+        standing between a misread sentence and permanent data loss.
+        ``RuntimeTaskDeleteHandshakeTest`` in
+        ``apps/integrations/test_runtime_task_delete.py`` pins that.
+        """
+        from apps.journal.lifecycle_serializers import TaskSerializer
+        from apps.journal.models import Task
+
+        auth_failure = _internal_auth_or_401(request, tenant_id)
+        if auth_failure is not None:
+            return auth_failure
+
+        tenant, tenant_failure = _load_tenant_or_404(tenant_id)
+        if tenant_failure is not None or tenant is None:
+            return tenant_failure
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
+
+        task = Task.objects.filter(tenant=tenant, id=task_id).first()
+        if task is None:
+            return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
+
+        # Computed once and reused for both the preview and the receipt, so the
+        # number the user agreed to and the number reported deleted cannot drift.
+        subtask_count = len(_task_descendant_ids(tenant, task))
+
+        # Only a real JSON ``true`` proceeds. A string "true", a form post, a
+        # missing body — everything else falls back to the preview. Failing
+        # closed costs one extra round trip; failing open costs the user's data.
+        body = request.data if isinstance(request.data, dict) else {}
+        if body.get("confirm") is not True:
+            # Deliberately the runtime serializer with no ``rehydrate`` flag:
+            # the title stays in placeholder space, which is what the model
+            # already has, so the confirmation surfaces nothing new about the
+            # owner. See _RehydrateTitleDescriptionMixin.
+            preview = TaskSerializer(task).data
+            return Response(
+                {
+                    "status": "confirmation_required",
+                    "task": {
+                        "id": preview["id"],
+                        "title": preview["title"],
+                        "status": preview["status"],
+                    },
+                    "subtask_count": subtask_count,
+                    "hint": _task_delete_confirmation_hint(subtask_count),
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        deleted_id = str(task.id)
+        task.delete()
+        logger.info("journal_task_delete tenant=%s subtasks=%s", str(tenant.id)[:8], subtask_count)
+        return Response(
+            {"status": "deleted", "id": deleted_id, "subtasks_deleted": subtask_count},
             status=status.HTTP_200_OK,
         )
 

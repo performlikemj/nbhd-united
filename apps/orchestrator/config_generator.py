@@ -213,7 +213,10 @@ _TYPED_LIFECYCLE_SWAPS: tuple[tuple[str, str], ...] = (
     (
         "`nbhd_document_set` with kind='tasks', slug='tasks'",
         "`nbhd_task_create` for new actionable items (or `nbhd_task_update`/`nbhd_task_complete` "
-        "for existing tasks). Do not write goal/task content into Document anymore",
+        "for existing tasks). Do not write goal/task content into Document anymore. Never call "
+        "`nbhd_task_delete` from a cron turn: deletion is permanent and requires the user's explicit "
+        "confirmation in conversation, which an automated turn cannot obtain — complete, skip or "
+        "defer stale items instead, and leave anything that looks like junk for the user to confirm",
     ),
     # ── Write-side: goals ───────────────────────────────────────────────
     (
@@ -1411,6 +1414,8 @@ def _build_memory_flush_block(tenant: Tenant) -> dict:
                 "nbhd_goal_achieve / nbhd_goal_abandon\n"
                 "- Tasks (actionable items with a status): nbhd_task_create / nbhd_task_complete / "
                 "nbhd_task_skip / nbhd_task_defer\n"
+                "  Never nbhd_task_delete during a flush — deletion is permanent and requires the "
+                "user's explicit confirmation in conversation, and there is no user to ask here\n"
                 "- Durable facts about the user that have no other source of truth "
                 "(preferences, principles, identity, learned patterns): nbhd_memory_update\n"
                 "- Narrative reflection on today: nbhd_daily_note_append\n"
