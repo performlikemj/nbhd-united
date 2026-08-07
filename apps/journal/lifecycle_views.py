@@ -16,6 +16,8 @@ lint-on-Edit hook reaps module-level imports that look unused at parse time).
 
 from __future__ import annotations
 
+import logging
+
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -23,10 +25,13 @@ from rest_framework.views import APIView
 
 from .document_views import _get_tenant
 
+logger = logging.getLogger(__name__)
+
 # Cap for the ``?q=`` name search path — keeps a Siri/Shortcuts disambiguation
 # picker (EntityQuery) bounded. Only applied when ``q`` is present; the
 # unfiltered list stays full so the web/iOS enumeration paths don't truncate.
 _ENTITY_SEARCH_LIMIT = 20
+_SEARCH_VARIANT_LIMIT = 20
 
 
 def _owner_ctx(tenant):
@@ -41,24 +46,86 @@ def _owner_ctx(tenant):
     return {"tenant": tenant, "rehydrate": True}
 
 
-def _redact_owner_input(tenant, data):
-    """Re-redact owner-typed title/description before validation/persistence.
-
-    Owner-facing reads rehydrate these fields (see ``_owner_ctx``), so an edit
-    round-trips real values back here; without this pass the real PII would
-    persist raw and leak to the agent via the runtime serializers. Known names
-    map back to their existing placeholder, new PII mints a fresh one —
-    symmetric with the document PATCH/append write path. redact_user_message
-    is fail-open (returns the original text on any error).
-    """
-    from apps.pii.redactor import redact_user_message
+def _author_owner_input(tenant, data, *, seam, receipts=None, include_defaults=False):
+    """Route owner-authored lifecycle fields through the Layer-1 chokepoint."""
+    from apps.pii.authoring import author_text
 
     out = data.dict() if hasattr(data, "dict") else dict(data)
+    if include_defaults:
+        out.setdefault("description", "")
+    next_receipts = dict(receipts or {})
     for field in ("title", "description"):
-        value = out.get(field)
-        if isinstance(value, str) and value:
-            out[field] = redact_user_message(value, tenant)
-    return out
+        if field not in out or not isinstance(out[field], str):
+            continue
+        authored = author_text(tenant, out[field], seam=seam, writer="owner", field=field)
+        out[field] = authored.text
+        next_receipts[field] = authored.receipt
+    return out, next_receipts
+
+
+def _search_variants(tenant, query: str) -> list[str]:
+    """Return bounded original/name-placeholder query variants."""
+    import re
+
+    from apps.pii.entity_registry import inverted_names_multimap
+
+    query_ci = query.casefold()
+    matches: list[tuple[str, str]] = []
+    seen_bindings: set[tuple[str, str]] = set()
+    for bindings in inverted_names_multimap(getattr(tenant, "pii_entity_map", None) or {}).values():
+        for value, placeholder in bindings:
+            value = value.strip()
+            binding = (value, placeholder)
+            if len(value) >= 3 and value.casefold() in query_ci and binding not in seen_bindings:
+                seen_bindings.add(binding)
+                matches.append(binding)
+
+    candidates = [query]
+    if len(matches) <= 2:
+        for value, placeholder in matches:
+            for variant in tuple(candidates):
+                candidates.append(
+                    re.sub(
+                        re.escape(value),
+                        lambda _match, replacement=placeholder: replacement,
+                        variant,
+                        flags=re.IGNORECASE,
+                    )
+                )
+    else:
+        for value, placeholder in matches:
+            candidates.append(
+                re.sub(
+                    re.escape(value),
+                    lambda _match, replacement=placeholder: replacement,
+                    query,
+                    flags=re.IGNORECASE,
+                )
+            )
+
+    variants: list[str] = []
+    for candidate in candidates:
+        if candidate in variants:
+            continue
+        if len(variants) >= _SEARCH_VARIANT_LIMIT:
+            logger.warning(
+                "pii_search_variants_capped tenant=%s matched_bindings=%d cap=%d",
+                getattr(tenant, "pk", getattr(tenant, "id", "?")),
+                len(matches),
+                _SEARCH_VARIANT_LIMIT,
+            )
+            break
+        variants.append(candidate)
+    return variants
+
+
+def _filter_title_variants(queryset, variants):
+    from django.db.models import Q
+
+    title_q = Q()
+    for variant in variants:
+        title_q |= Q(title__icontains=variant)
+    return queryset.filter(title_q)
 
 
 def _parse_iso_date(raw, field_name):
@@ -110,14 +177,20 @@ class TaskDetailView(APIView):
         if task is None:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+        authored_data, receipts = _author_owner_input(
+            tenant,
+            request.data,
+            seam="journal.owner.task.patch",
+            receipts=task.pii_receipts,
+        )
         serializer = TaskSerializer(
             task,
-            data=_redact_owner_input(tenant, request.data),
+            data=authored_data,
             partial=True,
             context={"tenant": tenant},
         )
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(pii_receipts=receipts)
         return Response(TaskSerializer(task, context=_owner_ctx(tenant)).data)
 
 
@@ -183,14 +256,20 @@ class GoalDetailView(APIView):
         if goal is None:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+        authored_data, receipts = _author_owner_input(
+            tenant,
+            request.data,
+            seam="journal.owner.goal.patch",
+            receipts=goal.pii_receipts,
+        )
         serializer = GoalSerializer(
             goal,
-            data=_redact_owner_input(tenant, request.data),
+            data=authored_data,
             partial=True,
             context={"tenant": tenant},
         )
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(pii_receipts=receipts)
         return Response(GoalSerializer(goal, context=_owner_ctx(tenant)).data)
 
 
@@ -270,16 +349,22 @@ class TaskListCreateView(APIView):
         qs = qs.order_by("-updated_at")
         q = (params.get("q") or "").strip()
         if q:
-            qs = qs.filter(title__icontains=q)[:_ENTITY_SEARCH_LIMIT]
+            qs = _filter_title_variants(qs, _search_variants(tenant, q))[:_ENTITY_SEARCH_LIMIT]
         return Response(TaskSerializer(qs, many=True, context=_owner_ctx(tenant)).data)
 
     def post(self, request):
         from .lifecycle_serializers import TaskSerializer
 
         tenant = _get_tenant(request.user)
-        serializer = TaskSerializer(data=_redact_owner_input(tenant, request.data), context=_owner_ctx(tenant))
+        authored_data, receipts = _author_owner_input(
+            tenant,
+            request.data,
+            seam="journal.owner.task.create",
+            include_defaults=True,
+        )
+        serializer = TaskSerializer(data=authored_data, context=_owner_ctx(tenant))
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(pii_receipts=receipts)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
 
@@ -313,14 +398,20 @@ class GoalListCreateView(APIView):
         qs = qs.order_by("-updated_at")
         q = (params.get("q") or "").strip()
         if q:
-            qs = qs.filter(title__icontains=q)[:_ENTITY_SEARCH_LIMIT]
+            qs = _filter_title_variants(qs, _search_variants(tenant, q))[:_ENTITY_SEARCH_LIMIT]
         return Response(GoalSerializer(qs, many=True, context=_owner_ctx(tenant)).data)
 
     def post(self, request):
         from .lifecycle_serializers import GoalSerializer
 
         tenant = _get_tenant(request.user)
-        serializer = GoalSerializer(data=_redact_owner_input(tenant, request.data), context=_owner_ctx(tenant))
+        authored_data, receipts = _author_owner_input(
+            tenant,
+            request.data,
+            seam="journal.owner.goal.create",
+            include_defaults=True,
+        )
+        serializer = GoalSerializer(data=authored_data, context=_owner_ctx(tenant))
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(pii_receipts=receipts)
         return Response(serializer.data, status=status.HTTP_201_CREATED)

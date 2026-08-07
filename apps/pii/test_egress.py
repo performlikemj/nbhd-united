@@ -11,6 +11,7 @@ from apps.pii.egress import (
     redact_known_value_fields,
     redact_known_values,
 )
+from apps.pii.redactor import rehydrate_text
 
 
 def _tenant(entity_map):
@@ -60,6 +61,27 @@ class KnownValueEgressGuardTests(SimpleTestCase):
             original = "Theo stays available"
             self.assertEqual(redact_known_values(tenant, original, seam="unit_failure"), original)
         self.assertIn("pii_egress_guard_error tenant=tenant-a seam=unit_failure", logs.output[0])
+
+    def test_retired_binding_is_not_substituted_or_legended_but_rehydrates(self):
+        entity_map = {
+            "[PERSON_1]": {
+                "name": "Alice",
+                "relationship": "retired friend",
+                "retired": True,
+            },
+            "[PERSON_2]": {"name": "Bob", "relationship": "active friend"},
+        }
+        tenant = _tenant(entity_map)
+
+        self.assertEqual(
+            redact_known_values(tenant, "Alice met Bob", seam="test.retired"),
+            "Alice met [PERSON_2]",
+        )
+        self.assertEqual(
+            build_entity_legend(tenant, "[PERSON_1] met [PERSON_2]"),
+            "[PERSON_2]: active friend",
+        )
+        self.assertEqual(rehydrate_text("Hello [PERSON_1]", entity_map), "Hello Alice")
 
     def test_recursive_guard_only_changes_allowlisted_human_text_fields(self):
         tenant = _tenant({"[PERSON_1]": "Theo Smith", "[ORG_1]": "Optiver"})

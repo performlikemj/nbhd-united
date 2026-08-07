@@ -32,6 +32,15 @@ def _edge_boundary(character: str) -> str:
     return r"\b" if character and (character.isalnum() or character == "_") else ""
 
 
+def _active_entity_map(entity_map: dict[str, Any]) -> dict[str, Any]:
+    """Return bindings eligible for egress substitution and legends."""
+    return {
+        placeholder: entry
+        for placeholder, entry in entity_map.items()
+        if not (isinstance(entry, dict) and entry.get("retired"))
+    }
+
+
 @lru_cache(maxsize=512)
 def _compile_known_value_matcher(
     tenant_key: str,
@@ -59,7 +68,7 @@ def _compile_known_value_matcher(
 
 
 def _matcher_for_tenant(tenant: Tenant) -> _KnownValueMatcher | None:
-    entity_map = getattr(tenant, "pii_entity_map", None) or {}
+    entity_map = _active_entity_map(getattr(tenant, "pii_entity_map", None) or {})
     canonical: dict[str, tuple[str, str]] = {}
     for key, (display_name, placeholder) in inverted_names_ci(entity_map).items():
         value = display_name.strip()
@@ -132,7 +141,7 @@ def build_entity_legend(tenant: Tenant | None, text: str) -> str:
     if not present:
         return ""
 
-    entries = dict(iter_normalized(entity_map))
+    entries = dict(iter_normalized(_active_entity_map(entity_map)))
     matcher = _matcher_for_tenant(tenant)
     ordered = sorted(
         present,
@@ -144,6 +153,8 @@ def build_entity_legend(tenant: Tenant | None, text: str) -> str:
 
     lines: list[str] = []
     for placeholder in ordered:
+        if placeholder not in entries:
+            continue
         meta = get_metadata(entries.get(placeholder))
         relationship_value = meta.get("relationship")
         notes_value = meta.get("notes")

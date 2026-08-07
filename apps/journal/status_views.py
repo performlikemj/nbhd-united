@@ -26,12 +26,33 @@ def _rehydrate_status_payload(tenant, payload: dict) -> dict:
     """
     from apps.pii.redactor import rehydrate_for_tenant
 
+    from .models import Goal, Task
+
+    tasks_by_id = {
+        str(task.id): task
+        for task in Task.objects.filter(
+            tenant=tenant,
+            id__in=[item.get("id") for item in payload.get("open_tasks", []) or [] if item.get("id")],
+        )
+    }
+    goals_by_id = {
+        str(goal.id): goal
+        for goal in Goal.objects.filter(
+            tenant=tenant,
+            id__in=[item.get("id") for item in payload.get("active_goals", []) or [] if item.get("id")],
+        )
+    }
+
     for task in payload.get("open_tasks", []) or []:
         if task.get("title"):
             task["title"] = rehydrate_for_tenant(tenant, task["title"])
+        row = tasks_by_id.get(str(task.get("id")))
+        task["pii_receipts"] = (row.pii_receipts if row else {}) or {}
     for goal in payload.get("active_goals", []) or []:
         if goal.get("title"):
             goal["title"] = rehydrate_for_tenant(tenant, goal["title"])
+        row = goals_by_id.get(str(goal.get("id")))
+        goal["pii_receipts"] = (row.pii_receipts if row else {}) or {}
     for obligation in payload.get("obligations", []) or []:
         if obligation.get("nickname"):
             obligation["nickname"] = rehydrate_for_tenant(tenant, obligation["nickname"])

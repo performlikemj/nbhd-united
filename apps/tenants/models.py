@@ -578,6 +578,10 @@ class Tenant(models.Model):
         default=False,
         help_text="Capture transcript memory from its birthday forward; disabled by default.",
     )
+    layer1_placeholder_writes = models.BooleanField(
+        default=False,
+        help_text="Store Layer-1 authored text in PII placeholder space; disabled by default.",
+    )
     recall_capture_birthday = models.DateTimeField(
         null=True,
         blank=True,

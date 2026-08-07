@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import timedelta
 from unittest import mock
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -174,7 +175,47 @@ class TaskLinkageTest(TestCase):
         task = Task.objects.get(id=result["task_id"])
         self.assertEqual(task.tenant_id, self.a.id)  # the caller's OWN task
         self.assertEqual(task.related_ref["object_id"], str(self.mission.id))
+        self.assertEqual(task.pii_receipts["title"], {"state": "bypass"})
         self.assertTrue(SharedGoalUpdate.objects.filter(shared_goal=self.mission, kind="task_added").exists())
+
+    def test_flag_on_mission_task_stores_placeholder_and_receipt(self):
+        self.a.layer1_placeholder_writes = True
+        self.a.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.a.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            result = services.add_mission_task(
+                self.a,
+                self.a.user,
+                str(self.mission.id),
+                title="Walk with Alice",
+            )
+
+        task = Task.objects.get(id=result["task_id"])
+        self.assertEqual(task.title, "Walk with [PERSON_1]")
+        self.assertEqual(task.pii_receipts["title"]["state"], "placeholder")
+
+    def test_near_limit_mission_task_truncates_after_authoring_without_partial_token(self):
+        self.a.layer1_placeholder_writes = True
+        self.a.pii_entity_map = {"[PERSON_1]": {"name": "Amy"}}
+        self.a.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            result = services.add_mission_task(
+                self.a,
+                self.a.user,
+                str(self.mission.id),
+                title="x" * 250 + " Amy!",
+            )
+
+        task = Task.objects.get(id=result["task_id"])
+        self.assertEqual(task.title, "x" * 250 + " ")
+        self.assertLessEqual(len(task.title), Task._meta.get_field("title").max_length)
+        self.assertNotIn("[PERSON", task.title)
 
 
 class ProposeApproveTest(TestCase):

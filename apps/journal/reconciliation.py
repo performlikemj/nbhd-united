@@ -107,6 +107,25 @@ def _coerce_uuid(value: Any) -> UUID | None:
         return None
 
 
+def _reauthor_lifecycle_instance(instance, *, seam: str) -> None:
+    from apps.pii.authoring import author_text
+
+    receipts = dict(instance.pii_receipts or {})
+    changed_fields = []
+    for field in ("title", "description"):
+        authored = author_text(instance.tenant, getattr(instance, field), seam=seam, writer="background", field=field)
+        if authored.text != getattr(instance, field):
+            setattr(instance, field, authored.text)
+            changed_fields.append(field)
+        if receipts.get(field) != authored.receipt:
+            receipts[field] = authored.receipt
+    if receipts != (instance.pii_receipts or {}):
+        instance.pii_receipts = receipts
+        changed_fields.append("pii_receipts")
+    if changed_fields:
+        instance.save(update_fields=changed_fields)
+
+
 def apply_task_action(
     *,
     tenant: Tenant,
@@ -129,41 +148,55 @@ def apply_task_action(
     except Task.DoesNotExist:
         return None
 
+    target_states = {
+        "complete": Task.Status.DONE,
+        "in_progress": Task.Status.IN_PROGRESS,
+        "skip": Task.Status.SKIPPED,
+        "defer": Task.Status.DEFERRED,
+    }
+    target_state = target_states.get(action)
+    if target_state is None:
+        logger.warning("reconciliation: unknown task action %r for task %s", action, str(uuid)[:8])
+        return None
+    if task.status == target_state:
+        return None
+
+    from apps.pii.authoring import author_text
+
+    authored_evidence = author_text(
+        tenant,
+        evidence[:EVIDENCE_MAX_CHARS],
+        seam="journal.reconciliation.task.evidence",
+        writer="background",
+        field="evidence",
+    )
     before_state = {
         "status": task.status,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
     }
 
+    _reauthor_lifecycle_instance(task, seam="journal.reconciliation.task.transition")
+
     if action == "complete":
-        if task.status == Task.Status.DONE:
-            return None
         task.complete()
         kind = PendingTaskAction.Kind.TASK_COMPLETE
     elif action == "in_progress":
-        if task.status == Task.Status.IN_PROGRESS:
-            return None
         task.status = Task.Status.IN_PROGRESS
         task.save(update_fields=["status", "updated_at"])
         kind = PendingTaskAction.Kind.TASK_PROGRESS
     elif action == "skip":
-        if task.status == Task.Status.SKIPPED:
-            return None
         task.skip()
         kind = PendingTaskAction.Kind.TASK_SKIP
-    elif action == "defer":
-        if task.status == Task.Status.DEFERRED:
-            return None
+    else:
         task.defer()
         kind = PendingTaskAction.Kind.TASK_DEFER
-    else:
-        logger.warning("reconciliation: unknown task action %r for task %s", action, str(uuid)[:8])
-        return None
 
     return PendingTaskAction.objects.create(
         tenant=tenant,
         kind=kind,
         task=task,
-        evidence=evidence[:EVIDENCE_MAX_CHARS],
+        evidence=authored_evidence.text,
+        pii_receipts={"evidence": authored_evidence.receipt},
         source_date=source_date,
         before_state=before_state,
     )
@@ -213,9 +246,33 @@ def apply_subtask_create(
     if any(titles_match(title, existing.title) for existing in scope):
         return None
 
+    from apps.pii.authoring import author_text, truncate_placeholder_safe
+
+    authored_title = author_text(
+        tenant,
+        title,
+        seam="journal.reconciliation.subtask.create",
+        writer="background",
+        field="title",
+    )
+    authored_description = author_text(
+        tenant,
+        "",
+        seam="journal.reconciliation.subtask.create",
+        writer="background",
+        field="description",
+    )
     subtask = Task.objects.create(
         tenant=tenant,
-        title=title[:256],
+        title=truncate_placeholder_safe(
+            authored_title.text,
+            Task._meta.get_field("title").max_length,
+        ),
+        description=authored_description.text,
+        pii_receipts={
+            "title": authored_title.receipt,
+            "description": authored_description.receipt,
+        },
         parent_task=parent,
         parent_goal=parent.parent_goal,
         pillar=parent.pillar,
@@ -248,30 +305,46 @@ def apply_goal_action(
     except Goal.DoesNotExist:
         return None
 
+    target_states = {
+        "achieve": Goal.Status.ACHIEVED,
+        "abandon": Goal.Status.ABANDONED,
+    }
+    target_state = target_states.get(action)
+    if target_state is None:
+        logger.warning("reconciliation: unknown goal action %r for goal %s", action, str(uuid)[:8])
+        return None
+    if goal.status == target_state:
+        return None
+
+    from apps.pii.authoring import author_text
+
+    authored_evidence = author_text(
+        tenant,
+        evidence[:EVIDENCE_MAX_CHARS],
+        seam="journal.reconciliation.goal.evidence",
+        writer="background",
+        field="evidence",
+    )
     before_state = {
         "status": goal.status,
         "achieved_at": goal.achieved_at.isoformat() if goal.achieved_at else None,
     }
 
+    _reauthor_lifecycle_instance(goal, seam="journal.reconciliation.goal.transition")
+
     if action == "achieve":
-        if goal.status == Goal.Status.ACHIEVED:
-            return None
         goal.mark_achieved()
         kind = PendingTaskAction.Kind.GOAL_ACHIEVE
-    elif action == "abandon":
-        if goal.status == Goal.Status.ABANDONED:
-            return None
+    else:
         goal.abandon()
         kind = PendingTaskAction.Kind.GOAL_ABANDON
-    else:
-        logger.warning("reconciliation: unknown goal action %r for goal %s", action, str(uuid)[:8])
-        return None
 
     return PendingTaskAction.objects.create(
         tenant=tenant,
         kind=kind,
         goal=goal,
-        evidence=evidence[:EVIDENCE_MAX_CHARS],
+        evidence=authored_evidence.text,
+        pii_receipts={"evidence": authored_evidence.receipt},
         source_date=source_date,
         before_state=before_state,
     )

@@ -59,6 +59,7 @@ from apps.billing.services import (
     resolve_model_for_attribution,
 )
 from apps.common.eval_sink import blocks_real_transport_for_identifier, suppresses_real_transport
+from apps.pii.authoring import placeholder_redactions
 from apps.router.models import AppChatMessage, PendingMessage
 from apps.router.reply_text import clamp_reply_text
 from apps.tenants.models import Tenant
@@ -2567,42 +2568,6 @@ def _store_ios_turn_error(tenant: Tenant, batch: list[PendingMessage], reason: s
             reason,
             now=timezone.now(),
         )
-
-
-def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict]:
-    """Per-turn PII transparency metadata for a chat message.
-
-    Given placeholder-space ``text`` (the LLM-bound user payload, or the
-    assistant reply BEFORE rehydration) and the tenant's entity map, return the
-    distinct placeholders present, each resolved to the real value it stands in
-    for, in first-appearance order:
-
-        ``[{"placeholder": "[LOCATION_330]", "value": "Sydney"}]``
-
-    ``value`` is ``None`` for a placeholder with no binding (an orphan/unknown
-    token, e.g. a stale delete). Returns ``[]`` when nothing was obfuscated.
-    This is pure regex + dict lookup — no NER, no DB write, no minting — so it
-    is safe to fold into the write paths that already have the text in hand.
-    """
-    if not text:
-        return []
-    from apps.pii.entity_registry import get_name
-    from apps.pii.redactor import _PLACEHOLDER_RE
-
-    entity_map = entity_map or {}
-    out: list[dict] = []
-    seen: set[str] = set()
-    # Model replies may preserve an annotation (``[PERSON_1|coworker]``), but
-    # transparency metadata and the registry are keyed by the canonical bare
-    # placeholder.
-    for match in _PLACEHOLDER_RE.finditer(text):
-        placeholder = f"[{match.group(1)}_{match.group(2)}]"
-        if placeholder in seen:
-            continue
-        seen.add(placeholder)
-        name = get_name(entity_map.get(placeholder))
-        out.append({"placeholder": placeholder, "value": name or None})
-    return out
 
 
 def _clean_assistant_text_for_app(

@@ -806,6 +806,41 @@ class RuntimeWeeklyReviewsView(APIView):
 # look unused at parse time. See ``feedback_local_reimport_pattern.md``.
 
 
+def _author_runtime_lifecycle_input(tenant, data, *, seam, receipts=None, include_defaults=False):
+    from apps.pii.authoring import author_text
+
+    out = data.dict() if hasattr(data, "dict") else dict(data)
+    if include_defaults:
+        out.setdefault("description", "")
+    next_receipts = dict(receipts or {})
+    for field in ("title", "description"):
+        if field not in out or not isinstance(out[field], str):
+            continue
+        authored = author_text(tenant, out[field], seam=seam, writer="runtime", field=field)
+        out[field] = authored.text
+        next_receipts[field] = authored.receipt
+    return out, next_receipts
+
+
+def _reauthor_runtime_lifecycle_instance(instance, *, seam):
+    from apps.pii.authoring import author_text
+
+    receipts = dict(instance.pii_receipts or {})
+    changed_fields = []
+    for field in ("title", "description"):
+        authored = author_text(instance.tenant, getattr(instance, field), seam=seam, writer="runtime", field=field)
+        if authored.text != getattr(instance, field):
+            setattr(instance, field, authored.text)
+            changed_fields.append(field)
+        if receipts.get(field) != authored.receipt:
+            receipts[field] = authored.receipt
+    if receipts != (instance.pii_receipts or {}):
+        instance.pii_receipts = receipts
+        changed_fields.append("pii_receipts")
+    if changed_fields:
+        instance.save(update_fields=changed_fields)
+
+
 class RuntimeGoalListCreateView(KnownValueResponseGuardMixin, APIView):
     """List or create goals for a tenant runtime."""
 
@@ -865,7 +900,13 @@ class RuntimeGoalListCreateView(KnownValueResponseGuardMixin, APIView):
         if blocked is not None:
             return blocked
 
-        serializer = GoalSerializer(data=request.data, context={"tenant": tenant})
+        authored_data, receipts = _author_runtime_lifecycle_input(
+            tenant,
+            request.data,
+            seam="journal.runtime.goal.create",
+            include_defaults=True,
+        )
+        serializer = GoalSerializer(data=authored_data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
 
         # Idempotency backstop — see RuntimeTaskListCreateView.post. Prevents a
@@ -883,7 +924,7 @@ class RuntimeGoalListCreateView(KnownValueResponseGuardMixin, APIView):
                 status=status.HTTP_200_OK,
             )
 
-        goal = serializer.save()
+        goal = serializer.save(pii_receipts=receipts)
         return Response(
             {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
             status=status.HTTP_201_CREATED,
@@ -933,9 +974,15 @@ class RuntimeGoalDetailView(APIView):
         if goal is None:
             return Response({"error": "goal_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = GoalSerializer(goal, data=request.data, partial=True, context={"tenant": tenant})
+        authored_data, receipts = _author_runtime_lifecycle_input(
+            tenant,
+            request.data,
+            seam="journal.runtime.goal.patch",
+            receipts=goal.pii_receipts,
+        )
+        serializer = GoalSerializer(goal, data=authored_data, partial=True, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(pii_receipts=receipts)
         return Response(
             {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
             status=status.HTTP_200_OK,
@@ -964,6 +1011,7 @@ class RuntimeGoalAchieveView(APIView):
         if goal is None:
             return Response({"error": "goal_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+        _reauthor_runtime_lifecycle_instance(goal, seam="journal.runtime.goal.achieve")
         goal.mark_achieved()
         return Response(
             {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
@@ -993,6 +1041,7 @@ class RuntimeGoalAbandonView(APIView):
         if goal is None:
             return Response({"error": "goal_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+        _reauthor_runtime_lifecycle_instance(goal, seam="journal.runtime.goal.abandon")
         goal.abandon()
         return Response(
             {"tenant_id": str(tenant.id), "goal": GoalSerializer(goal).data},
@@ -1101,7 +1150,13 @@ class RuntimeTaskListCreateView(KnownValueResponseGuardMixin, APIView):
         if blocked is not None:
             return blocked
 
-        serializer = TaskSerializer(data=request.data, context={"tenant": tenant})
+        authored_data, receipts = _author_runtime_lifecycle_input(
+            tenant,
+            request.data,
+            seam="journal.runtime.task.create",
+            include_defaults=True,
+        )
+        serializer = TaskSerializer(data=authored_data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
 
         # Idempotency backstop (agent path only — the UI uses a different,
@@ -1123,7 +1178,7 @@ class RuntimeTaskListCreateView(KnownValueResponseGuardMixin, APIView):
                 status=status.HTTP_200_OK,
             )
 
-        task = serializer.save()
+        task = serializer.save(pii_receipts=receipts)
         return Response(
             {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},
             status=status.HTTP_201_CREATED,
@@ -1173,9 +1228,15 @@ class RuntimeTaskDetailView(APIView):
         if task is None:
             return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        serializer = TaskSerializer(task, data=request.data, partial=True, context={"tenant": tenant})
+        authored_data, receipts = _author_runtime_lifecycle_input(
+            tenant,
+            request.data,
+            seam="journal.runtime.task.patch",
+            receipts=task.pii_receipts,
+        )
+        serializer = TaskSerializer(task, data=authored_data, partial=True, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
-        serializer.save()
+        serializer.save(pii_receipts=receipts)
         return Response(
             {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},
             status=status.HTTP_200_OK,
@@ -1206,6 +1267,10 @@ class _RuntimeTaskTransitionView(APIView):
         if task is None:
             return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+        _reauthor_runtime_lifecycle_instance(
+            task,
+            seam=f"journal.runtime.task.{self.transition_method}",
+        )
         getattr(task, self.transition_method)()
         return Response(
             {"tenant_id": str(tenant.id), "task": TaskSerializer(task).data},

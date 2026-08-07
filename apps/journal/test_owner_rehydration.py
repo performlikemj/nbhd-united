@@ -257,13 +257,23 @@ class StatusViewRehydrationTests(TestCase):
         self.client.force_authenticate(user=self.user)
 
     def test_status_view_rehydrates_task_title(self):
-        Task.objects.create(tenant=self.tenant, title="Call [PERSON_1]", status=Task.Status.OPEN)
+        receipt = {
+            "state": "placeholder",
+            "redactions": [{"placeholder": "[PERSON_1]", "value": "Sarah"}],
+        }
+        Task.objects.create(
+            tenant=self.tenant,
+            title="Call [PERSON_1]",
+            status=Task.Status.OPEN,
+            pii_receipts={"title": receipt},
+        )
         resp = self.client.get("/api/v1/journal/status/")
         self.assertEqual(resp.status_code, 200)
         titles = [t["title"] for t in resp.data["open_tasks"]]
         self.assertIn("Call Sarah", titles)
         for t in titles:
             self.assertNotIn("[PERSON_1]", t)
+        self.assertEqual(resp.data["open_tasks"][0]["pii_receipts"]["title"], receipt)
 
     def test_status_view_rehydrates_goal_title(self):
         Goal.objects.create(tenant=self.tenant, title="Visit [LOCATION_330]", status=Goal.Status.ACTIVE)
@@ -294,16 +304,22 @@ class LifecycleSerializerRehydrationTests(TestCase):
         self.client.force_authenticate(user=self.user)
 
     def test_task_detail_rehydrates_title_and_description(self):
+        receipt = {
+            "state": "placeholder",
+            "redactions": [{"placeholder": "[PERSON_1]", "value": "Sarah"}],
+        }
         task = Task.objects.create(
             tenant=self.tenant,
             title="Call [PERSON_1]",
             description="about [LOCATION_330]",
             status=Task.Status.OPEN,
+            pii_receipts={"title": receipt},
         )
         resp = self.client.get(f"/api/v1/journal/tasks/{task.id}/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["title"], "Call Sarah")
         self.assertEqual(resp.data["description"], "about july")
+        self.assertEqual(resp.data["pii_receipts"]["title"], receipt)
 
     def test_goal_detail_rehydrates_title(self):
         goal = Goal.objects.create(tenant=self.tenant, title="Support [PERSON_1]", status=Goal.Status.ACTIVE)
@@ -318,6 +334,8 @@ class LifecycleSerializerRehydrationTests(TestCase):
 
         task = Task.objects.create(tenant=self.tenant, title="Call [PERSON_1]", status=Task.Status.OPEN)
         self.assertEqual(TaskSerializer(task).data["title"], "Call [PERSON_1]")
+        self.assertNotIn("pii_receipts", TaskSerializer(task).data)
         # Even with tenant present (the agent write path passes tenant), absence
         # of rehydrate keeps it redacted.
         self.assertEqual(TaskSerializer(task, context={"tenant": self.tenant}).data["title"], "Call [PERSON_1]")
+        self.assertNotIn("pii_receipts", TaskSerializer(task, context={"tenant": self.tenant}).data)

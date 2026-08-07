@@ -153,6 +153,10 @@ SYSTEM_CRONS = [
     # RETIRED_CRON_PATHS below). Offset from cleanup-expired-telegram-tokens
     # (03:00) and poll-line-quota (03:15). See apps/pii/junk_sweep.py.
     ("pii-junk-sweep", "45 3 * * *", "/api/cron/trigger/pii_junk_sweep/"),
+    # Hourly — bounded repair of Layer-1 fields whose authoring receipts are
+    # unconfirmed/residual. The task is retry/DLQ-backed through QStash and
+    # prioritizes repairable failures ahead of stable residuals.
+    ("placeholder-repair-sweep", "0 * * * *", "/api/cron/trigger/placeholder_repair_sweep/"),
     # Every minute — reaper for the per-tenant inbound message queue.
     # Republishes drain tasks for PendingMessage rows whose original drain
     # never ran (publish_task raised + swallowed, QStash 5xx → DLQ, worker

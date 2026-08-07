@@ -161,7 +161,7 @@ class DataMigrationSeedingTests(TestCase):
 
 
 class DeletionLeavesCountersIntactTests(TestCase):
-    """Task (d): bulk-delete and junk_sweep drop bindings but never the counter."""
+    """Task (d): retirement/junk deletion never lowers the mint counter."""
 
     def test_bulk_delete_view_preserves_counters(self):
         tenant = _make_tenant(
@@ -178,7 +178,11 @@ class DeletionLeavesCountersIntactTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         tenant.refresh_from_db()
-        self.assertEqual(tenant.pii_entity_map, {})  # both deleted
+        self.assertEqual(
+            {placeholder: entry["name"] for placeholder, entry in tenant.pii_entity_map.items()},
+            {"[PERSON_1]": "Bob", "[PERSON_2]": "Alice"},
+        )
+        self.assertTrue(all(entry["retired"] is True for entry in tenant.pii_entity_map.values()))
         self.assertEqual(tenant.pii_type_counters, {"PERSON": 2})  # counter intact
 
     def test_bulk_delete_then_mint_does_not_recycle(self):

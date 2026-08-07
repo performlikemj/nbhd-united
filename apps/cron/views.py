@@ -395,6 +395,10 @@ TASK_MAP = {
     # ``pii_arbiter`` (which shipped span text to a cloud LLM). Residual
     # ambiguous cases go to the on-device review flow. See apps/pii/junk_sweep.py.
     "pii_junk_sweep": "apps.pii.junk_sweep.pii_junk_sweep_task",
+    # Hourly bounded repair of Task/Goal fields whose per-field receipt is
+    # unconfirmed or residual. QStash retries feed its DLQ; the task is
+    # idempotent because successful fields leave the repair states.
+    "placeholder_repair_sweep": "apps.pii.repair_sweep.placeholder_repair_sweep_task",
     # RETIRED: ``pii_arbiter`` (apps/pii/arbiter.py) shipped PERSON/LOCATION span
     # text to Claude Haiku to prune false positives. That cloud egress is retired
     # in favor of pii_junk_sweep + on-device review; the schedule is removed via

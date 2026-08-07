@@ -192,6 +192,28 @@ class HorizonsViewGoalsDualReadTests(TestCase):
         Goal.objects.create(tenant=self.tenant, title="Typed only goal", status=Goal.Status.ACTIVE)
         self.assertIn("Typed only goal", self._titles())
 
+    def test_typed_goal_rehydrates_and_emits_receipt_metadata(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        receipt = {
+            "state": "placeholder",
+            "redactions": [{"placeholder": "[PERSON_1]", "value": "Alice"}],
+        }
+        goal = Goal.objects.create(
+            tenant=self.tenant,
+            title="Support [PERSON_1]",
+            description="Plan with [PERSON_1]",
+            status=Goal.Status.ACTIVE,
+            pii_receipts={"title": receipt, "description": receipt},
+        )
+
+        resp = self.client.get("/api/v1/dashboard/horizons/")
+
+        card = next(item for item in resp.json()["goals"] if item["id"] == str(goal.id))
+        self.assertEqual(card["title"], "Support Alice")
+        self.assertEqual(card["markdown"], "Plan with Alice")
+        self.assertEqual(card["pii_receipts"]["title"], receipt)
+
     def test_legacy_documents_still_appear_when_no_typed_goals(self):
         Document.objects.create(
             tenant=self.tenant,
