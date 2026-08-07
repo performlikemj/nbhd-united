@@ -42,14 +42,13 @@ azure-core==1.39.0
     #   azure-keyvault-secrets
     #   azure-mgmt-core
     #   azure-storage-file-share
-    #   msrest
 azure-identity==1.25.3
     # via -r requirements.in
 azure-keyvault-keys==4.11.1
     # via -r requirements.in
 azure-keyvault-secrets==4.11.0
     # via -r requirements.in
-azure-mgmt-appcontainers==4.0.0
+azure-mgmt-appcontainers==5.0.0
     # via -r requirements.in
 azure-mgmt-authorization==4.0.0
     # via -r requirements.in
@@ -84,7 +83,6 @@ certifi==2026.2.25
     # via
     #   httpcore
     #   httpx
-    #   msrest
     #   requests
     #   sentry-sdk
 cffi==2.0.0
@@ -227,13 +225,13 @@ isodate==0.7.2
     # via
     #   azure-keyvault-keys
     #   azure-keyvault-secrets
+    #   azure-mgmt-appcontainers
     #   azure-mgmt-authorization
     #   azure-mgmt-containerinstance
     #   azure-mgmt-costmanagement
     #   azure-mgmt-msi
     #   azure-mgmt-storage
     #   azure-storage-file-share
-    #   msrest
 jinja2==3.1.6
     # via
     #   litellm
@@ -267,8 +265,6 @@ msal==1.35.1
     #   msal-extensions
 msal-extensions==1.3.1
     # via azure-identity
-msrest==0.7.1
-    # via azure-mgmt-appcontainers
 multidict==6.7.1
     # via
     #   aiohttp
@@ -330,8 +326,6 @@ nvidia-nvshmem-cu13==3.4.5
     # via torch
 nvidia-nvtx==13.0.85
     # via cuda-toolkit
-oauthlib==3.3.1
-    # via requests-oauthlib
 openai==2.52.0
     # via
     #   -r requirements.in
@@ -445,18 +439,14 @@ requests==2.32.5
     #   google-auth
     #   google-genai
     #   msal
-    #   msrest
     #   pysher
     #   requests-file
-    #   requests-oauthlib
     #   spacy
     #   stripe
     #   tiktoken
     #   tldextract
 requests-file==3.0.1
     # via tldextract
-requests-oauthlib==2.0.0
-    # via msrest
 rich==14.3.3
     # via typer
 rpds-py==0.30.0
