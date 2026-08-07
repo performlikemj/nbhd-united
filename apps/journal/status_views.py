@@ -24,9 +24,15 @@ def _rehydrate_status_payload(tenant, payload: dict) -> dict:
     statuses and amounts never do. Mutating in place is safe because
     ``build_journal_status`` returns a fresh dict per call (nothing shared).
     """
+    from apps.pii.authoring import resolve_receipt_values
     from apps.pii.redactor import rehydrate_for_tenant
 
     from .models import Goal, Task
+
+    entity_map = getattr(tenant, "pii_entity_map", None)
+
+    def _receipts(row) -> dict:
+        return resolve_receipt_values((row.pii_receipts if row else {}) or {}, entity_map)
 
     tasks_by_id = {
         str(task.id): task
@@ -46,13 +52,11 @@ def _rehydrate_status_payload(tenant, payload: dict) -> dict:
     for task in payload.get("open_tasks", []) or []:
         if task.get("title"):
             task["title"] = rehydrate_for_tenant(tenant, task["title"])
-        row = tasks_by_id.get(str(task.get("id")))
-        task["pii_receipts"] = (row.pii_receipts if row else {}) or {}
+        task["pii_receipts"] = _receipts(tasks_by_id.get(str(task.get("id"))))
     for goal in payload.get("active_goals", []) or []:
         if goal.get("title"):
             goal["title"] = rehydrate_for_tenant(tenant, goal["title"])
-        row = goals_by_id.get(str(goal.get("id")))
-        goal["pii_receipts"] = (row.pii_receipts if row else {}) or {}
+        goal["pii_receipts"] = _receipts(goals_by_id.get(str(goal.get("id"))))
     for obligation in payload.get("obligations", []) or []:
         if obligation.get("nickname"):
             obligation["nickname"] = rehydrate_for_tenant(tenant, obligation["nickname"])

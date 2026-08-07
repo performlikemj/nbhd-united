@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.core.management import call_command
@@ -347,6 +348,184 @@ class AuthorTextTests(TestCase):
                     self.assertEqual(authored.receipt["state"], expected_state)
                     self.assertNotEqual(authored.receipt["state"], "unconfirmed")
         record_live.assert_not_called()
+
+    def test_degraded_cache_returning_none_never_fails_the_write(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        # django-redis with IGNORE_EXCEPTIONS=True returns None instead of
+        # raising, so LocMem cannot reproduce this — the mock is the only way.
+        degraded = SimpleNamespace(
+            add=lambda *a, **kw: None,
+            incr=lambda *a, **kw: None,
+            get=lambda *a, **kw: None,
+            set=lambda *a, **kw: None,
+        )
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text="Alice failed", confirmed=False, reason="redaction-error"),
+            ),
+            patch("apps.pii.alerts.cache", degraded),
+            patch("apps.transcripts.alerts._send_alert") as send_alert,
+        ):
+            authored = author_text(
+                self.tenant,
+                "Alice failed",
+                seam="test.degraded-cache",
+                writer="owner",
+                field="title",
+            )
+
+        self.assertEqual(authored.text, "[PERSON_1] failed")
+        self.assertEqual(authored.receipt["state"], "unconfirmed")
+        send_alert.assert_not_called()
+
+    def test_alert_gate_cooldown_skips_the_steward_query_once_tripped(self):
+        from apps.pii.alerts import send_rate_alert
+
+        with patch("apps.transcripts.alerts._send_alert", return_value=True) as send_alert:
+            first = send_rate_alert(
+                self.tenant,
+                attempts=100,
+                count=50,
+                kind="error",
+                fingerprint_scope="cooldown-scope",
+                window="test window",
+                counters=(("Attempts", 100),),
+            )
+            second = send_rate_alert(
+                self.tenant,
+                attempts=100,
+                count=50,
+                kind="error",
+                fingerprint_scope="cooldown-scope",
+                window="test window",
+                counters=(("Attempts", 100),),
+            )
+
+        self.assertTrue(first)
+        self.assertFalse(second)
+        send_alert.assert_called_once()
+
+    def test_input_already_over_the_limit_is_left_for_serializer_validation(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        over_limit_input = "y" * 300
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text=over_limit_input, confirmed=True, reason="redacted"),
+            ),
+            patch("apps.pii.authoring._residual_summary", return_value={"count": 0, "kinds": {}}),
+        ):
+            authored = author_text(
+                self.tenant,
+                over_limit_input,
+                seam="test.oversize-input",
+                writer="owner",
+                field="title",
+            )
+
+        self.assertEqual(authored.text, over_limit_input)
+        self.assertEqual(len(authored.text), 300)
+
+    def test_flag_off_bypass_never_truncates(self):
+        original = "z" * 400
+        authored = author_text(
+            self.tenant,
+            original,
+            seam="test.bypass-truncation",
+            writer="runtime",
+            field="title",
+        )
+
+        self.assertEqual(authored.text, original)
+        self.assertEqual(authored.receipt["state"], "bypass")
+
+    def test_non_live_authoring_stays_out_of_live_write_counters(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text="Alice failed", confirmed=False, reason="redaction-error"),
+            ),
+            patch("apps.pii.alerts.record_live_write_outcome") as record_live,
+        ):
+            authored = author_text(
+                self.tenant,
+                "Alice failed",
+                seam="test.not-live",
+                writer="background",
+                field="title",
+                live=False,
+            )
+
+        self.assertEqual(authored.receipt["state"], "unconfirmed")
+        record_live.assert_not_called()
+
+    def test_unresolved_placeholder_omits_the_value_key_entirely(self):
+        receipts = {
+            "title": {
+                "state": "placeholder",
+                "redactions": [
+                    {"placeholder": "[PERSON_1]", "value": "Stale Alice"},
+                    {"placeholder": "[PERSON_404]", "value": "Stale Ghost"},
+                ],
+            }
+        }
+
+        resolved = resolve_receipt_values(receipts, {"[PERSON_1]": {"name": "Live Alice"}})
+
+        redactions = resolved["title"]["redactions"]
+        self.assertEqual(redactions[0], {"placeholder": "[PERSON_1]", "value": "Live Alice"})
+        self.assertEqual(redactions[1], {"placeholder": "[PERSON_404]"})
+        self.assertNotIn("value", redactions[1])
+        self.assertNotIn("Stale Ghost", repr(resolved))
+
+    def test_residual_detection_reads_the_stored_text_not_the_raw_input(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text="Call [PERSON_1]", confirmed=True, reason="redacted"),
+            ),
+            patch(
+                "apps.pii.authoring._residual_summary",
+                return_value={"count": 0, "kinds": {}},
+            ) as residual,
+        ):
+            authored = author_text(
+                self.tenant,
+                "Call Alice",
+                seam="test.residual-input",
+                writer="runtime",
+                field="title",
+            )
+
+        # Scanning the raw input re-detects names the redactor already replaced,
+        # and an over-captured span ("Call Alice") never matches a known binding.
+        self.assertEqual(residual.call_args.args[1], "Call [PERSON_1]")
+        self.assertEqual(authored.receipt["state"], "placeholder")
+
+    def test_known_name_in_an_over_captured_span_is_not_false_residual(self):
+        """End-to-end with the REAL detector: 'Call Alice' comes back as one
+        PERSON span, so matching by exact value cannot find the Alice binding."""
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+
+        authored = author_text(
+            self.tenant,
+            "Call Alice",
+            seam="test.over-captured-span",
+            writer="runtime",
+            field="title",
+        )
+
+        self.assertEqual(authored.text, "Call [PERSON_1]")
+        self.assertEqual(authored.receipt["state"], "placeholder")
+        self.assertNotIn("residual_spans", authored.receipt)
 
     def test_management_command_toggles_flag(self):
         out = StringIO()

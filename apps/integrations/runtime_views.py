@@ -826,8 +826,18 @@ def _reauthor_runtime_lifecycle_instance(instance, *, seam):
     from apps.pii.authoring import author_text
 
     receipts = dict(instance.pii_receipts or {})
+    # Status transitions (complete/skip/defer/achieve/abandon) don't touch the
+    # text, so a field that already carries a receipt and still matches the row
+    # on disk has nothing to re-learn — skipping it keeps a full NER inference
+    # off every transition. Comparing against the STORED value (not just the
+    # receipt's existence) means a caller that edited the instance in memory
+    # first still gets authored, rather than a receipt that no longer describes
+    # the text.
+    stored = type(instance)._default_manager.filter(pk=instance.pk).values("title", "description").first() or {}
     changed_fields = []
     for field in ("title", "description"):
+        if receipts.get(field) and stored.get(field) == getattr(instance, field):
+            continue
         authored = author_text(instance.tenant, getattr(instance, field), seam=seam, writer="runtime", field=field)
         if authored.text != getattr(instance, field):
             setattr(instance, field, authored.text)

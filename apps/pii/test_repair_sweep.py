@@ -193,6 +193,25 @@ class RepairSweepTests(TestCase):
         self.assertEqual(first["fields_repaired"], 1)
         self.assertEqual(second["fields_attempted"], 0)
 
+    def test_sweep_repairs_do_not_pollute_live_write_counters(self):
+        Task.objects.create(
+            tenant=self.tenant,
+            title="Alice task",
+            pii_receipts={"title": {"state": "unconfirmed", "reason": "redaction-error"}},
+        )
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text="still broken", confirmed=False, reason="redaction-error"),
+            ),
+            patch("apps.pii.alerts.record_live_write_outcome") as record_live,
+        ):
+            result = repair_tenant(self.tenant, alert=False)
+
+        self.assertEqual(result["fields_attempted"], 1)
+        self.assertEqual(result["unconfirmed"], 1)
+        record_live.assert_not_called()
+
     def test_synthetic_error_rate_above_one_percent_fires_metadata_only_alert(self):
         with patch("apps.transcripts.alerts._send_alert", return_value=True) as send_alert:
             fired = _check_rate_alert(self.tenant, attempts=100, count=2, kind="error")

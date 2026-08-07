@@ -123,14 +123,24 @@ def _classify(entity_map: dict[str, Any], max_entries: int) -> tuple[dict[str, i
     deterministic (dict insertion order) so a run and its dry-run agree, and a
     huge legacy map can't blow the per-run budget.
     """
-    summary = {"examined": 0, "junk": 0, "healed_rows": 0, "denied": 0, "deleted": 0, "skipped": 0}
+    summary = {
+        "examined": 0,
+        "junk": 0,
+        "healed_rows": 0,
+        "denied": 0,
+        "deleted": 0,
+        "skipped": 0,
+        "retired_skipped": 0,
+    }
     junk: dict[str, dict[str, str]] = {}
     for placeholder, entry in list(entity_map.items())[:max_entries]:
         summary["examined"] += 1
         if isinstance(entry, dict) and entry.get("retired"):
             # Owner-deleted real entities stay bound for rehydration. Junk
             # healing would write their real values back into Layer-1 stores.
-            summary["skipped"] += 1
+            # Counted apart from `skipped` so retirement volume stays readable
+            # against ordinary keepers.
+            summary["retired_skipped"] += 1
             continue
         name = get_name(entry)
         verdict, reason = classify_entry(placeholder, name)
@@ -321,7 +331,8 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
 def sweep_tenant(tenant: Any, *, dry_run: bool = False, max_entries: int = DEFAULT_MAX_ENTRIES) -> dict[str, int]:
     """Heal → deny → delete every deterministic-junk binding for one tenant.
 
-    Returns ``{examined, junk, healed_rows, denied, deleted, skipped}``. On
+    Returns ``{examined, junk, healed_rows, denied, deleted, skipped,
+    retired_skipped}``. On
     ``dry_run`` it classifies and reports counts without touching anything.
 
     The real path classifies UNDER the row lock (from the freshly re-read map)
@@ -337,7 +348,15 @@ def sweep_tenant(tenant: Any, *, dry_run: bool = False, max_entries: int = DEFAU
     with transaction.atomic():
         locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
         if locked is None:
-            return {"examined": 0, "junk": 0, "healed_rows": 0, "denied": 0, "deleted": 0, "skipped": 0}
+            return {
+                "examined": 0,
+                "junk": 0,
+                "healed_rows": 0,
+                "denied": 0,
+                "deleted": 0,
+                "skipped": 0,
+                "retired_skipped": 0,
+            }
 
         entity_map = dict(locked.pii_entity_map or {})
         denylist = dict(locked.pii_denylist or {})
@@ -396,6 +415,7 @@ def sweep_all_tenants(
         "denied": 0,
         "deleted": 0,
         "skipped": 0,
+        "retired_skipped": 0,
         "errors": 0,
     }
 
@@ -416,14 +436,14 @@ def sweep_all_tenants(
             totals["errors"] += 1
             logger.exception("pii_junk_sweep failed for tenant=%s", tenant.pk)
             continue
-        for field in ("examined", "junk", "healed_rows", "denied", "deleted", "skipped"):
-            totals[field] += result[field]
+        for field in ("examined", "junk", "healed_rows", "denied", "deleted", "skipped", "retired_skipped"):
+            totals[field] += result.get(field, 0)
         if result["junk"]:
             totals["tenants_with_junk"] += 1
 
     logger.info(
         "pii_junk_sweep complete tenants_seen=%d tenants_with_junk=%d examined=%d junk=%d "
-        "healed_rows=%d denied=%d deleted=%d errors=%d",
+        "healed_rows=%d denied=%d deleted=%d retired_skipped=%d errors=%d",
         totals["tenants_seen"],
         totals["tenants_with_junk"],
         totals["examined"],
@@ -431,6 +451,7 @@ def sweep_all_tenants(
         totals["healed_rows"],
         totals["denied"],
         totals["deleted"],
+        totals["retired_skipped"],
         totals["errors"],
     )
     return totals

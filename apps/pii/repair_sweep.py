@@ -98,6 +98,7 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                         seam=f"pii.repair.{store.model_label}.{field}",
                         writer="background",
                         field=field,
+                        live=False,
                     )
                 except Exception:
                     totals["errors"] += 1

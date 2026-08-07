@@ -277,6 +277,7 @@ class HorizonsView(APIView):
             reverse=True,
         )[:20]
 
+        from apps.pii.authoring import resolve_receipt_values
         from apps.pii.redactor import rehydrate_for_tenant
 
         for goal in goals:
@@ -454,7 +455,10 @@ class HorizonsView(APIView):
                         "slug": g["slug"],
                         "preview": _clean_markdown_preview(g["markdown"] or ""),
                         "markdown": g["markdown"] or "",
-                        "pii_receipts": g.get("pii_receipts") or {},
+                        "pii_receipts": resolve_receipt_values(
+                            g.get("pii_receipts") or {},
+                            getattr(tenant, "pii_entity_map", None),
+                        ),
                         "created_at": g["created_at"].isoformat(),
                         "updated_at": g["updated_at"].isoformat(),
                     }

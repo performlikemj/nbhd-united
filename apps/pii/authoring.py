@@ -80,9 +80,11 @@ def receipt_placeholders(text: str) -> list[dict[str, str]]:
 def resolve_receipt_values(receipts: Any, entity_map: dict | None) -> dict[str, Any]:
     """Resolve new and legacy receipt shapes against the current entity map.
 
-    Persisted receipt values are never trusted: a renamed or tombstoned live
-    binding wins over an embedded W1c canary value, and a missing binding
-    resolves to ``None``.
+    Persisted receipt values are never trusted: a renamed live binding wins
+    over an embedded W1c canary value. A placeholder the live map cannot
+    resolve (unbound or tombstoned) emits NO ``value`` key at all rather than
+    an explicit null — an absent key and a null both decode to "unknown"
+    downstream, and omitting it keeps a stale embedded value from surviving.
     """
     if not isinstance(receipts, dict):
         return {}
@@ -103,7 +105,11 @@ def resolve_receipt_values(receipts: Any, entity_map: dict | None) -> dict[str, 
                 item = dict(raw_item)
                 placeholder = item.get("placeholder")
                 if isinstance(placeholder, str):
-                    item["value"] = get_name(entity_map.get(placeholder)) or None
+                    name = get_name(entity_map.get(placeholder))
+                    if name:
+                        item["value"] = name
+                    else:
+                        item.pop("value", None)
                 next_redactions.append(item)
             receipt["redactions"] = next_redactions
         resolved[field] = receipt
@@ -137,7 +143,14 @@ def _registered_field_max_length(field: str) -> int | None:
 
 
 def _residual_summary(tenant, text: str) -> dict[str, Any]:
-    """Count unknown PERSON/LOCATION detections without retaining their values."""
+    """Count unknown PERSON/LOCATION detections without retaining their values.
+
+    ``text`` must be the STORED text, not the pre-redaction input. The receipt
+    describes what is at rest, and detected spans are matched against known
+    bindings by exact value — on raw input the detector regularly over-captures
+    ("Call Alice" comes back as one PERSON span), so the known-value lookup
+    misses and a fully-redacted field is recorded as residual forever.
+    """
     tier = getattr(tenant, "model_tier", "starter")
     policy = TIER_POLICIES.get(tier, TIER_POLICIES["starter"])
     results = _detect_pii(
@@ -183,11 +196,22 @@ def _finalize(
     writer: WriterClass,
     field: str,
     checked: bool,
+    live: bool = True,
+    source_text: str | None = None,
 ) -> AuthoredText:
-    """Apply invariants shared by every authoring outcome before persistence."""
-    max_length = _registered_field_max_length(field)
-    if max_length is not None:
-        text = truncate_placeholder_safe(text, max_length)
+    """Apply invariants shared by every authoring outcome before persistence.
+
+    Truncation covers PLACEHOLDER GROWTH only: authoring can make text longer
+    (a short name becomes ``[PERSON_12]``) and an authored overflow would raise
+    a DB error nobody asked for. Text the caller sent over the limit already is
+    left alone so serializer validation still answers it with a 400, exactly as
+    it did pre-P3. Passing ``source_text=None`` opts out entirely (bypass paths
+    must stay byte-identical).
+    """
+    if source_text is not None:
+        max_length = _registered_field_max_length(field)
+        if max_length is not None and len(source_text) <= max_length:
+            text = truncate_placeholder_safe(text, max_length)
 
     receipt = dict(receipt)
     receipt["writer"] = writer
@@ -196,7 +220,7 @@ def _finalize(
 
     state = receipt["state"]
     _log_counter(tenant=tenant, seam=seam, writer=writer, field=field, state=state)
-    if checked:
+    if checked and live:
         from apps.pii.alerts import record_live_write_outcome
 
         record_live_write_outcome(
@@ -234,12 +258,17 @@ def author_text(
     seam: str,
     writer: WriterClass,
     field: str,
+    live: bool = True,
 ) -> AuthoredText:
     """Author one text field under its writer-class mint policy.
 
     Flag-off preserves the pre-P3 behavior of each writer class. Owner writes
     still use the legacy unchecked redactor; runtime/background writes remain
-    byte-identical passthroughs.
+    byte-identical passthroughs — including length, so a bypass never truncates.
+
+    ``live=False`` marks a re-authoring pass over already-stored rows (the
+    repair sweep). It keeps such passes out of the live-write error-rate
+    counters, which exist to measure what real user writes are experiencing.
     """
     if writer not in _WRITER_POLICIES:
         raise ValueError(f"unsupported writer class: {writer!r}")
@@ -258,6 +287,7 @@ def author_text(
             writer=writer,
             field=field,
             checked=False,
+            live=live,
         )
 
     mint, allow_user_name = _WRITER_POLICIES[writer]
@@ -289,6 +319,8 @@ def author_text(
             writer=writer,
             field=field,
             checked=False,
+            live=live,
+            source_text=text,
         )
     if reason == "redaction-disabled":
         receipt = {"state": "bypass", "reason": reason}
@@ -300,6 +332,7 @@ def author_text(
             writer=writer,
             field=field,
             checked=False,
+            live=live,
         )
     if outcome is None or not outcome.confirmed:
         stored = _redact_active_known_values(tenant, text, seam=f"{seam}:known-fallback")
@@ -316,6 +349,8 @@ def author_text(
             writer=writer,
             field=field,
             checked=True,
+            live=live,
+            source_text=text,
         )
 
     stored = outcome.text
@@ -332,7 +367,7 @@ def author_text(
         # migration fence trusts `placeholder` and the repair sweep only revisits
         # unconfirmed/residual.
         try:
-            residual_spans = _residual_summary(tenant, text)
+            residual_spans = _residual_summary(tenant, stored)
         except Exception:
             logger.exception(
                 "pii_authoring_residual_detection_error tenant=%s seam=%s field=%s",
@@ -359,4 +394,6 @@ def author_text(
         writer=writer,
         field=field,
         checked=True,
+        live=live,
+        source_text=text,
     )

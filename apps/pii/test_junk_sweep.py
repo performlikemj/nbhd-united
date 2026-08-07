@@ -300,6 +300,9 @@ class RegistryJsonPathHealTests(_TenantMixin, TestCase):
         self.assertEqual(result["junk"], 0)
         self.assertEqual(result["healed_rows"], 0)
         self.assertEqual(result["deleted"], 0)
+        # Retirement volume is its own counter, not folded in with keepers.
+        self.assertEqual(result["retired_skipped"], 1)
+        self.assertEqual(result["skipped"], 0)
         self.assertEqual(goal.title, f"Keep {placeholder}")
         self.assertIn(placeholder, tenant.pii_entity_map)
 

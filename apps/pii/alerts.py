@@ -15,6 +15,10 @@ RATE_MIN_ATTEMPTS = 20
 RATE_THRESHOLD_PERCENT = 1
 RATE_WINDOW = timedelta(hours=24)
 RATE_COOLDOWN = timedelta(hours=24)
+# Cheap cache gate in front of the DB-backed steward gate. Once a fingerprint
+# trips, every subsequent authoring write on the hot path would otherwise pay a
+# steward query just to be told "suppressed".
+ALERT_GATE_COOLDOWN = timedelta(hours=1)
 
 
 def rate_exceeded(*, attempts: int, count: int) -> bool:
@@ -36,12 +40,25 @@ def send_rate_alert(
     if not rate_exceeded(attempts=attempts, count=count):
         return False
 
+    scope_suffix = f":{fingerprint_scope}" if fingerprint_scope else ""
+    fingerprint = f"pii-authoring-{kind}-rate:{tenant.id}{scope_suffix}"
+
+    try:
+        claimed = cache.add("pii:alert-gate:" + fingerprint, 1, timeout=int(ALERT_GATE_COOLDOWN.total_seconds()))
+    except Exception:
+        logger.exception("pii_alert_gate_error fingerprint=%s", fingerprint)
+        return False
+    if claimed is not True:
+        # False: this fingerprint already alerted inside the cooldown. None:
+        # django-redis is degraded and swallowed the write (IGNORE_EXCEPTIONS),
+        # so the flag would never stick. Either way, skip the steward query.
+        return False
+
     from apps.transcripts.alerts import _send_alert
 
     counter_lines = "".join(f"{label}: {value}\n" for label, value in counters)
-    scope_suffix = f":{fingerprint_scope}" if fingerprint_scope else ""
     return _send_alert(
-        fingerprint=f"pii-authoring-{kind}-rate:{tenant.id}{scope_suffix}",
+        fingerprint=fingerprint,
         cooldown=RATE_COOLDOWN,
         subject=f"[PII] Layer-1 {kind} rate above 1%",
         body=f"Tenant ID: {tenant.id}\nWindow: {window}\n{counter_lines}",
@@ -70,6 +87,34 @@ def record_live_write_outcome(tenant, *, seam: str, writer: str, is_error: bool)
         errors_key = f"{base}:errors"
         cache.add(errors_key, 0, timeout=timeout)
         errors = cache.incr(errors_key) if is_error else int(cache.get(errors_key, 0) or 0)
+
+        if not isinstance(attempts, int) or not isinstance(errors, int):
+            # Production runs django-redis with IGNORE_EXCEPTIONS=True, so a
+            # degraded cache RETURNS None rather than raising. The values, not
+            # the calls, are what decides whether this telemetry is usable —
+            # comparing None against a threshold would 500 the primary write.
+            logger.warning(
+                "pii_live_write_alert_counter_degraded tenant=%s seam=%s writer=%s",
+                getattr(tenant, "id", "?"),
+                seam,
+                writer,
+            )
+            return False
+
+        return send_rate_alert(
+            tenant,
+            attempts=attempts,
+            count=errors,
+            kind="error",
+            fingerprint_scope=f"live:{seam_key}:{writer}:{bucket}",
+            window="current fixed 24h live-write window",
+            counters=(
+                ("Seam", seam),
+                ("Writer class", writer),
+                ("Writer attempts", attempts),
+                ("Writer errors", errors),
+            ),
+        )
     except Exception:
         logger.exception(
             "pii_live_write_alert_counter_error tenant=%s seam=%s writer=%s",
@@ -78,18 +123,3 @@ def record_live_write_outcome(tenant, *, seam: str, writer: str, is_error: bool)
             writer,
         )
         return False
-
-    return send_rate_alert(
-        tenant,
-        attempts=attempts,
-        count=errors,
-        kind="error",
-        fingerprint_scope=f"live:{seam_key}:{writer}:{bucket}",
-        window="current fixed 24h live-write window",
-        counters=(
-            ("Seam", seam),
-            ("Writer class", writer),
-            ("Writer attempts", attempts),
-            ("Writer errors", errors),
-        ),
-    )

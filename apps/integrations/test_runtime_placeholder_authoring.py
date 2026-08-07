@@ -73,3 +73,54 @@ class RuntimePlaceholderAuthoringTests(TestCase):
         self.assertEqual(task.status, Task.Status.DONE)
         self.assertEqual(transitioned.json()["task"]["title"], "Call [PERSON_1]")
         self.assertNotIn("pii_receipts", transitioned.json()["task"])
+
+    def test_transition_on_unchanged_text_never_runs_the_detector(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        task = Task.objects.create(
+            tenant=self.tenant,
+            title="Call [PERSON_1]",
+            description="Plan with [PERSON_1]",
+            pii_receipts={
+                "title": {"state": "placeholder", "writer": "runtime", "redactions": []},
+                "description": {"state": "placeholder", "writer": "runtime", "redactions": []},
+            },
+        )
+
+        with (
+            patch("apps.pii.redactor._detect_pii") as detect,
+            patch("apps.pii.authoring._residual_summary") as residual,
+        ):
+            for transition in ("complete", "skip", "defer"):
+                with self.subTest(transition=transition):
+                    response = self.client.post(
+                        f"/api/v1/integrations/runtime/{self.tenant.id}/tasks/{task.id}/{transition}/",
+                        format="json",
+                        **self.headers,
+                    )
+                    self.assertEqual(response.status_code, 200)
+
+        detect.assert_not_called()
+        residual.assert_not_called()
+        task.refresh_from_db()
+        self.assertEqual(task.title, "Call [PERSON_1]")
+        self.assertEqual(task.pii_receipts["title"]["state"], "placeholder")
+
+    def test_transition_still_authors_a_field_that_has_no_receipt(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        legacy = Task.objects.create(tenant=self.tenant, title="Call Alice", pii_receipts={})
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            response = self.client.post(
+                f"/api/v1/integrations/runtime/{self.tenant.id}/tasks/{legacy.id}/complete/",
+                format="json",
+                **self.headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        legacy.refresh_from_db()
+        self.assertEqual(legacy.title, "Call [PERSON_1]")
+        self.assertEqual(legacy.pii_receipts["title"]["writer"], "runtime")
