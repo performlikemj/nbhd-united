@@ -206,9 +206,16 @@ def _build_cron_message(
 _TYPED_LIFECYCLE_SWAPS: tuple[tuple[str, str], ...] = (
     # ── Write-side: tasks ───────────────────────────────────────────────
     (
+        # This key is the one that actually occurs in the live prompt corpus
+        # (``_HEARTBEAT_CHECKIN_PROMPT``), so guidance hung here reaches real
+        # generated prompts. ``TypedLifecycleDeleteGuidanceTest`` renders the
+        # real cron message and fails if either half of that stops being true.
         "`nbhd_document_append` (kind='tasks', slug='tasks')",
         "`nbhd_task_create` (typed lifecycle — captures status + due_date as a queryable row; "
-        "use `nbhd_task_complete` to mark done later)",
+        "use `nbhd_task_complete` to mark done later). Never call `nbhd_task_delete` from a cron "
+        "turn: deletion is permanent and requires the user's explicit confirmation in conversation, "
+        "which an automated turn cannot obtain — complete, skip or defer stale items instead, and "
+        "leave anything that looks like junk for the user to confirm",
     ),
     (
         "`nbhd_document_set` with kind='tasks', slug='tasks'",
@@ -1411,6 +1418,8 @@ def _build_memory_flush_block(tenant: Tenant) -> dict:
                 "nbhd_goal_achieve / nbhd_goal_abandon\n"
                 "- Tasks (actionable items with a status): nbhd_task_create / nbhd_task_complete / "
                 "nbhd_task_skip / nbhd_task_defer\n"
+                "  Never nbhd_task_delete during a flush — deletion is permanent and requires the "
+                "user's explicit confirmation in conversation, and there is no user to ask here\n"
                 "- Durable facts about the user that have no other source of truth "
                 "(preferences, principles, identity, learned patterns): nbhd_memory_update\n"
                 "- Narrative reflection on today: nbhd_daily_note_append\n"

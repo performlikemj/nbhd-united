@@ -47,6 +47,7 @@
       "nbhd_task_complete",
       "nbhd_task_skip",
       "nbhd_task_defer",
+      "nbhd_task_delete",
       "nbhd_task_list",
       "nbhd_task_get",
       "nbhd_current_status",

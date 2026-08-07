@@ -1320,3 +1320,252 @@ describe("W · clamp boundary splits a straddling surrogate pair", () => {
     });
   }
 });
+
+// ── nbhd_task_delete: the two-phase confirm handshake ───────────────────────
+// The only DESTRUCTIVE tool on the journal surface. The server is the real
+// enforcement point (it refuses to delete without `confirm: true`), but the
+// plugin is what decides which value gets sent — so these pin the transport
+// contract itself: what method, what path, and above all that nothing except a
+// genuine JSON `true` can ever arrive at the server as consent. A truthy string
+// silently promoted to `true` here would delete the user's data one turn early,
+// and no server-side check could tell that apart from a real confirmation.
+
+describe("nbhd_task_delete two-phase transport contract", () => {
+  const TASK_ID = "11111111-2222-3333-4444-555555555555";
+  const deleteTarget = { dir: "nbhd-journal-tools", tool: "nbhd_task_delete" };
+
+  /** Run the tool against a 200 response, returning the request it made. */
+  async function captureRequest(params, payload = { status: "confirmation_required" }) {
+    const tools = await loadTools(deleteTarget);
+    const tool = tools.get(deleteTarget.tool);
+    assert.ok(tool, "nbhd_task_delete must be registered by nbhd-journal-tools");
+
+    const calls = [];
+    globalThis.fetch = async (url, options) => {
+      calls.push({ url: String(url), options });
+      return {
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        headers: { get: () => null },
+        async text() {
+          return JSON.stringify(payload);
+        },
+        async json() {
+          return payload;
+        },
+      };
+    };
+
+    let result;
+    try {
+      result = await withQuietLogs(async () => tool.execute("task-delete-test", params));
+    } finally {
+      globalThis.fetch = ORIGINAL_FETCH;
+    }
+
+    assert.equal(calls.length, 1, "expected exactly one runtime call");
+    const { url, options } = calls[0];
+    return { url, options, body: JSON.parse(options.body), result };
+  }
+
+  it("is registered", async () => {
+    const tools = await loadTools(deleteTarget);
+    assert.ok(tools.get("nbhd_task_delete"), "nbhd_task_delete must be registered");
+  });
+
+  it("sends DELETE to the task detail route, with no action verb appended", async () => {
+    const { url, options } = await captureRequest({ task_id: TASK_ID });
+    assert.equal(options.method, "DELETE");
+    assert.ok(url.endsWith(`/tasks/${TASK_ID}/`), url);
+    for (const verb of ["complete", "skip", "defer"]) {
+      assert.ok(!url.includes(`/${verb}/`), `${url} must not hit the ${verb} route`);
+    }
+  });
+
+  it("omitting confirm sends confirm:false — the preview phase", async () => {
+    const { body } = await captureRequest({ task_id: TASK_ID });
+    assert.equal(body.confirm, false);
+  });
+
+  it("confirm:true is passed through so the delete can actually happen", async () => {
+    const { body } = await captureRequest({ task_id: TASK_ID, confirm: true, expected_subtask_count: 0 });
+    assert.equal(body.confirm, true);
+  });
+
+  it("forwards expected_subtask_count so the server can bind the confirm to the preview", async () => {
+    const { body } = await captureRequest({ task_id: TASK_ID, confirm: true, expected_subtask_count: 3 });
+    assert.equal(body.expected_subtask_count, 3);
+  });
+
+  it("omits expected_subtask_count entirely when the model did not supply one", async () => {
+    const { body } = await captureRequest({ task_id: TASK_ID, confirm: true });
+    assert.ok(!("expected_subtask_count" in body), JSON.stringify(body));
+  });
+
+  it("never forwards a non-integer expected_subtask_count as if it were the count", async () => {
+    // A string "3" or a float would either be rejected by the server or, worse,
+    // coerced somewhere downstream into agreement the user never gave.
+    for (const value of ["3", 3.5, true, null, [3]]) {
+      const { body } = await captureRequest({
+        task_id: TASK_ID,
+        confirm: true,
+        expected_subtask_count: value,
+      });
+      assert.ok(
+        !("expected_subtask_count" in body),
+        `expected_subtask_count: ${JSON.stringify(value)} must not be forwarded`,
+      );
+    }
+  });
+
+  it("forwards a zero count — the childless case is still an explicit agreement", async () => {
+    const { body } = await captureRequest({ task_id: TASK_ID, confirm: true, expected_subtask_count: 0 });
+    assert.equal(body.expected_subtask_count, 0);
+  });
+
+  it("surfaces the count_changed refusal WITH the fresh numbers the model needs to re-ask", async () => {
+    // The server answers a stale count with 409, so this arrives as a thrown
+    // transport error rather than a rendered payload. The compactErrorDetail
+    // block is what keeps the fresh subtask_count and the hint in the message —
+    // without them the model would know only that it failed, not what to show
+    // the user next.
+    const refusal = {
+      status: "confirmation_required",
+      reason: "count_changed",
+      task: { id: TASK_ID, title: "Renew the licence", status: "open" },
+      subtask_count: 4,
+      pending_action_count: 1,
+      hint: "retry with confirm=true AND expected_subtask_count=4",
+    };
+    const { message, threw } = await runWithResponse(
+      { ...deleteTarget, params: { task_id: TASK_ID, confirm: true, expected_subtask_count: 3 } },
+      () => errorResponse(409, JSON.stringify(refusal)),
+    );
+
+    assert.equal(threw, true, `a refused delete must propagate: ${message}`);
+    assert.ok(message.includes("409"), message);
+    assert.ok(message.includes("count_changed"), message);
+    assert.ok(message.includes("expected_subtask_count=4"), message);
+  });
+
+  it("surfaces the cross-tenant integrity refusal", async () => {
+    const { message, threw } = await runWithResponse(
+      { ...deleteTarget, params: { task_id: TASK_ID, confirm: true, expected_subtask_count: 0 } },
+      () =>
+        errorResponse(
+          409,
+          JSON.stringify({ error: "integrity_error", detail: "subtasks outside this tenant" }),
+        ),
+    );
+
+    assert.equal(threw, true, message);
+    assert.ok(message.includes("integrity_error"), message);
+    assert.ok(message.includes("subtasks outside this tenant"), message);
+  });
+
+  it("no truthy non-boolean is ever promoted to consent", async () => {
+    for (const value of ["true", "yes", 1, [], {}, "TRUE"]) {
+      const { body } = await captureRequest({ task_id: TASK_ID, confirm: value });
+      assert.equal(body.confirm, false, `confirm: ${JSON.stringify(value)} must not become true`);
+    }
+  });
+
+  it("confirm:false stays false", async () => {
+    const { body } = await captureRequest({ task_id: TASK_ID, confirm: false });
+    assert.equal(body.confirm, false);
+  });
+
+  it("hands the confirmation payload back to the model verbatim", async () => {
+    const payload = {
+      status: "confirmation_required",
+      task: { id: TASK_ID, title: "Renew the licence", status: "open" },
+      subtask_count: 3,
+      hint: "Ask the user to explicitly confirm deleting this task (and its 3 subtasks...)",
+    };
+    const { result } = await captureRequest({ task_id: TASK_ID }, payload);
+
+    // The subtask count is the whole point of the preview — it must reach the
+    // model intact or the user is asked to confirm an unknown blast radius.
+    assert.deepEqual(result.details.json, payload);
+    assert.ok(result.content[0].text.includes("subtask_count"), result.content[0].text);
+    assert.ok(result.content[0].text.includes("3"), result.content[0].text);
+  });
+
+  it("a blank task_id fails before any transport", async () => {
+    const tools = await loadTools(deleteTarget);
+    const tool = tools.get("nbhd_task_delete");
+    let reached = false;
+    globalThis.fetch = async () => {
+      reached = true;
+      throw new Error("unreachable");
+    };
+    try {
+      await assert.rejects(
+        withQuietLogs(async () => tool.execute("task-delete-test", { task_id: "   " })),
+        /task_id is required/,
+      );
+    } finally {
+      globalThis.fetch = ORIGINAL_FETCH;
+    }
+    assert.equal(reached, false, "a blank task_id must not reach the runtime");
+  });
+
+  it("surfaces the server's refusal envelope instead of swallowing it", async () => {
+    const { message, threw } = await runWithResponse({ ...deleteTarget, params: { task_id: TASK_ID } }, () =>
+      errorResponse(409, JSON.stringify({ error: "document_turn_write_blocked", detail: "a document arrived this turn" })),
+    );
+    assert.equal(threw, true, `a refused delete must propagate: ${message}`);
+    assert.ok(message.includes("409"), message);
+    assert.ok(message.includes("document_turn_write_blocked"), message);
+    assert.ok(message.includes("a document arrived this turn"), message);
+  });
+
+  it("declares the two-phase params and requires only task_id", async () => {
+    const tools = await loadTools(deleteTarget);
+    const schema = tools.get("nbhd_task_delete").parameters;
+    assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(schema.required, ["task_id"]);
+    assert.equal(schema.properties.confirm.type, "boolean");
+    assert.equal(schema.properties.task_id.type, "string");
+    // Integer, not number: a float count is meaningless and the server rejects
+    // anything that is not a true int.
+    assert.equal(schema.properties.expected_subtask_count.type, "integer");
+  });
+
+  it("warns the model that the tool is destructive and needs an explicit yes", async () => {
+    const tools = await loadTools(deleteTarget);
+    const description = tools.get("nbhd_task_delete").description;
+    assert.ok(description.includes("DESTRUCTIVE"), description);
+    assert.ok(/subtask/i.test(description), description);
+    assert.ok(/no undo/i.test(description), description);
+    assert.ok(/confirm=true/.test(description), description);
+    // The non-destructive alternatives must be named, or the model reaches for
+    // delete when the user only wanted the item off their list.
+    for (const alternative of ["nbhd_task_complete", "nbhd_task_skip", "nbhd_task_defer"]) {
+      assert.ok(description.includes(alternative), `description should point at ${alternative}`);
+    }
+  });
+
+  it("tells the model how to handle a count_changed rejection", async () => {
+    const tools = await loadTools(deleteTarget);
+    const description = tools.get("nbhd_task_delete").description;
+    assert.ok(description.includes("expected_subtask_count"), description);
+    assert.ok(description.includes("count_changed"), description);
+    // Re-asking, not blind retrying, is the whole point of the binding.
+    assert.ok(/do not simply retry/i.test(description), description);
+  });
+
+  it("is declared in the plugin manifest", async () => {
+    // A tool absent from contracts.tools is undeclared surface area — the
+    // manifest is the plugin's public contract even though it does not gate
+    // registration.
+    const manifest = JSON.parse(
+      fs.readFileSync(new URL("./nbhd-journal-tools/openclaw.plugin.json", import.meta.url), "utf8"),
+    );
+    assert.ok(
+      manifest.contracts.tools.includes("nbhd_task_delete"),
+      "nbhd_task_delete must be declared in openclaw.plugin.json",
+    );
+  });
+});

@@ -293,6 +293,7 @@ class MemoryFlushGatedTest(TestCase):
         block = _build_memory_flush_block(self.tenant)
         self.assertNotIn("nbhd_goal_create", block["systemPrompt"])
         self.assertNotIn("nbhd_task_create", block["systemPrompt"])
+        self.assertNotIn("nbhd_task_delete", block["systemPrompt"])
         self.assertIn("nbhd_memory_update", block["systemPrompt"])
 
     def test_typed_variant_mentions_typed_tools(self):
@@ -304,6 +305,21 @@ class MemoryFlushGatedTest(TestCase):
         self.assertIn("nbhd_goal_create", block["systemPrompt"])
         self.assertIn("nbhd_task_create", block["systemPrompt"])
         self.assertIn("Do NOT capture current values", block["systemPrompt"])
+
+    def test_typed_variant_forbids_deletion_during_a_flush(self):
+        """A compaction flush has no user present, so it can never satisfy the
+        delete handshake. The prompt must say so — a flush that "tidied up" by
+        deleting tasks would destroy data with nobody having agreed to it.
+        """
+        from apps.orchestrator.config_generator import _build_memory_flush_block
+
+        self.tenant.experimental_typed_journal_lifecycle = True
+        self.tenant.save()
+        block = _build_memory_flush_block(self.tenant)
+        self.assertIn("Never nbhd_task_delete", block["systemPrompt"])
+        self.assertIn("explicit confirmation", block["systemPrompt"])
+        # The write-side prompt must not invite deletion either.
+        self.assertNotIn("nbhd_task_delete", block["prompt"])
 
 
 class MemorySyncExclusionGatedTest(TestCase):
@@ -423,6 +439,81 @@ class TypedLifecycleSwapsTest(TestCase):
         self.assertIn("nbhd_task_create", out)
         self.assertIn("nbhd_goal_create", out)
         self.assertNotIn("nbhd_document_set", out)
+
+    def test_flag_on_task_swap_forbids_deletion_from_a_cron_turn(self):
+        """Cron turns run with no user in the loop, so they can never satisfy the
+        nbhd_task_delete handshake. The swapped guidance has to say that
+        explicitly — a maintenance turn that "cleaned up" by deleting tasks
+        would be irreversible and unconsented.
+        """
+        self.tenant.experimental_typed_journal_lifecycle = True
+        self.tenant.save()
+        prompt = "Add each next_steps item as a task via `nbhd_document_append` (kind='tasks', slug='tasks')."
+        out = self._prepare(prompt)
+        self.assertIn("Never call `nbhd_task_delete` from a cron turn", out)
+        self.assertIn("explicit confirmation", out)
+
+    def test_flag_off_never_mentions_the_delete_tool(self):
+        """Flag-off tenants run an older OpenClaw image without the typed tools;
+        naming nbhd_task_delete would prompt a call the runtime cannot serve.
+        """
+        prompt = "Add each next_steps item as a task via `nbhd_document_append` (kind='tasks', slug='tasks')."
+        self.assertNotIn("nbhd_task_delete", self._prepare(prompt))
+
+
+class TypedLifecycleDeleteGuidanceTest(TestCase):
+    """The delete guidance must reach a REAL generated cron prompt.
+
+    Guidance hung off a swap key that occurs nowhere in the prompt corpus is
+    dead text: the substitution never fires, the sentence never renders, and a
+    unit test that feeds the key in by hand passes anyway. So these drive the
+    real generation path (``_build_cron_message`` → ``_prepare_cron_prompt``)
+    over a real corpus prompt, and separately assert the key still occurs in
+    that prompt — if someone rewrites the heartbeat prompt, this fails instead
+    of the guidance silently going dark.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="delguideuser", password="pass")
+        self.tenant = Tenant.objects.create(user=self.user, status="active")
+
+    def _render(self) -> str:
+        from apps.orchestrator.config_generator import _HEARTBEAT_CHECKIN_PROMPT, _build_cron_message
+
+        return _build_cron_message(
+            _HEARTBEAT_CHECKIN_PROMPT,
+            "heartbeat-checkin",
+            foreground=False,
+            tenant=self.tenant,
+        )
+
+    def test_the_swap_key_still_occurs_in_the_live_prompt(self):
+        from apps.orchestrator.config_generator import _HEARTBEAT_CHECKIN_PROMPT, _TYPED_LIFECYCLE_SWAPS
+
+        key = "`nbhd_document_append` (kind='tasks', slug='tasks')"
+        self.assertIn(
+            key,
+            _HEARTBEAT_CHECKIN_PROMPT,
+            "the delete guidance hangs off this swap key — if the prompt stops using it, the guidance goes dark",
+        )
+        self.assertIn(key, [old for old, _ in _TYPED_LIFECYCLE_SWAPS])
+
+    def test_generated_cron_message_carries_the_delete_guidance(self):
+        self.tenant.experimental_typed_journal_lifecycle = True
+        self.tenant.save()
+
+        message = self._render()
+
+        self.assertIn("Never call `nbhd_task_delete` from a cron turn", message)
+        self.assertIn("explicit confirmation", message)
+        # The swap fired, so the legacy instruction it replaced is gone.
+        self.assertNotIn("`nbhd_document_append` (kind='tasks', slug='tasks')", message)
+
+    def test_flag_off_generated_message_never_mentions_the_delete_tool(self):
+        message = self._render()
+
+        self.assertNotIn("nbhd_task_delete", message)
+        self.assertIn("`nbhd_document_append` (kind='tasks', slug='tasks')", message)
 
 
 class LifecycleSerializerImportSmokeTest(TestCase):
