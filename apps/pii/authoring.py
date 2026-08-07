@@ -22,6 +22,7 @@ from apps.pii.redactor import (
     MINT_VALIDATED,
     _detect_pii,
     _filter_results,
+    redact_user_message,
     redact_user_message_checked,
 )
 
@@ -59,6 +60,18 @@ def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict[str,
         name = get_name(entity_map.get(placeholder))
         out.append({"placeholder": placeholder, "value": name or None})
     return out
+
+
+def truncate_placeholder_safe(text: str, max_len: int) -> str:
+    """Truncate without leaving a partial ``[TYPE_N]`` placeholder token."""
+    if max_len < 0:
+        raise ValueError("max_len must be non-negative")
+    if len(text) <= max_len:
+        return text
+    for match in _PLACEHOLDER_RE.finditer(text):
+        if match.start() < max_len < match.end():
+            return text[: match.start()]
+    return text[:max_len]
 
 
 def _residual_summary(tenant, text: str) -> dict[str, Any]:
@@ -128,15 +141,19 @@ def author_text(
 ) -> AuthoredText:
     """Author one text field under its writer-class mint policy.
 
-    Flag-off is intentionally the first branch: no redactor, detector,
-    known-value matcher, or content receipt is touched before returning the
-    byte-identical input.
+    Flag-off preserves the pre-P3 behavior of each writer class. Owner writes
+    still use the legacy unchecked redactor; runtime/background writes remain
+    byte-identical passthroughs.
     """
     if writer not in _WRITER_POLICIES:
         raise ValueError(f"unsupported writer class: {writer!r}")
 
     if not getattr(tenant, "layer1_placeholder_writes", False):
-        receipt = {"state": "bypass"}
+        if writer == "owner":
+            text = redact_user_message(text, tenant)
+            receipt = {"state": "bypass", "mode": "legacy-redact"}
+        else:
+            receipt = {"state": "bypass"}
         _log_counter(tenant=tenant, seam=seam, writer=writer, field=field, state="bypass")
         return AuthoredText(text=text, receipt=receipt)
 

@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
-from apps.journal.models import Document, DocumentChunk, Goal, Task
+from apps.journal.models import Document, DocumentChunk, Goal, PendingTaskAction, Task
 from apps.pii import junk_sweep
 from apps.pii.junk_sweep import classify_entry, sweep_all_tenants, sweep_tenant
 from apps.tenants.models import Tenant, User
@@ -140,6 +140,18 @@ class SweepTenantTests(_TenantMixin, TestCase):
             text="chunk [CREDIT_CARD_106] x",
             embedding=[0.0] * 1536,
         )
+        self.pending_action = PendingTaskAction.objects.create(
+            tenant=self.tenant,
+            kind=PendingTaskAction.Kind.TASK_PROGRESS,
+            evidence="Evidence [CREDIT_CARD_106]",
+            pii_receipts={
+                "evidence": {
+                    "state": "placeholder",
+                    "redactions": [{"placeholder": "[CREDIT_CARD_106]", "value": "django"}],
+                }
+            },
+            source_date="2026-08-07",
+        )
 
     def test_full_sweep_heals_denies_deletes(self):
         result = sweep_tenant(self.tenant)
@@ -150,7 +162,7 @@ class SweepTenantTests(_TenantMixin, TestCase):
         self.assertEqual(result["skipped"], 4)
         self.assertEqual(result["deleted"], 8)
         self.assertEqual(result["denied"], 6)  # 8 junk − 2 non-denyable
-        self.assertEqual(result["healed_rows"], 4)  # doc, task, goal, chunk
+        self.assertEqual(result["healed_rows"], 5)  # doc, task, goal, chunk, reconciliation evidence
 
         self.tenant.refresh_from_db()
 
@@ -175,6 +187,9 @@ class SweepTenantTests(_TenantMixin, TestCase):
         self.assertEqual(self.goal.description, "Ref django here")
         self.chunk.refresh_from_db()
         self.assertEqual(self.chunk.text, "chunk django x")
+        self.pending_action.refresh_from_db()
+        self.assertEqual(self.pending_action.evidence, "Evidence django")
+        self.assertEqual(self.pending_action.pii_receipts["evidence"]["redactions"], [])
 
         # (b) denylist gained canonical keys with the junk-sweep reason.
         self.assertIn("django", self.tenant.pii_denylist)

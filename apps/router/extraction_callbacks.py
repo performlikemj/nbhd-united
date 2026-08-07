@@ -110,11 +110,11 @@ def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
     """
     if getattr(pending.tenant, "experimental_typed_journal_lifecycle", False):
         from apps.journal.models import Goal
-        from apps.pii.authoring import author_text
+        from apps.pii.authoring import author_text, truncate_placeholder_safe
 
         authored_title = author_text(
             pending.tenant,
-            pending.text[:256],
+            pending.text,
             seam="journal.extraction.goal.approve",
             writer="background",
             field="title",
@@ -128,7 +128,10 @@ def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
         )
         goal = Goal.objects.create(
             tenant=pending.tenant,
-            title=authored_title.text,
+            title=truncate_placeholder_safe(
+                authored_title.text,
+                Goal._meta.get_field("title").max_length,
+            ),
             description=authored_description.text,
             pii_receipts={
                 "title": authored_title.receipt,
@@ -172,11 +175,11 @@ def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
     """
     if getattr(pending.tenant, "experimental_typed_journal_lifecycle", False):
         from apps.journal.models import Task
-        from apps.pii.authoring import author_text
+        from apps.pii.authoring import author_text, truncate_placeholder_safe
 
         authored_title = author_text(
             pending.tenant,
-            pending.text[:256],
+            pending.text,
             seam="journal.extraction.task.approve",
             writer="background",
             field="title",
@@ -190,7 +193,10 @@ def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
         )
         task = Task.objects.create(
             tenant=pending.tenant,
-            title=authored_title.text,
+            title=truncate_placeholder_safe(
+                authored_title.text,
+                Task._meta.get_field("title").max_length,
+            ),
             description=authored_description.text,
             pii_receipts={
                 "title": authored_title.receipt,

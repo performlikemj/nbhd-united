@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from unittest.mock import patch
+from uuid import UUID
 
+from django.db import DataError
 from django.test import TestCase
 
-from apps.journal.models import Task
+from apps.journal.models import PendingTaskAction, Task
 from apps.pii.authoring import AuthoredText
 from apps.pii.repair_sweep import _check_rate_alert, repair_tenant
 from apps.tenants.models import Tenant, User
@@ -43,6 +45,91 @@ class RepairSweepTests(TestCase):
         self.assertEqual(second["fields_attempted"], 0)
         author.assert_called_once()
 
+    def test_repairs_unconfirmed_reconciliation_evidence(self):
+        action = PendingTaskAction.objects.create(
+            tenant=self.tenant,
+            kind=PendingTaskAction.Kind.TASK_PROGRESS,
+            evidence="Alice confirmed it",
+            pii_receipts={"evidence": {"state": "unconfirmed", "reason": "redaction-error"}},
+            source_date="2026-08-07",
+        )
+        repaired = AuthoredText(
+            text="[PERSON_1] confirmed it",
+            receipt={
+                "state": "placeholder",
+                "redactions": [{"placeholder": "[PERSON_1]", "value": "Alice"}],
+            },
+        )
+
+        with patch("apps.pii.repair_sweep.author_text", return_value=repaired):
+            result = repair_tenant(self.tenant, alert=False)
+
+        action.refresh_from_db()
+        self.assertEqual(action.evidence, "[PERSON_1] confirmed it")
+        self.assertEqual(action.pii_receipts["evidence"]["state"], "placeholder")
+        self.assertEqual(result["fields_repaired"], 1)
+
+    def test_unconfirmed_rows_are_processed_before_residual_rows(self):
+        residual = Task.objects.create(
+            id=UUID(int=1),
+            tenant=self.tenant,
+            title="stable residual",
+            pii_receipts={"title": {"state": "residual"}},
+        )
+        unconfirmed = Task.objects.create(
+            id=UUID(int=2),
+            tenant=self.tenant,
+            title="repair me",
+            pii_receipts={"title": {"state": "unconfirmed"}},
+        )
+        repaired = AuthoredText(text="repaired", receipt={"state": "placeholder", "redactions": []})
+
+        with patch("apps.pii.repair_sweep.author_text", return_value=repaired):
+            result = repair_tenant(self.tenant, max_rows=1, alert=False)
+
+        residual.refresh_from_db()
+        unconfirmed.refresh_from_db()
+        self.assertEqual(result["rows_seen"], 1)
+        self.assertEqual(unconfirmed.title, "repaired")
+        self.assertEqual(residual.title, "stable residual")
+
+    def test_row_save_error_is_counted_and_sweep_continues(self):
+        poison = Task.objects.create(
+            id=UUID(int=1),
+            tenant=self.tenant,
+            title="poison",
+            pii_receipts={"title": {"state": "unconfirmed"}},
+        )
+        good = Task.objects.create(
+            id=UUID(int=2),
+            tenant=self.tenant,
+            title="good",
+            pii_receipts={"title": {"state": "unconfirmed"}},
+        )
+        original_save = Task.save
+
+        def flaky_save(instance, *args, **kwargs):
+            if instance.pk == poison.pk:
+                raise DataError("title overflow")
+            return original_save(instance, *args, **kwargs)
+
+        def repaired(_tenant, text, **_kwargs):
+            return AuthoredText(text=f"fixed {text}", receipt={"state": "placeholder", "redactions": []})
+
+        with (
+            patch.object(Task, "save", new=flaky_save),
+            patch("apps.pii.repair_sweep.author_text", side_effect=repaired),
+        ):
+            result = repair_tenant(self.tenant, alert=False)
+
+        poison.refresh_from_db()
+        good.refresh_from_db()
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(result["rows_seen"], 2)
+        self.assertEqual(result["fields_repaired"], 1)
+        self.assertEqual(poison.title, "poison")
+        self.assertEqual(good.title, "fixed good")
+
     def test_synthetic_error_rate_above_one_percent_fires_metadata_only_alert(self):
         with patch("apps.transcripts.alerts._send_alert", return_value=True) as send_alert:
             fired = _check_rate_alert(self.tenant, attempts=100, count=2, kind="error")
@@ -61,3 +148,10 @@ class RepairSweepTests(TestCase):
             TASK_MAP["placeholder_repair_sweep"],
             "apps.pii.repair_sweep.placeholder_repair_sweep_task",
         )
+
+    def test_system_crons_register_hourly_repair_sweep(self):
+        from apps.cron.management.commands.register_system_crons import SYSTEM_CRONS
+
+        entry = next(item for item in SYSTEM_CRONS if item[0] == "placeholder-repair-sweep")
+        self.assertEqual(entry[1], "0 * * * *")
+        self.assertEqual(entry[2], "/api/cron/trigger/placeholder_repair_sweep/")

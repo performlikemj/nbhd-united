@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import timedelta
 
-from django.db.models import Q
+from django.db.models import Case, IntegerField, Q, Value, When
 
 from apps.pii.authoring import author_text
 from apps.pii.store_registry import registered_stores
@@ -22,6 +22,13 @@ def _repair_query(fields: tuple[str, ...], receipts_field: str) -> Q:
     query = Q()
     for field in fields:
         query |= Q(**{f"{receipts_field}__{field}__state__in": sorted(REPAIR_STATES)})
+    return query
+
+
+def _receipt_state_query(fields: tuple[str, ...], receipts_field: str, state: str) -> Q:
+    query = Q()
+    for field in fields:
+        query |= Q(**{f"{receipts_field}__{field}__state": state})
     return query
 
 
@@ -69,13 +76,24 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
         rows = (
             store.model.objects.filter(tenant=tenant)
             .filter(_repair_query(store.flat_fields, store.receipts_field))
-            .order_by("pk")[:remaining]
+            .annotate(
+                _repair_priority=Case(
+                    When(
+                        _receipt_state_query(store.flat_fields, store.receipts_field, "unconfirmed"),
+                        then=Value(0),
+                    ),
+                    default=Value(1),
+                    output_field=IntegerField(),
+                )
+            )
+            .order_by("_repair_priority", "pk")[:remaining]
         )
         for row in rows:
             totals["rows_seen"] += 1
             remaining -= 1
             receipts = dict(getattr(row, store.receipts_field, {}) or {})
             changed_fields: list[str] = []
+            repaired_fields = 0
             for field in store.flat_fields:
                 old_receipt = receipts.get(field)
                 old_state = old_receipt.get("state") if isinstance(old_receipt, dict) else None
@@ -111,13 +129,25 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                 elif state == "residual":
                     totals["residual"] += 1
                 elif state not in REPAIR_STATES:
-                    totals["fields_repaired"] += 1
+                    repaired_fields += 1
 
             if receipts != (getattr(row, store.receipts_field, {}) or {}):
                 setattr(row, store.receipts_field, receipts)
                 changed_fields.append(store.receipts_field)
             if changed_fields:
-                row.save(update_fields=list(dict.fromkeys(changed_fields)))
+                try:
+                    row.save(update_fields=list(dict.fromkeys(changed_fields)))
+                except Exception:
+                    totals["errors"] += 1
+                    logger.exception(
+                        "pii_repair_row_save_error tenant=%s store=%s row=%s fields=%s",
+                        tenant.pk,
+                        store.model_label,
+                        row.pk,
+                        ",".join(dict.fromkeys(changed_fields)),
+                    )
+                    continue
+            totals["fields_repaired"] += repaired_fields
 
     if alert:
         _check_rate_alert(

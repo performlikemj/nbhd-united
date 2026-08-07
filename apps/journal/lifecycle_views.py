@@ -16,6 +16,8 @@ lint-on-Edit hook reaps module-level imports that look unused at parse time).
 
 from __future__ import annotations
 
+import logging
+
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -23,10 +25,13 @@ from rest_framework.views import APIView
 
 from .document_views import _get_tenant
 
+logger = logging.getLogger(__name__)
+
 # Cap for the ``?q=`` name search path — keeps a Siri/Shortcuts disambiguation
 # picker (EntityQuery) bounded. Only applied when ``q`` is present; the
 # unfiltered list stays full so the web/iOS enumeration paths don't truncate.
 _ENTITY_SEARCH_LIMIT = 20
+_SEARCH_VARIANT_LIMIT = 20
 
 
 def _owner_ctx(tenant):
@@ -59,24 +64,58 @@ def _author_owner_input(tenant, data, *, seam, receipts=None, include_defaults=F
 
 
 def _search_variants(tenant, query: str) -> list[str]:
-    """Return original + one placeholder-substituted variant per name binding."""
+    """Return bounded original/name-placeholder query variants."""
     import re
 
     from apps.pii.entity_registry import inverted_names_multimap
 
-    variants = [query]
     query_ci = query.casefold()
+    matches: list[tuple[str, str]] = []
+    seen_bindings: set[tuple[str, str]] = set()
     for bindings in inverted_names_multimap(getattr(tenant, "pii_entity_map", None) or {}).values():
         for value, placeholder in bindings:
-            if value and value.casefold() in query_ci:
-                variant = re.sub(
+            value = value.strip()
+            binding = (value, placeholder)
+            if len(value) >= 3 and value.casefold() in query_ci and binding not in seen_bindings:
+                seen_bindings.add(binding)
+                matches.append(binding)
+
+    candidates = [query]
+    if len(matches) <= 2:
+        for value, placeholder in matches:
+            for variant in tuple(candidates):
+                candidates.append(
+                    re.sub(
+                        re.escape(value),
+                        lambda _match, replacement=placeholder: replacement,
+                        variant,
+                        flags=re.IGNORECASE,
+                    )
+                )
+    else:
+        for value, placeholder in matches:
+            candidates.append(
+                re.sub(
                     re.escape(value),
                     lambda _match, replacement=placeholder: replacement,
                     query,
                     flags=re.IGNORECASE,
                 )
-                if variant not in variants:
-                    variants.append(variant)
+            )
+
+    variants: list[str] = []
+    for candidate in candidates:
+        if candidate in variants:
+            continue
+        if len(variants) >= _SEARCH_VARIANT_LIMIT:
+            logger.warning(
+                "pii_search_variants_capped tenant=%s matched_bindings=%d cap=%d",
+                getattr(tenant, "pk", getattr(tenant, "id", "?")),
+                len(matches),
+                _SEARCH_VARIANT_LIMIT,
+            )
+            break
+        variants.append(candidate)
     return variants
 
 

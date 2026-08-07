@@ -173,7 +173,6 @@ def apply_task_action(
     before_state = {
         "status": task.status,
         "completed_at": task.completed_at.isoformat() if task.completed_at else None,
-        "pii_receipts": {"evidence": authored_evidence.receipt},
     }
 
     _reauthor_lifecycle_instance(task, seam="journal.reconciliation.task.transition")
@@ -197,6 +196,7 @@ def apply_task_action(
         kind=kind,
         task=task,
         evidence=authored_evidence.text,
+        pii_receipts={"evidence": authored_evidence.receipt},
         source_date=source_date,
         before_state=before_state,
     )
@@ -246,11 +246,11 @@ def apply_subtask_create(
     if any(titles_match(title, existing.title) for existing in scope):
         return None
 
-    from apps.pii.authoring import author_text
+    from apps.pii.authoring import author_text, truncate_placeholder_safe
 
     authored_title = author_text(
         tenant,
-        title[:256],
+        title,
         seam="journal.reconciliation.subtask.create",
         writer="background",
         field="title",
@@ -264,7 +264,10 @@ def apply_subtask_create(
     )
     subtask = Task.objects.create(
         tenant=tenant,
-        title=authored_title.text,
+        title=truncate_placeholder_safe(
+            authored_title.text,
+            Task._meta.get_field("title").max_length,
+        ),
         description=authored_description.text,
         pii_receipts={
             "title": authored_title.receipt,
@@ -325,7 +328,6 @@ def apply_goal_action(
     before_state = {
         "status": goal.status,
         "achieved_at": goal.achieved_at.isoformat() if goal.achieved_at else None,
-        "pii_receipts": {"evidence": authored_evidence.receipt},
     }
 
     _reauthor_lifecycle_instance(goal, seam="journal.reconciliation.goal.transition")
@@ -342,6 +344,7 @@ def apply_goal_action(
         kind=kind,
         goal=goal,
         evidence=authored_evidence.text,
+        pii_receipts={"evidence": authored_evidence.receipt},
         source_date=source_date,
         before_state=before_state,
     )

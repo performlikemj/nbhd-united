@@ -210,6 +210,34 @@ class EntityRegistryDeleteTests(TestCase):
         listing = self.client.get("/api/v1/tenants/settings/entity-registry/")
         self.assertEqual([entry["name"] for entry in listing.json()["entries"]], ["Bob"])
 
+    def test_duplicate_name_retirement_keeps_active_binding_functional(self):
+        user, tenant = _make_user_with_tenant(
+            entity_map={
+                "[PERSON_3]": {"name": "Alex"},
+                "[PERSON_9]": {"name": "Alex"},
+            }
+        )
+        self.client.force_authenticate(user=user)
+
+        resp = self.client.delete("/api/v1/tenants/settings/entity-registry/%5BPERSON_9%5D/")
+
+        self.assertEqual(resp.status_code, 204)
+        tenant.refresh_from_db()
+        self.assertTrue(tenant.pii_entity_map["[PERSON_9]"]["retired"])
+        self.assertNotIn("alex", tenant.pii_denylist)
+
+        from apps.pii.authoring import _redact_active_known_values
+        from apps.pii.egress import redact_known_values
+
+        self.assertEqual(
+            _redact_active_known_values(tenant, "Call Alex", seam="test.duplicate-retirement"),
+            "Call [PERSON_3]",
+        )
+        self.assertEqual(
+            redact_known_values(tenant, "Call Alex", seam="test.duplicate-retirement"),
+            "Call [PERSON_3]",
+        )
+
     def test_returns_404_for_unknown_placeholder(self):
         user, _ = _make_user_with_tenant(entity_map={"[PERSON_1]": "Alice"})
         self.client.force_authenticate(user=user)

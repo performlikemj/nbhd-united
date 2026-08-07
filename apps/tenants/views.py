@@ -1447,15 +1447,15 @@ class EntityRegistryItemView(APIView):
         )
 
     def delete(self, request, placeholder: str):
-        from apps.pii.entity_registry import coerce, normalize_denylist_key
+        from apps.pii.entity_registry import canonical_key, coerce, get_name, normalize_denylist_key
 
         try:
             tenant = request.user.tenant
         except Tenant.DoesNotExist:
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
-        # Keep the binding for historical rehydration, but retire + deny it so
-        # future redaction cannot reuse or re-mint the value.
+        # Keep the binding for historical rehydration. Deny its value only if
+        # this retirement leaves no active same-name binding.
         with transaction.atomic():
             locked = Tenant.objects.select_for_update().filter(pk=tenant.pk).first()
             entity_map = dict((locked.pii_entity_map if locked else None) or {})
@@ -1472,7 +1472,11 @@ class EntityRegistryItemView(APIView):
             retired["retired_at"] = now
             entity_map[placeholder] = retired
             key = normalize_denylist_key(retired.get("name", ""))
-            if key and key not in denylist:
+            has_active_same_name = any(
+                canonical_key(get_name(entry)) == key and not (isinstance(entry, dict) and entry.get("retired"))
+                for entry in entity_map.values()
+            )
+            if key and not has_active_same_name and key not in denylist:
                 denylist[key] = {"reason": "owner-delete-retired", "decided_at": now}
             Tenant.objects.filter(pk=tenant.pk).update(
                 pii_entity_map=entity_map,
@@ -1494,16 +1498,16 @@ class EntityRegistryBulkDeleteView(APIView):
 
     Body: ``{"placeholders": ["[PERSON_1]", ...], "deny": false}``.
 
-    ``deny`` is retained for wire compatibility. Retirement always deny-lists
-    the value because a retired binding must never be reused; the map entry is
-    retained so historical placeholders continue to rehydrate.
+    ``deny`` is retained for wire compatibility. Retirement deny-lists a value
+    only when the completed batch leaves no active same-name binding; the map
+    entry is retained so historical placeholders continue to rehydrate.
     """
 
     permission_classes = [IsAuthenticated]
     _MAX_BATCH = 1000
 
     def post(self, request):
-        from apps.pii.entity_registry import coerce, get_name, normalize_denylist_key
+        from apps.pii.entity_registry import canonical_key, coerce, get_name, normalize_denylist_key
 
         try:
             tenant = request.user.tenant
@@ -1549,6 +1553,7 @@ class EntityRegistryBulkDeleteView(APIView):
             denylist = dict((locked.pii_denylist if locked else None) or {})
 
             now = timezone.now().isoformat()
+            retired_keys: dict[str, str] = {}
             for placeholder in placeholders:
                 if placeholder not in entity_map:
                     not_found.append(placeholder)
@@ -1560,7 +1565,15 @@ class EntityRegistryBulkDeleteView(APIView):
                 retired["retired_at"] = now
                 entity_map[placeholder] = retired
                 key = normalize_denylist_key(get_name(entry))
-                if key and key not in denylist:
+                if key:
+                    retired_keys.setdefault(key, get_name(entry))
+
+            for key in retired_keys:
+                has_active_same_name = any(
+                    canonical_key(get_name(entry)) == key and not (isinstance(entry, dict) and entry.get("retired"))
+                    for entry in entity_map.values()
+                )
+                if not has_active_same_name and key not in denylist:
                     denylist[key] = {"reason": "bulk-delete-retired", "decided_at": now}
                     denied.append(key)
 

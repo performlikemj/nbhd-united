@@ -197,6 +197,26 @@ class TaskLinkageTest(TestCase):
         self.assertEqual(task.title, "Walk with [PERSON_1]")
         self.assertEqual(task.pii_receipts["title"]["state"], "placeholder")
 
+    def test_near_limit_mission_task_truncates_after_authoring_without_partial_token(self):
+        self.a.layer1_placeholder_writes = True
+        self.a.pii_entity_map = {"[PERSON_1]": {"name": "Amy"}}
+        self.a.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            result = services.add_mission_task(
+                self.a,
+                self.a.user,
+                str(self.mission.id),
+                title="x" * 250 + " Amy!",
+            )
+
+        task = Task.objects.get(id=result["task_id"])
+        self.assertEqual(task.title, "x" * 250 + " ")
+        self.assertLessEqual(len(task.title), Task._meta.get_field("title").max_length)
+        self.assertNotIn("[PERSON", task.title)
+
 
 class ProposeApproveTest(TestCase):
     def setUp(self):

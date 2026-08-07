@@ -167,6 +167,48 @@ class EntityRegistryBulkDeleteViewTests(TestCase):
         tenant.refresh_from_db()
         self.assertIn("alice", tenant.pii_denylist)
 
+    def test_retiring_one_duplicate_does_not_deny_active_name(self):
+        user, tenant = _make_user_with_tenant(
+            entity_map={
+                "[PERSON_3]": {"name": "Alex"},
+                "[PERSON_9]": {"name": "Alex"},
+            },
+            denylist={},
+        )
+        self.client.force_authenticate(user=user)
+
+        resp = self.client.post(_URL, {"placeholders": ["[PERSON_9]"]}, format="json")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["denied"], [])
+        tenant.refresh_from_db()
+        self.assertNotIn("alex", tenant.pii_denylist)
+        self.assertNotIn("retired", tenant.pii_entity_map["[PERSON_3]"])
+        self.assertTrue(tenant.pii_entity_map["[PERSON_9]"]["retired"])
+
+    def test_retiring_all_duplicates_denies_name_after_batch(self):
+        user, tenant = _make_user_with_tenant(
+            entity_map={
+                "[PERSON_3]": {"name": "Alex"},
+                "[PERSON_9]": {"name": "Alex"},
+            },
+            denylist={},
+        )
+        self.client.force_authenticate(user=user)
+
+        resp = self.client.post(
+            _URL,
+            {"placeholders": ["[PERSON_3]", "[PERSON_9]"]},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["denied"], ["alex"])
+        tenant.refresh_from_db()
+        self.assertIn("alex", tenant.pii_denylist)
+        self.assertTrue(tenant.pii_entity_map["[PERSON_3]"]["retired"])
+        self.assertTrue(tenant.pii_entity_map["[PERSON_9]"]["retired"])
+
     def test_rejects_oversized_batch(self):
         user, _ = _make_user_with_tenant(entity_map={})
         self.client.force_authenticate(user=user)

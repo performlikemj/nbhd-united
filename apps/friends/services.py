@@ -1534,11 +1534,11 @@ def _mint_member_task(tenant, mission, title, description, due_date):
     """The caller's OWN local journal Task, linked to the mission via related_ref
     (zero journal.Task schema change)."""
     from apps.journal.models import Task
-    from apps.pii.authoring import author_text
+    from apps.pii.authoring import author_text, truncate_placeholder_safe
 
     authored_title = author_text(
         tenant,
-        title[:256],
+        title,
         seam="friends.mission.local_task.create",
         writer="background",
         field="title",
@@ -1552,7 +1552,10 @@ def _mint_member_task(tenant, mission, title, description, due_date):
     )
     return Task.objects.create(
         tenant=tenant,
-        title=authored_title.text,
+        title=truncate_placeholder_safe(
+            authored_title.text,
+            Task._meta.get_field("title").max_length,
+        ),
         description=authored_description.text,
         pii_receipts={
             "title": authored_title.receipt,

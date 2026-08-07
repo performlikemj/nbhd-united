@@ -6,7 +6,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
-from apps.pii.authoring import author_text
+from apps.pii.authoring import author_text, truncate_placeholder_safe
 from apps.pii.redactor import MINT_ALL, MINT_NEVER, MINT_VALIDATED, RedactionOutcome
 from apps.tenants.models import Tenant, User
 
@@ -20,10 +20,11 @@ class AuthorTextTests(TestCase):
             pii_entity_map={"[PERSON_1]": {"name": "Alice"}},
         )
 
-    def test_flag_off_is_byte_identical_bypass_without_ner_or_map_mutation(self):
+    def test_flag_off_owner_preserves_legacy_redaction_without_checked_receipt(self):
         original = "  Alice\n[PERSON_999]  "
         before_map = dict(self.tenant.pii_entity_map)
         with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
             patch("apps.pii.authoring.redact_user_message_checked") as checked,
             patch("apps.pii.authoring._redact_active_known_values") as known_values,
             patch("apps.pii.authoring._residual_summary") as residual,
@@ -36,13 +37,44 @@ class AuthorTextTests(TestCase):
                 field="title",
             )
 
-        self.assertEqual(authored.text, original)
-        self.assertEqual(authored.receipt, {"state": "bypass"})
+        self.assertEqual(authored.text, "  [PERSON_1]\n[PERSON_999]  ")
+        self.assertEqual(authored.receipt, {"state": "bypass", "mode": "legacy-redact"})
         checked.assert_not_called()
         known_values.assert_not_called()
         residual.assert_not_called()
         self.tenant.refresh_from_db()
         self.assertEqual(self.tenant.pii_entity_map, before_map)
+
+    def test_flag_off_runtime_and_background_are_passthrough_without_redaction_calls(self):
+        original = "  Alice\n[PERSON_999]  "
+        with (
+            patch("apps.pii.authoring.redact_user_message") as legacy,
+            patch("apps.pii.authoring.redact_user_message_checked") as checked,
+            patch("apps.pii.authoring._redact_active_known_values") as known_values,
+            patch("apps.pii.authoring._residual_summary") as residual,
+        ):
+            for writer in ("runtime", "background"):
+                with self.subTest(writer=writer):
+                    authored = author_text(
+                        self.tenant,
+                        original,
+                        seam="test.flag-off",
+                        writer=writer,
+                        field="title",
+                    )
+                    self.assertEqual(authored.text, original)
+                    self.assertEqual(authored.receipt, {"state": "bypass"})
+
+        legacy.assert_not_called()
+        checked.assert_not_called()
+        known_values.assert_not_called()
+        residual.assert_not_called()
+
+    def test_placeholder_safe_truncation_never_bisects_token(self):
+        text = "12345[PERSON_123]tail"
+        self.assertEqual(truncate_placeholder_safe(text, 10), "12345")
+        self.assertEqual(truncate_placeholder_safe(text, len("12345[PERSON_123]")), "12345[PERSON_123]")
+        self.assertEqual(truncate_placeholder_safe("abcdefgh", 5), "abcde")
 
     def test_writer_classes_apply_the_directive_mint_policies(self):
         self.tenant.layer1_placeholder_writes = True

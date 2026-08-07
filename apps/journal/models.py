@@ -595,6 +595,7 @@ class PendingTaskAction(models.Model):
     )
 
     evidence = models.TextField(blank=True, default="")
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.PENDING_TASK_ACTION_EVIDENCE``) — ships DARK.
     evidence_enc = models.BinaryField(null=True)
     source_date = models.DateField()

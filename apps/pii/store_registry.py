@@ -32,6 +32,12 @@ _STORES = (
         json_paths=(),
         receipts_field="pii_receipts",
     ),
+    PlaceholderStore(
+        model_label="journal.PendingTaskAction",
+        flat_fields=("evidence",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
 )
 
 

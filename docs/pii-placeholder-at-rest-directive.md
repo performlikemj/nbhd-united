@@ -4,7 +4,7 @@
 **Siblings:** `pii-coverage-audit-2026-08-04.md` (commissioning audit; §5C is this program) · `transcript-memory-postgres-directive.md` (provenance types + ciphertext pattern reused) · `encryption-at-rest-directive.md` (this program is the precondition for encrypting `Document`) · `ios-chat-redaction-transparency-directive.md` (the purple-affordance contract this extends to Layer-1).
 **Prior phases:** #1376 egress guard (known-values, no NER — `apps/pii/egress.py:78-114`) + #1377 entity legend sealed model egress for KNOWN names. Phase 3 makes the stores themselves placeholder-space so unknown names stop existing downstream.
 
-**One-line summary:** Every Layer-1 authoring write passes through ONE provenance-aware redaction chokepoint that stores placeholder-space text plus a per-field STATE-bearing receipt; owners get rehydration + entity metadata on every read surface; searches translate names to placeholder variants; entity retirement becomes registry-aware so rehydration can never be orphaned; per-tenant flag with true-passthrough-off semantics, canary-first; migration is designed here and run only on MJ's explicit go.
+**One-line summary:** Every Layer-1 authoring write passes through ONE provenance-aware redaction chokepoint that stores placeholder-space text plus a per-field STATE-bearing receipt; owners get rehydration + entity metadata on every read surface; searches translate names to placeholder variants; entity retirement becomes registry-aware so rehydration can never be orphaned; per-tenant flag with pre-P3-preserving off semantics, canary-first; migration is designed here and run only on MJ's explicit go.
 
 ## 1. Product contract
 1. The owner always sees their own real names — every owner-facing surface rehydrates (web, iOS, Telegram/LINE deliveries, Siri, dashboard). A surface that shows raw placeholders to the owner is a bug (today: Dashboard Horizons, owner memory view, journal-entry/review serializers).
@@ -23,13 +23,15 @@ New `apps/pii/authoring.py`: `author_text(tenant, text, *, seam, writer, ...) ->
 NER cost: local synchronous DeBERTa CPU (~600MB singleton, `engine.py:60-103`), already run per chat message; authoring is lower-frequency. No new model calls.
 
 ### A2 — Receipts are per-field, on-row, STATE-bearing
-One `pii_receipts` JSONField per model, keyed by field name (JSON-carrying fields aggregate placeholders per top-level field — chat receipts are offset-free, so nested text needs no offsets). Receipt schema = chat metadata + `state`: `placeholder` (confirmed clean) | `residual` (unminted spans recorded) | `unconfirmed` (redaction-error; known-values-scrubbed raw) | `bypass` (flag-off/disabled — no content analysis ran). Absent key = pre-P3 legacy. State drives BOTH the repair sweep and the migration fence (A7). Content receipts exist ONLY where analysis ran (flag-on); `bypass` receipts carry no placeholder data.
+One `pii_receipts` JSONField per model, keyed by field name (JSON-carrying fields aggregate placeholders per top-level field — chat receipts are offset-free, so nested text needs no offsets). Receipt schema = chat metadata + `state`: `placeholder` (confirmed clean) | `residual` (unminted spans recorded) | `unconfirmed` (redaction-error; known-values-scrubbed raw) | `bypass` (flag-off/disabled — no checked provenance ran; owner legacy mode may still redact unchecked). Absent key = pre-P3 legacy. State drives BOTH the repair sweep and the migration fence (A7). Content receipts exist ONLY where checked analysis ran (flag-on); `bypass` receipts carry no placeholder data.
+
+**W2 receipt note:** W2 re-shapes receipts to placeholder-only (values resolved at owner-read) — value-bearing receipts undermine the encryption-ladder composition; ratified for W2, tolerated for W1c canary volume.
 
 ### A3 — Rehydrate at the owner boundary ONLY, via the serializer layer
 Extend the live opt-in pattern (`document_serializers.py:10-24`, `lifecycle_serializers.py:10-32`, `_owner_ctx`): rehydration + metadata emission in serializers/response-builders keyed on explicit owner context; runtime serializers structurally never receive it. Fix owner surfaces that bypass it (Dashboard Horizons, owner memory view, journal-entry/review serializers). Read-path changes ship unconditionally (no-op on raw rows). Known paste-edge (review P2-6): legacy raw text containing a literal mapped token gets swapped on newly-rehydrating surfaces — pre-existing behavior on Document GET; receipts eventually disambiguate; accepted + documented.
 
-### A4 — Flag: `layer1_placeholder_writes`, per-tenant, default False — TRUE PASSTHROUGH OFF
-Flag-off = pure passthrough: **no NER, no minting, no content receipt** — at most a `{"state":"bypass"}` marker and a counter metric. (Review P0: the v1 wording would have run NER + `MINT_ALL` fleet-wide with the flag off, mutating every tenant's entity map — and the map is live coupling into the #1376 egress guard and chat known-values substitution, changing fleet behavior pre-canary. Rejected.) Flag-on enables the full chokepoint per writer class. Reads/rehydration/search-translation ship unconditional. Canary → Kiho → fleet per the standing ladder. Flag shape mirrors `recall_capture_enabled` (actively checked + management command), not the dark `encrypt_journal_writes` shape.
+### A4 — Flag: `layer1_placeholder_writes`, per-tenant, default False — PRE-P3-PRESERVING OFF
+Flag-off preserves each path's PRE-P3 behavior: owner surfaces that redact today keep their legacy unchecked redaction (receipt `bypass`/`legacy-redact`); runtime/background stay pure passthrough. No NEW detection or minting is introduced anywhere by flag-off. Flag-on enables the full chokepoint per writer class. Reads/rehydration/search-translation ship unconditional. Canary → Kiho → fleet per the standing ladder. Flag shape mirrors `recall_capture_enabled` (actively checked + management command), not the dark `encrypt_journal_writes` shape.
 
 ### A5 — Search translation (variants, not tokens)
 Per §1.5. W1c scope: Task/Goal owner `icontains` search (`lifecycle_views.py:271-274,314-317`). Document FTS websearch translation lands in W2 (plain-term variant union; no tsquery surgery in v1).
@@ -41,6 +43,8 @@ Per §1.5. W1c scope: Task/Goal owner `icontains` search (`lifecycle_views.py:27
 ### A7 — Migration (existing rows): designed now, run NEVER without MJ
 Per-store command, fenced PER FIELD on receipt state — a field migrates unless `state=placeholder` (review P1-3: row-presence fencing breaks on bypass receipts, unconfirmed rows, and partial-JSON updates). Precondition per store: repair queue drained. Batching (review P2-7): pre-scan batch → mint all new entities in ONE per-tenant locked transaction → rewrite rows OUTSIDE the lock; off-peak; resumable; dry-run-first; canary-only until MJ fleet go. Ordering: migration precedes any `Document` encryption backfill (redact → encrypt; `enc_columns.py:19-23` exclusions stay deferred until this lands).
 
+Runbook accounting note: runtime transition re-authoring performs incidental migration of touched rows; migration accounting must expect it.
+
 ### A8 — Explicitly out of scope / excluded
 Chat pipeline (already placeholder-space) · friends sharing scrub (fail-closed, distinct contract) · **cross-tenant shared stores (SharedGoal/SharedUpdate/FriendMessage): EXCLUDED by design — creator-namespace placeholders are meaningless-or-wrong against the recipient's map; logged residual, never routed through the per-tenant chokepoint** (review P2-4c) · sautai EGRESS exception (prompt rehydration at client) — but `SautaiMealPlanJob.user_prompt` INGRESS storage is in-scope (W3) · `UserMemory` (dead model, no production writer; flagged for deletion) · OC workspace files (memory-sync stays known-only+no-mint) · iOS client work.
 
@@ -50,8 +54,12 @@ New `apps/pii/store_registry.py`: each wave registers its placeholder-bearing su
 - **Owner explicit delete/bulk-delete** (`tenants/views.py:1446-1467,1537-1563` — currently deletes bindings with NO healing, admitting it breaks rehydration): switches to **tombstoning** — binding kept for rehydration, marked retired (hidden from registry UI, excluded from minting reuse and from egress known-values substitution decisions as appropriate). Healing-by-rehydration is WRONG for real entities (it would write real names back into stores — the inverse of this program). True purge of a tombstoned value = migration-grade rewrite over the registry; deferred, documented.
 - **Repair sweep + migration** iterate the same registry. (Arbiter is safe as-is — stamps/denies, never deletes.)
 
+Retirement auto-denies the value only when no other active binding shares the canonical name. Retired bindings are excluded from egress substitution and legends; rehydration retains them.
+
 ### A10 — Repair sweep (buildable spec)
 QStash-scheduled (hourly), per-tenant batch over registry stores where any field state ∈ {`unconfirmed`, `residual`}; re-runs `author_text` with current map + full NER; idempotent via receipt state transition; bounded batch size; DLQ + counter telemetry; drain-required before migration (A7). Reuses the transcripts alert mechanism (steward-gated, metadata-only).
+
+Live-write failure-rate alerting (not just repair-time) lands with W2.
 
 ## 3. Implementation waves (each canary-gated, PR-per-item)
 1. **W1a — Siri egress fix** (small, standalone, closes a live cloud leak).
@@ -63,3 +71,5 @@ QStash-scheduled (hourly), per-tenant batch over registry stores where any field
 
 ## 4. Review trail
 v1 drafted from codex recon (worktree @ a69ebb52). Round 1 (Fable-family critic, adversarial, code-re-verified): **SOUND-WITH-CHANGES** — P0 flag-off NER/mint leak (accepted → A4 rewritten); P1-1 retirement orphaning (accepted → A9 registry + tombstone); P1-2 MINT_VALIDATED PERSON impossibility (accepted → A1 residual receipts); P1-3 fence unsoundness (accepted → per-field state fence); P1-4 W1 split + insights read-binding (accepted → W1a/b/c); P2 1-7 folded (Siri intent, reason codes, known-values-on-failure + sweep spec, coverage incl. cross-tenant exclusion, search variants, paste-edge, migration batching). Arbitration by Fable orchestrator; verdict adopted in full with one modification: retirement uses heal-for-junk + tombstone-for-owner-delete (critic offered registry-heal OR tombstone; healing owner-deleted real entities would un-redact stores).
+
+Round 2 (implementation review): **FIX-FIRST → this commit** — legacy-preserving flag-off by writer class, collision-safe retirement, token-safe post-authoring truncation, repair save isolation/order, evidence receipts registration, repair scheduling, tombstone egress/legend filtering, search hardening, and receipt-helper deduplication. The critic's self-correction of round 1's P0 over-correction is recorded in A4.

@@ -13,6 +13,7 @@ from unittest.mock import patch
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from apps.journal.lifecycle_views import _search_variants
 from apps.journal.models import Document, Goal, Task
 from apps.tenants.models import Tenant, User
 
@@ -158,7 +159,10 @@ class TaskGoalListCreateTests(TestCase):
         task = Task.objects.get(id=resp.data["id"])
         self.assertEqual(task.tenant_id, self.tenant.id)
         self.assertEqual(task.title, "Pay loan")
-        self.assertEqual(task.pii_receipts["title"], {"state": "bypass"})
+        self.assertEqual(
+            task.pii_receipts["title"],
+            {"state": "bypass", "mode": "legacy-redact"},
+        )
 
     def test_flag_on_create_stores_placeholder_and_owner_receipt(self):
         self.tenant.layer1_placeholder_writes = True
@@ -229,6 +233,33 @@ class TaskGoalListCreateTests(TestCase):
         resp = self.client.get("/api/v1/journal/tasks/?q=ALICE")
 
         self.assertEqual([task["title"] for task in resp.data], ["Call Alice"])
+
+    def test_task_search_cross_product_finds_fully_redacted_multi_name_title(self):
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {"name": "Alex"},
+            "[PERSON_2]": {"name": "Bob"},
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+        Task.objects.create(tenant=self.tenant, title="Call [PERSON_1] about [PERSON_2]")
+
+        resp = self.client.get("/api/v1/journal/tasks/?q=call%20Alex%20about%20Bob")
+
+        self.assertEqual([task["title"] for task in resp.data], ["Call Alex about Bob"])
+
+    def test_search_variants_skip_short_values_and_cap_with_log(self):
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {"name": "Li"},
+            **{f"[PERSON_{index + 2}]": {"name": f"Name{index:02d}"} for index in range(25)},
+        }
+        self.assertEqual(_search_variants(self.tenant, "Call Li"), ["Call Li"])
+
+        query = " ".join(f"Name{index:02d}" for index in range(25))
+        with self.assertLogs("apps.journal.lifecycle_views", level="WARNING") as logs:
+            variants = _search_variants(self.tenant, query)
+
+        self.assertEqual(len(variants), 20)
+        self.assertEqual(variants[0], query)
+        self.assertIn("pii_search_variants_capped", logs.output[0])
 
     def test_list_tasks_q_no_match_returns_empty(self):
         Task.objects.create(tenant=self.tenant, title="Call the Dentist")
