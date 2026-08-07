@@ -326,7 +326,11 @@ def author_text(
         "state": "placeholder",
         "redactions": [],
     }
-    if writer == "background":
+    if writer in {"runtime", "background"}:
+        # Runtime never mints, so detection is the only thing standing between a
+        # model-composed raw name and a receipt that reads clean forever: the A7
+        # migration fence trusts `placeholder` and the repair sweep only revisits
+        # unconfirmed/residual.
         try:
             residual_spans = _residual_summary(tenant, text)
         except Exception:

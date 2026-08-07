@@ -94,6 +94,41 @@ class RepairSweepTests(TestCase):
         self.assertEqual(unconfirmed.title, "repaired")
         self.assertEqual(residual.title, "stable residual")
 
+    def test_runtime_residual_row_is_reauthored_as_background_and_stays_residual(self):
+        raw = "Dana Whitfield is on the list"
+        task = Task.objects.create(
+            tenant=self.tenant,
+            title=raw,
+            pii_receipts={
+                "title": {
+                    "state": "residual",
+                    "writer": "runtime",
+                    "residual_spans": {"count": 1, "kinds": {"PERSON": 1}},
+                }
+            },
+        )
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text=raw, confirmed=True, reason="redacted"),
+            ),
+            patch(
+                "apps.pii.authoring._residual_summary",
+                return_value={"count": 1, "kinds": {"PERSON": 1}},
+            ),
+            patch("apps.pii.alerts.record_live_write_outcome"),
+        ):
+            result = repair_tenant(self.tenant, alert=False)
+
+        task.refresh_from_db()
+        self.assertEqual(task.title, raw)
+        self.assertEqual(task.pii_receipts["title"]["state"], "residual")
+        self.assertEqual(task.pii_receipts["title"]["writer"], "background")
+        self.assertEqual(result["fields_attempted"], 1)
+        self.assertEqual(result["residual"], 1)
+        self.assertEqual(result["fields_repaired"], 0)
+        self.assertEqual(result["errors"], 0)
+
     def test_row_save_error_is_counted_and_sweep_continues(self):
         poison = Task.objects.create(
             id=UUID(int=1),

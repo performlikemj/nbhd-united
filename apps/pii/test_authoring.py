@@ -131,6 +131,80 @@ class AuthorTextTests(TestCase):
         self.assertEqual(authored.receipt["residual_spans"], {"count": 1, "kinds": {"PERSON": 1}})
         self.assertNotIn("Unknown Person", repr(authored.receipt))
 
+    def test_runtime_records_unknown_person_residual_without_minting(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        before_map = dict(self.tenant.pii_entity_map)
+        model_output = "[PERSON_1] is meeting Dana Whitfield"
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text=model_output, confirmed=True, reason="redacted"),
+            ) as checked,
+            patch(
+                "apps.pii.authoring._residual_summary",
+                return_value={"count": 1, "kinds": {"PERSON": 1}},
+            ),
+        ):
+            authored = author_text(
+                self.tenant,
+                model_output,
+                seam="test.runtime",
+                writer="runtime",
+                field="description",
+            )
+
+        self.assertEqual(authored.text, model_output)
+        self.assertEqual(authored.receipt["state"], "residual")
+        self.assertEqual(authored.receipt["residual_spans"], {"count": 1, "kinds": {"PERSON": 1}})
+        self.assertEqual(authored.receipt["writer"], "runtime")
+        self.assertNotIn("Dana Whitfield", repr(authored.receipt))
+        self.assertEqual(checked.call_args.kwargs["mint"], MINT_NEVER)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.pii_entity_map, before_map)
+
+    def test_runtime_clean_placeholder_space_text_stays_placeholder(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        model_output = "[PERSON_1] is on track"
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text=model_output, confirmed=True, reason="redacted"),
+            ),
+            patch("apps.pii.authoring._residual_summary", return_value={"count": 0, "kinds": {}}),
+        ):
+            authored = author_text(
+                self.tenant,
+                model_output,
+                seam="test.runtime",
+                writer="runtime",
+                field="description",
+            )
+
+        self.assertEqual(authored.text, model_output)
+        self.assertEqual(authored.receipt["state"], "placeholder")
+        self.assertNotIn("residual_spans", authored.receipt)
+
+    def test_flag_off_runtime_never_reaches_the_detector(self):
+        original = "Dana Whitfield is meeting Alice"
+        with (
+            patch("apps.pii.redactor._detect_pii") as detect,
+            patch("apps.pii.authoring._residual_summary") as residual,
+        ):
+            authored = author_text(
+                self.tenant,
+                original,
+                seam="test.flag-off",
+                writer="runtime",
+                field="description",
+            )
+
+        self.assertEqual(authored.text, original)
+        self.assertEqual(authored.receipt, {"state": "bypass", "writer": "runtime"})
+        detect.assert_not_called()
+        residual.assert_not_called()
+
     def test_redaction_error_uses_independent_known_value_path_and_marks_repair(self):
         self.tenant.layer1_placeholder_writes = True
         self.tenant.save(update_fields=["layer1_placeholder_writes"])
