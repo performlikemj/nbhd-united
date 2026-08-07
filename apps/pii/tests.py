@@ -1212,6 +1212,52 @@ class MintGuardUnitTest(TestCase):
         results = [DetectedEntity("PERSON", 0, len("Max Verstappen"), 0.98)]
         self.assertEqual(len(_filter_results(results, text, set())), 1)
 
+    def test_fleet_stoplist_drops_app_vocabulary_brands_and_interjections(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # One case per evidence family from the cross-tenant ignore analysis:
+        # template vocabulary (single + multi-token, incl. the hyphenated form
+        # that needs the "in" glue token), brands, interjection, food, group.
+        for text, etype in [
+            ("Calendar", "PERSON"),
+            ("Quick Wins", "PERSON"),
+            ("Morning Briefing", "PERSON"),
+            ("heartbeat check-in", "PERSON"),
+            ("evening check-in", "LOCATION"),
+            ("Google Calendar", "LOCATION"),
+            ("Gmail", "PERSON"),
+            ("Nvidia", "LOCATION"),
+            ("Hmm", "PERSON"),
+            ("gyoza", "PERSON"),
+            ("Houthis", "PERSON"),
+            ("NBHD", "PERSON"),
+        ]:
+            results = [DetectedEntity(etype, 0, len(text), 0.95)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
+    def test_demonym_guard_drops_nationality_adjectives(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        for text, etype in [("Japanese", "PERSON"), ("American", "LOCATION"), ("Korean", "PERSON")]:
+            results = [DetectedEntity(etype, 0, len(text), 0.95)]
+            self.assertEqual(_filter_results(results, text, set()), [], f"{text!r} should be dropped")
+
+    def test_fleet_stoplist_keeps_spans_carrying_a_real_name(self):
+        from apps.pii.redactor import DetectedEntity, _filter_results
+
+        # The all-tokens rule is what makes the fleet stoplist safe: one
+        # non-stoplisted token and the span is a name again. Mid-sentence and
+        # sentence-start forms both pinned.
+        for text, span in [
+            ("Quick Delgado", "Quick Delgado"),
+            ("Calendar Rodriguez", "Calendar Rodriguez"),
+            ("Japanese Yamamoto", "Japanese Yamamoto"),
+            ("Tell Morning Delgado I said hi", "Morning Delgado"),
+        ]:
+            start = text.index(span)
+            results = [DetectedEntity("PERSON", start, start + len(span), 0.95)]
+            self.assertEqual(len(_filter_results(results, text, set())), 1, f"{span!r} should survive")
+
     def test_date_like_guard_drops_iso_week_and_dates(self):
         from apps.pii.redactor import DetectedEntity, _filter_results
 

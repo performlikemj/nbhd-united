@@ -503,6 +503,89 @@ _COMMON_WORD_STOPLIST = frozenset(
         "bst",
         "ist",
         "aest",
+        # ---------------------------------------------------------------
+        # Fleet evidence (cross-tenant ignore analysis, 2026-08-08): words
+        # that two or more tenants explicitly marked "not PII" and that are
+        # implausible as a personal name. Name-SHAPED denies from the same
+        # data (max, mar, theo, la, moon, spark, claude) are deliberately
+        # absent — under-redacting a real name is the failure mode here.
+        # ---------------------------------------------------------------
+        # Assistant/app template vocabulary minted as PERSON (830 live
+        # "calendar" bindings fleet-wide, 345 "quick wins").
+        "nbhd",
+        "calendar",
+        "quick",
+        "wins",
+        "briefing",
+        "briefings",
+        "morning",
+        "evening",
+        "daily",
+        "weekly",
+        "status",
+        "schedule",
+        "lesson",
+        "lessons",
+        "email",
+        "background",
+        "complete",
+        "running",
+        "await",
+        "project",
+        "setup",
+        "weather",
+        "push",
+        "pull",
+        "heartbeat",
+        "check",
+        "checkin",
+        # Glue token so hyphenated template phrases collapse under the
+        # all-tokens rule ("heartbeat check-in" tokenizes to
+        # ['heartbeat', 'check', 'in']). Harmless on its own: a bare "in"
+        # is already dropped by the degenerate-span floor.
+        "in",
+        # Brands / products the model labels PERSON or LOCATION.
+        "gmail",
+        "google",
+        "youtube",
+        "telegram",
+        "fedex",
+        "nvidia",
+        "overcast",
+        "totemo",
+        "playoff",
+        "breezy",
+        "drizzle",
+        # Interjection / food / group nouns from the canary incident set.
+        "hmm",
+        "gyoza",
+        "houthis",
+    }
+)
+
+# Nationality adjectives the model tags PERSON or LOCATION when a user writes
+# about language practice, food, or news ("I practiced my Japanese today"). A
+# demonym is never a personal name, so these are safe fleet-wide. Kept in their
+# own constant rather than folded into the common-word set so the demonym policy
+# stays auditable and extendable on its own; it is consumed by the SAME
+# all-tokens-must-match rule, so "Japanese Yamamoto" still redacts.
+#
+# Deliberately absent: german, french, english, dutch, israel — each is also a
+# surname or given name in common use.
+_DEMONYM_STOPLIST = frozenset(
+    {
+        "japanese",
+        "american",
+        "chinese",
+        "korean",
+        "italian",
+        "spanish",
+        "canadian",
+        "australian",
+        "indian",
+        "russian",
+        "mexican",
+        "brazilian",
     }
 )
 
@@ -605,6 +688,47 @@ def _at_sentence_start(text: str, start: int) -> bool:
     return prefix == "" or prefix[-1] in ".!?…"
 
 
+# Tokens that stay stoplisted for DETECTION but must never drive a destructive
+# retire. Each is a real given/family name somewhere in the tenant base (Jan,
+# Jun, Mar/María del Mar, Sun 孫, Can) that only earned its stoplist slot as a
+# month/weekday abbreviation or an ops noun. Dropping a fresh detection for one
+# of these is recoverable — the user re-adds the contact. Retiring the binding
+# is not: it silently removes protection a user may have created by hand, so
+# ``is_never_a_name`` (the backfill predicate) refuses them.
+_RETIRE_EXEMPT_TOKENS = frozenset({"jan", "jun", "mar", "sun", "can"})
+
+
+def _is_fleet_stoplisted_token(token: str) -> bool:
+    """True for a token that is never a personal name on ANY tenant.
+
+    Single source of truth for the fleet stoplists (common words + demonyms).
+    The name-collision set is NOT consulted here: those words ARE real names and
+    are only suppressed positionally, by :func:`_is_common_word_span`.
+    """
+    return token in _COMMON_WORD_STOPLIST or token in _DEMONYM_STOPLIST
+
+
+def is_never_a_name(text: str) -> bool:
+    """True when EVERY alphabetic token of ``text`` is fleet-stoplisted.
+
+    The public form of the all-tokens rule, shared by the detection filter and
+    the ``retire_stoplisted_bindings`` backfill so the "what counts as junk"
+    decision can never drift between what we stop minting and what we retire.
+
+    Three properties the callers depend on: a span with any non-stoplisted token
+    is False ("Quick Delgado" is a name); a span with no a-z tokens at all is
+    False — which exempts CJK names, whose identifying signal the Latin tokenizer
+    cannot see; and :data:`_RETIRE_EXEMPT_TOKENS` is False, so the destructive
+    caller is strictly narrower than the detection filter.
+    """
+    tokens = _span_tokens(text.casefold())
+    if not tokens:
+        return False
+    if any(token in _RETIRE_EXEMPT_TOKENS for token in tokens):
+        return False
+    return all(_is_fleet_stoplisted_token(token) for token in tokens)
+
+
 def _is_common_word_span(matched_lower: str, at_sentence_start: bool) -> bool:
     """True when every token of a span is a stoplisted common word.
 
@@ -616,7 +740,7 @@ def _is_common_word_span(matched_lower: str, at_sentence_start: bool) -> bool:
     if not tokens:
         return False
     for token in tokens:
-        if token in _COMMON_WORD_STOPLIST:
+        if _is_fleet_stoplisted_token(token):
             continue
         if at_sentence_start and token in _NAME_COLLISION_STOPLIST:
             continue
