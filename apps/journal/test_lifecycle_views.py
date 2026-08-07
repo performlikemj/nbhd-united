@@ -161,7 +161,7 @@ class TaskGoalListCreateTests(TestCase):
         self.assertEqual(task.title, "Pay loan")
         self.assertEqual(
             task.pii_receipts["title"],
-            {"state": "bypass", "mode": "legacy-redact"},
+            {"state": "bypass", "mode": "legacy-redact", "writer": "owner"},
         )
 
     def test_flag_on_create_stores_placeholder_and_owner_receipt(self):
@@ -181,6 +181,11 @@ class TaskGoalListCreateTests(TestCase):
         self.assertEqual(task.title, "Call [PERSON_1]")
         self.assertEqual(resp.data["title"], "Call Alice")
         self.assertEqual(task.pii_receipts["title"]["state"], "placeholder")
+        self.assertEqual(task.pii_receipts["title"]["writer"], "owner")
+        self.assertEqual(
+            task.pii_receipts["title"]["redactions"],
+            [{"placeholder": "[PERSON_1]"}],
+        )
         self.assertEqual(
             resp.data["pii_receipts"]["title"]["redactions"],
             [{"placeholder": "[PERSON_1]", "value": "Alice"}],

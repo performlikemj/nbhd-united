@@ -43,8 +43,8 @@ class ExtractionPlaceholderAuthoringTests(TestCase):
         _approve_task(pending)
         task = Task.objects.get(tenant=pending.tenant)
         self.assertEqual(task.title, "Call Alice")
-        self.assertEqual(task.pii_receipts["title"], {"state": "bypass"})
-        self.assertEqual(task.pii_receipts["description"], {"state": "bypass"})
+        self.assertEqual(task.pii_receipts["title"], {"state": "bypass", "writer": "background"})
+        self.assertEqual(task.pii_receipts["description"], {"state": "bypass", "writer": "background"})
 
     def test_flag_on_stores_placeholder_and_receipt(self):
         pending = self._pending(enabled=True)
@@ -58,6 +58,7 @@ class ExtractionPlaceholderAuthoringTests(TestCase):
         self.assertEqual(task.title, "Call [PERSON_1]")
         self.assertEqual(task.pii_receipts["title"]["state"], "placeholder")
         self.assertEqual(task.pii_receipts["description"]["state"], "placeholder")
+        self.assertEqual(task.pii_receipts["title"]["writer"], "background")
 
     def test_near_limit_task_and_goal_titles_truncate_after_authoring_without_partial_token(self):
         raw_title = "x" * 250 + " Amy!"

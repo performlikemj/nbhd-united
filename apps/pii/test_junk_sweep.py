@@ -19,6 +19,7 @@ from django.test import TestCase
 from apps.journal.models import Document, DocumentChunk, Goal, PendingTaskAction, Task
 from apps.pii import junk_sweep
 from apps.pii.junk_sweep import classify_entry, sweep_all_tenants, sweep_tenant
+from apps.pii.store_registry import PlaceholderStore
 from apps.tenants.models import Tenant, User
 
 # 8 junk bindings spanning the audit's deterministic-junk classes, keyed to the
@@ -236,6 +237,71 @@ class SweepTenantTests(_TenantMixin, TestCase):
         # Cap below the junk count — only the first slice is examined.
         result = sweep_tenant(self.tenant, dry_run=True, max_entries=3)
         self.assertEqual(result["examined"], 3)
+
+
+class RegistryJsonPathHealTests(_TenantMixin, TestCase):
+    def test_json_path_heal_round_trip_rewrites_wildcard_leaves_and_receipt(self):
+        tenant = self._make_tenant(
+            username="json-heal",
+            entity_map={"[ACCOUNT_105]": {"name": "2026-05-30"}},
+        )
+        goal = Goal.objects.create(
+            tenant=tenant,
+            title="JSON carrier",
+            target={
+                "summary": "Due [ACCOUNT_105]",
+                "items": [
+                    {"note": "Plain [ACCOUNT_105]"},
+                    {"note": "Escaped \\[ACCOUNT_105\\]"},
+                ],
+                "unregistered": "Keep raw 2026-05-30",
+            },
+            pii_receipts={
+                "target": {
+                    "state": "placeholder",
+                    "redactions": [{"placeholder": "[ACCOUNT_105]"}],
+                }
+            },
+        )
+        synthetic = PlaceholderStore(
+            model_label="journal.Goal",
+            flat_fields=(),
+            json_paths=("target.summary", "target.items[].note"),
+            receipts_field="pii_receipts",
+        )
+
+        with patch("apps.pii.store_registry.registered_stores", return_value=(synthetic,)):
+            result = sweep_tenant(tenant)
+
+        goal.refresh_from_db()
+        tenant.refresh_from_db()
+        self.assertEqual(result["healed_rows"], 1)
+        self.assertEqual(goal.target["summary"], "Due 2026-05-30")
+        self.assertEqual(
+            goal.target["items"],
+            [{"note": "Plain 2026-05-30"}, {"note": "Escaped 2026-05-30"}],
+        )
+        self.assertEqual(goal.target["unregistered"], "Keep raw 2026-05-30")
+        self.assertEqual(goal.pii_receipts["target"]["redactions"], [])
+        self.assertNotIn("[ACCOUNT_105]", tenant.pii_entity_map)
+
+    def test_tombstoned_binding_is_never_healed_or_deleted(self):
+        placeholder = "[PERSON_999]"
+        tenant = self._make_tenant(
+            username="retired-heal",
+            entity_map={placeholder: {"name": "### machine text", "retired": True}},
+        )
+        goal = Goal.objects.create(tenant=tenant, title=f"Keep {placeholder}")
+
+        result = sweep_tenant(tenant)
+
+        goal.refresh_from_db()
+        tenant.refresh_from_db()
+        self.assertEqual(result["junk"], 0)
+        self.assertEqual(result["healed_rows"], 0)
+        self.assertEqual(result["deleted"], 0)
+        self.assertEqual(goal.title, f"Keep {placeholder}")
+        self.assertIn(placeholder, tenant.pii_entity_map)
 
 
 class SweepAllTenantsTests(_TenantMixin, TestCase):

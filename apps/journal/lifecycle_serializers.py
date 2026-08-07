@@ -22,6 +22,7 @@ class _RehydrateTitleDescriptionMixin:
     def to_representation(self, instance):
         data = super().to_representation(instance)
         if self.context.get("rehydrate"):
+            from apps.pii.authoring import resolve_receipt_values
             from apps.pii.redactor import rehydrate_for_tenant
 
             tenant = self.context.get("tenant") or getattr(instance, "tenant", None)
@@ -29,7 +30,10 @@ class _RehydrateTitleDescriptionMixin:
                 value = data.get(field)
                 if value:
                     data[field] = rehydrate_for_tenant(tenant, value)
-            data["pii_receipts"] = getattr(instance, "pii_receipts", {}) or {}
+            data["pii_receipts"] = resolve_receipt_values(
+                getattr(instance, "pii_receipts", {}) or {},
+                getattr(tenant, "pii_entity_map", None),
+            )
         return data
 
 

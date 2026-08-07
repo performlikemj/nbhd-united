@@ -34,7 +34,7 @@ class RuntimePlaceholderAuthoringTests(TestCase):
         task = Task.objects.get(id=response.json()["task"]["id"])
         self.assertEqual(task.title, "Alice task")  # serializer trims surrounding whitespace only
         self.assertEqual(task.description, "Alice desc")
-        self.assertEqual(task.pii_receipts["title"], {"state": "bypass"})
+        self.assertEqual(task.pii_receipts["title"], {"state": "bypass", "writer": "runtime"})
         self.assertNotIn("pii_receipts", response.json()["task"])
 
     def test_flag_on_create_patch_and_transition_stay_placeholder_space(self):
@@ -69,6 +69,7 @@ class RuntimePlaceholderAuthoringTests(TestCase):
         self.assertEqual(task.title, "Call [PERSON_1]")
         self.assertEqual(task.description, "Plan with [PERSON_1]")
         self.assertEqual(task.pii_receipts["title"]["state"], "placeholder")
+        self.assertEqual(task.pii_receipts["title"]["writer"], "runtime")
         self.assertEqual(task.status, Task.Status.DONE)
         self.assertEqual(transitioned.json()["task"]["title"], "Call [PERSON_1]")
         self.assertNotIn("pii_receipts", transitioned.json()["task"])

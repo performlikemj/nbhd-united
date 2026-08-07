@@ -9,6 +9,12 @@ from django.apps import apps
 
 @dataclass(frozen=True)
 class PlaceholderStore:
+    """One placeholder-bearing model surface.
+
+    ``json_paths`` use dotted paths beginning with the model JSONField name;
+    ``*``, ``[]``, and ``[*]`` fan out over mapping values or list items.
+    """
+
     model_label: str
     flat_fields: tuple[str, ...]
     json_paths: tuple[str, ...]

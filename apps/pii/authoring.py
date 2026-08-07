@@ -62,6 +62,54 @@ def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict[str,
     return out
 
 
+def receipt_placeholders(text: str) -> list[dict[str, str]]:
+    """Return placeholder-only receipt metadata in first-appearance order."""
+    if not text:
+        return []
+    out: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for match in _PLACEHOLDER_RE.finditer(text):
+        placeholder = f"[{match.group(1)}_{match.group(2)}]"
+        if placeholder in seen:
+            continue
+        seen.add(placeholder)
+        out.append({"placeholder": placeholder})
+    return out
+
+
+def resolve_receipt_values(receipts: Any, entity_map: dict | None) -> dict[str, Any]:
+    """Resolve new and legacy receipt shapes against the current entity map.
+
+    Persisted receipt values are never trusted: a renamed or tombstoned live
+    binding wins over an embedded W1c canary value, and a missing binding
+    resolves to ``None``.
+    """
+    if not isinstance(receipts, dict):
+        return {}
+    entity_map = entity_map or {}
+    resolved: dict[str, Any] = {}
+    for field, raw_receipt in receipts.items():
+        if not isinstance(raw_receipt, dict):
+            resolved[field] = raw_receipt
+            continue
+        receipt = dict(raw_receipt)
+        redactions = raw_receipt.get("redactions")
+        if isinstance(redactions, list):
+            next_redactions = []
+            for raw_item in redactions:
+                if not isinstance(raw_item, dict):
+                    next_redactions.append(raw_item)
+                    continue
+                item = dict(raw_item)
+                placeholder = item.get("placeholder")
+                if isinstance(placeholder, str):
+                    item["value"] = get_name(entity_map.get(placeholder)) or None
+                next_redactions.append(item)
+            receipt["redactions"] = next_redactions
+        resolved[field] = receipt
+    return resolved
+
+
 def truncate_placeholder_safe(text: str, max_len: int) -> str:
     """Truncate without leaving a partial ``[TYPE_N]`` placeholder token."""
     if max_len < 0:
@@ -72,6 +120,20 @@ def truncate_placeholder_safe(text: str, max_len: int) -> str:
         if match.start() < max_len < match.end():
             return text[: match.start()]
     return text[:max_len]
+
+
+def _registered_field_max_length(field: str) -> int | None:
+    """Return the strictest registered model limit for a flat text field."""
+    from apps.pii.store_registry import registered_stores
+
+    limits = []
+    for store in registered_stores():
+        if field not in store.flat_fields:
+            continue
+        max_length = getattr(store.model._meta.get_field(field), "max_length", None)
+        if max_length is not None:
+            limits.append(max_length)
+    return min(limits) if limits else None
 
 
 def _residual_summary(tenant, text: str) -> dict[str, Any]:
@@ -110,6 +172,40 @@ def _log_counter(*, tenant, seam: str, writer: str, field: str, state: str) -> N
         field,
         state,
     )
+
+
+def _finalize(
+    tenant,
+    text: str,
+    receipt: dict[str, Any],
+    *,
+    seam: str,
+    writer: WriterClass,
+    field: str,
+    checked: bool,
+) -> AuthoredText:
+    """Apply invariants shared by every authoring outcome before persistence."""
+    max_length = _registered_field_max_length(field)
+    if max_length is not None:
+        text = truncate_placeholder_safe(text, max_length)
+
+    receipt = dict(receipt)
+    receipt["writer"] = writer
+    if "redactions" in receipt:
+        receipt["redactions"] = receipt_placeholders(text)
+
+    state = receipt["state"]
+    _log_counter(tenant=tenant, seam=seam, writer=writer, field=field, state=state)
+    if checked:
+        from apps.pii.alerts import record_live_write_outcome
+
+        record_live_write_outcome(
+            tenant,
+            seam=seam,
+            writer=writer,
+            is_error=state == "unconfirmed",
+        )
+    return AuthoredText(text=text, receipt=receipt)
 
 
 def _redact_active_known_values(tenant, text: str, *, seam: str) -> str:
@@ -154,8 +250,15 @@ def author_text(
             receipt = {"state": "bypass", "mode": "legacy-redact"}
         else:
             receipt = {"state": "bypass"}
-        _log_counter(tenant=tenant, seam=seam, writer=writer, field=field, state="bypass")
-        return AuthoredText(text=text, receipt=receipt)
+        return _finalize(
+            tenant,
+            text,
+            receipt,
+            seam=seam,
+            writer=writer,
+            field=field,
+            checked=False,
+        )
 
     mint, allow_user_name = _WRITER_POLICIES[writer]
     try:
@@ -178,21 +281,42 @@ def author_text(
     reason = getattr(outcome, "reason", "redaction-error")
     if reason == "empty-input":
         receipt = {"state": "placeholder", "reason": reason, "redactions": []}
-        _log_counter(tenant=tenant, seam=seam, writer=writer, field=field, state="placeholder")
-        return AuthoredText(text=text, receipt=receipt)
+        return _finalize(
+            tenant,
+            text,
+            receipt,
+            seam=seam,
+            writer=writer,
+            field=field,
+            checked=False,
+        )
     if reason == "redaction-disabled":
         receipt = {"state": "bypass", "reason": reason}
-        _log_counter(tenant=tenant, seam=seam, writer=writer, field=field, state="bypass")
-        return AuthoredText(text=text, receipt=receipt)
+        return _finalize(
+            tenant,
+            text,
+            receipt,
+            seam=seam,
+            writer=writer,
+            field=field,
+            checked=False,
+        )
     if outcome is None or not outcome.confirmed:
         stored = _redact_active_known_values(tenant, text, seam=f"{seam}:known-fallback")
         receipt = {
             "state": "unconfirmed",
             "reason": "redaction-error",
-            "redactions": placeholder_redactions(stored, getattr(tenant, "pii_entity_map", None)),
+            "redactions": [],
         }
-        _log_counter(tenant=tenant, seam=seam, writer=writer, field=field, state="unconfirmed")
-        return AuthoredText(text=stored, receipt=receipt)
+        return _finalize(
+            tenant,
+            stored,
+            receipt,
+            seam=seam,
+            writer=writer,
+            field=field,
+            checked=True,
+        )
 
     stored = outcome.text
     if writer in {"runtime", "background"}:
@@ -200,7 +324,7 @@ def author_text(
 
     receipt: dict[str, Any] = {
         "state": "placeholder",
-        "redactions": placeholder_redactions(stored, getattr(tenant, "pii_entity_map", None)),
+        "redactions": [],
     }
     if writer == "background":
         try:
@@ -216,12 +340,19 @@ def author_text(
             receipt = {
                 "state": "unconfirmed",
                 "reason": "redaction-error",
-                "redactions": placeholder_redactions(stored, getattr(tenant, "pii_entity_map", None)),
+                "redactions": [],
             }
         else:
             if residual_spans["count"]:
                 receipt["state"] = "residual"
                 receipt["residual_spans"] = residual_spans
 
-    _log_counter(tenant=tenant, seam=seam, writer=writer, field=field, state=receipt["state"])
-    return AuthoredText(text=stored, receipt=receipt)
+    return _finalize(
+        tenant,
+        stored,
+        receipt,
+        seam=seam,
+        writer=writer,
+        field=field,
+        checked=True,
+    )

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 
 from django.db.models import Case, IntegerField, Q, Value, When
 
+from apps.pii.alerts import send_rate_alert
 from apps.pii.authoring import author_text
 from apps.pii.store_registry import registered_stores
 
@@ -14,8 +14,6 @@ logger = logging.getLogger(__name__)
 
 REPAIR_STATES = frozenset({"unconfirmed", "residual"})
 DEFAULT_BATCH_SIZE = 200
-_ALERT_MIN_ATTEMPTS = 20
-_ALERT_COOLDOWN = timedelta(hours=24)
 
 
 def _repair_query(fields: tuple[str, ...], receipts_field: str) -> Q:
@@ -34,21 +32,14 @@ def _receipt_state_query(fields: tuple[str, ...], receipts_field: str, state: st
 
 def _check_rate_alert(tenant, *, attempts: int, count: int, kind: str) -> bool:
     """Emit a metadata-only >1% alert through the transcript alert gate."""
-    if attempts < _ALERT_MIN_ATTEMPTS or count * 100 <= attempts:
-        return False
-
-    from apps.transcripts.alerts import _send_alert
-
-    return _send_alert(
-        fingerprint=f"pii-authoring-{kind}-rate:{tenant.id}",
-        cooldown=_ALERT_COOLDOWN,
-        subject=f"[PII] Layer-1 {kind} rate above 1%",
-        body=(
-            f"Tenant ID: {tenant.id}\n"
-            "Window: current bounded repair sweep\n"
-            f"Attempts: {attempts}\n"
-            f"{kind.title()} outcomes: {count}\n"
-        ),
+    return send_rate_alert(
+        tenant,
+        attempts=attempts,
+        count=count,
+        kind=kind,
+        fingerprint_scope=None,
+        window="current bounded repair sweep",
+        counters=(("Attempts", attempts), (f"{kind.title()} outcomes", count)),
     )
 
 

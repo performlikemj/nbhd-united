@@ -6,7 +6,7 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
-from apps.pii.authoring import author_text, truncate_placeholder_safe
+from apps.pii.authoring import author_text, resolve_receipt_values, truncate_placeholder_safe
 from apps.pii.redactor import MINT_ALL, MINT_NEVER, MINT_VALIDATED, RedactionOutcome
 from apps.tenants.models import Tenant, User
 
@@ -38,7 +38,10 @@ class AuthorTextTests(TestCase):
             )
 
         self.assertEqual(authored.text, "  [PERSON_1]\n[PERSON_999]  ")
-        self.assertEqual(authored.receipt, {"state": "bypass", "mode": "legacy-redact"})
+        self.assertEqual(
+            authored.receipt,
+            {"state": "bypass", "mode": "legacy-redact", "writer": "owner"},
+        )
         checked.assert_not_called()
         known_values.assert_not_called()
         residual.assert_not_called()
@@ -63,7 +66,7 @@ class AuthorTextTests(TestCase):
                         field="title",
                     )
                     self.assertEqual(authored.text, original)
-                    self.assertEqual(authored.receipt, {"state": "bypass"})
+                    self.assertEqual(authored.receipt, {"state": "bypass", "writer": writer})
 
         legacy.assert_not_called()
         checked.assert_not_called()
@@ -93,9 +96,10 @@ class AuthorTextTests(TestCase):
                 ("background", MINT_VALIDATED, False),
             ):
                 with self.subTest(writer=writer):
-                    author_text(self.tenant, "text", seam="test.policy", writer=writer, field="title")
+                    authored = author_text(self.tenant, "text", seam="test.policy", writer=writer, field="title")
                     self.assertEqual(checked.call_args.kwargs["mint"], mint)
                     self.assertEqual(checked.call_args.kwargs["allow_user_name"], allow_user_name)
+                    self.assertEqual(authored.receipt["writer"], writer)
 
     def test_background_records_unknown_person_residual_without_value(self):
         self.tenant.layer1_placeholder_writes = True
@@ -147,8 +151,75 @@ class AuthorTextTests(TestCase):
         self.assertEqual(authored.receipt["reason"], "redaction-error")
         self.assertEqual(
             authored.receipt["redactions"],
-            [{"placeholder": "[PERSON_1]", "value": "Alice"}],
+            [{"placeholder": "[PERSON_1]"}],
         )
+
+    def test_owner_receipt_resolution_accepts_both_shapes_and_prefers_live_map(self):
+        receipts = {
+            "legacy": {
+                "state": "placeholder",
+                "redactions": [{"placeholder": "[PERSON_1]", "value": "Stale Alice"}],
+            },
+            "current": {
+                "state": "placeholder",
+                "redactions": [{"placeholder": "[PERSON_1]"}],
+            },
+        }
+
+        live_map = {"[PERSON_1]": {"name": "Renamed Alice", "retired": True}}
+        resolved = resolve_receipt_values(receipts, live_map)
+
+        expected = [{"placeholder": "[PERSON_1]", "value": "Renamed Alice"}]
+        self.assertEqual(resolved["legacy"]["redactions"], expected)
+        self.assertEqual(resolved["current"]["redactions"], expected)
+
+    def test_authoring_centrally_truncates_registered_charfield_without_splitting_placeholder(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        poison = "x" * 250 + "[PERSON_123456789]" + "tail"
+        with patch(
+            "apps.pii.authoring.redact_user_message_checked",
+            return_value=RedactionOutcome(text=poison, confirmed=True, reason="redacted"),
+        ):
+            authored = author_text(
+                self.tenant,
+                "safe source",
+                seam="test.truncate",
+                writer="owner",
+                field="title",
+            )
+
+        self.assertEqual(authored.text, "x" * 250)
+        self.assertLessEqual(len(authored.text), 256)
+        self.assertNotIn("[PERSON_", authored.text)
+        self.assertEqual(authored.receipt["redactions"], [])
+
+    def test_live_write_error_rate_fires_metadata_only_alert(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        outcomes = [RedactionOutcome(text="clean", confirmed=True, reason="redacted")] * 19
+        outcomes.append(RedactionOutcome(text="private Alice", confirmed=False, reason="redaction-error"))
+
+        with (
+            patch("apps.pii.authoring.redact_user_message_checked", side_effect=outcomes),
+            patch("apps.transcripts.alerts._send_alert", return_value=True) as send_alert,
+        ):
+            for _ in range(20):
+                author_text(
+                    self.tenant,
+                    "private Alice",
+                    seam="test.live-write",
+                    writer="owner",
+                    field="description",
+                )
+
+        send_alert.assert_called_once()
+        body = send_alert.call_args.kwargs["body"]
+        self.assertIn("Seam: test.live-write", body)
+        self.assertIn("Writer class: owner", body)
+        self.assertIn("Writer attempts: 20", body)
+        self.assertIn("Writer errors: 1", body)
+        self.assertNotIn("private Alice", body)
 
     def test_residual_detector_error_keeps_already_redacted_output(self):
         self.tenant.layer1_placeholder_writes = True
@@ -183,23 +254,25 @@ class AuthorTextTests(TestCase):
             (RedactionOutcome(text="", confirmed=False, reason="empty-input"), "placeholder"),
             (RedactionOutcome(text="raw", confirmed=False, reason="redaction-disabled"), "bypass"),
         )
-        for outcome, expected_state in outcomes:
-            with (
-                self.subTest(reason=outcome.reason),
-                patch(
-                    "apps.pii.authoring.redact_user_message_checked",
-                    return_value=outcome,
-                ),
-            ):
-                authored = author_text(
-                    self.tenant,
-                    outcome.text,
-                    seam="test.non-error",
-                    writer="owner",
-                    field="description",
-                )
-                self.assertEqual(authored.receipt["state"], expected_state)
-                self.assertNotEqual(authored.receipt["state"], "unconfirmed")
+        with patch("apps.pii.alerts.record_live_write_outcome") as record_live:
+            for outcome, expected_state in outcomes:
+                with (
+                    self.subTest(reason=outcome.reason),
+                    patch(
+                        "apps.pii.authoring.redact_user_message_checked",
+                        return_value=outcome,
+                    ),
+                ):
+                    authored = author_text(
+                        self.tenant,
+                        outcome.text,
+                        seam="test.non-error",
+                        writer="owner",
+                        field="description",
+                    )
+                    self.assertEqual(authored.receipt["state"], expected_state)
+                    self.assertNotEqual(authored.receipt["state"], "unconfirmed")
+        record_live.assert_not_called()
 
     def test_management_command_toggles_flag(self):
         out = StringIO()

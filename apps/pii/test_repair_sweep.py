@@ -8,6 +8,7 @@ from django.test import TestCase
 
 from apps.journal.models import PendingTaskAction, Task
 from apps.pii.authoring import AuthoredText
+from apps.pii.redactor import RedactionOutcome
 from apps.pii.repair_sweep import _check_rate_alert, repair_tenant
 from apps.tenants.models import Tenant, User
 
@@ -129,6 +130,33 @@ class RepairSweepTests(TestCase):
         self.assertEqual(result["fields_repaired"], 1)
         self.assertEqual(poison.title, "poison")
         self.assertEqual(good.title, "fixed good")
+
+    def test_reauthor_truncation_prevents_poison_row_from_wedging_sweep(self):
+        task = Task.objects.create(
+            tenant=self.tenant,
+            title="repair me",
+            pii_receipts={"title": {"state": "unconfirmed"}},
+        )
+        over_limit = "x" * 250 + "[PERSON_123456789]" + "tail"
+        with (
+            patch(
+                "apps.pii.authoring.redact_user_message_checked",
+                return_value=RedactionOutcome(text=over_limit, confirmed=True, reason="redacted"),
+            ),
+            patch("apps.pii.authoring._residual_summary", return_value={"count": 0, "kinds": {}}),
+            patch("apps.pii.alerts.record_live_write_outcome"),
+        ):
+            first = repair_tenant(self.tenant, alert=False)
+            second = repair_tenant(self.tenant, alert=False)
+
+        task.refresh_from_db()
+        self.assertEqual(task.title, "x" * 250)
+        self.assertLessEqual(len(task.title), Task._meta.get_field("title").max_length)
+        self.assertNotIn("[PERSON_", task.title)
+        self.assertEqual(task.pii_receipts["title"]["writer"], "background")
+        self.assertEqual(first["errors"], 0)
+        self.assertEqual(first["fields_repaired"], 1)
+        self.assertEqual(second["fields_attempted"], 0)
 
     def test_synthetic_error_rate_above_one_percent_fires_metadata_only_alert(self):
         with patch("apps.transcripts.alerts._send_alert", return_value=True) as send_alert:
