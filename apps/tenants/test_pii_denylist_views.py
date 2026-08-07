@@ -252,7 +252,7 @@ class PIIDenylistBulkViewTests(TestCase):
             format="json",
         )
         self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.json(), {"added": [], "skipped": []})
+        self.assertEqual(resp.json(), {"added": [], "skipped": [], "retired": 0})
         tenant.refresh_from_db()
         self.assertEqual(set(tenant.pii_denylist.keys()), {"existing"})
 
