@@ -293,11 +293,11 @@ def sweep_tenant(tenant: Any, *, dry_run: bool = False, max_entries: int = DEFAU
 def sweep_all_tenants(
     *, dry_run: bool = False, max_entries: int = DEFAULT_MAX_ENTRIES, max_tenants: int | None = None
 ) -> dict[str, int]:
-    """Sweep every active tenant that has any bindings, with per-tenant error
-    isolation — one tenant's failure is logged and the sweep continues.
+    """Sweep active tenants, skipping empty maps in Python, with per-tenant
+    error isolation — one tenant's failure is logged and the sweep continues.
 
-    Mirrors ``pii_arbiter_task``'s iteration (only-fields projection, empty-map
-    exclusion, ordered by id). Returns fleet totals for the cron log.
+    Keeps the bounded, ordered ``only``-fields iteration used by
+    ``pii_arbiter_task``. Returns fleet totals for the cron log.
     """
     from apps.tenants.models import Tenant
 
@@ -314,16 +314,16 @@ def sweep_all_tenants(
     }
 
     candidate_tenants = (
-        Tenant.objects.filter(status=Tenant.Status.ACTIVE)
-        .exclude(pii_entity_map={})
-        .only("id", "pii_entity_map", "pii_denylist")
-        .order_by("id")
+        Tenant.objects.filter(status=Tenant.Status.ACTIVE).only("id", "pii_entity_map", "pii_denylist").order_by("id")
     )
     if max_tenants is not None:
         candidate_tenants = candidate_tenants[:max_tenants]
 
     for tenant in candidate_tenants:
         totals["tenants_seen"] += 1
+        if not (tenant.pii_entity_map or {}):
+            totals["skipped"] += 1
+            continue
         try:
             result = sweep_tenant(tenant, dry_run=dry_run, max_entries=max_entries)
         except Exception:
