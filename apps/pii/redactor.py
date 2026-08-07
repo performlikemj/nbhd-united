@@ -578,9 +578,10 @@ _FLEET_WORD_STOPLIST = frozenset(
 # "Evening" and "Breezy" are all real surnames, so a lone span carrying one must
 # keep redacting while the template phrase it usually appears in does not.
 #
-# Matching is on the NORMALIZED token string (``_phrase_key``), not the raw
-# span, so punctuation and markdown noise still hit: "Quick Wins\n-" and
-# "evening check-in" both normalize onto an entry here.
+# Matching is on the span's ``_span_tokens`` joined by single spaces, not on the
+# raw span, so punctuation and markdown noise still hit: "Quick Wins\n-" and
+# "evening check-in" both normalize onto an entry here. Entries must therefore
+# be written in that normalized form (see "evening check in" below).
 _FLEET_PHRASE_STOPLIST = frozenset(
     {
         "quick wins",
@@ -725,16 +726,6 @@ def _at_sentence_start(text: str, start: int) -> bool:
 # is not: it silently removes protection a user may have created by hand, so
 # ``is_never_a_name`` (the backfill predicate) refuses them.
 _RETIRE_EXEMPT_TOKENS = frozenset({"jan", "jun", "mar", "sun", "can", "thu", "mon", "main", "jul", "sep"})
-
-
-def _phrase_key(text: str) -> str:
-    """Normalized token string used for whole-span phrase matching.
-
-    "Quick Wins\\n-" and "evening check-in" collapse to "quick wins" and
-    "evening check in", so a template phrase still matches through markdown
-    noise, hyphens, and stray punctuation.
-    """
-    return " ".join(_span_tokens(text.casefold()))
 
 
 def _is_fleet_stoplisted_token(token: str) -> bool:
