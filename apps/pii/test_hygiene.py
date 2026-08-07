@@ -40,6 +40,11 @@ class IsJunkSpanTest(SimpleTestCase):
         ("list_bold_timestamp", "- **06:02**", "PERSON", "structure"),
         ("heading_quick_wins", "## Quick Wins", "PERSON", "structure"),
         ("multiline", "Quick Wins\n- something", "PERSON", "structure"),
+        # The exact fleet-audit fragment shape: 239 live "quick wins\n-"
+        # PERSON bindings across tenants. Newline and list bullet each drop
+        # the span on their own, so this class dies regardless of vocabulary.
+        ("quick_wins_bullet_reply", "Quick Wins\n- reply", "PERSON", "structure"),
+        ("leading_bullet", "- reply to the note", "PERSON", "structure"),
         ("bold_marker", "**Neighbor**", "PERSON", "structure"),
         ("hr_rule", "Section ----", "LOCATION", "structure"),
         ("pipe_row", "Mon | Tue | Wed", "LOCATION", "structure"),

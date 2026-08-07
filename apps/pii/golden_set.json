@@ -114,6 +114,59 @@
     "expect": "clean"
   },
   {
+    "id": "vocab-001",
+    "pillar": "vocab",
+    "text": "Add gyoza to the list",
+    "expect": "clean"
+  },
+  {
+    "id": "vocab-002",
+    "pillar": "vocab",
+    "text": "Hmm let me think",
+    "expect": "clean"
+  },
+  {
+    "id": "vocab-003",
+    "pillar": "vocab",
+    "text": "My morning briefing was late",
+    "expect": "clean"
+  },
+  {
+    "id": "vocab-004",
+    "pillar": "vocab",
+    "text": "Check my Google Calendar",
+    "expect": "clean"
+  },
+  {
+    "id": "vocab-005",
+    "pillar": "vocab",
+    "text": "The quick wins section is empty",
+    "expect": "clean"
+  },
+  {
+    "id": "vocab-006",
+    "pillar": "vocab",
+    "text": "I practiced my Japanese today",
+    "expect": "clean"
+  },
+  {
+    "id": "vocab-007",
+    "pillar": "vocab",
+    "text": "NBHD keeps improving",
+    "expect": "clean"
+  },
+  {
+    "id": "control-090",
+    "pillar": "control",
+    "text": "Mark Quick called about the lease",
+    "expect": [
+      {
+        "span": "Mark Quick",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
     "id": "control-001",
     "pillar": "control",
     "text": "Email my coach at jordan.rivera@example.com about the deload.",
