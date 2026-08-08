@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from apps.router.models import AppChatMessage, ChatThread, PendingMessage, RuntimeWriteActivity
 from apps.router.pending_queue import (
+    _dropped_retry_enabled,
     drain_pending_messages_for_tenant_task,
     dropped_retry_dedup_id,
     dropped_retry_health_dedup_id,
@@ -56,6 +57,9 @@ class DroppedAppTurnRetryTest(TestCase):
             is_main=True,
             title="Main",
         )
+        retry_gate = override_settings(RETRY_DROPPED_TENANT_IDS=str(self.tenant.id))
+        retry_gate.enable()
+        self.addCleanup(retry_gate.disable)
 
     def _pair(
         self,
@@ -223,6 +227,45 @@ class DroppedAppTurnRetryTest(TestCase):
                 self.assertFalse(any(call.args[0] == "retry_dropped_app_turn" for call in publish.call_args_list))
                 publish.reset_mock()
         self.assertEqual(notify_error.call_count, 2)
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    @patch("apps.cron.publish.publish_task")
+    def test_drop_older_than_thirty_seconds_uses_standard_notify(self, publish, notify_error):
+        turn, _ = self._pair("old-drop")
+        AppChatMessage.objects.filter(id=turn.id).update(created_at=timezone.now() - timedelta(seconds=31))
+
+        self._drop()
+
+        turn.refresh_from_db()
+        self.assertIsNone(turn.retried_at)
+        self.assertFalse(any(call.args[0] == "retry_dropped_app_turn" for call in publish.call_args_list))
+        notify_error.assert_called_once_with(self.tenant, ["old-drop"])
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    @patch("apps.cron.publish.publish_task")
+    def test_ungated_tenant_uses_standard_notify(self, publish, notify_error):
+        turn, _ = self._pair("ungated")
+
+        with (
+            override_settings(RETRY_DROPPED_TENANT_IDS="00000000-0000-0000-0000-000000000000"),
+            self.assertLogs("apps.router.pending_queue", level="INFO") as logs,
+        ):
+            self._drop()
+
+        turn.refresh_from_db()
+        self.assertIsNone(turn.retried_at)
+        self.assertFalse(any(call.args[0] == "retry_dropped_app_turn" for call in publish.call_args_list))
+        notify_error.assert_called_once_with(self.tenant, ["ungated"])
+        self.assertTrue(any("is not in RETRY_DROPPED_TENANT_IDS" in record.getMessage() for record in logs.records))
+
+    def test_retry_gate_parsing_is_empty_fail_closed_and_whitespace_case_safe(self):
+        for raw in ("", "  , \t ,"):
+            with self.subTest(raw=raw), override_settings(RETRY_DROPPED_TENANT_IDS=raw):
+                self.assertFalse(_dropped_retry_enabled(self.tenant))
+
+        raw = f" 00000000-0000-0000-0000-000000000000, {str(self.tenant.id).upper()} , "
+        with override_settings(RETRY_DROPPED_TENANT_IDS=raw):
+            self.assertTrue(_dropped_retry_enabled(self.tenant))
 
     @patch("apps.router.push_views.notify_app_reply_error")
     @patch("apps.cron.publish.publish_task")
@@ -454,6 +497,9 @@ class DroppedAppTurnRetryConcurrencyTest(TransactionTestCase):
             status=Tenant.Status.ACTIVE,
             container_fqdn="oc-retry-race.example.com",
         )
+        retry_gate = override_settings(RETRY_DROPPED_TENANT_IDS=str(self.tenant.id))
+        retry_gate.enable()
+        self.addCleanup(retry_gate.disable)
         self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
         now = timezone.now()
         self.turn = AppChatMessage.objects.create(

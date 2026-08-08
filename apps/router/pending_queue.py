@@ -91,6 +91,12 @@ _DRAIN_PUBLISH_RETRIES = 3
 _DROPPED_RETRY_DELAY_SECONDS = 60
 _DROPPED_RETRY_HEALTH_DELAY_SECONDS = 120
 
+# Covers the observed container-kill-at-turn-start class (for example, the
+# 19:40:52→19:41:09 incident). A completed model round-trip plus raw cron.add
+# inside 30 seconds is implausible; the residual double-cron risk in this bound
+# is accepted until the deferred wrapping-plugin guard lands.
+_DROPPED_RETRY_MAX_DROP_AGE_SECONDS = 30
+
 # Narration is only corroborating evidence: exact ``thinking`` is required,
 # while the control plane's runtime-write record is authoritative for mutations.
 _DROPPED_RETRY_SAFE_PHASE = "thinking"
@@ -1033,16 +1039,38 @@ def _runtime_write_in_retry_window(turn: AppChatMessage, dropped_stamped_at) -> 
     ).exists()
 
 
+def _dropped_retry_enabled(tenant: Tenant) -> bool:
+    """Whether the fail-closed dropped-turn retry canary includes ``tenant``."""
+    raw = str(getattr(settings, "RETRY_DROPPED_TENANT_IDS", "") or "")
+    allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if not allowed:
+        return False
+    if str(tenant.id).lower() in allowed:
+        return True
+    logger.info(
+        "retry_dropped: tenant %s is not in RETRY_DROPPED_TENANT_IDS (%d id(s) configured) — no retry",
+        str(tenant.id)[:8],
+        len(allowed),
+    )
+    return False
+
+
 def _is_silent_dropped_retry_candidate(turn: AppChatMessage, error: str, *, dropped_stamped_at) -> bool:
-    """Conservative eligibility predicate, evaluated before terminalizing."""
+    """Conservative enqueue predicate, evaluated before terminalizing."""
+    # Four safety legs bound the accepted raw-cron residual: canary gate,
+    # exact thinking phase, no authoritative runtime write, and drop age at
+    # most 30 seconds. Follow-up guard lane: apps/cron/gateway_client.py's
+    # deferred wrapping-plugin guard for OC-native raw cron.add.
     return bool(
         error == "dropped"
+        and _dropped_retry_enabled(turn.tenant)
         and turn.source == AppChatMessage.Source.TENANT
         and turn.retried_at is None
         and turn.reply_text == ""
         and turn.partial_text == ""
         and turn.phase == _DROPPED_RETRY_SAFE_PHASE
         and not _runtime_write_in_retry_window(turn, dropped_stamped_at)
+        and (dropped_stamped_at - turn.created_at).total_seconds() <= _DROPPED_RETRY_MAX_DROP_AGE_SECONDS
         and not _app_turn_has_newer_message(turn)
     )
 
