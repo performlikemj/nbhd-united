@@ -7,7 +7,6 @@ from apps.tenants.services import create_tenant
 from .constants import (
     ANTHROPIC_OPUS_MODEL,
     ANTHROPIC_SONNET_MODEL,
-    DEEPSEEK_FLASH_MODEL,
     DEEPSEEK_MODEL,
     MINIMAX_MODEL,
 )
@@ -182,7 +181,7 @@ class ResolveTenantPrimaryModelTest(TestCase):
         self.tenant.applied_model = ""
         self.tenant.preferred_model = ""
         self.tenant.save()
-        self.assertEqual(resolve_tenant_primary_model(self.tenant), DEEPSEEK_FLASH_MODEL)
+        self.assertEqual(resolve_tenant_primary_model(self.tenant), DEEPSEEK_MODEL)
 
 
 class ResolveModelForAttributionTest(TestCase):
