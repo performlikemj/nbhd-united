@@ -300,10 +300,21 @@ def author_text(
         raise ValueError(f"unsupported writer class: {writer!r}")
 
     if not getattr(tenant, "layer1_placeholder_writes", False):
+        source_text = None
         if writer == "owner":
+            # The legacy redactor substitutes placeholders, so this branch was
+            # never byte-identical to its input and it grows text the same way
+            # the checked path does — a short name becoming ``[PERSON_12]`` can
+            # push a title past its column and 500 on the insert. It gets the
+            # same growth-only cap: ``source_text`` opts in, so text the caller
+            # sent over the limit already is still left alone for serializer
+            # validation to answer with a 400.
+            source_text = text
             text = redact_user_message(text, tenant)
             receipt = {"state": "bypass", "mode": "legacy-redact"}
         else:
+            # Runtime/background flag-off stays a pure passthrough, length
+            # included — a bypass must never truncate.
             receipt = {"state": "bypass"}
         return _finalize(
             tenant,
@@ -314,6 +325,8 @@ def author_text(
             field=field,
             checked=False,
             live=live,
+            source_text=source_text,
+            model_label=model_label,
         )
 
     mint, allow_user_name = _WRITER_POLICIES[writer]

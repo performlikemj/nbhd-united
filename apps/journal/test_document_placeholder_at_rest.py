@@ -26,7 +26,8 @@ from unittest.mock import patch
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from apps.journal.document_authoring import merge_field_receipt
+from apps.journal.document_authoring import as_fts_phrase, merge_field_receipt
+from apps.journal.document_views import _default_markdown
 from apps.journal.models import Document, DocumentChunk, DocumentIngestion, DocumentIngestionArtifact
 from apps.tenants.models import Tenant, User
 from apps.tenants.test_utils import seed_internal_key
@@ -218,6 +219,59 @@ class OwnerDocumentWriteFlagOffTests(_DocumentPiiBase):
             doc.pii_receipts["markdown"],
             {"state": "bypass", "mode": "legacy-redact", "writer": "owner"},
         )
+
+    def test_default_body_is_a_byte_identical_passthrough(self):
+        """A4: creating a daily note runs NO detection while the flag is off.
+
+        The default body is authored as BACKGROUND, not owner. Owner would mean
+        the legacy redactor here — real detection and real minting on a path
+        that had neither before P3, on every first touch of every daily note.
+        """
+        template = _default_markdown("daily", "2026-08-08", tenant=self.tenant)
+        before_map = dict(self.tenant.pii_entity_map)
+
+        with patch("apps.pii.redactor._detect_pii") as detect:
+            resp = self.client.post(
+                "/api/v1/journal/documents/daily/2026-08-08/append/",
+                {"content": "note", "time": "09:00"},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 201)
+        doc = Document.objects.get(tenant=self.tenant, kind="daily", slug="2026-08-08")
+        # The template survives byte-for-byte at the head of the column.
+        self.assertTrue(doc.markdown.startswith(template.rstrip()))
+        self.assertEqual(doc.pii_receipts["markdown"]["state"], "bypass")
+        # The DEFAULT BODY never reached the detector. The appended fragment
+        # does — owner writes redacted before P3 and A4 keeps that — so this
+        # asserts on the arguments rather than the call count.
+        detected_texts = [call.args[0] for call in detect.call_args_list if call.args]
+        self.assertNotIn(template, detected_texts)
+        self.assertEqual(detected_texts, ["note"])
+        # And nothing was minted from the template either.
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.pii_entity_map, before_map)
+
+    def test_long_owner_title_still_fits_its_column_after_legacy_redaction(self):
+        """Legacy redaction grows text too — "Alice" (5) → "[PERSON_1]" (10).
+
+        The flag-off owner branch was passing the grown string straight to a
+        CharField(256) and 500ing on the insert.
+        """
+        title = ("Alice " * 41).strip()
+        self.assertLessEqual(len(title), 256)
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            resp = self.client.post(
+                "/api/v1/journal/documents/",
+                {"kind": "project", "slug": "longoff", "title": title},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 201)
+        doc = Document.objects.get(tenant=self.tenant, kind="project", slug="longoff")
+        self.assertLessEqual(len(doc.title), 256)
+        self.assertNotIn("[PERSON_", doc.title.split("]")[-1])
 
     def test_post_create_gets_the_same_legacy_redaction_as_patch(self):
         """The POST fix is deliberately unconditional.
@@ -581,6 +635,50 @@ class OwnerDocumentReadTests(_DocumentPiiBase):
         self.assertEqual(doc.markdown, "[PERSON_1] lives next door")
         self.assertEqual(resp.data["markdown"], "Alice lives next door")
 
+    def test_memory_round_trip_preserves_a_tombstoned_binding(self):
+        """The memory editor renders what it will be handed back to save.
+
+        A retired binding rehydrated here would come back as a real name on
+        save with nothing left to substitute it — retirement removes the value
+        from the known-value path — so the owner DELETING an entity would be the
+        one action that writes its name back in plaintext. Active bindings
+        rehydrate; a tombstoned one stays a literal token and round-trips
+        byte-for-byte.
+        """
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {"name": "Alice"},
+            "[PERSON_2]": {"name": "Bob", "retired": True},
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="memory",
+            slug="long-term",
+            title="Memory",
+            markdown="[PERSON_1] knows [PERSON_2]",
+        )
+        map_before = dict(self.tenant.pii_entity_map)
+
+        served = self.client.get("/api/v1/journal/memory/").data["markdown"]
+        # Active rehydrated, tombstoned left as the literal token.
+        self.assertEqual(served, "Alice knows [PERSON_2]")
+
+        with patch("apps.pii.redactor._detect_pii", return_value=[]):
+            put = self.client.put("/api/v1/journal/memory/", {"markdown": served}, format="json")
+        self.assertEqual(put.status_code, 200)
+
+        doc = Document.objects.get(tenant=self.tenant, kind="memory", slug="long-term")
+        self.tenant.refresh_from_db()
+        # 1. Nothing raw at rest — neither the active name nor the retired one.
+        self.assertEqual(doc.markdown, "[PERSON_1] knows [PERSON_2]")
+        self.assertNotIn("Alice", doc.markdown)
+        self.assertNotIn("Bob", doc.markdown)
+        # 2. No fresh mint: the map is byte-identical, same binding count.
+        self.assertEqual(self.tenant.pii_entity_map, map_before)
+        self.assertEqual(len(self.tenant.pii_entity_map), 2)
+        # 3. The tombstone survived the round trip as a tombstone.
+        self.assertTrue(self.tenant.pii_entity_map["[PERSON_2]"]["retired"])
+
     def test_detail_list_today_and_sidebar_all_carry_receipts(self):
         self._make_doc()
 
@@ -664,6 +762,72 @@ class DocumentSearchVariantTests(_DocumentPiiBase):
         # that appears nowhere in the stored body.
         self.assertIn("[PERSON_1]", resp.data["results"][0]["snippet"])
 
+    def test_fts_does_not_match_a_different_persons_placeholder(self):
+        """Postgres lexes ``[PERSON_4]`` into ``person`` + ``4`` and ANDs them.
+
+        Unquoted, a query variant for [PERSON_4] matches any document holding
+        SOME ``[PERSON_…]`` token and SOME ``…_4`` token anywhere — a different
+        person entirely. Quoting each token makes it an adjacency phrase.
+        """
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {"name": "Alice"},
+            "[PERSON_4]": {"name": "Dana"},
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+        # Neighbour doc: has a PERSON token and a _4 token, but never [PERSON_4].
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="project",
+            slug="decoy",
+            title="Decoy",
+            markdown="[PERSON_11] emailed [EMAIL_ADDRESS_4] about it",
+        )
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="project",
+            slug="real",
+            title="Real",
+            markdown="[PERSON_4] signed the lease",
+        )
+
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal/search/?q=Dana",
+            **self._runtime_headers(),
+        )
+        slugs = [r["slug"] for r in resp.data["results"]]
+        self.assertIn("real", slugs)
+        self.assertNotIn("decoy", slugs)
+
+    def test_as_fts_phrase_quotes_multi_word_placeholder_types(self):
+        """TYPE can itself contain underscores — EMAIL_ADDRESS, CREDIT_CARD.
+
+        A ``[A-Z]+`` character class silently skips exactly those, leaving the
+        types most likely to carry a real secret unquoted.
+        """
+        self.assertEqual(as_fts_phrase("[PERSON_4]"), '"[PERSON_4]"')
+        self.assertEqual(as_fts_phrase("[EMAIL_ADDRESS_4]"), '"[EMAIL_ADDRESS_4]"')
+        self.assertEqual(as_fts_phrase("call [PERSON_4] now"), 'call "[PERSON_4]" now')
+        # A query with no placeholder is untouched.
+        self.assertEqual(as_fts_phrase("kitchen renovation"), "kitchen renovation")
+
+    def test_snippet_anchors_on_the_quoted_variant_match(self):
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="project",
+            slug="long",
+            title="Long",
+            markdown=("filler paragraph. " * 40) + "and then [PERSON_1] arrived at the end",
+        )
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal/search/?q=Alice&kind=project",
+            **self._runtime_headers(),
+        )
+        snippet = [r for r in resp.data["results"] if r["slug"] == "long"][0]["snippet"]
+        # The snippet followed the placeholder to the tail of the document
+        # rather than defaulting to offset 0.
+        self.assertIn("[PERSON_1]", snippet)
+        self.assertTrue(snippet.startswith("..."))
+
     def test_fts_still_answers_a_plain_query(self):
         resp = self.client.get(
             f"/api/v1/integrations/runtime/{self.tenant.id}/journal/search/?q=kitchen",
@@ -680,6 +844,98 @@ class DocumentSearchVariantTests(_DocumentPiiBase):
 
 
 # ── Receipt folding ────────────────────────────────────────────────────────
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-runtime-key")
+class ReplaceLaneReceiptCoherenceTests(_DocumentPiiBase):
+    """The replace lanes merge onto the row read UNDER the lock.
+
+    Interleaving: request A authors, request B commits a change to a DIFFERENT
+    field, then A saves. A must not write its pre-lock snapshot back over B's
+    receipt — B's text would survive next to A's stale receipt for it, and a
+    receipt that disagrees with its text rehydrates the wrong binding.
+    """
+
+    def _doc(self, **kwargs):
+        defaults = {
+            "tenant": self.tenant,
+            "kind": "project",
+            "slug": "reno",
+            "title": "original title",
+            "markdown": "original body",
+            "pii_receipts": {},
+        }
+        defaults.update(kwargs)
+        return Document.objects.create(**defaults)
+
+    def test_owner_patch_preserves_a_concurrent_receipt_for_an_untouched_field(self):
+        doc = self._doc()
+        b_receipt = {"state": "placeholder", "redactions": [{"placeholder": "[PERSON_1]"}], "writer": "runtime"}
+
+        def _commit_b(*args, **kwargs):
+            # Runs while request A is authoring, before A takes the lock.
+            Document.objects.filter(pk=doc.pk).update(
+                title="[PERSON_1] title",
+                pii_receipts={"title": b_receipt},
+            )
+            return []
+
+        with patch("apps.pii.redactor._detect_pii", side_effect=_commit_b):
+            resp = self.client.patch(
+                "/api/v1/journal/documents/project/reno/",
+                {"markdown": "Alice rewrote the body"},
+                format="json",
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        doc.refresh_from_db()
+        # A's field landed…
+        self.assertEqual(doc.markdown, "[PERSON_1] rewrote the body")
+        self.assertEqual(doc.pii_receipts["markdown"]["writer"], "owner")
+        # …and B's text AND its receipt both survived intact.
+        self.assertEqual(doc.title, "[PERSON_1] title")
+        self.assertEqual(doc.pii_receipts["title"], b_receipt)
+
+    def test_runtime_put_preserves_a_concurrent_receipt_for_an_untouched_field(self):
+        doc = self._doc()
+        b_receipt = {"state": "residual", "redactions": [], "writer": "background"}
+
+        def _commit_b(*args, **kwargs):
+            Document.objects.filter(pk=doc.pk).update(
+                title="b title",
+                pii_receipts={"title": b_receipt},
+            )
+            return []
+
+        with patch("apps.pii.redactor._detect_pii", side_effect=_commit_b):
+            resp = self.client.put(
+                f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+                {"kind": "project", "slug": "reno", "markdown": "Alice rewrote it"},
+                format="json",
+                **self._runtime_headers(),
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        doc.refresh_from_db()
+        self.assertEqual(doc.markdown, "[PERSON_1] rewrote it")
+        self.assertEqual(doc.title, "b title")
+        self.assertEqual(doc.pii_receipts["title"], b_receipt)
+
+    def test_memory_put_preserves_a_concurrent_receipt_for_an_untouched_field(self):
+        doc = self._doc(kind="memory", slug="long-term", title="Memory")
+        b_receipt = {"state": "placeholder", "redactions": [], "writer": "runtime"}
+
+        def _commit_b(*args, **kwargs):
+            Document.objects.filter(pk=doc.pk).update(pii_receipts={"title": b_receipt})
+            return []
+
+        with patch("apps.pii.redactor._detect_pii", side_effect=_commit_b):
+            resp = self.client.put("/api/v1/journal/memory/", {"markdown": "Alice note"}, format="json")
+
+        self.assertEqual(resp.status_code, 200)
+        doc.refresh_from_db()
+        self.assertEqual(doc.markdown, "[PERSON_1] note")
+        self.assertEqual(doc.pii_receipts["title"], b_receipt)
 
 
 class MergeFieldReceiptTests(TestCase):

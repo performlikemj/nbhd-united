@@ -1861,7 +1861,6 @@ class RuntimeDailyNotesView(KnownValueResponseGuardMixin, APIView):
             slug=slug,
             title=_default_title("daily", slug),
             markdown_factory=lambda: _default_markdown("daily", slug, tenant=tenant),
-            writer="runtime",
             seam="journal.daily_note.default_body.runtime",
         )
         return Response(
@@ -1951,7 +1950,6 @@ class RuntimeDailyNoteAppendView(APIView):
             slug=slug,
             title=_default_title("daily", slug),
             markdown_factory=lambda: _default_markdown("daily", slug, tenant=tenant),
-            writer="runtime",
             seam="journal.daily_note.default_body.runtime",
         )
 
@@ -2047,7 +2045,6 @@ class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
             slug="long-term",
             title=_default_title("memory", "long-term"),
             markdown_factory=lambda: _default_markdown("memory", "long-term", tenant=tenant),
-            writer="runtime",
             seam="journal.memory.default_body.runtime",
         )
         return Response(
@@ -2098,7 +2095,6 @@ class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
                 slug="long-term",
                 title=_default_title("memory", "long-term"),
                 markdown_factory=lambda: _default_markdown("memory", "long-term", tenant=tenant),
-                writer="runtime",
                 seam="journal.memory.default_body.runtime",
             )
         else:
@@ -2836,12 +2832,21 @@ class RuntimeDocumentView(KnownValueResponseGuardMixin, APIView):
         )
 
         if not created:
-            doc.markdown = markdown
-            doc.pii_receipts = set_field_receipt(doc.pii_receipts, "markdown", authored_markdown.receipt)
-            if title:
-                doc.title = title
-                doc.pii_receipts = set_field_receipt(doc.pii_receipts, "title", receipts["title"])
-            doc.save()
+            # Merge onto the row read under the lock, carrying ONLY the fields
+            # this request authored. A PUT that omits ``title`` must leave the
+            # title receipt a concurrent writer just set exactly as it is — a
+            # receipt that no longer matches its text rehydrates the wrong
+            # binding. Authoring already happened above, outside the transaction
+            # (invariants §8).
+            with transaction.atomic():
+                doc = Document.objects.select_for_update().get(pk=doc.pk)
+                doc.markdown = markdown
+                update_fields = ["markdown"]
+                if title:
+                    doc.title = title
+                    update_fields.append("title")
+                doc.pii_receipts = {**(doc.pii_receipts or {}), **receipts}
+                doc.save(update_fields=[*update_fields, "pii_receipts", "updated_at"])
 
         return Response(
             {
@@ -2892,7 +2897,7 @@ class RuntimeJournalSearchView(KnownValueResponseGuardMixin, APIView):
 
         from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 
-        from apps.journal.document_authoring import search_query_variants
+        from apps.journal.document_authoring import as_fts_phrase, search_query_variants
 
         # Content-based full-text search is intentionally NOT slug-filtered by
         # date: a mis-kinded daily with real content (e.g. an old
@@ -2907,17 +2912,28 @@ class RuntimeJournalSearchView(KnownValueResponseGuardMixin, APIView):
         # search for "Sarah" cannot match a note that says "[PERSON_4]". Generate
         # QUERY VARIANTS — the original plus one per name binding whose value
         # appears in the query — and OR their websearch queries together. Variant
-        # union, never tsquery surgery: `[PERSON_4]` lexes to the same tokens on
-        # both sides, so the stock parser does the matching. Recall-over-precision
-        # across same-name collisions is the deliberate §1.5 trade.
+        # union, never tsquery surgery: the stock parser does the matching.
+        # Recall-over-precision across same-name collisions is the deliberate
+        # §1.5 trade; matching a DIFFERENT person is not, which is why each
+        # placeholder token is quoted into an adjacency phrase (as_fts_phrase).
         variants = search_query_variants(tenant, query)
         search_vector = SearchVector("title", weight="A") + SearchVector("markdown", weight="B")
-        search_query = SearchQuery(variants[0], search_type="websearch")
+        search_query = SearchQuery(as_fts_phrase(variants[0]), search_type="websearch")
         for variant in variants[1:]:
-            search_query = search_query | SearchQuery(variant, search_type="websearch")
+            search_query = search_query | SearchQuery(as_fts_phrase(variant), search_type="websearch")
 
+        # ``@@`` decides what matches; rank only ORDERS what matched.
+        # ``ts_rank`` is a similarity score, not a predicate: it counts lexeme
+        # overlap and ignores phrase adjacency, so the old ``rank > 0`` filter
+        # returned 0.09 for a document Postgres itself says does not match. That
+        # was survivable while every query was prose; it is not once a variant is
+        # a placeholder, because ``[PERSON_4]`` contributes the loose lexemes
+        # ``person`` and ``4`` and scores every note mentioning ANY person and
+        # ANY "…_4" token — a different person entirely.
         results = (
-            qs.annotate(rank=SearchRank(search_vector, search_query)).filter(rank__gt=0.0).order_by("-rank")[:limit]
+            qs.annotate(search=search_vector, rank=SearchRank(search_vector, search_query))
+            .filter(search=search_query)
+            .order_by("-rank")[:limit]
         )
 
         def _make_snippet(text: str, query_variants: list[str], max_len: int = 300) -> str:
@@ -3262,7 +3278,6 @@ class RuntimeDocumentAppendView(KnownValueResponseGuardMixin, APIView):
             slug=slug,
             title=_default_title(kind, slug),
             markdown_factory=lambda: _default_markdown(kind, slug, tenant=tenant),
-            writer="runtime",
             seam="journal.document.default_body.runtime",
         )
 

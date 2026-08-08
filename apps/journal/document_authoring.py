@@ -21,6 +21,7 @@ removed from row-presence fencing.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 # Worst → best. ``unconfirmed`` and ``residual`` both pull a field into the
@@ -92,7 +93,6 @@ def get_or_create_authored_document(
     slug: str,
     title: str,
     markdown_factory,
-    writer: str,
     seam: str,
 ):
     """Get a document, authoring its DEFAULT body when one has to be created.
@@ -104,6 +104,15 @@ def get_or_create_authored_document(
     :func:`merge_field_receipt` then (correctly) refuses to let any later append
     call the field verified. The flagship append surface would carry a permanent
     ``bypass`` receipt and the owner would get no entity affordances on it.
+
+    Always the BACKGROUND writer class, never the calling seam's. A rendered
+    template is server-composed text, not something a human just typed, so the
+    owner class would be a lie about provenance — and an expensive one: at
+    flag-off, owner means the legacy redactor, which is real detection and real
+    minting on a path that had neither before P3. A4 requires flag-off to change
+    nothing, and background is the only class that is a pure passthrough there.
+    Flag-on it gets full detection plus MINT_VALIDATED, with anything unmintable
+    recorded as ``residual`` for the repair sweep.
 
     The row is looked up BEFORE the body is rendered or authored so the common
     path — the document already exists — costs one SELECT and no NER, rather than
@@ -120,7 +129,7 @@ def get_or_create_authored_document(
         tenant,
         markdown_factory(),
         seam=seam,
-        writer=writer,
+        writer="background",
         field="markdown",
         model_label="journal.Document",
     )
@@ -164,6 +173,63 @@ def owner_receipts(instance, tenant) -> dict[str, Any]:
         getattr(instance, "pii_receipts", None) or {},
         getattr(tenant, "pii_entity_map", None),
     )
+
+
+# Matches the canonical ``[TYPE_N]`` shape from ``apps.pii.redactor``. TYPE may
+# itself contain underscores (EMAIL_ADDRESS, CREDIT_CARD, IP_ADDRESS), so the
+# character class has to include ``_`` — a ``[A-Z]+`` class silently skips every
+# multi-word type and leaves exactly those variants unquoted.
+_PLACEHOLDER_TOKEN_RE = re.compile(r"\[[A-Z_]+_\d+\]")
+
+
+def as_fts_phrase(variant: str) -> str:
+    """Quote every ``[TYPE_N]`` token in a websearch query variant.
+
+    A placeholder is not one lexeme: ``[PERSON_4]`` parses to ``person`` and
+    ``4``. For a variant carrying a SINGLE placeholder this costs nothing —
+    ``websearch_to_tsquery`` already compounds the underscore-joined token into
+    ``'person' <-> '4'`` on its own, quoted or not, under both ``english`` and
+    ``simple``.
+
+    It is a variant carrying TWO placeholders that needs this. Bare, they fuse
+    into one long chain — ``[PERSON_4],[PERSON_1]`` becomes
+    ``'person' <-> '4' <-> 'person' <-> '1'``, which demands the two tokens sit
+    literally side by side and matches almost nothing. Quoted, each becomes its
+    own phrase and they are ANDed: ``'person' <-> '4' & 'person' <-> '1'``.
+
+    This does NOT by itself stop a different person's document from matching —
+    that is the ``@@`` matcher's job at the call sites, because ``ts_rank``
+    scores loose lexeme overlap and ignores adjacency entirely.
+
+    FTS call sites ONLY. The ``icontains`` arms match whole substrings against
+    stored text that contains no quotes, so quoting there would match nothing.
+    """
+    return _PLACEHOLDER_TOKEN_RE.sub(r'"\g<0>"', variant)
+
+
+def rehydrate_active(tenant, text: str) -> str:
+    """Rehydrate ACTIVE bindings only — retired ones stay as literal tokens.
+
+    Mirrors ``egress._active_entity_map``. Used where the owner's rendered text
+    can come straight back as a write (the memory editor): a retired binding
+    that rehydrated to its name would be re-authored on save, and since
+    retirement removes the value from substitution, the name would land RAW at
+    rest — an owner deleting an entity would be the one thing that puts it back
+    in plaintext. Leaving the token in place is the honest render: the owner
+    deleted that entity, and the token still resolves everywhere it is legitimately
+    rehydrated (directive §A9).
+    """
+    from apps.pii.redactor import rehydrate_text
+
+    entity_map = getattr(tenant, "pii_entity_map", None) or {}
+    active = {
+        placeholder: entry
+        for placeholder, entry in entity_map.items()
+        if not (isinstance(entry, dict) and entry.get("retired"))
+    }
+    if not text or not active:
+        return text
+    return rehydrate_text(text, active)
 
 
 def search_query_variants(tenant, query: str) -> list[str]:

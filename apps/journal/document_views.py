@@ -107,7 +107,6 @@ def _get_or_create_document(tenant: Tenant, kind: str, slug: str) -> Document:
         slug=slug,
         title=_default_title(kind, slug),
         markdown_factory=lambda: _default_markdown(kind, slug, tenant=tenant),
-        writer="owner",
         seam="journal.document.default_body",
     )
     return doc
@@ -221,6 +220,14 @@ class DocumentListCreateView(APIView):
         # "NaN-NaN-NaN" Invalid-Date artifact) or an NTFS-hostile slug persist a
         # garbage row that memory_sync then has to skip forever.
         _validate_slug(data["kind"], data["slug"])
+
+        # POST is get-or-create, and a POST onto an existing slug returns that
+        # row untouched. Author AFTER establishing it is a real create: authoring
+        # is a detector pass that can MINT, so doing it first would grow the
+        # entity map from text this request is about to throw away.
+        existing = Document.objects.filter(tenant=tenant, kind=data["kind"], slug=data["slug"]).first()
+        if existing is not None:
+            return Response(DocumentSerializer(existing, context={"tenant": tenant}).data, status=status.HTTP_200_OK)
 
         # POST was the one owner Document write that stored its body RAW while
         # PATCH and append both re-redacted — so a document CREATED with a real
@@ -436,28 +443,36 @@ class DocumentDetailView(APIView):
         # rehydrated (real-value) fields back here on save; without this pass
         # real PII would land in the agent-visible Document row. PATCH replaces
         # the whole column, so the submitted text's receipt IS the field's.
-        receipts = doc.pii_receipts or {}
-        if markdown is not None:
+        #
+        # ``authored_receipts`` deliberately starts EMPTY rather than from the
+        # pre-lock row: it must hold only the fields this request authored. A
+        # pre-lock snapshot written back under the lock would overwrite a
+        # concurrent writer's receipt for a field this request never touched —
+        # that writer's text would survive next to our receipt, and a receipt
+        # that disagrees with its text rehydrates the wrong binding.
+        #
+        # Authoring stays OUTSIDE the transaction (invariants §8: no
+        # out-of-process calls inside ``atomic()``).
+        authored_text: dict[str, str] = {}
+        authored_receipts: dict[str, dict] = {}
+        for field, submitted in (("markdown", markdown), ("title", title)):
+            if submitted is None:
+                continue
             authored = _author_owner_document(
                 tenant,
-                markdown,
+                submitted,
                 seam="journal.document.patch",
-                field="markdown",
+                field=field,
             )
-            doc.markdown = authored.text
-            receipts = set_field_receipt(receipts, "markdown", authored.receipt)
-        if title is not None:
-            authored = _author_owner_document(
-                tenant,
-                title,
-                seam="journal.document.patch",
-                field="title",
-            )
-            doc.title = authored.text
-            receipts = set_field_receipt(receipts, "title", authored.receipt)
+            authored_text[field] = authored.text
+            authored_receipts[field] = authored.receipt
 
-        doc.pii_receipts = receipts
-        doc.save()
+        with transaction.atomic():
+            doc = Document.objects.select_for_update().get(pk=doc.pk)
+            for field, value in authored_text.items():
+                setattr(doc, field, value)
+            doc.pii_receipts = {**(doc.pii_receipts or {}), **authored_receipts}
+            doc.save(update_fields=[*authored_text, "pii_receipts", "updated_at"])
         return Response(DocumentSerializer(doc, context={"tenant": tenant}).data)
 
     def delete(self, request, kind: str, slug: str):

@@ -405,25 +405,32 @@ class MemoryView(APIView):
         # back as "[PERSON_12]" here while the same document rehydrated correctly
         # through the Document endpoints. Owner boundary ⇒ rehydrate + receipts
         # (directive §A3).
-        from apps.pii.redactor import rehydrate_for_tenant
-
-        from .document_authoring import owner_receipts
+        #
+        # ACTIVE bindings only. This surface is an EDITOR: whatever it renders
+        # comes straight back as a write. A retired binding rehydrated here would
+        # be re-authored on save with no substitution available (retirement pulls
+        # the value out of the known-value path), so the owner deleting an entity
+        # would be the one action that puts its real name back at rest in
+        # plaintext. The token stays literal instead — honest about the deletion,
+        # and it round-trips byte-for-byte (§A9).
+        from .document_authoring import owner_receipts, rehydrate_active
 
         tenant = _get_tenant_for_user(request.user)
         doc = Document.objects.filter(tenant=tenant, kind="memory", slug="long-term").first()
         return Response(
             {
-                "markdown": rehydrate_for_tenant(tenant, doc.markdown) if doc else "",
+                "markdown": rehydrate_active(tenant, doc.markdown) if doc else "",
                 "pii_receipts": owner_receipts(doc, tenant) if doc else {},
                 "updated_at": doc.updated_at.isoformat() if doc else None,
             }
         )
 
     def put(self, request):
-        from apps.pii.authoring import author_text
-        from apps.pii.redactor import rehydrate_for_tenant
+        from django.db import transaction
 
-        from .document_authoring import owner_receipts, set_field_receipt
+        from apps.pii.authoring import author_text
+
+        from .document_authoring import owner_receipts, rehydrate_active
 
         tenant = _get_tenant_for_user(request.user)
         serializer = MemoryPatchSerializer(data=request.data)
@@ -438,6 +445,9 @@ class MemoryView(APIView):
         # The GET above now hands the owner real values, so the save round-trips
         # real values back — without authoring, this PUT would write the names
         # the agent must never see straight back into its memory document.
+        # Authoring runs OUTSIDE the transaction: it is the PII path and may
+        # reach a detector out of process, which invariants §8 forbids inside
+        # ``atomic()``.
         authored = author_text(
             tenant,
             serializer.validated_data["markdown"],
@@ -446,13 +456,17 @@ class MemoryView(APIView):
             field="markdown",
             model_label="journal.Document",
         )
-        doc.markdown = authored.text
-        doc.pii_receipts = set_field_receipt(doc.pii_receipts, "markdown", authored.receipt)
-        doc.save()
+        with transaction.atomic():
+            # Merge onto the row read UNDER the lock, so a receipt another
+            # writer set for a field this request never touched survives.
+            doc = Document.objects.select_for_update().get(pk=doc.pk)
+            doc.markdown = authored.text
+            doc.pii_receipts = {**(doc.pii_receipts or {}), "markdown": authored.receipt}
+            doc.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
         return Response(
             {
-                "markdown": rehydrate_for_tenant(tenant, doc.markdown),
+                "markdown": rehydrate_active(tenant, doc.markdown),
                 "pii_receipts": owner_receipts(doc, tenant),
                 "updated_at": doc.updated_at.isoformat(),
             }
