@@ -16,7 +16,15 @@ from pathlib import Path
 
 _READINESS_PROBE = {
     "failureThreshold": 48,
-    "httpGet": {"path": "/health/", "port": 8000, "scheme": "HTTP"},
+    "httpGet": {
+        "path": "/health/",
+        "port": 8000,
+        "scheme": "HTTP",
+        "httpHeaders": [
+            {"name": "Host", "value": "localhost"},
+            {"name": "X-Forwarded-Proto", "value": "https"},
+        ],
+    },
     "periodSeconds": 5,
     "successThreshold": 1,
     "timeoutSeconds": 5,

@@ -1,7 +1,7 @@
 from copy import deepcopy
 from pathlib import Path
 
-from django.test import SimpleTestCase
+from django.test import Client, SimpleTestCase, override_settings
 
 from config.containerapp_deploy import prepare_deployment
 
@@ -61,16 +61,49 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
         self.assertEqual(result["properties"]["configuration"], original["properties"]["configuration"])
 
         readiness = [probe for probe in container["probes"] if probe["type"] == "Readiness"]
-        self.assertEqual(len(readiness), 1)
         self.assertEqual(
-            readiness[0]["httpGet"],
-            {"path": "/health/", "port": 8000, "scheme": "HTTP"},
+            readiness,
+            [
+                {
+                    "failureThreshold": 48,
+                    "httpGet": {
+                        "path": "/health/",
+                        "port": 8000,
+                        "scheme": "HTTP",
+                        "httpHeaders": [
+                            {"name": "Host", "value": "localhost"},
+                            {"name": "X-Forwarded-Proto", "value": "https"},
+                        ],
+                    },
+                    "periodSeconds": 5,
+                    "successThreshold": 1,
+                    "timeoutSeconds": 5,
+                    "type": "Readiness",
+                }
+            ],
         )
-        self.assertNotIn("tcpSocket", readiness[0])
         self.assertEqual(
             {probe["type"] for probe in container["probes"]},
             {"Liveness", "Readiness", "Startup"},
         )
+
+    @override_settings(
+        ALLOWED_HOSTS=["localhost"],
+        SECURE_SSL_REDIRECT=True,
+        SECURE_PROXY_SSL_HEADER=("HTTP_X_FORWARDED_PROTO", "https"),
+    )
+    def test_readiness_headers_cross_the_real_production_middleware_stack(self):
+        client = Client()
+
+        pod_ip_request = client.get("/health/", headers={"host": "10.0.0.42"})
+        fixed_request = client.get(
+            "/health/",
+            headers={"host": "localhost", "x-forwarded-proto": "https"},
+        )
+
+        self.assertEqual(pod_ip_request.status_code, 400)
+        self.assertEqual(fixed_request.status_code, 200)
+        self.assertEqual(fixed_request.json()["status"], "ok")
 
     def test_missing_target_container_fails_closed(self):
         with self.assertRaisesMessage(ValueError, "expected exactly one container named 'api', found 0"):

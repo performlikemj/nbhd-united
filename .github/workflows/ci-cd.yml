@@ -581,7 +581,7 @@ jobs:
           EXPECTED="${{ github.sha }}"
           echo "Waiting for the serving revision to report build=$EXPECTED ..."
           SERVED=""
-          for i in $(seq 1 30); do
+          for i in $(seq 1 45); do
             BODY=$(curl -sf "$DJANGO_URL/health/" 2>/dev/null || echo "")
             SERVED=$(printf '%s' "$BODY" | jq -r '.build // ""' 2>/dev/null || echo "")
             if [ "$SERVED" = "$EXPECTED" ]; then
