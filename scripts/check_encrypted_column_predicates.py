@@ -188,7 +188,7 @@ _ALLOWLISTED_SITES: set[tuple[str, int, str]] = {
     ("apps/journal/extraction.py", 242, "text"),
     # Document.markdown — grounding-probe cron: is a topic reachable via
     # literal-phrase match.
-    ("apps/orchestrator/grounding_probe.py", 113, "markdown"),
+    ("apps/orchestrator/grounding_probe.py", 102, "markdown"),
     # Document.markdown — one-time data migration cleaning up NaN-slug stubs
     # by their unrendered {{date}} placeholder body.
     ("apps/journal/migrations/0020_cleanup_nan_daily_stubs.py", 31, "markdown"),

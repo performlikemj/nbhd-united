@@ -2895,9 +2895,7 @@ class RuntimeJournalSearchView(KnownValueResponseGuardMixin, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
-
-        from apps.journal.document_authoring import as_fts_phrase, search_query_variants
+        from apps.journal.document_authoring import document_fts_search, search_query_variants
 
         # Content-based full-text search is intentionally NOT slug-filtered by
         # date: a mis-kinded daily with real content (e.g. an old
@@ -2914,27 +2912,13 @@ class RuntimeJournalSearchView(KnownValueResponseGuardMixin, APIView):
         # appears in the query — and OR their websearch queries together. Variant
         # union, never tsquery surgery: the stock parser does the matching.
         # Recall-over-precision across same-name collisions is the deliberate
-        # §1.5 trade; matching a DIFFERENT person is not, which is why each
-        # placeholder token is quoted into an adjacency phrase (as_fts_phrase).
+        # §1.5 trade; matching a DIFFERENT person is not.
+        #
+        # Matching and its recall floor live in ``document_fts_search`` so the
+        # grounding probe, whose whole job is to predict what this endpoint
+        # returns, cannot drift from it.
         variants = search_query_variants(tenant, query)
-        search_vector = SearchVector("title", weight="A") + SearchVector("markdown", weight="B")
-        search_query = SearchQuery(as_fts_phrase(variants[0]), search_type="websearch")
-        for variant in variants[1:]:
-            search_query = search_query | SearchQuery(as_fts_phrase(variant), search_type="websearch")
-
-        # ``@@`` decides what matches; rank only ORDERS what matched.
-        # ``ts_rank`` is a similarity score, not a predicate: it counts lexeme
-        # overlap and ignores phrase adjacency, so the old ``rank > 0`` filter
-        # returned 0.09 for a document Postgres itself says does not match. That
-        # was survivable while every query was prose; it is not once a variant is
-        # a placeholder, because ``[PERSON_4]`` contributes the loose lexemes
-        # ``person`` and ``4`` and scores every note mentioning ANY person and
-        # ANY "…_4" token — a different person entirely.
-        results = (
-            qs.annotate(search=search_vector, rank=SearchRank(search_vector, search_query))
-            .filter(search=search_query)
-            .order_by("-rank")[:limit]
-        )
+        results = document_fts_search(qs, variants, limit=limit)
 
         def _make_snippet(text: str, query_variants: list[str], max_len: int = 300) -> str:
             """Extract relevant snippet around first match.

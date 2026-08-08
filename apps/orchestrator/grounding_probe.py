@@ -49,24 +49,13 @@ def journal_search(tenant, query: str, limit: int = 20) -> list[Document]:
     actually would; a probe that searched real names against placeholder-space
     storage would report a grounding gap the agent does not have.
     """
-    from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
+    from apps.journal.document_authoring import document_fts_search, search_query_variants
 
-    from apps.journal.document_authoring import as_fts_phrase, search_query_variants
-
+    # Same helper the endpoint calls, deliberately: a probe that ran its own
+    # matching would report documents as reachable that the agent's tool would
+    # never return — or miss ones it would.
     variants = search_query_variants(tenant, query)
-    search_vector = SearchVector("title", weight="A") + SearchVector("markdown", weight="B")
-    search_query = SearchQuery(as_fts_phrase(variants[0]), search_type="websearch")
-    for variant in variants[1:]:
-        search_query = search_query | SearchQuery(as_fts_phrase(variant), search_type="websearch")
-    # ``@@`` matches, rank orders — mirroring RuntimeJournalSearchView exactly.
-    # A probe that used the looser ``rank > 0`` predicate would report documents
-    # as reachable that the agent's own tool would never return.
-    return list(
-        Document.objects.filter(tenant=tenant)
-        .annotate(search=search_vector, rank=SearchRank(search_vector, search_query))
-        .filter(search=search_query)
-        .order_by("-rank")[:limit]
-    )
+    return document_fts_search(Document.objects.filter(tenant=tenant), variants, limit=limit)
 
 
 def probe_grounding(tenant, topic: str, expect_terms: list[str] | None = None) -> GroundingReport:

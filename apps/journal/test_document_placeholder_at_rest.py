@@ -659,9 +659,27 @@ class OwnerDocumentReadTests(_DocumentPiiBase):
         )
         map_before = dict(self.tenant.pii_entity_map)
 
-        served = self.client.get("/api/v1/journal/memory/").data["markdown"]
+        Document.objects.filter(tenant=self.tenant, kind="memory").update(
+            pii_receipts={
+                "markdown": {
+                    "state": "placeholder",
+                    "redactions": [{"placeholder": "[PERSON_1]"}, {"placeholder": "[PERSON_2]"}],
+                    "writer": "runtime",
+                }
+            }
+        )
+
+        get_body = self.client.get("/api/v1/journal/memory/").data
+        served = get_body["markdown"]
         # Active rehydrated, tombstoned left as the literal token.
         self.assertEqual(served, "Alice knows [PERSON_2]")
+        # 0. Body and receipts agree: the active placeholder carries its value,
+        # the tombstoned one carries NO value key — otherwise the client would
+        # draw a "Bob" chip over a token the body shows literally.
+        self.assertEqual(
+            get_body["pii_receipts"]["markdown"]["redactions"],
+            [{"placeholder": "[PERSON_1]", "value": "Alice"}, {"placeholder": "[PERSON_2]"}],
+        )
 
         with patch("apps.pii.redactor._detect_pii", return_value=[]):
             put = self.client.put("/api/v1/journal/memory/", {"markdown": served}, format="json")
@@ -809,6 +827,73 @@ class DocumentSearchVariantTests(_DocumentPiiBase):
         self.assertEqual(as_fts_phrase("call [PERSON_4] now"), 'call "[PERSON_4]" now')
         # A query with no placeholder is untouched.
         self.assertEqual(as_fts_phrase("kitchen renovation"), "kitchen renovation")
+
+    def test_strict_match_wins_and_the_recall_floor_stays_unused(self):
+        """When ``@@`` finds anything, the loose predicate never runs.
+
+        The decoy scores a non-zero ``ts_rank`` for a ``[PERSON_4]`` variant
+        (loose ``person`` + ``4`` overlap), so if the fallback fired whenever it
+        could it would drag a different person's note back in.
+        """
+        self.tenant.pii_entity_map = {"[PERSON_4]": {"name": "Dana"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="project",
+            slug="decoy",
+            title="Decoy",
+            markdown="[PERSON_11] emailed [EMAIL_ADDRESS_4] about it",
+        )
+        Document.objects.create(
+            tenant=self.tenant, kind="project", slug="real", title="Real", markdown="[PERSON_4] signed the lease"
+        )
+
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal/search/?q=Dana",
+            **self._runtime_headers(),
+        )
+        slugs = [r["slug"] for r in resp.data["results"]]
+        self.assertEqual(slugs, ["real"])
+        self.assertNotIn("decoy", slugs)
+
+    def test_recall_floor_answers_a_partial_term_prose_query(self):
+        """``websearch_to_tsquery`` ANDs its terms — measured, not assumed.
+
+        "kitchen renovation permits" requires all three, so a note carrying two
+        of them matches NOTHING strictly. Rather than answer the agent with an
+        empty result set, the pre-P3 ``rank > 0`` predicate runs as a floor.
+        """
+        Document.objects.create(
+            tenant=self.tenant,
+            kind="project",
+            slug="partial",
+            title="Kitchen plan",
+            markdown="the kitchen renovation starts in March",
+        )
+
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal/search/?q=kitchen+renovation+permits&kind=project",
+            **self._runtime_headers(),
+        )
+        slugs = [r["slug"] for r in resp.data["results"]]
+        self.assertIn("partial", slugs)
+        # Still ranked, not an unordered dump.
+        self.assertGreater(resp.data["results"][0]["rank"], 0.0)
+
+    def test_no_match_either_way_returns_empty(self):
+        """Neither pass may degrade into "return the corpus".
+
+        The literal pre-P3 predicate would fail this: ``ts_rank`` returns
+        ``1e-20`` rather than 0 for a query sharing no lexeme with the document,
+        so ``rank > 0`` passed every row and an unmatched query dumped
+        everything the tenant owns.
+        """
+        resp = self.client.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/journal/search/?q=xylophone+bassoon",
+            **self._runtime_headers(),
+        )
+        self.assertEqual(resp.data["count"], 0)
+        self.assertEqual(resp.data["results"], [])
 
     def test_snippet_anchors_on_the_quoted_variant_match(self):
         Document.objects.create(

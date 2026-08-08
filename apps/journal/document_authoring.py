@@ -175,10 +175,35 @@ def owner_receipts(instance, tenant) -> dict[str, Any]:
     )
 
 
+def owner_receipts_active(instance, tenant) -> dict[str, Any]:
+    """``owner_receipts`` resolved against ACTIVE bindings only.
+
+    The editor counterpart to :func:`rehydrate_active`, and it exists so the two
+    halves of one response agree. With the full map, a retired placeholder still
+    resolves to its name, so the body would show the literal ``[PERSON_2]`` while
+    the receipt beside it carried ``value: "Bob"`` — the client would render a
+    named entity chip over a token the owner deleted. Dropping the value key
+    leaves an unresolved placeholder, which is exactly what the body shows.
+    """
+    from apps.pii.authoring import resolve_receipt_values
+
+    return resolve_receipt_values(
+        getattr(instance, "pii_receipts", None) or {},
+        _active_bindings(tenant),
+    )
+
+
 # Matches the canonical ``[TYPE_N]`` shape from ``apps.pii.redactor``. TYPE may
 # itself contain underscores (EMAIL_ADDRESS, CREDIT_CARD, IP_ADDRESS), so the
 # character class has to include ``_`` — a ``[A-Z]+`` class silently skips every
 # multi-word type and leaves exactly those variants unquoted.
+#
+# A deliberate SUBSET of ``redactor._PLACEHOLDER_RE``: that one also accepts an
+# optional ``|label`` suffix (``[PERSON_4|Alice]``), this one does not. Query
+# variants are built by substituting placeholders straight out of
+# ``inverted_names_multimap``, which yields bare tokens — a labelled token never
+# reaches here. Do NOT copy this pattern to anything that reads STORED text,
+# where labelled tokens do occur.
 _PLACEHOLDER_TOKEN_RE = re.compile(r"\[[A-Z_]+_\d+\]")
 
 
@@ -207,29 +232,90 @@ def as_fts_phrase(variant: str) -> str:
     return _PLACEHOLDER_TOKEN_RE.sub(r'"\g<0>"', variant)
 
 
-def rehydrate_active(tenant, text: str) -> str:
-    """Rehydrate ACTIVE bindings only — retired ones stay as literal tokens.
-
-    Mirrors ``egress._active_entity_map``. Used where the owner's rendered text
-    can come straight back as a write (the memory editor): a retired binding
-    that rehydrated to its name would be re-authored on save, and since
-    retirement removes the value from substitution, the name would land RAW at
-    rest — an owner deleting an entity would be the one thing that puts it back
-    in plaintext. Leaving the token in place is the honest render: the owner
-    deleted that entity, and the token still resolves everywhere it is legitimately
-    rehydrated (directive §A9).
-    """
-    from apps.pii.redactor import rehydrate_text
-
+def _active_bindings(tenant) -> dict[str, Any]:
+    """Tenant bindings minus the tombstoned ones. Mirrors ``egress._active_entity_map``."""
     entity_map = getattr(tenant, "pii_entity_map", None) or {}
-    active = {
+    return {
         placeholder: entry
         for placeholder, entry in entity_map.items()
         if not (isinstance(entry, dict) and entry.get("retired"))
     }
+
+
+def rehydrate_active(tenant, text: str) -> str:
+    """Rehydrate ACTIVE bindings only — retired ones stay as literal tokens.
+
+    Used where the owner's rendered text can come straight back as a write (the
+    memory editor): a retired binding that rehydrated to its name would be
+    re-authored on save, and since retirement removes the value from
+    substitution, the name would land RAW at rest — an owner deleting an entity
+    would be the one thing that puts it back in plaintext. Leaving the token in
+    place is the honest render: the owner deleted that entity, and the token
+    still resolves everywhere it is legitimately rehydrated (directive §A9).
+    """
+    from apps.pii.redactor import rehydrate_text
+
+    active = _active_bindings(tenant)
     if not text or not active:
         return text
     return rehydrate_text(text, active)
+
+
+def document_fts_search(base_queryset, variants: list[str], *, limit: int) -> list:
+    """Run the Document full-text search: strict match first, recall floor second.
+
+    ONE implementation for both call sites (the agent's ``nbhd_journal_search``
+    and the grounding probe that exists to predict it) — a probe that ranked
+    differently from the tool it models would report grounding the agent does
+    not have.
+
+    Two passes, because the two failure modes pull in opposite directions:
+
+    1. **ALL terms** (``websearch``, which ANDs). This is the real matcher.
+       ``ts_rank`` is a similarity score that counts lexeme overlap and ignores
+       phrase adjacency — measured at 0.09 for a document Postgres reports as
+       non-matching — so ranking alone lets a placeholder variant surface a
+       DIFFERENT person's note (``[PERSON_4]`` contributes the loose lexemes
+       ``person`` and ``4``).
+    2. **ANY term**, and only when pass 1 found NOTHING. Measured: "kitchen
+       renovation permits" requires all three, so a note carrying two of them
+       matches nothing at all. Answering the agent with an empty result set
+       where pre-P3 gave a partial answer is a regression, so the floor widens
+       to an OR of the individual terms.
+
+    The floor is deliberately NOT the literal pre-P3 predicate. ``rank > 0``
+    reads like "scored something" but is not a predicate at all: measured,
+    ``ts_rank`` returns ``1e-20`` — not zero — for a query with no matching
+    lexeme whatsoever, so that filter passed EVERY row and a genuinely
+    unmatched query dumped the corpus. The OR pass expresses the intended
+    best-effort recall with semantics that actually hold.
+
+    Ordering stays keyed to the full-intent query in both passes, so a document
+    matching two terms of three still outranks one matching a single term.
+    """
+    from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
+
+    search_vector = SearchVector("title", weight="A") + SearchVector("markdown", weight="B")
+    search_query = SearchQuery(as_fts_phrase(variants[0]), search_type="websearch")
+    for variant in variants[1:]:
+        search_query = search_query | SearchQuery(as_fts_phrase(variant), search_type="websearch")
+
+    annotated = base_queryset.annotate(
+        search=search_vector,
+        rank=SearchRank(search_vector, search_query),
+    )
+    strict = list(annotated.filter(search=search_query).order_by("-rank")[:limit])
+    if strict:
+        return strict
+
+    any_term_query = None
+    for variant in variants:
+        for term in variant.split():
+            term_query = SearchQuery(as_fts_phrase(term), search_type="websearch")
+            any_term_query = term_query if any_term_query is None else (any_term_query | term_query)
+    if any_term_query is None:
+        return []
+    return list(annotated.filter(search=any_term_query).order_by("-rank")[:limit])
 
 
 def search_query_variants(tenant, query: str) -> list[str]:

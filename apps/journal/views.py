@@ -413,14 +413,18 @@ class MemoryView(APIView):
         # would be the one action that puts its real name back at rest in
         # plaintext. The token stays literal instead — honest about the deletion,
         # and it round-trips byte-for-byte (§A9).
-        from .document_authoring import owner_receipts, rehydrate_active
+        # Receipts are resolved active-only for the SAME reason, so the two
+        # halves of this response agree: with the full map a retired
+        # placeholder still resolves to its name, and the client would draw a
+        # named entity chip over a token the body shows literally.
+        from .document_authoring import owner_receipts_active, rehydrate_active
 
         tenant = _get_tenant_for_user(request.user)
         doc = Document.objects.filter(tenant=tenant, kind="memory", slug="long-term").first()
         return Response(
             {
                 "markdown": rehydrate_active(tenant, doc.markdown) if doc else "",
-                "pii_receipts": owner_receipts(doc, tenant) if doc else {},
+                "pii_receipts": owner_receipts_active(doc, tenant) if doc else {},
                 "updated_at": doc.updated_at.isoformat() if doc else None,
             }
         )
@@ -430,7 +434,7 @@ class MemoryView(APIView):
 
         from apps.pii.authoring import author_text
 
-        from .document_authoring import owner_receipts, rehydrate_active
+        from .document_authoring import owner_receipts_active, rehydrate_active
 
         tenant = _get_tenant_for_user(request.user)
         serializer = MemoryPatchSerializer(data=request.data)
@@ -467,7 +471,7 @@ class MemoryView(APIView):
         return Response(
             {
                 "markdown": rehydrate_active(tenant, doc.markdown),
-                "pii_receipts": owner_receipts(doc, tenant),
+                "pii_receipts": owner_receipts_active(doc, tenant),
                 "updated_at": doc.updated_at.isoformat(),
             }
         )
