@@ -22,10 +22,23 @@ from __future__ import annotations
 import inspect
 import logging
 
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.response import Response
 
 logger = logging.getLogger(__name__)
+
+
+def record_runtime_write_activity(tenant) -> None:
+    """Upsert the tenant's latest runtime mutation without locking its hot row."""
+    from apps.router.models import RuntimeWriteActivity
+
+    RuntimeWriteActivity.objects.bulk_create(
+        [RuntimeWriteActivity(tenant_id=tenant.id, last_runtime_write_at=timezone.now())],
+        update_conflicts=True,
+        update_fields=["last_runtime_write_at"],
+        unique_fields=["tenant"],
+    )
 
 
 def assert_write_allowed_for_document_turn(tenant, thread=None) -> Response | None:
@@ -42,6 +55,9 @@ def assert_write_allowed_for_document_turn(tenant, thread=None) -> Response | No
     lookup; thread-scoped when a thread is available (runtime writes carry none, so it
     is tenant-scoped in practice).
     """
+    # This is also the common runtime-WRITE activity chokepoint. Record before
+    # the document feature gate: retry safety is fleet-wide, not canary-gated.
+    record_runtime_write_activity(tenant)
     if not getattr(tenant, "document_ingestion_enabled", False):
         return None
     from apps.router.inbound_media import is_inbound_document_path

@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 import secrets
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from django.test import TestCase, override_settings
+from django.db import close_old_connections
+from django.test import TestCase, TransactionTestCase, override_settings
+from django.utils import timezone
 
-from apps.router.models import AppChatMessage, ChatThread, PendingMessage
+from apps.router.models import AppChatMessage, ChatThread, PendingMessage, RuntimeWriteActivity
 from apps.router.pending_queue import (
     drain_pending_messages_for_tenant_task,
     dropped_retry_dedup_id,
+    dropped_retry_health_dedup_id,
     retry_dropped_app_turn_task,
 )
 from apps.router.services import clear_cache, clear_rate_limits
@@ -59,6 +65,7 @@ class DroppedAppTurnRetryTest(TestCase):
         partial_text: str = "",
         reply_text: str = "",
         attempts: int = 3,
+        partial_seq: int = 0,
     ) -> tuple[AppChatMessage, PendingMessage]:
         turn = AppChatMessage.objects.create(
             tenant=self.tenant,
@@ -70,6 +77,7 @@ class DroppedAppTurnRetryTest(TestCase):
             status=AppChatMessage.Status.PENDING,
             phase=phase,
             partial_text=partial_text,
+            partial_seq=partial_seq,
         )
         queue_row = PendingMessage.objects.create(
             tenant=self.tenant,
@@ -139,6 +147,7 @@ class DroppedAppTurnRetryTest(TestCase):
         turn.refresh_from_db()
         self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
         self.assertEqual(turn.error, "")
+        self.assertEqual(turn.partial_seq, 0)
         pending_retry = PendingMessage.objects.get(
             tenant=self.tenant,
             channel=PendingMessage.Channel.IOS,
@@ -217,13 +226,71 @@ class DroppedAppTurnRetryTest(TestCase):
 
     @patch("apps.router.push_views.notify_app_reply_error")
     @patch("apps.cron.publish.publish_task")
-    def test_tool_activity_never_retries(self, publish, notify_error):
-        turn, _ = self._pair("used-tool", phase="tool")
+    def test_only_exact_thinking_phase_is_narrative_evidence(self, publish, notify_error):
+        for phase in ("", "waking", "tool", "composing"):
+            with self.subTest(phase=phase):
+                turn, _ = self._pair(f"phase-{phase or 'empty'}", phase=phase)
+                self._drop()
+                turn.refresh_from_db()
+                self.assertIsNone(turn.retried_at)
+                self.assertFalse(any(call.args[0] == "retry_dropped_app_turn" for call in publish.call_args_list))
+                publish.reset_mock()
+        self.assertEqual(notify_error.call_count, 4)
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    @patch("apps.cron.publish.publish_task")
+    def test_authoritative_runtime_write_during_turn_blocks_retry(self, publish, notify_error):
+        turn, _ = self._pair("runtime-write")
+        RuntimeWriteActivity.objects.create(
+            tenant=self.tenant,
+            last_runtime_write_at=turn.created_at + timedelta(microseconds=1),
+        )
+
         self._drop()
+
         turn.refresh_from_db()
         self.assertIsNone(turn.retried_at)
         self.assertFalse(any(call.args[0] == "retry_dropped_app_turn" for call in publish.call_args_list))
-        notify_error.assert_called_once_with(self.tenant, ["used-tool"])
+        notify_error.assert_called_once_with(self.tenant, ["runtime-write"])
+
+    @patch("apps.cron.publish.publish_task")
+    def test_runtime_write_before_turn_does_not_block_retry(self, publish):
+        turn, _ = self._pair("old-runtime-write")
+        RuntimeWriteActivity.objects.create(
+            tenant=self.tenant,
+            last_runtime_write_at=turn.created_at - timedelta(seconds=1),
+        )
+
+        self._drop()
+
+        turn.refresh_from_db()
+        self.assertIsNotNone(turn.retried_at)
+        self.assertTrue(any(call.args[0] == "retry_dropped_app_turn" for call in publish.call_args_list))
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    @patch("apps.cron.publish.publish_task")
+    def test_delayed_task_rechecks_authoritative_write_window(self, publish, notify_error):
+        turn, _ = self._pair("late-write-record")
+        self._drop()
+        turn.refresh_from_db()
+        RuntimeWriteActivity.objects.create(
+            tenant=self.tenant,
+            last_runtime_write_at=turn.created_at + timedelta(microseconds=1),
+        )
+
+        with patch("apps.router.pending_queue._is_tenant_container_live") as health:
+            result = retry_dropped_app_turn_task(str(turn.id))
+
+        self.assertEqual(result, {"retried": 0, "exhausted": "ineligible"})
+        health.assert_not_called()
+        notify_error.assert_called_once_with(self.tenant, ["late-write-record"])
+        self.assertFalse(
+            PendingMessage.objects.filter(
+                tenant=self.tenant,
+                delivery_status=PendingMessage.Status.PENDING,
+            ).exists()
+        )
+        self.assertTrue(any(call.args[0] == "retry_dropped_app_turn" for call in publish.call_args_list))
 
     @patch("apps.router.push_views.notify_app_reply_error")
     @patch("apps.cron.publish.publish_task")
@@ -275,15 +342,23 @@ class DroppedAppTurnRetryTest(TestCase):
 
     @patch("apps.router.push_views.notify_app_reply_error")
     @patch("apps.cron.publish.publish_task")
-    def test_unhealthy_container_spends_retry_and_leaves_row_dropped(self, publish, notify_error):
+    def test_unhealthy_container_redefers_once_then_exhausts(self, publish, notify_error):
         turn, _ = self._pair("unhealthy")
         self._drop()
+        publish.reset_mock()
 
-        with patch("apps.router.pending_queue._is_tenant_container_live", return_value=False):
-            result = retry_dropped_app_turn_task(str(turn.id))
+        with (
+            patch("apps.router.pending_queue._is_tenant_container_live", return_value=False),
+            patch("apps.router.inbound_dedup.claim_inbound_event") as claim,
+        ):
+            first = retry_dropped_app_turn_task(str(turn.id))
+            second = retry_dropped_app_turn_task(str(turn.id))
 
-        self.assertEqual(result, {"retried": 0, "exhausted": "container_unhealthy"})
+        self.assertEqual(first, {"retried": 0, "deferred": "container_unhealthy"})
+        self.assertEqual(second, {"retried": 0, "exhausted": "container_unhealthy"})
+        claim.assert_not_called()
         turn.refresh_from_db()
+        self.assertIsNotNone(turn.retry_health_deferred_at)
         self.assertEqual(turn.status, AppChatMessage.Status.ERROR)
         self.assertEqual(turn.error, "dropped")
         self.assertEqual(
@@ -291,6 +366,59 @@ class DroppedAppTurnRetryTest(TestCase):
             0,
         )
         notify_error.assert_called_once_with(self.tenant, ["unhealthy"])
+        retry_calls = [call for call in publish.call_args_list if call.args[0] == "retry_dropped_app_turn"]
+        self.assertEqual(len(retry_calls), 1)
+        self.assertEqual(retry_calls[0].kwargs["delay_seconds"], 120)
+        self.assertEqual(retry_calls[0].kwargs["retries"], 0)
+        self.assertEqual(retry_calls[0].kwargs["idempotency_key"], dropped_retry_health_dedup_id(turn.id))
+        self.assertNotEqual(retry_calls[0].kwargs["idempotency_key"], dropped_retry_dedup_id(turn.id))
+        self.assertNotIn(":", retry_calls[0].kwargs["idempotency_key"])
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.router.push_views.notify_app_reply_error")
+    def test_task_exception_exhausts_and_notifies(self, notify_error, _publish):
+        turn, _ = self._pair("raising-task")
+        self._drop()
+
+        with (
+            patch("apps.router.pending_queue._is_tenant_container_live", return_value=True),
+            patch("apps.router.inbound_dedup.claim_inbound_event", return_value=True),
+            patch("apps.router.pending_queue.enqueue_message_for_tenant", side_effect=RuntimeError("boom")),
+        ):
+            result = retry_dropped_app_turn_task(str(turn.id))
+
+        self.assertEqual(result, {"retried": 0, "exhausted": "task_error"})
+        notify_error.assert_called_once_with(self.tenant, ["raising-task"])
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    @patch("apps.router.pending_queue._is_tenant_container_live", return_value=True)
+    @patch("apps.cron.publish.publish_task")
+    def test_cron_callback_round_trip_uses_registered_task_map_entry(self, _publish, _health, _signature):
+        turn, _ = self._pair("callback-round-trip")
+        self._drop()
+
+        response = self.client.post(
+            "/api/cron/trigger/retry_dropped_app_turn/",
+            data=json.dumps({"args": [str(turn.id)]}),
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["task_name"], "retry_dropped_app_turn")
+        turn.refresh_from_db()
+        self.assertEqual(turn.status, AppChatMessage.Status.PENDING)
+
+    @patch("apps.cron.publish.publish_task")
+    def test_requeue_preserves_partial_seq_guard(self, _publish):
+        turn, _ = self._pair("preserve-seq", partial_seq=7)
+        self._drop()
+
+        with patch("apps.router.pending_queue._is_tenant_container_live", return_value=True):
+            result = retry_dropped_app_turn_task(str(turn.id))
+
+        self.assertEqual(result, {"retried": 1})
+        turn.refresh_from_db()
+        self.assertEqual(turn.partial_seq, 7)
 
     @patch("apps.cron.publish.publish_task")
     def test_claim_inbound_event_blocks_double_submission(self, publish):
@@ -312,6 +440,80 @@ class DroppedAppTurnRetryTest(TestCase):
         value = dropped_retry_dedup_id("56e7f92c-45a5-4478-a773-bf2beec93a9d")
         self.assertNotIn(":", value)
         self.assertFalse(any(char.isspace() for char in value))
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-key", NBHD_DISABLE_BACKGROUND_THREADS=True)
+class DroppedAppTurnRetryConcurrencyTest(TransactionTestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            username=f"drop_retry_race_{secrets.token_hex(4)}",
+            email=f"{secrets.token_hex(4)}@example.com",
+        )
+        self.tenant = Tenant.objects.create(
+            user=self.user,
+            status=Tenant.Status.ACTIVE,
+            container_fqdn="oc-retry-race.example.com",
+        )
+        self.thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, is_main=True, title="Main")
+        now = timezone.now()
+        self.turn = AppChatMessage.objects.create(
+            tenant=self.tenant,
+            user=self.user,
+            thread=self.thread,
+            client_msg_id="fail-open-race",
+            user_text="question",
+            status=AppChatMessage.Status.ERROR,
+            error="dropped",
+            phase="thinking",
+            replied_at=now,
+            retried_at=now,
+        )
+        PendingMessage.objects.create(
+            tenant=self.tenant,
+            channel=PendingMessage.Channel.IOS,
+            channel_user_id=str(self.thread.id),
+            payload={
+                "message_text": "question",
+                "client_msg_id": self.turn.client_msg_id,
+                "thread_id": str(self.thread.id),
+            },
+            user_text="question",
+            delivery_status=PendingMessage.Status.FAILED,
+            delivered_at=now,
+        )
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.router.pending_queue._is_tenant_container_live", return_value=True)
+    def test_concurrent_fail_open_claims_still_requeue_once(self, _health, _publish, notify_error):
+        claim_barrier = threading.Barrier(2)
+
+        def fail_open_claim(_event_key):
+            claim_barrier.wait(timeout=5)
+            return True
+
+        def run_task():
+            close_old_connections()
+            try:
+                return retry_dropped_app_turn_task(str(self.turn.id))
+            finally:
+                close_old_connections()
+
+        with (
+            patch("apps.router.inbound_dedup.claim_inbound_event", side_effect=fail_open_claim),
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            results = list(pool.map(lambda _index: run_task(), range(2)))
+
+        self.assertCountEqual(results, [{"retried": 1}, {"retried": 0, "duplicate": True}])
+        self.assertEqual(
+            PendingMessage.objects.filter(
+                tenant=self.tenant,
+                delivery_status=PendingMessage.Status.PENDING,
+            ).count(),
+            1,
+        )
+        notify_error.assert_not_called()
 
 
 @override_settings(

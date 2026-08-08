@@ -22,6 +22,7 @@ from rest_framework.views import APIView
 
 from apps.common.eval_sink import suppresses_real_transport
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -418,6 +419,8 @@ class CronDeliveryView(APIView):
         serializer = SendToUserSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=http_status.HTTP_400_BAD_REQUEST)
+
+        record_runtime_write_activity(tenant)
 
         # As authored by the agent — PII-placeholder space ([PERSON_1]). Retained
         # so the at-rest copies (ProactiveOutbound.message_text, the LINE

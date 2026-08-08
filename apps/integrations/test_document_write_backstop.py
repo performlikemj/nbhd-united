@@ -24,7 +24,7 @@ from rest_framework.test import APIClient
 from apps.journal.document_ingestion import record_keep
 from apps.journal.models import DocumentIngestion, Task
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn
-from apps.router.models import AppChatMessage
+from apps.router.models import AppChatMessage, RuntimeWriteActivity
 from apps.router.test_ios_chat import _JPEG_BYTES, _PDF_BYTES, _b64, _make_tenant, _make_user, _ok_chat_response
 from apps.tenants.test_utils import seed_internal_key
 
@@ -175,9 +175,29 @@ class DocumentWriteBackstopRealIngressTest(TestCase):
         self.tenant.save(update_fields=["document_ingestion_enabled"])
         self._upload_document("u1")
         self.assertEqual(self._create_task().status_code, 201)
+        self.assertTrue(RuntimeWriteActivity.objects.filter(tenant=self.tenant).exists())
 
     def test_no_messages_allows_write(self):
         self.assertEqual(self._create_task().status_code, 201)
+
+    def test_runtime_read_does_not_record_write_activity(self):
+        response = self.rt.get(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/current-status/",
+            **self._rt_headers(),
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(RuntimeWriteActivity.objects.filter(tenant=self.tenant).exists())
+
+    def test_runtime_update_bypass_records_write_activity(self):
+        task = Task.objects.create(tenant=self.tenant, title="Before")
+        response = self.rt.patch(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/tasks/{task.id}/",
+            {"title": "After"},
+            format="json",
+            **self._rt_headers(),
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(RuntimeWriteActivity.objects.filter(tenant=self.tenant).count(), 1)
 
     def test_block_emits_telemetry(self):
         self._upload_document("u1")

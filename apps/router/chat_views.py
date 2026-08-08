@@ -585,6 +585,8 @@ def enqueue_tenant_turn(
                 status=AppChatMessage.Status.PENDING,
             )
     except IntegrityError:
+        # Safe only because ATOMIC_REQUESTS is off: the inner atomic rolled back,
+        # so this winner lookup runs in a usable outer connection.
         # Concurrent inbound won the (tenant, client_msg_id) race; the winner
         # already enqueued the tenant turn — replay, don't re-enqueue.
         turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
@@ -1158,6 +1160,8 @@ class ChatLocalTurnView(APIView):
                     replied_at=occurred_at or now,
                 )
         except IntegrityError:
+            # Safe only because ATOMIC_REQUESTS is off: the inner atomic rolled
+            # back before this winner lookup uses the connection.
             # Concurrent outbox retry won the (tenant, client_msg_id) race.
             turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
             return Response(_serialize_message(turn), status=status.HTTP_200_OK)
@@ -1393,21 +1397,16 @@ class ChatProgressEventView(APIView):
             if in_flight_oldest is not None:
                 qs = base.filter(thread_id=in_flight_oldest.thread_id)
             else:
-                # No live IOS lease matched (lease expired / narrow race) — fall
-                # back to the newest PENDING row so a real PHASE event is never
-                # silently dropped. But do NOT attribute partial reply TEXT here:
-                # without a live IOS lease the turn ACTUALLY in flight may be a
-                # Telegram/LINE turn (which creates no AppChatMessage row), and
-                # writing its cumulative reply into an unrelated PENDING app row
-                # would surface another channel's private reply as this turn's
-                # streaming text. Phase-only on the fallback.
+                # No live IOS lease matched (lease expired / narrow race). The
+                # runtime omitted client_msg_id, so neither phase nor partial
+                # text is attributable: the actual turn may be Telegram/LINE.
                 latest_pk = base.order_by("-created_at").values_list("pk", flat=True).first()
                 qs = base.filter(pk=latest_pk) if latest_pk is not None else base.none()
                 partial_attributable = False
         # Phase narration overwrites in place (only when a phase was sent — a
         # text-only post must NOT clobber a live phase with an empty string).
         updated = 0
-        if phase:
+        if phase and partial_attributable:
             updated += qs.update(phase=phase, phase_detail=detail)
         # Partial text is seq-guarded: only apply when this seq is strictly newer
         # than what's stored, so an out-of-order or duplicate post can't rewind

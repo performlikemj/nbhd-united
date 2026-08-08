@@ -16,7 +16,7 @@ from rest_framework.views import APIView
 from apps.common.llm_contracts import resolve_relative_date, today_in_tenant_tz
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.pii.egress import KnownValueResponseGuardMixin
-from apps.router.document_write_guard import assert_write_allowed_for_document_turn
+from apps.router.document_write_guard import assert_write_allowed_for_document_turn, record_runtime_write_activity
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
@@ -318,6 +318,7 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
         if err:
             return err
+        record_runtime_write_activity(tenant)
         lock_resp = _edit_locked_response(workout)
         if lock_resp is not None:
             logger.info("runtime.patch.edit_locked workout=%s", workout_id)
@@ -446,9 +447,10 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
         )
 
     def delete(self, request, tenant_id, workout_id):
-        _tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
+        tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
         if err:
             return err
+        record_runtime_write_activity(tenant)
         lock_resp = _edit_locked_response(workout)
         if lock_resp is not None:
             logger.info("runtime.delete.edit_locked workout=%s", workout_id)
@@ -474,6 +476,7 @@ class RuntimeWorkoutSkipView(_FuelResponseGuard, APIView):
         tenant_or_resp = _get_tenant_or_404(tenant_id)
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
+        record_runtime_write_activity(tenant_or_resp)
         try:
             workout = Workout.objects.get(id=workout_id, tenant=tenant_or_resp)
         except Workout.DoesNotExist:
@@ -522,6 +525,7 @@ class RuntimeWorkoutCompleteView(_FuelResponseGuard, APIView):
         tenant_or_resp = _get_tenant_or_404(tenant_id)
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
+        record_runtime_write_activity(tenant_or_resp)
         try:
             workout = Workout.objects.get(id=workout_id, tenant=tenant_or_resp)
         except Workout.DoesNotExist:
@@ -596,6 +600,7 @@ class RuntimeWorkoutSwapView(_FuelResponseGuard, APIView):
         tenant_or_resp = _get_tenant_or_404(tenant_id)
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
+        record_runtime_write_activity(tenant_or_resp)
         a_id = request.data.get("a")
         b_id = request.data.get("b")
         if not a_id or not b_id or a_id == b_id:
@@ -946,6 +951,7 @@ class RuntimeBodyWeightView(APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+        record_runtime_write_activity(tenant)
 
         weight_date = request.query_params.get("date") or request.data.get("date")
         if not weight_date:
@@ -1806,6 +1812,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+        record_runtime_write_activity(tenant)
 
         plan = self._get_plan(tenant, plan_id)
         if not plan:
@@ -1996,6 +2003,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+        record_runtime_write_activity(tenant)
 
         plan = self._get_plan(tenant, plan_id)
         if not plan:

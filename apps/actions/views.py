@@ -22,6 +22,7 @@ from apps.integrations.internal_auth import (
     InternalAuthError,
     validate_internal_runtime_request,
 )
+from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.models import Tenant
 
 from .models import (
@@ -138,6 +139,8 @@ class GateRequestView(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
+
+        record_runtime_write_activity(tenant)
 
         from apps.pii.store_authoring import author_store_fields
 

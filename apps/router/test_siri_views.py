@@ -587,10 +587,9 @@ class ChatProgressEventTest(TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
-    def test_no_client_msg_id_fallback_narrates_newest_when_no_lease(self):
-        # FALLBACK path: when no thread holds a live drain lease (e.g. the lease
-        # raced/expired), the control plane narrates the most-recent PENDING turn
-        # so a real progress event is never dropped.
+    def test_no_client_msg_id_fallback_does_not_narrate_without_a_lease(self):
+        # Without client_msg_id or a live iOS lease, narration is not attributable
+        # to either app row and must not mutate retry eligibility evidence.
         older = self._pending("old")
         AppChatMessage.objects.filter(pk=older.pk).update(created_at=timezone.now() - timedelta(minutes=5))
         newer = self._pending("new")
@@ -602,12 +601,12 @@ class ChatProgressEventTest(TestCase):
             HTTP_X_NBHD_TENANT_ID=str(self.tenant.id),
         )
         self.assertEqual(resp.status_code, 200, resp.content)
-        self.assertTrue(resp.data["updated"])
+        self.assertFalse(resp.data["updated"])
         newer.refresh_from_db()
         older.refresh_from_db()
-        self.assertEqual(newer.phase, "tool")
-        self.assertEqual(newer.phase_detail, "checking your journal")
-        self.assertEqual(older.phase, "")  # no lease → fallback narrates newest
+        self.assertEqual(newer.phase, "")
+        self.assertEqual(newer.phase_detail, "")
+        self.assertEqual(older.phase, "")
 
     def test_no_client_msg_id_narrates_in_flight_thread_not_newest(self):
         # router-chat#2: with no client_msg_id, narrate the IN-FLIGHT thread (one
@@ -808,19 +807,19 @@ class ChatProgressEventTest(TestCase):
         self.assertEqual(turn.reply_text, "here is the final answer")
         self.assertEqual(turn.partial_text, "")
 
-    def test_no_client_msg_id_partial_dropped_on_fallback_but_phase_narrates(self):
+    def test_no_client_msg_id_phase_and_partial_dropped_on_fallback(self):
         # Cross-channel bleed guard: with NO client_msg_id and NO live IOS lease
         # (the newest-PENDING fallback), the turn actually in flight may be a
         # Telegram/LINE turn — writing its reply text into an unrelated PENDING
         # app row would surface another channel's private reply as this turn's
-        # stream. So the low-sensitivity PHASE still narrates on the fallback, but
-        # the partial reply TEXT is DROPPED.
+        # stream. Narration without attribution is not evidence about this app
+        # row, so both phase and partial reply text are dropped.
         turn = self._pending()
         resp = self._post({"phase": "composing", "text": "secret from another channel", "seq": 1})
         self.assertEqual(resp.status_code, 200, resp.content)
-        self.assertTrue(resp.data["updated"])  # phase applied
+        self.assertFalse(resp.data["updated"])
         turn.refresh_from_db()
-        self.assertEqual(turn.phase, "composing")  # phase narrates on fallback
+        self.assertEqual(turn.phase, "")
         self.assertEqual(turn.partial_text, "")  # partial text NOT attributed
         self.assertEqual(turn.partial_seq, 0)
 
