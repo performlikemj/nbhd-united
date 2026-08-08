@@ -56,6 +56,15 @@ const CONTRACT_PREFIX = "nbhd.v1 ";
 const SEND_TOOL_ID = "nbhd_send_to_user";
 const TOOL_DISPATCH_META = "tool_call";
 
+// Tools that COUNT against a contract's ``limits.mutations`` budget. Must stay
+// in lockstep with apps/cron/patterns/task_hygiene.py::_HYGIENE_LIFECYCLE_TOOLS
+// — the Python side pins that tuple exactly in its drift test, so a change
+// there fails a test that points here. A pattern can only ever call what its
+// toolsAllow grants, so a tool missing from this set is uncounted, not
+// unguarded; the allowlist remains the hard boundary and this is the budget on
+// top of it.
+const MUTATION_TOOL_IDS = new Set(["nbhd_task_complete", "nbhd_task_skip", "nbhd_task_defer"]);
+
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
 }
@@ -226,6 +235,59 @@ export function decideGuardAction(contract, content, revisionsUsed) {
   return { type: "pass" }; // unknown action → fail-open
 }
 
+// ── fire-time hard caps ─────────────────────────────────────────────────────
+// A contract may carry ``limits: {sends, mutations}``. Unlike check/on_fail
+// (which shape a message), these BLOCK the tool call outright once spent.
+// Absent or garbage limits → uncapped, exactly the historical behaviour, so
+// every pattern that predates this stays untouched.
+//
+// Pure decision function: never mutates. The caller owns the counters on the
+// cache entry, the same ownership split decideGuardAction/entry.revisions uses.
+// Exported for unit tests.
+export function decideLimitAction(contract, toolId, counters) {
+  const limits = contract && contract.limits;
+  if (!limits || typeof limits !== "object" || Array.isArray(limits)) return { type: "pass" };
+
+  const readCap = (value) =>
+    typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+  const readUsed = (value) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const counted = asObject(counters);
+
+  if (toolId === SEND_TOOL_ID) {
+    const cap = readCap(limits.sends);
+    if (cap === null) return { type: "pass" };
+    if (readUsed(counted.sends) >= cap) {
+      return {
+        type: "block",
+        counter: "sends",
+        reason:
+          `This scheduled task is allowed to send ${cap} message(s) and has already sent them. ` +
+          `Do not call \`nbhd_send_to_user\` again — everything you still want to raise belongs ` +
+          `in that single summary. End the turn now.`,
+      };
+    }
+    return { type: "count", counter: "sends" };
+  }
+
+  if (MUTATION_TOOL_IDS.has(toolId)) {
+    const cap = readCap(limits.mutations);
+    if (cap === null) return { type: "pass" };
+    if (readUsed(counted.mutations) >= cap) {
+      return {
+        type: "block",
+        counter: "mutations",
+        reason:
+          `This scheduled task has reached its limit of ${cap} task change(s) for this run. ` +
+          `Stop changing tasks and include the remaining items as PROPOSALS in your single ` +
+          `summary message, so the user can confirm them in conversation.`,
+      };
+    }
+    return { type: "count", counter: "mutations" };
+  }
+
+  return { type: "pass" };
+}
+
 // ── dispatch-shape handling ─────────────────────────────────────────────────
 // Mirrors extractDispatchedToolId from nbhd-routing-context/index.js:69-73 —
 // the toolSearch meta-tool dispatch wraps the real tool id under id/toolId/
@@ -234,6 +296,15 @@ function extractDispatchedToolId(params) {
   if (!params || typeof params !== "object") return "";
   const raw = params.id ?? params.toolId ?? params.tool ?? params.name ?? "";
   return typeof raw === "string" ? raw.trim().toLowerCase() : "";
+}
+
+// Resolve the tool id being dispatched, through EITHER shape, for the cap
+// bookkeeping (which cares about every tool call, not just the send tool).
+// Exported for unit tests.
+export function resolveDispatchedToolId(event) {
+  const toolName = asTrimmedString(event && event.toolName);
+  if (toolName === TOOL_DISPATCH_META) return extractDispatchedToolId(asObject(event && event.params));
+  return toolName.toLowerCase();
 }
 
 // Resolve the outgoing nbhd_send_to_user message from EITHER dispatch shape.
@@ -343,7 +414,7 @@ export default function register(api) {
       if (!contract) return undefined; // freeform/legacy/no-contract cron — nothing to enforce
 
       setCacheEntry(
-        { fetchedAtMs: Date.now(), ttlMs: cacheTtlMs, cronName, contract, revisions: 0 },
+        { fetchedAtMs: Date.now(), ttlMs: cacheTtlMs, cronName, contract, revisions: 0, sends: 0, mutations: 0 },
         sessionKey,
         runId,
       );
@@ -364,14 +435,58 @@ export default function register(api) {
       const entry = lookupCacheEntry(event && event.sessionKey, event && event.runId);
       if (!entry || !entry.contract) return undefined;
 
+      const toolId = resolveDispatchedToolId(event);
+
+      // Mutation budget. Nothing to validate about the content of a
+      // complete/skip/defer — the only question is whether this turn has spent
+      // its allowance. Handled before the send path so a non-send tool exits
+      // here and never touches message extraction.
+      if (toolId !== SEND_TOOL_ID) {
+        const mutationLimit = decideLimitAction(entry.contract, toolId, entry);
+        if (mutationLimit.type === "block") {
+          safeLog(
+            api,
+            "warn",
+            `nbhd-cron-enforcement: mutation cap reached cron=${entry.cronName} ` +
+              `pattern=${(entry.contract && entry.contract.pattern) || "?"} tool=${toolId}`,
+          );
+          return { block: true, blockReason: mutationLimit.reason };
+        }
+        if (mutationLimit.type === "count") entry.mutations = (entry.mutations || 0) + 1;
+        return undefined;
+      }
+
       const dispatch = extractSendMessage(event);
       if (!dispatch.matched) return undefined;
 
+      // Send budget, evaluated BEFORE the content contract: dispatch number two
+      // is refused outright rather than being revised into shape. This is what
+      // makes "exactly one summary" structural instead of prose — and it also
+      // closes the unmarked-second-message path, since a message that never
+      // dispatches cannot arrive without its marker.
+      const sendLimit = decideLimitAction(entry.contract, SEND_TOOL_ID, entry);
+      if (sendLimit.type === "block") {
+        safeLog(
+          api,
+          "warn",
+          `nbhd-cron-enforcement: send cap reached cron=${entry.cronName} ` +
+            `pattern=${(entry.contract && entry.contract.pattern) || "?"}`,
+        );
+        return { block: true, blockReason: sendLimit.reason };
+      }
+
       const decision = decideGuardAction(entry.contract, dispatch.message, entry.revisions);
       if (decision.type === "revise") {
+        // A blocked revise never reaches the user, so it must not burn the send
+        // budget — otherwise asking the model to fix its marker would cost it
+        // the only message it was allowed to send.
         entry.revisions += 1;
         return { block: true, blockReason: decision.reason };
       }
+
+      // Everything below here ships a message to the user (pass, rewrite, or
+      // allow-after-budget), so the send is spent at this point.
+      if (sendLimit.type === "count") entry.sends = (entry.sends || 0) + 1;
       if (decision.type === "rewrite") {
         safeLog(
           api,

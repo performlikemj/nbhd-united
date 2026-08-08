@@ -1,7 +1,7 @@
 """Base classes for typed cron pattern handlers.
 
 Each pattern (pure_reminder, quote_user_intent, domain_summary,
-daily_briefing, workout_congrats) implements a subclass of
+daily_briefing, workout_congrats, task_hygiene) implements a subclass of
 ``PatternHandler`` and registers itself via ``register_handler()`` in
 ``apps/cron/patterns/__init__.py``.
 
@@ -121,6 +121,14 @@ class PatternHandler(ABC):
         ``nbhd-cron-enforcement`` plugin's ``evaluateCheck`` /
         ``decideGuardAction`` — see the parity test.
 
+        An optional ``limits`` key (``{"sends": N, "mutations": N}``) declares
+        fire-time HARD CAPS the plugin enforces by blocking the tool call
+        outright — how many times the turn may call ``nbhd_send_to_user``, and
+        how many mutation tools it may call in total. Patterns that omit it are
+        uncapped (the historical behaviour, and correct for the read-only
+        patterns whose ``toolsAllow`` already makes mutation impossible). Only
+        a pattern whose turn can actually change data needs it.
+
         Per-pattern matrix (the actual contracts each handler bakes):
 
           pure_reminder      — contains(text) / rewrite(text)
@@ -128,6 +136,7 @@ class PatternHandler(ABC):
           domain_summary     — marker([block: <render_block>]) / revise_then_allow(max_revisions=1)
           daily_briefing     — marker([block: daily_briefing]) / revise_then_allow(max_revisions=1)
           workout_congrats   — bounded(800) / rewrite(get_fallback_message())
+          task_hygiene       — marker([block: task_hygiene]) / revise_then_allow(max_revisions=1)
         """
         return None
 
