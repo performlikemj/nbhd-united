@@ -150,7 +150,7 @@ broken image never deploys (see [`workflow.md`](../agents/workflow.md)).
 | Build+push `nbhd-openclaw:<tag>` | `deploy-backend` | — | yes |
 | Image boot smoke (maximal config vs built image) | `deploy-backend` | `plugin path not found` / `Invalid config` ([`ci-cd.yml:425`](../../.github/workflows/ci-cd.yml)) | yes |
 | `revision set-mode single` + `containerapp update` | `deploy-backend` | ships the image, sets `OPENCLAW_IMAGE_TAG` + `SENTRY_RELEASE` | yes |
-| Wait for `/health/` 200 (24× / 10s) | `deploy-backend` | **the deploy gate** ([`ci-cd.yml:467`](../../.github/workflows/ci-cd.yml)) | yes |
+| Wait for `/health/` 200 (45× / 10s) | `deploy-backend` | **the deploy gate** ([`ci-cd.yml:467`](../../.github/workflows/ci-cd.yml)) | yes |
 | Sentry release | `deploy-backend` | suspect-commit tracking | no (`continue-on-error`) |
 | bump-all-pending-configs | `deploy-backend` | queue config push to tenants | no (`\|\| echo`) |
 | force-reseed-crons | `deploy-backend` | recreate tenant system crons | no |
@@ -180,7 +180,7 @@ returns `{"status":"ok"}`, **deliberately does not touch the database** (the
 Supavisor pooler drops idle connections; coupling liveness to that would cause
 false deploy failures). Routed unauthenticated at `/health/`
 ([`config/urls.py:11`](../../config/urls.py)) and skipped by the timing
-middleware. If the new revision never serves a 200 in 24 attempts, the deploy job
+middleware. If the new revision never serves a 200 in 45 attempts, the deploy job
 `exit 1`s ([`ci-cd.yml:485`](../../.github/workflows/ci-cd.yml)).
 
 ## Runtime entrypoints
@@ -206,7 +206,13 @@ instead of 4×600 MB > cgroup limit (issue #693 OOM). `post_worker_init`
 ([`gunicorn.conf.py:8`](../../gunicorn.conf.py)) **warms the PII pipeline at
 worker boot** so it never cold-loads inside a user's chat POST (8–114 s in-request
 otherwise → iOS "Something went wrong"); it never fails the worker (the redactor
-degrades to pattern recognizers).
+degrades to pattern recognizers). The deploy rewrites Azure's readiness probe
+from the default TCP check to HTTP `GET /health/` in the same revision as the new
+image. The probe supplies `Host: localhost` (an allowed host) and
+`X-Forwarded-Proto: https` (so `SECURE_SSL_REDIRECT` does not turn the check into
+a redirect). A 200 therefore proves `/health/` reached a worker after its
+`post_worker_init`; workers still loading the model have not entered their accept
+loop and cannot receive user requests.
 
 ### `entrypoint.sh` — OpenClaw ([`runtime/openclaw/entrypoint.sh`](../../runtime/openclaw/entrypoint.sh))
 

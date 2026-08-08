@@ -27,7 +27,14 @@ def post_worker_init(worker):
         get_pii_pipeline()
         worker.log.info("post_worker_init: PII pipeline warmed")
     except Exception as exc:
-        worker.log.warning("post_worker_init: PII warm skipped (%s)", exc)
+        # get_pii_pipeline() has already cached + logged the root failure.
+        # Keep booting, but make the degraded posture unmistakable in the
+        # Gunicorn stream too: requests retain pattern-recognizer coverage.
+        worker.log.error(
+            "post_worker_init: PII pipeline warm failed; neural detection disabled "
+            "for this worker, pattern-recognizer fallback remains active (%s)",
+            exc,
+        )
 
     # Encryption-at-rest Phase 1 (PR4): best-effort DEK cache pre-warm, dark
     # (nothing decrypts yet — this only populates apps.crypto.cache so a
