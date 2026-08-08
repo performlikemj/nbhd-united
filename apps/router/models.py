@@ -740,6 +740,14 @@ class AppChatMessage(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     replied_at = models.DateTimeField(null=True, blank=True)
+    retried_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Set when a silently dropped tenant-runtime turn spends its one "
+            "bounded replay. The same row returns to pending if that replay runs."
+        ),
+    )
     waking_at = models.DateTimeField(
         null=True,
         blank=True,

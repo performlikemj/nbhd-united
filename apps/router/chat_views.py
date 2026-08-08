@@ -453,6 +453,10 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None, user_text: Redac
         "error": msg.error,
         "created_at": msg.created_at.isoformat(),
         "replied_at": msg.replied_at.isoformat() if msg.replied_at else None,
+        # Additive observability only: existing clients keep polling status as
+        # before, while newer clients/debug tooling can distinguish a delayed
+        # replay from an ordinary first attempt.
+        "retried_at": msg.retried_at.isoformat() if msg.retried_at else None,
         # Set while a hibernated container boots; clients show "waking up"
         # copy when status is still pending and this is non-null.
         "waking_at": msg.waking_at.isoformat() if msg.waking_at else None,
@@ -547,8 +551,30 @@ def enqueue_tenant_turn(
     # Budget gate — don't enqueue work (or wake a container) for an over-budget
     # tenant. Recorded as an error so the client surfaces the reason.
     budget_reason = check_budget(tenant)
-    if budget_reason:
-        try:
+    try:
+        with transaction.atomic():
+            # Serialize user-turn creation with the delayed dropped-turn retry.
+            # The retry locks this same thread before its final newest-turn
+            # check, closing the insert-between-check-and-requeue race.
+            ChatThread.objects.select_for_update().only("id").get(id=thread.id, tenant=tenant)
+            existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
+            if existing:
+                return existing, False
+
+            if budget_reason:
+                turn = AppChatMessage.objects.create(
+                    tenant=tenant,
+                    user=user,
+                    thread=thread,
+                    client_msg_id=client_msg_id,
+                    user_text=text,
+                    user_text_enc=user_text_enc,
+                    status=AppChatMessage.Status.ERROR,
+                    error="budget_exhausted",
+                    replied_at=timezone.now(),
+                )
+                return turn, False
+
             turn = AppChatMessage.objects.create(
                 tenant=tenant,
                 user=user,
@@ -556,26 +582,10 @@ def enqueue_tenant_turn(
                 client_msg_id=client_msg_id,
                 user_text=text,
                 user_text_enc=user_text_enc,
-                status=AppChatMessage.Status.ERROR,
-                error="budget_exhausted",
-                replied_at=timezone.now(),
+                status=AppChatMessage.Status.PENDING,
             )
-        except IntegrityError:
-            turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
-        return turn, False
-
-    try:
-        turn = AppChatMessage.objects.create(
-            tenant=tenant,
-            user=user,
-            thread=thread,
-            client_msg_id=client_msg_id,
-            user_text=text,
-            user_text_enc=user_text_enc,
-            status=AppChatMessage.Status.PENDING,
-        )
     except IntegrityError:
-        # Concurrent retry won the (tenant, client_msg_id) race; the winner
+        # Concurrent inbound won the (tenant, client_msg_id) race; the winner
         # already enqueued the tenant turn — replay, don't re-enqueue.
         turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
         return turn, False
@@ -1128,18 +1138,25 @@ class ChatLocalTurnView(APIView):
         occurred_at = _parse_occurred_at(request.data.get("occurred_at"))
         user_text_enc = _encrypt_chat_value(tenant, enc_columns.APP_CHAT_MESSAGE_USER_TEXT, user_text)
         try:
-            turn = AppChatMessage.objects.create(
-                tenant=tenant,
-                user=request.user,
-                thread=thread,
-                client_msg_id=client_msg_id,
-                user_text=user_text,
-                user_text_enc=user_text_enc,
-                reply_text=reply_text,
-                status=AppChatMessage.Status.READY,
-                source=AppChatMessage.Source.ON_DEVICE,
-                replied_at=occurred_at or now,
-            )
+            with transaction.atomic():
+                # Local/offline turns are still newer user messages in this
+                # thread, so serialize them with the same retry recency guard.
+                ChatThread.objects.select_for_update().only("id").get(id=thread.id, tenant=tenant)
+                existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
+                if existing:
+                    return Response(_serialize_message(existing), status=status.HTTP_200_OK)
+                turn = AppChatMessage.objects.create(
+                    tenant=tenant,
+                    user=request.user,
+                    thread=thread,
+                    client_msg_id=client_msg_id,
+                    user_text=user_text,
+                    user_text_enc=user_text_enc,
+                    reply_text=reply_text,
+                    status=AppChatMessage.Status.READY,
+                    source=AppChatMessage.Source.ON_DEVICE,
+                    replied_at=occurred_at or now,
+                )
         except IntegrityError:
             # Concurrent outbox retry won the (tenant, client_msg_id) race.
             turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)

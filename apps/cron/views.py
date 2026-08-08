@@ -354,6 +354,10 @@ TASK_MAP = {
     # OpenClaw claude-cli backend never sees overlapping turns on the
     # same live session.
     "drain_pending_messages_for_tenant": "apps.router.pending_queue.drain_pending_messages_for_tenant_task",
+    # One-shot, 60-second replay for an app turn that reached dropped with no
+    # output or tool activity. The task re-enters the shared PendingMessage
+    # inbound path and can never schedule itself.
+    "retry_dropped_app_turn": "apps.router.pending_queue.retry_dropped_app_turn_task",
     # Per-minute reaper for the message queue. Republishes drain tasks
     # for PendingMessage rows whose original drain never ran. Safety net
     # for QStash publish failures, DLQ-bound drain attempts, and worker
