@@ -72,24 +72,34 @@ class CronDeliveryPlaceholderTests(TestCase):
         self.assertEqual(receipt["writer"], "background")
         self.assertEqual(receipt["redactions"], [{"placeholder": "[PERSON_1]"}])
 
-    def test_flag_on_response_authors_name_crossing_character_500_before_safe_truncation(self):
+    def test_flag_on_response_slices_to_500_before_authoring_and_truncates_growth_safely(self):
         self._enable_placeholder_writes()
         attempt = self._attempt("boundary")
         empty_rendered = json.dumps({"detail": ""}, sort_keys=True, default=str)
         value_prefix_len = empty_rendered.index('""') + 1
-        padding = 497 - value_prefix_len
+        padding = 494 - value_prefix_len
         response = Response({"detail": ("x" * padding) + " Alice"}, status=503)
         rendered = json.dumps(response.data, sort_keys=True, default=str)
-        self.assertEqual(rendered.index("Alice"), 498)
+        self.assertEqual(rendered.index("Alice"), 495)
 
-        with _checked_detection():
+        detector_inputs = []
+
+        def bounded_detector(text, *_args, **_kwargs):
+            detector_inputs.append(text)
+            return []
+
+        with (
+            patch("apps.pii.redactor._detect_pii", side_effect=bounded_detector),
+            patch("apps.pii.authoring._detect_pii", side_effect=bounded_detector),
+        ):
             _resolve_delivery_attempt(attempt, state=DeliveryAttempt.State.FAILED, response=response)
 
         attempt.refresh_from_db()
-        self.assertEqual(attempt.response_excerpt, rendered[:498])
+        self.assertEqual(attempt.response_excerpt, rendered[:495])
         self.assertLessEqual(len(attempt.response_excerpt), 500)
-        self.assertNotIn("Ali", attempt.response_excerpt)
         self.assertNotIn("[PERS", attempt.response_excerpt)
+        self.assertTrue(detector_inputs)
+        self.assertTrue(all(len(text) <= 500 for text in detector_inputs))
         receipt = attempt.pii_receipts["response_excerpt"]
         self.assertEqual(receipt["writer"], "background")
         self.assertEqual(receipt["redactions"], [])

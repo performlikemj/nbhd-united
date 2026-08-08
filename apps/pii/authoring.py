@@ -140,21 +140,18 @@ def truncate_placeholder_safe(text: str, max_len: int) -> str:
     return text[:max_len]
 
 
-def _registered_field_max_length(field: str, model_label: str | None = None) -> int | None:
+def _registered_field_max_length(field: str, model_label: str) -> int | None:
     """Return the registered column limit for a flat text field.
 
-    ``model_label`` resolves the limit against ONE store, which is the only
+    ``model_label`` is required and resolves the limit against ONE store, the only
     correct answer once two stores register the same field NAME with different
     limits — a name-global minimum would silently truncate the roomier store's
     writes to the tighter store's column. Callers that know which model they are
     writing should always pass it.
 
-    Omitting it is retained for pre-registry callers. A name-only lookup applies
-    a limit only when every registered namesake agrees; ambiguity returns no
-    central cap so authoring cannot silently truncate for an unrelated model.
-    The owning serializer/model remains responsible for its normal validation,
-    and registered writers should pass ``model_label`` for exact safe growth
-    truncation.
+    Name-only lookup is deliberately unsupported: silently returning no cap for
+    ambiguous names would turn a newly divergent registration into an unbounded
+    write. Unregistered callers opt out before invoking this helper.
     """
     from apps.pii.store_registry import registered_stores
 
@@ -162,7 +159,7 @@ def _registered_field_max_length(field: str, model_label: str | None = None) -> 
     for store in registered_stores():
         if field not in store.flat_fields:
             continue
-        if model_label is not None and store.model_label != model_label:
+        if store.model_label != model_label:
             continue
         max_length = getattr(store.model._meta.get_field(field), "max_length", None)
         limits.add(max_length)
@@ -239,7 +236,7 @@ def _finalize(
     must stay byte-identical).
     """
     if source_text is not None:
-        max_length = _registered_field_max_length(field, model_label)
+        max_length = _registered_field_max_length(field, model_label) if model_label is not None else None
         if max_length is not None and len(source_text) <= max_length:
             text = truncate_placeholder_safe(text, max_length)
 
@@ -347,9 +344,18 @@ def author_text(
         )
 
     mint, allow_user_name = _WRITER_POLICIES[writer]
+    authoring_input = text
+    if writer in {"runtime", "background"}:
+        # The checked redactor substitutes known values before its NER pass.
+        # Do that cheap substitution here too so registered growth can be
+        # placeholder-safely capped before BOTH detector passes.
+        authoring_input = _redact_active_known_values(tenant, text, seam=f"{seam}:known-input")
+        max_length = _registered_field_max_length(field, model_label) if model_label is not None else None
+        if max_length is not None and len(text) <= max_length:
+            authoring_input = truncate_placeholder_safe(authoring_input, max_length)
     try:
         outcome = redact_user_message_checked(
-            text,
+            authoring_input,
             tenant,
             allow_user_name=allow_user_name,
             mint=mint,
@@ -369,7 +375,7 @@ def author_text(
         receipt = {"state": "placeholder", "reason": reason, "redactions": []}
         return _finalize(
             tenant,
-            text,
+            authoring_input,
             receipt,
             seam=seam,
             writer=writer,
@@ -414,6 +420,13 @@ def author_text(
     stored = outcome.text
     if writer in {"runtime", "background"}:
         stored = _redact_active_known_values(tenant, stored, seam=f"{seam}:known-values")
+        # Bound residual detection to the actual registered column budget too.
+        # Placeholder substitution can grow an already-bounded source; trimming
+        # before the second detector keeps hot paths such as cron excerpts from
+        # paying NER for bytes that cannot be persisted anyway.
+        max_length = _registered_field_max_length(field, model_label) if model_label is not None else None
+        if max_length is not None and len(text) <= max_length:
+            stored = truncate_placeholder_safe(stored, max_length)
 
     receipt: dict[str, Any] = {
         "state": "placeholder",

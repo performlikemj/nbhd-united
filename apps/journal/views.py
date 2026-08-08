@@ -86,9 +86,9 @@ def _note_template_response(note: DailyNote, *, include_entries: bool = False) -
     )
     # Owner-facing serve boundary: note.markdown + section bodies are stored in
     # PII placeholder space (the assistant authors them on redacted input), so
-    # rehydrate the user-visible strings back to real values. Template metadata
-    # (id/slug/name) is static config and never carries PII. ``sections`` is a
-    # fresh copy from get_or_seed_note_template, so mutating in place is safe.
+    # rehydrate the user-visible strings back to real values. Template names are
+    # owner-authored; ids/slugs remain structured config. ``sections`` is a fresh
+    # copy from get_or_seed_note_template, so mutating in place is safe.
     for section in sections:
         for key in ("title", "content"):
             if section.get(key):
@@ -98,7 +98,7 @@ def _note_template_response(note: DailyNote, *, include_entries: bool = False) -
         "markdown": rehydrate_for_tenant(tenant, note.markdown),
         "template_id": str(template.id),
         "template_slug": template.slug,
-        "template_name": template.name,
+        "template_name": rehydrate_for_tenant(tenant, template.name),
         "sections": sections,
         "pii_receipts": resolve_receipt_values(note.pii_receipts, tenant.pii_entity_map),
     }

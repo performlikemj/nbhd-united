@@ -298,13 +298,13 @@ _STORES = (
     ),
     PlaceholderStore(
         model_label="journal.Session",
-        flat_fields=("summary",),
+        flat_fields=("project", "summary"),
         json_paths=("accomplishments[]", "blockers[]", "next_steps[]", "processed_summary.**"),
         receipts_field="pii_receipts",
     ),
     PlaceholderStore(
         model_label="journal.NoteTemplate",
-        flat_fields=(),
+        flat_fields=("name",),
         json_paths=("sections[].title", "sections[].content"),
         receipts_field="pii_receipts",
     ),

@@ -135,6 +135,32 @@ class FinanceLongTailPlaceholderTests(TestCase):
             "Alice",
         )
 
+    def test_transaction_serializer_direct_create_authors_description(self):
+        self._enable_placeholder_writes()
+        account = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="student_loan",
+            nickname="Loan",
+            current_balance="1000.00",
+        )
+        serializer = FinanceTransactionSerializer(
+            data={
+                "account": str(account.id),
+                "amount": "50.00",
+                "transaction_type": "payment",
+                "date": "2026-08-08",
+                "description": "Paid after Alice called",
+            },
+            context={"tenant": self.tenant},
+        )
+        self.assertTrue(serializer.is_valid(), serializer.errors)
+
+        with _checked_detection():
+            transaction = serializer.save()
+
+        self.assertEqual(transaction.description, "Paid after [PERSON_1] called")
+        self.assertEqual(transaction.pii_receipts["description"]["writer"], "owner")
+
     def test_runtime_writes_and_payoff_projection_remain_placeholder_space(self):
         self._enable_placeholder_writes()
         account_url = f"/api/v1/finance/runtime/{self.tenant.id}/accounts/"

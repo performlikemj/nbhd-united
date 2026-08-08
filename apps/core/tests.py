@@ -348,6 +348,25 @@ class RenderMeditationOrchestrationTests(TestCase):
         self.assertIn(f"workspace/meditations/{session.id}.ogg", upload_paths)
         mock_notify.assert_called_once()
 
+    def test_render_rehydrates_manifest_for_tts_without_mutating_stored_manifest(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        manifest = _valid_manifest()
+        manifest["phases"][0]["segments"][0]["text"] = "Welcome, [PERSON_1]."
+        session = self._session(manifest=manifest)
+
+        with (
+            patch.object(render, "render_manifest_to_audio", return_value=_fake_result()) as mock_render,
+            patch.object(services, "upload_workspace_file_binary"),
+            patch.object(services, "notify_meditation_ready"),
+        ):
+            services.render_meditation(session)
+
+        rendered_manifest = mock_render.call_args.args[0]
+        self.assertEqual(rendered_manifest["phases"][0]["segments"][0]["text"], "Welcome, Alice.")
+        session.refresh_from_db()
+        self.assertEqual(session.manifest["phases"][0]["segments"][0]["text"], "Welcome, [PERSON_1].")
+
     def test_idempotent_double_fire_renders_once(self):
         session = self._session()
         with (

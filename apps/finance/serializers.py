@@ -82,8 +82,17 @@ class FinanceTransactionSerializer(OwnerStoreSerializerMixin, serializers.ModelS
         read_only_fields = ["id", "pii_receipts", "created_at"]
 
     def create(self, validated_data):
-        validated_data["tenant"] = self.context["tenant"]
-        return super().create(validated_data)
+        tenant = self.context["tenant"]
+        authored, receipts = author_store_fields(
+            tenant,
+            validated_data,
+            model_label=self.pii_model_label,
+            seam="finance.owner.transaction.create",
+            writer="owner",
+        )
+        authored["tenant"] = tenant
+        authored["pii_receipts"] = receipts
+        return super().create(authored)
 
     def to_representation(self, instance):
         represented = super().to_representation(instance)

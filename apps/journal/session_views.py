@@ -140,7 +140,7 @@ class SessionCreateView(APIView):
             session = Session.objects.create(
                 tenant=tenant,
                 source=data["source"],
-                project=data["project"],
+                project=authored["project"],
                 project_identity=data.get("project_identity", ""),
                 project_type=data.get("project_type", ""),
                 session_start=data["session_start"],

@@ -30,7 +30,7 @@ from typing import Any
 # no prior receipt is legacy text, so it enters the fold as ``bypass``: honest
 # about having never been checked, without inventing a repair job for every
 # pre-P3 row an append happens to touch.
-_STATE_RANK = {"unconfirmed": 0, "residual": 1, "bypass": 2, "placeholder": 3}
+_STATE_RANK = {"unconfirmed": 0, "terminal": 0, "residual": 1, "bypass": 2, "placeholder": 3}
 _LEGACY_RANK = _STATE_RANK["bypass"]
 
 
@@ -60,7 +60,9 @@ def merge_field_receipt(
     prior_rank = _STATE_RANK.get(prior_state, _LEGACY_RANK)
     new_rank = _STATE_RANK.get(receipt.get("state"), _LEGACY_RANK)
 
-    winner = receipt if new_rank <= prior_rank else prior
+    # A terminal receipt is an exhausted repair result. A later append cannot
+    # launder it back into an active unconfirmed state at the same rank.
+    winner = prior if prior_state == "terminal" else receipt if new_rank <= prior_rank else prior
     if isinstance(winner, dict):
         merged = dict(winner)
     else:

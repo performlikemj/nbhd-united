@@ -579,6 +579,28 @@ class ReconcilePlanStateTests(TestCase):
         self.assertEqual(stale_workout.activity, "Push Day")
         self.assertEqual(counts["workouts_locked_skip"], 1)
 
+    def test_apply_skips_retemplate_when_diff_time_state_changed_without_incrementing_counters(self):
+        initial = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(initial, plan=self.plan, tenant=self.tenant)
+        changed_schedule = {
+            **self.plan.schedule_json,
+            "0": {**self.plan.schedule_json["0"], "activity": "Renamed Push Day"},
+        }
+        rec = self._reconcile(self.plan, changed_schedule, self.plan.weeks, today=self.today)
+        stale_workout, _patch = next(
+            item for item in rec.workouts_to_retemplate if item[0].slot.week_index == 0 and item[0].slot.weekday == 0
+        )
+        changed_ids = [workout.pk for workout, _patch in rec.workouts_to_retemplate]
+        Workout.objects.filter(pk__in=changed_ids).update(status="done")
+
+        counts = self._apply(rec, plan=self.plan, tenant=self.tenant, writer="runtime")
+
+        stale_workout.refresh_from_db()
+        self.assertEqual(stale_workout.status, "done")
+        self.assertEqual(stale_workout.activity, "Push Day")
+        self.assertEqual(counts["workouts_retemplated"], 0)
+        self.assertEqual(counts["workouts_locked_skip"], 0)
+
     def test_apply_merges_patch_receipts_with_locked_current_row(self):
         initial = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
         self._apply(initial, plan=self.plan, tenant=self.tenant)

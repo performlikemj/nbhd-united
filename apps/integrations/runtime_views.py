@@ -5856,7 +5856,7 @@ class RuntimeJournalTemplateUpdateView(APIView):
             {"sections": sections},
             model_label="journal.NoteTemplate",
             seam="integrations.runtime.note_template_update",
-            writer="owner",
+            writer="runtime",
             receipts=template.pii_receipts,
         )
         template.sections = authored["sections"]

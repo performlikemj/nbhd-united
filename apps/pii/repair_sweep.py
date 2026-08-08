@@ -273,6 +273,15 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
             count=totals["residual"],
             kind="residual",
         )
+        # Terminal outcomes have their own >1% threshold/fingerprint so an
+        # exhausted repair population is alarm-visible rather than blending
+        # into the transient error or residual rates.
+        _check_rate_alert(
+            tenant,
+            attempts=totals["fields_attempted"],
+            count=totals["terminal"],
+            kind="terminal",
+        )
     logger.info(
         "pii_repair_counter tenant=%s rows_seen=%d fields_attempted=%d fields_repaired=%d "
         "unconfirmed=%d residual=%d terminal=%d errors=%d",

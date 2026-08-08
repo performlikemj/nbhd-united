@@ -376,6 +376,43 @@ class RepairSweepTests(TestCase):
         self.assertIn("Attempts: 100", kwargs["body"])
         self.assertNotIn("Alice", kwargs["body"])
 
+    def test_terminal_rate_has_its_own_alarm_and_counter_line(self):
+        with patch("apps.transcripts.alerts._send_alert", return_value=True) as send_alert:
+            fired = _check_rate_alert(self.tenant, attempts=100, count=2, kind="terminal")
+
+        self.assertTrue(fired)
+        kwargs = send_alert.call_args.kwargs
+        self.assertIn("terminal rate above 1%", kwargs["subject"])
+        self.assertIn("Terminal outcomes: 2", kwargs["body"])
+
+    def test_repair_feeds_terminal_outcomes_to_terminal_alarm(self):
+        Task.objects.create(
+            tenant=self.tenant,
+            title="still raw",
+            pii_receipts={
+                "title": {
+                    "state": "unconfirmed",
+                    "reason": "redaction-error",
+                    "repair_attempts": MAX_REPAIR_ATTEMPTS - 1,
+                }
+            },
+        )
+        failed = AuthoredText(
+            text="still raw",
+            receipt={"state": "unconfirmed", "reason": "redaction-error", "redactions": []},
+        )
+
+        with (
+            patch("apps.pii.repair_sweep.author_text", return_value=failed),
+            patch("apps.pii.repair_sweep._check_rate_alert", return_value=False) as check_alert,
+        ):
+            result = repair_tenant(self.tenant)
+
+        self.assertEqual(result["terminal"], 1)
+        terminal_call = next(call for call in check_alert.call_args_list if call.kwargs["kind"] == "terminal")
+        self.assertEqual(terminal_call.kwargs["count"], 1)
+        self.assertEqual(terminal_call.kwargs["attempts"], 1)
+
     def test_qstash_task_map_registers_repair_entrypoint(self):
         from apps.cron.views import TASK_MAP
 

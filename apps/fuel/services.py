@@ -490,6 +490,9 @@ def apply_reconciliation(
         )
         authored_creations.append((spec, authored, receipts))
 
+    # Every locked refetch below deliberately reasserts the diff-time state.
+    # If that state changed, skip without counting a mutation or an edit-lock
+    # skip: those counters describe work actually applied or explicitly locked.
     with transaction.atomic():
         new_slot_by_key: dict[SlotKey, Any] = {}
         for key in rec.new_slot_keys:

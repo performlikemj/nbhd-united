@@ -118,10 +118,10 @@ class StoreRegistryTests(SimpleTestCase):
             "actions.PendingAction": (("display_summary",), ("action_payload.**",)),
             "actions.ActionAuditLog": (("display_summary",), ("action_payload.**",)),
             "journal.Session": (
-                ("summary",),
+                ("project", "summary"),
                 ("accomplishments[]", "blockers[]", "next_steps[]", "processed_summary.**"),
             ),
-            "journal.NoteTemplate": ((), ("sections[].title", "sections[].content")),
+            "journal.NoteTemplate": (("name",), ("sections[].title", "sections[].content")),
             "router.DeliveryAttempt": (("response_excerpt",), ()),
             "core.CoreProfile": (("additional_context",), ()),
             "core.MeditationSession": (
@@ -209,12 +209,10 @@ class StoreRegistryTests(SimpleTestCase):
         # TextField columns have no limit at all.
         self.assertIsNone(_registered_field_max_length("markdown", "journal.Document"))
 
-    def test_unscoped_field_limit_is_disabled_when_namesakes_disagree(self):
-        """A legacy name-only caller must never inherit another model's cap."""
-        self.assertIsNone(_registered_field_max_length("title"))
-        self.assertIsNone(_registered_field_max_length("description"))
-        self.assertEqual(_registered_field_max_length("nickname"), 128)
-
+    def test_registered_field_limit_requires_unambiguous_model_label(self):
+        """Name-only lookup is forbidden even when today's namesakes agree."""
+        with self.assertRaises(TypeError):
+            _registered_field_max_length("nickname")  # type: ignore[call-arg]
         self.assertEqual(_registered_field_max_length("title", "journal.Task"), 256)
         self.assertEqual(_registered_field_max_length("title", "core.MeditationSession"), 160)
         self.assertIsNone(_registered_field_max_length("description", "journal.Task"))

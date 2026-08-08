@@ -464,8 +464,21 @@ def render_meditation(session: MeditationSession) -> None:
     if session is None:
         return
 
-    # ---- validate before any TTS spend; a bad manifest is terminal ----
-    errors = render.validate_manifest(session.manifest)
+    # Rehydrate only at the render boundary: the stored manifest remains in
+    # placeholder space, while TTS receives the owner's real binding values.
+    from apps.pii.store_authoring import owner_store_representation
+
+    render_manifest = owner_store_representation(
+        session,
+        session.tenant,
+        {"manifest": session.manifest},
+        model_label="core.MeditationSession",
+    )["manifest"]
+
+    # Validate exactly what the renderer consumes. A real binding may be longer
+    # than its placeholder, so the authored at-rest shape is not authoritative
+    # for render-time speech bounds.
+    errors = render.validate_manifest(render_manifest)
     if errors:
         logger.warning("render_meditation: session %s invalid manifest: %s", sid[:8], errors[:3])
         _fail(session, "invalid_manifest: " + "; ".join(errors))
@@ -515,7 +528,7 @@ def render_meditation(session: MeditationSession) -> None:
 
     try:
         result = render.render_manifest_to_audio(
-            session.manifest,
+            render_manifest,
             tenant=session.tenant,
             voice=voice,
             model=model,

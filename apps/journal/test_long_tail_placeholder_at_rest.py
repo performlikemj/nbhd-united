@@ -53,7 +53,7 @@ class JournalLongTailPlaceholderTests(TestCase):
     def _template_payload():
         return {
             "slug": "alice-plan",
-            "name": "Owner template",
+            "name": "Alice template",
             "sections": [
                 {
                     "slug": "focus",
@@ -62,6 +62,7 @@ class JournalLongTailPlaceholderTests(TestCase):
                     "source": "human",
                 }
             ],
+            "is_default": True,
             "source": "human",
         }
 
@@ -82,7 +83,7 @@ class JournalLongTailPlaceholderTests(TestCase):
     def _session_payload():
         return {
             "source": "owner-app/1.0",
-            "project": "w3b-project",
+            "project": "Alice project",
             "session_start": "2026-08-08T01:00:00Z",
             "session_end": "2026-08-08T02:00:00Z",
             "summary": "Reviewed Alice's launch plan",
@@ -96,8 +97,11 @@ class JournalLongTailPlaceholderTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         template = NoteTemplate.objects.get(tenant=self.tenant, slug="alice-plan")
+        self.assertEqual(template.name, self._template_payload()["name"])
         self.assertEqual(template.sections, self._template_payload()["sections"])
+        self.assertEqual(template.pii_receipts["name"], {"state": "bypass", "writer": "owner"})
         self.assertEqual(template.pii_receipts["sections"], {"state": "bypass", "writer": "owner"})
+        self.assertEqual(response.data["name"], self._template_payload()["name"])
         self.assertEqual(response.data["sections"], self._template_payload()["sections"])
 
     def test_note_template_authors_sections_and_rejects_forged_receipts(self):
@@ -111,23 +115,31 @@ class JournalLongTailPlaceholderTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         template = NoteTemplate.objects.get(tenant=self.tenant, slug="alice-plan")
+        self.assertEqual(template.name, "[PERSON_1] template")
         self.assertEqual(template.sections[0]["title"], "[PERSON_1] focus")
         self.assertEqual(template.sections[0]["content"], "Plan the launch with [PERSON_1]")
+        self.assertEqual(template.pii_receipts["name"]["writer"], "owner")
         self.assertEqual(template.pii_receipts["sections"]["writer"], "owner")
         self.assertNotEqual(template.pii_receipts["sections"]["state"], "forged")
+        self.assertEqual(response.data["name"], "Alice template")
         self.assertEqual(response.data["sections"], self._template_payload()["sections"])
         self.assertEqual(
             response.data["pii_receipts"]["sections"]["redactions"],
             [{"placeholder": "[PERSON_1]", "value": "Alice"}],
         )
+        daily = self.client.get("/api/v1/journal/daily/2026-08-08/template/")
+        self.assertEqual(daily.status_code, 200)
+        self.assertEqual(daily.data["template_name"], "Alice template")
 
     def test_session_pat_create_flag_off_preserves_bytes(self):
         response = self._pat_client().post("/api/v1/sessions/create/", self._session_payload(), format="json")
 
         self.assertEqual(response.status_code, 201)
         session = Session.objects.get(id=response.data["id"])
+        self.assertEqual(session.project, self._session_payload()["project"])
         self.assertEqual(session.summary, self._session_payload()["summary"])
         self.assertEqual(session.accomplishments, self._session_payload()["accomplishments"])
+        self.assertEqual(session.pii_receipts["project"], {"state": "bypass", "writer": "owner"})
         self.assertEqual(session.pii_receipts["summary"], {"state": "bypass", "writer": "owner"})
 
     def test_session_pat_create_stores_placeholders_and_owner_reads_all_fields(self):
@@ -138,9 +150,12 @@ class JournalLongTailPlaceholderTests(TestCase):
 
         self.assertEqual(response.status_code, 201)
         session = Session.objects.get(id=response.data["id"])
+        self.assertEqual(session.project, "[PERSON_1] project")
         self.assertEqual(session.summary, "Reviewed [PERSON_1]'s launch plan")
         self.assertEqual(session.accomplishments, ["Called [PERSON_1]"])
+        self.assertEqual(session.pii_receipts["project"]["writer"], "owner")
         self.assertEqual(session.pii_receipts["summary"]["writer"], "owner")
+        self.assertEqual(response.data["project"], "Alice project")
         self.assertEqual(response.data["summary"], self._session_payload()["summary"])
         self.assertEqual(
             response.data["pii_receipts"]["summary"]["redactions"],

@@ -148,14 +148,14 @@ class JournalShapingViewTest(TestCase):
         self.assertEqual(runtime_read.status_code, 200, runtime_read.content)
         template.refresh_from_db()
         self.assertEqual(template.sections, sections)
-        self.assertEqual(template.pii_receipts["sections"], {"state": "bypass", "writer": "owner"})
+        self.assertEqual(template.pii_receipts["sections"], {"state": "bypass", "writer": "runtime"})
         self.assertEqual(updated.json()["sections"], sections)
         self.assertEqual(runtime_read.json()["sections"], sections)
         self.assertNotIn("pii_receipts", updated.json())
         self.assertNotIn("pii_receipts", runtime_read.json())
 
     @patch("apps.cron.publish.publish_task")
-    def test_placeholder_writes_on_stores_owner_receipt_and_runtime_stays_placeholder_space(self, _publish_task):
+    def test_placeholder_writes_on_pins_runtime_writer_and_runtime_stays_placeholder_space(self, _publish_task):
         self._enable()
         self.tenant.layer1_placeholder_writes = True
         self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
@@ -195,7 +195,7 @@ class JournalShapingViewTest(TestCase):
         template.refresh_from_db()
         self.assertEqual(template.sections, placeholder_sections)
         self.assertEqual(template.pii_receipts["sections"]["state"], "placeholder")
-        self.assertEqual(template.pii_receipts["sections"]["writer"], "owner")
+        self.assertEqual(template.pii_receipts["sections"]["writer"], "runtime")
         self.assertEqual(template.pii_receipts["sections"]["redactions"], [{"placeholder": "[PERSON_1]"}])
         self.assertEqual(updated.json()["sections"], placeholder_sections)
         self.assertEqual(runtime_read.json()["sections"], placeholder_sections)
