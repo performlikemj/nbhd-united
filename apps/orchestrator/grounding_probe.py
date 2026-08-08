@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from django.db.models import Q
+
 from apps.journal.models import Document
 
 
@@ -40,11 +42,22 @@ class GroundingReport:
 
 
 def journal_search(tenant, query: str, limit: int = 20) -> list[Document]:
-    """Replicate ``RuntimeJournalSearchView`` — the backend of ``nbhd_journal_search``."""
+    """Replicate ``RuntimeJournalSearchView`` — the backend of ``nbhd_journal_search``.
+
+    Including its A5 name→placeholder variant union. The probe's whole value is
+    that it answers "could the cron have reached this?" the way the agent's tool
+    actually would; a probe that searched real names against placeholder-space
+    storage would report a grounding gap the agent does not have.
+    """
     from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 
+    from apps.journal.document_authoring import search_query_variants
+
+    variants = search_query_variants(tenant, query)
     search_vector = SearchVector("title", weight="A") + SearchVector("markdown", weight="B")
-    search_query = SearchQuery(query, search_type="websearch")
+    search_query = SearchQuery(variants[0], search_type="websearch")
+    for variant in variants[1:]:
+        search_query = search_query | SearchQuery(variant, search_type="websearch")
     return list(
         Document.objects.filter(tenant=tenant)
         .annotate(rank=SearchRank(search_vector, search_query))
@@ -79,10 +92,23 @@ def probe_grounding(tenant, topic: str, expect_terms: list[str] | None = None) -
     #    nbhd_document_get would surface). Full markdown is the BEST CASE the
     #    agent could ground on — if a term is absent here, no tool call could
     #    surface it, so the cron is definitively ungrounded on it.
+    #    The literal arm takes the same A5 variants as the search arm, or a
+    #    topic named after a redacted person would match nothing at all.
+    from apps.journal.document_authoring import search_query_variants
+
     reachable: dict = {}
     for doc in journal_search(tenant, topic):
         reachable[doc.id] = doc
-    for doc in Document.objects.filter(tenant=tenant, markdown__icontains=topic):
+    # The base queryset is bound BEFORE the predicate is built, deliberately:
+    # the encrypted-column guard identifies a predicate's model by looking
+    # upward for a ``Document.objects`` chain, so building the Q() first would
+    # hide this raw ``markdown`` predicate from the check that is supposed to
+    # flag it when the column flips to ciphertext.
+    literal_matches = Document.objects.filter(tenant=tenant)
+    literal_q = Q()
+    for variant in search_query_variants(tenant, topic):
+        literal_q |= Q(markdown__icontains=variant)
+    for doc in literal_matches.filter(literal_q):
         reachable.setdefault(doc.id, doc)
     docs = sorted(reachable.values(), key=lambda d: d.updated_at, reverse=True)
 

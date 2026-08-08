@@ -185,6 +185,10 @@ class Document(models.Model):
     slug = models.CharField(max_length=128)
     title = models.CharField(max_length=256)
     markdown = models.TextField(default="")
+    # P3 placeholder-at-rest receipts, keyed by field name ("title"/"markdown").
+    # An ABSENT key means pre-P3 legacy text with no provenance — never "clean".
+    # See apps/pii/authoring.py and docs/pii-placeholder-at-rest-directive.md §A2.
+    pii_receipts = models.JSONField(default=dict, blank=True)
     pillar = models.CharField(max_length=32, choices=Pillar.choices, blank=True, default="")
     topic = models.ForeignKey(
         "insights.TopicRegistry",
@@ -632,6 +636,10 @@ class DocumentChunk(models.Model):
     document = models.ForeignKey("journal.Document", on_delete=models.CASCADE, related_name="chunks")
     chunk_index = models.IntegerField()
     text = models.TextField()
+    # P3 receipts for the derived chunk text (key: "text"). A chunk is a COPY of
+    # already-authored Document.markdown, but it is re-authored on derivation
+    # because the chunk is what leaves for the embedding provider.
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.DOCUMENT_CHUNK_TEXT``) — ships DARK.
     # The ``embedding`` vector stays plaintext (disclosed residual, plan §7.4).
     text_enc = models.BinaryField(null=True)
@@ -715,6 +723,10 @@ class DocumentIngestion(models.Model):
     # Human display label: a filename for UPLOAD, the email subject / event title /
     # post title for the P3 sources. Reused by the list + forget rendering.
     original_filename = models.CharField(max_length=255)
+    # P3 receipts (key: "original_filename"). A filename is user content —
+    # "alice-contract.pdf" names a person — so it goes through the chokepoint
+    # like any other Layer-1 text.
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.DOCUMENT_INGESTION_ORIGINAL_FILENAME``) —
     # ships DARK. ``source_ref`` stays plaintext (it is a source id, not user content).
     original_filename_enc = models.BinaryField(null=True)
@@ -776,6 +788,10 @@ class DocumentIngestionArtifact(models.Model):
     object_id = models.CharField(max_length=128)
     destination = models.CharField(max_length=255, blank=True, default="")
     content_excerpt = models.TextField(blank=True, default="")
+    # P3 receipts (key: "content_excerpt"). The excerpt is quoted from an
+    # uploaded/read source that never passed chat ingress, so this is one of the
+    # few places raw unknown names can still enter Layer-1 storage.
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.DOCUMENT_INGESTION_ARTIFACT_CONTENT_EXCERPT``) — ships DARK.
     content_excerpt_enc = models.BinaryField(null=True)
     removal_strategy = models.CharField(max_length=32, blank=True, default="")

@@ -180,7 +180,7 @@ class RepoStateTests(SimpleTestCase):
             ("apps/router/management/commands/audit_proactive_sync.py", 65, "parsed_items"),
             ("apps/lessons/agent_context.py", 91, "galaxy_note"),
             ("apps/journal/extraction.py", 242, "text"),
-            ("apps/orchestrator/grounding_probe.py", 85, "markdown"),
+            ("apps/orchestrator/grounding_probe.py", 110, "markdown"),
             ("apps/journal/migrations/0020_cleanup_nan_daily_stubs.py", 31, "markdown"),
             ("apps/pii/arbiter.py", 356, "pii_entity_map"),
             ("apps/pii/junk_sweep.py", 297, "pii_entity_map"),

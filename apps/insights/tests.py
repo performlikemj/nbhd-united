@@ -669,7 +669,7 @@ class Phase2EndpointTests(TestCase):
         self.assertEqual(body["statement"], "Theo Smith is reducing debt.")
         self.assertEqual(
             body["pii_receipts"]["statement"],
-            [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}],
+            {"redactions": [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}]},
         )
         self.assertEqual(
             AssistantInsight.objects.get(id=body["id"]).statement,
@@ -806,6 +806,34 @@ class Phase2EndpointTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["count"], 1)
 
+    def test_owner_receipt_omits_value_for_unbound_placeholder(self):
+        """Same ``resolve_receipt_values`` semantics as every other surface.
+
+        A placeholder with no live binding drops the ``value`` KEY rather than
+        emitting an explicit null, and the receipt carries no ``state`` — no
+        checked authoring pass produced it, so it must not read as verified to
+        the A7 migration fence.
+        """
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.GRAVITY.value,
+            topic=self.debt_topic,
+            statement="[PERSON_1] met [PERSON_77] about it.",
+        )
+
+        listed = self.jwt_client.get("/api/v1/insights/insights/?pillar=gravity").json()["insights"][0]
+        receipt = listed["pii_receipts"]["statement"]
+        self.assertNotIn("state", receipt)
+        self.assertEqual(
+            receipt["redactions"],
+            [
+                {"placeholder": "[PERSON_1]", "value": "Theo Smith"},
+                {"placeholder": "[PERSON_77]"},
+            ],
+        )
+
     def test_owner_list_confirm_refute_rehydrate_with_receipts(self):
         self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Theo Smith"}}
         self.tenant.save(update_fields=["pii_entity_map"])
@@ -822,7 +850,7 @@ class Phase2EndpointTests(TestCase):
         self.assertEqual(listed["statement"], "Theo Smith checks the balance weekly.")
         self.assertEqual(
             listed["pii_receipts"]["statement"],
-            [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}],
+            {"redactions": [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}]},
         )
 
         confirm_resp = self.jwt_client.post(
@@ -834,7 +862,7 @@ class Phase2EndpointTests(TestCase):
         self.assertEqual(confirm_resp.json()["statement"], "Theo Smith checks the balance weekly.")
         self.assertEqual(
             confirm_resp.json()["pii_receipts"]["statement"],
-            [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}],
+            {"redactions": [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}]},
         )
 
         refute_resp = self.jwt_client.post(
@@ -846,7 +874,7 @@ class Phase2EndpointTests(TestCase):
         self.assertEqual(refute_resp.json()["statement"], "Theo Smith checks the balance weekly.")
         self.assertEqual(
             refute_resp.json()["pii_receipts"]["statement"],
-            [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}],
+            {"redactions": [{"placeholder": "[PERSON_1]", "value": "Theo Smith"}]},
         )
 
     def test_runtime_list_create_confirm_refute_stay_placeholder_space(self):

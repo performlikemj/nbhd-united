@@ -23,6 +23,22 @@ class _RehydrateFieldMixin:
             return value
         return rehydrate_for_tenant(tenant, value)
 
+    def _receipts(self, obj) -> dict:
+        """Per-field placeholder metadata for the owner's purple affordances.
+
+        Emitted only when the owner context is present, mirroring the rehydration
+        above: the runtime/agent surfaces never build these serializers, and a
+        caller with no tenant cannot resolve placeholder → value anyway. Values
+        come from the LIVE entity map, never from what the receipt recorded at
+        write time, so a renamed entity reads correctly.
+        """
+        from .document_authoring import owner_receipts
+
+        tenant = self.context.get("tenant")
+        if tenant is None:
+            return {}
+        return owner_receipts(obj, tenant)
+
 
 class DocumentSerializer(_RehydrateFieldMixin, serializers.ModelSerializer):
     # ``markdown`` and ``title`` are stored in PII placeholder space (the
@@ -34,10 +50,11 @@ class DocumentSerializer(_RehydrateFieldMixin, serializers.ModelSerializer):
     # storage where the agent would read it.
     markdown = serializers.SerializerMethodField()
     title = serializers.SerializerMethodField()
+    pii_receipts = serializers.SerializerMethodField()
 
     class Meta:
         model = Document
-        fields = ("id", "kind", "slug", "title", "markdown", "created_at", "updated_at")
+        fields = ("id", "kind", "slug", "title", "markdown", "pii_receipts", "created_at", "updated_at")
         read_only_fields = ("id", "created_at", "updated_at")
 
     def get_markdown(self, obj) -> str:
@@ -45,6 +62,9 @@ class DocumentSerializer(_RehydrateFieldMixin, serializers.ModelSerializer):
 
     def get_title(self, obj) -> str:
         return self._rehydrated(obj.title)
+
+    def get_pii_receipts(self, obj) -> dict:
+        return self._receipts(obj)
 
 
 class DocumentListSerializer(_RehydrateFieldMixin, serializers.ModelSerializer):
@@ -56,14 +76,20 @@ class DocumentListSerializer(_RehydrateFieldMixin, serializers.ModelSerializer):
     """
 
     title = serializers.SerializerMethodField()
+    pii_receipts = serializers.SerializerMethodField()
 
     class Meta:
         model = Document
-        fields = ("id", "kind", "slug", "title", "updated_at")
+        fields = ("id", "kind", "slug", "title", "pii_receipts", "updated_at")
         read_only_fields = ("id", "updated_at")
 
     def get_title(self, obj) -> str:
         return self._rehydrated(obj.title)
+
+    def get_pii_receipts(self, obj) -> dict:
+        """Title-only in practice — the list serializer omits the body."""
+        receipts = self._receipts(obj)
+        return {field: receipt for field, receipt in receipts.items() if field == "title"}
 
 
 class DocumentAppendSerializer(serializers.Serializer):

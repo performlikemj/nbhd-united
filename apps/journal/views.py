@@ -400,16 +400,31 @@ class MemoryView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
+        # This view served ``doc.markdown`` RAW — the owner's long-term memory is
+        # written by the agent in placeholder space, so every mapped name read
+        # back as "[PERSON_12]" here while the same document rehydrated correctly
+        # through the Document endpoints. Owner boundary ⇒ rehydrate + receipts
+        # (directive §A3).
+        from apps.pii.redactor import rehydrate_for_tenant
+
+        from .document_authoring import owner_receipts
+
         tenant = _get_tenant_for_user(request.user)
         doc = Document.objects.filter(tenant=tenant, kind="memory", slug="long-term").first()
         return Response(
             {
-                "markdown": doc.markdown if doc else "",
+                "markdown": rehydrate_for_tenant(tenant, doc.markdown) if doc else "",
+                "pii_receipts": owner_receipts(doc, tenant) if doc else {},
                 "updated_at": doc.updated_at.isoformat() if doc else None,
             }
         )
 
     def put(self, request):
+        from apps.pii.authoring import author_text
+        from apps.pii.redactor import rehydrate_for_tenant
+
+        from .document_authoring import owner_receipts, set_field_receipt
+
         tenant = _get_tenant_for_user(request.user)
         serializer = MemoryPatchSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -420,12 +435,25 @@ class MemoryView(APIView):
             slug="long-term",
             defaults={"title": "Memory"},
         )
-        doc.markdown = serializer.validated_data["markdown"]
+        # The GET above now hands the owner real values, so the save round-trips
+        # real values back — without authoring, this PUT would write the names
+        # the agent must never see straight back into its memory document.
+        authored = author_text(
+            tenant,
+            serializer.validated_data["markdown"],
+            seam="journal.memory.put",
+            writer="owner",
+            field="markdown",
+            model_label="journal.Document",
+        )
+        doc.markdown = authored.text
+        doc.pii_receipts = set_field_receipt(doc.pii_receipts, "markdown", authored.receipt)
         doc.save()
 
         return Response(
             {
-                "markdown": doc.markdown,
+                "markdown": rehydrate_for_tenant(tenant, doc.markdown),
+                "pii_receipts": owner_receipts(doc, tenant),
                 "updated_at": doc.updated_at.isoformat(),
             }
         )

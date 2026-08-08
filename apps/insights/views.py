@@ -247,17 +247,22 @@ def _serialize_insight(ins: AssistantInsight, *, owner_tenant=None) -> dict[str,
         "author_model_version": ins.author_model_version,
     }
     if owner_tenant is not None:
+        from apps.pii.authoring import receipt_placeholders, resolve_receipt_values
         from apps.pii.redactor import rehydrate_for_tenant
-        from apps.router.pending_queue import placeholder_redactions
 
-        # Reuse chat's pure metadata helper directly rather than duplicating its
-        # placeholder normalization and legacy/dict entity-map handling here.
-        redactions = placeholder_redactions(
-            statement,
+        # Same receipt SHAPE every other owner surface emits since P3 W2a —
+        # ``{field: {"redactions": [{placeholder, value?}]}}`` resolved against
+        # the live entity map, with ``value`` OMITTED (never null) when a
+        # placeholder has no binding. AssistantInsight carries no ``pii_receipts``
+        # column, so the receipt is built live from the stored statement and
+        # deliberately carries NO ``state``: no checked authoring pass ran, and
+        # claiming ``placeholder`` here would tell the A7 migration fence this
+        # field is already verified.
+        payload["statement"] = rehydrate_for_tenant(owner_tenant, statement)
+        payload["pii_receipts"] = resolve_receipt_values(
+            {"statement": {"redactions": receipt_placeholders(statement)}},
             getattr(owner_tenant, "pii_entity_map", None),
         )
-        payload["statement"] = rehydrate_for_tenant(owner_tenant, statement)
-        payload["pii_receipts"] = {"statement": redactions}
     return payload
 
 

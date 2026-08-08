@@ -26,6 +26,11 @@ from apps.billing.services import record_usage
 from apps.common.tenant_tz import safe_zoneinfo, tenant_today, tenant_tz_name
 from apps.common.windows import Window, resolve_window
 from apps.integrations.content_sanitize import neutralize_remote_image_markdown
+from apps.journal.document_authoring import (
+    get_or_create_authored_document,
+    merge_field_receipt,
+    set_field_receipt,
+)
 from apps.journal.document_views import _default_markdown, _default_title
 from apps.journal.models import DailyNote, Document, JournalEntry
 from apps.journal.serializers import (
@@ -804,6 +809,31 @@ class RuntimeWeeklyReviewsView(APIView):
 # Imports of Goal/Task/GoalSerializer/TaskSerializer are intentionally LOCAL
 # inside each method — the lint-on-Edit hook reaps module-level imports that
 # look unused at parse time. See ``feedback_local_reimport_pattern.md``.
+
+
+_DOCUMENT_STORE = "journal.Document"
+
+
+def _author_runtime_document(tenant, text: str, *, seam: str, field: str):
+    """Author one agent-written Document field (runtime writer class).
+
+    ``MINT_NEVER`` + known-value scrub + residual detection per directive §A1:
+    the agent composes from text that already passed chat ingress, so minting
+    here would coin placeholders for spans the ingress redactor already judged.
+    What the agent CAN do is compose a name itself, which is what the residual
+    receipt records — a name the model wrote lands as ``state="residual"`` and
+    the repair sweep picks it up, instead of a false-clean ``placeholder``.
+    """
+    from apps.pii.authoring import author_text
+
+    return author_text(
+        tenant,
+        text,
+        seam=seam,
+        writer="runtime",
+        field=field,
+        model_label=_DOCUMENT_STORE,
+    )
 
 
 def _author_runtime_lifecycle_input(tenant, data, *, seam, receipts=None, include_defaults=False):
@@ -1825,14 +1855,14 @@ class RuntimeDailyNotesView(KnownValueResponseGuardMixin, APIView):
             )
 
         slug = str(d)
-        doc, _created = Document.objects.get_or_create(
-            tenant=tenant,
+        doc, _created = get_or_create_authored_document(
+            tenant,
             kind="daily",
             slug=slug,
-            defaults={
-                "title": _default_title("daily", slug),
-                "markdown": _default_markdown("daily", slug, tenant=tenant),
-            },
+            title=_default_title("daily", slug),
+            markdown_factory=lambda: _default_markdown("daily", slug, tenant=tenant),
+            writer="runtime",
+            seam="journal.daily_note.default_body.runtime",
         )
         return Response(
             {
@@ -1915,18 +1945,29 @@ class RuntimeDailyNoteAppendView(APIView):
         # get_or_create outside the lock is fine — it only races on the very
         # first write to a brand-new row (extremely rare); the select_for_update
         # inside the atomic block serialises all concurrent appends after that.
-        doc, _created = Document.objects.get_or_create(
-            tenant=tenant,
+        doc, _created = get_or_create_authored_document(
+            tenant,
             kind="daily",
             slug=slug,
-            defaults={
-                "title": _default_title("daily", slug),
-                "markdown": _default_markdown("daily", slug, tenant=tenant),
-            },
+            title=_default_title("daily", slug),
+            markdown_factory=lambda: _default_markdown("daily", slug, tenant=tenant),
+            writer="runtime",
+            seam="journal.daily_note.default_body.runtime",
         )
 
         section_slug = request.data.get("section_slug")
         section_slug_str = str(section_slug).strip() if section_slug else ""
+
+        # Author the fragment before it merges into the note. Both branches below
+        # write only this content into an existing body, so the receipt is folded
+        # into the field's existing one rather than replacing it.
+        authored = _author_runtime_document(
+            tenant,
+            content,
+            seam="journal.daily_note.append.runtime",
+            field="markdown",
+        )
+        content = authored.text
 
         with transaction.atomic():
             # Re-read under a row lock so concurrent appends are serialised
@@ -1949,7 +1990,13 @@ class RuntimeDailyNoteAppendView(APIView):
                 entry = f"- **{timestamp}** ({persona_name}) — {content}"
                 doc.markdown = md.rstrip() + "\n\n" + entry + "\n"
 
-            doc.save(update_fields=["markdown", "updated_at"])
+            doc.pii_receipts = merge_field_receipt(
+                doc.pii_receipts,
+                "markdown",
+                authored.receipt,
+                stored_text=doc.markdown,
+            )
+            doc.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
         response_payload = {
             "tenant_id": str(tenant.id),
@@ -1994,14 +2041,14 @@ class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
-        doc, _created = Document.objects.get_or_create(
-            tenant=tenant,
+        doc, _created = get_or_create_authored_document(
+            tenant,
             kind="memory",
             slug="long-term",
-            defaults={
-                "title": _default_title("memory", "long-term"),
-                "markdown": _default_markdown("memory", "long-term", tenant=tenant),
-            },
+            title=_default_title("memory", "long-term"),
+            markdown_factory=lambda: _default_markdown("memory", "long-term", tenant=tenant),
+            writer="runtime",
+            seam="journal.memory.default_body.runtime",
         )
         return Response(
             {"tenant_id": str(tenant.id), "markdown": doc.markdown},
@@ -2033,15 +2080,38 @@ class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
         # and silently lost whichever committed first — the clobber the P2 capture
         # reflex would otherwise amplify (mirrors RuntimeDailyNoteAppendView /
         # EntityRegistryItemView lost-update guards).
-        doc, _created = Document.objects.get_or_create(
-            tenant=tenant,
-            kind="memory",
-            slug="long-term",
-            defaults={
-                "title": _default_title("memory", "long-term"),
-                "markdown": (_default_markdown("memory", "long-term", tenant=tenant) if section else markdown),
-            },
+        authored = _author_runtime_document(
+            tenant,
+            markdown,
+            seam="journal.memory.put.runtime",
+            field="markdown",
         )
+        markdown = authored.text
+
+        if section:
+            # A scoped write merges into a body it did not supply, so a brand-new
+            # row gets the template — authored on creation so the section merge
+            # below has a checked half to fold into.
+            doc, _created = get_or_create_authored_document(
+                tenant,
+                kind="memory",
+                slug="long-term",
+                title=_default_title("memory", "long-term"),
+                markdown_factory=lambda: _default_markdown("memory", "long-term", tenant=tenant),
+                writer="runtime",
+                seam="journal.memory.default_body.runtime",
+            )
+        else:
+            doc, _created = Document.objects.get_or_create(
+                tenant=tenant,
+                kind="memory",
+                slug="long-term",
+                defaults={
+                    "title": _default_title("memory", "long-term"),
+                    "markdown": markdown,
+                    "pii_receipts": {"markdown": authored.receipt},
+                },
+            )
 
         with transaction.atomic():
             # Re-read under a row lock so a scoped section write merges against
@@ -2050,9 +2120,16 @@ class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
             doc = Document.objects.select_for_update().get(pk=doc.pk)
             if section:
                 doc.markdown = _upsert_markdown_section(doc.markdown or "", section, markdown)
+                doc.pii_receipts = merge_field_receipt(
+                    doc.pii_receipts,
+                    "markdown",
+                    authored.receipt,
+                    stored_text=doc.markdown,
+                )
             else:
                 doc.markdown = markdown
-            doc.save(update_fields=["markdown", "updated_at"])
+                doc.pii_receipts = set_field_receipt(doc.pii_receipts, "markdown", authored.receipt)
+            doc.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
         return Response(
             {"tenant_id": str(tenant.id), "markdown": doc.markdown},
@@ -2726,6 +2803,27 @@ class RuntimeDocumentView(KnownValueResponseGuardMixin, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # PUT replaces the whole body, so both fields are authored outright.
+        # An omitted title falls back to the server-rendered default, which
+        # carries no user text and therefore earns no receipt.
+        authored_markdown = _author_runtime_document(
+            tenant,
+            markdown,
+            seam="journal.document.put.runtime",
+            field="markdown",
+        )
+        markdown = authored_markdown.text
+        receipts = {"markdown": authored_markdown.receipt}
+        if title:
+            authored_title = _author_runtime_document(
+                tenant,
+                title,
+                seam="journal.document.put.runtime",
+                field="title",
+            )
+            title = authored_title.text
+            receipts["title"] = authored_title.receipt
+
         doc, created = Document.objects.get_or_create(
             tenant=tenant,
             kind=kind,
@@ -2733,13 +2831,16 @@ class RuntimeDocumentView(KnownValueResponseGuardMixin, APIView):
             defaults={
                 "title": title or _default_title(kind, slug),
                 "markdown": markdown,
+                "pii_receipts": receipts,
             },
         )
 
         if not created:
             doc.markdown = markdown
+            doc.pii_receipts = set_field_receipt(doc.pii_receipts, "markdown", authored_markdown.receipt)
             if title:
                 doc.title = title
+                doc.pii_receipts = set_field_receipt(doc.pii_receipts, "title", receipts["title"])
             doc.save()
 
         return Response(
@@ -2791,6 +2892,8 @@ class RuntimeJournalSearchView(KnownValueResponseGuardMixin, APIView):
 
         from django.contrib.postgres.search import SearchQuery, SearchRank, SearchVector
 
+        from apps.journal.document_authoring import search_query_variants
+
         # Content-based full-text search is intentionally NOT slug-filtered by
         # date: a mis-kinded daily with real content (e.g. an old
         # "<date>-debt-chart") must stay findable. Empty pre-guard stubs rank ~0
@@ -2800,19 +2903,35 @@ class RuntimeJournalSearchView(KnownValueResponseGuardMixin, APIView):
         if kind:
             qs = qs.filter(kind=kind)
 
+        # A5 search translation. Bodies are stored in placeholder space, so a
+        # search for "Sarah" cannot match a note that says "[PERSON_4]". Generate
+        # QUERY VARIANTS — the original plus one per name binding whose value
+        # appears in the query — and OR their websearch queries together. Variant
+        # union, never tsquery surgery: `[PERSON_4]` lexes to the same tokens on
+        # both sides, so the stock parser does the matching. Recall-over-precision
+        # across same-name collisions is the deliberate §1.5 trade.
+        variants = search_query_variants(tenant, query)
         search_vector = SearchVector("title", weight="A") + SearchVector("markdown", weight="B")
-        search_query = SearchQuery(query, search_type="websearch")
+        search_query = SearchQuery(variants[0], search_type="websearch")
+        for variant in variants[1:]:
+            search_query = search_query | SearchQuery(variant, search_type="websearch")
 
         results = (
             qs.annotate(rank=SearchRank(search_vector, search_query)).filter(rank__gt=0.0).order_by("-rank")[:limit]
         )
 
-        def _make_snippet(text: str, query_terms: str, max_len: int = 300) -> str:
-            """Extract relevant snippet around first match."""
+        def _make_snippet(text: str, query_variants: list[str], max_len: int = 300) -> str:
+            """Extract relevant snippet around first match.
+
+            Scans EVERY variant: a hit found through the placeholder variant has
+            no real-name term to anchor on, and falling back to offset 0 would
+            hand the agent the top of the document instead of the passage that
+            matched.
+            """
             if not text:
                 return ""
             lower_text = text.lower()
-            terms = [t.lower() for t in query_terms.split() if len(t) > 2]
+            terms = [t.lower() for variant in query_variants for t in variant.split() if len(t) > 2]
             best_pos = 0
             for term in terms:
                 pos = lower_text.find(term)
@@ -2835,7 +2954,7 @@ class RuntimeJournalSearchView(KnownValueResponseGuardMixin, APIView):
                         "kind": doc.kind,
                         "slug": doc.slug,
                         "title": doc.title,
-                        "snippet": _make_snippet(doc.markdown, query),
+                        "snippet": _make_snippet(doc.markdown, variants),
                         "updated_at": doc.updated_at.isoformat(),
                         "rank": float(doc.rank),
                     }
@@ -3137,15 +3256,23 @@ class RuntimeDocumentAppendView(KnownValueResponseGuardMixin, APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        doc, _created = Document.objects.get_or_create(
-            tenant=tenant,
+        doc, _created = get_or_create_authored_document(
+            tenant,
             kind=kind,
             slug=slug,
-            defaults={
-                "title": _default_title(kind, slug),
-                "markdown": _default_markdown(kind, slug, tenant=tenant),
-            },
+            title=_default_title(kind, slug),
+            markdown_factory=lambda: _default_markdown(kind, slug, tenant=tenant),
+            writer="runtime",
+            seam="journal.document.default_body.runtime",
         )
+
+        authored = _author_runtime_document(
+            tenant,
+            content,
+            seam="journal.document.append.runtime",
+            field="markdown",
+        )
+        content = authored.text
 
         with transaction.atomic():
             # Re-read under a row lock to serialise concurrent appends and
@@ -3155,7 +3282,13 @@ class RuntimeDocumentAppendView(KnownValueResponseGuardMixin, APIView):
             persona_name = _get_persona_name(tenant)
             entry_block = f"\n\n### {time_str} — {persona_name}\n{content}\n"
             doc.markdown = (doc.markdown or "").rstrip() + entry_block
-            doc.save(update_fields=["markdown", "updated_at"])
+            doc.pii_receipts = merge_field_receipt(
+                doc.pii_receipts,
+                "markdown",
+                authored.receipt,
+                stored_text=doc.markdown,
+            )
+            doc.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
         return Response(
             {

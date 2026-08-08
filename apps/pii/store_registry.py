@@ -44,6 +44,33 @@ _STORES = (
         json_paths=(),
         receipts_field="pii_receipts",
     ),
+    # ── P3 W2b: the Document family ──────────────────────────────────────
+    # ``target`` (Document) stays OUT: it is structured lifecycle metadata, and
+    # enc_columns.py excludes it from encryption on the same grounds.
+    PlaceholderStore(
+        model_label="journal.Document",
+        flat_fields=("title", "markdown"),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="journal.DocumentChunk",
+        flat_fields=("text",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="journal.DocumentIngestion",
+        flat_fields=("original_filename",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="journal.DocumentIngestionArtifact",
+        flat_fields=("content_excerpt",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
 )
 
 
