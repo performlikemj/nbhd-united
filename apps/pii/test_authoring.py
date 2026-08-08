@@ -7,8 +7,10 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
-from apps.pii.authoring import author_text, resolve_receipt_values, truncate_placeholder_safe
+from apps.pii.authoring import author_json_paths, author_text, resolve_receipt_values, truncate_placeholder_safe
 from apps.pii.redactor import MINT_ALL, MINT_NEVER, MINT_VALIDATED, RedactionOutcome
+from apps.pii.repair_sweep import REPAIR_STATES
+from apps.pii.store_registry import registered_store
 from apps.tenants.models import Tenant, User
 
 
@@ -348,6 +350,51 @@ class AuthorTextTests(TestCase):
                     self.assertEqual(authored.receipt["state"], expected_state)
                     self.assertNotEqual(authored.receipt["state"], "unconfirmed")
         record_live.assert_not_called()
+
+    def test_nonempty_json_shape_mismatch_is_unconfirmed_for_repair(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        paths = registered_store("journal.Purpose").nested_json_paths("evidence")
+
+        authored = author_json_paths(
+            self.tenant,
+            {"unexpected": "Alice"},
+            paths=paths,
+            seam="test.json-shape",
+            writer="runtime",
+            field="payload",
+        )
+
+        self.assertEqual(authored.value, {"unexpected": "Alice"})
+        self.assertEqual(
+            authored.receipt,
+            {
+                "state": "unconfirmed",
+                "reason": "shape-mismatch",
+                "redactions": [],
+                "writer": "runtime",
+            },
+        )
+        self.assertIn(authored.receipt["state"], REPAIR_STATES)
+
+    def test_truly_empty_json_keeps_empty_input_receipt(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        paths = registered_store("journal.Purpose").nested_json_paths("evidence")
+
+        authored = author_json_paths(
+            self.tenant,
+            [],
+            paths=paths,
+            seam="test.json-empty",
+            writer="runtime",
+            field="payload",
+        )
+
+        self.assertEqual(authored.value, [])
+        self.assertEqual(authored.receipt["state"], "placeholder")
+        self.assertEqual(authored.receipt["reason"], "empty-input")
+        self.assertEqual(authored.receipt["redactions"], [])
 
     def test_degraded_cache_returning_none_never_fails_the_write(self):
         self.tenant.layer1_placeholder_writes = True

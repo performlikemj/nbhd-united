@@ -300,7 +300,7 @@ class DailyNoteEntryDetailView(APIView):
         note.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
         return Response(
-            {"date": date, "entries": _note_template_response(note, include_entries=True)["entries"]},
+            {"date": date, "entries": entries},
             headers=DEPRECATION_HEADERS,
         )
 
@@ -327,7 +327,7 @@ class DailyNoteEntryDetailView(APIView):
         note.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
         return Response(
-            {"date": date, "entries": _note_template_response(note, include_entries=True)["entries"]},
+            {"date": date, "entries": entries},
             headers=DEPRECATION_HEADERS,
         )
 
@@ -382,7 +382,12 @@ class DailyNoteTemplateView(APIView):
             return Response({"error": "Invalid payload.", "detail": str(exc)}, status=400)
 
         section_payload = serializer.validated_data["sections"]
-        set_daily_note_sections(note=note, sections=section_payload, template=template)
+        set_daily_note_sections(
+            note=note,
+            sections=section_payload,
+            writer="owner",
+            template=template,
+        )
         note.refresh_from_db()
         return Response(_note_template_response(note, include_entries=False), status=200)
 
@@ -408,7 +413,7 @@ class DailyNoteTemplateView(APIView):
         note.pii_receipts = refresh_field_redactions(note.pii_receipts, "markdown", note.markdown)
         note.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
-        return Response({"date": date, "entries": _note_template_response(note, include_entries=True)["entries"]})
+        return Response({"date": date, "entries": entries})
 
 
 class DailyNoteSectionView(APIView):
@@ -433,6 +438,7 @@ class DailyNoteSectionView(APIView):
                 note=note,
                 section_slug=slug,
                 content=str(content),
+                writer="owner",
             )
         except ValueError as exc:
             return Response({"error": str(exc)}, status=400)

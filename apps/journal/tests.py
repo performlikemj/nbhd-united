@@ -7,7 +7,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from django.test import TestCase, override_settings
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from apps.tenants.models import Tenant, User
 from apps.tenants.test_utils import seed_internal_key
@@ -20,6 +20,7 @@ from .services import (
     get_or_seed_note_template,
     seed_default_templates_for_tenant,
     set_daily_note_section,
+    set_daily_note_sections,
 )
 
 # ---------------------------------------------------------------------------
@@ -218,6 +219,7 @@ class SetSectionTest(TestCase):
             note=note,
             section_slug="morning-report",
             content="Hello morning",
+            writer="owner",
         )
         mr = next(s for s in sections if s["slug"] == "morning-report")
         self.assertEqual(mr["content"], "Hello morning")
@@ -229,6 +231,7 @@ class SetSectionTest(TestCase):
             note=note,
             section_slug="tweet-drafts",
             content="Some tweet ideas",
+            writer="owner",
         )
         slugs = [s["slug"] for s in sections]
         self.assertIn("tweet-drafts", slugs)
@@ -254,8 +257,23 @@ class SetSectionTest(TestCase):
             note=note,
             section_slug="new-section",
             content="New content",
+            writer="owner",
         )
         self.assertEqual(sections[-1]["slug"], "new-section")
+
+    def test_section_helpers_require_explicit_writer(self):
+        note = DailyNote.objects.create(tenant=self.tenant, date=date(2026, 2, 16))
+        with self.assertRaises(TypeError):
+            set_daily_note_section(  # type: ignore[call-arg]
+                note=note,
+                section_slug="morning-report",
+                content="Hello morning",
+            )
+        with self.assertRaises(TypeError):
+            set_daily_note_sections(  # type: ignore[call-arg]
+                note=note,
+                sections=[{"slug": "log", "title": "Log", "content": "Hello"}],
+            )
 
 
 class AppendLogTest(TestCase):
@@ -382,12 +400,63 @@ class DailyNoteAPITest(TestCase):
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["entries"][0]["content"], "Updated")
 
+    def test_patch_entry_flag_off_wire_echoes_mutated_entries(self):
+        self.assertFalse(self.tenant.layer1_placeholder_writes)
+        self.client.post(
+            "/api/v1/journal/daily/2026-02-15/entries/",
+            {"content": "Original", "mood": "fine"},
+            format="json",
+        )
+        note = DailyNote.objects.get(tenant=self.tenant, date=date(2026, 2, 15))
+        expected_entries = parse_daily_note(note.markdown)
+        expected_entries[0]["mood"] = "very good"
+
+        resp = self.client.patch(
+            "/api/v1/journal/daily/2026-02-15/entries/0/",
+            {"mood": "very good"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, {"date": "2026-02-15", "entries": expected_entries})
+        self.assertEqual(resp.data["entries"][0]["mood"], "very good")
+
     def test_delete_entry(self):
         self.client.post("/api/v1/journal/daily/2026-02-15/entries/", {"content": "A"}, format="json")
         self.client.post("/api/v1/journal/daily/2026-02-15/entries/", {"content": "B"}, format="json")
         resp = self.client.delete("/api/v1/journal/daily/2026-02-15/entries/0/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(len(resp.data["entries"]), 1)
+
+    def test_delete_entry_flag_off_wire_echoes_mutated_entries(self):
+        self.assertFalse(self.tenant.layer1_placeholder_writes)
+        self.client.post("/api/v1/journal/daily/2026-02-15/entries/", {"content": "A"}, format="json")
+        self.client.post("/api/v1/journal/daily/2026-02-15/entries/", {"content": "B"}, format="json")
+        note = DailyNote.objects.get(tenant=self.tenant, date=date(2026, 2, 15))
+        expected_entries = parse_daily_note(note.markdown)
+        expected_entries.pop(0)
+
+        resp = self.client.delete("/api/v1/journal/daily/2026-02-15/entries/0/")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, {"date": "2026-02-15", "entries": expected_entries})
+
+    def test_template_delete_flag_off_wire_echoes_mutated_entries(self):
+        from apps.journal.views import DailyNoteTemplateView
+
+        self.assertFalse(self.tenant.layer1_placeholder_writes)
+        self.client.post("/api/v1/journal/daily/2026-02-15/entries/", {"content": "A"}, format="json")
+        self.client.post("/api/v1/journal/daily/2026-02-15/entries/", {"content": "B"}, format="json")
+        note = DailyNote.objects.get(tenant=self.tenant, date=date(2026, 2, 15))
+        expected_entries = parse_daily_note(note.markdown)
+        expected_entries.pop(0)
+        request = APIRequestFactory().delete("/api/v1/journal/daily/2026-02-15/template/")
+        force_authenticate(request, user=self.user)
+
+        resp = DailyNoteTemplateView.as_view()(request, date="2026-02-15", index=0)
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data, {"date": "2026-02-15", "entries": expected_entries})
 
     def test_patch_out_of_range(self):
         resp = self.client.patch(

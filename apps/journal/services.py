@@ -412,7 +412,7 @@ def set_daily_note_section(
     note: DailyNote,
     section_slug: str,
     content: str,
-    writer: str = "owner",
+    writer: str,
     seam: str = "journal.daily_note.section.owner",
 ) -> tuple[DailyNote, list[dict[str, str]]]:
     """Update a single section's content in the rendered note."""
@@ -453,8 +453,8 @@ def set_daily_note_sections(
     *,
     note: DailyNote,
     sections: list[dict],
+    writer: str,
     template: NoteTemplate | None = None,
-    writer: str = "owner",
     seam: str = "journal.daily_note.sections.owner",
 ) -> DailyNote:
     if not sections:

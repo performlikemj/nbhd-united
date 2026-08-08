@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 from django.test import SimpleTestCase, TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.dashboard.views import _clean_markdown_preview, _derive_week_bounds
 from apps.insights.models import AssistantInsight, TopicRegistry
 from apps.insights.pillars import Pillar
-from apps.journal.models import Document, Goal
+from apps.journal.models import Document, Goal, PendingExtraction, Purpose
 from apps.journal.services import STARTER_DOCUMENT_TEMPLATES
 from apps.journal.templates_md import GOALS_TEMPLATE
 from apps.tenants.services import create_tenant
@@ -78,6 +79,79 @@ class DeriveWeekBoundsTests(SimpleTestCase):
     def test_invalid_month_falls_back(self):
         start, _ = _derive_week_bounds("2026-13-01", date(2026, 4, 20))
         self.assertEqual(start, date(2026, 4, 20))  # Monday
+
+
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
+class HorizonsOwnerRehydrationTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Horizons-Owner", telegram_chat_id=900699)
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        self.client = APIClient()
+        token = RefreshToken.for_user(self.tenant.user)
+        self.client.credentials(HTTP_AUTHORIZATION=f"Bearer {token.access_token}")
+
+    @staticmethod
+    def _receipt():
+        return {
+            "text": {
+                "state": "placeholder",
+                "writer": "background",
+                "redactions": [{"placeholder": "[PERSON_1]"}],
+            }
+        }
+
+    def test_purpose_and_pending_rows_rehydrate_with_resolved_receipts(self):
+        purpose = Purpose.objects.create(
+            tenant=self.tenant,
+            statement="Build with [PERSON_1]",
+            status=Purpose.Status.CONFIRMED,
+            pii_receipts={
+                "statement": {
+                    "state": "placeholder",
+                    "writer": "owner",
+                    "redactions": [{"placeholder": "[PERSON_1]"}],
+                }
+            },
+        )
+        purpose_card = PendingExtraction.objects.create(
+            tenant=self.tenant,
+            kind=PendingExtraction.Kind.PURPOSE,
+            text="A future with [PERSON_1]",
+            pii_receipts=self._receipt(),
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+        pending_task = PendingExtraction.objects.create(
+            tenant=self.tenant,
+            kind=PendingExtraction.Kind.TASK,
+            text="Call [PERSON_1]",
+            pii_receipts=self._receipt(),
+            expires_at=timezone.now() + timedelta(days=1),
+        )
+
+        response = self.client.get("/api/v1/dashboard/horizons/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        purpose_row = next(row for row in body["north_star"] if row["id"] == str(purpose.id))
+        purpose_card_row = next(row for row in body["north_star"] if row["id"] == str(purpose_card.id))
+        pending_row = next(row for row in body["pending_extractions"] if row["id"] == str(pending_task.id))
+        self.assertEqual(purpose_row["statement"], "Build with Alice")
+        self.assertEqual(purpose_card_row["statement"], "A future with Alice")
+        self.assertEqual(pending_row["text"], "Call Alice")
+        self.assertEqual(
+            purpose_row["pii_receipts"]["statement"]["redactions"],
+            [{"placeholder": "[PERSON_1]", "value": "Alice"}],
+        )
+        self.assertEqual(
+            purpose_card_row["pii_receipts"]["text"]["redactions"],
+            [{"placeholder": "[PERSON_1]", "value": "Alice"}],
+        )
+        self.assertEqual(
+            pending_row["pii_receipts"]["text"]["redactions"],
+            [{"placeholder": "[PERSON_1]", "value": "Alice"}],
+        )
 
 
 @override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)

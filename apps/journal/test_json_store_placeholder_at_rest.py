@@ -193,3 +193,4 @@ class JsonStoreFlagOnTests(_JsonStoreBase):
         self.assertEqual(purpose.pii_receipts["evidence"]["state"], "placeholder")
         self.assertEqual(response.data["statement"], "Build with Alice")
         self.assertEqual(response.data["evidence"][0]["note"], "Alice encouraged me")
+        self.assertIn("pii_receipts", response.data)

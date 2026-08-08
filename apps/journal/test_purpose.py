@@ -168,6 +168,7 @@ class PurposeRuntimeTests(TestCase):
         purpose = resp.json()["purpose"]
         self.assertEqual(purpose["status"], "proposed")
         self.assertEqual(purpose["origin"], "assistant_proposed")
+        self.assertNotIn("pii_receipts", purpose)
 
     def test_confirm_requires_user_confirmed_flag(self):
         p = Purpose.objects.create(
@@ -234,6 +235,7 @@ class PurposeRuntimeTests(TestCase):
         self.assertEqual(resp.status_code, 200)
         g.refresh_from_db()
         self.assertEqual(g.purpose_id, p.id)
+        self.assertNotIn("pii_receipts", resp.json()["purpose"])
 
     def test_link_goal_cross_tenant_404(self):
         p = Purpose.objects.create(tenant=self.tenant, statement="X", status=Purpose.Status.CONFIRMED)
@@ -253,6 +255,7 @@ class PurposeRuntimeTests(TestCase):
         resp = self.client.get(f"{self._base()}/", **self._headers())
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["count"], 1)
+        self.assertNotIn("pii_receipts", resp.json()["purposes"][0])
 
 
 # ── Envelope section ───────────────────────────────────────────────────────

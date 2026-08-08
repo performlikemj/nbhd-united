@@ -539,9 +539,20 @@ def author_json_paths(
         authored_value, _changed = rewrite_json_path(authored_value, path, _author_leaf)
 
     if not leaf_receipts:
-        # Empty arrays and shape-mismatched legacy blobs still need an honest
-        # top-level receipt; the empty-input path is detector-free.
-        _author_leaf("")
+        if value is None or value == "" or value == [] or value == {}:
+            # Truly empty fields keep the detector-free empty-input receipt.
+            _author_leaf("")
+        else:
+            # A populated blob that exposes no registered string leaf is not
+            # clean: preserve it fail-open and leave it eligible for repair.
+            leaf_receipts.append(
+                {
+                    "state": "unconfirmed",
+                    "reason": "shape-mismatch",
+                    "redactions": [],
+                    "writer": writer,
+                }
+            )
     return AuthoredJSON(
         value=authored_value,
         receipt=_aggregate_json_receipts(leaf_receipts, writer=writer),

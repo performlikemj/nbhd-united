@@ -75,6 +75,7 @@ class PurposeSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         tenant = self.context.get("tenant")
         if tenant is None or not self.context.get("rehydrate"):
+            data.pop("pii_receipts", None)
             return data
         from .store_authoring import owner_store_representation
 
