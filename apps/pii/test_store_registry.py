@@ -17,6 +17,11 @@ class StoreRegistryTests(SimpleTestCase):
                 "journal.DocumentChunk",
                 "journal.DocumentIngestion",
                 "journal.DocumentIngestionArtifact",
+                "journal.DailyNote",
+                "journal.JournalEntry",
+                "journal.WeeklyReview",
+                "journal.Purpose",
+                "journal.PendingExtraction",
             },
         )
         for model_label in ("journal.Task", "journal.Goal"):
@@ -43,6 +48,33 @@ class StoreRegistryTests(SimpleTestCase):
             "journal.DocumentIngestionArtifact",
         ):
             self.assertEqual(stores[label].json_paths, ())
+            self.assertEqual(stores[label].receipts_field, "pii_receipts")
+
+    def test_w3a_json_and_legacy_surfaces_are_registered(self):
+        stores = {store.model_label: store for store in registered_stores()}
+        self.assertEqual(stores["journal.DailyNote"].flat_fields, ("markdown",))
+        self.assertEqual(
+            stores["journal.JournalEntry"].json_paths,
+            ("wins[]", "challenges[]"),
+        )
+        self.assertEqual(
+            stores["journal.WeeklyReview"].json_paths,
+            (
+                "top_wins[]",
+                "top_challenges[]",
+                "lessons[]",
+                "intentions_next_week[]",
+            ),
+        )
+        self.assertEqual(stores["journal.Purpose"].json_paths, ("evidence[].note",))
+        self.assertEqual(stores["journal.PendingExtraction"].flat_fields, ("text",))
+        for label in (
+            "journal.DailyNote",
+            "journal.JournalEntry",
+            "journal.WeeklyReview",
+            "journal.Purpose",
+            "journal.PendingExtraction",
+        ):
             self.assertEqual(stores[label].receipts_field, "pii_receipts")
 
     def test_registered_field_max_length_is_resolved_per_model(self):

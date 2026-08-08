@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from datetime import date
 from unittest.mock import patch
 from uuid import UUID
 
 from django.db import DataError
 from django.test import TestCase
 
-from apps.journal.models import PendingTaskAction, Task
+from apps.journal.models import JournalEntry, PendingTaskAction, Task
 from apps.pii.authoring import AuthoredText
 from apps.pii.redactor import RedactionOutcome
 from apps.pii.repair_sweep import _check_rate_alert, repair_tenant
@@ -45,6 +46,42 @@ class RepairSweepTests(TestCase):
         self.assertEqual(first["fields_repaired"], 1)
         self.assertEqual(second["fields_attempted"], 0)
         author.assert_called_once()
+        self.assertEqual(author.call_args.kwargs["model_label"], "journal.Task")
+
+    def test_real_registered_json_store_repairs_wildcard_leaves_once(self):
+        entry = JournalEntry.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 8, 8),
+            mood="steady",
+            energy=JournalEntry.Energy.MEDIUM,
+            wins=["Alice shipped", "No name"],
+            challenges=[],
+            reflection="",
+            raw_text="Wins: Alice shipped, No name",
+            pii_receipts={"wins": {"state": "unconfirmed", "reason": "redaction-error"}},
+        )
+
+        def authored(_tenant, text, **_kwargs):
+            rewritten = text.replace("Alice", "[PERSON_1]")
+            redactions = [{"placeholder": "[PERSON_1]"}] if rewritten != text else []
+            return AuthoredText(
+                text=rewritten,
+                receipt={"state": "placeholder", "redactions": redactions, "writer": "background"},
+            )
+
+        with patch("apps.pii.authoring.author_text", side_effect=authored) as author:
+            first = repair_tenant(self.tenant, alert=False)
+            second = repair_tenant(self.tenant, alert=False)
+
+        entry.refresh_from_db()
+        self.assertEqual(entry.wins, ["[PERSON_1] shipped", "No name"])
+        self.assertEqual(entry.pii_receipts["wins"]["state"], "placeholder")
+        self.assertEqual(entry.pii_receipts["wins"]["redactions"], [{"placeholder": "[PERSON_1]"}])
+        self.assertEqual(first["fields_attempted"], 1)
+        self.assertEqual(first["fields_repaired"], 1)
+        self.assertEqual(second["fields_attempted"], 0)
+        self.assertEqual(author.call_count, 2)
+        self.assertTrue(all(call.kwargs["model_label"] == "journal.JournalEntry" for call in author.call_args_list))
 
     def test_repairs_unconfirmed_reconciliation_evidence(self):
         action = PendingTaskAction.objects.create(

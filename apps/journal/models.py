@@ -64,6 +64,7 @@ class JournalEntry(models.Model):
     challenges = models.JSONField(default=list, blank=True)
     reflection = models.TextField(blank=True, default="")
     raw_text = models.TextField()
+    pii_receipts = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -94,6 +95,7 @@ class WeeklyReview(models.Model):
     week_rating = models.CharField(max_length=16, choices=WeekRating.choices)
     intentions_next_week = models.JSONField(default=list, blank=True)
     raw_text = models.TextField()
+    pii_receipts = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -113,6 +115,7 @@ class DailyNote(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="daily_notes")
     date = models.DateField()
     markdown = models.TextField(default="")
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.DAILY_NOTE_MARKDOWN``) — ships DARK.
     # DailyNote is legacy v1 but still live-written (plan §1.1), so it is in scope.
     markdown_enc = models.BinaryField(null=True)
@@ -243,6 +246,7 @@ class PendingExtraction(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="pending_extractions")
     kind = models.CharField(max_length=16, choices=Kind.choices)
     text = models.TextField()
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecar — sealed envelope of ``text`` under AAD
     # ``enc_columns.PENDING_EXTRACTION_TEXT``. Ships DARK (nothing reads/writes it
     # yet; PR-2 dual-writes behind ``Tenant.encrypt_journal_writes``, PR-4 reads
@@ -423,6 +427,7 @@ class Purpose(models.Model):
     # (e.g. {"kind": "journal", "ref": "2026-06-30", "note": "..."}). Empty for
     # user-created purposes.
     evidence = models.JSONField(default=list, blank=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.PURPOSE_EVIDENCE``, JSON) — ships DARK.
     evidence_enc = models.BinaryField(null=True)
     confirmed_at = models.DateTimeField(null=True, blank=True)

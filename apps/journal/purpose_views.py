@@ -54,7 +54,13 @@ class PurposeListCreateView(APIView):
         status_filter = request.query_params.get("status")
         if status_filter:
             qs = qs.filter(status=status_filter)
-        return Response(PurposeSerializer(qs.order_by("-updated_at"), many=True).data)
+        return Response(
+            PurposeSerializer(
+                qs.order_by("-updated_at"),
+                many=True,
+                context={"tenant": tenant, "rehydrate": True},
+            ).data
+        )
 
     def post(self, request):
         from .models import Purpose
@@ -63,15 +69,35 @@ class PurposeListCreateView(APIView):
         tenant = _get_tenant(request.user)
         serializer = PurposeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {
+                "statement": serializer.validated_data["statement"],
+                "evidence": serializer.validated_data.get("evidence", []),
+            },
+            model_label="journal.Purpose",
+            seam="journal.purpose.create.owner",
+            writer="owner",
+        )
         purpose = Purpose.objects.create(
             tenant=tenant,
-            statement=serializer.validated_data["statement"],
+            statement=authored["statement"],
             pillars=serializer.validated_data.get("pillars", []),
+            evidence=authored["evidence"],
+            pii_receipts=receipts,
             origin=Purpose.Origin.USER_CREATED,
             status=Purpose.Status.CONFIRMED,
             confirmed_at=timezone.now(),
         )
-        return Response(PurposeSerializer(purpose).data, status=status.HTTP_201_CREATED)
+        return Response(
+            PurposeSerializer(
+                purpose,
+                context={"tenant": tenant, "rehydrate": True},
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class PurposeDetailView(APIView):
@@ -92,7 +118,12 @@ class PurposeDetailView(APIView):
         purpose = Purpose.objects.filter(tenant=tenant, id=purpose_id).first()
         if purpose is None:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
-        return Response(PurposeSerializer(purpose).data)
+        return Response(
+            PurposeSerializer(
+                purpose,
+                context={"tenant": tenant, "rehydrate": True},
+            ).data
+        )
 
     def patch(self, request, purpose_id):
         from .models import Purpose
@@ -106,17 +137,30 @@ class PurposeDetailView(APIView):
         serializer = PurposeSerializer(purpose, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {field: validated[field] for field in ("statement", "evidence") if field in validated},
+            model_label="journal.Purpose",
+            seam="journal.purpose.update.owner",
+            writer="owner",
+            receipts=purpose.pii_receipts,
+        )
 
         update_fields: list[str] = []
-        if "statement" in validated:
-            purpose.statement = validated["statement"]
+        if "statement" in authored:
+            purpose.statement = authored["statement"]
             update_fields.append("statement")
         if "pillars" in validated:
             purpose.pillars = validated["pillars"]
             update_fields.append("pillars")
-        if "evidence" in validated:
-            purpose.evidence = validated["evidence"]
+        if "evidence" in authored:
+            purpose.evidence = authored["evidence"]
             update_fields.append("evidence")
+        if authored:
+            purpose.pii_receipts = receipts
+            update_fields.append("pii_receipts")
         if "status" in validated:
             new_status = validated["status"]
             purpose.status = new_status
@@ -127,4 +171,9 @@ class PurposeDetailView(APIView):
             update_fields.append("updated_at")
             purpose.save(update_fields=update_fields)
 
-        return Response(PurposeSerializer(purpose).data)
+        return Response(
+            PurposeSerializer(
+                purpose,
+                context={"tenant": tenant, "rehydrate": True},
+            ).data
+        )

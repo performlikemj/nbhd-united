@@ -86,7 +86,16 @@ class JournalEntryRuntimeSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data: dict) -> JournalEntry:
         tenant = self.context["tenant"]
-        return JournalEntry.objects.create(tenant=tenant, **validated_data)
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            validated_data,
+            model_label="journal.JournalEntry",
+            seam="journal.entry.create.runtime",
+            writer="runtime",
+        )
+        return JournalEntry.objects.create(tenant=tenant, pii_receipts=receipts, **authored)
 
 
 class WeeklyReviewRuntimeSerializer(serializers.ModelSerializer):
@@ -149,7 +158,16 @@ class WeeklyReviewRuntimeSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data: dict) -> WeeklyReview:
         tenant = self.context["tenant"]
-        return WeeklyReview.objects.create(tenant=tenant, **validated_data)
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            validated_data,
+            model_label="journal.WeeklyReview",
+            seam="journal.weekly_review.create.runtime",
+            writer="runtime",
+        )
+        return WeeklyReview.objects.create(tenant=tenant, pii_receipts=receipts, **authored)
 
 
 def _build_raw_text(data: dict) -> str:
@@ -180,10 +198,11 @@ class JournalEntrySerializer(serializers.ModelSerializer):
             "wins",
             "challenges",
             "reflection",
+            "pii_receipts",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_at", "updated_at")
+        read_only_fields = ("id", "pii_receipts", "created_at", "updated_at")
 
     def validate_wins(self, value):
         return _validate_string_list(field_name="wins", value=value)
@@ -203,16 +222,47 @@ class JournalEntrySerializer(serializers.ModelSerializer):
     def create(self, validated_data: dict) -> JournalEntry:
         tenant = self.context["tenant"]
         raw_text = _build_raw_text(validated_data)
-        return JournalEntry.objects.create(tenant=tenant, raw_text=raw_text, **validated_data)
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {**validated_data, "raw_text": raw_text},
+            model_label="journal.JournalEntry",
+            seam="journal.entry.create.owner",
+            writer="owner",
+        )
+        return JournalEntry.objects.create(tenant=tenant, pii_receipts=receipts, **authored)
 
     def update(self, instance: JournalEntry, validated_data: dict) -> JournalEntry:
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.raw_text = _build_raw_text(
-            {f: getattr(instance, f) for f in ("mood", "energy", "wins", "challenges", "reflection")}
+        tenant = self.context["tenant"]
+        final_data = {
+            field: validated_data.get(field, getattr(instance, field))
+            for field in ("mood", "energy", "wins", "challenges", "reflection")
+        }
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {**validated_data, "raw_text": _build_raw_text(final_data)},
+            model_label="journal.JournalEntry",
+            seam="journal.entry.update.owner",
+            writer="owner",
+            receipts=instance.pii_receipts,
         )
-        instance.save()
+        for attr, value in authored.items():
+            setattr(instance, attr, value)
+        instance.pii_receipts = receipts
+        instance.save(update_fields=[*authored, "pii_receipts", "updated_at"])
         return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        tenant = self.context.get("tenant")
+        if tenant is None:
+            return data
+        from .store_authoring import owner_store_representation
+
+        return owner_store_representation(instance, tenant, data, model_label="journal.JournalEntry")
 
 
 # ---------------------------------------------------------------------------
@@ -297,10 +347,11 @@ class WeeklyReviewSerializer(serializers.ModelSerializer):
             "lessons",
             "week_rating",
             "intentions_next_week",
+            "pii_receipts",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_at", "updated_at")
+        read_only_fields = ("id", "pii_receipts", "created_at", "updated_at")
 
     def validate(self, attrs: dict) -> dict:
         week_start = attrs.get("week_start")
@@ -333,26 +384,52 @@ class WeeklyReviewSerializer(serializers.ModelSerializer):
     def create(self, validated_data: dict) -> WeeklyReview:
         tenant = self.context["tenant"]
         raw_text = _build_weekly_review_raw_text(validated_data)
-        return WeeklyReview.objects.create(tenant=tenant, raw_text=raw_text, **validated_data)
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {**validated_data, "raw_text": raw_text},
+            model_label="journal.WeeklyReview",
+            seam="journal.weekly_review.create.owner",
+            writer="owner",
+        )
+        return WeeklyReview.objects.create(tenant=tenant, pii_receipts=receipts, **authored)
 
     def update(self, instance: WeeklyReview, validated_data: dict) -> WeeklyReview:
-        for attr, value in validated_data.items():
-            setattr(instance, attr, value)
-        instance.raw_text = _build_weekly_review_raw_text(
-            {
-                f: getattr(instance, f)
-                for f in (
-                    "mood_summary",
-                    "week_rating",
-                    "top_wins",
-                    "top_challenges",
-                    "lessons",
-                    "intentions_next_week",
-                )
-            }
+        tenant = self.context["tenant"]
+        fields = (
+            "mood_summary",
+            "week_rating",
+            "top_wins",
+            "top_challenges",
+            "lessons",
+            "intentions_next_week",
         )
-        instance.save()
+        final_data = {field: validated_data.get(field, getattr(instance, field)) for field in fields}
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {**validated_data, "raw_text": _build_weekly_review_raw_text(final_data)},
+            model_label="journal.WeeklyReview",
+            seam="journal.weekly_review.update.owner",
+            writer="owner",
+            receipts=instance.pii_receipts,
+        )
+        for attr, value in authored.items():
+            setattr(instance, attr, value)
+        instance.pii_receipts = receipts
+        instance.save(update_fields=[*authored, "pii_receipts", "updated_at"])
         return instance
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        tenant = self.context.get("tenant")
+        if tenant is None:
+            return data
+        from .store_authoring import owner_store_representation
+
+        return owner_store_representation(instance, tenant, data, model_label="journal.WeeklyReview")
 
 
 # ---------------------------------------------------------------------------

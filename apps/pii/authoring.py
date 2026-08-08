@@ -45,6 +45,14 @@ class AuthoredText:
     receipt: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class AuthoredJSON:
+    """A rewritten JSON value plus one aggregate receipt for its model field."""
+
+    value: Any
+    receipt: dict[str, Any]
+
+
 def placeholder_redactions(text: str, entity_map: dict | None) -> list[dict[str, str | None]]:
     """Return chat-parity ``{placeholder, value}`` metadata in appearance order."""
     if not text:
@@ -280,12 +288,15 @@ def author_text(
     field: str,
     live: bool = True,
     model_label: str | None = None,
+    flag_off_legacy_redaction: bool = True,
 ) -> AuthoredText:
     """Author one text field under its writer-class mint policy.
 
-    Flag-off preserves the pre-P3 behavior of each writer class. Owner writes
-    still use the legacy unchecked redactor; runtime/background writes remain
-    byte-identical passthroughs — including length, so a bypass never truncates.
+    Flag-off preserves the pre-P3 behavior of each writer seam. Owner writes
+    use the legacy unchecked redactor by default; newly routed owner seams that
+    were raw before P3 pass ``flag_off_legacy_redaction=False`` for a byte-
+    identical bypass. Runtime/background writes remain byte-identical
+    passthroughs — including length, so a bypass never truncates.
 
     ``live=False`` marks a re-authoring pass over already-stored rows (the
     repair sweep). It keeps such passes out of the live-write error-rate
@@ -295,13 +306,17 @@ def author_text(
     the post-authoring length cap resolves against THAT column rather than the
     strictest column sharing the field name — see
     :func:`_registered_field_max_length`.
+
+    ``flag_off_legacy_redaction`` is ONLY an A4 compatibility switch. It does
+    not alter flag-on policy: owner text still runs full checked authoring with
+    ``MINT_ALL``.
     """
     if writer not in _WRITER_POLICIES:
         raise ValueError(f"unsupported writer class: {writer!r}")
 
     if not getattr(tenant, "layer1_placeholder_writes", False):
         source_text = None
-        if writer == "owner":
+        if writer == "owner" and flag_off_legacy_redaction:
             # The legacy redactor substitutes placeholders, so this branch was
             # never byte-identical to its input and it grows text the same way
             # the checked path does — a short name becoming ``[PERSON_12]`` can
@@ -438,4 +453,96 @@ def author_text(
         live=live,
         source_text=text,
         model_label=model_label,
+    )
+
+
+_JSON_RECEIPT_STATE_RANK = {"unconfirmed": 0, "residual": 1, "bypass": 2, "placeholder": 3}
+
+
+def _aggregate_json_receipts(receipts: list[dict[str, Any]], *, writer: WriterClass) -> dict[str, Any]:
+    """Fold leaf receipts into one A2 receipt keyed by the JSONField name."""
+    winner = min(
+        receipts,
+        key=lambda receipt: _JSON_RECEIPT_STATE_RANK.get(receipt.get("state"), -1),
+    )
+    aggregate = dict(winner)
+    aggregate["writer"] = writer
+
+    if aggregate.get("state") == "bypass":
+        aggregate.pop("redactions", None)
+        aggregate.pop("residual_spans", None)
+        return aggregate
+
+    redactions: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for receipt in receipts:
+        for item in receipt.get("redactions", []):
+            placeholder = item.get("placeholder") if isinstance(item, dict) else None
+            if isinstance(placeholder, str) and placeholder not in seen:
+                seen.add(placeholder)
+                redactions.append({"placeholder": placeholder})
+    aggregate["redactions"] = redactions
+
+    if aggregate.get("state") == "residual":
+        kinds: dict[str, int] = {}
+        for receipt in receipts:
+            summary = receipt.get("residual_spans")
+            if not isinstance(summary, dict) or not isinstance(summary.get("kinds"), dict):
+                continue
+            for kind, count in summary["kinds"].items():
+                if isinstance(count, int):
+                    kinds[kind] = kinds.get(kind, 0) + count
+        aggregate["residual_spans"] = {"count": sum(kinds.values()), "kinds": kinds}
+    else:
+        aggregate.pop("residual_spans", None)
+    return aggregate
+
+
+def author_json_paths(
+    tenant,
+    value: Any,
+    *,
+    paths: tuple[tuple[str, ...], ...],
+    seam: str,
+    writer: WriterClass,
+    field: str,
+    live: bool = True,
+    model_label: str | None = None,
+    flag_off_legacy_redaction: bool = True,
+) -> AuthoredJSON:
+    """Author every string leaf selected by parsed registry path suffixes.
+
+    Each leaf goes through :func:`author_text`; the returned receipt aggregates
+    state, residual counts, and placeholder metadata at the top-level JSONField
+    boundary required by directive A2.
+    """
+    from apps.pii.store_registry import rewrite_json_path
+
+    leaf_receipts: list[dict[str, Any]] = []
+
+    def _author_leaf(text: str) -> str:
+        authored = author_text(
+            tenant,
+            text,
+            seam=seam,
+            writer=writer,
+            field=field,
+            live=live,
+            model_label=model_label,
+            flag_off_legacy_redaction=flag_off_legacy_redaction,
+        )
+        leaf_receipts.append(authored.receipt)
+        return authored.text
+
+    authored_value = value
+    for path in paths:
+        authored_value, _changed = rewrite_json_path(authored_value, path, _author_leaf)
+
+    if not leaf_receipts:
+        # Empty arrays and shape-mismatched legacy blobs still need an honest
+        # top-level receipt; the empty-input path is detector-free.
+        _author_leaf("")
+    return AuthoredJSON(
+        value=authored_value,
+        receipt=_aggregate_json_receipts(leaf_receipts, writer=writer),
     )

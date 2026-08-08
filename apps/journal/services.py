@@ -412,6 +412,8 @@ def set_daily_note_section(
     note: DailyNote,
     section_slug: str,
     content: str,
+    writer: str = "owner",
+    seam: str = "journal.daily_note.section.owner",
 ) -> tuple[DailyNote, list[dict[str, str]]]:
     """Update a single section's content in the rendered note."""
     template, sections = get_or_seed_note_template(
@@ -437,12 +439,23 @@ def set_daily_note_section(
         }
         sections.append(new_section)
 
-    note = set_daily_note_sections(note=note, sections=sections, template=template)
+    note = set_daily_note_sections(
+        note=note,
+        sections=sections,
+        template=template,
+        writer=writer,
+        seam=seam,
+    )
     return note, sections
 
 
 def set_daily_note_sections(
-    *, note: DailyNote, sections: list[dict], template: NoteTemplate | None = None
+    *,
+    note: DailyNote,
+    sections: list[dict],
+    template: NoteTemplate | None = None,
+    writer: str = "owner",
+    seam: str = "journal.daily_note.sections.owner",
 ) -> DailyNote:
     if not sections:
         raise ValidationError("sections cannot be empty.")
@@ -467,12 +480,25 @@ def set_daily_note_sections(
             }
         )
 
-    note.markdown = materialize_sections_markdown(
+    markdown = materialize_sections_markdown(
         note_date=note.date,
         sections=section_payload,
         template_name=template.name if template is not None else None,
     )
-    note.save(update_fields=["markdown", "template", "updated_at"])
+    from apps.pii.authoring import author_text
+
+    authored = author_text(
+        note.tenant,
+        markdown,
+        seam=seam,
+        writer=writer,
+        field="markdown",
+        model_label="journal.DailyNote",
+        flag_off_legacy_redaction=False,
+    )
+    note.markdown = authored.text
+    note.pii_receipts = {**(note.pii_receipts or {}), "markdown": authored.receipt}
+    note.save(update_fields=["markdown", "template", "pii_receipts", "updated_at"])
     return note
 
 
@@ -504,11 +530,30 @@ def append_log_to_note(
 
     if log_section is not None:
         log_section["content"] = (log_section.get("content") or "").rstrip() + entry_block
-        note = set_daily_note_sections(note=note, sections=sections, template=note.template)
+        note = set_daily_note_sections(
+            note=note,
+            sections=sections,
+            template=note.template,
+            writer="runtime" if author == "agent" else "owner",
+            seam="journal.daily_note.append.runtime" if author == "agent" else "journal.daily_note.append.owner",
+        )
     else:
         # Append to the document tail.
-        note.markdown = (note.markdown or "").rstrip() + entry_block
-        note.save(update_fields=["markdown", "updated_at"])
+        markdown = (note.markdown or "").rstrip() + entry_block
+        from apps.pii.authoring import author_text
+
+        authored = author_text(
+            note.tenant,
+            markdown,
+            seam="journal.daily_note.append.runtime" if author == "agent" else "journal.daily_note.append.owner",
+            writer="runtime" if author == "agent" else "owner",
+            field="markdown",
+            model_label="journal.DailyNote",
+            flag_off_legacy_redaction=False,
+        )
+        note.markdown = authored.text
+        note.pii_receipts = {**(note.pii_receipts or {}), "markdown": authored.receipt}
+        note.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
     return note
 
@@ -521,12 +566,24 @@ def upsert_default_daily_note(*, tenant, note_date: date) -> DailyNote:
             template = seed_default_templates_for_tenant(tenant=tenant)["template"]
         note.template = template
         if not note.markdown:
-            note.markdown = materialize_sections_markdown(
+            markdown = materialize_sections_markdown(
                 note_date=note.date,
                 sections=_default_template_payload(),
                 template_name=template.name if template is not None else None,
             )
-            note.save(update_fields=["template", "markdown", "updated_at"])
+            from apps.pii.authoring import author_text
+
+            authored = author_text(
+                tenant,
+                markdown,
+                seam="journal.daily_note.default_body.background",
+                writer="background",
+                field="markdown",
+                model_label="journal.DailyNote",
+            )
+            note.markdown = authored.text
+            note.pii_receipts = {"markdown": authored.receipt}
+            note.save(update_fields=["template", "markdown", "pii_receipts", "updated_at"])
         else:
             note.save(update_fields=["template", "updated_at"])
     return note

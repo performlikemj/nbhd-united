@@ -167,65 +167,6 @@ def _build_heal_regex(inners: list[str]) -> re.Pattern[str] | None:
     return re.compile(r"\\?\[(" + alternation + r")\\?\]")
 
 
-def _json_path_parts(path: str) -> tuple[str, ...]:
-    """Parse dotted registry paths; ``[]``/``[*]`` are wildcard aliases."""
-    normalized = path.replace("[*]", ".*").replace("[]", ".*")
-    return tuple(part for part in normalized.split(".") if part)
-
-
-def _heal_json_value(value: Any, parts: tuple[str, ...], substitute) -> tuple[Any, bool]:
-    """Copy-on-write rewrite of string leaves selected by one JSON path."""
-    if not parts:
-        if not isinstance(value, str):
-            return value, False
-        healed = substitute(value)
-        return healed, healed != value
-
-    head, *tail_list = parts
-    tail = tuple(tail_list)
-    if head == "*":
-        if isinstance(value, dict):
-            next_value = value
-            changed = False
-            for key, child in value.items():
-                healed_child, child_changed = _heal_json_value(child, tail, substitute)
-                if child_changed:
-                    if not changed:
-                        next_value = dict(value)
-                    next_value[key] = healed_child
-                    changed = True
-            return next_value, changed
-        if isinstance(value, list):
-            next_value = value
-            changed = False
-            for index, child in enumerate(value):
-                healed_child, child_changed = _heal_json_value(child, tail, substitute)
-                if child_changed:
-                    if not changed:
-                        next_value = list(value)
-                    next_value[index] = healed_child
-                    changed = True
-            return next_value, changed
-        return value, False
-
-    if isinstance(value, dict) and head in value:
-        healed_child, changed = _heal_json_value(value[head], tail, substitute)
-        if changed:
-            next_value = dict(value)
-            next_value[head] = healed_child
-            return next_value, True
-        return value, False
-    if isinstance(value, list) and head.isdigit():
-        index = int(head)
-        if 0 <= index < len(value):
-            healed_child, changed = _heal_json_value(value[index], tail, substitute)
-            if changed:
-                next_value = list(value)
-                next_value[index] = healed_child
-                return next_value, True
-    return value, False
-
-
 def _without_healed_redactions(receipt: Any, ph_to_name: dict[str, str]) -> Any:
     """Drop healed placeholder items from either receipt generation's shape."""
     if not isinstance(receipt, dict) or not isinstance(receipt.get("redactions"), list):
@@ -247,7 +188,7 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
     raw value — so a junk value that also occurs as ordinary prose is untouched.
     """
     from apps.journal.models import Document, DocumentChunk
-    from apps.pii.store_registry import registered_stores
+    from apps.pii.store_registry import json_path_parts, registered_stores, rewrite_json_path
 
     inner_to_name: dict[str, str] = {}
     for placeholder, name in ph_to_name.items():
@@ -288,7 +229,7 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
             targets.append((model, fields, (), None))
 
     for model, fields, json_paths, receipts_field in targets:
-        json_parts = [_json_path_parts(path) for path in json_paths]
+        json_parts = [json_path_parts(path) for path in json_paths]
         json_parts = [parts for parts in json_parts if parts]
         json_fields = tuple(dict.fromkeys(parts[0] for parts in json_parts))
         only_fields = list(dict.fromkeys(["id", *fields, *json_fields]))
@@ -333,7 +274,7 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
             for parts in json_parts:
                 field, *nested_parts = parts
                 current = getattr(row, field)
-                healed_value, changed = _heal_json_value(current, tuple(nested_parts), _sub)
+                healed_value, changed = rewrite_json_path(current, tuple(nested_parts), _sub)
                 if changed:
                     setattr(row, field, healed_value)
                     if field not in changed_fields:

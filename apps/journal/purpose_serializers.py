@@ -34,6 +34,7 @@ class PurposeSerializer(serializers.ModelSerializer):
             "status",
             "origin",
             "evidence",
+            "pii_receipts",
             "confirmed_at",
             "retired_at",
             "created_at",
@@ -42,6 +43,7 @@ class PurposeSerializer(serializers.ModelSerializer):
         read_only_fields = [
             "id",
             "origin",
+            "pii_receipts",
             "confirmed_at",
             "retired_at",
             "created_at",
@@ -68,3 +70,12 @@ class PurposeSerializer(serializers.ModelSerializer):
         if not cleaned:
             raise serializers.ValidationError("statement cannot be empty.")
         return cleaned
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        tenant = self.context.get("tenant")
+        if tenant is None or not self.context.get("rehydrate"):
+            return data
+        from .store_authoring import owner_store_representation
+
+        return owner_store_representation(instance, tenant, data, model_label="journal.Purpose")

@@ -71,6 +71,13 @@ def _undo_candidate_texts(pending: PendingExtraction) -> list[str]:
     return [scrubbed] if scrubbed == pending.text else [scrubbed, pending.text]
 
 
+def _owner_pending_text(pending: PendingExtraction) -> str:
+    """Render a placeholder-stored extraction at the Telegram owner boundary."""
+    from apps.pii.redactor import rehydrate_text
+
+    return rehydrate_text(pending.text, pending.tenant.pii_entity_map)
+
+
 # ── Telegram helpers ──────────────────────────────────────────────────────────
 
 
@@ -292,14 +299,24 @@ def _approve_purpose(pending: PendingExtraction) -> tuple[str, None]:
                 "note": "Nightly cross-pillar hypothesis, confirmed by user.",
             }
         )
+    from apps.journal.store_authoring import author_store_fields
+
+    authored, receipts = author_store_fields(
+        pending.tenant,
+        {"statement": pending.text.strip(), "evidence": evidence},
+        model_label="journal.Purpose",
+        seam="journal.purpose.approve.background",
+        writer="background",
+    )
     Purpose.objects.create(
         tenant=pending.tenant,
-        statement=pending.text.strip(),
+        statement=authored["statement"],
         pillars=pillars,
         origin=Purpose.Origin.ASSISTANT_PROPOSED,
         status=Purpose.Status.CONFIRMED,
         confirmed_at=timezone.now(),
-        evidence=evidence,
+        evidence=authored["evidence"],
+        pii_receipts=receipts,
     )
     return "Set as your North Star. ✨", None
 
@@ -409,7 +426,7 @@ def handle_extraction_callback(update: dict, tenant: Tenant) -> JsonResponse:
         pending.resolved_at = timezone.now()
         pending.save(update_fields=["status", "resolved_at"])
 
-        _edit_message(chat_id, message_id, f"~{pending.text[:80]}~ — removed")
+        _edit_message(chat_id, message_id, f"~{_owner_pending_text(pending)[:80]}~ — removed")
         return _answer_callback(callback_id, "Removed!")
 
     # Approve/dismiss actions operate on PENDING items
@@ -427,7 +444,7 @@ def handle_extraction_callback(update: dict, tenant: Tenant) -> JsonResponse:
         pending.status = PendingExtraction.Status.DISMISSED
         pending.resolved_at = timezone.now()
         pending.save(update_fields=["status", "resolved_at"])
-        _edit_message(chat_id, message_id, f"❌ Skipped: {pending.text[:80]}")
+        _edit_message(chat_id, message_id, f"❌ Skipped: {_owner_pending_text(pending)[:80]}")
         return _answer_callback(callback_id, "Skipped")
 
     try:
@@ -452,5 +469,5 @@ def handle_extraction_callback(update: dict, tenant: Tenant) -> JsonResponse:
         pending.save(update_fields=["status", "resolved_at"])
 
     kind_emoji = {"lesson": "💡", "goal": "🎯", "task": "✅"}.get(pending.kind, "✅")
-    _edit_message(chat_id, message_id, f"{kind_emoji} {pending.text[:80]}")
+    _edit_message(chat_id, message_id, f"{kind_emoji} {_owner_pending_text(pending)[:80]}")
     return _answer_callback(callback_id, answer)
