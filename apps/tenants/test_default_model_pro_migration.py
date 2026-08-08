@@ -2,59 +2,66 @@
 
 from __future__ import annotations
 
-import importlib
-
-from django.test import TestCase
+from django.db import connection
+from django.db.migrations.executor import MigrationExecutor
+from django.test import TransactionTestCase
 
 from apps.billing.constants import DEEPSEEK_FLASH_MODEL, GEMMA_MODEL
-from apps.tenants.models import Tenant
-from apps.tenants.services import create_tenant
 
 
-class DefaultModelProMigrationTest(TestCase):
+class DefaultModelProMigrationTest(TransactionTestCase):
+    migrate_from = ("tenants", "0145_tenant_layer1_placeholder_writes")
+    migrate_to = ("tenants", "0146_bump_tier_default_tenants_for_pro")
+
     def setUp(self):
-        self.rolling_default = create_tenant(display_name="Rolling Default", telegram_chat_id=830001)
-        self.explicit_flash = create_tenant(display_name="Explicit Flash", telegram_chat_id=830002)
-        self.explicit_other = create_tenant(display_name="Explicit Other", telegram_chat_id=830003)
+        super().setUp()
+        executor = MigrationExecutor(connection)
+        executor.migrate([self.migrate_from])
+        old_apps = executor.loader.project_state([self.migrate_from]).apps
+        User = old_apps.get_model("tenants", "User")
+        Tenant = old_apps.get_model("tenants", "Tenant")
 
-        Tenant.objects.filter(id=self.rolling_default.id).update(
+        rolling_user = User.objects.create(username="migration-rolling-default")
+        flash_user = User.objects.create(username="migration-explicit-flash")
+        other_user = User.objects.create(username="migration-explicit-other")
+        self.rolling_default_id = Tenant.objects.create(
+            user=rolling_user,
             preferred_model="",
             task_model_preferences={"morning_briefing": DEEPSEEK_FLASH_MODEL},
             pending_config_version=4,
-        )
-        Tenant.objects.filter(id=self.explicit_flash.id).update(
+        ).pk
+        self.explicit_flash_id = Tenant.objects.create(
+            user=flash_user,
             preferred_model=DEEPSEEK_FLASH_MODEL,
             pending_config_version=7,
-        )
-        Tenant.objects.filter(id=self.explicit_other.id).update(
+        ).pk
+        self.explicit_other_id = Tenant.objects.create(
+            user=other_user,
             preferred_model=GEMMA_MODEL,
             pending_config_version=9,
-        )
+        ).pk
 
-    def _run_forward(self) -> None:
-        migration = importlib.import_module("apps.tenants.migrations.0146_bump_tier_default_tenants_for_pro")
-
-        class _AppsStub:
-            @staticmethod
-            def get_model(app_label, model_name):
-                return Tenant
-
-        migration.bump_tier_default_tenants(_AppsStub(), schema_editor=None)
+    def tearDown(self):
+        MigrationExecutor(connection).migrate([self.migrate_to])
+        super().tearDown()
 
     def test_bumps_only_rolling_default_tenants(self):
-        self._run_forward()
+        executor = MigrationExecutor(connection)
+        executor.migrate([self.migrate_to])
+        new_apps = executor.loader.project_state([self.migrate_to]).apps
+        Tenant = new_apps.get_model("tenants", "Tenant")
 
-        self.rolling_default.refresh_from_db()
-        self.explicit_flash.refresh_from_db()
-        self.explicit_other.refresh_from_db()
+        rolling_default = Tenant.objects.get(pk=self.rolling_default_id)
+        explicit_flash = Tenant.objects.get(pk=self.explicit_flash_id)
+        explicit_other = Tenant.objects.get(pk=self.explicit_other_id)
 
-        self.assertEqual(self.rolling_default.preferred_model, "")
+        self.assertEqual(rolling_default.preferred_model, "")
         self.assertEqual(
-            self.rolling_default.task_model_preferences,
+            rolling_default.task_model_preferences,
             {"morning_briefing": DEEPSEEK_FLASH_MODEL},
         )
-        self.assertEqual(self.rolling_default.pending_config_version, 5)
-        self.assertEqual(self.explicit_flash.preferred_model, DEEPSEEK_FLASH_MODEL)
-        self.assertEqual(self.explicit_flash.pending_config_version, 7)
-        self.assertEqual(self.explicit_other.preferred_model, GEMMA_MODEL)
-        self.assertEqual(self.explicit_other.pending_config_version, 9)
+        self.assertEqual(rolling_default.pending_config_version, 5)
+        self.assertEqual(explicit_flash.preferred_model, DEEPSEEK_FLASH_MODEL)
+        self.assertEqual(explicit_flash.pending_config_version, 7)
+        self.assertEqual(explicit_other.preferred_model, GEMMA_MODEL)
+        self.assertEqual(explicit_other.pending_config_version, 9)
