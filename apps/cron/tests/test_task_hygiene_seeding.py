@@ -108,8 +108,17 @@ class TaskHygieneSeedingTests(TestCase):
         cron = CronJob.objects.get(tenant=self.tenant, name=TASK_HYGIENE_CRON_NAME)
         self.assertEqual(
             cron.data["schedule"],
-            {"kind": "cron", "expr": "0 18 * * 0", "tz": "Asia/Tokyo"},
+            {"kind": "cron", "expr": "30 18 * * 0", "tz": "Asia/Tokyo"},
         )
+
+    def test_schedule_avoids_the_top_of_the_hour(self):
+        """The heartbeat fires at ``0 {heartbeat_start_hour} * * *``. A tenant
+        whose window starts at 18 would collide with a round 18:00 hygiene cron
+        every Sunday, so the offset is load-bearing, not cosmetic."""
+        self.seed_gated()
+        cron = CronJob.objects.get(tenant=self.tenant, name=TASK_HYGIENE_CRON_NAME)
+        minute = cron.data["schedule"]["expr"].split()[0]
+        self.assertNotEqual(minute, "0")
 
     def test_timezone_falls_back_to_utc_when_the_user_has_none(self):
         tzless = _make_tenant("hygiene-no-tz", timezone="")
@@ -139,6 +148,77 @@ class TaskHygieneSeedingTests(TestCase):
         self.assertFalse(result["created"])
         self.assertEqual(CronJob.objects.filter(tenant=self.tenant, name=TASK_HYGIENE_CRON_NAME).count(), 1)
         cron.refresh_from_db()
+        self.assertFalse(cron.enabled)
+
+
+class TaskHygieneGateConvergesOffTests(TestCase):
+    """Removing a tenant from the allowlist is the ROLLBACK LEVER for a
+    proactive sender. A gate that only guarded creation would leave every
+    already-seeded tenant messaging forever, making the canary ladder one-way —
+    so un-gating has to actually stop the sending."""
+
+    def setUp(self):
+        self.tenant = _make_tenant("hygiene-converge")
+
+    def _seed_gated(self):
+        with override_settings(TASK_HYGIENE_TENANT_IDS=str(self.tenant.id)):
+            return seed_task_hygiene_cron(self.tenant)
+
+    def _converge_ungated(self):
+        with override_settings(TASK_HYGIENE_TENANT_IDS=""):
+            return seed_task_hygiene_cron(self.tenant)
+
+    def test_gated_seeds_it_enabled(self):
+        self._seed_gated()
+        cron = CronJob.objects.get(tenant=self.tenant, name=TASK_HYGIENE_CRON_NAME)
+        self.assertTrue(cron.enabled)
+
+    def test_un_gating_disables_the_existing_cron(self):
+        self._seed_gated()
+        result = self._converge_ungated()
+
+        self.assertEqual(result["reason"], "disabled_ungated")
+        cron = CronJob.objects.get(tenant=self.tenant, name=TASK_HYGIENE_CRON_NAME)
+        self.assertFalse(cron.enabled)
+
+    def test_un_gating_disables_rather_than_deletes(self):
+        """The row is the audit trail — and deleting would also let a later
+        re-gate silently resurrect a sender the operator turned off."""
+        self._seed_gated()
+        self._converge_ungated()
+        self.assertEqual(CronJob.objects.filter(tenant=self.tenant, name=TASK_HYGIENE_CRON_NAME).count(), 1)
+
+    def test_converging_off_twice_is_a_no_op(self):
+        self._seed_gated()
+        self._converge_ungated()
+        second = self._converge_ungated()
+        self.assertEqual(second["reason"], "not_gated")
+
+    def test_un_gated_with_no_row_creates_nothing(self):
+        result = self._converge_ungated()
+        self.assertEqual(result["reason"], "not_gated")
+        self.assertFalse(CronJob.objects.filter(tenant=self.tenant).exists())
+
+    def test_re_gating_does_not_silently_resurrect_it(self):
+        """After an operator rolls a tenant back, putting the id back in the
+        allowlist must not flip the sender on again by itself — the row stays
+        disabled until someone deliberately re-enables it."""
+        self._seed_gated()
+        self._converge_ungated()
+
+        self._seed_gated()
+
+        cron = CronJob.objects.get(tenant=self.tenant, name=TASK_HYGIENE_CRON_NAME)
+        self.assertFalse(cron.enabled)
+
+    def test_config_apply_converges_off_through_the_real_call_site(self):
+        from apps.orchestrator.services import refresh_system_cron_rows_from_seed
+
+        self._seed_gated()
+        with override_settings(TASK_HYGIENE_TENANT_IDS=""):
+            refresh_system_cron_rows_from_seed(self.tenant)
+
+        cron = CronJob.objects.get(tenant=self.tenant, name=TASK_HYGIENE_CRON_NAME)
         self.assertFalse(cron.enabled)
 
 
@@ -199,6 +279,30 @@ class TaskHygieneRenderedTurnTests(TestCase):
         self.assertEqual(contract["pattern"], "task_hygiene")
         self.assertEqual(contract["check"], {"kind": "marker", "marker": "[block: task_hygiene]"})
         self.assertEqual(contract["on_fail"], {"action": "revise_then_allow", "max_revisions": 1})
+
+    def test_signal_bakes_the_fire_time_caps(self):
+        """``limits`` is what the plugin blocks on. If the signal stops passing
+        it through, the caps vanish silently: the cron still fires, still sends,
+        and nothing enforces one-message-only or the mutation ceiling."""
+        contract = json.loads(self.cron.data["description"][len(CRON_CONTRACT_PREFIX) :])
+        self.assertEqual(contract["limits"], {"sends": 1, "mutations": 10})
+
+    def test_a_pattern_without_limits_bakes_no_limits_key(self):
+        """The signal change must be a pure addition. A pure_reminder row baked
+        alongside must come out byte-identical to before — no ``limits`` key at
+        all, which is what keeps the plugin's cap logic dormant for it."""
+        from apps.cron.models import CronPattern
+        from apps.cron.services import create_typed_cron
+
+        reminder = create_typed_cron(
+            tenant=self.tenant,
+            pattern=CronPattern.PURE_REMINDER,
+            typed_payload={"text": "Take out trash"},
+            name="trash-tuesday",
+            schedule={"kind": "cron", "expr": "0 8 * * 2", "tz": "Asia/Tokyo"},
+        )
+        contract = json.loads(reminder.data["description"][len(CRON_CONTRACT_PREFIX) :])
+        self.assertNotIn("limits", contract)
 
 
 class TaskHygieneSeedPathWiringTests(TestCase):

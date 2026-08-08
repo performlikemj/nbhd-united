@@ -200,6 +200,23 @@ class TaskHygieneHandler(PatternHandler):
         return {
             "check": {"kind": "marker", "marker": _MARKER},
             "on_fail": {"action": "revise_then_allow", "max_revisions": 1},
+            # Fire-time hard caps, enforced in-container by the
+            # nbhd-cron-enforcement plugin (see its MUTATION_TOOL_IDS — that set
+            # MUST stay in lockstep with _HYGIENE_LIFECYCLE_TOOLS above; the
+            # drift test pins this side).
+            #
+            # sends=1 is what actually makes "ONE summary" true. Everything else
+            # about one-message-only is prose the model can talk itself out of;
+            # this blocks dispatch number two outright. It also closes the
+            # unmarked-second-message path: a message that never dispatches
+            # cannot arrive without a marker.
+            #
+            # mutations=10 bounds the worst case of an unattended turn that
+            # misreads the task list — ten wrong closures is recoverable and
+            # visible in one summary; a hundred is a data-loss incident. Past
+            # the cap the model is told to list the rest as proposals, which is
+            # the same escape hatch deletion already uses.
+            "limits": {"sends": 1, "mutations": 10},
         }
 
     def validate_outbound_message(

@@ -134,6 +134,14 @@ def cronjob_derive_data_from_typed_payload(sender, instance, **kwargs):
             "check": contract.get("check"),
             "on_fail": contract.get("on_fail"),
         }
+        # Optional per-fire hard caps: {"sends": N, "mutations": N}. Omitted for
+        # every pattern that doesn't declare them, so the plugin's cap logic
+        # stays entirely dormant for the read-only patterns (a briefing with no
+        # ``limits`` key is uncapped, exactly as before). Only patterns whose
+        # turn can mutate — today just task_hygiene — opt in.
+        limits = contract.get("limits")
+        if limits:
+            full_contract["limits"] = limits
         instance.data["description"] = CRON_CONTRACT_PREFIX + json.dumps(
             full_contract, separators=(",", ":"), ensure_ascii=False
         )

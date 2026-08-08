@@ -51,11 +51,12 @@ logger = logging.getLogger(__name__)
 # would delete it on the next config apply).
 TASK_HYGIENE_CRON_NAME = "Task Hygiene"
 
-# Sunday 18:00 in the tenant's own timezone. Deliberately an hour clear of the
-# other Sunday-evening system crons — Gravity Weekly Check-in at 19:00 and
-# Weekly Reflection at 20:00 — so a user on all three gets three separate
-# moments rather than one pile-up.
-TASK_HYGIENE_CRON_EXPR = "0 18 * * 0"
+# Sunday 18:30 in the tenant's own timezone, clear of every other Sunday-evening
+# sender: Gravity Weekly Check-in at 19:00, Weekly Reflection at 20:00, and — the
+# reason for the :30 rather than a round 18:00 — the heartbeat, whose expression
+# is ``0 {heartbeat_start_hour} * * *``. A tenant with heartbeat_start_hour == 18
+# would have had both land on the same minute every Sunday.
+TASK_HYGIENE_CRON_EXPR = "30 18 * * 0"
 
 
 class TypedCronError(Exception):
@@ -282,21 +283,44 @@ def task_hygiene_enabled(tenant: Tenant) -> bool:
     allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
     if not allowed:
         return False
-    return str(tenant.id).lower() in allowed
+    if str(tenant.id).lower() in allowed:
+        return True
+    # The allowlist is populated but this tenant is not on it. Almost always
+    # intentional (canary rollout), but it is also exactly what a typo'd or
+    # truncated TASK_HYGIENE_TENANT_IDS looks like — and the symptom of that
+    # mistake is silence, which is indistinguishable from working correctly.
+    # One line at INFO turns a confused "why didn't the canary get it" into a
+    # log grep.
+    logger.info(
+        "task_hygiene: tenant %s is not in TASK_HYGIENE_TENANT_IDS (%d id(s) configured) — no hygiene cron",
+        str(tenant.id)[:8],
+        len(allowed),
+    )
+    return False
 
 
 def seed_task_hygiene_cron(tenant: Tenant) -> dict[str, Any]:
-    """Idempotently seed the weekly task-hygiene cron for a gated tenant.
+    """Converge the weekly task-hygiene cron to match the gate, both directions.
 
     Called from the provisioning seed path and from the config-apply refresh
-    path (``apps/orchestrator/services.py``) so a tenant added to the gate
-    converges without a manual DB write.
+    path (``apps/orchestrator/services.py``) so a tenant added to — or removed
+    from — the gate converges without a manual DB write.
 
-    Idempotent by NAME, and deliberately blind to ``enabled``: if a row called
-    ``TASK_HYGIENE_CRON_NAME`` exists at all we leave it alone. That is what
-    makes "user turns the weekly cleanup off" stick — a gate check that only
-    looked for enabled rows would helpfully recreate it on the next config
-    apply and the user could never be rid of it.
+    GATE OPEN, no row      → create it.
+    GATE OPEN, row exists  → leave it EXACTLY as it is, enabled or not. This is
+                             what makes "user turns the weekly cleanup off"
+                             stick: a check that only looked for enabled rows
+                             would helpfully recreate it on the next config
+                             apply and the user could never be rid of it.
+    GATE CLOSED, row exists → DISABLE it. Removing a tenant from the allowlist
+                             is the rollback lever for a proactive sender, so it
+                             has to actually stop the sending — a gate that only
+                             guarded creation would leave every already-seeded
+                             tenant messaging forever, which makes the canary
+                             ladder one-way. Disabled, never deleted: the row is
+                             the audit trail, and re-gating re-enables nothing
+                             by surprise (it stays off until someone turns it
+                             back on deliberately).
 
     Returns a small status dict; never raises. A hygiene cron is a nicety and
     must not be able to fail provisioning.
@@ -304,12 +328,23 @@ def seed_task_hygiene_cron(tenant: Tenant) -> dict[str, Any]:
     from apps.common.tenant_tz import tenant_tz_name
 
     result: dict[str, Any] = {"tenant_id": str(tenant.id), "created": False}
+    existing = CronJob.objects.filter(tenant=tenant, name=TASK_HYGIENE_CRON_NAME).first()
 
     if not task_hygiene_enabled(tenant):
+        if existing is not None and existing.enabled:
+            existing.enabled = False
+            existing.save(update_fields=["enabled", "updated_at"])
+            logger.info(
+                "task_hygiene: disabled %r for ungated tenant %s",
+                TASK_HYGIENE_CRON_NAME,
+                str(tenant.id)[:8],
+            )
+            result["reason"] = "disabled_ungated"
+            return result
         result["reason"] = "not_gated"
         return result
 
-    if CronJob.objects.filter(tenant=tenant, name=TASK_HYGIENE_CRON_NAME).exists():
+    if existing is not None:
         result["reason"] = "already_exists"
         return result
 

@@ -121,6 +121,14 @@ class PatternHandler(ABC):
         ``nbhd-cron-enforcement`` plugin's ``evaluateCheck`` /
         ``decideGuardAction`` — see the parity test.
 
+        An optional ``limits`` key (``{"sends": N, "mutations": N}``) declares
+        fire-time HARD CAPS the plugin enforces by blocking the tool call
+        outright — how many times the turn may call ``nbhd_send_to_user``, and
+        how many mutation tools it may call in total. Patterns that omit it are
+        uncapped (the historical behaviour, and correct for the read-only
+        patterns whose ``toolsAllow`` already makes mutation impossible). Only
+        a pattern whose turn can actually change data needs it.
+
         Per-pattern matrix (the actual contracts each handler bakes):
 
           pure_reminder      — contains(text) / rewrite(text)

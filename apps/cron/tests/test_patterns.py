@@ -394,8 +394,50 @@ class TaskHygieneTests(SimpleTestCase):
                     else ({"text": "x"} if pattern == "pure_reminder" else {})
                 )
                 payload = handler.validate_payload(payload_dict)
-                for t in handler.get_tools_allow(payload):
+                allow = handler.get_tools_allow(payload)
+                # A handler regressing to [] would satisfy the loop below
+                # vacuously while actually breaking delivery — every pattern
+                # must still be able to reach the user.
+                self.assertTrue(allow, f"{pattern} returned an empty toolsAllow")
+                self.assertIn("nbhd_send_to_user", allow)
+                for t in allow:
                     self.assertNotIn(t, FORBIDDEN_MUTATION_TOOLS)
+
+    def test_lifecycle_tools_are_pinned_in_lockstep_with_the_plugin(self):
+        """The plugin's MUTATION_TOOL_IDS set (nbhd-cron-enforcement/index.js)
+        decides which calls burn the mutation budget, and it is maintained BY
+        HAND against this tuple. Pin the Python side so a change here fails a
+        test that names the file to update on the JS side."""
+        from apps.cron.patterns.task_hygiene import _HYGIENE_LIFECYCLE_TOOLS
+
+        self.assertEqual(
+            _HYGIENE_LIFECYCLE_TOOLS,
+            ("nbhd_task_complete", "nbhd_task_skip", "nbhd_task_defer"),
+        )
+
+    def test_contract_declares_fire_time_caps(self):
+        """The caps are what make ONE-summary and bounded-mutation structural
+        rather than prose. Absent from the contract, the plugin enforces
+        neither."""
+        payload = self.handler.validate_payload({})
+        contract = self.handler.get_outbound_contract(payload, name="Task Hygiene")
+        self.assertEqual(contract["limits"], {"sends": 1, "mutations": 10})
+
+    def test_only_the_mutating_pattern_declares_limits(self):
+        """Read-only patterns must stay uncapped — their toolsAllow already
+        makes mutation impossible, and adding a send cap to a briefing would be
+        a silent behaviour change to a shipped feature."""
+        for pattern, payload_dict in (
+            ("daily_briefing", {}),
+            ("pure_reminder", {"text": "x"}),
+            ("domain_summary", {"query_tool": "nbhd_task_list", "render_block": "task_summary"}),
+            ("workout_congrats", {"activity": "Push Day"}),
+        ):
+            with self.subTest(pattern=pattern):
+                handler = get_handler(pattern)
+                payload = handler.validate_payload(payload_dict)
+                contract = handler.get_outbound_contract(payload, name="probe")
+                self.assertNotIn("limits", contract)
 
     def test_build_oc_data_shape(self):
         payload = self.handler.validate_payload({})

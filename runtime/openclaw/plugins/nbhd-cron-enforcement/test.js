@@ -14,13 +14,51 @@ import register, {
   parseContract,
   evaluateCheck,
   decideGuardAction,
+  decideLimitAction,
   extractSendMessage,
+  resolveDispatchedToolId,
 } from "./index.js";
 
 const PREFIX = "nbhd.v1 ";
 
 function contract(check, onFail, pattern = "pure_reminder") {
   return PREFIX + JSON.stringify({ v: 1, pattern, check, on_fail: onFail });
+}
+
+// The task_hygiene contract exactly as apps/cron/signals.py bakes it — marker
+// check plus the fire-time caps. Mirrors
+// apps/cron/patterns/task_hygiene.py::get_outbound_contract.
+const HYGIENE_MARKER = "[block: task_hygiene]";
+function hygieneContract(limits = { sends: 1, mutations: 10 }) {
+  return (
+    PREFIX +
+    JSON.stringify({
+      v: 1,
+      pattern: "task_hygiene",
+      check: { kind: "marker", marker: HYGIENE_MARKER },
+      on_fail: { action: "revise_then_allow", max_revisions: 1 },
+      limits,
+    })
+  );
+}
+
+function startHygieneCron(sessionKey, limits) {
+  const api = makeFakeApi();
+  register(api);
+  api._handlers["cron_changed"]({
+    action: "started",
+    sessionKey,
+    job: { name: "Task Hygiene", description: hygieneContract(limits) },
+  });
+  return api._handlers["before_tool_call"];
+}
+
+function sendCall(sessionKey, message) {
+  return { sessionKey, toolName: "nbhd_send_to_user", params: { message } };
+}
+
+function mutationCall(sessionKey, toolName = "nbhd_task_complete") {
+  return { sessionKey, toolName, params: { task_id: "t-1" } };
 }
 
 // ── parseContract ────────────────────────────────────────────────────────────
@@ -745,5 +783,188 @@ describe("before_tool_call throw-safety", () => {
     assert.doesNotThrow(() =>
       cronChanged({ action: "started", sessionKey: "s-log-4", job: { name: "j4", description: undefined } }),
     );
+  });
+});
+
+// ── fire-time hard caps (limits) ─────────────────────────────────────────────
+// The JS twin of apps/cron/tests/test_patterns.py::TaskHygieneLimitsTests and
+// test_task_hygiene_seeding.py's baked-contract assertions. Python proves the
+// contract is BAKED with limits; these prove the limits are ENFORCED. Both
+// sides must agree on the shape {sends, mutations} — update both tables.
+
+describe("decideLimitAction (unit)", () => {
+  const withLimits = { limits: { sends: 1, mutations: 10 } };
+
+  it("counts a send when the budget is unspent", () => {
+    assert.deepEqual(decideLimitAction(withLimits, "nbhd_send_to_user", { sends: 0 }), {
+      type: "count",
+      counter: "sends",
+    });
+  });
+
+  it("blocks a send once the budget is spent", () => {
+    const decision = decideLimitAction(withLimits, "nbhd_send_to_user", { sends: 1 });
+    assert.equal(decision.type, "block");
+    assert.match(decision.reason, /already sent/);
+  });
+
+  it("blocks a mutation only once the budget is spent", () => {
+    assert.equal(decideLimitAction(withLimits, "nbhd_task_skip", { mutations: 9 }).type, "count");
+    const decision = decideLimitAction(withLimits, "nbhd_task_skip", { mutations: 10 });
+    assert.equal(decision.type, "block");
+    assert.match(decision.reason, /PROPOSALS/);
+  });
+
+  it("all three lifecycle tools count against the same mutation budget", () => {
+    for (const tool of ["nbhd_task_complete", "nbhd_task_skip", "nbhd_task_defer"]) {
+      assert.equal(decideLimitAction(withLimits, tool, { mutations: 10 }).type, "block", tool);
+    }
+  });
+
+  it("a contract with NO limits key is uncapped (briefings et al. unaffected)", () => {
+    const noLimits = { check: { kind: "marker", marker: "[block: daily_briefing]" } };
+    assert.deepEqual(decideLimitAction(noLimits, "nbhd_send_to_user", { sends: 99 }), { type: "pass" });
+    assert.deepEqual(decideLimitAction(noLimits, "nbhd_task_skip", { mutations: 99 }), { type: "pass" });
+  });
+
+  it("garbage limits fail open rather than blocking", () => {
+    for (const limits of [null, "nope", [], { sends: "one" }, { sends: NaN }]) {
+      assert.equal(decideLimitAction({ limits }, "nbhd_send_to_user", { sends: 5 }).type, "pass");
+    }
+  });
+
+  it("a read-only query tool never counts as a mutation", () => {
+    assert.deepEqual(decideLimitAction(withLimits, "nbhd_task_list", { mutations: 10 }), { type: "pass" });
+  });
+});
+
+describe("resolveDispatchedToolId", () => {
+  it("resolves a direct dispatch", () => {
+    assert.equal(resolveDispatchedToolId({ toolName: "nbhd_task_complete" }), "nbhd_task_complete");
+  });
+
+  it("resolves through the toolSearch meta dispatch", () => {
+    assert.equal(
+      resolveDispatchedToolId({ toolName: "tool_call", params: { id: "nbhd_task_skip" } }),
+      "nbhd_task_skip",
+    );
+  });
+});
+
+describe("end-to-end caps via register() — the real before_tool_call path", () => {
+  it("the FIRST summary goes out and the SECOND is blocked outright", () => {
+    const beforeToolCall = startHygieneCron("cap-sends");
+
+    const first = beforeToolCall(sendCall("cap-sends", `${HYGIENE_MARKER}\nClosed 2, deferred 1.`));
+    assert.equal(first, undefined, "first send must pass through untouched");
+
+    const second = beforeToolCall(sendCall("cap-sends", `${HYGIENE_MARKER}\nAlso, one more thing.`));
+    assert.equal(second.block, true);
+    assert.match(second.blockReason, /already sent/);
+  });
+
+  it("a second send is refused even when its content is perfectly valid", () => {
+    // The cap is structural, not a content judgement — this is the ONE-sender
+    // guarantee, and it holds regardless of how good message two looks.
+    const beforeToolCall = startHygieneCron("cap-sends-valid");
+    beforeToolCall(sendCall("cap-sends-valid", `${HYGIENE_MARKER}\nfirst`));
+    assert.equal(beforeToolCall(sendCall("cap-sends-valid", `${HYGIENE_MARKER}\nsecond`)).block, true);
+  });
+
+  it("a blocked revise does NOT burn the send budget", () => {
+    // Regression guard: if the revise-block counted as a send, asking the model
+    // to add its missing marker would cost it the only message it was allowed
+    // to send, and the hygiene summary would never arrive.
+    const beforeToolCall = startHygieneCron("cap-revise");
+
+    const missingMarker = beforeToolCall(sendCall("cap-revise", "I tidied up your tasks."));
+    assert.equal(missingMarker.block, true);
+    assert.match(missingMarker.blockReason, /marker/);
+
+    const corrected = beforeToolCall(sendCall("cap-revise", `${HYGIENE_MARKER}\nClosed 2.`));
+    assert.equal(corrected, undefined, "the corrected first send must still be allowed");
+
+    const extra = beforeToolCall(sendCall("cap-revise", `${HYGIENE_MARKER}\nOne more.`));
+    assert.equal(extra.block, true, "but the budget is spent now");
+  });
+
+  it("ten task changes pass and the eleventh is blocked", () => {
+    const beforeToolCall = startHygieneCron("cap-mutations");
+
+    for (let i = 0; i < 10; i += 1) {
+      assert.equal(beforeToolCall(mutationCall("cap-mutations")), undefined, `mutation ${i + 1} must pass`);
+    }
+
+    const eleventh = beforeToolCall(mutationCall("cap-mutations"));
+    assert.equal(eleventh.block, true);
+    assert.match(eleventh.blockReason, /PROPOSALS/);
+  });
+
+  it("the mutation budget is shared across complete/skip/defer", () => {
+    const beforeToolCall = startHygieneCron("cap-mixed", { sends: 1, mutations: 3 });
+    assert.equal(beforeToolCall(mutationCall("cap-mixed", "nbhd_task_complete")), undefined);
+    assert.equal(beforeToolCall(mutationCall("cap-mixed", "nbhd_task_skip")), undefined);
+    assert.equal(beforeToolCall(mutationCall("cap-mixed", "nbhd_task_defer")), undefined);
+    assert.equal(beforeToolCall(mutationCall("cap-mixed", "nbhd_task_complete")).block, true);
+  });
+
+  it("mutations are capped through the toolSearch meta dispatch too", () => {
+    const beforeToolCall = startHygieneCron("cap-meta", { sends: 1, mutations: 1 });
+    assert.equal(
+      beforeToolCall({ sessionKey: "cap-meta", toolName: "tool_call", params: { id: "nbhd_task_skip" } }),
+      undefined,
+    );
+    const blocked = beforeToolCall({
+      sessionKey: "cap-meta",
+      toolName: "tool_call",
+      params: { id: "nbhd_task_skip" },
+    });
+    assert.equal(blocked.block, true);
+  });
+
+  it("read-only query tools are never capped", () => {
+    const beforeToolCall = startHygieneCron("cap-reads", { sends: 1, mutations: 1 });
+    for (let i = 0; i < 20; i += 1) {
+      assert.equal(beforeToolCall({ sessionKey: "cap-reads", toolName: "nbhd_task_list", params: {} }), undefined);
+    }
+    // The mutation budget is untouched by all that reading.
+    assert.equal(beforeToolCall(mutationCall("cap-reads")), undefined);
+  });
+
+  it("a daily_briefing contract carries no limits and stays uncapped", () => {
+    // The whole point of making `limits` optional: existing patterns must not
+    // acquire a cap by accident.
+    const api = makeFakeApi();
+    register(api);
+    api._handlers["cron_changed"]({
+      action: "started",
+      sessionKey: "briefing",
+      job: {
+        name: "Morning Briefing",
+        description: contract(
+          { kind: "marker", marker: "[block: daily_briefing]" },
+          { action: "revise_then_allow", max_revisions: 1 },
+          "daily_briefing",
+        ),
+      },
+    });
+    const beforeToolCall = api._handlers["before_tool_call"];
+
+    for (let i = 0; i < 5; i += 1) {
+      const result = beforeToolCall({
+        sessionKey: "briefing",
+        toolName: "nbhd_send_to_user",
+        params: { message: "[block: daily_briefing]\nGood morning!" },
+      });
+      assert.equal(result, undefined, `briefing send ${i + 1} must not be capped`);
+    }
+  });
+
+  it("each cron session gets its own budget", () => {
+    const first = startHygieneCron("cap-session-a");
+    const second = startHygieneCron("cap-session-b");
+    first(sendCall("cap-session-a", `${HYGIENE_MARKER}\na`));
+    assert.equal(first(sendCall("cap-session-a", `${HYGIENE_MARKER}\na2`)).block, true);
+    assert.equal(second(sendCall("cap-session-b", `${HYGIENE_MARKER}\nb`)), undefined);
   });
 });
