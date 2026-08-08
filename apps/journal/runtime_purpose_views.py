@@ -29,6 +29,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
@@ -100,6 +101,7 @@ class RuntimePurposeProposeView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+        record_runtime_write_activity(tenant)
 
         serializer = PurposeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -163,6 +165,7 @@ class RuntimePurposeConfirmView(APIView):
                 },
                 status=status.HTTP_403_FORBIDDEN,
             )
+        record_runtime_write_activity(tenant)
 
         purpose = Purpose.objects.filter(tenant=tenant, id=purpose_id).first()
         if purpose is None:
@@ -192,6 +195,7 @@ class RuntimePurposeUpdateView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+        record_runtime_write_activity(tenant)
 
         purpose = Purpose.objects.filter(tenant=tenant, id=purpose_id).first()
         if purpose is None:
@@ -269,6 +273,7 @@ class RuntimePurposeRetireView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+        record_runtime_write_activity(tenant)
 
         purpose = Purpose.objects.filter(tenant=tenant, id=purpose_id).first()
         if purpose is None:
@@ -298,6 +303,7 @@ class RuntimePurposeLinkGoalView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+        record_runtime_write_activity(tenant)
 
         purpose = Purpose.objects.filter(tenant=tenant, id=purpose_id).first()
         if purpose is None:

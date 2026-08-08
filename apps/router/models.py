@@ -647,6 +647,21 @@ class ChatThread(models.Model):
         return f"ChatThread({label}, tenant={self.tenant_id})"
 
 
+class RuntimeWriteActivity(models.Model):
+    """Control-plane-authoritative timestamp of a tenant runtime mutation."""
+
+    tenant = models.OneToOneField(
+        "tenants.Tenant",
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="runtime_write_activity",
+    )
+    last_runtime_write_at = models.DateTimeField()
+
+    class Meta:
+        db_table = "runtime_write_activity"
+
+
 class AppChatMessage(models.Model):
     """A single rich-client (iOS/web) chat turn: the user's message and the
     assistant's reply, persisted so the client can POLL for the reply.
@@ -740,6 +755,19 @@ class AppChatMessage(models.Model):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     replied_at = models.DateTimeField(null=True, blank=True)
+    retried_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Set when a silently dropped tenant-runtime turn spends its one "
+            "bounded replay. The same row returns to pending if that replay runs."
+        ),
+    )
+    retry_health_deferred_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Set when the dropped-turn replay spends its one 120-second health deferral.",
+    )
     waking_at = models.DateTimeField(
         null=True,
         blank=True,

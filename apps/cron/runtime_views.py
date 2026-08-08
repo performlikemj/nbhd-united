@@ -21,6 +21,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
@@ -71,6 +72,7 @@ class RuntimeContainerStartedView(APIView):
         if isinstance(tenant_or_resp, Response):
             return tenant_or_resp
         tenant = tenant_or_resp
+        record_runtime_write_activity(tenant)
 
         # Self-heal AGENTS.md on every boot: re-assert the authoritative render
         # (persona + per-tenant gates + Gravity) to the file share. AGENTS.md is

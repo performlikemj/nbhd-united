@@ -24,6 +24,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
@@ -79,6 +80,7 @@ class RuntimeWelcomeMarkView(APIView):
             tenant = Tenant.objects.get(id=tenant_id)
         except Tenant.DoesNotExist:
             return Response({"error": "tenant_not_found"}, status=status.HTTP_404_NOT_FOUND)
+        record_runtime_write_activity(tenant)
 
         marks = dict(tenant.welcomes_sent or {})
         marks[feature] = timezone.now().isoformat()
@@ -144,6 +146,7 @@ class RuntimeAgendaEngagementView(APIView):
             tenant = Tenant.objects.get(id=tenant_id)
         except Tenant.DoesNotExist:
             return Response({"error": "tenant_not_found"}, status=status.HTTP_404_NOT_FOUND)
+        record_runtime_write_activity(tenant)
 
         signal = request.data.get("signal")
         if action == "surfaced":
@@ -256,6 +259,7 @@ class RuntimePreferredModelView(APIView):
                 }
                 return Response(response_body, status=status.HTTP_400_BAD_REQUEST)
 
+        record_runtime_write_activity(tenant)
         tenant.preferred_model = model_id
         tenant.save(update_fields=["preferred_model"])
         tenant.bump_pending_config()
@@ -326,6 +330,7 @@ class RuntimeCommitmentRecordView(APIView):
         except Tenant.DoesNotExist:
             return Response({"error": "tenant_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+        record_runtime_write_activity(tenant)
         commitment = record_commitment(
             tenant,
             about=about,

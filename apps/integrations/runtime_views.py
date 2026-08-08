@@ -52,7 +52,7 @@ from apps.lessons.serializers import LessonSerializer
 from apps.lessons.services import search_lessons
 from apps.orchestrator.personas import get_persona
 from apps.pii.egress import KnownValueResponseGuardMixin
-from apps.router.document_write_guard import assert_write_allowed_for_document_turn
+from apps.router.document_write_guard import assert_write_allowed_for_document_turn, record_runtime_write_activity
 from apps.tenants.models import Tenant
 
 from .apple_maps import search_places
@@ -787,6 +787,7 @@ class RuntimeWeeklyReviewsView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         serializer = WeeklyReviewRuntimeSerializer(
             data=request.data,
@@ -1035,6 +1036,7 @@ class RuntimeGoalDetailView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         goal = Goal.objects.filter(tenant=tenant, id=goal_id).first()
         if goal is None:
@@ -1073,6 +1075,7 @@ class RuntimeGoalAchieveView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         goal = Goal.objects.filter(tenant=tenant, id=goal_id).first()
         if goal is None:
@@ -1103,6 +1106,7 @@ class RuntimeGoalAbandonView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         goal = Goal.objects.filter(tenant=tenant, id=goal_id).first()
         if goal is None:
@@ -1365,6 +1369,7 @@ class RuntimeTaskDetailView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         if not Task.objects.filter(tenant=tenant, id=task_id).exists():
             return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
@@ -1453,10 +1458,6 @@ class RuntimeTaskDetailView(APIView):
         if tenant_failure is not None or tenant is None:
             return tenant_failure
 
-        blocked = assert_write_allowed_for_document_turn(tenant)
-        if blocked is not None:
-            return blocked
-
         # Only a real JSON ``true`` proceeds. A string "true", a form post, a
         # missing body — everything else falls back to the preview. Failing
         # closed costs one extra round trip; failing open costs the user's data.
@@ -1474,6 +1475,10 @@ class RuntimeTaskDetailView(APIView):
                 ),
                 status=status.HTTP_200_OK,
             )
+
+        blocked = assert_write_allowed_for_document_turn(tenant)
+        if blocked is not None:
+            return blocked
 
         # Confirm leg. The row is locked for the whole read-check-delete
         # sequence so a racing PATCH cannot resurrect it (see ``patch``) and the
@@ -1562,6 +1567,7 @@ class _RuntimeTaskTransitionView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         task = Task.objects.filter(tenant=tenant, id=task_id).first()
         if task is None:
@@ -2078,6 +2084,7 @@ class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         # P0-3: strip agent-written markdown-image beacons before they reach
         # any durable store — see apps/integrations/content_sanitize.py.
@@ -2379,6 +2386,7 @@ class RuntimeSessionMarkProcessedView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         session = Session.objects.filter(tenant=tenant, id=session_id).first()
         if session is None:
@@ -3018,6 +3026,7 @@ class RuntimeUsageReportView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         if not isinstance(request.data, dict):
             return Response(
@@ -3114,6 +3123,7 @@ class RuntimeBYOErrorReportView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         if not isinstance(request.data, dict):
             return Response(
@@ -3362,6 +3372,7 @@ class RuntimeProfileUpdateView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         user = tenant.user
         if user is None:
@@ -3543,6 +3554,7 @@ class RuntimeSituationUpdateView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         from apps.tenants.situation import clean_place_label
 
@@ -4123,6 +4135,7 @@ class RuntimeCronPhase2SummaryView(KnownValueResponseGuardMixin, APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         data = request.data or {}
         summary = str(data.get("summary", "")).strip()
@@ -4261,6 +4274,7 @@ class RuntimeWorkspaceListView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         name = str(request.data.get("name", "")).strip()
         description = str(request.data.get("description", "")).strip()
@@ -4342,6 +4356,7 @@ class RuntimeWorkspaceDetailView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         from apps.journal.models import Workspace
 
@@ -4401,6 +4416,7 @@ class RuntimeWorkspaceDetailView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         from apps.journal.models import Workspace
 
@@ -4457,6 +4473,7 @@ class RuntimeWorkspaceSwitchView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         slug = str(request.data.get("slug", "")).strip()
         if not slug:
@@ -4510,6 +4527,7 @@ class RedditConnectView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         callback_url = str(request.data.get("callback_url", "")).strip()
         if not callback_url:
@@ -4552,6 +4570,7 @@ class RedditCompleteView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         connection_request_id = str(request.data.get("connection_request_id", "")).strip()
         if not connection_request_id:
@@ -4624,6 +4643,7 @@ class RedditDisconnectView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         try:
             disconnect_integration(tenant, "reddit")
@@ -4658,6 +4678,9 @@ class RedditToolView(APIView):
                 {"error": "invalid_request", "detail": "action is required"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        if action in {"post", "reply", "edit", "delete_post", "delete_comment"}:
+            record_runtime_write_activity(tenant)
 
         params = {k: v for k, v in request.data.items() if k != "action"}
 
@@ -4991,6 +5014,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
                 user_prompt=user_prompt,
                 reason=confirmation_failure,
             )
+        record_runtime_write_activity(tenant)
 
         # One snapshot is the decision for this request: it controls both this
         # confirmation branch and the worker's POST timeout after being written
@@ -5506,6 +5530,7 @@ class RuntimeProposeShareView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
         if not getattr(tenant, "friends_agent_propose_enabled", False):
             return Response(
                 {"error": "propose_disabled", "detail": "Agent proposing is off for this account (absorb-only)."},
@@ -5626,6 +5651,7 @@ class RuntimeProposeMissionTaskView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
         if not getattr(tenant, "friends_agent_propose_enabled", False):
             return Response(
                 {"error": "propose_disabled", "detail": "Agent proposing is off for this account (absorb-only)."},
@@ -5680,6 +5706,7 @@ class RuntimeDocumentKeepView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         data = request.data if isinstance(request.data, dict) else {}
         source = data.get("source") if isinstance(data.get("source"), dict) else {}
@@ -5734,6 +5761,7 @@ class RuntimeDocumentForgetView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         result = forget_ingestion(tenant, ingestion_id)
         if result.get("error") == "not_found":
@@ -5835,6 +5863,7 @@ class RuntimeJournalTemplateUpdateView(APIView):
         tenant, tenant_failure = _load_tenant_or_404(tenant_id)
         if tenant_failure is not None or tenant is None:
             return tenant_failure
+        record_runtime_write_activity(tenant)
 
         flag_failure = _journal_shaping_forbidden(tenant)
         if flag_failure is not None:

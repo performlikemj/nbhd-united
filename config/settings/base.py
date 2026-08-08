@@ -221,6 +221,10 @@ STEWARD_OPENROUTER_CANARY_TENANT_ID = env(
 # Fleet-go is a deliberate follow-up, not a side effect of deploying this code.
 TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
 
+# Silently-dropped app-turn retry canary gate. Comma-separated tenant UUIDs;
+# empty means nobody so the retry ships dark and opens one tenant at a time.
+RETRY_DROPPED_TENANT_IDS = env("RETRY_DROPPED_TENANT_IDS", default="")
+
 # Core AI on-device model (iOS 27 bring-your-own model) delivery.
 # Django serves only the small JWT-gated manifest (GET /api/v1/coreai/model/manifest/);
 # the big model files are hosted off-Django (Azure Blob / CDN) under COREAI_MODEL_BASE_URL.

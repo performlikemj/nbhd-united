@@ -34,6 +34,7 @@ from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.pii.egress import KnownValueResponseGuardMixin
+from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
@@ -327,6 +328,7 @@ class RuntimeRecordInsightView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+        record_runtime_write_activity(tenant)
 
         err, cleaned = _validate_record_body(request.data or {})
         if err:
@@ -346,6 +348,7 @@ class RuntimeConfirmInsightView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+        record_runtime_write_activity(tenant)
 
         try:
             ins = AssistantInsight.objects.select_related("topic").get(id=insight_id, tenant=tenant)
@@ -371,6 +374,7 @@ class RuntimeRefuteInsightView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+        record_runtime_write_activity(tenant)
 
         try:
             ins = AssistantInsight.objects.select_related("topic").get(id=insight_id, tenant=tenant)
@@ -448,6 +452,7 @@ class RuntimeVoicePrefSetView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+        record_runtime_write_activity(tenant)
 
         err, cleaned = _validate_voice_pref_body(request.data or {})
         if err:

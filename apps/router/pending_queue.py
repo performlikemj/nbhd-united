@@ -60,7 +60,7 @@ from apps.billing.services import (
 )
 from apps.common.eval_sink import blocks_real_transport_for_identifier, suppresses_real_transport
 from apps.pii.authoring import placeholder_redactions
-from apps.router.models import AppChatMessage, PendingMessage
+from apps.router.models import AppChatMessage, ChatThread, PendingMessage, RuntimeWriteActivity
 from apps.router.reply_text import clamp_reply_text
 from apps.tenants.models import Tenant
 
@@ -84,6 +84,22 @@ _IN_FLIGHT_LEASE_FACTOR = 1.5
 # all three at 60s cadence. Three QStash retries here absorbs transient
 # OC cold-start 504s without waiting the full minute for the reaper.
 _DRAIN_PUBLISH_RETRIES = 3
+
+# A terminal app drop gets one delayed replay only. QStash delivery retries are
+# disabled for the replay task itself; once it runs, the shared PendingMessage
+# queue owns the re-submitted inbound under its existing bounded semantics.
+_DROPPED_RETRY_DELAY_SECONDS = 60
+_DROPPED_RETRY_HEALTH_DELAY_SECONDS = 120
+
+# Covers the observed container-kill-at-turn-start class (for example, the
+# 19:40:52→19:41:09 incident). A completed model round-trip plus raw cron.add
+# inside 30 seconds is implausible; the residual double-cron risk in this bound
+# is accepted until the deferred wrapping-plugin guard lands.
+_DROPPED_RETRY_MAX_DROP_AGE_SECONDS = 30
+
+# Narration is only corroborating evidence: exact ``thinking`` is required,
+# while the control plane's runtime-write record is authoritative for mutations.
+_DROPPED_RETRY_SAFE_PHASE = "thinking"
 
 # Seconds to wait after waking a hibernated container before re-attempting
 # delivery. Idle hibernation deactivates the revision, so the OpenClaw
@@ -681,6 +697,8 @@ def enqueue_message_for_tenant(
     channel_user_id: str,
     payload: dict,
     user_text_excerpt: str = "",
+    *,
+    defer_publish_until_commit: bool = False,
 ) -> PendingMessage:
     """Insert a pending message row and schedule the drain task.
 
@@ -705,6 +723,11 @@ def enqueue_message_for_tenant(
     relays the reply, so it never re-runs redaction over the assembled
     body (which carries structural markers the NER detector would
     misfire on).
+
+    ``defer_publish_until_commit`` is reserved for the dropped-turn replay:
+    that path atomically returns the existing app row to PENDING and inserts
+    this queue row, then publishes only after both writes commit. Ordinary
+    inbound callers keep the historical immediate-publish behavior.
     """
     msg = PendingMessage.objects.create(
         tenant=tenant,
@@ -721,26 +744,32 @@ def enqueue_message_for_tenant(
     # drop-off cohort.
     Tenant.objects.filter(id=tenant.id, first_message_at__isnull=True).update(first_message_at=timezone.now())
 
-    try:
-        from apps.cron.publish import publish_task
+    def _publish_drain() -> None:
+        try:
+            from apps.cron.publish import publish_task
 
-        publish_task(
-            "drain_pending_messages_for_tenant",
-            str(tenant.id),
-            channel,
-            channel_user_id or "",
-            retries=_DRAIN_PUBLISH_RETRIES,
-        )
-    except Exception:
-        # Reaper safety net: the per-minute cron picks up rows whose
-        # initial publish failed and republishes the drain. So a silent
-        # publish failure here means a ~60s delay, not a multi-hour stall
-        # (the historical failure mode this module was rewritten to fix).
-        logger.exception(
-            "pending_queue: failed to publish drain task for tenant %s — reaper will pick up row %s within ~60s",
-            str(tenant.id)[:8],
-            msg.id,
-        )
+            publish_task(
+                "drain_pending_messages_for_tenant",
+                str(tenant.id),
+                channel,
+                channel_user_id or "",
+                retries=_DRAIN_PUBLISH_RETRIES,
+            )
+        except Exception:
+            # Reaper safety net: the per-minute cron picks up rows whose
+            # initial publish failed and republishes the drain. So a silent
+            # publish failure here means a ~60s delay, not a multi-hour stall
+            # (the historical failure mode this module was rewritten to fix).
+            logger.exception(
+                "pending_queue: failed to publish drain task for tenant %s — reaper will pick up row %s within ~60s",
+                str(tenant.id)[:8],
+                msg.id,
+            )
+
+    if defer_publish_until_commit:
+        transaction.on_commit(_publish_drain)
+    else:
+        _publish_drain()
 
     return msg
 
@@ -979,6 +1008,115 @@ def _has_more_pending(tenant: Tenant, channel: str, channel_user_id: str) -> boo
     ).exists()
 
 
+def dropped_retry_dedup_id(turn_id) -> str:
+    """Return the QStash-safe deduplication id for one app-turn replay."""
+    compact_id = str(turn_id).replace("-", "")
+    return f"retry-dropped-app-{compact_id}"
+
+
+def dropped_retry_health_dedup_id(turn_id) -> str:
+    """Return the distinct QStash dedup id for the one health deferral."""
+    compact_id = str(turn_id).replace("-", "")
+    return f"retry-dropped-health-{compact_id}"
+
+
+def _app_turn_has_newer_message(turn: AppChatMessage) -> bool:
+    """Whether the thread already contains a strictly newer user turn."""
+    return (
+        AppChatMessage.objects.filter(thread_id=turn.thread_id)
+        .exclude(id=turn.id)
+        .filter(models.Q(created_at__gt=turn.created_at) | models.Q(created_at=turn.created_at, id__gt=turn.id))
+        .exists()
+    )
+
+
+def _runtime_write_in_retry_window(turn: AppChatMessage, dropped_stamped_at) -> bool:
+    """Whether the control plane recorded a mutation during this turn."""
+    return RuntimeWriteActivity.objects.filter(
+        tenant_id=turn.tenant_id,
+        last_runtime_write_at__gte=turn.created_at,
+        last_runtime_write_at__lte=dropped_stamped_at,
+    ).exists()
+
+
+def _dropped_retry_enabled(tenant: Tenant) -> bool:
+    """Whether the fail-closed dropped-turn retry canary includes ``tenant``."""
+    raw = str(getattr(settings, "RETRY_DROPPED_TENANT_IDS", "") or "")
+    allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if not allowed:
+        return False
+    if str(tenant.id).lower() in allowed:
+        return True
+    logger.info(
+        "retry_dropped: tenant %s is not in RETRY_DROPPED_TENANT_IDS (%d id(s) configured) — no retry",
+        str(tenant.id)[:8],
+        len(allowed),
+    )
+    return False
+
+
+def _is_silent_dropped_retry_candidate(turn: AppChatMessage, error: str, *, dropped_stamped_at) -> bool:
+    """Conservative enqueue predicate, evaluated before terminalizing."""
+    # Four safety legs bound the accepted raw-cron residual: canary gate,
+    # exact thinking phase, no authoritative runtime write, and drop age at
+    # most 30 seconds. Follow-up guard lane: apps/cron/gateway_client.py's
+    # deferred wrapping-plugin guard for OC-native raw cron.add.
+    return bool(
+        error == "dropped"
+        and _dropped_retry_enabled(turn.tenant)
+        and turn.source == AppChatMessage.Source.TENANT
+        and turn.retried_at is None
+        and turn.reply_text == ""
+        and turn.partial_text == ""
+        and turn.phase == _DROPPED_RETRY_SAFE_PHASE
+        and not _runtime_write_in_retry_window(turn, dropped_stamped_at)
+        and (dropped_stamped_at - turn.created_at).total_seconds() <= _DROPPED_RETRY_MAX_DROP_AGE_SECONDS
+        and not _app_turn_has_newer_message(turn)
+    )
+
+
+def _notify_retry_exhausted(tenant: Tenant, turn_id, client_msg_id: str, reason: str) -> None:
+    """Emit the terminal counter and existing generic app error notification."""
+    logger.warning(
+        "retry_exhausted count=1 tenant=%s turn=%s reason=%s",
+        str(tenant.id)[:8],
+        str(turn_id)[:16],
+        reason,
+    )
+    from apps.router.push_views import notify_app_reply_error
+
+    _dispatch_push(notify_app_reply_error, tenant, [client_msg_id])
+
+
+def _enqueue_dropped_app_turn_retry(tenant: Tenant, turn_id, client_msg_id: str) -> None:
+    """Publish the one delayed replay after the dropped transition commits."""
+    try:
+        from apps.cron.publish import publish_task
+
+        publish_task(
+            "retry_dropped_app_turn",
+            str(turn_id),
+            idempotency_key=dropped_retry_dedup_id(turn_id),
+            delay_seconds=_DROPPED_RETRY_DELAY_SECONDS,
+            retries=0,
+        )
+        logger.info(
+            "retry_enqueued count=1 tenant=%s turn=%s delay_seconds=%d",
+            str(tenant.id)[:8],
+            str(turn_id)[:16],
+            _DROPPED_RETRY_DELAY_SECONDS,
+        )
+    except Exception:
+        logger.exception(
+            "retry_exhausted count=1 tenant=%s turn=%s reason=publish_failed",
+            str(tenant.id)[:8],
+            str(turn_id)[:16],
+        )
+        from apps.router.push_views import notify_app_reply_error
+
+        _dispatch_push(notify_app_reply_error, tenant, [client_msg_id])
+
+
 def _terminalize_pending_app_turns(
     tenant: Tenant,
     client_msg_ids: list[str],
@@ -996,26 +1134,70 @@ def _terminalize_pending_app_turns(
     from apps.router.push_views import notify_app_reply_error
 
     terminalized_ids: list[str] = []
+    notify_error_ids: list[str] = []
+    retries_to_enqueue: list[tuple[object, str]] = []
+    exhausted_retries: list[tuple[object, str, str]] = []
     for client_msg_id in dict.fromkeys(client_msg_ids):
-        changed = AppChatMessage.objects.filter(
-            tenant=tenant,
-            client_msg_id=client_msg_id,
-            status=AppChatMessage.Status.PENDING,
-        ).update(
-            status=AppChatMessage.Status.ERROR,
-            error=error,
-            replied_at=now,
-            partial_text="",
+        turn = (
+            AppChatMessage.objects.select_for_update()
+            .filter(
+                tenant=tenant,
+                client_msg_id=client_msg_id,
+                status=AppChatMessage.Status.PENDING,
+            )
+            .first()
         )
+        if turn is None:
+            continue
+        should_retry = _is_silent_dropped_retry_candidate(turn, error, dropped_stamped_at=now)
+        update_values = {
+            "status": AppChatMessage.Status.ERROR,
+            "error": error,
+            "replied_at": now,
+            "partial_text": "",
+        }
+        if should_retry:
+            # Spending the replay is atomic with the dropped transition. A
+            # duplicate terminalizer can neither enqueue nor spend it twice.
+            update_values["retried_at"] = now
+        changed = AppChatMessage.objects.filter(
+            id=turn.id,
+            status=AppChatMessage.Status.PENDING,
+        ).update(**update_values)
         if changed:
             terminalized_ids.append(client_msg_id)
+            if should_retry:
+                retries_to_enqueue.append((turn.id, client_msg_id))
+            elif turn.retried_at is not None:
+                exhausted_retries.append((turn.id, client_msg_id, error))
+            else:
+                notify_error_ids.append(client_msg_id)
 
-    if terminalized_ids:
+    if notify_error_ids:
         transaction.on_commit(
-            lambda tenant=tenant, ids=list(terminalized_ids): _dispatch_push(
+            lambda tenant=tenant, ids=list(notify_error_ids): _dispatch_push(
                 notify_app_reply_error,
                 tenant,
                 ids,
+            )
+        )
+    for turn_id, client_msg_id in retries_to_enqueue:
+        transaction.on_commit(
+            lambda tenant=tenant, turn_id=turn_id, client_msg_id=client_msg_id: _enqueue_dropped_app_turn_retry(
+                tenant,
+                turn_id,
+                client_msg_id,
+            )
+        )
+    for turn_id, client_msg_id, terminal_reason in exhausted_retries:
+        transaction.on_commit(
+            lambda tenant=tenant, turn_id=turn_id, client_msg_id=client_msg_id, reason=terminal_reason: (
+                _notify_retry_exhausted(
+                    tenant,
+                    turn_id,
+                    client_msg_id,
+                    reason,
+                )
             )
         )
     return terminalized_ids
@@ -1112,6 +1294,169 @@ def _terminalize_failed_queue_rows(
                 _send_apology_for_dropped_pending_message(locked_tenant, row)
 
     return locked_tenant, terminalized_rows, fqdn_appeared
+
+
+def retry_dropped_app_turn_task(turn_id: str) -> dict:
+    """Spend one delayed replay by re-entering the normal iOS queue path.
+
+    The row was stamped ``retried_at`` when its original PendingMessage was
+    finalized dropped. This task claims its own inbound event, re-checks every
+    conservative predicate after the 60-second delay, verifies the container is
+    serving, then atomically returns the same AppChatMessage to PENDING and
+    copies the original failed queue payload into a fresh PendingMessage.
+    """
+    turn = AppChatMessage.objects.select_related("tenant", "user", "thread").filter(id=turn_id).first()
+    if turn is None:
+        logger.warning(
+            "retry_exhausted count=1 tenant=unknown turn=%s reason=missing_turn",
+            str(turn_id)[:16],
+        )
+        return {"retried": 0, "exhausted": "missing_turn"}
+
+    tenant = turn.tenant
+
+    def _exhaust(reason: str) -> dict:
+        _notify_retry_exhausted(tenant, turn.id, turn.client_msg_id, reason)
+        return {"retried": 0, "exhausted": reason}
+
+    try:
+        if turn.status == AppChatMessage.Status.PENDING and turn.retried_at is not None:
+            return {"retried": 0, "duplicate": True}
+        # The canary gate is mutable and must still authorize the replay when
+        # this delayed task fires. Drop age is immutable once ``retried_at``
+        # stamps the original drop, so it does not need a fire-time re-check.
+        if not _dropped_retry_enabled(tenant):
+            return _exhaust("gate_revoked")
+        if (
+            turn.status != AppChatMessage.Status.ERROR
+            or turn.error != "dropped"
+            or turn.retried_at is None
+            or turn.source != AppChatMessage.Source.TENANT
+            or turn.reply_text != ""
+            or turn.phase != _DROPPED_RETRY_SAFE_PHASE
+            or _runtime_write_in_retry_window(turn, turn.retried_at)
+        ):
+            # A late original reply may have won the race and moved the row READY;
+            # that is already user-visible success, not exhaustion.
+            if turn.status == AppChatMessage.Status.READY:
+                return {"retried": 0, "already_ready": True}
+            return _exhaust("ineligible")
+        if _app_turn_has_newer_message(turn):
+            return _exhaust("newer_turn")
+
+        if not tenant.container_fqdn or not _is_tenant_container_live(tenant):
+            deferred_at = timezone.now()
+            deferred = AppChatMessage.objects.filter(
+                id=turn.id,
+                status=AppChatMessage.Status.ERROR,
+                retry_health_deferred_at__isnull=True,
+            ).update(retry_health_deferred_at=deferred_at)
+            if deferred:
+                from apps.cron.publish import publish_task
+
+                publish_task(
+                    "retry_dropped_app_turn",
+                    str(turn.id),
+                    idempotency_key=dropped_retry_health_dedup_id(turn.id),
+                    delay_seconds=_DROPPED_RETRY_HEALTH_DELAY_SECONDS,
+                    retries=0,
+                )
+                logger.info(
+                    "retry_redeferred count=1 tenant=%s turn=%s delay_seconds=%d",
+                    str(tenant.id)[:8],
+                    str(turn.id)[:16],
+                    _DROPPED_RETRY_HEALTH_DELAY_SECONDS,
+                )
+                return {"retried": 0, "deferred": "container_unhealthy"}
+            return _exhaust("container_unhealthy")
+
+        # Claim only after eligibility and health checks. A worker crash before
+        # this point must not burn the durable delivery claim.
+        from apps.router.inbound_dedup import claim_inbound_event
+
+        if not claim_inbound_event(f"app-retry:{turn.id}"):
+            return {"retried": 0, "duplicate": True}
+
+        failure_reason = ""
+        duplicate_after_lock = False
+        with transaction.atomic():
+            # App ingress locks this row before creating every user turn. Holding
+            # it through the final recency check and requeue makes "newest" an
+            # invariant rather than a check-then-insert race.
+            ChatThread.objects.select_for_update().only("id").get(id=turn.thread_id)
+            locked_turn = AppChatMessage.objects.select_for_update().select_related("tenant").filter(id=turn.id).first()
+            if locked_turn is None:
+                failure_reason = "missing_turn"
+            elif locked_turn.status != AppChatMessage.Status.ERROR:
+                # This status transition is the real fail-open/double-delivery
+                # guard. ``retried_at`` is already set before either delivery.
+                duplicate_after_lock = True
+            elif (
+                locked_turn.error != "dropped"
+                or locked_turn.retried_at is None
+                or locked_turn.reply_text != ""
+                or locked_turn.phase != _DROPPED_RETRY_SAFE_PHASE
+                or _runtime_write_in_retry_window(locked_turn, locked_turn.retried_at)
+                or _app_turn_has_newer_message(locked_turn)
+            ):
+                failure_reason = "ineligible_after_health"
+            else:
+                source_row = (
+                    PendingMessage.objects.select_for_update()
+                    .annotate(payload_client_msg_id=KeyTextTransform("client_msg_id", "payload"))
+                    .filter(
+                        tenant=tenant,
+                        channel=PendingMessage.Channel.IOS,
+                        delivery_status=PendingMessage.Status.FAILED,
+                        payload_client_msg_id=locked_turn.client_msg_id,
+                    )
+                    .order_by("-delivered_at", "-created_at")
+                    .first()
+                )
+                if source_row is None:
+                    failure_reason = "missing_original_inbound"
+                else:
+                    locked_turn.status = AppChatMessage.Status.PENDING
+                    locked_turn.error = ""
+                    locked_turn.replied_at = None
+                    locked_turn.waking_at = None
+                    locked_turn.phase = ""
+                    locked_turn.phase_detail = ""
+                    locked_turn.partial_text = ""
+                    locked_turn.notified_at = None
+                    locked_turn.save(
+                        update_fields=[
+                            "status",
+                            "error",
+                            "replied_at",
+                            "waking_at",
+                            "phase",
+                            "phase_detail",
+                            "partial_text",
+                            "notified_at",
+                        ]
+                    )
+                    enqueue_message_for_tenant(
+                        tenant=tenant,
+                        channel=PendingMessage.Channel.IOS,
+                        channel_user_id=str(locked_turn.thread_id),
+                        payload=dict(source_row.payload or {}),
+                        user_text_excerpt=source_row.user_text,
+                        defer_publish_until_commit=True,
+                    )
+
+        if duplicate_after_lock:
+            return {"retried": 0, "duplicate": True}
+        if failure_reason:
+            return _exhaust(failure_reason)
+        return {"retried": 1}
+    except Exception:
+        logger.exception(
+            "retry_task_error tenant=%s turn=%s",
+            str(tenant.id)[:8],
+            str(turn.id)[:16],
+        )
+        return _exhaust("task_error")
 
 
 def drain_pending_messages_for_tenant_task(
@@ -2491,6 +2836,15 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
     client_ids = _ios_client_msg_ids(batch)
     if not client_ids:
         return
+    retried_turns = dict(
+        AppChatMessage.objects.filter(
+            tenant=tenant,
+            client_msg_id__in=client_ids,
+            status=AppChatMessage.Status.PENDING,
+            retried_at__isnull=False,
+        ).values_list("client_msg_id", "id")
+    )
+    retried_client_ids = list(retried_turns)
     now = timezone.now()
     if ai_text:
         # A coalesced batch (N>1) yields ONE combined reply. Attach it to a single
@@ -2544,6 +2898,12 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         # body uses the REHYDRATED copy (``push_text``) — ``reply_text`` is stored
         # placeholder-space, so pushing ``text`` would leak a raw ``[PERSON_1]``.
         _dispatch_push(notify_app_reply_ready, tenant, [rep_id], push_text)
+        for client_msg_id in retried_client_ids:
+            logger.info(
+                "retry_succeeded count=1 tenant=%s turn=%s",
+                str(tenant.id)[:8],
+                str(retried_turns[client_msg_id])[:16],
+            )
     else:
         AppChatMessage.objects.filter(tenant=tenant, client_msg_id__in=client_ids).update(
             status=AppChatMessage.Status.ERROR,
@@ -2554,7 +2914,11 @@ def _store_ios_turn_reply(tenant: Tenant, batch: list[PendingMessage], ai_text: 
         # An empty terminal reply is still a turn the user is waiting on — push a
         # generic 'couldn't finish' so a backgrounded / Siri-escalated turn
         # doesn't go silent until the next foreground.
-        _dispatch_push(notify_app_reply_error, tenant, list(client_ids))
+        ordinary_client_ids = [client_msg_id for client_msg_id in client_ids if client_msg_id not in retried_client_ids]
+        if ordinary_client_ids:
+            _dispatch_push(notify_app_reply_error, tenant, ordinary_client_ids)
+        for client_msg_id in retried_client_ids:
+            _notify_retry_exhausted(tenant, retried_turns[client_msg_id], client_msg_id, "empty_response")
 
 
 def _store_ios_turn_error(tenant: Tenant, batch: list[PendingMessage], reason: str) -> None:
@@ -3312,7 +3676,10 @@ __all__ = [
     "PendingMessage",
     "cleanup_stale_pending_messages_task",
     "drain_pending_messages_for_tenant_task",
+    "dropped_retry_dedup_id",
+    "dropped_retry_health_dedup_id",
     "enqueue_message_for_tenant",
     "reap_stuck_inbound_messages_task",
     "relay_ai_response_to_telegram",
+    "retry_dropped_app_turn_task",
 ]

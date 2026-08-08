@@ -12,6 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.models import Tenant
 
 from .models import PlatformIssueLog
@@ -102,6 +103,8 @@ class PlatformIssueReportView(APIView):
                     {"detail": "Duplicate issue already reported recently.", "deduplicated": True},
                     status=http_status.HTTP_200_OK,
                 )
+
+        record_runtime_write_activity(tenant)
 
         # Redact-at-write: these fields say "no user PII" but nothing enforces
         # it, and they're stored plaintext (admin triage searches them). Swap

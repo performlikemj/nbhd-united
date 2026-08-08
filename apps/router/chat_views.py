@@ -453,6 +453,10 @@ def _serialize_message(msg: AppChatMessage, *, entity_map=None, user_text: Redac
         "error": msg.error,
         "created_at": msg.created_at.isoformat(),
         "replied_at": msg.replied_at.isoformat() if msg.replied_at else None,
+        # Additive observability only: existing clients keep polling status as
+        # before, while newer clients/debug tooling can distinguish a delayed
+        # replay from an ordinary first attempt.
+        "retried_at": msg.retried_at.isoformat() if msg.retried_at else None,
         # Set while a hibernated container boots; clients show "waking up"
         # copy when status is still pending and this is non-null.
         "waking_at": msg.waking_at.isoformat() if msg.waking_at else None,
@@ -547,8 +551,30 @@ def enqueue_tenant_turn(
     # Budget gate — don't enqueue work (or wake a container) for an over-budget
     # tenant. Recorded as an error so the client surfaces the reason.
     budget_reason = check_budget(tenant)
-    if budget_reason:
-        try:
+    try:
+        with transaction.atomic():
+            # Serialize user-turn creation with the delayed dropped-turn retry.
+            # The retry locks this same thread before its final newest-turn
+            # check, closing the insert-between-check-and-requeue race.
+            ChatThread.objects.select_for_update().only("id").get(id=thread.id, tenant=tenant)
+            existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
+            if existing:
+                return existing, False
+
+            if budget_reason:
+                turn = AppChatMessage.objects.create(
+                    tenant=tenant,
+                    user=user,
+                    thread=thread,
+                    client_msg_id=client_msg_id,
+                    user_text=text,
+                    user_text_enc=user_text_enc,
+                    status=AppChatMessage.Status.ERROR,
+                    error="budget_exhausted",
+                    replied_at=timezone.now(),
+                )
+                return turn, False
+
             turn = AppChatMessage.objects.create(
                 tenant=tenant,
                 user=user,
@@ -556,26 +582,12 @@ def enqueue_tenant_turn(
                 client_msg_id=client_msg_id,
                 user_text=text,
                 user_text_enc=user_text_enc,
-                status=AppChatMessage.Status.ERROR,
-                error="budget_exhausted",
-                replied_at=timezone.now(),
+                status=AppChatMessage.Status.PENDING,
             )
-        except IntegrityError:
-            turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
-        return turn, False
-
-    try:
-        turn = AppChatMessage.objects.create(
-            tenant=tenant,
-            user=user,
-            thread=thread,
-            client_msg_id=client_msg_id,
-            user_text=text,
-            user_text_enc=user_text_enc,
-            status=AppChatMessage.Status.PENDING,
-        )
     except IntegrityError:
-        # Concurrent retry won the (tenant, client_msg_id) race; the winner
+        # Safe only because ATOMIC_REQUESTS is off: the inner atomic rolled back,
+        # so this winner lookup runs in a usable outer connection.
+        # Concurrent inbound won the (tenant, client_msg_id) race; the winner
         # already enqueued the tenant turn — replay, don't re-enqueue.
         turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
         return turn, False
@@ -1128,19 +1140,28 @@ class ChatLocalTurnView(APIView):
         occurred_at = _parse_occurred_at(request.data.get("occurred_at"))
         user_text_enc = _encrypt_chat_value(tenant, enc_columns.APP_CHAT_MESSAGE_USER_TEXT, user_text)
         try:
-            turn = AppChatMessage.objects.create(
-                tenant=tenant,
-                user=request.user,
-                thread=thread,
-                client_msg_id=client_msg_id,
-                user_text=user_text,
-                user_text_enc=user_text_enc,
-                reply_text=reply_text,
-                status=AppChatMessage.Status.READY,
-                source=AppChatMessage.Source.ON_DEVICE,
-                replied_at=occurred_at or now,
-            )
+            with transaction.atomic():
+                # Local/offline turns are still newer user messages in this
+                # thread, so serialize them with the same retry recency guard.
+                ChatThread.objects.select_for_update().only("id").get(id=thread.id, tenant=tenant)
+                existing = AppChatMessage.objects.filter(tenant=tenant, client_msg_id=client_msg_id).first()
+                if existing:
+                    return Response(_serialize_message(existing), status=status.HTTP_200_OK)
+                turn = AppChatMessage.objects.create(
+                    tenant=tenant,
+                    user=request.user,
+                    thread=thread,
+                    client_msg_id=client_msg_id,
+                    user_text=user_text,
+                    user_text_enc=user_text_enc,
+                    reply_text=reply_text,
+                    status=AppChatMessage.Status.READY,
+                    source=AppChatMessage.Source.ON_DEVICE,
+                    replied_at=occurred_at or now,
+                )
         except IntegrityError:
+            # Safe only because ATOMIC_REQUESTS is off: the inner atomic rolled
+            # back before this winner lookup uses the connection.
             # Concurrent outbox retry won the (tenant, client_msg_id) race.
             turn = AppChatMessage.objects.get(tenant=tenant, client_msg_id=client_msg_id)
             return Response(_serialize_message(turn), status=status.HTTP_200_OK)
@@ -1376,21 +1397,16 @@ class ChatProgressEventView(APIView):
             if in_flight_oldest is not None:
                 qs = base.filter(thread_id=in_flight_oldest.thread_id)
             else:
-                # No live IOS lease matched (lease expired / narrow race) — fall
-                # back to the newest PENDING row so a real PHASE event is never
-                # silently dropped. But do NOT attribute partial reply TEXT here:
-                # without a live IOS lease the turn ACTUALLY in flight may be a
-                # Telegram/LINE turn (which creates no AppChatMessage row), and
-                # writing its cumulative reply into an unrelated PENDING app row
-                # would surface another channel's private reply as this turn's
-                # streaming text. Phase-only on the fallback.
+                # No live IOS lease matched (lease expired / narrow race). The
+                # runtime omitted client_msg_id, so neither phase nor partial
+                # text is attributable: the actual turn may be Telegram/LINE.
                 latest_pk = base.order_by("-created_at").values_list("pk", flat=True).first()
                 qs = base.filter(pk=latest_pk) if latest_pk is not None else base.none()
                 partial_attributable = False
         # Phase narration overwrites in place (only when a phase was sent — a
         # text-only post must NOT clobber a live phase with an empty string).
         updated = 0
-        if phase:
+        if phase and partial_attributable:
             updated += qs.update(phase=phase, phase_detail=detail)
         # Partial text is seq-guarded: only apply when this seq is strictly newer
         # than what's stored, so an out-of-order or duplicate post can't rewind

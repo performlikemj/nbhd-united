@@ -20,6 +20,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
+from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
@@ -137,6 +138,7 @@ class RuntimeCoreProfileView(APIView):
         tenant = _get_tenant_or_404(tenant_id)
         if isinstance(tenant, Response):
             return tenant
+        record_runtime_write_activity(tenant)
         profile, _created = CoreProfile.objects.get_or_create(tenant=tenant)
         changed = []
         incoming = {}
@@ -211,6 +213,8 @@ class RuntimeMeditationCreateView(APIView):
         )
         if in_flight:
             return Response({"meditation_id": str(in_flight.id), "status": in_flight.status})
+
+        record_runtime_write_activity(tenant)
 
         from apps.pii.store_authoring import author_store_fields
 

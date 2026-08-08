@@ -71,3 +71,7 @@ Plugin manifests (`openclaw.plugin.json`) declare `configSchema` with `additiona
 ## 16. AGENTS.md budget is chars-on-the-share; chat agents cannot read docs
 
 The bootstrap cap is 24,000 CHARS (not bytes; `BOOTSTRAP_MAX_CHARS`), the sentinel warns at 23k, and truncation is silent from the tail — always measure the rendered share file, never the template. Chat-context tool policy strips fs `read` (`tools.allow` = group:openclaw/group:plugins/pdf), so "read `docs/X.md` THIS TURN" gates can never fire in chat — that pattern is cron-only. Behavioral contracts for chat ride a TOOL RESPONSE (the Gravity `nbhd_insights_signals` pattern; tour-guide's `nbhd_tour_guide`): zero bootstrap budget, deterministic, verbatim.
+
+## 17. Every app-turn writer locks the ChatThread before newest/requeue decisions
+
+App chat ingress, local/offline turn insertion, and dropped-turn replay must take the same `ChatThread` row lock before checking newest-turn state or requeueing. The shared lock closes the insert-between-check-and-requeue race; a new app-turn writer that skips it can replay an older user message after a newer one has arrived.
