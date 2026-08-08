@@ -89,11 +89,30 @@ def embed_daily_note(tenant: Tenant, for_date: date) -> int:
     created = 0
     for i, chunk_text in enumerate(dated_chunks):
         try:
+            from apps.pii.authoring import author_text
             from apps.pii.egress import redact_known_values
 
+            # The known-value scrub stays FIRST and unconditional: it is what
+            # protected this seam pre-P3, and authoring is a pure passthrough
+            # for background writers while the tenant flag is off. Dropping it
+            # in favour of author_text alone would silently un-protect every
+            # flag-off tenant's embedding calls.
             guarded_chunk = redact_known_values(tenant, chunk_text, seam="journal_chunk_index_embedding")
-            embedding = generate_embedding(
+            # Chunks derive from doc.markdown, which is ALREADY authored — the
+            # chunk is a copy of stored text, never a pre-authoring buffer. It
+            # still gets its own pass because this text is what leaves for the
+            # embedding provider, and it earns its own receipt so the repair
+            # sweep and the A7 fence can see chunk-level state.
+            authored = author_text(
+                tenant,
                 guarded_chunk,
+                seam="journal_chunk_index_embedding",
+                writer="background",
+                field="text",
+                model_label="journal.DocumentChunk",
+            )
+            embedding = generate_embedding(
+                authored.text,
                 tenant=tenant,
                 seam="journal_chunk_index_embedding",
             )
@@ -105,7 +124,8 @@ def embed_daily_note(tenant: Tenant, for_date: date) -> int:
             tenant=tenant,
             document=doc,
             chunk_index=i,
-            text=guarded_chunk,
+            text=authored.text,
+            pii_receipts={"text": authored.receipt},
             embedding=embedding,
             source_date=for_date,
         )

@@ -285,6 +285,71 @@ class RegistryJsonPathHealTests(_TenantMixin, TestCase):
         self.assertEqual(goal.pii_receipts["target"]["redactions"], [])
         self.assertNotIn("[ACCOUNT_105]", tenant.pii_entity_map)
 
+    def test_mixed_flat_and_json_store_heals_from_either_side(self):
+        """A store carrying both kinds of field must reach a token in either.
+
+        The flat arm regressed once: any store with ``json_paths`` lost its
+        ``__contains="["`` narrowing wholesale, so flat columns were only ever
+        found by a full per-tenant scan.
+        """
+        synthetic = PlaceholderStore(
+            model_label="journal.Goal",
+            flat_fields=("title",),
+            json_paths=("target.summary",),
+            receipts_field="pii_receipts",
+        )
+        tenant = self._make_tenant(
+            username="mixed-heal",
+            entity_map={"[ACCOUNT_105]": {"name": "2026-05-30"}},
+        )
+        flat_only = Goal.objects.create(tenant=tenant, title="Due [ACCOUNT_105]", target={})
+        json_only = Goal.objects.create(
+            tenant=tenant,
+            title="no token here",
+            target={"summary": "Due [ACCOUNT_105]"},
+        )
+
+        with patch("apps.pii.store_registry.registered_stores", return_value=(synthetic,)):
+            result = sweep_tenant(tenant)
+
+        flat_only.refresh_from_db()
+        json_only.refresh_from_db()
+        self.assertEqual(result["healed_rows"], 2)
+        self.assertEqual(flat_only.title, "Due 2026-05-30")
+        self.assertEqual(json_only.target["summary"], "Due 2026-05-30")
+
+    def test_flat_narrowing_predicate_survives_json_paths(self):
+        """Pin the SQL: the flat bracket predicate must still be emitted."""
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        synthetic = PlaceholderStore(
+            model_label="journal.Goal",
+            flat_fields=("title",),
+            json_paths=("target.summary",),
+            receipts_field="pii_receipts",
+        )
+        tenant = self._make_tenant(
+            username="narrow-sql",
+            entity_map={"[ACCOUNT_105]": {"name": "2026-05-30"}},
+        )
+        Goal.objects.create(tenant=tenant, title="Due [ACCOUNT_105]", target={})
+
+        with (
+            patch("apps.pii.store_registry.registered_stores", return_value=(synthetic,)),
+            CaptureQueriesContext(connection) as captured,
+        ):
+            sweep_tenant(tenant)
+
+        goal_selects = [
+            q["sql"] for q in captured.captured_queries if "journal_goals" in q["sql"] and "SELECT" in q["sql"]
+        ]
+        self.assertTrue(goal_selects, "expected a SELECT against the goal store")
+        self.assertTrue(
+            any("title" in sql and "LIKE" in sql.upper() for sql in goal_selects),
+            f"flat-field bracket narrowing missing from: {goal_selects}",
+        )
+
     def test_tombstoned_binding_is_never_healed_or_deleted(self):
         placeholder = "[PERSON_999]"
         tenant = self._make_tenant(

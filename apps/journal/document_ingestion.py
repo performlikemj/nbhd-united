@@ -375,7 +375,43 @@ def record_keep(tenant, *, source: dict, artifacts: list[dict]) -> dict:
     ingestion_id = None
     if validated:
         from apps.journal.models import DocumentIngestion, DocumentIngestionArtifact
+        from apps.pii.authoring import author_text
 
+        # BACKGROUND writer class, not runtime, even though this arrives over
+        # the M2M runtime endpoint. The directive assigns M2M writes MINT_NEVER
+        # on the verified premise that "user text reaches runtime endpoints only
+        # post-ingress-redaction" — which is exactly what an ingestion breaks. A
+        # filename and an excerpt are quoted from a PDF/email the redactor has
+        # never seen, so this is one of the few Layer-1 seams where genuinely new
+        # PII arrives. Background gives it full detection plus MINT_VALIDATED, so
+        # a phone number or email in the excerpt is bound rather than stored raw;
+        # PERSON/LOCATION still cannot be minted by contract and land in the
+        # receipt as `residual` for the repair sweep.
+        # Both fields are pre-truncated FIRST so the chokepoint's placeholder-
+        # growth cap has a source length it can honour.
+        # Authored BEFORE the transaction opens: the chokepoint can mint new
+        # bindings (a phone number in an excerpt), and a mint is a write to the
+        # tenant row. Doing that inside the block would hold the ingestion's
+        # transaction open across every artifact's NER pass.
+        authored_filename = author_text(
+            tenant,
+            str(source.get("original_filename") or "")[:255],
+            seam="journal.document_ingestion.keep",
+            writer="background",
+            field="original_filename",
+            model_label="journal.DocumentIngestion",
+        )
+        authored_excerpts = [
+            author_text(
+                tenant,
+                str(art.get("excerpt") or "")[:_MAX_EXCERPT],
+                seam="journal.document_ingestion.keep",
+                writer="background",
+                field="content_excerpt",
+                model_label="journal.DocumentIngestionArtifact",
+            )
+            for art, _handler in validated
+        ]
         with transaction.atomic():
             ingestion = DocumentIngestion.objects.create(
                 tenant=tenant,
@@ -383,7 +419,8 @@ def record_keep(tenant, *, source: dict, artifacts: list[dict]) -> dict:
                 client_msg_id=client_msg_id,
                 source_kind=source_kind,
                 source_ref=source_ref,
-                original_filename=str(source.get("original_filename") or "")[:255],
+                original_filename=authored_filename.text,
+                pii_receipts={"original_filename": authored_filename.receipt},
                 content_hash=str(source.get("content_hash") or "")[:64],
                 workspace_path=str(source.get("workspace_path") or "")[:255],
                 uploaded_at=uploaded_at,
@@ -391,8 +428,9 @@ def record_keep(tenant, *, source: dict, artifacts: list[dict]) -> dict:
                 status=DocumentIngestion.Status.KEPT,
                 agreed_at=timezone.now(),
             )
-            DocumentIngestionArtifact.objects.bulk_create(
-                [
+            rows = []
+            for (art, handler), authored_excerpt in zip(validated, authored_excerpts, strict=True):
+                rows.append(
                     DocumentIngestionArtifact(
                         ingestion=ingestion,
                         tenant=tenant,
@@ -400,12 +438,16 @@ def record_keep(tenant, *, source: dict, artifacts: list[dict]) -> dict:
                         object_type=handler.object_type,
                         object_id=str(art.get("object_id") or "").strip()[:128],
                         destination=str(art.get("destination") or "")[:255],
-                        content_excerpt=str(art.get("excerpt") or "")[:_MAX_EXCERPT],
+                        # ``content_excerpt`` is a TextField, so placeholder
+                        # growth may push a few characters past _MAX_EXCERPT.
+                        # Accepted: cutting again here would strand a receipt
+                        # describing placeholders no longer in the text.
+                        content_excerpt=authored_excerpt.text,
+                        pii_receipts={"content_excerpt": authored_excerpt.receipt},
                         removal_strategy=handler.strategy,
                     )
-                    for art, handler in validated
-                ]
-            )
+                )
+            DocumentIngestionArtifact.objects.bulk_create(rows)
         ingestion_id = str(ingestion.id)
 
     recorded = len(validated)

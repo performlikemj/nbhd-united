@@ -65,17 +65,34 @@ class SessionDetailSerializer(serializers.ModelSerializer):
 def _ensure_project_document(tenant, project_name: str) -> None:
     """Auto-create a Document(kind='project') if one doesn't exist."""
     from apps.journal.path_validation import validate_kind_slug
+    from apps.pii.authoring import author_text
 
     slug = slugify(project_name)[:128]
     # Best-effort helper: skip silently if slugify produced something the shared
     # slug guard would reject, so every Document create path stays consistent.
     if not slug or validate_kind_slug(Document.Kind.PROJECT, slug) is not None:
         return
+    # The project name arrives over a PAT from an external tool, so it is
+    # externally-derived text that never met chat ingress — background writer
+    # class (full detection, validated minting, always known-value scrubbed).
+    # The SLUG stays raw: it is a stable identity other rows key on, and it is
+    # already lossy through slugify.
+    authored_title = author_text(
+        tenant,
+        project_name,
+        seam="journal.session.project_document",
+        writer="background",
+        field="title",
+        model_label="journal.Document",
+    )
     Document.objects.get_or_create(
         tenant=tenant,
         kind=Document.Kind.PROJECT,
         slug=slug,
-        defaults={"title": project_name},
+        defaults={
+            "title": authored_title.text,
+            "pii_receipts": {"title": authored_title.receipt},
+        },
     )
 
 

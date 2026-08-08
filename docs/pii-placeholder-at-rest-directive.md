@@ -56,6 +56,8 @@ New `apps/pii/store_registry.py`: each wave registers its placeholder-bearing su
 
 Retirement auto-denies the value only when no other active binding shares the canonical name. Retired bindings are excluded from egress substitution and legends; rehydration retains them.
 
+**W2b memory-editor exception:** an owner surface whose rendered text comes straight back as a write (today: the memory editor, `journal/views.py` `MemoryView`) rehydrates ACTIVE bindings ONLY — a retired placeholder stays a literal token. Rehydrating it there would re-author the real name on save with no substitution available (retirement removed the value from the known-value path), so owner-deleting an entity would be the one action that writes it back in plaintext. The token round-trips byte-for-byte instead, and still rehydrates on every read-only surface.
+
 ### A10 — Repair sweep (buildable spec)
 QStash-scheduled (hourly), per-tenant batch over registry stores where any field state ∈ {`unconfirmed`, `residual`}; re-runs `author_text` with current map + full NER; idempotent via receipt state transition; bounded batch size; DLQ + counter telemetry; drain-required before migration (A7). Reuses the transcripts alert mechanism (steward-gated, metadata-only).
 
@@ -66,7 +68,7 @@ Live-write failure-rate alerting (not just repair-time) lands with W2.
 2. **W1b — Insights flip + its owner reads** (bound in one PR; small).
 3. **W1c — chokepoint + registry + Task/Goal exemplar:** `apps/pii/authoring.py` + `store_registry.py` + receipts fields + ALL Task/Goal writer families (owner lifecycle, runtime M2M CRUD/transitions, extraction approval, reconciliation, friends mission) + owner reads incl. Dashboard Horizons + status view + search variants + flag + repair sweep + junk-sweep/owner-delete registry integration + alert. Tests per seam; canary flag-on; live proof.
 4. **W2 — Document family:** owner POST raw fix, PATCH/append upgraded to checked provenance, runtime put/append/daily-note/memory, reply artifacts, session docs, ingestion + chunk derivation, FTS variant translation, owner memory view rehydration.
-5. **W3 — long tail:** DailyNote legacy sections, JournalEntry, WeeklyReview, Purpose, PendingExtraction/PendingTaskAction, lessons (+ star journal), fuel, finance, actions, cron (incl. `CronDeliveryOccurrence.response_excerpt`), sessions, workspace, core/meditation, NoteTemplate, `SautaiMealPlanJob.user_prompt` ingress, automations run payloads.
+5. **W3 — long tail:** DailyNote legacy sections, JournalEntry, WeeklyReview, Purpose, PendingExtraction/PendingTaskAction, lessons (+ star journal), fuel, finance, actions, cron (incl. `CronDeliveryOccurrence.response_excerpt`), sessions, workspace, core/meditation, NoteTemplate, `SautaiMealPlanJob.user_prompt` ingress, automations run payloads. **Plus: a Document-wide round-trip policy.** W2b settled the retired-binding round-trip for the memory editor only (A9 exception). Document GET/PATCH has the same class of edge and predates P3 — decide once whether every editable owner surface rehydrates active-only, or whether the client round-trips an untouched-field marker so a PATCH can distinguish "unchanged" from "re-submitted".
 6. **W4 — migration commands + runbooks** (dry-runs on canary only; execution = MJ decision) + residuals ledger.
 
 ## 4. Review trail

@@ -42,7 +42,8 @@ import re
 from typing import Any
 
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Q, TextField
+from django.db.models.functions import Cast
 from django.utils import timezone
 
 from apps.pii.entity_registry import canonical_key, get_name
@@ -268,14 +269,23 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
     healed = 0
 
     # (model, flat fields, dotted JSON paths, receipts field) — each row is
-    # counted once no matter how many selected values changed. Flat-field
-    # ``__contains="["`` predicates narrow stores that have no JSON paths.
+    # counted once no matter how many selected values changed.
+    #
+    # Registered stores come first, then the pre-registry Document/DocumentChunk
+    # entries for whichever of them the registry does NOT yet cover. Keying the
+    # fallback on model label (rather than dropping it outright) means the day a
+    # wave registers one of these models it stops being visited twice per sweep,
+    # with no second edit here and no window where it is visited zero times.
     targets = [
-        (Document, ("markdown", "title"), (), None),
-        (DocumentChunk, ("text",), (), None),
+        (store.model, store.flat_fields, store.json_paths, store.receipts_field) for store in registered_stores()
     ]
-    for store in registered_stores():
-        targets.append((store.model, store.flat_fields, store.json_paths, store.receipts_field))
+    registered_labels = {store.model_label for store in registered_stores()}
+    for label, model, fields in (
+        ("journal.Document", Document, ("markdown", "title")),
+        ("journal.DocumentChunk", DocumentChunk, ("text",)),
+    ):
+        if label not in registered_labels:
+            targets.append((model, fields, (), None))
 
     for model, fields, json_paths, receipts_field in targets:
         json_parts = [_json_path_parts(path) for path in json_paths]
@@ -285,11 +295,27 @@ def _heal_rows(tenant: Any, ph_to_name: dict[str, str]) -> int:
         if receipts_field:
             only_fields.append(receipts_field)
         rows = model.objects.filter(tenant=tenant)
-        if not json_parts:
-            bracket_q = Q()
-            for field in fields:
-                bracket_q |= Q(**{f"{field}__contains": "["})
-            rows = rows.filter(bracket_q)
+        # Narrow to rows that could possibly carry a ``[TYPE_N]`` token. Flat
+        # columns take a direct ``__contains="["``; a JSON column is matched on
+        # its ``::text`` rendering, which is deliberately COARSE (any array or
+        # bracket anywhere in the blob qualifies) — a superset is correct here,
+        # a missed row is not. Without the JSON arm a store that carries BOTH
+        # kinds of field lost the flat narrowing entirely and fell back to a
+        # full per-tenant scan.
+        # Caveat for the encryption ladder: once a registered column stores
+        # ciphertext, its plaintext-shaped predicate stops matching. Every
+        # column here is either excluded from encryption (Document.markdown /
+        # .title, plan §2) or still dual-writing plaintext; a contract migration
+        # that drops the plaintext column must revisit this narrowing.
+        narrow_q = Q()
+        for field in fields:
+            narrow_q |= Q(**{f"{field}__contains": "["})
+        for json_field in json_fields:
+            annotation = f"_junk_probe_{json_field}"
+            rows = rows.annotate(**{annotation: Cast(json_field, TextField())})
+            narrow_q |= Q(**{f"{annotation}__contains": "["})
+        if narrow_q:
+            rows = rows.filter(narrow_q)
         rows = rows.only(*only_fields)
         for row in rows:
             changed_fields = []

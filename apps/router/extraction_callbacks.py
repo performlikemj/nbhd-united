@@ -24,6 +24,7 @@ from django.http import JsonResponse
 from django.utils import timezone
 
 from apps.common.eval_sink import blocks_real_transport_for_identifier
+from apps.journal.document_authoring import merge_field_receipt, refresh_field_redactions
 from apps.journal.models import Document, PendingExtraction
 from apps.lessons.models import Lesson
 from apps.lessons.services import process_approved_lesson
@@ -33,6 +34,41 @@ logger = logging.getLogger(__name__)
 
 TELEGRAM_API_BASE = "https://api.telegram.org/bot"
 TELEGRAM_TIMEOUT = 5
+
+
+def _author_legacy_document_entry(pending: PendingExtraction, *, seam: str):
+    """Author an extraction's text before it is spliced into a legacy document.
+
+    The typed Task/Goal branches already route through the chokepoint (W1c);
+    this covers the markdown-document fallback tenants still on, which was
+    appending ``pending.text`` verbatim. Background writer class — the text came
+    out of the nightly extractor, not from the human typing it here.
+    """
+    from apps.pii.authoring import author_text
+
+    return author_text(
+        pending.tenant,
+        pending.text,
+        seam=seam,
+        writer="background",
+        field="markdown",
+        model_label="journal.Document",
+    )
+
+
+def _undo_candidate_texts(pending: PendingExtraction) -> list[str]:
+    """Forms of ``pending.text`` an approved entry could be stored under.
+
+    Approval authors the text, so scrubbing on the RAW text alone would silently
+    leave a redacted entry in the document forever. The known-value substitution
+    reproduces what authoring stored (anything authoring minted is a binding by
+    now) without the minting side effects of a second authoring pass; the raw
+    form stays in the list for rows approved before this shipped.
+    """
+    from apps.pii.egress import redact_known_values
+
+    scrubbed = redact_known_values(pending.tenant, pending.text, seam="journal.extraction.undo")
+    return [scrubbed] if scrubbed == pending.text else [scrubbed, pending.text]
 
 
 # ── Telegram helpers ──────────────────────────────────────────────────────────
@@ -148,15 +184,22 @@ def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
         slug="goals",
         defaults={"title": "Goals", "markdown": "# Goals\n\n## Active\n\n## Completed\n"},
     )
+    authored = _author_legacy_document_entry(pending, seam="journal.extraction.goal.approve")
     today = date.today().isoformat()
-    new_entry = f"\n### {pending.text}\n- Added: {today}\n- Status: active\n"
+    new_entry = f"\n### {authored.text}\n- Added: {today}\n- Status: active\n"
 
     if "## Active" in doc.markdown:
         doc.markdown = doc.markdown.replace("## Active", f"## Active\n{new_entry}", 1)
     else:
         doc.markdown += f"\n## Active\n{new_entry}"
 
-    doc.save(update_fields=["markdown", "updated_at"])
+    doc.pii_receipts = merge_field_receipt(
+        doc.pii_receipts,
+        "markdown",
+        authored.receipt,
+        stored_text=doc.markdown,
+    )
+    doc.save(update_fields=["markdown", "pii_receipts", "updated_at"])
     return "Added to your goals! 🎯", None
 
 
@@ -213,9 +256,16 @@ def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
         slug="tasks",
         defaults={"title": "Tasks", "markdown": "# Tasks\n\n"},
     )
+    authored = _author_legacy_document_entry(pending, seam="journal.extraction.task.approve")
     today = date.today().isoformat()
-    doc.markdown += f"- [ ] {pending.text}  _(added {today})_\n"
-    doc.save(update_fields=["markdown", "updated_at"])
+    doc.markdown += f"- [ ] {authored.text}  _(added {today})_\n"
+    doc.pii_receipts = merge_field_receipt(
+        doc.pii_receipts,
+        "markdown",
+        authored.receipt,
+        stored_text=doc.markdown,
+    )
+    doc.save(update_fields=["markdown", "pii_receipts", "updated_at"])
     return "Added to your tasks! ✅", None
 
 
@@ -274,9 +324,14 @@ def _undo_goal(pending: PendingExtraction) -> None:
 
     doc = Document.objects.filter(tenant=pending.tenant, kind=Document.Kind.GOAL, slug="goals").first()
     if doc:
-        pattern = r"\n" + re.escape(f"### {pending.text}") + r"\n- Added: \d{4}-\d{2}-\d{2}\n- Status: active\n"
-        doc.markdown = re.sub(pattern, "", doc.markdown)
-        doc.save(update_fields=["markdown", "updated_at"])
+        for text in _undo_candidate_texts(pending):
+            pattern = r"\n" + re.escape(f"### {text}") + r"\n- Added: \d{4}-\d{2}-\d{2}\n- Status: active\n"
+            scrubbed = re.sub(pattern, "", doc.markdown)
+            if scrubbed != doc.markdown:
+                doc.markdown = scrubbed
+                break
+        doc.pii_receipts = refresh_field_redactions(doc.pii_receipts, "markdown", doc.markdown)
+        doc.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
 
 def _undo_task(pending: PendingExtraction) -> None:
@@ -290,9 +345,14 @@ def _undo_task(pending: PendingExtraction) -> None:
 
     doc = Document.objects.filter(tenant=pending.tenant, kind=Document.Kind.TASKS, slug="tasks").first()
     if doc:
-        pattern = re.escape(f"- [ ] {pending.text}") + r"  _\(added \d{4}-\d{2}-\d{2}\)_\n"
-        doc.markdown = re.sub(pattern, "", doc.markdown)
-        doc.save(update_fields=["markdown", "updated_at"])
+        for text in _undo_candidate_texts(pending):
+            pattern = re.escape(f"- [ ] {text}") + r"  _\(added \d{4}-\d{2}-\d{2}\)_\n"
+            scrubbed = re.sub(pattern, "", doc.markdown)
+            if scrubbed != doc.markdown:
+                doc.markdown = scrubbed
+                break
+        doc.pii_receipts = refresh_field_redactions(doc.pii_receipts, "markdown", doc.markdown)
+        doc.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
 
 # ── Main handler ──────────────────────────────────────────────────────────────

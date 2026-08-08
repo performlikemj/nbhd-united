@@ -132,13 +132,28 @@ def truncate_placeholder_safe(text: str, max_len: int) -> str:
     return text[:max_len]
 
 
-def _registered_field_max_length(field: str) -> int | None:
-    """Return the strictest registered model limit for a flat text field."""
+def _registered_field_max_length(field: str, model_label: str | None = None) -> int | None:
+    """Return the registered column limit for a flat text field.
+
+    ``model_label`` resolves the limit against ONE store, which is the only
+    correct answer once two stores register the same field NAME with different
+    limits — a name-global minimum would silently truncate the roomier store's
+    writes to the tighter store's column. Callers that know which model they are
+    writing should always pass it.
+
+    Omitting it falls back to the strictest limit across every store sharing the
+    name. That is exact only while those stores agree, which
+    ``StoreRegistryTests.test_flat_field_limits_are_unambiguous_by_name`` pins:
+    the day a registration diverges, that test fails and the divergent caller
+    has to start passing ``model_label``.
+    """
     from apps.pii.store_registry import registered_stores
 
     limits = []
     for store in registered_stores():
         if field not in store.flat_fields:
+            continue
+        if model_label is not None and store.model_label != model_label:
             continue
         max_length = getattr(store.model._meta.get_field(field), "max_length", None)
         if max_length is not None:
@@ -202,6 +217,7 @@ def _finalize(
     checked: bool,
     live: bool = True,
     source_text: str | None = None,
+    model_label: str | None = None,
 ) -> AuthoredText:
     """Apply invariants shared by every authoring outcome before persistence.
 
@@ -213,7 +229,7 @@ def _finalize(
     must stay byte-identical).
     """
     if source_text is not None:
-        max_length = _registered_field_max_length(field)
+        max_length = _registered_field_max_length(field, model_label)
         if max_length is not None and len(source_text) <= max_length:
             text = truncate_placeholder_safe(text, max_length)
 
@@ -263,6 +279,7 @@ def author_text(
     writer: WriterClass,
     field: str,
     live: bool = True,
+    model_label: str | None = None,
 ) -> AuthoredText:
     """Author one text field under its writer-class mint policy.
 
@@ -273,15 +290,31 @@ def author_text(
     ``live=False`` marks a re-authoring pass over already-stored rows (the
     repair sweep). It keeps such passes out of the live-write error-rate
     counters, which exist to measure what real user writes are experiencing.
+
+    ``model_label`` names the store being written (``"journal.Document"``) so
+    the post-authoring length cap resolves against THAT column rather than the
+    strictest column sharing the field name — see
+    :func:`_registered_field_max_length`.
     """
     if writer not in _WRITER_POLICIES:
         raise ValueError(f"unsupported writer class: {writer!r}")
 
     if not getattr(tenant, "layer1_placeholder_writes", False):
+        source_text = None
         if writer == "owner":
+            # The legacy redactor substitutes placeholders, so this branch was
+            # never byte-identical to its input and it grows text the same way
+            # the checked path does — a short name becoming ``[PERSON_12]`` can
+            # push a title past its column and 500 on the insert. It gets the
+            # same growth-only cap: ``source_text`` opts in, so text the caller
+            # sent over the limit already is still left alone for serializer
+            # validation to answer with a 400.
+            source_text = text
             text = redact_user_message(text, tenant)
             receipt = {"state": "bypass", "mode": "legacy-redact"}
         else:
+            # Runtime/background flag-off stays a pure passthrough, length
+            # included — a bypass must never truncate.
             receipt = {"state": "bypass"}
         return _finalize(
             tenant,
@@ -292,6 +325,8 @@ def author_text(
             field=field,
             checked=False,
             live=live,
+            source_text=source_text,
+            model_label=model_label,
         )
 
     mint, allow_user_name = _WRITER_POLICIES[writer]
@@ -325,6 +360,7 @@ def author_text(
             checked=False,
             live=live,
             source_text=text,
+            model_label=model_label,
         )
     if reason == "redaction-disabled":
         receipt = {"state": "bypass", "reason": reason}
@@ -355,6 +391,7 @@ def author_text(
             checked=True,
             live=live,
             source_text=text,
+            model_label=model_label,
         )
 
     stored = outcome.text
@@ -400,4 +437,5 @@ def author_text(
         checked=True,
         live=live,
         source_text=text,
+        model_label=model_label,
     )
