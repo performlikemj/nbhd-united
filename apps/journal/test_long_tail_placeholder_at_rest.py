@@ -174,6 +174,25 @@ class JournalLongTailPlaceholderTests(TestCase):
         self.assertEqual(detail.data["processed_summary"], {"note": "Filed for Alice"})
         self.assertEqual(detail.data["pii_receipts"]["processed_summary"]["writer"], "runtime")
 
+    def test_session_pat_project_filter_translates_literal_name_to_placeholder(self):
+        self._enable_placeholder_writes()
+        client = self._pat_client()
+        with _checked_detection():
+            created = client.post("/api/v1/sessions/create/", self._session_payload(), format="json")
+        Session.objects.create(
+            tenant=self.tenant,
+            source="owner-app/1.0",
+            project="unrelated project",
+            session_start="2026-08-08T03:00:00Z",
+            session_end="2026-08-08T04:00:00Z",
+            summary="Unrelated session",
+        )
+
+        response = client.get("/api/v1/sessions/", {"project": "Alice project"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.data], [created.data["id"]])
+
     def test_receipt_fields_are_read_only(self):
         self.assertTrue(NoteTemplateSerializer().fields["pii_receipts"].read_only)
         self.assertTrue(SessionDetailSerializer().fields["pii_receipts"].read_only)

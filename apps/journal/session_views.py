@@ -3,6 +3,7 @@
 import logging
 
 from django.db import IntegrityError
+from django.db.models import Q
 from django.utils.text import slugify
 from rest_framework import serializers, status
 from rest_framework.generics import get_object_or_404
@@ -202,7 +203,12 @@ class SessionListView(APIView):
         else:
             project = request.query_params.get("project")
             if project:
-                qs = qs.filter(project=project)
+                from apps.journal.lifecycle_views import _search_variants
+
+                project_query = Q()
+                for variant in _search_variants(tenant, project):
+                    project_query |= Q(project=variant)
+                qs = qs.filter(project_query)
 
         since = request.query_params.get("since")
         if since:
