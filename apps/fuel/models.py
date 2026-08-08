@@ -74,9 +74,12 @@ class WorkoutPlan(models.Model):
     )
     # Encryption-at-rest Phase 3 sidecars — ship DARK. AAD:
     # ``enc_columns.WORKOUT_PLAN_NOTES`` / ``WORKOUT_PLAN_OBJECTIVE``. ``schedule_json`` /
-    # ``week_overrides`` stay plaintext (structured render/config, no free text — plan §1.5).
+    # ``week_overrides`` stay outside the encryption ladder for now, but their live
+    # normalized shape carries free-form activity/detail strings and is therefore
+    # covered by the PII placeholder-at-rest registry.
     notes_enc = models.BinaryField(null=True)
     objective_enc = models.BinaryField(null=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     week_overrides = models.JSONField(
         default=dict,
         blank=True,
@@ -296,6 +299,7 @@ class Workout(models.Model):
     notes_enc = models.BinaryField(null=True)
     notes_thread_enc = models.BinaryField(null=True)
     detail_json_enc = models.BinaryField(null=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     version = models.PositiveIntegerField(
         default=0,
         help_text="Monotonic write counter. Bumped on every save (user or runtime). "
@@ -423,6 +427,7 @@ class FuelProfile(models.Model):
     additional_context = models.TextField(blank=True, default="", help_text="Free-form fitness context")
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.FUEL_PROFILE_ADDITIONAL_CONTEXT``) — ships DARK.
     additional_context_enc = models.BinaryField(null=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     use_session_scheduling = models.BooleanField(
         default=False,
         help_text=(
@@ -465,6 +470,7 @@ class WorkoutTemplate(models.Model):
     detail_json = models.JSONField(default=dict, blank=True)
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.WORKOUT_TEMPLATE_DETAIL_JSON``, JSON) — ships DARK.
     detail_json_enc = models.BinaryField(null=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -561,6 +567,7 @@ class SleepLog(models.Model):
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.SLEEP_LOG_NOTES``) — ships DARK.
     # ``duration_hours`` / ``quality`` stay plaintext (numeric body-metrics, DEFER to 3b).
     notes_enc = models.BinaryField(null=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

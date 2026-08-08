@@ -108,7 +108,7 @@ def _claim_delivery_attempt(*, tenant, occurrence_key: str, job_name: str, chann
     raise RuntimeError("delivery claim changed repeatedly before it could be inspected")
 
 
-def _response_excerpt(response: Response | None) -> str:
+def _response_excerpt(response: Response | None, *, truncate: bool = True) -> str:
     if response is None:
         return ""
     data = getattr(response, "data", None)
@@ -116,7 +116,7 @@ def _response_excerpt(response: Response | None) -> str:
         rendered = json.dumps(data, sort_keys=True, default=str)
     except (TypeError, ValueError):
         rendered = str(data)
-    return rendered[:500]
+    return rendered[:500] if truncate else rendered
 
 
 def _resolve_delivery_attempt(attempt, *, state: str, response: Response | None = None, excerpt: str = "") -> None:
@@ -126,15 +126,44 @@ def _resolve_delivery_attempt(attempt, *, state: str, response: Response | None 
     from apps.pii.egress import redact_known_values
     from apps.router.models import DeliveryAttempt
 
-    response_excerpt = redact_known_values(
+    flag_on = attempt.tenant.layer1_placeholder_writes
+    # The legacy response path sliced before its known-value scrub. Keep that
+    # exact order while allowing the flag-on path to see the complete value:
+    # author_text must replace a name that crosses character 500 *before* its
+    # model-aware, placeholder-safe length cap is applied.
+    raw_excerpt = excerpt or _response_excerpt(response, truncate=not flag_on)
+
+    from apps.pii.authoring import author_text, receipt_placeholders, truncate_placeholder_safe
+
+    if not flag_on:
+        # Keep A4 byte compatibility with the pre-P3 seam: known-value scrub,
+        # then an ordinary 500-character slice.
+        raw_excerpt = redact_known_values(
+            attempt.tenant,
+            raw_excerpt,
+            seam="cron_delivery_response_excerpt",
+        )
+    authored = author_text(
         attempt.tenant,
-        excerpt or _response_excerpt(response),
+        raw_excerpt,
         seam="cron_delivery_response_excerpt",
-    )[:500]
+        writer="background",
+        field="response_excerpt",
+        model_label="router.DeliveryAttempt",
+    )
+    # Response bodies can already exceed the CharField limit before authoring,
+    # so author_text's growth-only cap intentionally does not shorten them.
+    # Apply this seam's legacy 500-char cap to the *authored* value and rebuild
+    # offset-free receipt metadata from the exact final bytes.
+    response_excerpt = truncate_placeholder_safe(authored.text, 500) if flag_on else authored.text[:500]
+    receipt = dict(authored.receipt)
+    if "redactions" in receipt:
+        receipt["redactions"] = receipt_placeholders(response_excerpt)
     DeliveryAttempt.objects.filter(pk=attempt.pk, state=DeliveryAttempt.State.CLAIMED).update(
         state=state,
         resolved_at=timezone.now(),
         response_excerpt=response_excerpt,
+        pii_receipts={"response_excerpt": receipt},
     )
     if state == DeliveryAttempt.State.AMBIGUOUS:
         logger.error(

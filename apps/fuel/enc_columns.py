@@ -15,8 +15,11 @@ EXCLUDED from Phase 3 by design (do NOT add here without a plan/MJ update):
     /``quality``, ``BodyWeightLog.weight_kg``, ``Workout.rpe``/``duration_seconds``:
     need a numeric codec + per-reader aggregation audit; DEFER to Phase 3b
     (MJ decision 2026-07-14).
-  * ``WorkoutPlan.schedule_json`` / ``week_overrides`` — structured render/config
-    with no free text, default OUT (plan §1.5).
+  * ``WorkoutPlan.schedule_json`` / ``week_overrides`` — still OUT of this
+    encryption ladder pending an explicit plan update. Their live normalized
+    shape does carry activity/detail strings, so P3 W3b protects them through
+    the placeholder-at-rest registry even while the encryption sidecars remain
+    deferred.
   * ``FuelProfile.goals`` / ``equipment`` / ``preferred_time`` / ``fitness_level`` —
     structured prefs / enums (tier S), OUT.
   * ``PersonalRecord.exercise_name`` / ``FuelGoal.exercise_name`` — low-PII

@@ -24,6 +24,7 @@ def _rehydrate_status_payload(tenant, payload: dict) -> dict:
     statuses and amounts never do. Mutating in place is safe because
     ``build_journal_status`` returns a fresh dict per call (nothing shared).
     """
+    from apps.finance.models import FinanceAccount
     from apps.pii.authoring import resolve_receipt_values
     from apps.pii.redactor import rehydrate_for_tenant
 
@@ -48,6 +49,13 @@ def _rehydrate_status_payload(tenant, payload: dict) -> dict:
             id__in=[item.get("id") for item in payload.get("active_goals", []) or [] if item.get("id")],
         )
     }
+    accounts_by_id = {
+        str(account.id): account
+        for account in FinanceAccount.objects.filter(
+            tenant=tenant,
+            id__in=[item.get("account_id") for item in payload.get("obligations", []) or [] if item.get("account_id")],
+        )
+    }
 
     for task in payload.get("open_tasks", []) or []:
         if task.get("title"):
@@ -60,6 +68,7 @@ def _rehydrate_status_payload(tenant, payload: dict) -> dict:
     for obligation in payload.get("obligations", []) or []:
         if obligation.get("nickname"):
             obligation["nickname"] = rehydrate_for_tenant(tenant, obligation["nickname"])
+        obligation["pii_receipts"] = _receipts(accounts_by_id.get(str(obligation.get("account_id"))))
     return payload
 
 

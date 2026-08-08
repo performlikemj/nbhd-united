@@ -34,6 +34,7 @@ class NoteTemplate(models.Model):
     slug = models.SlugField(max_length=64)
     name = models.CharField(max_length=128)
     sections = models.JSONField(default=list)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     is_default = models.BooleanField(default=False)
     source = models.CharField(max_length=16, choices=Source.choices, default=Source.SHARED)
     created_at = models.DateTimeField(auto_now_add=True)

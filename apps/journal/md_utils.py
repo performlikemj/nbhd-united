@@ -31,7 +31,7 @@ _ENTRY_HEADER_RE = re.compile(
 
 _SECTION_PAREN_RE = re.compile(r"^(?P<section>.+?)\s*\((?P<author>[^)]+)\)$")
 _ENERGY_RE = re.compile(r"Energy:\s*(\d+)", re.IGNORECASE)
-_MOOD_RE = re.compile(r"Mood:\s*(\S+)", re.IGNORECASE)
+_MOOD_RE = re.compile(r"Mood:\s*(.+?)(?=\s*\|\s*(?:Energy|Rating):|$)", re.IGNORECASE)
 _SUBSECTION_RE = re.compile(r"^###\s+(.+)$")
 
 

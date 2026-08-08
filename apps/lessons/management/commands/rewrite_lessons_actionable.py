@@ -72,8 +72,19 @@ class Command(BaseCommand):
                     success += 1
                     continue
 
-                lesson.text = rewritten
-                lesson.save(update_fields=["text"])
+                from apps.pii.store_authoring import author_store_fields
+
+                authored, receipts = author_store_fields(
+                    lesson.tenant,
+                    {"text": rewritten},
+                    model_label="lessons.Lesson",
+                    seam="lessons.rewrite_actionable",
+                    writer="background",
+                    receipts=lesson.pii_receipts,
+                )
+                lesson.text = authored["text"]
+                lesson.pii_receipts = receipts
+                lesson.save(update_fields=["text", "pii_receipts"])
 
                 # Regenerate embedding for new text
                 try:

@@ -212,6 +212,16 @@ class JsonStoreFlagOnTests(_JsonStoreBase):
         get_response = self.client.get("/api/v1/journal/daily/2026-08-08/")
         self.assertEqual(response.data["entries"], parse_daily_note(get_response.data["markdown"]))
 
+    def test_daily_note_multi_word_mood_echo_matches_owner_get(self):
+        redactor_detect, residual_detect = self._checked()
+        with redactor_detect, residual_detect:
+            created = self._post_daily_note_entry("A steady morning", mood="calm and focused")
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.data["entries"][0]["mood"], "calm and focused")
+        get_response = self.client.get("/api/v1/journal/daily/2026-08-08/")
+        self.assertEqual(parse_daily_note(get_response.data["markdown"])[0]["mood"], "calm and focused")
+
     def test_daily_note_delete_echo_rehydrates_remaining_sibling(self):
         self._use_alice_as_daily_note_author()
         redactor_detect, residual_detect = self._checked()

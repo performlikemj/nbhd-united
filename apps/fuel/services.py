@@ -431,11 +431,13 @@ def apply_reconciliation(
     *,
     plan,
     tenant,
+    writer: str = "background",
     edit_lock_check: Callable[[Any], bool] | None = None,
 ) -> dict[str, int]:
     """Commit a :class:`PlanReconciliation` in a single transaction.
 
-    Returns a telemetry dict keyed by action. ``edit_lock_check`` is an
+    Returns a telemetry dict keyed by action. ``writer`` is the provenance of
+    the plan edit that produced the template diff. ``edit_lock_check`` is an
     optional callable taking a ``Workout`` and returning True if it's
     currently edit-locked; locked workouts are NOT deleted (they hang
     onto their existing FK pointing at the now-archived slot — the
@@ -443,6 +445,8 @@ def apply_reconciliation(
     """
     from django.db import transaction
     from django.utils import timezone
+
+    from apps.pii.store_authoring import author_store_fields
 
     from .models import PlanSlot, Workout, WorkoutSource, WorkoutStatus
 
@@ -456,6 +460,35 @@ def apply_reconciliation(
         "workouts_deleted": 0,
         "workouts_locked_skip": 0,
     }
+
+    registered_workout_fields = frozenset({"skip_reason", "activity", "notes", "notes_thread", "detail_json"})
+
+    def _author_patch(patch: dict[str, Any]) -> tuple[dict[str, Any], dict | None]:
+        if not registered_workout_fields.intersection(patch):
+            return patch, None
+        authored, receipts = author_store_fields(
+            tenant,
+            patch,
+            model_label="fuel.Workout",
+            seam=f"fuel.{writer}.plan.reconcile",
+            writer=writer,
+        )
+        return authored, receipts
+
+    authored_adoptions = [
+        (workout, slot_key, *_author_patch(patch)) for workout, slot_key, patch in rec.workouts_to_adopt
+    ]
+    authored_retemplates = [(workout, *_author_patch(patch)) for workout, patch in rec.workouts_to_retemplate]
+    authored_creations = []
+    for spec in rec.workouts_to_create:
+        authored, receipts = author_store_fields(
+            tenant,
+            {"activity": spec.activity, "detail_json": spec.detail_json},
+            model_label="fuel.Workout",
+            seam=f"fuel.{writer}.plan.reconcile",
+            writer=writer,
+        )
+        authored_creations.append((spec, authored, receipts))
 
     with transaction.atomic():
         new_slot_by_key: dict[SlotKey, Any] = {}
@@ -474,14 +507,39 @@ def apply_reconciliation(
             slot.save(update_fields=["archived_at"])
             counts["slots_archived"] += 1
 
-        for w in rec.workouts_to_delete:
-            if edit_lock_check and edit_lock_check(w):
+        for stale_workout in rec.workouts_to_delete:
+            workout = (
+                Workout.objects.select_for_update()
+                .filter(
+                    pk=stale_workout.pk,
+                    tenant=tenant,
+                    plan=plan,
+                    status=WorkoutStatus.PLANNED,
+                )
+                .first()
+            )
+            if workout is None:
+                continue
+            if edit_lock_check and edit_lock_check(workout):
                 counts["workouts_locked_skip"] += 1
                 continue
-            w.delete()
+            workout.delete()
             counts["workouts_deleted"] += 1
 
-        for workout, slot_key, patch in rec.workouts_to_adopt:
+        for stale_workout, slot_key, patch, field_receipts in authored_adoptions:
+            workout = (
+                Workout.objects.select_for_update()
+                .filter(
+                    pk=stale_workout.pk,
+                    tenant=tenant,
+                    plan=plan,
+                    status=WorkoutStatus.PLANNED,
+                    slot__isnull=True,
+                )
+                .first()
+            )
+            if workout is None:
+                continue
             if edit_lock_check and edit_lock_check(workout):
                 counts["workouts_locked_skip"] += 1
                 continue
@@ -493,11 +551,27 @@ def apply_reconciliation(
             for k, v in patch.items():
                 setattr(workout, k, v)
                 update_fields.append(k)
+            if field_receipts is not None:
+                workout.pii_receipts = {**(workout.pii_receipts or {}), **field_receipts}
+                update_fields.append("pii_receipts")
             update_fields.append("updated_at")
             workout.save(update_fields=update_fields)
             counts["workouts_adopted"] += 1
 
-        for workout, patch in rec.workouts_to_retemplate:
+        for stale_workout, patch, field_receipts in authored_retemplates:
+            workout = (
+                Workout.objects.select_for_update()
+                .filter(
+                    pk=stale_workout.pk,
+                    tenant=tenant,
+                    plan=plan,
+                    status=WorkoutStatus.PLANNED,
+                    slot_id=stale_workout.slot_id,
+                )
+                .first()
+            )
+            if workout is None:
+                continue
             if edit_lock_check and edit_lock_check(workout):
                 counts["workouts_locked_skip"] += 1
                 continue
@@ -505,12 +579,15 @@ def apply_reconciliation(
             for k, v in patch.items():
                 setattr(workout, k, v)
                 update_fields.append(k)
+            if field_receipts is not None:
+                workout.pii_receipts = {**(workout.pii_receipts or {}), **field_receipts}
+                update_fields.append("pii_receipts")
             if update_fields:
                 update_fields.append("updated_at")
                 workout.save(update_fields=update_fields)
                 counts["workouts_retemplated"] += 1
 
-        for spec in rec.workouts_to_create:
+        for spec, authored, receipts in authored_creations:
             slot = new_slot_by_key.get(spec.slot_key)
             if slot is None:
                 continue
@@ -522,10 +599,11 @@ def apply_reconciliation(
                 status=WorkoutStatus.PLANNED,
                 source=WorkoutSource.ASSISTANT,
                 category=spec.category,
-                activity=spec.activity,
+                activity=authored["activity"],
                 duration_minutes=spec.duration_minutes,
-                detail_json=spec.detail_json,
+                detail_json=authored["detail_json"],
                 rpe=spec.rpe,
+                pii_receipts=receipts,
             )
             counts["workouts_created"] += 1
 

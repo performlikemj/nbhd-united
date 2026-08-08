@@ -46,7 +46,7 @@ def _owner_ctx(tenant):
     return {"tenant": tenant, "rehydrate": True}
 
 
-def _author_owner_input(tenant, data, *, seam, receipts=None, include_defaults=False):
+def _author_owner_input(tenant, data, *, seam, model_label, receipts=None, include_defaults=False):
     """Route owner-authored lifecycle fields through the Layer-1 chokepoint."""
     from apps.pii.authoring import author_text
 
@@ -57,7 +57,14 @@ def _author_owner_input(tenant, data, *, seam, receipts=None, include_defaults=F
     for field in ("title", "description"):
         if field not in out or not isinstance(out[field], str):
             continue
-        authored = author_text(tenant, out[field], seam=seam, writer="owner", field=field)
+        authored = author_text(
+            tenant,
+            out[field],
+            seam=seam,
+            writer="owner",
+            field=field,
+            model_label=model_label,
+        )
         out[field] = authored.text
         next_receipts[field] = authored.receipt
     return out, next_receipts
@@ -181,6 +188,7 @@ class TaskDetailView(APIView):
             tenant,
             request.data,
             seam="journal.owner.task.patch",
+            model_label="journal.Task",
             receipts=task.pii_receipts,
         )
         serializer = TaskSerializer(
@@ -260,6 +268,7 @@ class GoalDetailView(APIView):
             tenant,
             request.data,
             seam="journal.owner.goal.patch",
+            model_label="journal.Goal",
             receipts=goal.pii_receipts,
         )
         serializer = GoalSerializer(
@@ -360,6 +369,7 @@ class TaskListCreateView(APIView):
             tenant,
             request.data,
             seam="journal.owner.task.create",
+            model_label="journal.Task",
             include_defaults=True,
         )
         serializer = TaskSerializer(data=authored_data, context=_owner_ctx(tenant))
@@ -409,6 +419,7 @@ class GoalListCreateView(APIView):
             tenant,
             request.data,
             seam="journal.owner.goal.create",
+            model_label="journal.Goal",
             include_defaults=True,
         )
         serializer = GoalSerializer(data=authored_data, context=_owner_ctx(tenant))

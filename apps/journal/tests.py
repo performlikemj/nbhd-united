@@ -110,6 +110,23 @@ Today I woke up early.
             self.assertEqual(orig["author"], reparsed["author"])
             self.assertEqual(orig["section"], reparsed["section"])
 
+    def test_multi_word_mood_roundtrips_without_truncation(self):
+        markdown = append_entry_markdown(
+            "",
+            time="10:00",
+            author="human",
+            content="A steady morning.",
+            mood="calm and focused",
+            energy=7,
+            date_str="2026-02-15",
+            author_label="Alex Rivera",
+        )
+
+        entry = parse_daily_note(markdown)[0]
+
+        self.assertEqual(entry["mood"], "calm and focused")
+        self.assertEqual(entry["energy"], 7)
+
     def test_append_to_empty(self):
         result = append_entry_markdown(
             "",

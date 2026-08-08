@@ -44,6 +44,7 @@ from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
+from apps.pii.authoring import truncate_placeholder_safe
 from apps.pii.redactor import RedactionSession, rehydrate_text
 
 from .models import Lesson, LessonConnection
@@ -110,7 +111,7 @@ def _days_since(dt, now) -> int | None:
 
 def _cap(text: str | None) -> str:
     text = (text or "").strip()
-    return text[: _TEXT_CAP - 1] + "…" if len(text) > _TEXT_CAP else text
+    return truncate_placeholder_safe(text, _TEXT_CAP - 1) + "…" if len(text) > _TEXT_CAP else text
 
 
 def build_spatial_context(

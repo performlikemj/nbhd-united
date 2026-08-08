@@ -79,11 +79,35 @@ class GenerateWeeklyReflectionTests(TestCase):
         self.assertEqual(doc.kind, Document.Kind.WEEKLY)
         self.assertNotIn("[[insight:", doc.markdown)
         self.assertIn("treading water", doc.markdown)
+        self.assertEqual(doc.pii_receipts["title"], {"state": "bypass", "writer": "background"})
+        self.assertEqual(doc.pii_receipts["markdown"], {"state": "bypass", "writer": "background"})
 
         ins = AssistantInsight.objects.get(id=result.insight_id)
         self.assertEqual(ins.statement, "you're treading water on principal while interest accrues")
         self.assertEqual(ins.topic_id, self.debt.id)
         self.assertEqual(ins.status, "open")
+
+    @patch("apps.insights.synthesis._call_synthesis_llm")
+    def test_weekly_document_stores_placeholder_with_background_receipt(self, mock_llm):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        self._seed_some_signal()
+        mock_llm.return_value = (
+            "Alice helped turn a vague plan into concrete next steps.",
+            {"prompt_tokens": 50, "completion_tokens": 25},
+        )
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            result = generate_weekly_reflection(self.tenant, now=self.now)
+
+        document = Document.objects.get(id=result.document_id)
+        self.assertEqual(document.markdown, "[PERSON_1] helped turn a vague plan into concrete next steps.")
+        self.assertEqual(document.pii_receipts["markdown"]["writer"], "background")
+        self.assertEqual(document.pii_receipts["markdown"]["state"], "placeholder")
 
     @patch("apps.insights.synthesis._call_synthesis_llm")
     def test_insight_id_attributes_only_reflections_own_insight(self, mock_llm):

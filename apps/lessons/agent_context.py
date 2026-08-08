@@ -32,6 +32,7 @@ from django.db.models import Count, Q
 from django.utils import timezone
 
 from apps.lessons.models import Lesson
+from apps.pii.authoring import truncate_placeholder_safe
 from apps.tenants.models import Tenant
 
 # Default lookback for "what has the user been working through lately".
@@ -51,7 +52,7 @@ def _truncate(text: str | None, cap: int) -> str:
     collapsed = " ".join((text or "").split())
     if len(collapsed) <= cap:
         return collapsed
-    return collapsed[: cap - 1].rstrip() + "…"
+    return truncate_placeholder_safe(collapsed, cap - 1).rstrip() + "…"
 
 
 def _star_activity_at(star: Lesson) -> datetime:
@@ -88,7 +89,7 @@ def recent_active_stars(tenant: Tenant, *, days: int = _DEFAULT_WINDOW_DAYS, lim
     qs = (
         Lesson.objects.filter(tenant=tenant, status="approved")
         .filter(
-            Q(galaxy_note__gt="")
+            Q(galaxy_note__gt="")  # guard: encrypted-predicate
             | Q(last_tutored_at__gte=cutoff)
             | Q(last_visited_at__gte=cutoff)
             | Q(journal_entries__created_at__gte=cutoff)

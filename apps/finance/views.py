@@ -5,6 +5,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
+from django.db.models import Q
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -25,6 +26,36 @@ from .services import AccountNotFound, record_transaction, resolve_account
 # Cap for the ``?q=`` nickname search path — keeps a Siri/Shortcuts
 # disambiguation picker (EntityQuery) bounded.
 _ACCOUNT_SEARCH_LIMIT = 20
+
+
+def _owner_transaction_payload(tenant, payload: dict) -> dict:
+    """Rehydrate the related account/transaction values returned by POST."""
+    from apps.pii.authoring import resolve_receipt_values
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    represented = dict(payload)
+    if isinstance(represented.get("account_nickname"), str):
+        represented["account_nickname"] = rehydrate_for_tenant(tenant, represented["account_nickname"])
+    if isinstance(represented.get("existing_description"), str):
+        represented["existing_description"] = rehydrate_for_tenant(tenant, represented["existing_description"])
+
+    row = (
+        FinanceTransaction.objects.filter(tenant=tenant, id=represented.get("transaction_id"))
+        .select_related("account")
+        .first()
+    )
+    receipts = {}
+    entity_map = getattr(tenant, "pii_entity_map", None)
+    if row is not None:
+        account_receipts = resolve_receipt_values(row.account.pii_receipts or {}, entity_map)
+        if "nickname" in account_receipts:
+            receipts["account_nickname"] = account_receipts["nickname"]
+        if "existing_description" in represented:
+            transaction_receipts = resolve_receipt_values(row.pii_receipts or {}, entity_map)
+            if "description" in transaction_receipts:
+                receipts["existing_description"] = transaction_receipts["description"]
+    represented["pii_receipts"] = receipts
+    return represented
 
 
 class FinanceAccountListView(APIView):
@@ -48,15 +79,23 @@ class FinanceAccountListView(APIView):
             accounts = FinanceAccount.objects.filter(tenant=tenant, is_active=True)
         q = (request.query_params.get("q") or "").strip()
         if q:
-            accounts = accounts.filter(nickname__icontains=q).order_by("nickname")[:_ACCOUNT_SEARCH_LIMIT]
-        serializer = FinanceAccountSerializer(accounts, many=True)
+            from apps.journal.lifecycle_views import _search_variants
+
+            query = Q()
+            for variant in _search_variants(tenant, q):
+                query |= Q(nickname__icontains=variant)  # guard: encrypted-predicate
+            accounts = accounts.filter(query).order_by("nickname")[:_ACCOUNT_SEARCH_LIMIT]
+        serializer = FinanceAccountSerializer(accounts, many=True, context={"tenant": tenant, "rehydrate": True})
         return Response(serializer.data)
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        serializer = FinanceAccountSerializer(data=request.data, context={"tenant": tenant})
+        serializer = FinanceAccountSerializer(
+            data=request.data,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -85,7 +124,7 @@ class FinanceAccountDetailView(APIView):
             account,
             data=request.data,
             partial=True,
-            context={"tenant": account.tenant},
+            context={"tenant": account.tenant, "rehydrate": True},
         )
         serializer.is_valid(raise_exception=True)
         serializer.save()
@@ -119,7 +158,11 @@ class FinanceTransactionListView(APIView):
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         transactions = FinanceTransaction.objects.filter(tenant=tenant).select_related("account")[:50]
-        serializer = FinanceTransactionSerializer(transactions, many=True)
+        serializer = FinanceTransactionSerializer(
+            transactions,
+            many=True,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         return Response(serializer.data)
 
     def post(self, request):
@@ -167,9 +210,10 @@ class FinanceTransactionListView(APIView):
             transaction_type=body.get("transaction_type", "payment"),
             txn_date=txn_date,
             description=body.get("description") or "",
+            writer="owner",
         )
         return Response(
-            payload,
+            _owner_transaction_payload(tenant, payload),
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
@@ -184,7 +228,7 @@ class PayoffPlanListView(APIView):
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         plans = PayoffPlan.objects.filter(tenant=tenant)
-        serializer = PayoffPlanSerializer(plans, many=True)
+        serializer = PayoffPlanSerializer(plans, many=True, context={"tenant": tenant, "rehydrate": True})
         return Response(serializer.data)
 
 
@@ -198,7 +242,11 @@ class FinanceSnapshotListView(APIView):
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         snapshots = FinanceSnapshot.objects.filter(tenant=tenant)[:24]
-        serializer = FinanceSnapshotSerializer(snapshots, many=True)
+        serializer = FinanceSnapshotSerializer(
+            snapshots,
+            many=True,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         return Response(serializer.data)
 
 
@@ -238,7 +286,7 @@ class FinanceDashboardView(APIView):
             "snapshots": snapshots,
             "recent_transactions": recent_transactions,
         }
-        serializer = FinanceDashboardSerializer(data)
+        serializer = FinanceDashboardSerializer(data, context={"tenant": tenant, "rehydrate": True})
         return Response(serializer.data)
 
 

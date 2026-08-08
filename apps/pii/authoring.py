@@ -149,24 +149,26 @@ def _registered_field_max_length(field: str, model_label: str | None = None) -> 
     writes to the tighter store's column. Callers that know which model they are
     writing should always pass it.
 
-    Omitting it falls back to the strictest limit across every store sharing the
-    name. That is exact only while those stores agree, which
-    ``StoreRegistryTests.test_flat_field_limits_are_unambiguous_by_name`` pins:
-    the day a registration diverges, that test fails and the divergent caller
-    has to start passing ``model_label``.
+    Omitting it is retained for pre-registry callers. A name-only lookup applies
+    a limit only when every registered namesake agrees; ambiguity returns no
+    central cap so authoring cannot silently truncate for an unrelated model.
+    The owning serializer/model remains responsible for its normal validation,
+    and registered writers should pass ``model_label`` for exact safe growth
+    truncation.
     """
     from apps.pii.store_registry import registered_stores
 
-    limits = []
+    limits: set[int | None] = set()
     for store in registered_stores():
         if field not in store.flat_fields:
             continue
         if model_label is not None and store.model_label != model_label:
             continue
         max_length = getattr(store.model._meta.get_field(field), "max_length", None)
-        if max_length is not None:
-            limits.append(max_length)
-    return min(limits) if limits else None
+        limits.add(max_length)
+    if len(limits) != 1:
+        return None
+    return next(iter(limits))
 
 
 def _residual_summary(tenant, text: str) -> dict[str, Any]:
@@ -539,20 +541,36 @@ def author_json_paths(
         authored_value, _changed = rewrite_json_path(authored_value, path, _author_leaf)
 
     if not leaf_receipts:
-        if value is None or value == "" or value == [] or value == {}:
-            # Truly empty fields keep the detector-free empty-input receipt.
+        recursive_payload = any(path and path[-1] == "**" for path in paths)
+        if value is None or value == "" or value == [] or value == {} or recursive_payload:
+            # Truly empty fields, and populated free-form payloads containing no
+            # string descendants, keep the detector-free empty-input receipt.
+            # A terminal ``**`` accepts arbitrary JSON scalar/container shapes;
+            # no visited leaf therefore means "nothing authorable", not drift.
+            _author_leaf("")
+        elif not getattr(tenant, "layer1_placeholder_writes", False):
+            # Flag-off is byte-identical even when a legacy payload does not
+            # match today's registered shape; it must not emit a live error.
             _author_leaf("")
         else:
             # A populated blob that exposes no registered string leaf is not
             # clean: preserve it fail-open and leave it eligible for repair.
-            leaf_receipts.append(
+            shape_mismatch = _finalize(
+                tenant,
+                "",
                 {
                     "state": "unconfirmed",
                     "reason": "shape-mismatch",
                     "redactions": [],
-                    "writer": writer,
-                }
+                },
+                seam=seam,
+                writer=writer,
+                field=field,
+                checked=True,
+                live=live,
+                model_label=model_label,
             )
+            leaf_receipts.append(shape_mismatch.receipt)
     return AuthoredJSON(
         value=authored_value,
         receipt=_aggregate_json_receipts(leaf_receipts, writer=writer),

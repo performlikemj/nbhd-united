@@ -38,6 +38,7 @@ from typing import Any
 import requests
 from django.conf import settings
 
+from apps.pii.authoring import truncate_placeholder_safe
 from apps.pii.redactor import RedactionSession, rehydrate_text
 
 from .clustering import _cluster_candidate_terms, deterministic_cluster_label
@@ -93,7 +94,7 @@ def _member_hash(lesson_ids: list[int]) -> str:
 
 def _cap(text: str | None) -> str:
     text = (text or "").strip()
-    return text[: _SNIPPET_CAP - 1] + "…" if len(text) > _SNIPPET_CAP else text
+    return truncate_placeholder_safe(text, _SNIPPET_CAP - 1) + "…" if len(text) > _SNIPPET_CAP else text
 
 
 def _clean_name(name: str) -> str:

@@ -112,10 +112,20 @@ def _approve_lesson(pending: PendingExtraction) -> tuple[str, str | None]:
     context = (
         f"Extracted from daily note — {pending.source_date.isoformat() if pending.source_date else 'recent entries'}"
     )
+    from apps.pii.store_authoring import author_store_fields
+
+    authored, receipts = author_store_fields(
+        pending.tenant,
+        {"text": pending.text, "context": context},
+        model_label="lessons.Lesson",
+        seam="router.extraction.approve_lesson",
+        writer="background",
+    )
     lesson = Lesson.objects.create(
         tenant=pending.tenant,
-        text=pending.text,
-        context=context,
+        text=authored["text"],
+        context=authored["context"],
+        pii_receipts=receipts,
         tags=pending.tags,
         source_type="journal",
         source_ref=str(pending.source_date or date.today()),
@@ -161,6 +171,7 @@ def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
             seam="journal.extraction.goal.approve",
             writer="background",
             field="title",
+            model_label="journal.Goal",
         )
         authored_description = author_text(
             pending.tenant,
@@ -168,6 +179,7 @@ def _approve_goal(pending: PendingExtraction) -> tuple[str, None]:
             seam="journal.extraction.goal.approve",
             writer="background",
             field="description",
+            model_label="journal.Goal",
         )
         goal = Goal.objects.create(
             tenant=pending.tenant,
@@ -233,6 +245,7 @@ def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
             seam="journal.extraction.task.approve",
             writer="background",
             field="title",
+            model_label="journal.Task",
         )
         authored_description = author_text(
             pending.tenant,
@@ -240,6 +253,7 @@ def _approve_task(pending: PendingExtraction) -> tuple[str, None]:
             seam="journal.extraction.task.approve",
             writer="background",
             field="description",
+            model_label="journal.Task",
         )
         task = Task.objects.create(
             tenant=pending.tenant,

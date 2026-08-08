@@ -836,7 +836,7 @@ def _author_runtime_document(tenant, text: str, *, seam: str, field: str):
     )
 
 
-def _author_runtime_lifecycle_input(tenant, data, *, seam, receipts=None, include_defaults=False):
+def _author_runtime_lifecycle_input(tenant, data, *, seam, model_label, receipts=None, include_defaults=False):
     from apps.pii.authoring import author_text
 
     out = data.dict() if hasattr(data, "dict") else dict(data)
@@ -846,7 +846,14 @@ def _author_runtime_lifecycle_input(tenant, data, *, seam, receipts=None, includ
     for field in ("title", "description"):
         if field not in out or not isinstance(out[field], str):
             continue
-        authored = author_text(tenant, out[field], seam=seam, writer="runtime", field=field)
+        authored = author_text(
+            tenant,
+            out[field],
+            seam=seam,
+            writer="runtime",
+            field=field,
+            model_label=model_label,
+        )
         out[field] = authored.text
         next_receipts[field] = authored.receipt
     return out, next_receipts
@@ -879,7 +886,14 @@ def _reauthor_runtime_lifecycle_instance(instance, *, seam):
     for field in ("title", "description"):
         if flag_on and receipts.get(field) and stored.get(field) == getattr(instance, field):
             continue
-        authored = author_text(instance.tenant, getattr(instance, field), seam=seam, writer="runtime", field=field)
+        authored = author_text(
+            instance.tenant,
+            getattr(instance, field),
+            seam=seam,
+            writer="runtime",
+            field=field,
+            model_label=instance._meta.label,
+        )
         if authored.text != getattr(instance, field):
             setattr(instance, field, authored.text)
             changed_fields.append(field)
@@ -955,6 +969,7 @@ class RuntimeGoalListCreateView(KnownValueResponseGuardMixin, APIView):
             tenant,
             request.data,
             seam="journal.runtime.goal.create",
+            model_label="journal.Goal",
             include_defaults=True,
         )
         serializer = GoalSerializer(data=authored_data, context={"tenant": tenant})
@@ -1029,6 +1044,7 @@ class RuntimeGoalDetailView(APIView):
             tenant,
             request.data,
             seam="journal.runtime.goal.patch",
+            model_label="journal.Goal",
             receipts=goal.pii_receipts,
         )
         serializer = GoalSerializer(goal, data=authored_data, partial=True, context={"tenant": tenant})
@@ -1205,6 +1221,7 @@ class RuntimeTaskListCreateView(KnownValueResponseGuardMixin, APIView):
             tenant,
             request.data,
             seam="journal.runtime.task.create",
+            model_label="journal.Task",
             include_defaults=True,
         )
         serializer = TaskSerializer(data=authored_data, context={"tenant": tenant})
@@ -1367,6 +1384,7 @@ class RuntimeTaskDetailView(APIView):
             tenant,
             request.data,
             seam="journal.runtime.task.patch",
+            model_label="journal.Task",
         )
         with transaction.atomic():
             task = Task.objects.select_for_update().filter(tenant=tenant, id=task_id).first()
@@ -2391,9 +2409,20 @@ class RuntimeSessionMarkProcessedView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {"processed_summary": raw_summary},
+            model_label="journal.Session",
+            seam="integrations.runtime.session.processed_summary",
+            writer="runtime",
+            receipts=session.pii_receipts,
+        )
         session.processed_at = tz.now()
-        session.processed_summary = raw_summary
-        session.save(update_fields=["processed_at", "processed_summary"])
+        session.processed_summary = authored["processed_summary"]
+        session.pii_receipts = receipts
+        session.save(update_fields=["processed_at", "processed_summary", "pii_receipts"])
 
         return Response(
             {
@@ -2468,10 +2497,20 @@ class RuntimeLessonCreateView(KnownValueResponseGuardMixin, APIView):
                 status=400,
             )
 
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {"text": text, "context": context},
+            model_label="lessons.Lesson",
+            seam="integrations.runtime.lesson.create",
+            writer="runtime",
+        )
         lesson = Lesson.objects.create(
             tenant=tenant,
-            text=text,
-            context=context,
+            text=authored["text"],
+            context=authored["context"],
+            pii_receipts=receipts,
             source_type=source_type,
             source_ref=source_ref,
             tags=tags,
@@ -4959,6 +4998,17 @@ class RuntimeSautaiGeneratePlanView(APIView):
         # one valid signed status poll, and reverts on a later legacy 200.
         async_contract_live = sautai_async_contract_confirmed()
 
+        from apps.pii.store_authoring import author_store_fields
+
+        authored_prompt, prompt_receipts = author_store_fields(
+            tenant,
+            {"user_prompt": user_prompt},
+            model_label="integrations.SautaiMealPlanJob",
+            seam="integrations.runtime.sautai.user_prompt",
+            writer="runtime",
+        )
+        stored_user_prompt = authored_prompt["user_prompt"]
+
         # Atomic coalesce: lock the tenant row so concurrent POSTs (the agent
         # retrying after its OWN 20s tool-call timeout, while the first
         # request already created the job, is the realistic trigger — not
@@ -5059,7 +5109,8 @@ class RuntimeSautaiGeneratePlanView(APIView):
                     tenant=tenant,
                     week_start=week_start,
                     number_of_days=number_of_days,
-                    user_prompt=user_prompt,
+                    user_prompt=stored_user_prompt,
+                    pii_receipts=prompt_receipts,
                     regenerate=regenerate,
                     funnel={ASYNC_CONTRACT_REQUEST_DECISION_KEY: async_contract_live},
                 )
@@ -5113,7 +5164,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
             # An IDENTICAL user_prompt is the plugin retrying the same body after its
             # own timeout (the case coalesce exists for) — the in-flight job already
             # carries that guidance, so it is NOT a false "not applied".
-            if regenerate or (user_prompt and user_prompt != in_flight.user_prompt):
+            if regenerate or (stored_user_prompt and stored_user_prompt != in_flight.user_prompt):
                 coalesced["request_applied"] = False
             return Response(coalesced)
 
@@ -5798,8 +5849,19 @@ class RuntimeJournalTemplateUpdateView(APIView):
         template = get_default_template(tenant=tenant)
         if template is None:
             template = seed_default_templates_for_tenant(tenant=tenant)["template"]
-        template.sections = sections
-        template.save()
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {"sections": sections},
+            model_label="journal.NoteTemplate",
+            seam="integrations.runtime.note_template_update",
+            writer="owner",
+            receipts=template.pii_receipts,
+        )
+        template.sections = authored["sections"]
+        template.pii_receipts = receipts
+        template.save(update_fields=["sections", "pii_receipts", "updated_at"])
 
         try:
             from apps.cron.publish import publish_task

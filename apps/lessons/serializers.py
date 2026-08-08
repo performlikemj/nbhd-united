@@ -4,21 +4,30 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from apps.pii.authoring import resolve_receipt_values, truncate_placeholder_safe
+from apps.pii.redactor import rehydrate_for_tenant
+from apps.pii.store_authoring import OwnerStoreSerializerMixin, owner_store_representation
+
 from .models import Lesson, LessonConnection, StarJournalEntry, TutoringSession
 
 # ── Base CRUD serializers (existing, preserved) ────────────────
 
 
-class LessonSerializer(serializers.ModelSerializer):
+class LessonSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
     """Full lesson representation for API responses."""
+
+    pii_model_label = "lessons.Lesson"
 
     class Meta:
         model = Lesson
         exclude = ["embedding"]
+        read_only_fields = ["pii_receipts"]
 
 
-class LessonCreateSerializer(serializers.ModelSerializer):
+class LessonCreateSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
     """Serializer for lesson creation."""
+
+    pii_model_label = "lessons.Lesson"
 
     class Meta:
         model = Lesson
@@ -29,8 +38,9 @@ class LessonCreateSerializer(serializers.ModelSerializer):
             "source_type",
             "source_ref",
             "tags",
+            "pii_receipts",
         ]
-        read_only_fields = ["id"]
+        read_only_fields = ["id", "pii_receipts"]
 
 
 class LessonApprovalSerializer(serializers.Serializer):
@@ -39,8 +49,10 @@ class LessonApprovalSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=["approved", "dismissed"], required=False)
 
 
-class ConstellationNodeSerializer(serializers.ModelSerializer):
+class ConstellationNodeSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
     """Node representation used by constellation visualizations."""
+
+    pii_model_label = "lessons.Lesson"
 
     x = serializers.SerializerMethodField()
     y = serializers.SerializerMethodField()
@@ -59,7 +71,9 @@ class ConstellationNodeSerializer(serializers.ModelSerializer):
             "x",
             "y",
             "created_at",
+            "pii_receipts",
         ]
+        read_only_fields = ["pii_receipts"]
 
     def get_x(self, obj):
         return getattr(obj, "position_x", None)
@@ -82,8 +96,10 @@ class ConstellationEdgeSerializer(serializers.ModelSerializer):
 # ── Galaxy / Game serializers ─────────────────────────────────
 
 
-class GalaxyStarSerializer(serializers.ModelSerializer):
+class GalaxyStarSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
     """Star representation for the galaxy map — lightweight with game state."""
+
+    pii_model_label = "lessons.Lesson"
 
     x = serializers.SerializerMethodField()
     y = serializers.SerializerMethodField()
@@ -114,7 +130,9 @@ class GalaxyStarSerializer(serializers.ModelSerializer):
             "context",
             "source_ref",
             "created_at",
+            "pii_receipts",
         ]
+        read_only_fields = ["pii_receipts"]
 
     def get_x(self, obj):
         return getattr(obj, "position_x", None)
@@ -205,13 +223,15 @@ class TutoringStateSerializer(serializers.Serializer):
     phases_completed = serializers.ListField(child=serializers.CharField())
 
 
-class StarJournalEntrySerializer(serializers.ModelSerializer):
+class StarJournalEntrySerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
     """Serializes a star journal entry."""
+
+    pii_model_label = "lessons.StarJournalEntry"
 
     class Meta:
         model = StarJournalEntry
-        fields = ["id", "star", "text", "entry_type", "tags", "created_at"]
-        read_only_fields = ["id", "created_at"]
+        fields = ["id", "star", "text", "entry_type", "tags", "pii_receipts", "created_at"]
+        read_only_fields = ["id", "pii_receipts", "created_at"]
 
 
 class StarJournalEntryCreateSerializer(serializers.ModelSerializer):
@@ -238,8 +258,10 @@ class StarConnectSerializer(serializers.Serializer):
     )
 
 
-class StarDetailSerializer(serializers.ModelSerializer):
+class StarDetailSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
     """Full star detail for landing — includes journal preview."""
+
+    pii_model_label = "lessons.Lesson"
 
     x = serializers.SerializerMethodField()
     y = serializers.SerializerMethodField()
@@ -269,7 +291,9 @@ class StarDetailSerializer(serializers.ModelSerializer):
             "last_visited_at",
             "created_at",
             "approved_at",
+            "pii_receipts",
         ]
+        read_only_fields = ["pii_receipts"]
 
     def get_x(self, obj):
         return getattr(obj, "position_x", None)
@@ -279,15 +303,32 @@ class StarDetailSerializer(serializers.ModelSerializer):
 
     def get_journal_entries(self, obj):
         entries = obj.journal_entries.order_by("-created_at")[:5]
-        return [
-            {
-                "id": str(e.id),
-                "text": e.text[:200] + ("..." if len(e.text) > 200 else ""),
-                "entry_type": e.entry_type,
-                "created_at": e.created_at.isoformat(),
+        represented = []
+        for entry in entries:
+            data = {
+                "id": str(entry.id),
+                "text": entry.text,
+                "entry_type": entry.entry_type,
+                "pii_receipts": entry.pii_receipts,
+                "created_at": entry.created_at.isoformat(),
             }
-            for e in entries
-        ]
+            tenant = self.context.get("tenant")
+            if tenant is not None and self.context.get("rehydrate"):
+                data = owner_store_representation(
+                    entry,
+                    tenant,
+                    data,
+                    model_label="lessons.StarJournalEntry",
+                )
+            else:
+                data.pop("pii_receipts", None)
+                data["text"] = truncate_placeholder_safe(data["text"], 200)
+            if len(data["text"]) > 200:
+                data["text"] = truncate_placeholder_safe(data["text"], 200) + "..."
+            elif len(entry.text) > 200 and not (tenant is not None and self.context.get("rehydrate")):
+                data["text"] += "..."
+            represented.append(data)
+        return represented
 
     def get_connection_count(self, obj):
         return obj.connections_out.count()
@@ -320,6 +361,7 @@ class TutoringInsightSerializer(serializers.ModelSerializer):
 
     star_id = serializers.IntegerField(read_only=True)
     star_text = serializers.SerializerMethodField()
+    pii_receipts = serializers.SerializerMethodField()
 
     class Meta:
         model = TutoringSession
@@ -327,6 +369,7 @@ class TutoringInsightSerializer(serializers.ModelSerializer):
             "id",
             "star_id",
             "star_text",
+            "pii_receipts",
             "phases_completed",
             "player_restated_accurately",
             "player_found_edge_cases",
@@ -340,4 +383,23 @@ class TutoringInsightSerializer(serializers.ModelSerializer):
 
     def get_star_text(self, obj) -> str:
         text = obj.star.text or ""
-        return text[:120] + ("..." if len(text) > 120 else "")
+        tenant = self.context.get("tenant")
+        if tenant is not None and self.context.get("rehydrate"):
+            text = rehydrate_for_tenant(tenant, text)
+        is_truncated = len(text) > 120
+        text = truncate_placeholder_safe(text, 120)
+        return text + ("..." if is_truncated else "")
+
+    def get_pii_receipts(self, obj) -> dict:
+        tenant = self.context.get("tenant")
+        if tenant is None or not self.context.get("rehydrate"):
+            return {}
+        text_receipt = (obj.star.pii_receipts or {}).get("text")
+        receipts = {"text": text_receipt} if text_receipt else {}
+        return resolve_receipt_values(receipts, getattr(tenant, "pii_entity_map", None))
+
+    def to_representation(self, instance):
+        represented = super().to_representation(instance)
+        if self.context.get("tenant") is None or not self.context.get("rehydrate"):
+            represented.pop("pii_receipts", None)
+        return represented

@@ -107,6 +107,7 @@ class SautaiMealPlanJob(models.Model):
     # (may carry [PERSON_N] placeholders); rehydrated only at sautai egress in
     # the QStash task, never persisted rehydrated.
     user_prompt = models.TextField(blank=True, default="")
+    pii_receipts = models.JSONField(default=dict, blank=True)
     # Legacy 200: destructive replacement after explicit confirmation. Async
     # 202: fill missing slots only; explicit replace_slots are not exposed.
     regenerate = models.BooleanField(default=False)

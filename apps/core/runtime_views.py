@@ -139,12 +139,26 @@ class RuntimeCoreProfileView(APIView):
             return tenant
         profile, _created = CoreProfile.objects.get_or_create(tenant=tenant)
         changed = []
+        incoming = {}
         for field in _PROFILE_FIELDS:
             if field in request.data:
-                setattr(profile, field, request.data[field])
+                incoming[field] = request.data[field]
                 changed.append(field)
         if changed:
-            profile.save(update_fields=[*changed, "updated_at"])
+            from apps.pii.store_authoring import author_store_fields
+
+            authored, receipts = author_store_fields(
+                tenant,
+                incoming,
+                model_label="core.CoreProfile",
+                seam="core.runtime.profile.update",
+                writer="runtime",
+                receipts=profile.pii_receipts,
+            )
+            for field, value in authored.items():
+                setattr(profile, field, value)
+            profile.pii_receipts = receipts
+            profile.save(update_fields=[*changed, "pii_receipts", "updated_at"])
         return Response({f: getattr(profile, f) for f in _PROFILE_FIELDS})
 
 
@@ -186,6 +200,32 @@ class RuntimeMeditationCreateView(APIView):
         today = tenant_today(tenant)
         response_status = status.HTTP_201_CREATED
 
+        in_flight = (
+            MeditationSession.objects.filter(
+                tenant=tenant,
+                date=today,
+                status__in=[MeditationStatus.PENDING, MeditationStatus.RENDERING],
+            )
+            .order_by("-created_at")
+            .first()
+        )
+        if in_flight:
+            return Response({"meditation_id": str(in_flight.id), "status": in_flight.status})
+
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {
+                "title": str(manifest.get("title", ""))[:160],
+                "theme": str(manifest.get("theme", "")),
+                "manifest": manifest,
+            },
+            model_label="core.MeditationSession",
+            seam="core.runtime.meditation.create",
+            writer="runtime",
+        )
+
         # Serialize creation per tenant so repeated runtime calls cannot create
         # a second billable render while today's first request is still active.
         with transaction.atomic():
@@ -220,10 +260,11 @@ class RuntimeMeditationCreateView(APIView):
                     tenant=tenant,
                     date=today,  # the user's LOCAL day, not server UTC
                     status=MeditationStatus.PENDING,
-                    title=str(manifest.get("title", ""))[:160],
-                    theme=str(manifest.get("theme", "")),
+                    title=authored["title"],
+                    theme=authored["theme"],
                     voice=str(manifest.get("voice", "")),
-                    manifest=manifest,
+                    manifest=authored["manifest"],
+                    pii_receipts=receipts,
                 )
 
         try:

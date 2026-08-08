@@ -31,6 +31,7 @@ Invariants this module owns:
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import threading
@@ -311,23 +312,53 @@ def _find_candidate(tenant, clean: dict, tz, consumed: set) -> Workout | None:
     return min(timed, key=lambda c: abs(c.scheduled_at - clean["started_at"]))
 
 
-def _complete_planned(locked: Workout, clean: dict) -> dict:
+def _complete_planned(locked: Workout, clean: dict, authored_input: dict, input_receipts: dict) -> dict:
     """Flip a locked planned row to done with the HK actuals.
 
     Caller holds ``select_for_update`` on the row inside an atomic block.
     Planned exercises/detail are preserved; measured metric keys win.
     """
     merged = dict(locked.detail_json or {})
-    merged.update(_hk_detail(clean, matched=True))
+    healthkit_detail = dict(authored_input["detail_json"])
+    healthkit_detail["_healthkit"] = {**(healthkit_detail.get("_healthkit") or {}), "matched": True}
+    merged.update(healthkit_detail)
 
-    thread = list(locked.notes_thread or [])
+    prior_thread = list(locked.notes_thread or [])
+    thread = list(prior_thread)
     thread.append(
         {
             "at": dj_timezone.now().isoformat(),
             "who": "system",
-            "text": f"Marked done from Apple Health ({clean['activity']}, {clean['duration_minutes']}m)",
+            "text": f"Marked done from Apple Health ({authored_input['activity']}, {clean['duration_minutes']}m)",
         }
     )
+
+    from apps.journal.document_authoring import merge_field_receipt, set_field_receipt
+    from apps.pii.authoring import receipt_placeholders
+
+    receipts = merge_field_receipt(
+        locked.pii_receipts,
+        "detail_json",
+        input_receipts["detail_json"],
+        stored_text=json.dumps(merged, sort_keys=True, default=str),
+    )
+    stored_thread = json.dumps(thread, sort_keys=True, default=str)
+    if not prior_thread and not isinstance(receipts.get("notes_thread"), dict):
+        # There is no unchecked legacy body to preserve pessimistically: this
+        # system entry is the entire field, and its only dynamic text came from
+        # the already-authored activity. Give it that checked receipt and derive
+        # redactions from the exact final JSON bytes.
+        thread_receipt = dict(input_receipts["activity"])
+        if "redactions" in thread_receipt:
+            thread_receipt["redactions"] = receipt_placeholders(stored_thread)
+        receipts = set_field_receipt(receipts, "notes_thread", thread_receipt)
+    else:
+        receipts = merge_field_receipt(
+            receipts,
+            "notes_thread",
+            input_receipts["activity"],
+            stored_text=stored_thread,
+        )
 
     locked.status = WorkoutStatus.DONE
     locked.duration_minutes = clean["duration_minutes"]
@@ -335,6 +366,7 @@ def _complete_planned(locked: Workout, clean: dict) -> dict:
     locked.detail_json = merged
     locked.external_id = clean["external_id"]
     locked.notes_thread = thread
+    locked.pii_receipts = receipts
     locked.version += 1
     locked.save(
         update_fields=[
@@ -344,6 +376,7 @@ def _complete_planned(locked: Workout, clean: dict) -> dict:
             "detail_json",
             "external_id",
             "notes_thread",
+            "pii_receipts",
             "version",
             "updated_at",
         ]
@@ -427,7 +460,7 @@ def _find_adoptable_log(tenant, clean: dict, tz, consumed: set) -> Workout | Non
     return min(timed, key=lambda c: abs(c.scheduled_at - clean["started_at"]))
 
 
-def _adopt_existing_log(locked: Workout, clean: dict) -> dict:
+def _adopt_existing_log(locked: Workout, clean: dict, authored_input: dict, input_receipts: dict) -> dict:
     """Stamp the HK external_id onto a pre-existing manual DONE log and
     enrich it with measured metrics, instead of creating a duplicate row.
 
@@ -437,27 +470,53 @@ def _adopt_existing_log(locked: Workout, clean: dict) -> dict:
     deletion tombstone-safe. Caller holds ``select_for_update`` on the row.
     """
     existing_detail = dict(locked.detail_json or {})
-    hk_detail = _hk_detail(clean, matched=True)
+    hk_detail = dict(authored_input["detail_json"])
+    hk_detail["_healthkit"] = {**(hk_detail.get("_healthkit") or {}), "matched": True}
     # User-entered values win on conflict; HK measured keys fill the gaps.
     merged = {**hk_detail, **existing_detail}
     hk_block = dict(hk_detail.get("_healthkit") or {})
     hk_block["adopted"] = True
     merged["_healthkit"] = hk_block
 
-    thread = list(locked.notes_thread or [])
+    prior_thread = list(locked.notes_thread or [])
+    thread = list(prior_thread)
     thread.append(
         {
             "at": dj_timezone.now().isoformat(),
             "who": "system",
-            "text": f"Linked to Apple Health ({clean['activity']}, {clean['duration_minutes']}m)",
+            "text": f"Linked to Apple Health ({authored_input['activity']}, {clean['duration_minutes']}m)",
         }
     )
+
+    from apps.journal.document_authoring import merge_field_receipt, set_field_receipt
+    from apps.pii.authoring import receipt_placeholders
+
+    receipts = merge_field_receipt(
+        locked.pii_receipts,
+        "detail_json",
+        input_receipts["detail_json"],
+        stored_text=json.dumps(merged, sort_keys=True, default=str),
+    )
+    stored_thread = json.dumps(thread, sort_keys=True, default=str)
+    if not prior_thread and not isinstance(receipts.get("notes_thread"), dict):
+        thread_receipt = dict(input_receipts["activity"])
+        if "redactions" in thread_receipt:
+            thread_receipt["redactions"] = receipt_placeholders(stored_thread)
+        receipts = set_field_receipt(receipts, "notes_thread", thread_receipt)
+    else:
+        receipts = merge_field_receipt(
+            receipts,
+            "notes_thread",
+            input_receipts["activity"],
+            stored_text=stored_thread,
+        )
 
     locked.external_id = clean["external_id"]
     locked.detail_json = merged
     locked.notes_thread = thread
+    locked.pii_receipts = receipts
     locked.version += 1
-    locked.save(update_fields=["external_id", "detail_json", "notes_thread", "version", "updated_at"])
+    locked.save(update_fields=["external_id", "detail_json", "notes_thread", "pii_receipts", "version", "updated_at"])
 
     return {
         "external_id": clean["external_id"],
@@ -468,6 +527,18 @@ def _adopt_existing_log(locked: Workout, clean: dict) -> dict:
 
 def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
     eid = clean["external_id"]
+    from apps.pii.store_authoring import author_store_fields
+
+    authored_input, input_receipts = author_store_fields(
+        tenant,
+        {
+            "activity": clean["activity"],
+            "detail_json": _hk_detail(clean, matched=False),
+        },
+        model_label="fuel.Workout",
+        seam="fuel.owner.healthkit.ingress",
+        writer="owner",
+    )
     candidate = _find_candidate(tenant, clean, tz, consumed)
     completed_planned: Workout | None = None  # only this path runs detect_prs
     try:
@@ -479,7 +550,7 @@ def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
                     .first()
                 )
                 if locked is not None:
-                    result = _complete_planned(locked, clean)
+                    result = _complete_planned(locked, clean, authored_input, input_receipts)
                     completed_planned = locked
                 # Lost the race (assistant or another device flipped it
                 # first) — fall through to adopt-or-create.
@@ -496,7 +567,7 @@ def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
                         .first()
                     )
                 if locked_log is not None:
-                    result = _adopt_existing_log(locked_log, clean)
+                    result = _adopt_existing_log(locked_log, clean, authored_input, input_receipts)
                 else:
                     workout = Workout.objects.create(
                         tenant=tenant,
@@ -505,10 +576,11 @@ def _ingest_workout(tenant, clean: dict, tz, consumed: set) -> dict:
                         source=WorkoutSource.HEALTHKIT,
                         external_id=eid,
                         category=clean["category"],
-                        activity=clean["activity"],
+                        activity=authored_input["activity"],
                         duration_minutes=clean["duration_minutes"],
                         duration_seconds=clean["duration_seconds"],
-                        detail_json=_hk_detail(clean, matched=False),
+                        detail_json=authored_input["detail_json"],
+                        pii_receipts=input_receipts,
                     )
                     result = {"external_id": eid, "status": "created", "workout_id": str(workout.id)}
     except IntegrityError:

@@ -11,6 +11,7 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from dateutil.relativedelta import relativedelta
 from django.db import transaction as db_transaction
+from django.db.models import Q
 
 from .models import FinanceAccount, FinanceTransaction
 
@@ -281,9 +282,18 @@ def resolve_account(tenant, *, account_id=None, account_nickname=None) -> Financ
 
     nickname = (account_nickname or "").strip()
     if nickname:
-        account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__iexact=nickname).first()
+        from apps.journal.lifecycle_views import _search_variants
+
+        variants = _search_variants(tenant, nickname)
+        exact_query = Q()
+        contains_query = Q()
+        for variant in variants:
+            exact_query |= Q(nickname__iexact=variant)  # guard: encrypted-predicate
+            contains_query |= Q(nickname__icontains=variant)  # guard: encrypted-predicate
+        base = FinanceAccount.objects.filter(tenant=tenant, is_active=True)
+        account = base.filter(exact_query).first()
         if account is None:
-            account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__icontains=nickname).first()
+            account = base.filter(contains_query).first()
         if account is not None:
             return account
 
@@ -298,6 +308,7 @@ def record_transaction(
     transaction_type: str = "payment",
     txn_date: date | None = None,
     description: str = "",
+    writer: str = "background",
 ) -> tuple[dict, bool]:
     """Record a transaction against ``account`` and mutate its balance.
 
@@ -316,12 +327,11 @@ def record_transaction(
     txn_date = txn_date or date.today()
     description = (description or "")[:256]
 
-    with db_transaction.atomic():
-        locked = FinanceAccount.objects.select_for_update().get(pk=account.pk)
-        existing = (
+    def _existing_for(locked_account):
+        return (
             FinanceTransaction.objects.filter(
                 tenant=tenant,
-                account=locked,
+                account=locked_account,
                 transaction_type=transaction_type,
                 amount=amount,
                 date=txn_date,
@@ -329,37 +339,62 @@ def record_transaction(
             .order_by("created_at")
             .first()
         )
-        if existing is not None:
-            logger.info(
-                "finance.dedup_hit tenant=%s account=%s amount=%s date=%s type=%s existing_id=%s",
-                str(tenant.id)[:8],
-                locked.nickname,
-                amount,
-                txn_date,
-                transaction_type,
-                existing.id,
-            )
-            return (
-                {
-                    "transaction_id": str(existing.id),
-                    "account_id": str(locked.id),
-                    "account_nickname": locked.nickname,
-                    "new_balance": str(locked.current_balance.quantize(Decimal("0.01"))),
-                    "transaction_type": existing.transaction_type,
-                    "amount": str(existing.amount),
-                    "duplicate": True,
-                    "existing_description": existing.description,
-                    "existing_recorded_at": existing.created_at.isoformat(),
-                },
-                False,
-            )
 
+    def _dedup_result(locked_account, existing):
+        logger.info(
+            "finance.dedup_hit tenant=%s account=%s amount=%s date=%s type=%s existing_id=%s",
+            str(tenant.id)[:8],
+            locked_account.nickname,
+            amount,
+            txn_date,
+            transaction_type,
+            existing.id,
+        )
+        return (
+            {
+                "transaction_id": str(existing.id),
+                "account_id": str(locked_account.id),
+                "account_nickname": locked_account.nickname,
+                "new_balance": str(locked_account.current_balance.quantize(Decimal("0.01"))),
+                "transaction_type": existing.transaction_type,
+                "amount": str(existing.amount),
+                "duplicate": True,
+                "existing_description": existing.description,
+                "existing_recorded_at": existing.created_at.isoformat(),
+            },
+            False,
+        )
+
+    # Fast duplicate path before detector work. The account lock is released
+    # before authoring; a second locked check below closes the concurrent race.
+    with db_transaction.atomic():
+        locked = FinanceAccount.objects.select_for_update().get(pk=account.pk)
+        existing = _existing_for(locked)
+        if existing is not None:
+            return _dedup_result(locked, existing)
+
+    from apps.pii.store_authoring import author_store_fields
+
+    authored, receipts = author_store_fields(
+        tenant,
+        {"description": description},
+        model_label="finance.FinanceTransaction",
+        seam="finance.transaction.record",
+        writer=writer,
+    )
+
+    with db_transaction.atomic():
+        locked = FinanceAccount.objects.select_for_update().get(pk=account.pk)
+        existing = _existing_for(locked)
+        if existing is not None:
+            return _dedup_result(locked, existing)
         txn_row = FinanceTransaction.objects.create(
             tenant=tenant,
             account=locked,
             transaction_type=transaction_type,
             amount=amount,
-            description=description,
+            description=authored["description"],
+            pii_receipts=receipts,
             date=txn_date,
         )
         if transaction_type in ("payment", "refund"):

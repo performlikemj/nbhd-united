@@ -36,6 +36,7 @@ class FinanceAccount(models.Model):
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="finance_accounts")
     account_type = models.CharField(max_length=32, choices=AccountType.choices)
     nickname = models.CharField(max_length=128, help_text="User-chosen label, e.g. 'Big CC' or 'Car Loan'")
+    pii_receipts = models.JSONField(default=dict, blank=True)
     current_balance = models.DecimalField(max_digits=12, decimal_places=2)
     original_balance = models.DecimalField(
         max_digits=12,
@@ -107,6 +108,7 @@ class FinanceTransaction(models.Model):
     transaction_type = models.CharField(max_length=16, choices=TransactionType.choices)
     amount = models.DecimalField(max_digits=12, decimal_places=2)
     description = models.CharField(max_length=256, blank=True, default="")
+    pii_receipts = models.JSONField(default=dict, blank=True)
     date = models.DateField()
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -146,6 +148,7 @@ class PayoffPlan(models.Model):
         default=list,
         help_text="Month-by-month breakdown: [{month, accounts: [{nickname, balance, payment}], total_remaining}]",
     )
+    pii_receipts = models.JSONField(default=dict, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -171,6 +174,7 @@ class FinanceSnapshot(models.Model):
         default=list,
         help_text="Snapshot of all account balances: [{nickname, type, balance}]",
     )
+    pii_receipts = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

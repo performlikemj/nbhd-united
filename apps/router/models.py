@@ -413,6 +413,7 @@ class DeliveryAttempt(models.Model):
     claimed_at = models.DateTimeField(auto_now_add=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
     response_excerpt = models.CharField(max_length=500, blank=True, default="")
+    pii_receipts = models.JSONField(default=dict, blank=True)
 
     class Meta:
         constraints = [

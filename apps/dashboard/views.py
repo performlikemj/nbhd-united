@@ -54,7 +54,9 @@ def _clean_markdown_preview(markdown: str, max_chars: int = 180) -> str:
     # Collapse whitespace
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > max_chars:
-        text = text[: max_chars - 1].rstrip(" ,;:-") + "\u2026"
+        from apps.pii.authoring import truncate_placeholder_safe
+
+        text = truncate_placeholder_safe(text, max_chars - 1).rstrip(" ,;:-") + "\u2026"
     return text
 
 
@@ -98,20 +100,28 @@ def _derive_week_bounds(slug: str, fallback: date) -> tuple[date, date]:
     return monday, monday + timedelta(days=6)
 
 
-def _serialize_weekly_document(wd: dict) -> dict:
+def _serialize_weekly_document(wd: dict, *, owner_tenant) -> dict:
     """Shape a Document(kind=weekly) row for the Horizons Weekly Pulse fallback."""
+    from apps.pii.authoring import resolve_receipt_values
+    from apps.pii.redactor import rehydrate_for_tenant
+
     updated_at = wd["updated_at"]
     fallback_date = updated_at.date() if isinstance(updated_at, datetime) else updated_at
     week_start, week_end = _derive_week_bounds(wd.get("slug") or "", fallback_date)
-    markdown = wd.get("markdown") or ""
+    title = rehydrate_for_tenant(owner_tenant, wd.get("title") or "Weekly Review")
+    markdown = rehydrate_for_tenant(owner_tenant, wd.get("markdown") or "")
     return {
         "id": str(wd["id"]),
-        "title": wd.get("title") or "Weekly Review",
+        "title": title,
         "slug": wd.get("slug") or "",
         "week_start": str(week_start),
         "week_end": str(week_end),
         "preview": _clean_markdown_preview(markdown),
         "markdown": markdown,
+        "pii_receipts": resolve_receipt_values(
+            wd.get("pii_receipts") or {},
+            getattr(owner_tenant, "pii_entity_map", None),
+        ),
         "updated_at": updated_at.isoformat(),
     }
 
@@ -263,6 +273,7 @@ class HorizonsView(APIView):
                 "title",
                 "slug",
                 "markdown",
+                "pii_receipts",
                 "created_at",
                 "updated_at",
             )
@@ -277,7 +288,7 @@ class HorizonsView(APIView):
             reverse=True,
         )[:20]
 
-        from apps.pii.authoring import resolve_receipt_values
+        from apps.pii.authoring import receipt_placeholders, resolve_receipt_values
         from apps.pii.redactor import rehydrate_for_tenant
 
         for goal in goals:
@@ -316,6 +327,7 @@ class HorizonsView(APIView):
                 "week_end",
                 "week_rating",
                 "top_wins",
+                "pii_receipts",
             )
         )
 
@@ -331,6 +343,7 @@ class HorizonsView(APIView):
                 "title",
                 "slug",
                 "markdown",
+                "pii_receipts",
                 "updated_at",
             )
         )
@@ -342,7 +355,7 @@ class HorizonsView(APIView):
                 date__gte=thirty_days_ago,
             )
             .order_by("date")
-            .values("date", "mood", "energy")
+            .values("date", "mood", "energy", "pii_receipts")
         )
 
         # 5. Momentum (30 days) — message counts + journal dates
@@ -493,12 +506,27 @@ class HorizonsView(APIView):
                         "week_start": str(w["week_start"]),
                         "week_end": str(w["week_end"]),
                         "week_rating": w["week_rating"],
-                        "top_win": w["top_wins"][0] if w["top_wins"] else None,
+                        "top_win": (rehydrate_for_tenant(tenant, w["top_wins"][0]) if w["top_wins"] else None),
+                        "pii_receipts": resolve_receipt_values(
+                            w.get("pii_receipts") or {},
+                            getattr(tenant, "pii_entity_map", None),
+                        ),
                     }
                     for w in weeks
                 ],
-                "weekly_documents": [_serialize_weekly_document(wd) for wd in weekly_docs],
-                "mood_trend": [{"date": str(m["date"]), "mood": m["mood"], "energy": m["energy"]} for m in moods],
+                "weekly_documents": [_serialize_weekly_document(wd, owner_tenant=tenant) for wd in weekly_docs],
+                "mood_trend": [
+                    {
+                        "date": str(m["date"]),
+                        "mood": rehydrate_for_tenant(tenant, m["mood"]),
+                        "energy": m["energy"],
+                        "pii_receipts": resolve_receipt_values(
+                            m.get("pii_receipts") or {},
+                            getattr(tenant, "pii_entity_map", None),
+                        ),
+                    }
+                    for m in moods
+                ],
                 "momentum": momentum,
                 "current_streak": streak,
                 "assistant_insights": [
@@ -507,7 +535,15 @@ class HorizonsView(APIView):
                         "pillar": ins.pillar,
                         "topic_slug": ins.topic.slug if ins.topic else None,
                         "topic_display_name": ins.topic.display_name if ins.topic else None,
-                        "statement": ins.statement,
+                        "statement": rehydrate_for_tenant(tenant, ins.statement),
+                        "pii_receipts": resolve_receipt_values(
+                            {
+                                "statement": {
+                                    "redactions": receipt_placeholders(ins.statement),
+                                }
+                            },
+                            getattr(tenant, "pii_entity_map", None),
+                        ),
                         "status": ins.status,
                         "confidence": ins.confidence,
                         "created_at": ins.created_at.isoformat(),

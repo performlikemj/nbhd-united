@@ -83,11 +83,23 @@ class Command(BaseCommand):
         for kind, slug, title, n, path in plan:
             self.stdout.write(f"  {kind:7} {slug:26} {n:6d} chars")
             if opts["apply"]:
+                from apps.pii.store_authoring import author_store_fields
+
+                authored, receipts = author_store_fields(
+                    tenant,
+                    {
+                        "markdown": path.read_text(encoding="utf-8", errors="replace"),
+                        "title": title,
+                    },
+                    model_label="journal.Document",
+                    seam="journal.import_assistant_memory",
+                    writer="owner",
+                )
                 Document.objects.update_or_create(
                     tenant=tenant,
                     kind=kind,
                     slug=slug,
-                    defaults={"markdown": path.read_text(encoding="utf-8", errors="replace"), "title": title},
+                    defaults={**authored, "pii_receipts": receipts},
                 )
                 written += 1
 

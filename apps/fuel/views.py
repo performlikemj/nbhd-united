@@ -7,7 +7,7 @@ from datetime import date as date_cls
 from datetime import timedelta
 from urllib.parse import urlparse
 
-from django.db.models import Count, Sum
+from django.db.models import Count, Q, Sum
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -305,7 +305,7 @@ class FuelProfileView(APIView):
             profile = FuelProfile.objects.get(tenant=tenant)
         except FuelProfile.DoesNotExist:
             return Response({"error": "no_profile"}, status=status.HTTP_404_NOT_FOUND)
-        return Response(FuelProfileSerializer(profile).data)
+        return Response(FuelProfileSerializer(profile, context={"tenant": tenant, "rehydrate": True}).data)
 
     def patch(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -315,7 +315,12 @@ class FuelProfileView(APIView):
             profile = FuelProfile.objects.get(tenant=tenant)
         except FuelProfile.DoesNotExist:
             return Response({"error": "no_profile"}, status=status.HTTP_404_NOT_FOUND)
-        serializer = FuelProfileSerializer(profile, data=request.data, partial=True)
+        serializer = FuelProfileSerializer(
+            profile,
+            data=request.data,
+            partial=True,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
@@ -366,14 +371,17 @@ class WorkoutListView(APIView):
 
         limit = min(_safe_int(request.query_params.get("limit"), 100), 500)
         qs = qs.order_by("-date", "-id")[:limit]
-        serializer = WorkoutSerializer(qs, many=True)
+        serializer = WorkoutSerializer(qs, many=True, context={"tenant": tenant, "rehydrate": True})
         return Response(serializer.data)
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        serializer = WorkoutSerializer(data=request.data, context={"tenant": tenant})
+        serializer = WorkoutSerializer(
+            data=request.data,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         serializer.is_valid(raise_exception=True)
         workout = serializer.save()
         detect_prs(tenant, workout)
@@ -409,7 +417,7 @@ class WorkoutDetailView(APIView):
         workout, err = self._get_workout(request, workout_id)
         if err:
             return err
-        return Response(WorkoutSerializer(workout).data)
+        return Response(WorkoutSerializer(workout, context={"tenant": workout.tenant, "rehydrate": True}).data)
 
     def patch(self, request, workout_id):
         from django.db import transaction
@@ -423,7 +431,7 @@ class WorkoutDetailView(APIView):
             workout,
             data=request.data,
             partial=True,
-            context={"tenant": workout.tenant},
+            context={"tenant": workout.tenant, "rehydrate": True},
         )
         serializer.is_valid(raise_exception=True)
         original_date = workout.date
@@ -453,7 +461,7 @@ class WorkoutDetailView(APIView):
             updated,
             transitioned_to_done=(not was_done and updated.status == WorkoutStatus.DONE),
         )
-        return Response(WorkoutSerializer(updated).data)
+        return Response(WorkoutSerializer(updated, context={"tenant": updated.tenant, "rehydrate": True}).data)
 
     def delete(self, request, workout_id):
         workout, err = self._get_workout(request, workout_id)
@@ -561,7 +569,7 @@ def _recent_workouts_payload(tenant, limit=OVERVIEW_WORKOUT_LIMIT):
     ``select_related('plan')`` avoids N+1 on ``plan_id`` / ``plan_name``.
     """
     qs = Workout.objects.filter(tenant=tenant).select_related("plan").order_by("-date", "-id")[:limit]
-    return WorkoutSerializer(qs, many=True).data
+    return WorkoutSerializer(qs, many=True, context={"tenant": tenant, "rehydrate": True}).data
 
 
 def _calendar_month_payload(tenant, year, month):
@@ -581,7 +589,7 @@ def _calendar_month_payload(tenant, year, month):
 
     by_date = defaultdict(list)
     for w in workouts:
-        by_date[str(w.date)].append(WorkoutStubSerializer(w).data)
+        by_date[str(w.date)].append(WorkoutStubSerializer(w, context={"tenant": tenant, "rehydrate": True}).data)
 
     entries = [{"date": d, "workouts": ws} for d, ws in sorted(by_date.items())]
 
@@ -660,7 +668,10 @@ class FuelOverviewView(APIView):
         # /fuel/profile/'s no_profile body. Same serializer as the endpoint.
         try:
             profile = FuelProfile.objects.get(tenant=tenant)
-            profile_payload = FuelProfileSerializer(profile).data
+            profile_payload = FuelProfileSerializer(
+                profile,
+                context={"tenant": tenant, "rehydrate": True},
+            ).data
         except FuelProfile.DoesNotExist:
             profile_payload = {"error": "no_profile"}
 
@@ -894,13 +905,16 @@ class WorkoutTemplateListView(APIView):
         qs = WorkoutTemplate.objects.filter(tenant=tenant)
         if cat and cat in WorkoutCategory.values:
             qs = qs.filter(category=cat)
-        return Response(WorkoutTemplateSerializer(qs, many=True).data)
+        return Response(WorkoutTemplateSerializer(qs, many=True, context={"tenant": tenant, "rehydrate": True}).data)
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        serializer = WorkoutTemplateSerializer(data=request.data, context={"tenant": tenant})
+        serializer = WorkoutTemplateSerializer(
+            data=request.data,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -925,13 +939,18 @@ class WorkoutTemplateDetailView(APIView):
         tmpl, err = self._get(request, template_id)
         if err:
             return err
-        return Response(WorkoutTemplateSerializer(tmpl).data)
+        return Response(WorkoutTemplateSerializer(tmpl, context={"tenant": tmpl.tenant, "rehydrate": True}).data)
 
     def patch(self, request, template_id):
         tmpl, err = self._get(request, template_id)
         if err:
             return err
-        serializer = WorkoutTemplateSerializer(tmpl, data=request.data, partial=True)
+        serializer = WorkoutTemplateSerializer(
+            tmpl,
+            data=request.data,
+            partial=True,
+            context={"tenant": tmpl.tenant, "rehydrate": True},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
@@ -958,6 +977,10 @@ class WorkoutDuplicateView(APIView):
         except Workout.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
+        source_receipts = source.pii_receipts if isinstance(source.pii_receipts, dict) else {}
+        copied_receipts = {
+            field: source_receipts[field] for field in ("activity", "detail_json") if field in source_receipts
+        }
         new_workout = Workout.objects.create(
             tenant=tenant,
             date=today_in_tenant_tz(tenant),
@@ -966,8 +989,12 @@ class WorkoutDuplicateView(APIView):
             activity=source.activity,
             duration_minutes=source.duration_minutes,
             detail_json=source.detail_json,
+            pii_receipts=copied_receipts,
         )
-        return Response(WorkoutSerializer(new_workout).data, status=status.HTTP_201_CREATED)
+        return Response(
+            WorkoutSerializer(new_workout, context={"tenant": tenant, "rehydrate": True}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class WorkoutSkipView(APIView):
@@ -988,10 +1015,21 @@ class WorkoutSkipView(APIView):
         except Workout.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         reason = (request.data.get("reason") or "")[:128]
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {"skip_reason": reason},
+            model_label="fuel.Workout",
+            seam="fuel.owner.workout.skip",
+            writer="owner",
+            receipts=workout.pii_receipts,
+        )
         workout.status = WorkoutStatus.SKIPPED
-        workout.skip_reason = reason
-        workout.save(update_fields=["status", "skip_reason", "updated_at"])
-        return Response(WorkoutSerializer(workout).data)
+        workout.skip_reason = authored["skip_reason"]
+        workout.pii_receipts = receipts
+        workout.save(update_fields=["status", "skip_reason", "pii_receipts", "updated_at"])
+        return Response(WorkoutSerializer(workout, context={"tenant": tenant, "rehydrate": True}).data)
 
 
 class WorkoutCompleteView(APIView):
@@ -1009,7 +1047,18 @@ class WorkoutCompleteView(APIView):
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
         workout.status = WorkoutStatus.DONE
         if "notes" in request.data:
-            workout.notes = request.data["notes"] or ""
+            from apps.pii.store_authoring import author_store_fields
+
+            authored, receipts = author_store_fields(
+                tenant,
+                {"notes": request.data["notes"] or ""},
+                model_label="fuel.Workout",
+                seam="fuel.owner.workout.complete",
+                writer="owner",
+                receipts=workout.pii_receipts,
+            )
+            workout.notes = authored["notes"]
+            workout.pii_receipts = receipts
         if "rpe" in request.data and request.data["rpe"] is not None:
             try:
                 rpe = int(request.data["rpe"])
@@ -1030,7 +1079,7 @@ class WorkoutCompleteView(APIView):
         from .congrats import maybe_congratulate_workout
 
         maybe_congratulate_workout(tenant, workout, transitioned_to_done=True)
-        return Response(WorkoutSerializer(workout).data)
+        return Response(WorkoutSerializer(workout, context={"tenant": tenant, "rehydrate": True}).data)
 
 
 class WorkoutSwapView(APIView):
@@ -1072,7 +1121,10 @@ class WorkoutSwapView(APIView):
             PersonalRecord.objects.filter(workout_id=b.id).update(date=b.date)
 
         return Response(
-            {"a": WorkoutSerializer(a).data, "b": WorkoutSerializer(b).data},
+            {
+                "a": WorkoutSerializer(a, context={"tenant": tenant, "rehydrate": True}).data,
+                "b": WorkoutSerializer(b, context={"tenant": tenant, "rehydrate": True}).data,
+            },
         )
 
 
@@ -1314,7 +1366,7 @@ class SleepListView(APIView):
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         limit = min(_safe_int(request.query_params.get("limit"), 90), 365)
         entries = SleepLog.objects.filter(tenant=tenant)[:limit]
-        return Response(SleepLogSerializer(entries, many=True).data)
+        return Response(SleepLogSerializer(entries, many=True, context={"tenant": tenant, "rehydrate": True}).data)
 
     def post(self, request):
         tenant = getattr(request.user, "tenant", None)
@@ -1348,17 +1400,27 @@ class SleepListView(APIView):
             if quality is not None and not (1 <= quality <= 5):
                 quality = None
 
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {"notes": str(request.data.get("notes", "")).strip()},
+            model_label="fuel.SleepLog",
+            seam="fuel.owner.sleep.upsert",
+            writer="owner",
+        )
         entry, created = SleepLog.objects.update_or_create(
             tenant=tenant,
             date=entry_date,
             defaults={
                 "duration_hours": duration,
                 "quality": quality,
-                "notes": str(request.data.get("notes", "")).strip(),
+                "notes": authored["notes"],
+                "pii_receipts": receipts,
             },
         )
         return Response(
-            SleepLogSerializer(entry).data,
+            SleepLogSerializer(entry, context={"tenant": tenant, "rehydrate": True}).data,
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
@@ -1376,7 +1438,12 @@ class SleepDetailView(APIView):
             entry = SleepLog.objects.get(id=entry_id, tenant=tenant)
         except SleepLog.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
-        serializer = SleepLogSerializer(entry, data=request.data, partial=True, context={"tenant": tenant})
+        serializer = SleepLogSerializer(
+            entry,
+            data=request.data,
+            partial=True,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         serializer.is_valid(raise_exception=True)
         # (tenant, date) is unique. If the user is moving an entry onto a
         # date already occupied by another row, surface a 409 with a clean
@@ -1427,7 +1494,10 @@ class WorkoutPlanListView(APIView):
         today = today_in_tenant_tz(tenant)
         result = []
         for plan in qs.order_by("-created_at")[:20]:
-            data = WorkoutPlanSerializer(plan, context={"today": today}).data
+            data = WorkoutPlanSerializer(
+                plan,
+                context={"today": today, "tenant": tenant, "rehydrate": True},
+            ).data
             data["workout_count"] = Workout.objects.filter(plan=plan).count()
             data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
             result.append(data)
@@ -1437,12 +1507,19 @@ class WorkoutPlanListView(APIView):
     def post(self, request):
         from django.db import transaction
 
-        from .runtime_views import _expand_plan_workouts, _validate_normalize_schedule
+        from .runtime_views import (
+            _author_plan_expansion_inputs,
+            _expand_plan_workouts,
+            _validate_normalize_schedule,
+        )
 
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
-        serializer = WorkoutPlanSerializer(data=request.data, context={"tenant": tenant})
+        serializer = WorkoutPlanSerializer(
+            data=request.data,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         serializer.is_valid(raise_exception=True)
 
         # Validate + normalise schedule_json before persisting anything so a
@@ -1460,17 +1537,45 @@ class WorkoutPlanListView(APIView):
         start_date = serializer.validated_data.get("start_date")
         name = serializer.validated_data.get("name", "")
         if start_date and name:
+            from apps.journal.lifecycle_views import _search_variants
+
+            name_query = Q()
+            for variant in _search_variants(tenant, name):
+                name_query |= Q(name=variant)  # guard: encrypted-predicate
             existing = WorkoutPlan.objects.filter(
+                name_query,
                 tenant=tenant,
-                name=name,  # guard: encrypted-predicate
                 start_date=start_date,
                 status=PlanStatus.ACTIVE,
             ).first()
             if existing is not None:
-                data = WorkoutPlanSerializer(existing, context={"today": today_in_tenant_tz(tenant)}).data
+                data = WorkoutPlanSerializer(
+                    existing,
+                    context={"today": today_in_tenant_tz(tenant), "tenant": tenant, "rehydrate": True},
+                ).data
                 data["workout_count"] = Workout.objects.filter(plan=existing).count()
                 data["deduped"] = True
                 return Response(data, status=status.HTTP_200_OK)
+
+        from apps.pii.store_authoring import author_store_fields
+
+        authored_plan, plan_receipts = author_store_fields(
+            tenant,
+            serializer.validated_data,
+            model_label="fuel.WorkoutPlan",
+            seam="fuel.fuel.WorkoutPlan.create",
+            writer="owner",
+        )
+        serializer.validated_data.clear()
+        serializer.validated_data.update(authored_plan)
+        serializer.validated_data["pii_receipts"] = plan_receipts
+        serializer.context["pii_preauthored"] = True
+        authored_workouts = _author_plan_expansion_inputs(
+            tenant,
+            authored_plan.get("schedule_json") or {},
+            authored_plan.get("weeks") or 0,
+            writer="owner",
+        )
 
         # Wrap the plan row + calendar expansion in one transaction so a
         # mid-loop failure in _expand_plan_workouts rolls back the plan row too.
@@ -1478,14 +1583,24 @@ class WorkoutPlanListView(APIView):
             with transaction.atomic():
                 plan = serializer.save()
                 if plan.schedule_json and plan.start_date and plan.weeks:
-                    _expand_plan_workouts(plan, tenant, plan.schedule_json, plan.start_date, plan.weeks)
+                    _expand_plan_workouts(
+                        plan,
+                        tenant,
+                        plan.schedule_json,
+                        plan.start_date,
+                        plan.weeks,
+                        authored_workouts=authored_workouts,
+                    )
         except Exception as exc:
             return Response(
                 {"error": "create_failed", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        data = WorkoutPlanSerializer(plan, context={"today": today_in_tenant_tz(tenant)}).data
+        data = WorkoutPlanSerializer(
+            plan,
+            context={"today": today_in_tenant_tz(tenant), "tenant": tenant, "rehydrate": True},
+        ).data
         data["workout_count"] = Workout.objects.filter(plan=plan).count()
         return Response(data, status=status.HTTP_201_CREATED)
 
@@ -1503,7 +1618,10 @@ class WorkoutPlanDetailView(APIView):
             plan = WorkoutPlan.objects.get(id=plan_id, tenant=tenant)
         except WorkoutPlan.DoesNotExist:
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
-        data = WorkoutPlanSerializer(plan, context={"today": today_in_tenant_tz(tenant)}).data
+        data = WorkoutPlanSerializer(
+            plan,
+            context={"today": today_in_tenant_tz(tenant), "tenant": tenant, "rehydrate": True},
+        ).data
         data["workout_count"] = Workout.objects.filter(plan=plan).count()
         data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
         return Response(data)
@@ -1511,7 +1629,11 @@ class WorkoutPlanDetailView(APIView):
     def patch(self, request, plan_id):
         from django.db import transaction
 
-        from .runtime_views import _expand_plan_workouts, _validate_normalize_schedule
+        from .runtime_views import (
+            _author_plan_expansion_inputs,
+            _expand_plan_workouts,
+            _validate_normalize_schedule,
+        )
 
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
@@ -1524,7 +1646,12 @@ class WorkoutPlanDetailView(APIView):
         old_schedule = plan.schedule_json
         old_weeks = plan.weeks
 
-        serializer = WorkoutPlanSerializer(plan, data=request.data, partial=True, context={"tenant": tenant})
+        serializer = WorkoutPlanSerializer(
+            plan,
+            data=request.data,
+            partial=True,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         serializer.is_valid(raise_exception=True)
 
         # Validate + normalise any incoming schedule_json before saving so a
@@ -1550,6 +1677,36 @@ class WorkoutPlanDetailView(APIView):
                 return sched_err
             serializer.validated_data["schedule_json"] = normalized_schedule
 
+        from apps.pii.store_authoring import author_store_fields
+
+        authored_plan, plan_receipts = author_store_fields(
+            tenant,
+            serializer.validated_data,
+            model_label="fuel.WorkoutPlan",
+            seam="fuel.fuel.WorkoutPlan.update",
+            writer="owner",
+            receipts=plan.pii_receipts,
+        )
+        prospective_schedule = authored_plan.get("schedule_json", plan.schedule_json)
+        prospective_weeks = authored_plan.get("weeks", plan.weeks)
+        authored_workouts = None
+        if prospective_schedule != old_schedule or prospective_weeks != old_weeks:
+            today = today_in_tenant_tz(tenant)
+            elapsed_days = (today - plan.start_date).days
+            elapsed_weeks = max(0, elapsed_days // 7)
+            remaining_weeks = max(0, prospective_weeks - elapsed_weeks)
+            if remaining_weeks > 0:
+                authored_workouts = _author_plan_expansion_inputs(
+                    tenant,
+                    prospective_schedule,
+                    remaining_weeks,
+                    writer="owner",
+                )
+        serializer.validated_data.clear()
+        serializer.validated_data.update(authored_plan)
+        serializer.validated_data["pii_receipts"] = plan_receipts
+        serializer.context["pii_preauthored"] = True
+
         # Wrap the save + calendar regen in one transaction so a mid-loop failure
         # in _expand_plan_workouts rolls back the plan update and the partial deletes.
         try:
@@ -1565,14 +1722,24 @@ class WorkoutPlanDetailView(APIView):
                     remaining_weeks = max(0, plan.weeks - elapsed_weeks)
                     if remaining_weeks > 0:
                         regen_start = max(today, plan.start_date)
-                        _expand_plan_workouts(plan, tenant, plan.schedule_json, regen_start, remaining_weeks)
+                        _expand_plan_workouts(
+                            plan,
+                            tenant,
+                            plan.schedule_json,
+                            regen_start,
+                            remaining_weeks,
+                            authored_workouts=authored_workouts,
+                        )
         except Exception as exc:
             return Response(
                 {"error": "regen_failed", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        data = WorkoutPlanSerializer(plan, context={"today": today_in_tenant_tz(tenant)}).data
+        data = WorkoutPlanSerializer(
+            plan,
+            context={"today": today_in_tenant_tz(tenant), "tenant": tenant, "rehydrate": True},
+        ).data
         data["workout_count"] = Workout.objects.filter(plan=plan).count()
         data["completed_count"] = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
         return Response(data)

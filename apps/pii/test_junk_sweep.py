@@ -17,6 +17,7 @@ from unittest.mock import patch
 
 from django.test import TestCase
 
+from apps.fuel.models import Workout, WorkoutCategory
 from apps.journal.models import Document, DocumentChunk, Goal, JournalEntry, PendingTaskAction, Task
 from apps.pii import junk_sweep
 from apps.pii.junk_sweep import classify_entry, sweep_all_tenants, sweep_tenant
@@ -271,6 +272,51 @@ class RegistryJsonPathHealTests(_TenantMixin, TestCase):
         self.assertEqual(entry.wins, ["Due 2026-05-30", "Escaped 2026-05-30"])
         self.assertEqual(entry.challenges, ["Unchanged"])
         self.assertEqual(entry.pii_receipts["wins"]["redactions"], [])
+        self.assertNotIn("[ACCOUNT_105]", tenant.pii_entity_map)
+
+    def test_w3b_recursive_json_store_heals_all_string_descendants(self):
+        tenant = self._make_tenant(
+            username="recursive-json-heal",
+            entity_map={"[ACCOUNT_105]": {"name": "2026-05-30"}},
+        )
+        workout = Workout.objects.create(
+            tenant=tenant,
+            date=date(2026, 8, 8),
+            category=WorkoutCategory.OTHER,
+            activity="Circuit",
+            detail_json={
+                "when": "Due [ACCOUNT_105]",
+                "sets": [
+                    {"cue": "Escaped \\[ACCOUNT_105\\]", "reps": 5},
+                    [True, "Again [ACCOUNT_105]"],
+                ],
+                "nothing": None,
+            },
+            pii_receipts={
+                "detail_json": {
+                    "state": "placeholder",
+                    "redactions": [{"placeholder": "[ACCOUNT_105]"}],
+                }
+            },
+        )
+
+        result = sweep_tenant(tenant)
+
+        workout.refresh_from_db()
+        tenant.refresh_from_db()
+        self.assertEqual(result["healed_rows"], 1)
+        self.assertEqual(
+            workout.detail_json,
+            {
+                "when": "Due 2026-05-30",
+                "sets": [
+                    {"cue": "Escaped 2026-05-30", "reps": 5},
+                    [True, "Again 2026-05-30"],
+                ],
+                "nothing": None,
+            },
+        )
+        self.assertEqual(workout.pii_receipts["detail_json"]["redactions"], [])
         self.assertNotIn("[ACCOUNT_105]", tenant.pii_entity_map)
 
     def test_json_path_heal_round_trip_rewrites_wildcard_leaves_and_receipt(self):

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from apps.pii.store_authoring import OwnerStoreSerializerMixin
+
 from .models import Automation, AutomationRun
 from .services import (
     AutomationLimitError,
@@ -88,7 +90,9 @@ class AutomationSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError({"detail": str(exc)}) from exc
 
 
-class AutomationRunSerializer(serializers.ModelSerializer):
+class AutomationRunSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
+    pii_model_label = "automations.AutomationRun"
+
     class Meta:
         model = AutomationRun
         fields = (
@@ -103,6 +107,7 @@ class AutomationRunSerializer(serializers.ModelSerializer):
             "idempotency_key",
             "input_payload",
             "result_payload",
+            "pii_receipts",
             "error_message",
             "created_at",
             "updated_at",

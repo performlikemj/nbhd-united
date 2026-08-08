@@ -37,6 +37,8 @@ from django.conf import settings
 from django.core.cache import cache
 from django.utils import timezone
 
+from apps.pii.authoring import truncate_placeholder_safe
+
 from .models import Lesson, TutoringSession
 
 logger = logging.getLogger(__name__)
@@ -321,9 +323,10 @@ def start_tutoring(star: Lesson) -> dict[str, Any]:
         result = _tutor_request(state["messages"], tenant_id=tenant_id)
     except Exception:
         logger.exception("tutoring: start LLM call failed for star %s", star.id)
+        star_excerpt = truncate_placeholder_safe(star.text, 100)
         result = {
             "text": (
-                f"Let's revisit something you learned: *{star.text[:100]}"
+                f"Let's revisit something you learned: *{star_excerpt}"
                 f"{'...' if len(star.text) > 100 else ''}*\n\n"
                 "Can you put it in your own words for me?"
             ),
@@ -496,7 +499,7 @@ def get_tutoring_state(session_id: str) -> dict[str, Any] | None:
         return None
 
     star = Lesson.objects.filter(id=state["star_id"]).first()
-    star_text = star.text[:120] if star else ""
+    star_text = truncate_placeholder_safe(star.text, 120) if star else ""
 
     return {
         "session_id": session_id,
@@ -526,7 +529,7 @@ def _build_journal_context(star: Lesson) -> str:
 
     lines = ["\nThey've written about this before:"]
     for i, entry in enumerate(entries, 1):
-        excerpt = entry.text[:200]
+        excerpt = truncate_placeholder_safe(entry.text, 200)
         if len(entry.text) > 200:
             excerpt += "..."
         lines.append(f"  [{i}] {excerpt}")
@@ -549,7 +552,7 @@ def _build_connection_candidates(star: Lesson) -> list[dict[str, Any]]:
         .exclude(id=star.id)
         .distinct()[:_MAX_CONNECTION_CANDIDATES]
     )
-    return [{"id": n.id, "text": n.text[:120]} for n in neighbors]
+    return [{"id": n.id, "text": truncate_placeholder_safe(n.text, 120)} for n in neighbors]
 
 
 def _build_phase_prompt(

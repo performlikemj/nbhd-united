@@ -1581,6 +1581,7 @@ class LineWebhookView(View):
                         action_type=action.action_type,
                         action_payload=action.action_payload,
                         display_summary=action.display_summary,
+                        pii_receipts=action.pii_receipts,
                         result=ActionStatus.EXPIRED,
                     )
                     update_gate_message(action)
@@ -1605,6 +1606,7 @@ class LineWebhookView(View):
                 action_type=action.action_type,
                 action_payload=action.action_payload,
                 display_summary=action.display_summary,
+                pii_receipts=action.pii_receipts,
                 result=action.status,
                 responded_at=now,
             )

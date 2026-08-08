@@ -605,7 +605,11 @@ class TemplateListCreateView(APIView):
     def get(self, request):
         tenant = _get_tenant_for_user(request.user)
         templates = NoteTemplate.objects.filter(tenant=tenant).order_by("-is_default", "name")
-        serializer = NoteTemplateSerializer(templates, many=True, context={"tenant": tenant})
+        serializer = NoteTemplateSerializer(
+            templates,
+            many=True,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         return Response(serializer.data)
 
     def post(self, request):
@@ -613,7 +617,10 @@ class TemplateListCreateView(APIView):
         serializer = NoteTemplateSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
         template = serializer.save()
-        return Response(NoteTemplateSerializer(template).data, status=status.HTTP_201_CREATED)
+        return Response(
+            NoteTemplateSerializer(template, context={"tenant": tenant, "rehydrate": True}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class TemplateDetailView(APIView):
@@ -624,7 +631,7 @@ class TemplateDetailView(APIView):
         template = NoteTemplate.objects.filter(tenant=tenant, id=template_id).first()
         if not template:
             return Response({"error": "template not found."}, status=404)
-        serializer = NoteTemplateSerializer(template)
+        serializer = NoteTemplateSerializer(template, context={"tenant": tenant, "rehydrate": True})
         return Response(serializer.data)
 
     def patch(self, request, template_id: str):
@@ -645,7 +652,7 @@ class TemplateDetailView(APIView):
             except Exception:
                 pass  # Non-blocking; config update is best-effort.
 
-        return Response(NoteTemplateSerializer(template).data)
+        return Response(NoteTemplateSerializer(template, context={"tenant": tenant, "rehydrate": True}).data)
 
     def delete(self, request, template_id: str):
         tenant = _get_tenant_for_user(request.user)

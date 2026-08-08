@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
+from apps.pii.store_authoring import OwnerStoreSerializerMixin, author_store_fields
+
 from .models import JournalEntry, NoteTemplate, WeeklyReview
 from .services import _validate_template_sections
 
@@ -444,8 +446,10 @@ class NoteTemplateSectionSerializer(serializers.Serializer):
     source = serializers.ChoiceField(choices=NoteTemplate.Source.choices, required=False, default="shared")
 
 
-class NoteTemplateSerializer(serializers.ModelSerializer):
+class NoteTemplateSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
     """User-facing note template serializer."""
+
+    pii_model_label = "journal.NoteTemplate"
 
     sections = NoteTemplateSectionSerializer(many=True)
 
@@ -458,21 +462,37 @@ class NoteTemplateSerializer(serializers.ModelSerializer):
             "sections",
             "is_default",
             "source",
+            "pii_receipts",
             "created_at",
             "updated_at",
         )
-        read_only_fields = ("id", "created_at", "updated_at")
+        read_only_fields = ("id", "pii_receipts", "created_at", "updated_at")
 
     def validate_sections(self, value: list[dict]) -> list[dict[str, str]]:
         return _validate_template_sections(value)
 
     def create(self, validated_data: dict) -> NoteTemplate:
         tenant = self.context["tenant"]
+        validated_data, receipts = author_store_fields(
+            tenant,
+            validated_data,
+            model_label="journal.NoteTemplate",
+            seam="journal.note_template.owner_create",
+            writer="owner",
+        )
         if validated_data.get("is_default"):
             NoteTemplate.objects.filter(tenant=tenant, is_default=True).update(is_default=False)
-        return NoteTemplate.objects.create(tenant=tenant, **validated_data)
+        return NoteTemplate.objects.create(tenant=tenant, pii_receipts=receipts, **validated_data)
 
     def update(self, instance: NoteTemplate, validated_data: dict) -> NoteTemplate:
+        validated_data, receipts = author_store_fields(
+            instance.tenant,
+            validated_data,
+            model_label="journal.NoteTemplate",
+            seam="journal.note_template.owner_update",
+            writer="owner",
+            receipts=instance.pii_receipts,
+        )
         sections = validated_data.get("sections")
         if sections is not None:
             instance.sections = sections
@@ -485,5 +505,6 @@ class NoteTemplateSerializer(serializers.ModelSerializer):
             if attr == "sections":
                 continue
             setattr(instance, attr, value)
+        instance.pii_receipts = receipts
         instance.save()
         return instance

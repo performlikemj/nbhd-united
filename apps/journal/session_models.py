@@ -116,6 +116,7 @@ class Session(models.Model):
             "task ids, journal doc ids, memory updates, skip reason, etc."
         ),
     )
+    pii_receipts = models.JSONField(default=dict, blank=True)
 
     class Meta:
         db_table = "journal_sessions"

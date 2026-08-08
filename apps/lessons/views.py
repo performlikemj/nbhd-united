@@ -9,6 +9,10 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from apps.pii.authoring import resolve_receipt_values, truncate_placeholder_safe
+from apps.pii.redactor import rehydrate_for_tenant
+from apps.pii.store_authoring import author_store_fields
+
 from .models import Lesson, LessonConnection, StarJournalEntry, TutoringSession
 from .serializers import (
     ConstellationEdgeSerializer,
@@ -31,6 +35,19 @@ from .services import process_approved_lesson, search_lessons
 from .tutoring import continue_tutoring, end_tutoring, get_tutoring_state, start_tutoring
 
 
+def _lesson_text_receipts(tenant, lesson: Lesson) -> dict:
+    text_receipt = (lesson.pii_receipts or {}).get("text")
+    receipts = {"text": text_receipt} if text_receipt else {}
+    return resolve_receipt_values(receipts, getattr(tenant, "pii_entity_map", None))
+
+
+def _rehydrate_tutor_result(tenant, result: dict) -> dict:
+    represented = dict(result)
+    if isinstance(represented.get("message"), str):
+        represented["message"] = rehydrate_for_tenant(tenant, represented["message"])
+    return represented
+
+
 class LessonViewSet(viewsets.ModelViewSet):
     """Tenant-scoped lesson CRUD, galaxy, tutoring, and star journaling."""
 
@@ -45,6 +62,13 @@ class LessonViewSet(viewsets.ModelViewSet):
         if self.action in {"approve", "dismiss"}:
             return LessonApprovalSerializer
         return LessonSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        tenant = getattr(self.request.user, "tenant", None)
+        if tenant is not None:
+            context.update({"tenant": tenant, "rehydrate": True})
+        return context
 
     def get_throttles(self):
         # A share kicks off a real fail-closed DeBERTa scrub; cap it per user/day.
@@ -71,7 +95,31 @@ class LessonViewSet(viewsets.ModelViewSet):
         return qs
 
     def perform_create(self, serializer: LessonCreateSerializer):
-        serializer.save(tenant=self.request.user.tenant)
+        tenant = self.request.user.tenant
+        authored, receipts = author_store_fields(
+            tenant,
+            serializer.validated_data,
+            model_label="lessons.Lesson",
+            seam="lessons.owner.create",
+            writer="owner",
+        )
+        serializer.validated_data.clear()
+        serializer.validated_data.update(authored)
+        serializer.save(tenant=tenant, pii_receipts=receipts)
+
+    def perform_update(self, serializer):
+        tenant = self.request.user.tenant
+        authored, receipts = author_store_fields(
+            tenant,
+            serializer.validated_data,
+            model_label="lessons.Lesson",
+            seam="lessons.owner.update",
+            writer="owner",
+            receipts=serializer.instance.pii_receipts,
+        )
+        serializer.validated_data.clear()
+        serializer.validated_data.update(authored)
+        serializer.save(pii_receipts=receipts)
 
     # ── Approval ────────────────────────────────────────────────
 
@@ -107,7 +155,7 @@ class LessonViewSet(viewsets.ModelViewSet):
         except Exception:
             pass
 
-        return Response(LessonSerializer(lesson).data)
+        return Response(LessonSerializer(lesson, context=self.get_serializer_context()).data)
 
     @action(detail=True, methods=["post", "patch"], url_path="dismiss")
     def dismiss(self, request, pk=None):
@@ -123,7 +171,7 @@ class LessonViewSet(viewsets.ModelViewSet):
         lesson.status = "dismissed"
         lesson.approved_at = None
         lesson.save(update_fields=["status", "approved_at"])
-        return Response(LessonSerializer(lesson).data)
+        return Response(LessonSerializer(lesson, context=self.get_serializer_context()).data)
 
     # ── Neighborhood sharing (delegates to apps/friends — never touches the
     #    SharedLesson / LessonShareGrant managers here; the chokepoint test
@@ -186,7 +234,7 @@ class LessonViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=["get"], url_path="pending")
     def pending(self, request):
         lessons = self.get_queryset().filter(status="pending")
-        serializer = LessonSerializer(lessons, many=True)
+        serializer = LessonSerializer(lessons, many=True, context=self.get_serializer_context())
         return Response(serializer.data)
 
     # ── Web Constellation View (existing, preserved) ────────────
@@ -254,7 +302,7 @@ class LessonViewSet(viewsets.ModelViewSet):
 
         return Response(
             {
-                "nodes": ConstellationNodeSerializer(lessons, many=True).data,
+                "nodes": ConstellationNodeSerializer(lessons, many=True, context=self.get_serializer_context()).data,
                 "edges": ConstellationEdgeSerializer(edges, many=True).data,
                 "affinity_edges": affinity_edges,
                 "clusters": clusters,
@@ -338,7 +386,7 @@ class LessonViewSet(viewsets.ModelViewSet):
 
         return Response(
             {
-                "stars": GalaxyStarSerializer(lessons, many=True).data,
+                "stars": GalaxyStarSerializer(lessons, many=True, context=self.get_serializer_context()).data,
                 "edges": edge_data + affinity_edges,
                 "clusters": clusters,
             }
@@ -365,6 +413,17 @@ class LessonViewSet(viewsets.ModelViewSet):
 
         recent = approved.filter(last_visited_at__isnull=False).order_by("-last_visited_at")[:5]
 
+        recent_activity = []
+        for lesson in recent:
+            recent_activity.append(
+                {
+                    "id": lesson.id,
+                    "text": truncate_placeholder_safe(rehydrate_for_tenant(tenant, lesson.text), 80),
+                    "pii_receipts": _lesson_text_receipts(tenant, lesson),
+                    "visited": lesson.last_visited_at.isoformat() if lesson.last_visited_at else None,
+                }
+            )
+
         data = {
             "total_stars": approved.count(),
             "proto_count": stage_counts.get("proto", 0),
@@ -372,14 +431,7 @@ class LessonViewSet(viewsets.ModelViewSet):
             "radiant_count": stage_counts.get("radiant", 0),
             "supernova_count": stage_counts.get("supernova", 0),
             "cluster_count": cluster_count,
-            "recent_activity": [
-                {
-                    "id": s.id,
-                    "text": s.text[:80],
-                    "visited": s.last_visited_at.isoformat() if s.last_visited_at else None,
-                }
-                for s in recent
-            ],
+            "recent_activity": recent_activity,
         }
         return Response(data)
 
@@ -408,7 +460,7 @@ class LessonViewSet(viewsets.ModelViewSet):
             .order_by("-created_at")[:limit]
         )
 
-        return Response(TutoringInsightSerializer(sessions, many=True).data)
+        return Response(TutoringInsightSerializer(sessions, many=True, context=self.get_serializer_context()).data)
 
     # ── Co-pilot (Galaxy Reflect) ───────────────────────────────
 
@@ -503,7 +555,7 @@ class LessonViewSet(viewsets.ModelViewSet):
         star.last_visited_at = timezone.now()
         star.save(update_fields=["last_visited_at"])
 
-        return Response(StarDetailSerializer(star).data)
+        return Response(StarDetailSerializer(star, context=self.get_serializer_context()).data)
 
     # ── Tutoring ────────────────────────────────────────────────
 
@@ -521,7 +573,7 @@ class LessonViewSet(viewsets.ModelViewSet):
         if "error" in result:
             return Response(result, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        return Response(result)
+        return Response(_rehydrate_tutor_result(request.user.tenant, result))
 
     @action(detail=True, methods=["post"], url_path="tutor/message")
     def tutor_message(self, request, pk=None):
@@ -540,7 +592,7 @@ class LessonViewSet(viewsets.ModelViewSet):
         player_message = serializer.validated_data["message"]
 
         if action == "end":
-            result = end_tutoring(session_id)
+            result = end_tutoring(session_id, tenant_id=str(request.user.tenant.id))
             return Response(result)
 
         if action == "skip":
@@ -552,10 +604,15 @@ class LessonViewSet(viewsets.ModelViewSet):
 
         # Auto-end if mastery achieved
         if result.get("mastery_achieved"):
-            close_result = end_tutoring(session_id)
-            return Response({**result, "session_close": close_result})
+            close_result = end_tutoring(session_id, tenant_id=str(request.user.tenant.id))
+            return Response(
+                {
+                    **_rehydrate_tutor_result(request.user.tenant, result),
+                    "session_close": close_result,
+                }
+            )
 
-        return Response(result)
+        return Response(_rehydrate_tutor_result(request.user.tenant, result))
 
     @action(detail=True, methods=["post"], url_path="tutor/end")
     def tutor_end(self, request, pk=None):
@@ -567,7 +624,7 @@ class LessonViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        result = end_tutoring(session_id)
+        result = end_tutoring(session_id, tenant_id=str(request.user.tenant.id))
         if "error" in result:
             return Response(result, status=status.HTTP_404_NOT_FOUND)
 
@@ -583,12 +640,18 @@ class LessonViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        star = self.get_object()
         state = get_tutoring_state(session_id)
-        if state is None:
+        if state is None or state.get("star_id") != star.id:
             return Response(
                 {"detail": "Tutoring session not found or expired."},
                 status=status.HTTP_404_NOT_FOUND,
             )
+        state["star_text"] = truncate_placeholder_safe(
+            rehydrate_for_tenant(request.user.tenant, star.text),
+            120,
+        )
+        state["pii_receipts"] = _lesson_text_receipts(request.user.tenant, star)
         return Response(state)
 
     # ── Star Journal ────────────────────────────────────────────
@@ -598,7 +661,7 @@ class LessonViewSet(viewsets.ModelViewSet):
         """List journal entries attached to this star."""
         star = self.get_object()
         entries = star.journal_entries.all()
-        return Response(StarJournalEntrySerializer(entries, many=True).data)
+        return Response(StarJournalEntrySerializer(entries, many=True, context=self.get_serializer_context()).data)
 
     @action(detail=True, methods=["post"], url_path="journal/create")
     def star_journal_create(self, request, pk=None):
@@ -607,10 +670,18 @@ class LessonViewSet(viewsets.ModelViewSet):
         serializer = StarJournalEntryCreateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
+        authored, receipts = author_store_fields(
+            self.request.user.tenant,
+            {"text": serializer.validated_data["text"]},
+            model_label="lessons.StarJournalEntry",
+            seam="lessons.owner.star_journal.create",
+            writer="owner",
+        )
         entry = StarJournalEntry.objects.create(
             tenant=self.request.user.tenant,
             star=star,
-            text=serializer.validated_data["text"],
+            text=authored["text"],
+            pii_receipts=receipts,
             entry_type=serializer.validated_data.get("entry_type", "free"),
             tags=serializer.validated_data.get("tags", []),
         )
@@ -620,7 +691,7 @@ class LessonViewSet(viewsets.ModelViewSet):
 
         new_stage = apply_star_growth(star)
         return Response(
-            {**StarJournalEntrySerializer(entry).data, "star_stage": new_stage},
+            {**StarJournalEntrySerializer(entry, context=self.get_serializer_context()).data, "star_stage": new_stage},
             status=status.HTTP_201_CREATED,
         )
 
@@ -633,9 +704,18 @@ class LessonViewSet(viewsets.ModelViewSet):
         serializer = StarNoteSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        star.galaxy_note = serializer.validated_data["note"]
-        star.save(update_fields=["galaxy_note"])
-        return Response(StarDetailSerializer(star).data)
+        authored, receipts = author_store_fields(
+            star.tenant,
+            {"galaxy_note": serializer.validated_data["note"]},
+            model_label="lessons.Lesson",
+            seam="lessons.owner.pin_note",
+            writer="owner",
+            receipts=star.pii_receipts,
+        )
+        star.galaxy_note = authored["galaxy_note"]
+        star.pii_receipts = receipts
+        star.save(update_fields=["galaxy_note", "pii_receipts"])
+        return Response(StarDetailSerializer(star, context=self.get_serializer_context()).data)
 
     @action(detail=True, methods=["post"], url_path="connect")
     def connect(self, request, pk=None):
@@ -732,5 +812,11 @@ class LessonViewSet(viewsets.ModelViewSet):
             return Response({"detail": "Invalid 'limit' value."}, status=status.HTTP_400_BAD_REQUEST)
 
         lessons = search_lessons(tenant=request.user.tenant, query=query, limit=limit)
-        payload = [{**LessonSerializer(lesson).data, "similarity": lesson.similarity} for lesson in lessons]
+        payload = [
+            {
+                **LessonSerializer(lesson, context=self.get_serializer_context()).data,
+                "similarity": lesson.similarity,
+            }
+            for lesson in lessons
+        ]
         return Response(payload)

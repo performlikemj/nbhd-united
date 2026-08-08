@@ -70,6 +70,7 @@ class AutomationRun(models.Model):
     idempotency_key = models.CharField(max_length=255, unique=True)
     input_payload = models.JSONField(default=dict, blank=True)
     result_payload = models.JSONField(default=dict, blank=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     error_message = models.TextField(blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
