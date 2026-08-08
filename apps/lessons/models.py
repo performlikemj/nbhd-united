@@ -99,6 +99,7 @@ class Lesson(models.Model):
     )
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.LESSON_GALAXY_NOTE``) — ships DARK.
     galaxy_note_enc = models.BinaryField(null=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
 
     # ── Sharing (Phase 2+) ───────────────────────────────────
     shared = models.BooleanField(default=False)
@@ -225,6 +226,7 @@ class StarJournalEntry(models.Model):
     text = models.TextField()
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.STAR_JOURNAL_ENTRY_TEXT``) — ships DARK.
     text_enc = models.BinaryField(null=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     entry_type = models.CharField(
         max_length=20,
         choices=[

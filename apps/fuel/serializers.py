@@ -4,6 +4,8 @@ import logging
 
 from rest_framework import serializers
 
+from apps.pii.store_authoring import OwnerStoreSerializerMixin, author_store_fields, owner_store_representation
+
 from .models import (
     BodyWeightLog,
     FuelGoal,
@@ -19,6 +21,36 @@ from .models import (
 logger = logging.getLogger(__name__)
 
 
+class _FuelPiiSerializerMixin(OwnerStoreSerializerMixin):
+    def create(self, validated_data):
+        if self.context.get("pii_preauthored"):
+            return super().create(validated_data)
+        tenant = validated_data.get("tenant") or self.context["tenant"]
+        authored, receipts = author_store_fields(
+            tenant,
+            validated_data,
+            model_label=self.pii_model_label,
+            seam=f"fuel.{self.pii_model_label}.create",
+            writer=self.context.get("pii_writer", "owner"),
+        )
+        authored["pii_receipts"] = receipts
+        return super().create(authored)
+
+    def update(self, instance, validated_data):
+        if self.context.get("pii_preauthored"):
+            return super().update(instance, validated_data)
+        authored, receipts = author_store_fields(
+            instance.tenant,
+            validated_data,
+            model_label=self.pii_model_label,
+            seam=f"fuel.{self.pii_model_label}.update",
+            writer=self.context.get("pii_writer", "owner"),
+            receipts=instance.pii_receipts,
+        )
+        authored["pii_receipts"] = receipts
+        return super().update(instance, authored)
+
+
 def _loc_path(loc) -> str:
     """Render a pydantic error loc as a compact path string.
 
@@ -31,7 +63,9 @@ def _loc_path(loc) -> str:
     return out
 
 
-class FuelProfileSerializer(serializers.ModelSerializer):
+class FuelProfileSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
+    pii_model_label = "fuel.FuelProfile"
+
     class Meta:
         model = FuelProfile
         fields = [
@@ -46,13 +80,15 @@ class FuelProfileSerializer(serializers.ModelSerializer):
             "preferred_time",
             "additional_context",
             "distance_unit",
+            "pii_receipts",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "pii_receipts", "created_at", "updated_at"]
 
 
-class WorkoutPlanSerializer(serializers.ModelSerializer):
+class WorkoutPlanSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
+    pii_model_label = "fuel.WorkoutPlan"
     workout_count = serializers.IntegerField(read_only=True, default=0)
     completed_count = serializers.IntegerField(read_only=True, default=0)
     # Derived program-progress — end_date (inclusive last day), days_remaining
@@ -72,6 +108,8 @@ class WorkoutPlanSerializer(serializers.ModelSerializer):
             "days_per_week",
             "schedule_json",
             "notes",
+            "objective",
+            "pii_receipts",
             "workout_count",
             "completed_count",
             "end_date",
@@ -87,6 +125,7 @@ class WorkoutPlanSerializer(serializers.ModelSerializer):
             "end_date",
             "days_remaining",
             "current_week",
+            "pii_receipts",
             "created_at",
             "updated_at",
         ]
@@ -122,7 +161,8 @@ class WorkoutPlanSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class WorkoutSerializer(serializers.ModelSerializer):
+class WorkoutSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
+    pii_model_label = "fuel.Workout"
     plan_id = serializers.UUIDField(source="plan.id", read_only=True, default=None)
     plan_name = serializers.CharField(source="plan.name", read_only=True, default=None)
     # Optional at the field level so callers can supply scheduled_at instead;
@@ -149,6 +189,7 @@ class WorkoutSerializer(serializers.ModelSerializer):
             "notes",
             "notes_thread",
             "detail_json",
+            "pii_receipts",
             "plan_id",
             "plan_name",
             "version",
@@ -167,6 +208,7 @@ class WorkoutSerializer(serializers.ModelSerializer):
             "edit_lock_until",
             "edit_lock_owner",
             "last_edited_by_user_at",
+            "pii_receipts",
             "created_at",
             "updated_at",
         ]
@@ -292,9 +334,30 @@ class WorkoutSerializer(serializers.ModelSerializer):
         validated_data["tenant"] = self.context["tenant"]
         return super().create(validated_data)
 
+    def to_representation(self, instance):
+        represented = super().to_representation(instance)
+        tenant = self.context.get("tenant")
+        plan = getattr(instance, "plan", None)
+        if tenant is None or not self.context.get("rehydrate") or plan is None:
+            return represented
 
-class WorkoutStubSerializer(serializers.ModelSerializer):
+        plan_data = owner_store_representation(
+            plan,
+            tenant,
+            {"name": represented.get("plan_name"), "pii_receipts": plan.pii_receipts},
+            model_label="fuel.WorkoutPlan",
+        )
+        represented["plan_name"] = plan_data["name"]
+        plan_name_receipt = plan_data["pii_receipts"].get("name")
+        if plan_name_receipt is not None:
+            represented.setdefault("pii_receipts", {})["plan_name"] = plan_name_receipt
+        return represented
+
+
+class WorkoutStubSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
     """Lightweight serializer for calendar day cells."""
+
+    pii_model_label = "fuel.Workout"
 
     # Read the raw FK column (the field name ``plan_id`` IS the source — no ``source=``,
     # which DRF rejects as redundant), not ``plan.id``. Traversing the relation
@@ -315,6 +378,7 @@ class WorkoutStubSerializer(serializers.ModelSerializer):
             "duration_minutes",
             "rpe",
             "plan_id",
+            "pii_receipts",
         ]
         read_only_fields = fields
 
@@ -330,11 +394,23 @@ class BodyWeightLogSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class WorkoutTemplateSerializer(serializers.ModelSerializer):
+class WorkoutTemplateSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
+    pii_model_label = "fuel.WorkoutTemplate"
+
     class Meta:
         model = WorkoutTemplate
-        fields = ["id", "name", "category", "activity", "duration_minutes", "detail_json", "created_at", "updated_at"]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        fields = [
+            "id",
+            "name",
+            "category",
+            "activity",
+            "duration_minutes",
+            "detail_json",
+            "pii_receipts",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = ["id", "pii_receipts", "created_at", "updated_at"]
 
     def create(self, validated_data):
         validated_data["tenant"] = self.context["tenant"]
@@ -387,11 +463,13 @@ class RestingHeartRateLogSerializer(serializers.ModelSerializer):
         return super().create(validated_data)
 
 
-class SleepLogSerializer(serializers.ModelSerializer):
+class SleepLogSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer):
+    pii_model_label = "fuel.SleepLog"
+
     class Meta:
         model = SleepLog
-        fields = ["id", "date", "duration_hours", "quality", "notes", "created_at"]
-        read_only_fields = ["id", "created_at"]
+        fields = ["id", "date", "duration_hours", "quality", "notes", "pii_receipts", "created_at"]
+        read_only_fields = ["id", "pii_receipts", "created_at"]
 
     def create(self, validated_data):
         validated_data["tenant"] = self.context["tenant"]

@@ -189,14 +189,19 @@ class CoreProfileView(APIView):
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         profile, _created = CoreProfile.objects.get_or_create(tenant=tenant)
-        return Response(CoreProfileSerializer(profile).data)
+        return Response(CoreProfileSerializer(profile, context={"tenant": tenant, "rehydrate": True}).data)
 
     def patch(self, request):
         tenant = getattr(request.user, "tenant", None)
         if not tenant:
             return Response({"error": "no_tenant"}, status=status.HTTP_404_NOT_FOUND)
         profile, _created = CoreProfile.objects.get_or_create(tenant=tenant)
-        serializer = CoreProfileSerializer(profile, data=request.data, partial=True)
+        serializer = CoreProfileSerializer(
+            profile,
+            data=request.data,
+            partial=True,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         serializer.is_valid(raise_exception=True)
         serializer.save()
 
@@ -207,7 +212,7 @@ class CoreProfileView(APIView):
         from .services import advance_core_onboarding
 
         advance_core_onboarding(profile, CoreOnboardingStatus.IN_PROGRESS)
-        return Response(CoreProfileSerializer(profile).data)
+        return Response(CoreProfileSerializer(profile, context={"tenant": tenant, "rehydrate": True}).data)
 
 
 class MeditationSessionListView(ListAPIView):
@@ -215,6 +220,13 @@ class MeditationSessionListView(ListAPIView):
 
     permission_classes = [IsAuthenticated]
     serializer_class = MeditationSessionSerializer
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        tenant = getattr(self.request.user, "tenant", None)
+        if tenant is not None:
+            context.update({"tenant": tenant, "rehydrate": True})
+        return context
 
     def get_queryset(self):
         tenant = getattr(self.request.user, "tenant", None)
@@ -242,6 +254,13 @@ class MeditationSessionDetailView(RetrieveUpdateAPIView):
     serializer_class = MeditationSessionSerializer
     lookup_field = "id"
     http_method_names = ["get", "patch", "head", "options"]
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        tenant = getattr(self.request.user, "tenant", None)
+        if tenant is not None:
+            context.update({"tenant": tenant, "rehydrate": True})
+        return context
 
     def get_queryset(self):
         tenant = getattr(self.request.user, "tenant", None)

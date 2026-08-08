@@ -14,7 +14,8 @@ class PlaceholderStore:
     """One placeholder-bearing model surface.
 
     ``json_paths`` use dotted paths beginning with the model JSONField name;
-    ``*``, ``[]``, and ``[*]`` fan out over mapping values or list items.
+    ``*``, ``[]``, and ``[*]`` fan out over mapping values or list items;
+    ``**`` selects every descendant string in a genuinely free-form payload.
     """
 
     model_label: str
@@ -66,6 +67,36 @@ def rewrite_json_path(
 
     head, *tail_list = parts
     tail = tuple(tail_list)
+    if head == "**":
+        if tail:
+            raise ValueError("** must be the final JSON path component")
+        if isinstance(value, str):
+            rewritten = transform(value)
+            return rewritten, rewritten != value
+        if isinstance(value, dict):
+            next_value = value
+            changed = False
+            for key, child in value.items():
+                rewritten_child, child_changed = rewrite_json_path(child, ("**",), transform)
+                if child_changed:
+                    if not changed:
+                        next_value = dict(value)
+                    next_value[key] = rewritten_child
+                    changed = True
+            return next_value, changed
+        if isinstance(value, list):
+            next_value = value
+            changed = False
+            for index, child in enumerate(value):
+                rewritten_child, child_changed = rewrite_json_path(child, ("**",), transform)
+                if child_changed:
+                    if not changed:
+                        next_value = list(value)
+                    next_value[index] = rewritten_child
+                    changed = True
+            return next_value, changed
+        return value, False
+
     if head == "*":
         if isinstance(value, dict):
             next_value = value
@@ -184,6 +215,127 @@ _STORES = (
         model_label="journal.PendingExtraction",
         flat_fields=("text",),
         json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    # ── P3 W3b: flat long tail + explicit free-form payloads ───────────
+    PlaceholderStore(
+        model_label="lessons.Lesson",
+        flat_fields=("text", "context", "galaxy_note"),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="lessons.StarJournalEntry",
+        flat_fields=("text",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="fuel.WorkoutPlan",
+        flat_fields=("name", "notes", "objective"),
+        json_paths=("schedule_json.**", "week_overrides.**"),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="fuel.Workout",
+        flat_fields=("skip_reason", "activity", "notes"),
+        json_paths=("notes_thread[].text", "detail_json.**"),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="fuel.FuelProfile",
+        flat_fields=("additional_context",),
+        json_paths=("limitations[]",),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="fuel.WorkoutTemplate",
+        flat_fields=("name",),
+        json_paths=("detail_json.**",),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="fuel.SleepLog",
+        flat_fields=("notes",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="finance.FinanceAccount",
+        flat_fields=("nickname",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="finance.FinanceTransaction",
+        flat_fields=("description",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="finance.PayoffPlan",
+        flat_fields=(),
+        json_paths=("schedule_json.**",),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="finance.FinanceSnapshot",
+        flat_fields=(),
+        json_paths=("accounts_json.**",),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="actions.PendingAction",
+        flat_fields=("display_summary",),
+        json_paths=("action_payload.**",),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="actions.ActionAuditLog",
+        flat_fields=("display_summary",),
+        json_paths=("action_payload.**",),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="journal.Session",
+        flat_fields=("project", "summary"),
+        json_paths=("accomplishments[]", "blockers[]", "next_steps[]", "processed_summary.**"),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="journal.NoteTemplate",
+        flat_fields=("name",),
+        json_paths=("sections[].title", "sections[].content"),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="router.DeliveryAttempt",
+        flat_fields=("response_excerpt",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="core.CoreProfile",
+        flat_fields=("additional_context",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="core.MeditationSession",
+        flat_fields=("title", "theme", "guidance_text", "feedback_note"),
+        json_paths=("manifest.**",),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="integrations.SautaiMealPlanJob",
+        flat_fields=("user_prompt",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="automations.AutomationRun",
+        flat_fields=(),
+        json_paths=("input_payload.**", "result_payload.**"),
         receipts_field="pii_receipts",
     ),
 )

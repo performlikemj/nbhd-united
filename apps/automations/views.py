@@ -123,10 +123,13 @@ class AutomationManualRunView(APIView):
         # subscriber clicking "Run now" gets a failure status code, not a 201.
         if run.status == AutomationRun.Status.FAILED:
             return Response(
-                AutomationRunSerializer(run).data,
+                AutomationRunSerializer(run, context={"tenant": tenant, "rehydrate": True}).data,
                 status=status.HTTP_502_BAD_GATEWAY,
             )
-        return Response(AutomationRunSerializer(run).data, status=status.HTTP_201_CREATED)
+        return Response(
+            AutomationRunSerializer(run, context={"tenant": tenant, "rehydrate": True}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class AutomationRunsListView(APIView):
@@ -142,5 +145,5 @@ class AutomationRunsListView(APIView):
 
         paginator = PageNumberPagination()
         page = paginator.paginate_queryset(queryset, request, view=self)
-        serializer = AutomationRunSerializer(page, many=True)
+        serializer = AutomationRunSerializer(page, many=True, context={"tenant": tenant, "rehydrate": True})
         return paginator.get_paginated_response(serializer.data)

@@ -8,6 +8,7 @@ Covers:
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.test.utils import override_settings
@@ -181,7 +182,12 @@ class RuntimeSessionMarkProcessedViewTest(TestCase):
         }
 
     def test_marks_session_processed_and_stores_summary(self):
-        summary = {"daily_note_date": "2026-05-07", "tasks_added": ["t1"], "memory_updated": True}
+        summary = {
+            "daily_note_date": "2026-05-07",
+            "note": "Filed Alice exactly",
+            "tasks_added": ["t1"],
+            "memory_updated": True,
+        }
         response = self.client.post(
             self._url(),
             data=summary and {"processed_summary": summary},
@@ -193,10 +199,47 @@ class RuntimeSessionMarkProcessedViewTest(TestCase):
         self.assertEqual(body["session_id"], str(self.session.id))
         self.assertFalse(body["already_processed"])
         self.assertEqual(body["processed_summary"], summary)
+        self.assertNotIn("pii_receipts", body)
 
         self.session.refresh_from_db()
         self.assertIsNotNone(self.session.processed_at)
         self.assertEqual(self.session.processed_summary, summary)
+        self.assertEqual(
+            self.session.pii_receipts["processed_summary"],
+            {"state": "bypass", "writer": "runtime"},
+        )
+
+    def test_flag_on_stores_and_returns_processed_summary_in_placeholder_space(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        summary = {
+            "note": "Filed for Alice",
+            "nested": {"reviewer": "Alice"},
+        }
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            response = self.client.post(
+                self._url(),
+                data={"processed_summary": summary},
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        placeholder_summary = {
+            "note": "Filed for [PERSON_1]",
+            "nested": {"reviewer": "[PERSON_1]"},
+        }
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["processed_summary"], placeholder_summary)
+        self.assertNotIn("pii_receipts", response.json())
+        self.session.refresh_from_db()
+        self.assertEqual(self.session.processed_summary, placeholder_summary)
+        self.assertEqual(self.session.pii_receipts["processed_summary"]["writer"], "runtime")
+        self.assertEqual(self.session.pii_receipts["processed_summary"]["state"], "placeholder")
 
     def test_idempotent_when_already_processed(self):
         first = self.client.post(

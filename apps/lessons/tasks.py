@@ -117,10 +117,21 @@ def reseed_lessons_single_tenant_task(tenant_id: str) -> dict:
             if _embedding_duplicate(tenant, text):
                 total_deduped += 1
                 continue
+            from apps.pii.store_authoring import author_store_fields
+
+            context = f"Re-seeded from daily notes — {date.today().isoformat()}"
+            authored, receipts = author_store_fields(
+                tenant,
+                {"text": text, "context": context},
+                model_label="lessons.Lesson",
+                seam="lessons.daily_note_reseed",
+                writer="background",
+            )
             lesson = Lesson.objects.create(
                 tenant=tenant,
-                text=text,
-                context=f"Re-seeded from daily notes — {date.today().isoformat()}",
+                text=authored["text"],
+                context=authored["context"],
+                pii_receipts=receipts,
                 tags=item.get("tags", []),
                 source_type="journal",
                 source_ref="reseed",

@@ -3,6 +3,8 @@
 from django.conf import settings
 from rest_framework import serializers
 
+from apps.pii.store_authoring import OwnerStoreSerializerMixin, author_store_fields
+
 from .models import CoreProfile, MeditationSession, MeditationStatus
 
 # The thumb signal the feedback UI writes. Empty clears a prior signal. Kept in
@@ -14,7 +16,9 @@ ALLOWED_USER_FEEDBACK = {"", "liked", "disliked", "skipped"}
 MAX_FEEDBACK_NOTE_CHARS = 2000
 
 
-class CoreProfileSerializer(serializers.ModelSerializer):
+class CoreProfileSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
+    pii_model_label = "core.CoreProfile"
+
     class Meta:
         model = CoreProfile
         fields = [
@@ -26,13 +30,26 @@ class CoreProfileSerializer(serializers.ModelSerializer):
             "daily_cron_enabled",
             "preferred_time",
             "additional_context",
+            "pii_receipts",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "onboarding_status", "created_at", "updated_at"]
+        read_only_fields = ["id", "onboarding_status", "pii_receipts", "created_at", "updated_at"]
+
+    def update(self, instance, validated_data):
+        authored, receipts = author_store_fields(
+            instance.tenant,
+            validated_data,
+            model_label=self.pii_model_label,
+            seam="core.owner.profile.update",
+            writer="owner",
+            receipts=instance.pii_receipts,
+        )
+        authored["pii_receipts"] = receipts
+        return super().update(instance, authored)
 
 
-class MeditationSessionSerializer(serializers.ModelSerializer):
+class MeditationSessionSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
     """Read-mostly: audio + status are set by the render pipeline, not the client.
 
     The only client-writable fields are the feedback signals (``user_feedback``,
@@ -41,6 +58,7 @@ class MeditationSessionSerializer(serializers.ModelSerializer):
     """
 
     retryable = serializers.SerializerMethodField()
+    pii_model_label = "core.MeditationSession"
 
     class Meta:
         model = MeditationSession
@@ -62,6 +80,7 @@ class MeditationSessionSerializer(serializers.ModelSerializer):
             "error",
             "user_feedback",
             "feedback_note",
+            "pii_receipts",
             "feedback_at",
             "created_at",
             "updated_at",
@@ -82,6 +101,7 @@ class MeditationSessionSerializer(serializers.ModelSerializer):
             "duration_ms",
             "ambient_bed",
             "error",
+            "pii_receipts",
             "feedback_at",
             "created_at",
             "updated_at",
@@ -104,3 +124,15 @@ class MeditationSessionSerializer(serializers.ModelSerializer):
 
     def validate_feedback_note(self, value: str) -> str:
         return (value or "").strip()[:MAX_FEEDBACK_NOTE_CHARS]
+
+    def update(self, instance, validated_data):
+        authored, receipts = author_store_fields(
+            instance.tenant,
+            validated_data,
+            model_label=self.pii_model_label,
+            seam="core.owner.meditation.feedback",
+            writer="owner",
+            receipts=instance.pii_receipts,
+        )
+        authored["pii_receipts"] = receipts
+        return super().update(instance, authored)

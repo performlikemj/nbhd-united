@@ -86,9 +86,9 @@ def _note_template_response(note: DailyNote, *, include_entries: bool = False) -
     )
     # Owner-facing serve boundary: note.markdown + section bodies are stored in
     # PII placeholder space (the assistant authors them on redacted input), so
-    # rehydrate the user-visible strings back to real values. Template metadata
-    # (id/slug/name) is static config and never carries PII. ``sections`` is a
-    # fresh copy from get_or_seed_note_template, so mutating in place is safe.
+    # rehydrate the user-visible strings back to real values. Template names are
+    # owner-authored; ids/slugs remain structured config. ``sections`` is a fresh
+    # copy from get_or_seed_note_template, so mutating in place is safe.
     for section in sections:
         for key in ("title", "content"):
             if section.get(key):
@@ -98,7 +98,7 @@ def _note_template_response(note: DailyNote, *, include_entries: bool = False) -
         "markdown": rehydrate_for_tenant(tenant, note.markdown),
         "template_id": str(template.id),
         "template_slug": template.slug,
-        "template_name": template.name,
+        "template_name": rehydrate_for_tenant(tenant, template.name),
         "sections": sections,
         "pii_receipts": resolve_receipt_values(note.pii_receipts, tenant.pii_entity_map),
     }
@@ -605,7 +605,11 @@ class TemplateListCreateView(APIView):
     def get(self, request):
         tenant = _get_tenant_for_user(request.user)
         templates = NoteTemplate.objects.filter(tenant=tenant).order_by("-is_default", "name")
-        serializer = NoteTemplateSerializer(templates, many=True, context={"tenant": tenant})
+        serializer = NoteTemplateSerializer(
+            templates,
+            many=True,
+            context={"tenant": tenant, "rehydrate": True},
+        )
         return Response(serializer.data)
 
     def post(self, request):
@@ -613,7 +617,10 @@ class TemplateListCreateView(APIView):
         serializer = NoteTemplateSerializer(data=request.data, context={"tenant": tenant})
         serializer.is_valid(raise_exception=True)
         template = serializer.save()
-        return Response(NoteTemplateSerializer(template).data, status=status.HTTP_201_CREATED)
+        return Response(
+            NoteTemplateSerializer(template, context={"tenant": tenant, "rehydrate": True}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class TemplateDetailView(APIView):
@@ -624,7 +631,7 @@ class TemplateDetailView(APIView):
         template = NoteTemplate.objects.filter(tenant=tenant, id=template_id).first()
         if not template:
             return Response({"error": "template not found."}, status=404)
-        serializer = NoteTemplateSerializer(template)
+        serializer = NoteTemplateSerializer(template, context={"tenant": tenant, "rehydrate": True})
         return Response(serializer.data)
 
     def patch(self, request, template_id: str):
@@ -645,7 +652,7 @@ class TemplateDetailView(APIView):
             except Exception:
                 pass  # Non-blocking; config update is best-effort.
 
-        return Response(NoteTemplateSerializer(template).data)
+        return Response(NoteTemplateSerializer(template, context={"tenant": tenant, "rehydrate": True}).data)
 
     def delete(self, request, template_id: str):
         tenant = _get_tenant_for_user(request.user)

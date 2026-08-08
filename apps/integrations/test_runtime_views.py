@@ -901,8 +901,8 @@ class RuntimeMemorySyncViewTest(TestCase):
         response = self.client.post(
             f"/api/v1/integrations/runtime/{self.tenant.id}/lessons/",
             data={
-                "text": "Keep your promises to yourself",
-                "context": "evening check-in",
+                "text": "Keep Alice's exact phrasing",
+                "context": "evening check-in with Alice",
                 "source_type": "reflection",
                 "source_ref": "conversation:msg-1",
                 "tags": ["growth", "discipline"],
@@ -912,11 +912,55 @@ class RuntimeMemorySyncViewTest(TestCase):
         )
 
         self.assertEqual(response.status_code, 201)
-        created = Lesson.objects.filter(tenant=self.tenant).get(text="Keep your promises to yourself")
+        created = Lesson.objects.filter(tenant=self.tenant).get(text="Keep Alice's exact phrasing")
+        self.assertEqual(created.context, "evening check-in with Alice")
+        self.assertEqual(created.pii_receipts["text"], {"state": "bypass", "writer": "runtime"})
+        self.assertEqual(created.pii_receipts["context"], {"state": "bypass", "writer": "runtime"})
         self.assertEqual(created.status, "approved")
         self.assertIsNotNone(created.approved_at)
         self.assertEqual(created.source_type, "reflection")
+        self.assertEqual(response.json()["lesson"]["text"], "Keep Alice's exact phrasing")
+        self.assertEqual(response.json()["lesson"]["context"], "evening check-in with Alice")
+        self.assertNotIn("pii_receipts", response.json()["lesson"])
         # Embedding + connections run on the auto-approval path.
+        mock_process.assert_called_once_with(created)
+
+    @patch("apps.lessons.clustering.refresh_constellation")
+    @patch("apps.lessons.services.process_approved_lesson")
+    def test_runtime_lessons_create_stores_and_returns_placeholder_space(self, mock_process, mock_refresh):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            response = self.client.post(
+                f"/api/v1/integrations/runtime/{self.tenant.id}/lessons/",
+                data={
+                    "text": "Ask Alice for constraints",
+                    "context": "Notes from Alice",
+                    "source_type": "reflection",
+                    "source_ref": "conversation:msg-2",
+                    "tags": ["growth"],
+                },
+                content_type="application/json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 201)
+        created = Lesson.objects.get(tenant=self.tenant, source_ref="conversation:msg-2")
+        self.assertEqual(created.text, "Ask [PERSON_1] for constraints")
+        self.assertEqual(created.context, "Notes from [PERSON_1]")
+        self.assertEqual(created.pii_receipts["text"]["writer"], "runtime")
+        self.assertEqual(created.pii_receipts["text"]["state"], "placeholder")
+        self.assertEqual(created.pii_receipts["context"]["writer"], "runtime")
+        self.assertEqual(created.pii_receipts["context"]["state"], "placeholder")
+        lesson_payload = response.json()["lesson"]
+        self.assertEqual(lesson_payload["text"], created.text)
+        self.assertEqual(lesson_payload["context"], created.context)
+        self.assertNotIn("pii_receipts", lesson_payload)
         mock_process.assert_called_once_with(created)
 
     @patch("apps.integrations.runtime_views.search_lessons")

@@ -7,10 +7,11 @@ from uuid import UUID
 from django.db import DataError
 from django.test import TestCase
 
-from apps.journal.models import JournalEntry, PendingTaskAction, Task
+from apps.fuel.models import Workout, WorkoutCategory
+from apps.journal.models import JournalEntry, PendingTaskAction, Purpose, Task
 from apps.pii.authoring import AuthoredText
 from apps.pii.redactor import RedactionOutcome
-from apps.pii.repair_sweep import _check_rate_alert, repair_tenant
+from apps.pii.repair_sweep import MAX_REPAIR_ATTEMPTS, _check_rate_alert, repair_tenant
 from apps.tenants.models import Tenant, User
 
 
@@ -82,6 +83,113 @@ class RepairSweepTests(TestCase):
         self.assertEqual(second["fields_attempted"], 0)
         self.assertEqual(author.call_count, 2)
         self.assertTrue(all(call.kwargs["model_label"] == "journal.JournalEntry" for call in author.call_args_list))
+
+    def test_w3b_recursive_json_store_repairs_every_string_descendant_once(self):
+        workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 8, 8),
+            category=WorkoutCategory.OTHER,
+            activity="Circuit",
+            detail_json={
+                "coach": "Alice",
+                "sets": [{"cue": "Ask Alice", "reps": 5}, [True, "Alice note"]],
+                "empty": None,
+            },
+            pii_receipts={"detail_json": {"state": "unconfirmed", "reason": "redaction-error"}},
+        )
+
+        def authored(_tenant, text, **_kwargs):
+            rewritten = text.replace("Alice", "[PERSON_1]")
+            redactions = [{"placeholder": "[PERSON_1]"}] if rewritten != text else []
+            return AuthoredText(
+                text=rewritten,
+                receipt={"state": "placeholder", "redactions": redactions, "writer": "background"},
+            )
+
+        with patch("apps.pii.authoring.author_text", side_effect=authored) as author:
+            first = repair_tenant(self.tenant, alert=False)
+            second = repair_tenant(self.tenant, alert=False)
+
+        workout.refresh_from_db()
+        self.assertEqual(
+            workout.detail_json,
+            {
+                "coach": "[PERSON_1]",
+                "sets": [{"cue": "Ask [PERSON_1]", "reps": 5}, [True, "[PERSON_1] note"]],
+                "empty": None,
+            },
+        )
+        self.assertEqual(workout.pii_receipts["detail_json"]["state"], "placeholder")
+        self.assertEqual(
+            workout.pii_receipts["detail_json"]["redactions"],
+            [{"placeholder": "[PERSON_1]"}],
+        )
+        self.assertEqual(first["fields_attempted"], 1)
+        self.assertEqual(first["fields_repaired"], 1)
+        self.assertEqual(second["fields_attempted"], 0)
+        self.assertEqual(author.call_count, 3)
+        self.assertTrue(all(call.kwargs["model_label"] == "fuel.Workout" for call in author.call_args_list))
+
+    def test_shape_mismatch_terminalizes_after_bounded_persisted_attempts(self):
+        purpose = Purpose.objects.create(
+            tenant=self.tenant,
+            statement="A stable direction",
+            evidence=[{"unexpected": "Alice"}],
+            pii_receipts={"evidence": {"state": "unconfirmed", "reason": "shape-mismatch"}},
+        )
+
+        for attempt in range(1, MAX_REPAIR_ATTEMPTS + 1):
+            result = repair_tenant(self.tenant, alert=False)
+            purpose.refresh_from_db()
+            receipt = purpose.pii_receipts["evidence"]
+            self.assertEqual(receipt["repair_attempts"], attempt)
+            self.assertEqual(result["fields_attempted"], 1)
+            self.assertEqual(result["unconfirmed"], 1)
+            if attempt < MAX_REPAIR_ATTEMPTS:
+                self.assertEqual(receipt["state"], "unconfirmed")
+                self.assertEqual(result["terminal"], 0)
+            else:
+                self.assertEqual(receipt["state"], "terminal")
+                self.assertEqual(receipt["terminal_from"], "unconfirmed")
+                self.assertEqual(receipt["terminal_reason"], "repair-attempts-exhausted")
+                self.assertEqual(result["terminal"], 1)
+
+        exhausted = repair_tenant(self.tenant, alert=False)
+        purpose.refresh_from_db()
+        self.assertEqual(exhausted["rows_seen"], 0)
+        self.assertEqual(exhausted["fields_attempted"], 0)
+        self.assertEqual(purpose.pii_receipts["evidence"]["repair_attempts"], MAX_REPAIR_ATTEMPTS)
+
+    def test_repairs_are_tenant_scoped(self):
+        other_user = User.objects.create_user(username="repair-other", password="x")
+        other_tenant = Tenant.objects.create(
+            user=other_user,
+            status=Tenant.Status.ACTIVE,
+            layer1_placeholder_writes=True,
+        )
+        own = Task.objects.create(
+            tenant=self.tenant,
+            title="own raw",
+            pii_receipts={"title": {"state": "unconfirmed"}},
+        )
+        other = Task.objects.create(
+            tenant=other_tenant,
+            title="other raw",
+            pii_receipts={"title": {"state": "unconfirmed"}},
+        )
+
+        def repaired(_tenant, text, **_kwargs):
+            return AuthoredText(text=f"fixed {text}", receipt={"state": "placeholder", "redactions": []})
+
+        with patch("apps.pii.repair_sweep.author_text", side_effect=repaired):
+            result = repair_tenant(self.tenant, alert=False)
+
+        own.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(result["rows_seen"], 1)
+        self.assertEqual(own.title, "fixed own raw")
+        self.assertEqual(other.title, "other raw")
+        self.assertEqual(other.pii_receipts["title"]["state"], "unconfirmed")
 
     def test_repairs_unconfirmed_reconciliation_evidence(self):
         action = PendingTaskAction.objects.create(
@@ -193,14 +301,22 @@ class RepairSweepTests(TestCase):
             patch.object(Task, "save", new=flaky_save),
             patch("apps.pii.repair_sweep.author_text", side_effect=repaired),
         ):
-            result = repair_tenant(self.tenant, alert=False)
+            results = [repair_tenant(self.tenant, alert=False) for _attempt in range(MAX_REPAIR_ATTEMPTS + 1)]
 
         poison.refresh_from_db()
         good.refresh_from_db()
-        self.assertEqual(result["errors"], 1)
-        self.assertEqual(result["rows_seen"], 2)
-        self.assertEqual(result["fields_repaired"], 1)
+        self.assertEqual(results[0]["errors"], 1)
+        self.assertEqual(results[0]["rows_seen"], 2)
+        self.assertEqual(results[0]["fields_repaired"], 1)
+        self.assertEqual(results[1]["errors"], 1)
+        self.assertEqual(results[2]["errors"], 1)
+        self.assertEqual(results[2]["terminal"], 1)
+        self.assertEqual(results[3]["rows_seen"], 0)
+        self.assertEqual(results[3]["fields_attempted"], 0)
         self.assertEqual(poison.title, "poison")
+        self.assertEqual(poison.pii_receipts["title"]["state"], "terminal")
+        self.assertEqual(poison.pii_receipts["title"]["terminal_from"], "unconfirmed")
+        self.assertEqual(poison.pii_receipts["title"]["repair_attempts"], MAX_REPAIR_ATTEMPTS)
         self.assertEqual(good.title, "fixed good")
 
     def test_reauthor_truncation_prevents_poison_row_from_wedging_sweep(self):
@@ -259,6 +375,43 @@ class RepairSweepTests(TestCase):
         self.assertIn(f"Tenant ID: {self.tenant.id}", kwargs["body"])
         self.assertIn("Attempts: 100", kwargs["body"])
         self.assertNotIn("Alice", kwargs["body"])
+
+    def test_terminal_rate_has_its_own_alarm_and_counter_line(self):
+        with patch("apps.transcripts.alerts._send_alert", return_value=True) as send_alert:
+            fired = _check_rate_alert(self.tenant, attempts=100, count=2, kind="terminal")
+
+        self.assertTrue(fired)
+        kwargs = send_alert.call_args.kwargs
+        self.assertIn("terminal rate above 1%", kwargs["subject"])
+        self.assertIn("Terminal outcomes: 2", kwargs["body"])
+
+    def test_repair_feeds_terminal_outcomes_to_terminal_alarm(self):
+        Task.objects.create(
+            tenant=self.tenant,
+            title="still raw",
+            pii_receipts={
+                "title": {
+                    "state": "unconfirmed",
+                    "reason": "redaction-error",
+                    "repair_attempts": MAX_REPAIR_ATTEMPTS - 1,
+                }
+            },
+        )
+        failed = AuthoredText(
+            text="still raw",
+            receipt={"state": "unconfirmed", "reason": "redaction-error", "redactions": []},
+        )
+
+        with (
+            patch("apps.pii.repair_sweep.author_text", return_value=failed),
+            patch("apps.pii.repair_sweep._check_rate_alert", return_value=False) as check_alert,
+        ):
+            result = repair_tenant(self.tenant)
+
+        self.assertEqual(result["terminal"], 1)
+        terminal_call = next(call for call in check_alert.call_args_list if call.kwargs["kind"] == "terminal")
+        self.assertEqual(terminal_call.kwargs["count"], 1)
+        self.assertEqual(terminal_call.kwargs["attempts"], 1)
 
     def test_qstash_task_map_registers_repair_entrypoint(self):
         from apps.cron.views import TASK_MAP

@@ -78,6 +78,7 @@ class CoreProfile(models.Model):
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.CORE_PROFILE_ADDITIONAL_CONTEXT``) — ships DARK.
     # Shares the journal flag pair (``Tenant.encrypt_journal_writes`` / ``read_encrypted_journal``).
     additional_context_enc = models.BinaryField(null=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -168,6 +169,7 @@ class MeditationSession(models.Model):
     )
     # Encryption-at-rest Phase 3 sidecar (AAD ``enc_columns.MEDITATION_SESSION_FEEDBACK_NOTE``) — ships DARK.
     feedback_note_enc = models.BinaryField(null=True)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     feedback_at = models.DateTimeField(
         null=True,
         blank=True,

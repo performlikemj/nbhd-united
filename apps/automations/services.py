@@ -257,6 +257,19 @@ def _build_input_payload(
     }
 
 
+def _author_run_payloads(tenant, values: dict, *, seam: str, receipts=None):
+    from apps.pii.store_authoring import author_store_fields
+
+    return author_store_fields(
+        tenant,
+        values,
+        model_label="automations.AutomationRun",
+        seam=seam,
+        writer="background",
+        receipts=receipts,
+    )
+
+
 @dataclass
 class _LimitCheck:
     allowed: bool
@@ -409,6 +422,11 @@ def execute_automation(
         # exists, because next_run_at is never advanced on the error path
         # (scheduler.py catches the exception and continues).
         skipped_key = _build_idempotency_key(automation, trigger_source, reference_utc)
+        authored_payloads, payload_receipts = _author_run_payloads(
+            automation.tenant,
+            {"input_payload": _build_input_payload(automation, trigger_source, reference_utc)},
+            seam="automations.run.skipped",
+        )
         skipped_defaults = {
             "automation": automation,
             "tenant": automation.tenant,
@@ -417,7 +435,8 @@ def execute_automation(
             "scheduled_for": reference_utc,
             "started_at": timezone.now(),
             "finished_at": timezone.now(),
-            "input_payload": _build_input_payload(automation, trigger_source, reference_utc),
+            "input_payload": authored_payloads["input_payload"],
+            "pii_receipts": payload_receipts,
             "error_message": limit_check.reason,
         }
         with transaction.atomic():
@@ -448,13 +467,19 @@ def execute_automation(
         return run
 
     idempotency_key = _build_idempotency_key(automation, trigger_source, reference_utc)
+    authored_payloads, payload_receipts = _author_run_payloads(
+        automation.tenant,
+        {"input_payload": _build_input_payload(automation, trigger_source, reference_utc)},
+        seam="automations.run.create",
+    )
     defaults = {
         "automation": automation,
         "tenant": automation.tenant,
         "status": AutomationRun.Status.PENDING,
         "trigger_source": trigger_source,
         "scheduled_for": reference_utc,
-        "input_payload": _build_input_payload(automation, trigger_source, reference_utc),
+        "input_payload": authored_payloads["input_payload"],
+        "pii_receipts": payload_receipts,
     }
 
     with transaction.atomic():
@@ -489,11 +514,22 @@ def execute_automation(
     try:
         synthetic_update, dispatch_result = _dispatch_to_openclaw(automation, run.id)
         run.status = AutomationRun.Status.SUCCEEDED
-        run.input_payload = {
+        next_input_payload = {
             **run.input_payload,
             "synthetic_update": synthetic_update,
         }
-        run.result_payload = {"router_response": dispatch_result}
+        authored_payloads, payload_receipts = _author_run_payloads(
+            automation.tenant,
+            {
+                "input_payload": next_input_payload,
+                "result_payload": {"router_response": dispatch_result},
+            },
+            seam="automations.run.dispatch_result",
+            receipts=run.pii_receipts,
+        )
+        run.input_payload = authored_payloads["input_payload"]
+        run.result_payload = authored_payloads["result_payload"]
+        run.pii_receipts = payload_receipts
     except Exception as exc:
         run.status = AutomationRun.Status.FAILED
         run.error_message = str(exc)
@@ -504,6 +540,7 @@ def execute_automation(
             "status",
             "input_payload",
             "result_payload",
+            "pii_receipts",
             "error_message",
             "finished_at",
             "updated_at",

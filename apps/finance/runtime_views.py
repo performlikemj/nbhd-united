@@ -139,13 +139,25 @@ class RuntimeFinanceAccountsView(_FinanceResponseGuard, APIView):
         if account_type not in FinanceAccount.AccountType.values:
             account_type = "other_debt"
 
-        # Upsert by nickname (fuzzy: case-insensitive)
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {"nickname": nickname},
+            model_label="finance.FinanceAccount",
+            seam="finance.runtime.account.upsert",
+            writer="runtime",
+        )
+        stored_nickname = authored["nickname"]
+
+        # Upsert by placeholder-space nickname (fuzzy: case-insensitive)
         account, created = FinanceAccount.objects.update_or_create(
             tenant=tenant,
-            nickname__iexact=nickname,
+            nickname__iexact=stored_nickname,
             is_active=True,
             defaults={
-                "nickname": nickname,
+                "nickname": stored_nickname,
+                "pii_receipts": receipts,
                 "account_type": account_type,
                 "current_balance": balance,
                 "interest_rate": _safe_decimal(body.get("interest_rate")),
@@ -214,6 +226,7 @@ class RuntimeFinanceTransactionsView(_FinanceResponseGuard, APIView):
             transaction_type=body.get("transaction_type", "payment"),
             txn_date=txn_date,
             description=body.get("description") or "",
+            writer="runtime",
         )
         return Response(
             payload,
@@ -456,6 +469,15 @@ class RuntimeFinancePayoffView(APIView):
         save = body.get("save", False)
         if save and strategy:
             result_data = results[strategy]
+            from apps.pii.store_authoring import author_store_fields
+
+            authored, receipts = author_store_fields(
+                tenant,
+                {"schedule_json": result_data["schedule"]},
+                model_label="finance.PayoffPlan",
+                seam="finance.runtime.payoff_plan",
+                writer="runtime",
+            )
             # Deactivate existing plans
             PayoffPlan.objects.filter(tenant=tenant, is_active=True).update(is_active=False)
             PayoffPlan.objects.create(
@@ -466,7 +488,8 @@ class RuntimeFinancePayoffView(APIView):
                 total_interest=Decimal(result_data["total_interest"]),
                 payoff_months=result_data["payoff_months"],
                 payoff_date=date.fromisoformat(result_data["payoff_date"]),
-                schedule_json=result_data["schedule"],
+                schedule_json=authored["schedule_json"],
+                pii_receipts=receipts,
                 is_active=True,
             )
 

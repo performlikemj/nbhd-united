@@ -83,11 +83,21 @@ def _create_snapshot_for_tenant(tenant: Tenant, snapshot_date: date) -> FinanceS
         for a in accounts
     ]
 
+    from apps.pii.store_authoring import author_store_fields
+
+    authored, receipts = author_store_fields(
+        tenant,
+        {"accounts_json": accounts_json},
+        model_label="finance.FinanceSnapshot",
+        seam="finance.snapshot.monthly",
+        writer="background",
+    )
     return FinanceSnapshot.objects.create(
         tenant=tenant,
         date=snapshot_date,
         total_debt=total_debt,
         total_savings=total_savings,
         total_payments_this_month=total_payments,
-        accounts_json=accounts_json,
+        accounts_json=authored["accounts_json"],
+        pii_receipts=receipts,
     )

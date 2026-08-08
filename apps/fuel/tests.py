@@ -540,6 +540,106 @@ class ReconcilePlanStateTests(TestCase):
         self.assertEqual(Workout.objects.filter(id=w_locked.id).count(), 1)
         self.assertIsNotNone(w_locked.slot.archived_at)
 
+    def test_apply_refetches_edit_lock_before_retemplate(self):
+        from django.utils import timezone
+
+        initial = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(initial, plan=self.plan, tenant=self.tenant)
+        changed_schedule = {
+            **self.plan.schedule_json,
+            "0": {
+                **self.plan.schedule_json["0"],
+                "activity": "Renamed Push Day",
+            },
+        }
+        rec = self._reconcile(self.plan, changed_schedule, self.plan.weeks, today=self.today)
+        stale_workout, _patch = next(
+            item for item in rec.workouts_to_retemplate if item[0].slot.week_index == 0 and item[0].slot.weekday == 0
+        )
+
+        # Simulate the owner acquiring the lock after the diff was built but
+        # before it was applied. The stale object in ``rec`` does not see it.
+        Workout.objects.filter(pk=stale_workout.pk).update(
+            edit_lock_until=timezone.now() + timedelta(seconds=60),
+            edit_lock_owner="user",
+        )
+
+        def lock_check(workout):
+            return bool(workout.edit_lock_until and workout.edit_lock_until > timezone.now())
+
+        counts = self._apply(
+            rec,
+            plan=self.plan,
+            tenant=self.tenant,
+            writer="runtime",
+            edit_lock_check=lock_check,
+        )
+
+        stale_workout.refresh_from_db()
+        self.assertEqual(stale_workout.activity, "Push Day")
+        self.assertEqual(counts["workouts_locked_skip"], 1)
+
+    def test_apply_skips_retemplate_when_diff_time_state_changed_without_incrementing_counters(self):
+        initial = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(initial, plan=self.plan, tenant=self.tenant)
+        changed_schedule = {
+            **self.plan.schedule_json,
+            "0": {**self.plan.schedule_json["0"], "activity": "Renamed Push Day"},
+        }
+        rec = self._reconcile(self.plan, changed_schedule, self.plan.weeks, today=self.today)
+        stale_workout, _patch = next(
+            item for item in rec.workouts_to_retemplate if item[0].slot.week_index == 0 and item[0].slot.weekday == 0
+        )
+        changed_ids = [workout.pk for workout, _patch in rec.workouts_to_retemplate]
+        Workout.objects.filter(pk__in=changed_ids).update(status="done")
+
+        counts = self._apply(rec, plan=self.plan, tenant=self.tenant, writer="runtime")
+
+        stale_workout.refresh_from_db()
+        self.assertEqual(stale_workout.status, "done")
+        self.assertEqual(stale_workout.activity, "Push Day")
+        self.assertEqual(counts["workouts_retemplated"], 0)
+        self.assertEqual(counts["workouts_locked_skip"], 0)
+
+    def test_apply_merges_patch_receipts_with_locked_current_row(self):
+        initial = self._reconcile(self.plan, self.plan.schedule_json, self.plan.weeks, today=self.today)
+        self._apply(initial, plan=self.plan, tenant=self.tenant)
+        changed_schedule = {
+            **self.plan.schedule_json,
+            "0": {
+                **self.plan.schedule_json["0"],
+                "detail_json": {"cue": "Stay steady"},
+            },
+        }
+        rec = self._reconcile(self.plan, changed_schedule, self.plan.weeks, today=self.today)
+        stale_workout, _patch = next(
+            item for item in rec.workouts_to_retemplate if item[0].slot.week_index == 0 and item[0].slot.weekday == 0
+        )
+        owner_note_receipt = {
+            "state": "placeholder",
+            "writer": "owner",
+            "redactions": [{"placeholder": "[PERSON_1]"}],
+        }
+        current_receipts = {**(stale_workout.pii_receipts or {}), "notes": owner_note_receipt}
+        Workout.objects.filter(pk=stale_workout.pk).update(
+            notes="Checked with [PERSON_1]",
+            pii_receipts=current_receipts,
+        )
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            self._apply(rec, plan=self.plan, tenant=self.tenant, writer="runtime")
+
+        stale_workout.refresh_from_db()
+        self.assertEqual(stale_workout.detail_json, {"cue": "Stay steady"})
+        self.assertEqual(stale_workout.notes, "Checked with [PERSON_1]")
+        self.assertEqual(stale_workout.pii_receipts["notes"], owner_note_receipt)
+        self.assertEqual(stale_workout.pii_receipts["detail_json"]["writer"], "runtime")
+
     def test_apply_is_atomic_on_failure(self):
         # If the create_workout step blows up, no slots should remain.
         # We simulate this by setting plan.start_date to None partway through.
@@ -4825,6 +4925,53 @@ class HealthKitSyncTests(TestCase):
         self.assertIn("Apple Health", planned.notes_thread[-1]["text"])
         # No second row created
         self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_hk_empty_thread_gets_checked_receipt_from_final_json(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        planned = self._planned()
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            resp = self._post({"workouts": [self._workout_item(activity="Outdoor Run with Alice")]})
+
+        self.assertEqual(resp.data["results"][0]["status"], "matched_planned")
+        planned.refresh_from_db()
+        self.assertIn("[PERSON_1]", planned.notes_thread[-1]["text"])
+        self.assertEqual(planned.pii_receipts["notes_thread"]["state"], "placeholder")
+        self.assertEqual(planned.pii_receipts["notes_thread"]["writer"], "owner")
+        self.assertEqual(
+            planned.pii_receipts["notes_thread"]["redactions"],
+            [{"placeholder": "[PERSON_1]"}],
+        )
+
+    def test_hk_nonempty_legacy_thread_keeps_pessimistic_bypass(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.save(update_fields=["layer1_placeholder_writes", "pii_entity_map"])
+        manual = self._manual_log(
+            notes_thread=[
+                {
+                    "at": "2026-06-09T21:00:00Z",
+                    "who": "user",
+                    "text": "Unchecked legacy note",
+                }
+            ]
+        )
+
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            resp = self._post({"workouts": [self._workout_item(activity="Outdoor Run with Alice")]})
+
+        self.assertEqual(resp.data["results"][0]["status"], "matched_log")
+        manual.refresh_from_db()
+        self.assertEqual(manual.pii_receipts["notes_thread"]["state"], "bypass")
+        self.assertNotIn("redactions", manual.pii_receipts["notes_thread"])
 
     def test_walk_does_not_complete_planned_run(self):
         planned = self._planned()

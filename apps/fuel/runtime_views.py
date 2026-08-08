@@ -216,6 +216,20 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         if verr is not None:
             return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {
+                "activity": activity,
+                "notes": data.get("notes", ""),
+                "detail_json": detail_json,
+            },
+            model_label="fuel.Workout",
+            seam="fuel.runtime.workout.create",
+            writer="runtime",
+        )
+
         try:
             workout = Workout.objects.create(
                 tenant=tenant,
@@ -228,11 +242,12 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
                 # so the model can reason about where a session came from.
                 source=WorkoutSource.ASSISTANT,
                 category=category,
-                activity=activity,
+                activity=authored["activity"],
                 duration_minutes=duration,
                 rpe=rpe,
-                notes=data.get("notes", ""),
-                detail_json=detail_json,
+                notes=authored["notes"],
+                detail_json=authored["detail_json"],
+                pii_receipts=receipts,
             )
         except Exception as exc:
             logger.exception("RuntimeLogWorkoutView failed for tenant %s", tenant_id)
@@ -376,6 +391,26 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                     updated_fields.append("category")
 
         if updated_fields:
+            from apps.pii.store_authoring import author_store_fields
+
+            pii_values = {
+                field: getattr(workout, field)
+                for field in ("activity", "notes", "detail_json")
+                if field in updated_fields
+            }
+            authored, receipts = author_store_fields(
+                tenant,
+                pii_values,
+                model_label="fuel.Workout",
+                seam="fuel.runtime.workout.update",
+                writer="runtime",
+                receipts=workout.pii_receipts,
+            )
+            for field, value in authored.items():
+                setattr(workout, field, value)
+            if pii_values:
+                workout.pii_receipts = receipts
+                updated_fields.append("pii_receipts")
             updated_fields.append("updated_at")
             try:
                 with transaction.atomic():
@@ -448,9 +483,20 @@ class RuntimeWorkoutSkipView(_FuelResponseGuard, APIView):
             logger.info("runtime.skip.edit_locked workout=%s", workout_id)
             return lock_resp
         reason = str(request.data.get("reason") or "")[:128]
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant_or_resp,
+            {"skip_reason": reason},
+            model_label="fuel.Workout",
+            seam="fuel.runtime.workout.skip",
+            writer="runtime",
+            receipts=workout.pii_receipts,
+        )
         workout.status = WorkoutStatus.SKIPPED
-        workout.skip_reason = reason
-        workout.save(update_fields=["status", "skip_reason", "updated_at"])
+        workout.skip_reason = authored["skip_reason"]
+        workout.pii_receipts = receipts
+        workout.save(update_fields=["status", "skip_reason", "pii_receipts", "updated_at"])
         return Response(
             {
                 "id": str(workout.id),
@@ -485,8 +531,21 @@ class RuntimeWorkoutCompleteView(_FuelResponseGuard, APIView):
             logger.info("runtime.complete.edit_locked workout=%s", workout_id)
             return lock_resp
         workout.status = WorkoutStatus.DONE
+        update_fields = ["status", "rpe", "duration_minutes", "updated_at"]
         if "notes" in request.data:
-            workout.notes = str(request.data.get("notes") or "")
+            from apps.pii.store_authoring import author_store_fields
+
+            authored, receipts = author_store_fields(
+                tenant_or_resp,
+                {"notes": str(request.data.get("notes") or "")},
+                model_label="fuel.Workout",
+                seam="fuel.runtime.workout.complete",
+                writer="runtime",
+                receipts=workout.pii_receipts,
+            )
+            workout.notes = authored["notes"]
+            workout.pii_receipts = receipts
+            update_fields.extend(["notes", "pii_receipts"])
         if request.data.get("rpe") is not None:
             try:
                 rpe = int(request.data["rpe"])
@@ -502,7 +561,7 @@ class RuntimeWorkoutCompleteView(_FuelResponseGuard, APIView):
         # Scoped save — a full-column save from a stale in-memory copy
         # would blind-revert fields a concurrent HealthKit sync just wrote
         # (external_id, merged detail_json).
-        workout.save(update_fields=["status", "notes", "rpe", "duration_minutes", "updated_at"])
+        workout.save(update_fields=update_fields)
         try:
             from .services import detect_prs
 
@@ -792,6 +851,26 @@ class RuntimeFuelProfileView(_FuelResponseGuard, APIView):
                 updated_fields.append("preferred_time")
 
         if updated_fields:
+            from apps.pii.store_authoring import author_store_fields
+
+            pii_values = {
+                field: getattr(profile, field)
+                for field in ("additional_context", "limitations")
+                if field in updated_fields
+            }
+            authored, receipts = author_store_fields(
+                tenant,
+                pii_values,
+                model_label="fuel.FuelProfile",
+                seam="fuel.runtime.profile.update",
+                writer="runtime",
+                receipts=profile.pii_receipts,
+            )
+            for field, value in authored.items():
+                setattr(profile, field, value)
+            if pii_values:
+                profile.pii_receipts = receipts
+                updated_fields.append("pii_receipts")
             updated_fields.append("updated_at")
             try:
                 profile.save(update_fields=updated_fields)
@@ -933,13 +1012,23 @@ class RuntimeSleepView(APIView):
             except (TypeError, ValueError):
                 quality = None
 
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {"notes": str(data.get("notes", "")).strip()},
+            model_label="fuel.SleepLog",
+            seam="fuel.runtime.sleep.upsert",
+            writer="runtime",
+        )
         entry, created = SleepLog.objects.update_or_create(
             tenant=tenant,
             date=sleep_date,
             defaults={
                 "duration_hours": duration,
                 "quality": quality,
-                "notes": str(data.get("notes", "")).strip(),
+                "notes": authored["notes"],
+                "pii_receipts": receipts,
             },
         )
         return Response(
@@ -1197,7 +1286,57 @@ def _validate_normalize_week_overrides(week_overrides):
     return normalized, None
 
 
-def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks, week_overrides=None):
+def _author_plan_expansion_inputs(tenant, schedule_json, weeks, week_overrides=None, *, writer: str):
+    """Author every registered child-Workout value before the DB transaction."""
+    from apps.pii.store_authoring import author_store_fields
+
+    week_overrides = week_overrides or {}
+    authored_workouts = {}
+    for week_offset in range(weeks):
+        override = week_overrides.get(str(week_offset))
+        if isinstance(override, dict):
+            effective = dict(schedule_json)
+            for day_key, day_val in override.items():
+                if day_val is None:
+                    effective.pop(str(day_key), None)
+                else:
+                    effective[str(day_key)] = day_val
+        else:
+            effective = schedule_json
+
+        for day_str, workout_def in effective.items():
+            try:
+                day_int = int(day_str)
+            except (TypeError, ValueError):
+                continue
+            if not 0 <= day_int <= 6 or not isinstance(workout_def, dict):
+                continue
+            category = workout_def.get("category", "other")
+            if category not in WorkoutCategory.values:
+                category = "other"
+            authored_workouts[(week_offset, day_int)] = author_store_fields(
+                tenant,
+                {
+                    "activity": str(workout_def.get("activity", WorkoutCategory(category).label)).strip(),
+                    "detail_json": workout_def.get("detail_json", {}),
+                },
+                model_label="fuel.Workout",
+                seam=f"fuel.{writer}.plan.expand",
+                writer=writer,
+            )
+    return authored_workouts
+
+
+def _expand_plan_workouts(
+    plan,
+    tenant,
+    schedule_json,
+    start_date,
+    weeks,
+    week_overrides=None,
+    *,
+    authored_workouts,
+):
     """Create planned Workout rows + matching PlanSlot rows from a schedule.
 
     Each workout gets its ``slot`` FK set so the reconciler (Phase 5) can
@@ -1268,6 +1407,7 @@ def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks, week_o
                     weekday=day_int,
                 )
 
+            authored, receipts = authored_workouts[(week_offset, day_int)]
             Workout.objects.create(
                 tenant=tenant,
                 plan=plan,
@@ -1275,10 +1415,11 @@ def _expand_plan_workouts(plan, tenant, schedule_json, start_date, weeks, week_o
                 date=workout_date,
                 status=WorkoutStatus.PLANNED,
                 category=category,
-                activity=str(workout_def.get("activity", WorkoutCategory(category).label)).strip(),
+                activity=authored["activity"],
                 duration_minutes=workout_def.get("duration_minutes"),
                 rpe=workout_def.get("target_rpe"),
-                detail_json=workout_def.get("detail_json", {}),
+                detail_json=authored["detail_json"],
+                pii_receipts=receipts,
             )
             workouts_created += 1
 
@@ -1535,9 +1676,14 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         # path enforce single-active: the re-asserted plan still supersedes any
         # OTHER active plans — otherwise the multi-active legacy tenants this
         # exists to clean up keep their stragglers when a plan is re-created.
+        from apps.journal.lifecycle_views import _search_variants
+
+        name_query = db_models.Q()
+        for variant in _search_variants(tenant, name):
+            name_query |= db_models.Q(name=variant)  # guard: encrypted-predicate
         existing = WorkoutPlan.objects.filter(
+            name_query,
             tenant=tenant,
-            name=name,  # guard: encrypted-predicate
             start_date=plan_start,
             status=PlanStatus.ACTIVE,
         ).first()
@@ -1552,6 +1698,29 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
                 result["superseded_plans"] = superseded
             return Response(result, status=status.HTTP_200_OK)
 
+        from apps.pii.store_authoring import author_store_fields
+
+        authored_plan, plan_receipts = author_store_fields(
+            tenant,
+            {
+                "name": name,
+                "objective": str(data.get("objective", "")).strip()[:200],
+                "notes": str(data.get("notes", "")).strip(),
+                "schedule_json": normalized_schedule,
+                "week_overrides": normalized_overrides,
+            },
+            model_label="fuel.WorkoutPlan",
+            seam="fuel.runtime.plan.create",
+            writer="runtime",
+        )
+        authored_workouts = _author_plan_expansion_inputs(
+            tenant,
+            authored_plan["schedule_json"],
+            weeks,
+            week_overrides=authored_plan["week_overrides"],
+            writer="runtime",
+        )
+
         # Persist the plan row and expand its full calendar of planned workouts
         # in a SINGLE transaction. A mid-loop failure in _expand_plan_workouts
         # must roll back the plan row too — otherwise the retry hits the
@@ -1563,17 +1732,24 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             with transaction.atomic():
                 plan = WorkoutPlan.objects.create(
                     tenant=tenant,
-                    name=name,
+                    name=authored_plan["name"],
                     start_date=plan_start,
                     weeks=weeks,
                     days_per_week=days_per_week,
-                    schedule_json=normalized_schedule,
-                    week_overrides=normalized_overrides,
-                    objective=str(data.get("objective", "")).strip()[:200],
-                    notes=str(data.get("notes", "")).strip(),
+                    schedule_json=authored_plan["schedule_json"],
+                    week_overrides=authored_plan["week_overrides"],
+                    objective=authored_plan["objective"],
+                    notes=authored_plan["notes"],
+                    pii_receipts=plan_receipts,
                 )
                 workouts_created = _expand_plan_workouts(
-                    plan, tenant, normalized_schedule, plan_start, weeks, week_overrides=normalized_overrides
+                    plan,
+                    tenant,
+                    authored_plan["schedule_json"],
+                    plan_start,
+                    weeks,
+                    week_overrides=authored_plan["week_overrides"],
+                    authored_workouts=authored_workouts,
                 )
                 superseded = [] if concurrent else _supersede_other_active_plans(tenant, plan)
         except Exception as exc:
@@ -1652,6 +1828,10 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             plan.notes = str(data["notes"]).strip()
             updated_fields.append("notes")
 
+        if "objective" in data:
+            plan.objective = str(data["objective"]).strip()[:200]
+            updated_fields.append("objective")
+
         if "weeks" in data:
             try:
                 plan.weeks = max(1, min(52, int(data["weeks"])))
@@ -1705,6 +1885,26 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                 pass
 
         if updated_fields:
+            from apps.pii.store_authoring import author_store_fields
+
+            pii_values = {
+                field: getattr(plan, field)
+                for field in ("name", "notes", "objective", "schedule_json", "week_overrides")
+                if field in updated_fields
+            }
+            authored, receipts = author_store_fields(
+                tenant,
+                pii_values,
+                model_label="fuel.WorkoutPlan",
+                seam="fuel.runtime.plan.update",
+                writer="runtime",
+                receipts=plan.pii_receipts,
+            )
+            for field, value in authored.items():
+                setattr(plan, field, value)
+            if pii_values:
+                plan.pii_receipts = receipts
+                updated_fields.append("pii_receipts")
             updated_fields.append("updated_at")
             try:
                 plan.save(update_fields=updated_fields)
@@ -1743,6 +1943,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                     rec,
                     plan=plan,
                     tenant=tenant,
+                    writer="runtime",
                     edit_lock_check=_is_edit_locked,
                 )
                 logger.info("fuel.plan_reconciled plan=%s counts=%s", plan.id, counts)

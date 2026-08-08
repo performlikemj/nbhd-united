@@ -12,7 +12,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from apps.dashboard.views import _clean_markdown_preview, _derive_week_bounds
 from apps.insights.models import AssistantInsight, TopicRegistry
 from apps.insights.pillars import Pillar
-from apps.journal.models import Document, Goal, PendingExtraction, Purpose
+from apps.journal.models import Document, Goal, JournalEntry, PendingExtraction, Purpose, WeeklyReview
 from apps.journal.services import STARTER_DOCUMENT_TEMPLATES
 from apps.journal.templates_md import GOALS_TEMPLATE
 from apps.tenants.services import create_tenant
@@ -150,6 +150,74 @@ class HorizonsOwnerRehydrationTests(TestCase):
         )
         self.assertEqual(
             pending_row["pii_receipts"]["text"]["redactions"],
+            [{"placeholder": "[PERSON_1]", "value": "Alice"}],
+        )
+
+    def test_weekly_mood_and_insight_projections_rehydrate_with_receipts(self):
+        today = timezone.now().date()
+        receipt = {
+            "state": "placeholder",
+            "writer": "background",
+            "redactions": [{"placeholder": "[PERSON_1]"}],
+        }
+        weekly_document = Document.objects.create(
+            tenant=self.tenant,
+            kind=Document.Kind.WEEKLY,
+            slug=str(today - timedelta(days=today.weekday())),
+            title="Week with [PERSON_1]",
+            markdown="# Review\n\nShipped with [PERSON_1].",
+            pii_receipts={"title": receipt, "markdown": receipt},
+        )
+        WeeklyReview.objects.create(
+            tenant=self.tenant,
+            week_start=today - timedelta(days=today.weekday()),
+            week_end=today - timedelta(days=today.weekday()) + timedelta(days=6),
+            mood_summary="steady",
+            top_wins=["Shipped with [PERSON_1]"],
+            top_challenges=[],
+            lessons=[],
+            week_rating=WeeklyReview.WeekRating.THUMBS_UP,
+            intentions_next_week=[],
+            raw_text="",
+            pii_receipts={"top_wins": receipt},
+        )
+        JournalEntry.objects.create(
+            tenant=self.tenant,
+            date=today,
+            mood="focused with [PERSON_1]",
+            energy=JournalEntry.Energy.HIGH,
+            raw_text="",
+            pii_receipts={"mood": receipt},
+        )
+        topic, _ = TopicRegistry.objects.get_or_create(
+            pillar=Pillar.JOURNAL.value,
+            slug="mood",
+            defaults={"display_name": "Mood", "status": TopicRegistry.Status.CANONICAL},
+        )
+        insight = AssistantInsight.objects.create(
+            tenant=self.tenant,
+            pillar=Pillar.JOURNAL.value,
+            topic=topic,
+            statement="You work well with [PERSON_1]",
+        )
+
+        response = self.client.get("/api/v1/dashboard/horizons/")
+
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        document = next(item for item in body["weekly_documents"] if item["id"] == str(weekly_document.id))
+        self.assertEqual(document["title"], "Week with Alice")
+        self.assertEqual(document["markdown"], "# Review\n\nShipped with Alice.")
+        self.assertIn("Shipped with Alice", document["preview"])
+        self.assertEqual(document["pii_receipts"]["markdown"]["redactions"][0]["value"], "Alice")
+        self.assertEqual(body["weekly_pulse"][0]["top_win"], "Shipped with Alice")
+        self.assertEqual(body["weekly_pulse"][0]["pii_receipts"]["top_wins"]["writer"], "background")
+        self.assertEqual(body["mood_trend"][0]["mood"], "focused with Alice")
+        self.assertEqual(body["mood_trend"][0]["pii_receipts"]["mood"]["writer"], "background")
+        insight_row = next(item for item in body["assistant_insights"] if item["id"] == str(insight.id))
+        self.assertEqual(insight_row["statement"], "You work well with Alice")
+        self.assertEqual(
+            insight_row["pii_receipts"]["statement"]["redactions"],
             [{"placeholder": "[PERSON_1]", "value": "Alice"}],
         )
 

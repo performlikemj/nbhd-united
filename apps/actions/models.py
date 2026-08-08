@@ -42,6 +42,7 @@ class PendingAction(models.Model):
         max_length=500,
         help_text="Human-readable description shown in confirmation prompt.",
     )
+    pii_receipts = models.JSONField(default=dict, blank=True)
     status = models.CharField(
         max_length=16,
         choices=ActionStatus.choices,
@@ -114,6 +115,7 @@ class ActionAuditLog(models.Model):
     action_type = models.CharField(max_length=32, choices=ActionType.choices)
     action_payload = models.JSONField()
     display_summary = models.CharField(max_length=500)
+    pii_receipts = models.JSONField(default=dict, blank=True)
     result = models.CharField(
         max_length=16,
         choices=ActionStatus.choices,

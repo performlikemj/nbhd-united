@@ -264,6 +264,7 @@ class AuthorTextTests(TestCase):
                 seam="test.truncate",
                 writer="owner",
                 field="title",
+                model_label="journal.Task",
             )
 
         self.assertEqual(authored.text, "x" * 250)
@@ -356,14 +357,15 @@ class AuthorTextTests(TestCase):
         self.tenant.save(update_fields=["layer1_placeholder_writes"])
         paths = registered_store("journal.Purpose").nested_json_paths("evidence")
 
-        authored = author_json_paths(
-            self.tenant,
-            {"unexpected": "Alice"},
-            paths=paths,
-            seam="test.json-shape",
-            writer="runtime",
-            field="payload",
-        )
+        with patch("apps.pii.alerts.record_live_write_outcome") as record_live:
+            authored = author_json_paths(
+                self.tenant,
+                {"unexpected": "Alice"},
+                paths=paths,
+                seam="test.json-shape",
+                writer="runtime",
+                field="payload",
+            )
 
         self.assertEqual(authored.value, {"unexpected": "Alice"})
         self.assertEqual(
@@ -376,6 +378,64 @@ class AuthorTextTests(TestCase):
             },
         )
         self.assertIn(authored.receipt["state"], REPAIR_STATES)
+        record_live.assert_called_once_with(
+            self.tenant,
+            seam="test.json-shape",
+            writer="runtime",
+            is_error=True,
+        )
+
+    def test_flag_off_json_shape_mismatch_is_byte_identical_bypass(self):
+        paths = registered_store("journal.Purpose").nested_json_paths("evidence")
+        original = {"unexpected": "  Alice\n[PERSON_999]  "}
+
+        with (
+            patch("apps.pii.alerts.record_live_write_outcome") as record_live,
+            patch("apps.pii.authoring.redact_user_message_checked") as checked,
+        ):
+            authored = author_json_paths(
+                self.tenant,
+                original,
+                paths=paths,
+                seam="test.json-shape-off",
+                writer="runtime",
+                field="payload",
+            )
+
+        self.assertIs(authored.value, original)
+        self.assertEqual(authored.value, {"unexpected": "  Alice\n[PERSON_999]  "})
+        self.assertEqual(authored.receipt, {"state": "bypass", "writer": "runtime"})
+        checked.assert_not_called()
+        record_live.assert_not_called()
+
+    def test_recursive_json_with_no_string_descendants_is_clean_empty_content(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        paths = registered_store("fuel.Workout").nested_json_paths("detail_json")
+        original = {"sets": [{"reps": 5, "complete": True}], "score": 3.5, "note": None}
+
+        with patch("apps.pii.alerts.record_live_write_outcome") as record_live:
+            authored = author_json_paths(
+                self.tenant,
+                original,
+                paths=paths,
+                seam="test.recursive-non-text",
+                writer="runtime",
+                field="detail_json",
+                model_label="fuel.Workout",
+            )
+
+        self.assertIs(authored.value, original)
+        self.assertEqual(
+            authored.receipt,
+            {
+                "state": "placeholder",
+                "reason": "empty-input",
+                "redactions": [],
+                "writer": "runtime",
+            },
+        )
+        record_live.assert_not_called()
 
     def test_truly_empty_json_keeps_empty_input_receipt(self):
         self.tenant.layer1_placeholder_writes = True
@@ -471,6 +531,7 @@ class AuthorTextTests(TestCase):
                 seam="test.oversize-input",
                 writer="owner",
                 field="title",
+                model_label="journal.Task",
             )
 
         self.assertEqual(authored.text, over_limit_input)

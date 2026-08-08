@@ -113,7 +113,14 @@ def _reauthor_lifecycle_instance(instance, *, seam: str) -> None:
     receipts = dict(instance.pii_receipts or {})
     changed_fields = []
     for field in ("title", "description"):
-        authored = author_text(instance.tenant, getattr(instance, field), seam=seam, writer="background", field=field)
+        authored = author_text(
+            instance.tenant,
+            getattr(instance, field),
+            seam=seam,
+            writer="background",
+            field=field,
+            model_label=instance._meta.label,
+        )
         if authored.text != getattr(instance, field):
             setattr(instance, field, authored.text)
             changed_fields.append(field)
@@ -254,6 +261,7 @@ def apply_subtask_create(
         seam="journal.reconciliation.subtask.create",
         writer="background",
         field="title",
+        model_label="journal.Task",
     )
     authored_description = author_text(
         tenant,
@@ -261,6 +269,7 @@ def apply_subtask_create(
         seam="journal.reconciliation.subtask.create",
         writer="background",
         field="description",
+        model_label="journal.Task",
     )
     subtask = Task.objects.create(
         tenant=tenant,

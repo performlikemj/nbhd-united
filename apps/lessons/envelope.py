@@ -12,6 +12,7 @@ from __future__ import annotations
 from apps.lessons.agent_context import render_constellation_envelope
 from apps.lessons.models import Lesson, StarJournalEntry
 from apps.orchestrator.envelope_registry import register_section
+from apps.pii.authoring import truncate_placeholder_safe
 from apps.tenants.models import Tenant
 
 
@@ -34,7 +35,7 @@ def render_recent_lessons(tenant: Tenant, *, limit: int = 3) -> str:
             continue
         first_line = text.splitlines()[0]
         if len(first_line) > 140:
-            first_line = first_line[:137].rstrip() + "..."
+            first_line = truncate_placeholder_safe(first_line, 137).rstrip() + "..."
         out.append(f"- {first_line}")
     return "\n".join(out)
 

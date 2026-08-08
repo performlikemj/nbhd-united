@@ -186,13 +186,26 @@ def generate_weekly_reflection(tenant: Tenant, *, now: datetime | None = None) -
     # in Horizons' Weekly Pulse via the existing HorizonsWeeklyDocument fallback
     # path — zero frontend component change.
     monday = _iso_week_monday(iso_year, iso_week)
+    from apps.pii.store_authoring import author_store_fields
+
+    authored, receipts = author_store_fields(
+        tenant,
+        {
+            "title": f"Weekly Reflection — {iso_week_str}",
+            "markdown": cleaned_text,
+        },
+        model_label="journal.Document",
+        seam="insights.weekly_reflection.document",
+        writer="background",
+    )
     doc, _ = Document.objects.update_or_create(
         tenant=tenant,
         kind=Document.Kind.WEEKLY,
         slug=str(monday),
         defaults={
-            "title": f"Weekly Reflection — {iso_week_str}",
-            "markdown": cleaned_text,
+            "title": authored["title"],
+            "markdown": authored["markdown"],
+            "pii_receipts": receipts,
         },
     )
     result.document_id = str(doc.id)

@@ -1,7 +1,8 @@
+from django.db import models
 from django.test import SimpleTestCase
 
 from apps.pii.authoring import _registered_field_max_length
-from apps.pii.store_registry import registered_stores
+from apps.pii.store_registry import json_path_parts, registered_store, registered_stores, rewrite_json_path
 
 
 class StoreRegistryTests(SimpleTestCase):
@@ -22,6 +23,26 @@ class StoreRegistryTests(SimpleTestCase):
                 "journal.WeeklyReview",
                 "journal.Purpose",
                 "journal.PendingExtraction",
+                "lessons.Lesson",
+                "lessons.StarJournalEntry",
+                "fuel.WorkoutPlan",
+                "fuel.Workout",
+                "fuel.FuelProfile",
+                "fuel.WorkoutTemplate",
+                "fuel.SleepLog",
+                "finance.FinanceAccount",
+                "finance.FinanceTransaction",
+                "finance.PayoffPlan",
+                "finance.FinanceSnapshot",
+                "actions.PendingAction",
+                "actions.ActionAuditLog",
+                "journal.Session",
+                "journal.NoteTemplate",
+                "router.DeliveryAttempt",
+                "core.CoreProfile",
+                "core.MeditationSession",
+                "integrations.SautaiMealPlanJob",
+                "automations.AutomationRun",
             },
         )
         for model_label in ("journal.Task", "journal.Goal"):
@@ -34,6 +55,30 @@ class StoreRegistryTests(SimpleTestCase):
         self.assertEqual(evidence_store.flat_fields, ("evidence",))
         self.assertEqual(evidence_store.json_paths, ())
         self.assertEqual(evidence_store.receipts_field, "pii_receipts")
+
+    def test_registry_contract_is_model_valid_and_directly_tenant_scoped(self):
+        stores = registered_stores()
+        self.assertEqual(len(stores), len({store.model_label for store in stores}))
+
+        for store in stores:
+            with self.subTest(model_label=store.model_label):
+                tenant_field = store.model._meta.get_field("tenant")
+                self.assertTrue(tenant_field.is_relation)
+                self.assertIsInstance(
+                    store.model._meta.get_field(store.receipts_field),
+                    models.JSONField,
+                )
+                for field in store.flat_fields:
+                    self.assertIsInstance(
+                        store.model._meta.get_field(field),
+                        (models.CharField, models.TextField),
+                    )
+                for path in store.json_paths:
+                    parts = json_path_parts(path)
+                    self.assertTrue(parts)
+                    self.assertIsInstance(store.model._meta.get_field(parts[0]), models.JSONField)
+                    if "**" in parts:
+                        self.assertEqual(parts[-1], "**")
 
     def test_document_family_flat_surfaces_are_registered(self):
         stores = {store.model_label: store for store in registered_stores()}
@@ -49,6 +94,83 @@ class StoreRegistryTests(SimpleTestCase):
         ):
             self.assertEqual(stores[label].json_paths, ())
             self.assertEqual(stores[label].receipts_field, "pii_receipts")
+
+    def test_w3b_long_tail_surfaces_are_registered_exactly(self):
+        stores = {store.model_label: store for store in registered_stores()}
+        expected = {
+            "lessons.Lesson": (("text", "context", "galaxy_note"), ()),
+            "lessons.StarJournalEntry": (("text",), ()),
+            "fuel.WorkoutPlan": (
+                ("name", "notes", "objective"),
+                ("schedule_json.**", "week_overrides.**"),
+            ),
+            "fuel.Workout": (
+                ("skip_reason", "activity", "notes"),
+                ("notes_thread[].text", "detail_json.**"),
+            ),
+            "fuel.FuelProfile": (("additional_context",), ("limitations[]",)),
+            "fuel.WorkoutTemplate": (("name",), ("detail_json.**",)),
+            "fuel.SleepLog": (("notes",), ()),
+            "finance.FinanceAccount": (("nickname",), ()),
+            "finance.FinanceTransaction": (("description",), ()),
+            "finance.PayoffPlan": ((), ("schedule_json.**",)),
+            "finance.FinanceSnapshot": ((), ("accounts_json.**",)),
+            "actions.PendingAction": (("display_summary",), ("action_payload.**",)),
+            "actions.ActionAuditLog": (("display_summary",), ("action_payload.**",)),
+            "journal.Session": (
+                ("project", "summary"),
+                ("accomplishments[]", "blockers[]", "next_steps[]", "processed_summary.**"),
+            ),
+            "journal.NoteTemplate": (("name",), ("sections[].title", "sections[].content")),
+            "router.DeliveryAttempt": (("response_excerpt",), ()),
+            "core.CoreProfile": (("additional_context",), ()),
+            "core.MeditationSession": (
+                ("title", "theme", "guidance_text", "feedback_note"),
+                ("manifest.**",),
+            ),
+            "integrations.SautaiMealPlanJob": (("user_prompt",), ()),
+            "automations.AutomationRun": ((), ("input_payload.**", "result_payload.**")),
+        }
+
+        for model_label, (flat_fields, json_paths) in expected.items():
+            with self.subTest(model_label=model_label):
+                self.assertEqual(stores[model_label].flat_fields, flat_fields)
+                self.assertEqual(stores[model_label].json_paths, json_paths)
+                self.assertEqual(stores[model_label].receipts_field, "pii_receipts")
+
+    def test_recursive_json_path_walks_dicts_and_lists_copy_on_write(self):
+        original = {
+            "summary": "Alice",
+            "nested": [1, {"coach": "Bob", "active": True}, ["Cara"]],
+            "nothing": None,
+        }
+
+        rewritten, changed = rewrite_json_path(
+            original,
+            json_path_parts("**"),
+            lambda value: f"<{value}>",
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(
+            rewritten,
+            {
+                "summary": "<Alice>",
+                "nested": [1, {"coach": "<Bob>", "active": True}, ["<Cara>"]],
+                "nothing": None,
+            },
+        )
+        self.assertEqual(original["summary"], "Alice")
+        self.assertEqual(original["nested"][1]["coach"], "Bob")
+        self.assertEqual(original["nested"][2][0], "Cara")
+        self.assertEqual(
+            registered_store("automations.AutomationRun").nested_json_paths("input_payload"),
+            (("**",),),
+        )
+
+    def test_recursive_json_path_must_be_terminal(self):
+        with self.assertRaisesRegex(ValueError, r"\*\* must be the final JSON path component"):
+            rewrite_json_path({"name": "Alice"}, ("**", "name"), str.upper)
 
     def test_w3a_json_and_legacy_surfaces_are_registered(self):
         stores = {store.model_label: store for store in registered_stores()}
@@ -87,18 +209,11 @@ class StoreRegistryTests(SimpleTestCase):
         # TextField columns have no limit at all.
         self.assertIsNone(_registered_field_max_length("markdown", "journal.Document"))
 
-    def test_flat_field_limits_are_unambiguous_by_name(self):
-        """Guard for callers that omit ``model_label``.
-
-        Without it, :func:`_registered_field_max_length` answers with the
-        strictest limit across every store sharing the field NAME. That is exact
-        only while those stores agree. If this fails, a registration has
-        diverged — thread ``model_label`` through the call sites writing the
-        roomier column instead of relaxing this test.
-        """
-        limits: dict[str, set[int | None]] = {}
-        for store in registered_stores():
-            for field in store.flat_fields:
-                limits.setdefault(field, set()).add(getattr(store.model._meta.get_field(field), "max_length", None))
-        ambiguous = {field: sorted(map(str, values)) for field, values in limits.items() if len(values) > 1}
-        self.assertEqual(ambiguous, {})
+    def test_registered_field_limit_requires_unambiguous_model_label(self):
+        """Name-only lookup is forbidden even when today's namesakes agree."""
+        with self.assertRaises(TypeError):
+            _registered_field_max_length("nickname")  # type: ignore[call-arg]
+        self.assertEqual(_registered_field_max_length("title", "journal.Task"), 256)
+        self.assertEqual(_registered_field_max_length("title", "core.MeditationSession"), 160)
+        self.assertIsNone(_registered_field_max_length("description", "journal.Task"))
+        self.assertEqual(_registered_field_max_length("description", "finance.FinanceTransaction"), 256)

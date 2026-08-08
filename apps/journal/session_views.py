@@ -3,12 +3,14 @@
 import logging
 
 from django.db import IntegrityError
+from django.db.models import Q
 from django.utils.text import slugify
 from rest_framework import serializers, status
 from rest_framework.generics import get_object_or_404
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.pii.store_authoring import OwnerStoreSerializerMixin, author_store_fields
 from apps.tenants.permissions import HasSessionsReadScope, HasSessionsWriteScope
 from apps.tenants.throttling import PATSessionIngestDayThrottle, PATSessionIngestMinuteThrottle
 
@@ -39,7 +41,9 @@ class SessionCreateSerializer(serializers.Serializer):
         return attrs
 
 
-class SessionDetailSerializer(serializers.ModelSerializer):
+class SessionDetailSerializer(OwnerStoreSerializerMixin, serializers.ModelSerializer):
+    pii_model_label = "journal.Session"
+
     class Meta:
         model = Session
         fields = (
@@ -57,6 +61,9 @@ class SessionDetailSerializer(serializers.ModelSerializer):
             "references",
             "test_mode",
             "schema_version",
+            "processed_at",
+            "processed_summary",
+            "pii_receipts",
             "created_at",
         )
         read_only_fields = fields
@@ -117,21 +124,33 @@ class SessionCreateView(APIView):
         if idempotency_key:
             existing = Session.objects.filter(tenant=tenant, idempotency_key=idempotency_key).first()
             if existing:
-                return Response(SessionDetailSerializer(existing).data, status=status.HTTP_200_OK)
+                return Response(
+                    SessionDetailSerializer(existing, context={"tenant": tenant, "rehydrate": True}).data,
+                    status=status.HTTP_200_OK,
+                )
+
+        authored, receipts = author_store_fields(
+            tenant,
+            data,
+            model_label="journal.Session",
+            seam="journal.session.pat_create",
+            writer="owner",
+        )
 
         try:
             session = Session.objects.create(
                 tenant=tenant,
                 source=data["source"],
-                project=data["project"],
+                project=authored["project"],
                 project_identity=data.get("project_identity", ""),
                 project_type=data.get("project_type", ""),
                 session_start=data["session_start"],
                 session_end=data["session_end"],
-                summary=data["summary"],
-                accomplishments=data.get("accomplishments", []),
-                blockers=data.get("blockers", []),
-                next_steps=data.get("next_steps", []),
+                summary=authored["summary"],
+                accomplishments=authored.get("accomplishments", []),
+                blockers=authored.get("blockers", []),
+                next_steps=authored.get("next_steps", []),
+                pii_receipts=receipts,
                 references=data.get("references", {}),
                 test_mode=data.get("test_mode", False),
                 schema_version=data.get("schema_version", 1),
@@ -142,7 +161,10 @@ class SessionCreateView(APIView):
             if idempotency_key:
                 existing = Session.objects.filter(tenant=tenant, idempotency_key=idempotency_key).first()
                 if existing:
-                    return Response(SessionDetailSerializer(existing).data, status=status.HTTP_200_OK)
+                    return Response(
+                        SessionDetailSerializer(existing, context={"tenant": tenant, "rehydrate": True}).data,
+                        status=status.HTTP_200_OK,
+                    )
             raise
 
         # Auto-create project document
@@ -156,7 +178,10 @@ class SessionCreateView(APIView):
             data.get("test_mode", False),
         )
 
-        return Response(SessionDetailSerializer(session).data, status=status.HTTP_201_CREATED)
+        return Response(
+            SessionDetailSerializer(session, context={"tenant": tenant, "rehydrate": True}).data,
+            status=status.HTTP_201_CREATED,
+        )
 
 
 class SessionListView(APIView):
@@ -178,7 +203,12 @@ class SessionListView(APIView):
         else:
             project = request.query_params.get("project")
             if project:
-                qs = qs.filter(project=project)
+                from apps.journal.lifecycle_views import _search_variants
+
+                project_query = Q()
+                for variant in _search_variants(tenant, project):
+                    project_query |= Q(project=variant)
+                qs = qs.filter(project_query)
 
         since = request.query_params.get("since")
         if since:
@@ -208,7 +238,7 @@ class SessionListView(APIView):
             )
         qs = qs[:limit]
 
-        return Response(SessionDetailSerializer(qs, many=True).data)
+        return Response(SessionDetailSerializer(qs, many=True, context={"tenant": tenant, "rehydrate": True}).data)
 
 
 class SessionDetailView(APIView):
@@ -229,7 +259,7 @@ class SessionDetailView(APIView):
             return Response({"detail": "No tenant found."}, status=status.HTTP_404_NOT_FOUND)
 
         session = get_object_or_404(Session, id=session_id, tenant=tenant)
-        return Response(SessionDetailSerializer(session).data)
+        return Response(SessionDetailSerializer(session, context={"tenant": tenant, "rehydrate": True}).data)
 
     def delete(self, request, session_id):
         tenant = getattr(request.user, "tenant", None)

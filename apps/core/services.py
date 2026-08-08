@@ -260,10 +260,25 @@ def compose_meditation(session: MeditationSession) -> None:
             _log_compose_failure(session.tenant, str(exc))
             return
 
-        session.manifest = manifest
-        session.title = str(manifest.get("title", ""))[:160]
-        session.theme = str(manifest.get("theme", ""))
-        _save_session(session, ["manifest", "title", "theme", "updated_at"])
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            session.tenant,
+            {
+                "manifest": manifest,
+                "title": str(manifest.get("title", ""))[:160],
+                "theme": str(manifest.get("theme", "")),
+            },
+            model_label="core.MeditationSession",
+            seam="core.background.meditation.compose",
+            writer="background",
+            receipts=session.pii_receipts,
+        )
+        session.manifest = authored["manifest"]
+        session.title = authored["title"]
+        session.theme = authored["theme"]
+        session.pii_receipts = receipts
+        _save_session(session, ["manifest", "title", "theme", "pii_receipts", "updated_at"])
 
     # A publish failure intentionally propagates. QStash will redeliver compose,
     # which resumes from the valid persisted manifest without another LLM call.
@@ -388,7 +403,19 @@ def _resume_uploaded_artifacts(
     api_base = (getattr(settings, "API_BASE_URL", "") or "").rstrip("/")
     session.audio_url = f"{api_base}/api/v1/meditations/{tenant_id}/{mp3_name}"
     session.ogg_url = f"{api_base}/api/v1/meditations/{tenant_id}/{ogg_name}" if has_ogg else ""
-    session.guidance_text = session.guidance_text or render.flatten_guidance_text(session.manifest)
+    guidance_text = session.guidance_text or render.flatten_guidance_text(session.manifest)
+    from apps.pii.store_authoring import author_store_fields
+
+    authored, receipts = author_store_fields(
+        session.tenant,
+        {"guidance_text": guidance_text},
+        model_label="core.MeditationSession",
+        seam="core.background.meditation.persist_resume",
+        writer="background",
+        receipts=session.pii_receipts,
+    )
+    session.guidance_text = authored["guidance_text"]
+    session.pii_receipts = receipts
     session.model = session.model or model
     session.voice = session.voice or voice
     session.status = MeditationStatus.READY
@@ -400,6 +427,7 @@ def _resume_uploaded_artifacts(
             "audio_url",
             "ogg_url",
             "guidance_text",
+            "pii_receipts",
             "model",
             "voice",
             "status",
@@ -436,8 +464,21 @@ def render_meditation(session: MeditationSession) -> None:
     if session is None:
         return
 
-    # ---- validate before any TTS spend; a bad manifest is terminal ----
-    errors = render.validate_manifest(session.manifest)
+    # Rehydrate only at the render boundary: the stored manifest remains in
+    # placeholder space, while TTS receives the owner's real binding values.
+    from apps.pii.store_authoring import owner_store_representation
+
+    render_manifest = owner_store_representation(
+        session,
+        session.tenant,
+        {"manifest": session.manifest},
+        model_label="core.MeditationSession",
+    )["manifest"]
+
+    # Validate exactly what the renderer consumes. A real binding may be longer
+    # than its placeholder, so the authored at-rest shape is not authoritative
+    # for render-time speech bounds.
+    errors = render.validate_manifest(render_manifest)
     if errors:
         logger.warning("render_meditation: session %s invalid manifest: %s", sid[:8], errors[:3])
         _fail(session, "invalid_manifest: " + "; ".join(errors))
@@ -487,7 +528,7 @@ def render_meditation(session: MeditationSession) -> None:
 
     try:
         result = render.render_manifest_to_audio(
-            session.manifest,
+            render_manifest,
             tenant=session.tenant,
             voice=voice,
             model=model,
@@ -535,7 +576,18 @@ def render_meditation(session: MeditationSession) -> None:
         session.audio_url = f"{api_base}/api/v1/meditations/{tenant_id}/{mp3_name}"
         session.ogg_url = ""
         session.duration_ms = result.duration_ms
-        session.guidance_text = result.guidance_text
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            session.tenant,
+            {"guidance_text": result.guidance_text},
+            model_label="core.MeditationSession",
+            seam="core.background.meditation.render",
+            writer="background",
+            receipts=session.pii_receipts,
+        )
+        session.guidance_text = authored["guidance_text"]
+        session.pii_receipts = receipts
         session.model = model
         session.voice = voice
         session.artifact_manifest_sha256 = manifest_sha256
@@ -544,6 +596,7 @@ def render_meditation(session: MeditationSession) -> None:
             "ogg_url",
             "duration_ms",
             "guidance_text",
+            "pii_receipts",
             "model",
             "voice",
             "artifact_manifest_sha256",

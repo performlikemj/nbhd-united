@@ -304,6 +304,40 @@ class JournalStatusEndpointTests(TestCase):
         self.assertNotIn("Stale Alice", str(resp.data))
         self.assertNotIn("Stale Ghost", str(resp.data))
 
+    def test_finance_obligation_nickname_rehydrates_with_resolved_receipt(self):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Live Alice"}}
+        self.tenant.save(update_fields=["pii_entity_map"])
+        account = FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type=FinanceAccount.AccountType.STUDENT_LOAN,
+            nickname="[PERSON_1] loan",
+            current_balance=Decimal("100"),
+            minimum_payment=Decimal("10"),
+            due_day=5,
+            pii_receipts={
+                "nickname": {
+                    "state": "placeholder",
+                    "writer": "owner",
+                    "redactions": [{"placeholder": "[PERSON_1]", "value": "Stale Alice"}],
+                }
+            },
+        )
+
+        runtime_projection = build_journal_status(self.tenant, timezone.now().date())
+        self.assertEqual(runtime_projection["obligations"][0]["nickname"], "[PERSON_1] loan")
+        self.assertNotIn("pii_receipts", runtime_projection["obligations"][0])
+
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get("/api/v1/journal/status/")
+
+        self.assertEqual(response.status_code, 200)
+        obligation = next(item for item in response.data["obligations"] if item["account_id"] == str(account.id))
+        self.assertEqual(obligation["nickname"], "Live Alice loan")
+        self.assertEqual(
+            obligation["pii_receipts"]["nickname"]["redactions"],
+            [{"placeholder": "[PERSON_1]", "value": "Live Alice"}],
+        )
+
     def test_tenant_isolation(self):
         other_user = User.objects.create_user(username="other", password="x")
         other_tenant = Tenant.objects.create(

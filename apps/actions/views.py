@@ -139,14 +139,27 @@ class GateRequestView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        from apps.pii.store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {"action_payload": payload, "display_summary": display_summary},
+            model_label="actions.PendingAction",
+            seam="actions.runtime.gate_request",
+            writer="runtime",
+        )
+        stored_payload = authored["action_payload"]
+        stored_summary = authored["display_summary"]
+
         # Check if auto-approve is enabled for this action type
         if _should_auto_approve(tenant, action_type):
             # Log the auto-approval
             ActionAuditLog.objects.create(
                 tenant=tenant,
                 action_type=action_type,
-                action_payload=payload,
-                display_summary=display_summary,
+                action_payload=stored_payload,
+                display_summary=stored_summary,
+                pii_receipts=receipts,
                 result=ActionStatus.APPROVED,
                 responded_at=timezone.now(),
             )
@@ -163,8 +176,9 @@ class GateRequestView(APIView):
         action = PendingAction.objects.create(
             tenant=tenant,
             action_type=action_type,
-            action_payload=payload,
-            display_summary=display_summary,
+            action_payload=stored_payload,
+            display_summary=stored_summary,
+            pii_receipts=receipts,
         )
 
         # Send confirmation message via user's platform.
@@ -182,8 +196,9 @@ class GateRequestView(APIView):
             ActionAuditLog.objects.create(
                 tenant=tenant,
                 action_type=action_type,
-                action_payload=payload,
-                display_summary=display_summary,
+                action_payload=action.action_payload,
+                display_summary=action.display_summary,
+                pii_receipts=action.pii_receipts,
                 result=ActionStatus.EXPIRED,
             )
             logger.warning(
@@ -209,7 +224,7 @@ class GateRequestView(APIView):
             "Gate request created: %s | %s | %s",
             tenant.id,
             action_type,
-            display_summary[:60],
+            stored_summary[:60],
         )
 
         return Response(
@@ -258,6 +273,7 @@ class GatePollView(APIView):
                     action_type=action.action_type,
                     action_payload=action.action_payload,
                     display_summary=action.display_summary,
+                    pii_receipts=action.pii_receipts,
                     result=ActionStatus.EXPIRED,
                 )
                 # Clear the stale Approve/Deny buttons on the platform confirmation
@@ -349,6 +365,7 @@ class GateRespondView(APIView):
                     action_type=action.action_type,
                     action_payload=action.action_payload,
                     display_summary=action.display_summary,
+                    pii_receipts=action.pii_receipts,
                     result=ActionStatus.EXPIRED,
                 )
                 return Response(
@@ -371,6 +388,7 @@ class GateRespondView(APIView):
                 action_type=action.action_type,
                 action_payload=action.action_payload,
                 display_summary=action.display_summary,
+                pii_receipts=action.pii_receipts,
                 result=action.status,
                 responded_at=now,
             )

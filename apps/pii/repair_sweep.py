@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from django.db import transaction
 from django.db.models import Case, IntegerField, Q, Value, When
 
 from apps.pii.alerts import send_rate_alert
@@ -14,6 +15,28 @@ logger = logging.getLogger(__name__)
 
 REPAIR_STATES = frozenset({"unconfirmed", "residual"})
 DEFAULT_BATCH_SIZE = 200
+MAX_REPAIR_ATTEMPTS = 3
+
+
+def _fruitless_receipt(old_receipt, candidate=None) -> tuple[dict, bool]:
+    """Stamp one unsuccessful repair and terminalize after a bounded count."""
+    old = old_receipt if isinstance(old_receipt, dict) else {}
+    receipt = dict(candidate if isinstance(candidate, dict) else old)
+    attempts = old.get("repair_attempts", 0)
+    attempts = attempts if isinstance(attempts, int) and attempts >= 0 else 0
+    attempts += 1
+    receipt["repair_attempts"] = attempts
+    if attempts < MAX_REPAIR_ATTEMPTS:
+        return receipt, False
+    prior_state = receipt.get("state")
+    receipt.update(
+        {
+            "state": "terminal",
+            "terminal_from": prior_state,
+            "terminal_reason": "repair-attempts-exhausted",
+        }
+    )
+    return receipt, True
 
 
 def _repair_query(fields: tuple[str, ...], receipts_field: str) -> Q:
@@ -51,6 +74,7 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
         "fields_repaired": 0,
         "unconfirmed": 0,
         "residual": 0,
+        "terminal": 0,
         "errors": 0,
     }
     if max_rows <= 0 or not getattr(tenant, "layer1_placeholder_writes", False):
@@ -79,14 +103,18 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
             totals["rows_seen"] += 1
             remaining -= 1
             receipts = dict(getattr(row, store.receipts_field, {}) or {})
+            original_receipts = dict(receipts)
             changed_fields: list[str] = []
+            attempted_fields: list[str] = []
             repaired_fields = 0
+            row_terminal = 0
             for field in store.flat_fields:
                 old_receipt = receipts.get(field)
                 old_state = old_receipt.get("state") if isinstance(old_receipt, dict) else None
                 if old_state not in REPAIR_STATES:
                     continue
                 totals["fields_attempted"] += 1
+                attempted_fields.append(field)
                 try:
                     authored = author_text(
                         tenant,
@@ -99,6 +127,8 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                     )
                 except Exception:
                     totals["errors"] += 1
+                    receipts[field], terminal = _fruitless_receipt(old_receipt)
+                    row_terminal += int(terminal)
                     logger.exception(
                         "pii_repair_field_error tenant=%s store=%s row=%s field=%s",
                         tenant.pk,
@@ -111,13 +141,18 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                 if authored.text != getattr(row, field):
                     setattr(row, field, authored.text)
                     changed_fields.append(field)
-                receipts[field] = authored.receipt
-                state = authored.receipt.get("state")
+                receipt = authored.receipt
+                state = receipt.get("state")
                 if state == "unconfirmed":
                     totals["unconfirmed"] += 1
                 elif state == "residual":
                     totals["residual"] += 1
-                elif state not in REPAIR_STATES:
+                if state in REPAIR_STATES:
+                    receipt, terminal = _fruitless_receipt(old_receipt, receipt)
+                    row_terminal += int(terminal)
+                    state = receipt.get("state")
+                receipts[field] = receipt
+                if state not in {*REPAIR_STATES, "terminal"}:
                     repaired_fields += 1
 
             for field in store.json_fields:
@@ -126,6 +161,7 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                 if old_state not in REPAIR_STATES:
                     continue
                 totals["fields_attempted"] += 1
+                attempted_fields.append(field)
                 try:
                     authored = author_json_paths(
                         tenant,
@@ -139,6 +175,8 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                     )
                 except Exception:
                     totals["errors"] += 1
+                    receipts[field], terminal = _fruitless_receipt(old_receipt)
+                    row_terminal += int(terminal)
                     logger.exception(
                         "pii_repair_field_error tenant=%s store=%s row=%s field=%s",
                         tenant.pk,
@@ -151,13 +189,18 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                 if authored.value != getattr(row, field):
                     setattr(row, field, authored.value)
                     changed_fields.append(field)
-                receipts[field] = authored.receipt
-                state = authored.receipt.get("state")
+                receipt = authored.receipt
+                state = receipt.get("state")
                 if state == "unconfirmed":
                     totals["unconfirmed"] += 1
                 elif state == "residual":
                     totals["residual"] += 1
-                elif state not in REPAIR_STATES:
+                if state in REPAIR_STATES:
+                    receipt, terminal = _fruitless_receipt(old_receipt, receipt)
+                    row_terminal += int(terminal)
+                    state = receipt.get("state")
+                receipts[field] = receipt
+                if state not in {*REPAIR_STATES, "terminal"}:
                     repaired_fields += 1
 
             if receipts != (getattr(row, store.receipts_field, {}) or {}):
@@ -165,7 +208,10 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                 changed_fields.append(store.receipts_field)
             if changed_fields:
                 try:
-                    row.save(update_fields=list(dict.fromkeys(changed_fields)))
+                    # Isolate a database-level write failure so the receipt-only
+                    # fallback below can still run inside callers' transactions.
+                    with transaction.atomic():
+                        row.save(update_fields=list(dict.fromkeys(changed_fields)))
                 except Exception:
                     totals["errors"] += 1
                     logger.exception(
@@ -175,7 +221,43 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                         row.pk,
                         ",".join(dict.fromkeys(changed_fields)),
                     )
+                    # The authored column did not persist, so its success
+                    # receipt must not persist either. Stamp each attempted
+                    # ORIGINAL receipt as fruitless and save only the receipt
+                    # column, bypassing a model ``save``/field value that may be
+                    # the source of the DataError. Tenant + PK scoping prevents
+                    # this recovery path from crossing ownership boundaries.
+                    fallback_receipts = dict(original_receipts)
+                    fallback_terminal = 0
+                    for attempted_field in attempted_fields:
+                        fallback_receipts[attempted_field], terminal = _fruitless_receipt(
+                            original_receipts.get(attempted_field)
+                        )
+                        fallback_terminal += int(terminal)
+                    try:
+                        with transaction.atomic():
+                            persisted = store.model.objects.filter(pk=row.pk, tenant=tenant).update(
+                                **{store.receipts_field: fallback_receipts}
+                            )
+                    except Exception:
+                        logger.exception(
+                            "pii_repair_receipt_save_error tenant=%s store=%s row=%s",
+                            tenant.pk,
+                            store.model_label,
+                            row.pk,
+                        )
+                    else:
+                        if persisted:
+                            totals["terminal"] += fallback_terminal
+                        else:
+                            logger.warning(
+                                "pii_repair_receipt_save_missing tenant=%s store=%s row=%s",
+                                tenant.pk,
+                                store.model_label,
+                                row.pk,
+                            )
                     continue
+            totals["terminal"] += row_terminal
             totals["fields_repaired"] += repaired_fields
 
     if alert:
@@ -191,15 +273,25 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
             count=totals["residual"],
             kind="residual",
         )
+        # Terminal outcomes have their own >1% threshold/fingerprint so an
+        # exhausted repair population is alarm-visible rather than blending
+        # into the transient error or residual rates.
+        _check_rate_alert(
+            tenant,
+            attempts=totals["fields_attempted"],
+            count=totals["terminal"],
+            kind="terminal",
+        )
     logger.info(
         "pii_repair_counter tenant=%s rows_seen=%d fields_attempted=%d fields_repaired=%d "
-        "unconfirmed=%d residual=%d errors=%d",
+        "unconfirmed=%d residual=%d terminal=%d errors=%d",
         tenant.pk,
         totals["rows_seen"],
         totals["fields_attempted"],
         totals["fields_repaired"],
         totals["unconfirmed"],
         totals["residual"],
+        totals["terminal"],
         totals["errors"],
     )
     return totals
@@ -216,6 +308,7 @@ def sweep_placeholder_repairs(*, batch_size: int = DEFAULT_BATCH_SIZE) -> dict[s
         "fields_repaired": 0,
         "unconfirmed": 0,
         "residual": 0,
+        "terminal": 0,
         "errors": 0,
     }
     remaining = max(0, batch_size)
@@ -248,7 +341,7 @@ def sweep_placeholder_repairs(*, batch_size: int = DEFAULT_BATCH_SIZE) -> dict[s
 
     logger.info(
         "pii_repair_sweep complete batch_size=%d tenants_seen=%d rows_seen=%d "
-        "fields_attempted=%d fields_repaired=%d unconfirmed=%d residual=%d errors=%d",
+        "fields_attempted=%d fields_repaired=%d unconfirmed=%d residual=%d terminal=%d errors=%d",
         batch_size,
         totals["tenants_seen"],
         totals["rows_seen"],
@@ -256,6 +349,7 @@ def sweep_placeholder_repairs(*, batch_size: int = DEFAULT_BATCH_SIZE) -> dict[s
         totals["fields_repaired"],
         totals["unconfirmed"],
         totals["residual"],
+        totals["terminal"],
         totals["errors"],
     )
     return totals

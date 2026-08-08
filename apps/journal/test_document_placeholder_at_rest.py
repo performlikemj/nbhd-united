@@ -1046,6 +1046,24 @@ class MergeFieldReceiptTests(TestCase):
         self.assertEqual(merged["markdown"]["state"], "unconfirmed")
         self.assertEqual(merged["markdown"]["reason"], "redaction-error")
 
+    def test_terminal_receipt_is_sticky_against_unconfirmed_append(self):
+        terminal = {
+            "state": "terminal",
+            "terminal_from": "unconfirmed",
+            "terminal_reason": "repair-attempts-exhausted",
+            "writer": "background",
+        }
+        merged = merge_field_receipt(
+            {"markdown": terminal},
+            "markdown",
+            {"state": "unconfirmed", "reason": "redaction-error", "redactions": [], "writer": "runtime"},
+            stored_text="old body plus raw append",
+        )
+
+        self.assertEqual(merged["markdown"]["state"], "terminal")
+        self.assertEqual(merged["markdown"]["terminal_reason"], "repair-attempts-exhausted")
+        self.assertEqual(merged["markdown"]["writer"], "runtime")
+
     def test_a_field_with_no_prior_receipt_enters_as_unchecked(self):
         merged = merge_field_receipt(
             {},
