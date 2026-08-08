@@ -273,7 +273,9 @@ TIER_TOKEN_BUDGETS: dict[str, int] = {
 # Monthly cost budget in USD.  Enforcement compares
 # estimated_cost_this_month against this cap.
 TIER_COST_BUDGETS: dict[str, float] = {
-    "starter": 5.00,  # ~$5 of metered usage (DeepSeek V4 Flash @ $0.09/$0.18 per 1M)
+    # ~$5 of metered usage (DeepSeek V4 Pro @ $0.435/$0.87 per 1M).
+    # The cap amount itself is under review (business decision pending).
+    "starter": 5.00,
 }
 
 # ── Prepaid credit top-ups ─────────────────────────────────────────────────

@@ -551,18 +551,18 @@ class BYOConfigGeneratorTest(TestCase):
         )
 
     def test_non_byo_primary_keeps_fallbacks_populated(self):
-        """Tier default (DeepSeek V4 Flash) is not a BYO model — `fallbacks`
+        """Tier default (DeepSeek V4 Pro) is not a BYO model — `fallbacks`
         should still expose the rest of the tier's allowed models so
-        rate-limit/overload on the cheap model still falls through.
+        rate-limit/overload on the primary still falls through.
         """
         from apps.billing.constants import DEEPSEEK_FLASH_MODEL, DEEPSEEK_MODEL, GEMMA_MODEL
 
         # No preferred_model override — primary stays at tier default
-        # (DeepSeek V4 Flash since 2026-08-02).
+        # (DeepSeek V4 Pro since 2026-08-09).
         cfg = self._generate()
-        self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], DEEPSEEK_FLASH_MODEL)
+        self.assertEqual(cfg["agents"]["defaults"]["model"]["primary"], DEEPSEEK_MODEL)
         fallbacks = cfg["agents"]["defaults"]["model"]["fallbacks"]
-        self.assertIn(DEEPSEEK_MODEL, fallbacks)
+        self.assertIn(DEEPSEEK_FLASH_MODEL, fallbacks)
         self.assertIn(GEMMA_MODEL, fallbacks)
 
 

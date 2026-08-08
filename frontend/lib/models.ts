@@ -63,7 +63,7 @@ export const MODELS: ModelUI[] = [
 
 export const ACTIVE_MODELS = MODELS.filter((m) => !m.comingSoon);
 
-export const DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4-flash-0731";
+export const DEFAULT_MODEL = "openrouter/deepseek/deepseek-v4-pro";
 
 export function modelSummary(): string {
   const names = ACTIVE_MODELS.filter((m) => !m.requires && !m.limitedTimeOffer).map((m) => m.name);
