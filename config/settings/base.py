@@ -214,6 +214,13 @@ STEWARD_OPENROUTER_CANARY_TENANT_ID = env(
     default="",
 )
 
+# Weekly proactive task-hygiene cron (apps/cron/patterns/task_hygiene.py) —
+# canary rollout gate. Comma-separated tenant UUIDs; EMPTY MEANS NOBODY, which
+# is the safe default: this cron is a NEW PROACTIVE SENDER (it messages the
+# user unprompted), so it ships dark and is opened one tenant at a time.
+# Fleet-go is a deliberate follow-up, not a side effect of deploying this code.
+TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
+
 # Core AI on-device model (iOS 27 bring-your-own model) delivery.
 # Django serves only the small JWT-gated manifest (GET /api/v1/coreai/model/manifest/);
 # the big model files are hosted off-Django (Azure Blob / CDN) under COREAI_MODEL_BASE_URL.

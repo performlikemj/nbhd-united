@@ -34,9 +34,25 @@ FORBIDDEN_MUTATION_TOOLS = frozenset(
         "nbhd_daily_note_set_section",
         "nbhd_daily_note_append",
         "nbhd_memory_update",
+        # Destructive + irreversible, cascades to subtasks, and its confirm
+        # handshake can only be satisfied by a human answering in conversation.
+        # No cron pattern may ever hold it — see task_hygiene, which proposes
+        # deletions in prose instead.
+        "nbhd_task_delete",
         "cron",
     }
 )
+
+# The subset of the above that the task_hygiene pattern must ALSO never hold.
+# It is deliberately narrower: hygiene's whole job is closing and deferring
+# tasks that already exist, so complete/skip/defer are granted to it and only
+# to it. What stays forbidden is everything that can INVENT, REWRITE or
+# DESTROY — the properties that make a proactive unattended turn dangerous.
+HYGIENE_FORBIDDEN_TOOLS = FORBIDDEN_MUTATION_TOOLS - {
+    "nbhd_task_complete",
+    "nbhd_task_skip",
+    "nbhd_task_defer",
+}
 
 _RECURRING_SCHEDULE = {"kind": "cron", "expr": "0 8 * * 2", "tz": "Asia/Tokyo"}
 
@@ -310,6 +326,152 @@ class DailyBriefingTests(SimpleTestCase):
         self.assertEqual(contract["on_fail"], {"action": "revise_then_allow", "max_revisions": 1})
 
 
+class TaskHygieneTests(SimpleTestCase):
+    """The weekly proactive cleanup turn.
+
+    This pattern is the one exception to "no cron may mutate" — so its guard
+    rails get tested harder than the read-only patterns', not more loosely.
+    """
+
+    def setUp(self):
+        self.handler = get_handler("task_hygiene")
+
+    def test_payload_defaults(self):
+        payload = self.handler.validate_payload({})
+        self.assertEqual(payload.stale_after_days, 14)
+
+    def test_payload_rejects_out_of_range_staleness(self):
+        with self.assertRaises(Exception):
+            self.handler.validate_payload({"stale_after_days": 0})
+        with self.assertRaises(Exception):
+            self.handler.validate_payload({"stale_after_days": 400})
+
+    def test_payload_rejects_extra_fields(self):
+        # Cron prompts bypass inbound PII redaction, so the payload must never
+        # become a channel for free text (the workout_congrats lesson).
+        with self.assertRaises(Exception):
+            self.handler.validate_payload({"stale_after_days": 14, "notes": "private free text"})
+
+    def test_tools_allow_is_pinned_exactly(self):
+        """Drift guard. The allowlist IS the security boundary for this
+        pattern — prose in the prompt can be reinterpreted by a new model,
+        this list cannot. Any change here is a deliberate decision that must
+        be re-reviewed, so the test pins the exact membership, not a subset."""
+        payload = self.handler.validate_payload({})
+        self.assertEqual(
+            self.handler.get_tools_allow(payload),
+            [
+                "nbhd_task_list",
+                "nbhd_task_get",
+                "nbhd_goal_list",
+                "nbhd_current_status",
+                "nbhd_task_complete",
+                "nbhd_task_skip",
+                "nbhd_task_defer",
+                "nbhd_send_to_user",
+            ],
+        )
+
+    def test_tools_allow_cannot_create_rewrite_or_destroy(self):
+        payload = self.handler.validate_payload({})
+        allow = self.handler.get_tools_allow(payload)
+        for t in allow:
+            self.assertNotIn(t, HYGIENE_FORBIDDEN_TOOLS)
+        # Named explicitly so the intent survives a refactor of the set above.
+        for forbidden in ("nbhd_task_create", "nbhd_task_update", "nbhd_task_delete"):
+            self.assertNotIn(forbidden, allow)
+
+    def test_other_patterns_still_cannot_mutate(self):
+        """task_hygiene must not become a precedent. The read-only patterns
+        keep their absolute no-mutation guard — this asserts granting hygiene
+        its budget did not quietly widen theirs."""
+        for pattern in ("daily_briefing", "domain_summary", "pure_reminder"):
+            with self.subTest(pattern=pattern):
+                handler = get_handler(pattern)
+                payload_dict = (
+                    {"query_tool": "nbhd_task_list", "render_block": "task_summary"}
+                    if pattern == "domain_summary"
+                    else ({"text": "x"} if pattern == "pure_reminder" else {})
+                )
+                payload = handler.validate_payload(payload_dict)
+                for t in handler.get_tools_allow(payload):
+                    self.assertNotIn(t, FORBIDDEN_MUTATION_TOOLS)
+
+    def test_build_oc_data_shape(self):
+        payload = self.handler.validate_payload({})
+        data = self.handler.build_oc_data(
+            payload,
+            tenant=None,
+            name="Task Hygiene",
+            schedule=_RECURRING_SCHEDULE,
+        )
+        self.assertEqual(data["name"], "Task Hygiene")
+        self.assertEqual(data["sessionTarget"], "isolated")
+        self.assertEqual(data["wakeMode"], "next-heartbeat")
+        self.assertEqual(data["payload"]["kind"], "agentTurn")
+        # Delivery routes through Django (iOS-reachable), never OC channels.
+        self.assertEqual(data["delivery"], {"mode": "none"})
+
+    def test_prompt_proposes_deletion_rather_than_performing_it(self):
+        """The behavioural twin of the toolsAllow guard: the prompt must tell
+        the model deletion is out of reach here AND why, so it proposes instead
+        of trying and failing."""
+        payload = self.handler.validate_payload({})
+        message = self.handler.build_oc_data(
+            payload,
+            tenant=None,
+            name="Task Hygiene",
+            schedule=_RECURRING_SCHEDULE,
+        )["payload"]["message"]
+        self.assertIn("nbhd_task_delete", message)
+        self.assertIn("not available in this turn", message)
+        # The reason must be the structural one, not just "please don't".
+        self.assertIn("confirmation cannot be obtained", message)
+
+    def test_prompt_carries_the_staleness_threshold_from_the_payload(self):
+        payload = self.handler.validate_payload({"stale_after_days": 30})
+        message = self.handler.build_oc_data(
+            payload,
+            tenant=None,
+            name="Task Hygiene",
+            schedule=_RECURRING_SCHEDULE,
+        )["payload"]["message"]
+        self.assertIn("30 days", message)
+
+    def test_prompt_requires_silence_when_nothing_changed(self):
+        """A new proactive sender that messages every week regardless is a
+        weekly spam channel. The no-news-no-message rule is load-bearing."""
+        payload = self.handler.validate_payload({})
+        message = self.handler.build_oc_data(
+            payload,
+            tenant=None,
+            name="Task Hygiene",
+            schedule=_RECURRING_SCHEDULE,
+        )["payload"]["message"]
+        self.assertIn("send NOTHING AT ALL", message)
+        self.assertIn("EXACTLY ONCE", message)
+
+    def test_validate_outbound_requires_marker(self):
+        payload = self.handler.validate_payload({})
+        ok, _ = self.handler.validate_outbound_message(
+            "[block: task_hygiene]\nClosed 2, deferred 1.",
+            payload,
+        )
+        self.assertTrue(ok)
+        ok2, reason = self.handler.validate_outbound_message(
+            "Closed 2 tasks and deferred 1.",
+            payload,
+        )
+        self.assertFalse(ok2)
+        self.assertIn("[block: task_hygiene]", reason)
+
+    def test_get_outbound_contract_shape(self):
+        payload = self.handler.validate_payload({})
+        contract = self.handler.get_outbound_contract(payload, name="Task Hygiene")
+        self.assertEqual(contract["check"], {"kind": "marker", "marker": "[block: task_hygiene]"})
+        self.assertEqual(contract["on_fail"], {"action": "revise_then_allow", "max_revisions": 1})
+
+
 _AT_SCHEDULE = {"kind": "at", "at": "2099-01-01T00:00:00+00:00"}
 
 
@@ -447,6 +609,9 @@ PARITY_CASES: tuple[tuple[str, dict, str, bool], ...] = (
     # ── daily_briefing: marker ───────────────────────────────────────────
     ("daily_briefing", {}, "[block: daily_briefing]\nGood morning!", True),
     ("daily_briefing", {}, "Good morning! Your day looks busy.", False),
+    # ── task_hygiene: marker ─────────────────────────────────────────────
+    ("task_hygiene", {}, "[block: task_hygiene]\nClosed 2, deferred 1.", True),
+    ("task_hygiene", {}, "I tidied up your task list this week.", False),
     # ── workout_congrats: bounded ────────────────────────────────────────
     ("workout_congrats", {"activity": "Push Day"}, "Great push session — third this week!", True),
     ("workout_congrats", {"activity": "Push Day"}, "   ", False),
@@ -489,6 +654,7 @@ _MODEL_PINNING_PATTERN_PAYLOADS: dict[str, dict] = {
     "domain_summary": {"query_tool": "nbhd_task_list", "render_block": "task_summary"},
     "workout_congrats": {"activity": "Push Day"},
     "daily_briefing": {"sections": ["overdue_tasks", "due_today"], "warmth_level": "warm"},
+    "task_hygiene": {"stale_after_days": 14},
 }
 
 

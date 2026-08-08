@@ -1588,6 +1588,12 @@ def seed_cron_jobs(tenant: Tenant | str) -> dict:
                 enabled=bool(job.get("enabled", True)),
             )
             created += 1
+        # Typed system crons are seeded separately — they are CronJob rows built
+        # from a pattern + typed_payload, not from the legacy dicts above.
+        from apps.cron.services import seed_task_hygiene_cron
+
+        seed_task_hygiene_cron(tenant)
+
         logger.info(
             "seed_cron_jobs (postgres-canonical): tenant %s — created %d system rows (existing=%d, total=%d)",
             tenant_id,
@@ -1847,15 +1853,34 @@ def refresh_system_cron_rows_from_seed(tenant: Tenant | str) -> dict:
         row.save(update_fields=["data", "updated_at"])
         summary["updated"] += 1
 
+    # Seed the weekly task-hygiene cron for gated tenants. Lives here as well
+    # as in ``seed_cron_jobs`` so an EXISTING tenant added to the canary gate
+    # converges on the next config apply instead of needing a hand-written row.
+    # Idempotent and non-raising by contract.
+    from apps.cron.services import seed_task_hygiene_cron
+
+    seed_task_hygiene_cron(tenant)
+
     # Reap managed system crons that have fallen out of the seed — e.g.
     # "Heartbeat Check-in" once the tenant moves to the built-in heartbeat, or
     # "Gravity Weekly Check-in" while Gravity is paused. Without this they
     # linger as orphaned rows that keep firing on a stale model. The CronJob
     # post_delete signal pushes the removal to the container. Platform-managed
     # ``_sync:``/``_fuel:`` crons have their own lifecycle — leave them.
+    #
+    # TYPED rows are excluded for the same reason: ``build_cron_seed_jobs``
+    # only ever emits legacy-shaped dicts, so every typed system cron is by
+    # definition absent from ``seed_names``. Without this exclusion the reaper
+    # would delete the task-hygiene cron on the very next config apply — it
+    # would seed, vanish, reseed, and the user would get a weekly cleanup that
+    # sometimes silently wasn't there.
+    from apps.cron.models import CronCreationPath
+
     seed_names = {job.get("name", "") for job in seed_jobs}
     for orphan in list(
-        CronJob.objects.filter(tenant=tenant, source=CronJobSource.SYSTEM, managed=True).exclude(name__in=seed_names)
+        CronJob.objects.filter(tenant=tenant, source=CronJobSource.SYSTEM, managed=True)
+        .exclude(name__in=seed_names)
+        .exclude(creation_path=CronCreationPath.TYPED)
     ):
         if orphan.name.startswith(_SYSTEM_GENERATED_PREFIXES):
             continue

@@ -40,9 +40,9 @@ class CronPattern(models.TextChoices):
     ``apps/cron/patterns/`` that owns building the OC payload, validating
     fire-time output, and listing the tools the agent turn may call.
 
-    ``daily_briefing`` is system-defined — the agent's ``nbhd_cron_create_*``
-    tools do not accept it. System crons set it directly via
-    ``apps/cron/services.py``.
+    ``daily_briefing`` and ``task_hygiene`` are system-defined — the agent's
+    ``nbhd_cron_create_*`` tools do not accept them. System crons set them
+    directly via ``apps/cron/services.py``.
     """
 
     PURE_REMINDER = "pure_reminder", "Pure reminder"
@@ -50,6 +50,7 @@ class CronPattern(models.TextChoices):
     DOMAIN_SUMMARY = "domain_summary", "Domain summary"
     DAILY_BRIEFING = "daily_briefing", "Daily briefing (system)"
     WORKOUT_CONGRATS = "workout_congrats", "Workout congrats (system)"
+    TASK_HYGIENE = "task_hygiene", "Task hygiene (system)"
 
 
 class CronCreationPath(models.TextChoices):

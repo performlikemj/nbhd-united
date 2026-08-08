@@ -1,7 +1,7 @@
 """Base classes for typed cron pattern handlers.
 
 Each pattern (pure_reminder, quote_user_intent, domain_summary,
-daily_briefing, workout_congrats) implements a subclass of
+daily_briefing, workout_congrats, task_hygiene) implements a subclass of
 ``PatternHandler`` and registers itself via ``register_handler()`` in
 ``apps/cron/patterns/__init__.py``.
 
@@ -128,6 +128,7 @@ class PatternHandler(ABC):
           domain_summary     — marker([block: <render_block>]) / revise_then_allow(max_revisions=1)
           daily_briefing     — marker([block: daily_briefing]) / revise_then_allow(max_revisions=1)
           workout_congrats   — bounded(800) / rewrite(get_fallback_message())
+          task_hygiene       — marker([block: task_hygiene]) / revise_then_allow(max_revisions=1)
         """
         return None
 

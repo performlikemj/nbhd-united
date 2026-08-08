@@ -43,6 +43,20 @@ from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
 
+# ── task_hygiene seeding ────────────────────────────────────────────────────
+# The weekly proactive cleanup turn. Its name is load-bearing in three places:
+# the (tenant, name) uniqueness constraint, the idempotency check below, and
+# the ``refresh_system_cron_rows_from_seed`` reaper (which skips typed rows —
+# this row is NOT in ``build_cron_seed_jobs``, so without that skip the reaper
+# would delete it on the next config apply).
+TASK_HYGIENE_CRON_NAME = "Task Hygiene"
+
+# Sunday 18:00 in the tenant's own timezone. Deliberately an hour clear of the
+# other Sunday-evening system crons — Gravity Weekly Check-in at 19:00 and
+# Weekly Reflection at 20:00 — so a user on all three gets three separate
+# moments rather than one pile-up.
+TASK_HYGIENE_CRON_EXPR = "0 18 * * 0"
+
 
 class TypedCronError(Exception):
     """Validation or creation failure for a typed cron."""
@@ -247,3 +261,86 @@ def _push_at_cron_immediately(tenant: Tenant, cron: CronJob) -> None:
                 cron.name,
                 exc_info=True,
             )
+
+
+def task_hygiene_enabled(tenant: Tenant) -> bool:
+    """Is the weekly task-hygiene cron open for this tenant?
+
+    THE single gate. Every call site reads through here (invariant 13's
+    one-shared-helper rule) so the seed path and any future console surface
+    cannot drift into disagreeing about who gets a proactive sender.
+
+    Backed by ``settings.TASK_HYGIENE_TENANT_IDS`` — a comma-separated
+    allowlist of tenant UUIDs. Unset/empty means NOBODY: this cron messages
+    the user unprompted, so it fails closed and is opened one tenant at a time
+    (canary first, per the standing rollout ladder). Fleet-go is a deliberate
+    later change, never a side effect of this code deploying.
+    """
+    from django.conf import settings
+
+    raw = str(getattr(settings, "TASK_HYGIENE_TENANT_IDS", "") or "")
+    allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if not allowed:
+        return False
+    return str(tenant.id).lower() in allowed
+
+
+def seed_task_hygiene_cron(tenant: Tenant) -> dict[str, Any]:
+    """Idempotently seed the weekly task-hygiene cron for a gated tenant.
+
+    Called from the provisioning seed path and from the config-apply refresh
+    path (``apps/orchestrator/services.py``) so a tenant added to the gate
+    converges without a manual DB write.
+
+    Idempotent by NAME, and deliberately blind to ``enabled``: if a row called
+    ``TASK_HYGIENE_CRON_NAME`` exists at all we leave it alone. That is what
+    makes "user turns the weekly cleanup off" stick — a gate check that only
+    looked for enabled rows would helpfully recreate it on the next config
+    apply and the user could never be rid of it.
+
+    Returns a small status dict; never raises. A hygiene cron is a nicety and
+    must not be able to fail provisioning.
+    """
+    from apps.common.tenant_tz import tenant_tz_name
+
+    result: dict[str, Any] = {"tenant_id": str(tenant.id), "created": False}
+
+    if not task_hygiene_enabled(tenant):
+        result["reason"] = "not_gated"
+        return result
+
+    if CronJob.objects.filter(tenant=tenant, name=TASK_HYGIENE_CRON_NAME).exists():
+        result["reason"] = "already_exists"
+        return result
+
+    try:
+        create_typed_cron(
+            tenant=tenant,
+            pattern=CronPattern.TASK_HYGIENE,
+            typed_payload={},
+            name=TASK_HYGIENE_CRON_NAME,
+            schedule={
+                "kind": "cron",
+                "expr": TASK_HYGIENE_CRON_EXPR,
+                # Tenant-local Sunday evening, through the canonical tz front
+                # door (invariant 7) — never a private tz helper.
+                "tz": tenant_tz_name(tenant),
+            },
+            source=CronJobSource.SYSTEM,
+        )
+    except CronNameConflictError:
+        # Raced another seed call between the exists() check and the insert.
+        result["reason"] = "already_exists"
+        return result
+    except Exception:
+        logger.warning(
+            "seed_task_hygiene_cron failed for tenant %s (non-fatal)",
+            str(tenant.id)[:8],
+            exc_info=True,
+        )
+        result["reason"] = "error"
+        return result
+
+    result["created"] = True
+    logger.info("seed_task_hygiene_cron: created %r for tenant %s", TASK_HYGIENE_CRON_NAME, str(tenant.id)[:8])
+    return result

@@ -137,6 +137,12 @@ STEWARD_OPENROUTER_CANARY_TENANT_ID = env(
     default="",
 )
 
+# Task-hygiene cron canary gate — mirror of the base.py name so the deploy's
+# Azure Container App env vars are documented here. Comma-separated tenant
+# UUIDs. UNSET (the state at deploy time) means the cron seeds for nobody;
+# add the canary's id to the Container App to open it for that tenant only.
+TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
+
 # YardTalk one-time purchase + validation. The Price id is a Container App
 # config value; the HMAC key is a Key Vault-backed secretref.
 YARDTALK_STRIPE_PRICE_ID = env("YARDTALK_STRIPE_PRICE_ID", default="")

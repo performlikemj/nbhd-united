@@ -280,6 +280,9 @@ const PARITY_CASES = [
   [{ kind: "marker", marker: "[block: task_summary]" }, "You have 3 open tasks", false],
   [{ kind: "marker", marker: "[block: daily_briefing]" }, "[block: daily_briefing]\nGood morning!", true],
   [{ kind: "marker", marker: "[block: daily_briefing]" }, "Good morning! Your day looks busy.", false],
+  // ── task_hygiene: marker ─────────────────────────────────────────────────
+  [{ kind: "marker", marker: "[block: task_hygiene]" }, "[block: task_hygiene]\nClosed 2, deferred 1.", true],
+  [{ kind: "marker", marker: "[block: task_hygiene]" }, "I tidied up your task list this week.", false],
   // ── workout_congrats: bounded ────────────────────────────────────────────
   [{ kind: "bounded", max: 800 }, "Great push session — third this week!", true],
   [{ kind: "bounded", max: 800 }, "   ", false],
