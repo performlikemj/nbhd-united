@@ -7,7 +7,7 @@ import logging
 from django.db.models import Case, IntegerField, Q, Value, When
 
 from apps.pii.alerts import send_rate_alert
-from apps.pii.authoring import author_text
+from apps.pii.authoring import author_json_paths, author_text
 from apps.pii.store_registry import registered_stores
 
 logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def _check_rate_alert(tenant, *, attempts: int, count: int, kind: str) -> bool:
 
 
 def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = True) -> dict[str, int]:
-    """Repair up to ``max_rows`` Task/Goal rows for one flag-enabled tenant."""
+    """Repair up to ``max_rows`` registered rows for one flag-enabled tenant."""
     totals = {
         "rows_seen": 0,
         "fields_attempted": 0,
@@ -60,17 +60,13 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
     for store in registered_stores():
         if remaining <= 0:
             break
-        if store.json_paths:
-            # TODO(P3/W2): implement nested JSON repair before registering one.
-            raise NotImplementedError(f"JSON-path repair is not implemented for {store.model_label}")
-
         rows = (
             store.model.objects.filter(tenant=tenant)
-            .filter(_repair_query(store.flat_fields, store.receipts_field))
+            .filter(_repair_query(store.receipt_fields, store.receipts_field))
             .annotate(
                 _repair_priority=Case(
                     When(
-                        _receipt_state_query(store.flat_fields, store.receipts_field, "unconfirmed"),
+                        _receipt_state_query(store.receipt_fields, store.receipts_field, "unconfirmed"),
                         then=Value(0),
                     ),
                     default=Value(1),
@@ -99,6 +95,7 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
                         writer="background",
                         field=field,
                         live=False,
+                        model_label=store.model_label,
                     )
                 except Exception:
                     totals["errors"] += 1
@@ -113,6 +110,46 @@ def repair_tenant(tenant, *, max_rows: int = DEFAULT_BATCH_SIZE, alert: bool = T
 
                 if authored.text != getattr(row, field):
                     setattr(row, field, authored.text)
+                    changed_fields.append(field)
+                receipts[field] = authored.receipt
+                state = authored.receipt.get("state")
+                if state == "unconfirmed":
+                    totals["unconfirmed"] += 1
+                elif state == "residual":
+                    totals["residual"] += 1
+                elif state not in REPAIR_STATES:
+                    repaired_fields += 1
+
+            for field in store.json_fields:
+                old_receipt = receipts.get(field)
+                old_state = old_receipt.get("state") if isinstance(old_receipt, dict) else None
+                if old_state not in REPAIR_STATES:
+                    continue
+                totals["fields_attempted"] += 1
+                try:
+                    authored = author_json_paths(
+                        tenant,
+                        getattr(row, field),
+                        paths=store.nested_json_paths(field),
+                        seam=f"pii.repair.{store.model_label}.{field}",
+                        writer="background",
+                        field=field,
+                        live=False,
+                        model_label=store.model_label,
+                    )
+                except Exception:
+                    totals["errors"] += 1
+                    logger.exception(
+                        "pii_repair_field_error tenant=%s store=%s row=%s field=%s",
+                        tenant.pk,
+                        store.model_label,
+                        row.pk,
+                        field,
+                    )
+                    continue
+
+                if authored.value != getattr(row, field):
+                    setattr(row, field, authored.value)
                     changed_fields.append(field)
                 receipts[field] = authored.receipt
                 state = authored.receipt.get("state")

@@ -298,6 +298,7 @@ class HorizonsView(APIView):
                 "id",
                 "kind",
                 "text",
+                "pii_receipts",
                 "confidence",
                 "source_date",
                 "created_at",
@@ -412,10 +413,14 @@ class HorizonsView(APIView):
             {
                 "id": str(p.id),
                 "source": "purpose",
-                "statement": p.statement,
+                "statement": rehydrate_for_tenant(tenant, p.statement),
                 "pillars": p.pillars or [],
                 "status": p.status,
                 "origin": p.origin,
+                "pii_receipts": resolve_receipt_values(
+                    p.pii_receipts or {},
+                    getattr(tenant, "pii_entity_map", None),
+                ),
                 "created_at": p.created_at.isoformat(),
             }
             for p in Purpose.objects.filter(
@@ -437,10 +442,14 @@ class HorizonsView(APIView):
                 {
                     "id": str(card.id),
                     "source": "extraction",
-                    "statement": card.text,
+                    "statement": rehydrate_for_tenant(tenant, card.text),
                     "pillars": card.tags or [],
                     "status": "proposed",
                     "origin": "assistant_proposed",
+                    "pii_receipts": resolve_receipt_values(
+                        card.pii_receipts or {},
+                        getattr(tenant, "pii_entity_map", None),
+                    ),
                     "created_at": card.created_at.isoformat(),
                 }
             )
@@ -468,7 +477,11 @@ class HorizonsView(APIView):
                     {
                         "id": str(p["id"]),
                         "kind": p["kind"],
-                        "text": p["text"],
+                        "text": rehydrate_for_tenant(tenant, p["text"]),
+                        "pii_receipts": resolve_receipt_values(
+                            p.get("pii_receipts") or {},
+                            getattr(tenant, "pii_entity_map", None),
+                        ),
                         "confidence": p["confidence"],
                         "source_date": str(p["source_date"]) if p["source_date"] else None,
                         "created_at": p["created_at"].isoformat(),

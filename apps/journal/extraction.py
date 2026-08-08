@@ -199,6 +199,25 @@ def _get_fallback_content(tenant: Tenant) -> str | None:
     return combined if len(combined) >= MIN_NOTE_LENGTH else None
 
 
+def _create_pending_extraction(*, tenant: Tenant, text: str, seam: str, **fields) -> PendingExtraction:
+    """Persist extractor output through the background authoring chokepoint."""
+    from apps.journal.store_authoring import author_store_fields
+
+    authored, receipts = author_store_fields(
+        tenant,
+        {"text": text},
+        model_label="journal.PendingExtraction",
+        seam=seam,
+        writer="background",
+    )
+    return PendingExtraction.objects.create(
+        tenant=tenant,
+        text=authored["text"],
+        pii_receipts=receipts,
+        **fields,
+    )
+
+
 # ── Deduplication ─────────────────────────────────────────────────────────────
 
 
@@ -239,7 +258,7 @@ def _existing_lesson_duplicate(tenant: Tenant, text: str) -> bool:
     cutoff = timezone.now() - timedelta(days=30)
     return Lesson.objects.filter(
         tenant=tenant,
-        text__icontains=text[:50],
+        text__icontains=text[:50],  # guard: encrypted-predicate
         created_at__gte=cutoff,
     ).exists()
 
@@ -697,8 +716,9 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             continue
         if _embedding_duplicate(tenant, text):
             continue
-        pending = PendingExtraction.objects.create(
+        pending = _create_pending_extraction(
             tenant=tenant,
+            seam="journal.pending_extraction.lesson.background",
             kind=PendingExtraction.Kind.LESSON,
             text=text,
             tags=item.get("tags", []),
@@ -724,8 +744,9 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             continue
         if find_duplicate_goal(tenant, text, now=now) is not None:
             continue  # already a typed goal (active or recently closed) — don't resurrect
-        pending = PendingExtraction.objects.create(
+        pending = _create_pending_extraction(
             tenant=tenant,
+            seam="journal.pending_extraction.goal.background",
             kind=PendingExtraction.Kind.GOAL,
             text=text,
             confidence=item.get("confidence", "medium"),
@@ -747,8 +768,9 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             continue
         if find_duplicate_task(tenant, text, now=now) is not None:
             continue  # already a typed task (open or recently closed) — don't resurrect
-        pending = PendingExtraction.objects.create(
+        pending = _create_pending_extraction(
             tenant=tenant,
+            seam="journal.pending_extraction.task.background",
             kind=PendingExtraction.Kind.TASK,
             text=text,
             confidence=item.get("confidence", "medium"),
@@ -777,8 +799,9 @@ def run_extraction_for_tenant(tenant: Tenant) -> dict:
             continue  # cross-pillar evidence is required for a North Star
         if _recent_purpose_card_exists(tenant):
             break  # already proposed recently — stay sparse
-        PendingExtraction.objects.create(
+        _create_pending_extraction(
             tenant=tenant,
+            seam="journal.pending_extraction.purpose.background",
             kind=PendingExtraction.Kind.PURPOSE,
             text=statement,
             tags=pillars,

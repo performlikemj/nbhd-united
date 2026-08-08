@@ -103,11 +103,24 @@ class RuntimePurposeProposeView(APIView):
 
         serializer = PurposeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {
+                "statement": serializer.validated_data["statement"],
+                "evidence": serializer.validated_data.get("evidence", []),
+            },
+            model_label="journal.Purpose",
+            seam="journal.purpose.propose.runtime",
+            writer="runtime",
+        )
         purpose = Purpose.objects.create(
             tenant=tenant,
-            statement=serializer.validated_data["statement"],
+            statement=authored["statement"],
             pillars=serializer.validated_data.get("pillars", []),
-            evidence=serializer.validated_data.get("evidence", []),
+            evidence=authored["evidence"],
+            pii_receipts=receipts,
             origin=Purpose.Origin.ASSISTANT_PROPOSED,
             status=Purpose.Status.PROPOSED,
         )
@@ -187,17 +200,30 @@ class RuntimePurposeUpdateView(APIView):
         serializer = PurposeSerializer(purpose, data=request.data, partial=True)
         serializer.is_valid(raise_exception=True)
         validated = serializer.validated_data
+        from .store_authoring import author_store_fields
+
+        authored, receipts = author_store_fields(
+            tenant,
+            {field: validated[field] for field in ("statement", "evidence") if field in validated},
+            model_label="journal.Purpose",
+            seam="journal.purpose.update.runtime",
+            writer="runtime",
+            receipts=purpose.pii_receipts,
+        )
 
         update_fields: list[str] = []
-        if "statement" in validated:
-            purpose.statement = validated["statement"]
+        if "statement" in authored:
+            purpose.statement = authored["statement"]
             update_fields.append("statement")
         if "pillars" in validated:
             purpose.pillars = validated["pillars"]
             update_fields.append("pillars")
-        if "evidence" in validated:
-            purpose.evidence = validated["evidence"]
+        if "evidence" in authored:
+            purpose.evidence = authored["evidence"]
             update_fields.append("evidence")
+        if authored:
+            purpose.pii_receipts = receipts
+            update_fields.append("pii_receipts")
         if "status" in validated:
             new_status = validated["status"]
             # Guard the consent path: an un-confirmed proposal can never become
