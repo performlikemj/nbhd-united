@@ -1322,6 +1322,11 @@ def retry_dropped_app_turn_task(turn_id: str) -> dict:
     try:
         if turn.status == AppChatMessage.Status.PENDING and turn.retried_at is not None:
             return {"retried": 0, "duplicate": True}
+        # The canary gate is mutable and must still authorize the replay when
+        # this delayed task fires. Drop age is immutable once ``retried_at``
+        # stamps the original drop, so it does not need a fire-time re-check.
+        if not _dropped_retry_enabled(tenant):
+            return _exhaust("gate_revoked")
         if (
             turn.status != AppChatMessage.Status.ERROR
             or turn.error != "dropped"

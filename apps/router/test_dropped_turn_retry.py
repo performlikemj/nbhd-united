@@ -337,6 +337,30 @@ class DroppedAppTurnRetryTest(TestCase):
 
     @patch("apps.router.push_views.notify_app_reply_error")
     @patch("apps.cron.publish.publish_task")
+    def test_delayed_task_exhausts_when_gate_is_revoked(self, publish, notify_error):
+        turn, _ = self._pair("gate-revoked")
+        self._drop()
+        publish.reset_mock()
+
+        with (
+            override_settings(RETRY_DROPPED_TENANT_IDS=""),
+            patch("apps.router.pending_queue._is_tenant_container_live") as health,
+        ):
+            result = retry_dropped_app_turn_task(str(turn.id))
+
+        self.assertEqual(result, {"retried": 0, "exhausted": "gate_revoked"})
+        health.assert_not_called()
+        publish.assert_not_called()
+        notify_error.assert_called_once_with(self.tenant, ["gate-revoked"])
+        self.assertFalse(
+            PendingMessage.objects.filter(
+                tenant=self.tenant,
+                delivery_status=PendingMessage.Status.PENDING,
+            ).exists()
+        )
+
+    @patch("apps.router.push_views.notify_app_reply_error")
+    @patch("apps.cron.publish.publish_task")
     def test_older_turn_in_thread_never_retries(self, publish, notify_error):
         older, _ = self._pair("older")
         AppChatMessage.objects.create(
