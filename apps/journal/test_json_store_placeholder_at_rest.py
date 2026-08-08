@@ -7,9 +7,10 @@ from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
-from rest_framework.test import APIClient
+from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from apps.journal.extraction import _create_pending_extraction
+from apps.journal.md_utils import parse_daily_note
 from apps.journal.models import DailyNote, PendingExtraction, Purpose
 from apps.journal.serializers import JournalEntrySerializer, WeeklyReviewRuntimeSerializer
 from apps.tenants.models import Tenant, User
@@ -135,6 +136,25 @@ class JsonStoreFlagOnTests(_JsonStoreBase):
             patch("apps.pii.authoring._detect_pii", return_value=[]),
         )
 
+    def _use_alice_as_daily_note_author(self):
+        self.user.display_name = "Alice"
+        self.user.save(update_fields=["display_name"])
+
+    def _post_daily_note_entry(self, content: str, *, mood: str | None = None):
+        payload = {"content": content}
+        if mood is not None:
+            payload["mood"] = mood
+        return self.client.post(
+            "/api/v1/journal/daily/2026-08-08/entries/",
+            payload,
+            format="json",
+        )
+
+    def _assert_alice_entry_rehydrated(self, entry):
+        self.assertEqual(entry["author_label"], "Alice")
+        self.assertEqual(entry["content"], "Called Alice")
+        self.assertEqual(entry["mood"], "Alice")
+
     def test_owner_runtime_and_background_store_placeholders_and_receipts(self):
         redactor_detect, residual_detect = self._checked()
         with redactor_detect, residual_detect:
@@ -171,6 +191,58 @@ class JsonStoreFlagOnTests(_JsonStoreBase):
         self.assertIn("Called [PERSON_1]", note.markdown)
         self.assertEqual(note.pii_receipts["markdown"]["state"], "placeholder")
         self.assertIn("Called Alice", response.data["entries"][0]["content"])
+
+    def test_daily_note_patch_echo_rehydrates_sibling_and_matches_get(self):
+        self._use_alice_as_daily_note_author()
+        redactor_detect, residual_detect = self._checked()
+        with redactor_detect, residual_detect:
+            self._post_daily_note_entry("Called Alice", mood="Alice")
+            self._post_daily_note_entry("Original")
+            response = self.client.patch(
+                "/api/v1/journal/daily/2026-08-08/entries/1/",
+                {"content": "Updated"},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_alice_entry_rehydrated(response.data["entries"][0])
+        note = DailyNote.objects.get(tenant=self.tenant, date=date(2026, 8, 8))
+        self.assertIn("Called [PERSON_1]", note.markdown)
+        self.assertNotIn("Called Alice", note.markdown)
+        get_response = self.client.get("/api/v1/journal/daily/2026-08-08/")
+        self.assertEqual(response.data["entries"], parse_daily_note(get_response.data["markdown"]))
+
+    def test_daily_note_delete_echo_rehydrates_remaining_sibling(self):
+        self._use_alice_as_daily_note_author()
+        redactor_detect, residual_detect = self._checked()
+        with redactor_detect, residual_detect:
+            self._post_daily_note_entry("Remove this")
+            self._post_daily_note_entry("Called Alice", mood="Alice")
+            response = self.client.delete("/api/v1/journal/daily/2026-08-08/entries/0/")
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_alice_entry_rehydrated(response.data["entries"][0])
+        note = DailyNote.objects.get(tenant=self.tenant, date=date(2026, 8, 8))
+        self.assertIn("Called [PERSON_1]", note.markdown)
+        self.assertNotIn("Called Alice", note.markdown)
+
+    def test_daily_note_template_delete_echo_rehydrates_remaining_sibling(self):
+        from apps.journal.views import DailyNoteTemplateView
+
+        self._use_alice_as_daily_note_author()
+        redactor_detect, residual_detect = self._checked()
+        with redactor_detect, residual_detect:
+            self._post_daily_note_entry("Remove this")
+            self._post_daily_note_entry("Called Alice", mood="Alice")
+            request = APIRequestFactory().delete("/api/v1/journal/daily/2026-08-08/template/")
+            force_authenticate(request, user=self.user)
+            response = DailyNoteTemplateView.as_view()(request, date="2026-08-08", index=0)
+
+        self.assertEqual(response.status_code, 200)
+        self._assert_alice_entry_rehydrated(response.data["entries"][0])
+        note = DailyNote.objects.get(tenant=self.tenant, date=date(2026, 8, 8))
+        self.assertIn("Called [PERSON_1]", note.markdown)
+        self.assertNotIn("Called Alice", note.markdown)
 
     def test_purpose_authors_statement_and_only_registered_json_note(self):
         redactor_detect, residual_detect = self._checked()

@@ -65,6 +65,15 @@ DEPRECATION_HEADERS = {
 }
 
 
+def _rehydrate_daily_note_entries_in_place(tenant: Tenant, entries: list[dict]) -> None:
+    from apps.pii.redactor import rehydrate_for_tenant
+
+    for entry in entries:
+        for key in ("author_label", "content", "mood"):
+            if entry.get(key):
+                entry[key] = rehydrate_for_tenant(tenant, entry[key])
+
+
 def _note_template_response(note: DailyNote, *, include_entries: bool = False) -> dict:
     from apps.pii.authoring import resolve_receipt_values
     from apps.pii.redactor import rehydrate_for_tenant
@@ -95,10 +104,7 @@ def _note_template_response(note: DailyNote, *, include_entries: bool = False) -
     }
     if include_entries:
         entries = parse_daily_note(note.markdown)
-        for entry in entries:
-            for key in ("author_label", "content", "mood"):
-                if entry.get(key):
-                    entry[key] = rehydrate_for_tenant(tenant, entry[key])
+        _rehydrate_daily_note_entries_in_place(tenant, entries)
         payload["entries"] = entries
     return payload
 
@@ -299,6 +305,7 @@ class DailyNoteEntryDetailView(APIView):
         note.pii_receipts = {**(note.pii_receipts or {}), "markdown": authored.receipt}
         note.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
+        _rehydrate_daily_note_entries_in_place(tenant, entries)
         return Response(
             {"date": date, "entries": entries},
             headers=DEPRECATION_HEADERS,
@@ -326,6 +333,7 @@ class DailyNoteEntryDetailView(APIView):
         note.pii_receipts = refresh_field_redactions(note.pii_receipts, "markdown", note.markdown)
         note.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
+        _rehydrate_daily_note_entries_in_place(tenant, entries)
         return Response(
             {"date": date, "entries": entries},
             headers=DEPRECATION_HEADERS,
@@ -413,6 +421,7 @@ class DailyNoteTemplateView(APIView):
         note.pii_receipts = refresh_field_redactions(note.pii_receipts, "markdown", note.markdown)
         note.save(update_fields=["markdown", "pii_receipts", "updated_at"])
 
+        _rehydrate_daily_note_entries_in_place(tenant, entries)
         return Response({"date": date, "entries": entries})
 
 
