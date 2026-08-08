@@ -1,4 +1,4 @@
-"""Liveness + build-identity health-check endpoint for the CI deploy gate and load balancers.
+"""Liveness/readiness + build-identity health endpoint for deploy gates and load balancers.
 
 A plain Django view (not DRF) so it skips the project's auth/permission classes
 and answers unauthenticated probes. Returns 200 when the WSGI app has booted and
@@ -18,9 +18,12 @@ Deliberately does NOT touch the database. This control plane runs behind a
 Supavisor pooler that occasionally drops idle connections; coupling the deploy
 gate / LB liveness to a transient pooler hiccup would cause false deploy failures
 and needless restarts. Real database faults surface as errors in Sentry, not
-here. If a readiness (DB-touching) probe is ever needed, add it as a SEPARATE
-path (e.g. /health/ready/) so liveness stays decoupled. The build field is a
-pure settings read, so it keeps that DB-free property.
+here. Azure readiness intentionally uses this path as an HTTP probe. Gunicorn
+cannot dispatch the request until ``post_worker_init`` has returned, so a 200
+also proves that this worker's PII warm-up resolved (loaded or failed-and-cached)
+without making liveness depend on the model or database. Keep the warm-up
+synchronous if this invariant changes. The build field is a pure settings read,
+so the endpoint retains its DB-free property.
 """
 
 from django.conf import settings

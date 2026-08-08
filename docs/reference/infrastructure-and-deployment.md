@@ -206,7 +206,10 @@ instead of 4×600 MB > cgroup limit (issue #693 OOM). `post_worker_init`
 ([`gunicorn.conf.py:8`](../../gunicorn.conf.py)) **warms the PII pipeline at
 worker boot** so it never cold-loads inside a user's chat POST (8–114 s in-request
 otherwise → iOS "Something went wrong"); it never fails the worker (the redactor
-degrades to pattern recognizers).
+degrades to pattern recognizers). The deploy rewrites Azure's readiness probe
+from the default TCP check to HTTP `GET /health/` in the same revision as the new
+image. Gunicorn only dispatches that request after `post_worker_init`, so Azure
+cannot send user traffic to a revision whose workers are still loading the model.
 
 ### `entrypoint.sh` — OpenClaw ([`runtime/openclaw/entrypoint.sh`](../../runtime/openclaw/entrypoint.sh))
 
