@@ -919,7 +919,7 @@ class AppleCreationPolicyTests(AppleFixtureMixin, TestCase):
                 self.assertEqual(User.objects.count(), before)
                 self.assertEqual(ExternalIdentity.objects.count(), 0)
 
-    def test_active_email_requires_link_inactive_and_duplicates_fail_closed(self):
+    def test_active_email_requires_link_inactive_and_duplicates_are_constrained(self):
         active = self.make_user(email="match@example.com")
         row, nonce = self.mint_transaction()
         before = User.objects.count()
@@ -941,15 +941,11 @@ class AppleCreationPolicyTests(AppleFixtureMixin, TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data, {"error": "invalid_grant"})
 
+        from django.db import IntegrityError, transaction
+
         User.objects.create_user(username="dupe-1", email="dupe@example.com")
-        User.objects.create_user(username="dupe-2", email="dupe@example.com")
-        row, nonce = self.mint_transaction()
-        response, _ = self.post_complete(
-            row,
-            self.token_response(nonce=nonce, email="dupe@example.com"),
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data, {"error": "invalid_grant"})
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            User.objects.create_user(username="dupe-2", email="DUPE@example.com")
 
     def test_create_persists_unusable_password_ciphertext_and_pw_iat(self):
         row, nonce = self.mint_transaction()

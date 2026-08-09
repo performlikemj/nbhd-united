@@ -7,11 +7,12 @@ from django.contrib.auth.models import AbstractUser
 from django.core.exceptions import ValidationError
 from django.core.validators import MaxValueValidator, MinValueValidator
 from django.db import models
+from django.db.models.functions import Lower
 
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION  # noqa: I001
 
 from .agenda_models import AgendaEngagement  # noqa: F401
-from .apple_models import AppleAuthTransaction, AppleRevocationOutbox, ExternalIdentity  # noqa: F401
+from .apple_models import AppleAuthTransaction, AppleGrant, AppleRevocationOutbox, ExternalIdentity  # noqa: F401
 from .line_models import LineLinkToken  # noqa: F401
 
 # Import so Django discovers the models for migrations
@@ -91,6 +92,11 @@ class User(AbstractUser):
         ),
     )
 
+    # Versioned consent captured when a native account is created. Existing
+    # users remain null until a creation flow records explicit acceptance.
+    terms_version = models.CharField(max_length=20, null=True, blank=True)
+    terms_accepted_at = models.DateTimeField(null=True)
+
     # Marketing-email opt-out. Set by the one-click unsubscribe view
     # (apps/tenants/unsubscribe_views.py). Every promo/campaign send
     # excludes opted-out users. This governs bulk marketing sends only —
@@ -118,6 +124,13 @@ class User(AbstractUser):
 
     class Meta:
         db_table = "users"
+        constraints = [
+            models.UniqueConstraint(
+                Lower("email"),
+                condition=~models.Q(email=""),
+                name="uq_users_email_lower_nonblank",
+            ),
+        ]
 
     def set_password(self, raw_password):
         """Override to bump ``password_last_changed_at`` on every change.

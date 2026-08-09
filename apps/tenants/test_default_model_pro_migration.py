@@ -42,7 +42,9 @@ class DefaultModelProMigrationTest(TransactionTestCase):
         ).pk
 
     def tearDown(self):
-        MigrationExecutor(connection).migrate([self.migrate_to])
+        executor = MigrationExecutor(connection)
+        executor.loader.build_graph()
+        executor.migrate(executor.loader.graph.leaf_nodes())
         super().tearDown()
 
     def test_bumps_only_rolling_default_tenants(self):

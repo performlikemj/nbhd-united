@@ -47,6 +47,30 @@ class ExternalIdentity(models.Model):
         ]
 
 
+class AppleGrant(models.Model):
+    """One encrypted Apple refresh token scoped to its issuing client."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    identity = models.ForeignKey(
+        ExternalIdentity,
+        on_delete=models.CASCADE,
+        related_name="grants",
+    )
+    client_id = models.CharField(max_length=255, db_index=True)
+    refresh_token_encrypted = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+    rotated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "apple_grants"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["identity", "client_id"],
+                name="uq_apple_grant_identity_client",
+            ),
+        ]
+
+
 class AppleAuthTransaction(models.Model):
     """Short-lived, single-use state and nonce binding for one Apple popup."""
 
@@ -67,10 +91,16 @@ class AppleRevocationOutbox(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     token_ciphertext = models.TextField()
-    subject = models.CharField(max_length=255)
+    subject = models.CharField(max_length=255, null=True)
+    subject_verified = models.BooleanField(default=True)
+    client_id = models.CharField(max_length=255, null=True)
+    backfill_source = models.CharField(max_length=32, blank=True, default="")
     created_at = models.DateTimeField(auto_now_add=True)
     attempts = models.PositiveIntegerField(default=0)
     last_attempt_at = models.DateTimeField(null=True, blank=True)
+    next_attempt_at = models.DateTimeField(null=True, db_index=True)
+    claimed_at = models.DateTimeField(null=True)
+    consecutive_invalid_client = models.PositiveSmallIntegerField(default=0)
     revoked_at = models.DateTimeField(null=True, blank=True)
     last_error = models.CharField(max_length=512, blank=True, default="")
 
