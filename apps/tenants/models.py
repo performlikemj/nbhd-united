@@ -1108,6 +1108,48 @@ class Tenant(models.Model):
         self.save(update_fields=["pending_config_version"])
 
 
+class PlaceholderMigrationCursor(models.Model):
+    """Durable W4 progress for one tenant/store/mode migration stream."""
+
+    class Mode(models.TextChoices):
+        DRY_RUN = "dry-run", "Dry run"
+        COMMIT = "commit", "Commit"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        RUNNING = "running", "Running"
+        SKIPPED = "skipped", "Repair queue not drained"
+        COMPLETE = "complete", "Complete"
+
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="placeholder_migration_cursors",
+    )
+    store_label = models.CharField(max_length=128)
+    mode = models.CharField(max_length=8, choices=Mode.choices)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.PENDING)
+    last_pk = models.CharField(max_length=64, blank=True, default="")
+    report_counts = models.JSONField(default=dict, blank=True)
+    lease_token = models.UUIDField(null=True, blank=True)
+    lease_expires_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "pii_placeholder_migration_cursors"
+        constraints = [
+            models.UniqueConstraint(
+                fields=("tenant", "store_label", "mode"),
+                name="pii_migration_cursor_tenant_store_mode_uniq",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.tenant_id}:{self.store_label}:{self.mode}:{self.status}"
+
+
 class UserSituation(models.Model):
     """Structured, short-lived observations about a tenant's current situation.
 

@@ -403,6 +403,16 @@ TASK_MAP = {
     # unconfirmed or residual. QStash retries feed its DLQ; the task is
     # idempotent because successful fields leave the repair states.
     "placeholder_repair_sweep": "apps.pii.repair_sweep.placeholder_repair_sweep_task",
+    # P3 W4 operator-fired migration. The driver admits one registered store
+    # at a time; each bounded batch persists a PK cursor and chains its
+    # successor. Both entrypoints default to dry-run and require an explicit
+    # JSON boolean ``commit: true`` before content can change.
+    "historical_placeholder_migration_batch": (
+        "apps.pii.historical_migration.historical_placeholder_migration_batch_task"
+    ),
+    "historical_placeholder_migration_driver": (
+        "apps.pii.historical_migration.historical_placeholder_migration_driver_task"
+    ),
     # RETIRED: ``pii_arbiter`` (apps/pii/arbiter.py) shipped PERSON/LOCATION span
     # text to Claude Haiku to prune false positives. That cloud egress is retired
     # in favor of pii_junk_sweep + on-device review; the schedule is removed via
