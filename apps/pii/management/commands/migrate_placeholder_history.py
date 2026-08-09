@@ -10,6 +10,7 @@ from apps.pii.historical_migration import (
     migrate_tenant_registered_stores,
     normalize_batch_size,
     reset_store_cursor,
+    w4_migration_tenant_allowed,
 )
 from apps.pii.store_registry import registered_store, registered_stores
 from apps.tenants.models import Tenant
@@ -52,6 +53,12 @@ class Command(BaseCommand):
         from apps.tenants.middleware import set_rls_context
 
         set_rls_context(tenant_id=tenant.pk, service_role=True)
+        if options["commit"] and not w4_migration_tenant_allowed(tenant):
+            self.stdout.write(
+                f"w4_migration_complete tenant={tenant.pk} mode=commit status=not_gated stores_complete=0 "
+                "stores_skipped=0 batches=0"
+            )
+            return
         if options["reset"]:
             labels = (store_label,) if store_label else tuple(store.model_label for store in registered_stores())
             for label in labels:

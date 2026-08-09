@@ -413,6 +413,10 @@ TASK_MAP = {
     "historical_placeholder_migration_driver": (
         "apps.pii.historical_migration.historical_placeholder_migration_driver_task"
     ),
+    # W4 preflight/demotion of known false-clean runtime and pre-W3a JSON
+    # receipts. Required deploy cutoff is supplied by the operator; dry-run is
+    # the default and commit shares the W4 tenant allowlist.
+    "w4_receipt_demotion": "apps.pii.receipt_demotion.w4_receipt_demotion_task",
     # RETIRED: ``pii_arbiter`` (apps/pii/arbiter.py) shipped PERSON/LOCATION span
     # text to Claude Haiku to prune false positives. That cloud egress is retired
     # in favor of pii_junk_sweep + on-device review; the schedule is removed via

@@ -13,8 +13,10 @@ content.
 | `residual` | Earlier policy knowingly left detected text. | Repair must drain before store admission; if encountered after the admission check, re-drive. |
 | `terminal` | Repair attempts were exhausted. Terminal is excluded from repair eligibility. | Migrates; it is not a fence. |
 | `repair_pending_skipped` | Store still has `unconfirmed`/`residual` repair-eligible rows. | Let repair run, investigate persistent failures, then re-drive the tenant. |
-| `changed_skipped` | The row version changed after batch scan or lost the conditional update race. | Re-drive off-peak; cursor intentionally does not advance beyond it. |
-| `authoring_unconfirmed` | Re-read full NER could not prove placeholder-space after the batch mint. | No row write is accepted; investigate detector health and retry. |
+| `changed_skipped` | The row version changed after batch scan or lost the conditional update race. Count is attempts, not unique rows. | QStash and the management command retry three times off-peak. |
+| `changed_skipped_advanced` | The same cursor was still changing after three re-chains. | Row remains untouched; cursor advances with a report so the store can continue. Review/re-drive the row separately. |
+| `authoring_unconfirmed` | Re-read full NER could not prove placeholder-space, or a registered non-`**` JSON path exposed zero leaves. | Field and its receipt remain untouched; cursor advances and later fields/rows continue. Investigate detector or shape drift. |
+| `flag_disabled_skipped` | Commit reached a tenant whose `layer1_placeholder_writes` flag is off. | No content write is authorized; enable only through the approved rollout gate. |
 | `skipped_by_design` | Surface is intentionally outside the registry/migration. `rows=0` means “not enumerated,” not database cardinality. | Track here; do not route through the per-tenant migration. |
 
 ## Skipped-by-design surfaces
@@ -41,6 +43,12 @@ content.
 - A row changed after pre-scan can leave a newly minted but temporarily unused
   binding. This is preferable to applying stale spans; junk review/retirement
   remains the cleanup path, and the row is retried from the unchanged cursor.
+- **Accepted W1c value-bearing-receipt residual:** the bounded W1c canary wrote
+  some `redactions[].value` strings into receipts. W2 stopped new writes of that
+  shape, but W4 deliberately does not mutate fenced `state=placeholder` fields,
+  so their embedded values remain at rest permanently. Receipt demotion also
+  preserves the payload while changing state/reason. This is named, bounded to
+  W1c canary volume, and accepted; scrubbing it requires a separate migration.
 - W4 does not alter encrypted sidecars. The directive's order—placeholder
   migration before encryption backfill—is mandatory. If a historical sidecar
   backfill already ran, stop and design a decrypt/redact/re-encrypt migration;
