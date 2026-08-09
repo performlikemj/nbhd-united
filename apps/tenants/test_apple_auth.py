@@ -367,6 +367,40 @@ class AppleBeginAndTransactionTests(AppleFixtureMixin, TestCase):
         self.assertEqual(malformed.status_code, 400)
         self.assertEqual(malformed.data, {"error": "invalid_request"})
 
+    def test_malformed_json_is_logged_and_returns_invalid_grant(self):
+        with self.assertLogs("apps.tenants.apple_views", level="INFO") as captured:
+            response = self.client.generic(
+                "POST",
+                reverse("auth-apple-complete"),
+                b"{",
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"error": "invalid_grant"})
+        self.assertIn(
+            "auth.apple.parse_rejected view=AppleCompleteView exc=ParseError",
+            "\n".join(captured.output),
+        )
+
+    def test_invalid_begin_payload_is_logged_without_error_values(self):
+        invalid_purpose = "secret-invalid-purpose"
+        with self.assertLogs("apps.tenants.apple_views", level="INFO") as captured:
+            response = self.client.post(
+                reverse("auth-apple-begin"),
+                {"purpose": invalid_purpose},
+                format="json",
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data, {"error": "invalid_request"})
+        logs = "\n".join(captured.output)
+        self.assertIn(
+            "auth.apple.begin.invalid reason=malformed_request fields=['purpose']",
+            logs,
+        )
+        self.assertNotIn(invalid_purpose, logs)
+
     def test_malformed_wrong_type_bad_uuid_and_unknown_field_do_not_consume(self):
         row, _ = self.mint_transaction()
         bodies = (
@@ -1394,6 +1428,7 @@ class AppleNativeTests(AppleFixtureMixin, TestCase):
                 self.id_token(nonce=web_nonce, audience=BUNDLE_ID),
             )
         self.assertEqual(native_rejected.status_code, 400)
+        self.assertEqual(native_rejected.data, {"error": "invalid_grant"})
         verify.assert_not_called()
         web_row.refresh_from_db()
         self.assertIsNone(web_row.consumed_at)
@@ -1404,6 +1439,7 @@ class AppleNativeTests(AppleFixtureMixin, TestCase):
             self.token_response(nonce=native_nonce),
         )
         self.assertEqual(complete_rejected.status_code, 400)
+        self.assertEqual(complete_rejected.data, {"error": "invalid_grant"})
         apple_post.assert_not_called()
         native_row.refresh_from_db()
         self.assertIsNone(native_row.consumed_at)
@@ -1428,7 +1464,21 @@ class AppleNativeTests(AppleFixtureMixin, TestCase):
                 STATE,
                 expected_purpose="web_auth",
             )
-        self.assertEqual(mismatch.exception.reason, "transaction_consumed")
+        self.assertEqual(mismatch.exception.reason, "purpose_mismatch")
+
+        consumed_row, _ = self.mint_transaction()
+        consume_apple_transaction(
+            consumed_row.id,
+            STATE,
+            expected_purpose="web_auth",
+        )
+        with self.assertRaises(AppleTransactionRejected) as consumed:
+            consume_apple_transaction(
+                consumed_row.id,
+                STATE,
+                expected_purpose="web_auth",
+            )
+        self.assertEqual(consumed.exception.reason, "transaction_consumed")
 
     def test_native_readiness_isolated_and_anonymous_views_ignore_bad_bearers(self):
         with self.settings(APPLE_SIWA_BUNDLE_ID=""):

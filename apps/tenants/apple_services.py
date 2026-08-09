@@ -64,7 +64,9 @@ def consume_apple_transaction(transaction_id, state: str, *, expected_purpose: s
         if not hmac.compare_digest(state.encode("utf-8"), row.state.encode("utf-8")):
             raise AppleTransactionRejected("state_mismatch")
         now = timezone.now()
-        if row.consumed_at is not None or row.purpose != expected_purpose:
+        if row.purpose != expected_purpose:
+            raise AppleTransactionRejected("purpose_mismatch")
+        if row.consumed_at is not None:
             raise AppleTransactionRejected("transaction_consumed")
         if now >= row.expires_at:
             raise AppleTransactionRejected("transaction_expired")
