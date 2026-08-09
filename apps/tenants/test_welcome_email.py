@@ -5,9 +5,8 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from django.core import mail
 from django.test import TestCase, override_settings
-from django.utils import timezone
 
-from apps.router.models import LineQuotaState, PendingMessage
+from apps.router.models import PendingMessage
 from apps.router.pending_queue import enqueue_message_for_tenant
 from apps.tenants.emails import send_welcome_email
 from apps.tenants.models import Tenant
@@ -40,57 +39,58 @@ class WelcomeEmailTests(TestCase):
         )
         return Tenant.objects.create(user=user, status=Tenant.Status.ACTIVE)
 
-    # --- Subject line branching ---
+    # --- Rendered copy ---
 
-    def test_subject_branches_on_telegram_connected(self):
-        # Telegram-known: subject acknowledges the in-app hello already fired.
+    def test_subject_is_ios_first_for_all_signup_paths(self):
         send_welcome_email(self.tenant)
-        self.assertEqual(
-            mail.outbox[0].subject,
-            "Welcome — your assistant just said hi",
-        )
+        self.assertEqual(mail.outbox[0].subject, "Welcome — your assistant is ready")
 
-        # Web-signup: subject signals there's a step left.
         web = self._make_web_signup_tenant()
         send_welcome_email(web)
-        self.assertEqual(
-            mail.outbox[1].subject,
-            "Welcome — pick a channel to start chatting",
-        )
+        self.assertEqual(mail.outbox[1].subject, "Welcome — your assistant is ready")
 
-    # --- Telegram-connected branch ---
-
-    def test_telegram_connected_email_references_telegram_chat(self):
-        sent = send_welcome_email(self.tenant)
-        self.assertTrue(sent)
-        self.assertEqual(len(mail.outbox), 1)
-        msg = mail.outbox[0]
-        self.assertEqual(msg.to, ["alice@example.test"])
-        self.assertIn("Hi Alice", msg.body)
-        self.assertIn("Telegram", msg.body)
-        # Telegram-connected branch does NOT include the CTA pill copy.
-        self.assertNotIn("Connect Telegram or LINE", msg.body)
-
-    def test_telegram_connected_html_uses_gradient_hero(self):
-        send_welcome_email(self.tenant)
-        msg = mail.outbox[0]
-        html = next((b for b, mt in msg.alternatives if mt == "text/html"), "")
-        # Hero copy is in both the MSO fallback and the gradient span.
-        self.assertIn("Your assistant is ready.", html)
-        # The Constellation eyebrow.
-        self.assertIn("NBHD", html)
-
-    # --- Web-signup branch (no chat_id) ---
-
-    def test_web_signup_email_links_to_settings_integrations(self):
+    def test_rendered_copy_leads_with_ios_app_and_keeps_channels_secondary(self):
         web = self._make_web_signup_tenant()
         sent = send_welcome_email(web)
         self.assertTrue(sent)
+        self.assertEqual(len(mail.outbox), 1)
         msg = mail.outbox[0]
+        self.assertEqual(msg.to, ["web@example.test"])
+        body_copy = (
+            "Your assistant is set up. If you signed up on your iPhone, just open the "
+            "NBHD app — your assistant is already saying hello. Prefer messaging apps? "
+            "Connect Telegram or LINE from your dashboard and chat there too."
+        )
+        subhead = "Chat in the NBHD app on your iPhone — or connect Telegram or LINE."
+        self.assertIn(subhead, msg.body)
+        self.assertIn(body_copy, msg.body)
+        self.assertIn("Open the NBHD app", msg.body)
+        self.assertIn("https://apps.apple.com/app/id6779158519", msg.body)
+        self.assertIn("Connect Telegram or LINE", msg.body)
         self.assertIn("https://app.example.test/settings/integrations", msg.body)
+
         html = next((b for b, mt in msg.alternatives if mt == "text/html"), "")
-        # CTA pill copy appears only on the web-signup branch.
+        self.assertIn("Your assistant is ready.", html)
+        self.assertIn(subhead, html)
+        self.assertIn(body_copy, html)
+        app_store_position = html.index("https://apps.apple.com/app/id6779158519")
+        channels_position = html.index("https://app.example.test/settings/integrations")
+        self.assertLess(app_store_position, channels_position)
+        self.assertIn("Open the NBHD app", html)
         self.assertIn("Connect Telegram or LINE", html)
+
+    def test_things_to_try_list_is_unchanged(self):
+        send_welcome_email(self.tenant)
+        msg = mail.outbox[0]
+        html = next((b for b, mt in msg.alternatives if mt == "text/html"), "")
+        for prompt in (
+            '"What can you help me with?"',
+            '"I ran 5K this morning"',
+            '"Remind me to drink water at 8am every day"',
+            '"Hi, who are you?"',
+        ):
+            self.assertIn(prompt, msg.body)
+            self.assertIn(prompt, html)
 
     # --- Recipient guards ---
 
@@ -116,61 +116,6 @@ class WelcomeEmailTests(TestCase):
         self.assertEqual(len(mail.outbox), 1)
         # Stamp not bumped on the no-op call.
         self.assertEqual(Tenant.objects.get(pk=self.tenant.pk).welcome_email_sent_at, stamped)
-
-    # --- LINE quota gating ---
-
-    def test_line_quota_exhausted_hides_line_postscript(self):
-        LineQuotaState.objects.update_or_create(
-            pk=1,
-            defaults={
-                "line_quota_limit": 1000,
-                "line_quota_used": 1000,
-                "line_quota_exhausted_at": timezone.now(),
-            },
-        )
-        send_welcome_email(self.tenant)
-        msg = mail.outbox[0]
-        html = next((b for b, mt in msg.alternatives if mt == "text/html"), "")
-        # Telegram-connected + exhausted quota → no LINE P.S.
-        self.assertNotIn("also use your assistant on LINE", msg.body)
-        self.assertNotIn("also use your assistant on LINE", html)
-
-    def test_line_quota_available_shows_line_postscript_for_telegram_user(self):
-        # No LineQuotaState row → get_or_create returns one with
-        # line_quota_exhausted_at=None → is_exhausted=False.
-        send_welcome_email(self.tenant)
-        msg = mail.outbox[0]
-        self.assertIn("also use your assistant on LINE", msg.body)
-
-    def test_line_quota_postscript_omitted_for_web_signup(self):
-        # Web-signup gets the CTA pill, not the P.S. — both routes lead
-        # to the same dashboard URL so duplicating would be noise.
-        web = self._make_web_signup_tenant()
-        send_welcome_email(web)
-        msg = mail.outbox[0]
-        self.assertNotIn("also use your assistant on LINE", msg.body)
-
-    def test_line_quota_exhausted_web_signup_drops_line_from_cta(self):
-        # When LINE is currently capped, the web-signup CTA shortens to
-        # "Connect Telegram" so we don't push toward a channel the user
-        # would see disabled on the dashboard.
-        LineQuotaState.objects.update_or_create(
-            pk=1,
-            defaults={
-                "line_quota_limit": 1000,
-                "line_quota_used": 1000,
-                "line_quota_exhausted_at": timezone.now(),
-            },
-        )
-        web = self._make_web_signup_tenant()
-        send_welcome_email(web)
-        msg = mail.outbox[0]
-        html = next((b for b, mt in msg.alternatives if mt == "text/html"), "")
-        # Both the text body and the HTML CTA collapse to Telegram-only.
-        self.assertIn("connect it to Telegram from your", msg.body)
-        self.assertNotIn("Telegram or LINE", msg.body)
-        self.assertIn("Connect Telegram", html)
-        self.assertNotIn("Connect Telegram or LINE", html)
 
     # --- Video URL gating ---
 

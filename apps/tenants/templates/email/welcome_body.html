@@ -5,10 +5,9 @@ NBHD United — Welcome email (Day 0, on provisioning)
 
 Django template variables:
   - {{ display_name }}           — User.display_name (falls back to "there")
-  - {{ telegram_connected }}     — bool: True if tenant.user.telegram_chat_id is set
+  - {{ app_store_url }}          — NBHD iOS App Store listing
   - {{ settings_url }}           — Full dashboard URL to /settings/integrations
   - {{ video_url }}              — Optional 2-min walkthrough URL (empty → block omitted)
-  - {{ line_quota_available }}   — bool: not LineQuotaState.get().is_exhausted
 
 Styling mirrors privacy_rotation_2026/email_1_body.html (Constellation
 aesthetic): dark canvas, gradient hero with Outlook fallback, pill CTA
@@ -66,7 +65,7 @@ Tested width: 600px. Mobile breakpoint: 600px → full-width 24px gutter.
 
 <body style="margin: 0; padding: 0; background-color: #0b0f13; color: #e2e8f0;">
   <div style="display: none; max-height: 0; overflow: hidden; mso-hide: all; font-size: 1px; line-height: 1px; color: #0b0f13;">
-    {% if telegram_connected %}Your assistant just said hello in Telegram — open the chat to reply.{% else %}Your assistant is set up. Connect {{ channel_label }} to start chatting.{% endif %}
+    Your assistant is ready in the NBHD app on your iPhone.
   </div>
 
   <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background-color: #0b0f13;" bgcolor="#0b0f13">
@@ -102,7 +101,7 @@ Tested width: 600px. Mobile breakpoint: 600px → full-width 24px gutter.
           <tr>
             <td class="px-page" align="left" style="padding: 0 48px 28px 48px;">
               <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 14px; line-height: 1.5; color: rgba(226,232,240,0.62); font-weight: 500;">
-                {% if telegram_connected %}Set up and waiting — your hello is already in your Telegram chat.{% else %}Set up and waiting — connect {{ channel_label }} to start chatting.{% endif %}
+                Chat in the NBHD app on your iPhone — or connect Telegram or LINE.
               </p>
             </td>
           </tr>
@@ -113,57 +112,49 @@ Tested width: 600px. Mobile breakpoint: 600px → full-width 24px gutter.
               <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 16px; line-height: 1.6; color: #e2e8f0;">
                 Hi {{ display_name|default:"there" }},
               </p>
-              {% if telegram_connected %}
               <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
-                We just sent your assistant's first message to Telegram — the chat you started signup from. Open it and reply to get going.
+                Your assistant is set up. If you signed up on your iPhone, just open the NBHD app — your assistant is already saying hello. Prefer messaging apps? Connect Telegram or LINE from your dashboard and chat there too.
               </p>
-              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
-                Not sure what to say? Pick one of these to start:
-              </p>
-              {% else %}
-              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
-                Your assistant lives in your favorite messaging app. To start chatting, connect it to {{ channel_label }} from your dashboard.
-              </p>
-              {% endif %}
             </td>
           </tr>
 
-          {% if not telegram_connected %}
-          <!-- CTA: Connect a channel -->
+          <!-- Primary CTA: Open the iOS app -->
           <tr>
             <td class="px-page py-hero-bot" align="left" style="padding: 24px 48px 12px 48px;">
               <!--[if mso]>
               <v:roundrect
                 xmlns:v="urn:schemas-microsoft-com:vml"
                 xmlns:w="urn:schemas-microsoft-com:office:word"
-                href="{{ settings_url }}"
+                href="{{ app_store_url }}"
                 style="height:52px;v-text-anchor:middle;width:260px;"
                 arcsize="50%"
                 stroke="f"
                 fillcolor="#7C6BF0">
                 <w:anchorlock/>
                 <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:15px;font-weight:700;letter-spacing:0.01em;">
-                  Connect {{ channel_label }}
+                  Open the NBHD app
                 </center>
               </v:roundrect>
               <![endif]-->
               <!--[if !mso]><!-- -->
-              <a href="{{ settings_url }}" class="cta-glow" target="_blank" rel="noopener" style="display: inline-block; background-color: #7C6BF0; color: #ffffff; text-decoration: none; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; font-weight: 700; padding: 16px 36px; border-radius: 999px; letter-spacing: 0.01em; box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);">
-                Connect {{ channel_label }}
+              <a href="{{ app_store_url }}" class="cta-glow" target="_blank" rel="noopener" style="display: inline-block; background-color: #7C6BF0; color: #ffffff; text-decoration: none; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; font-weight: 700; padding: 16px 36px; border-radius: 999px; letter-spacing: 0.01em; box-shadow: 0 0 0 1px rgba(124, 107, 240, 0.35), 0 12px 32px rgba(124, 107, 240, 0.40);">
+                Open the NBHD app
               </a>
               <!--<![endif]-->
             </td>
           </tr>
 
-          <!-- Subbody after CTA -->
+          <!-- Secondary channel link and subbody after CTA -->
           <tr>
             <td class="px-page" align="left" style="padding: 16px 48px 0 48px;">
+              <p style="margin: 0 0 18px 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; line-height: 1.6; color: rgba(226,232,240,0.55);">
+                <a href="{{ settings_url }}" target="_blank" rel="noopener" style="color: #4ECDC4; text-decoration: none; border-bottom: 1px solid rgba(78,205,196,0.45);">Connect Telegram or LINE</a>
+              </p>
               <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 15px; line-height: 1.7; color: rgba(226,232,240,0.78);">
-                Once you're connected, here are some things to try:
+                Some things to try first:
               </p>
             </td>
           </tr>
-          {% endif %}
 
           <!-- Prompt list -->
           <tr>
@@ -246,17 +237,6 @@ Tested width: 600px. Mobile breakpoint: 600px → full-width 24px gutter.
               </p>
             </td>
           </tr>
-
-          {% if line_quota_available and telegram_connected %}
-          <!-- LINE P.S. (only if Telegram is the primary channel and LINE quota is available) -->
-          <tr>
-            <td class="px-page" align="left" style="padding: 20px 48px 0 48px;">
-              <p style="margin: 0; font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Arial, sans-serif; font-size: 13px; line-height: 1.6; color: rgba(226,232,240,0.55);">
-                <span style="font-family: 'IBM Plex Mono', Consolas, Menlo, monospace; font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase; color: rgba(78,205,196,0.85);">P.S.</span>&nbsp;&nbsp;You can also use your assistant on LINE. Connect it from <a href="{{ settings_url }}" target="_blank" rel="noopener" style="color: #4ECDC4; text-decoration: none; border-bottom: 1px solid rgba(78,205,196,0.45);">your dashboard</a>.
-              </p>
-            </td>
-          </tr>
-          {% endif %}
 
           <!-- Signoff -->
           <tr>
