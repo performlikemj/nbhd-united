@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from django.core.exceptions import FieldDoesNotExist
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -15,7 +16,6 @@ from apps.pii.historical_migration import (
     DEFAULT_BATCH_SIZE,
     _chain_dedup_id,
     _conditional_update,
-    _has_updated_at,
     _receipt_state,
     _row_queryset,
     _row_version,
@@ -47,11 +47,22 @@ def parse_deploy_cutoff(value: str | datetime) -> datetime:
     return cutoff
 
 
+def _time_discriminator_field(store: PlaceholderStore) -> str | None:
+    for field in ("updated_at", "created_at"):
+        try:
+            store.model._meta.get_field(field)
+        except FieldDoesNotExist:
+            continue
+        return field
+    return None
+
+
 def _field_demotion_reasons(
     row: Any,
     store: PlaceholderStore,
     field: str,
     cutoff: datetime,
+    time_discriminator: str,
 ) -> tuple[str, ...]:
     receipts = getattr(row, store.receipts_field, {})
     receipt = receipts.get(field) if isinstance(receipts, dict) else None
@@ -59,7 +70,9 @@ def _field_demotion_reasons(
         return ()
 
     reasons: list[str] = []
-    if receipt.get("writer") == "runtime" and _has_updated_at(store) and row.updated_at < cutoff:
+    # d24cf4b5 added residual detection to both writer paths; receipts from
+    # either path before its deploy cutoff are therefore equally false-clean.
+    if receipt.get("writer") in {"runtime", "background"} and getattr(row, time_discriminator) < cutoff:
         reasons.append("runtime_pre_cutoff")
     if field in store.json_fields and json_field_yields_no_registered_leaves(row, store, field):
         reasons.append("no_leaf_shape")
@@ -83,6 +96,11 @@ def process_receipt_demotion_batch(
         counts = {"flag_disabled_skipped": 0}
         emit_receipt_demotion_report(tenant.pk, store.model_label, counts)
         return ReceiptDemotionBatchResult(store.model_label, True, True, 0, after_pk, counts)
+    time_discriminator = _time_discriminator_field(store)
+    if time_discriminator is None:
+        counts = {"time_discriminator_missing_skipped": 0}
+        emit_receipt_demotion_report(tenant.pk, store.model_label, counts)
+        return ReceiptDemotionBatchResult(store.model_label, True, True, 0, after_pk, counts)
 
     queryset = _row_queryset(tenant, store).order_by("pk")
     if after_pk:
@@ -96,7 +114,7 @@ def process_receipt_demotion_batch(
         receipts = dict(getattr(row, store.receipts_field, {}) or {})
         changed = False
         for field in store.receipt_fields:
-            reasons = _field_demotion_reasons(row, store, field, cutoff)
+            reasons = _field_demotion_reasons(row, store, field, cutoff, time_discriminator)
             if not reasons:
                 continue
             counts["matched"] += 1
@@ -131,7 +149,8 @@ def process_receipt_demotion_batch(
 def emit_receipt_demotion_report(tenant_id: Any, store_label: str, counts: dict[str, int]) -> None:
     logger.info(
         "w4_receipt_demotion_report tenant=%s store=%s matched=%d runtime_pre_cutoff=%d "
-        "no_leaf_shape=%d demoted=%d changed_skipped=%d flag_disabled_skipped=%d",
+        "no_leaf_shape=%d demoted=%d changed_skipped=%d flag_disabled_skipped=%d "
+        "time_discriminator_missing_skipped=%d",
         tenant_id,
         store_label,
         counts.get("matched", 0),
@@ -140,6 +159,7 @@ def emit_receipt_demotion_report(tenant_id: Any, store_label: str, counts: dict[
         counts.get("demoted", 0),
         counts.get("changed_skipped", 0),
         counts.get("flag_disabled_skipped", 0),
+        counts.get("time_discriminator_missing_skipped", 0),
     )
 
 

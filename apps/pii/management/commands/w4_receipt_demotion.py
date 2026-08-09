@@ -71,5 +71,7 @@ class Command(BaseCommand):
                 "w4_receipt_demotion_store "
                 f"tenant={tenant.pk} store={store.model_label} mode={mode} matched={totals['matched']} "
                 f"runtime_pre_cutoff={totals['runtime_pre_cutoff']} no_leaf_shape={totals['no_leaf_shape']} "
-                f"demoted={totals['demoted']} changed_skipped={totals['changed_skipped']}"
+                f"demoted={totals['demoted']} changed_skipped={totals['changed_skipped']} "
+                "time_discriminator_missing_skipped="
+                f"{totals['time_discriminator_missing_skipped']}"
             )

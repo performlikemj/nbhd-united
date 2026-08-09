@@ -11,6 +11,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.journal.models import NoteTemplate, Task
+from apps.lessons.models import Lesson, StarJournalEntry
 from apps.pii.receipt_demotion import (
     ReceiptDemotionBatchResult,
     parse_deploy_cutoff,
@@ -18,6 +19,7 @@ from apps.pii.receipt_demotion import (
     w4_receipt_demotion_task,
 )
 from apps.pii.store_registry import registered_store
+from apps.router.models import DeliveryAttempt
 from apps.tenants.models import Tenant, User
 
 
@@ -50,16 +52,17 @@ class ReceiptDemotionTests(TestCase):
         task.refresh_from_db()
         return task
 
-    def test_runtime_pre_cutoff_dry_run_then_commit_demotes_only_state(self):
+    def test_runtime_and_background_pre_cutoff_dry_run_then_commit_demotes_only_state(self):
         old = self._task(1, updated_at=self.cutoff - timedelta(seconds=1))
         new = self._task(2, updated_at=self.cutoff + timedelta(seconds=1))
         owner = self._task(3, updated_at=self.cutoff - timedelta(seconds=1), writer="owner")
+        background = self._task(4, updated_at=self.cutoff - timedelta(seconds=1), writer="background")
         old_timestamp = old.updated_at
         original_redactions = old.pii_receipts["title"]["redactions"]
 
         dry = process_receipt_demotion_batch(self.tenant, "journal.Task", self.cutoff, batch_size=10)
         old.refresh_from_db()
-        self.assertEqual(dry.counts["matched"], 1)
+        self.assertEqual(dry.counts["matched"], 2)
         self.assertEqual(old.pii_receipts["title"]["state"], "placeholder")
 
         committed = process_receipt_demotion_batch(
@@ -72,12 +75,62 @@ class ReceiptDemotionTests(TestCase):
         old.refresh_from_db()
         new.refresh_from_db()
         owner.refresh_from_db()
-        self.assertEqual(committed.counts["demoted"], 1)
+        background.refresh_from_db()
+        self.assertEqual(committed.counts["demoted"], 2)
         self.assertEqual(old.pii_receipts["title"]["state"], "unconfirmed")
         self.assertEqual(old.pii_receipts["title"]["redactions"], original_redactions)
         self.assertEqual(old.updated_at, old_timestamp)
         self.assertEqual(new.pii_receipts["title"]["state"], "placeholder")
         self.assertEqual(owner.pii_receipts["title"]["state"], "placeholder")
+        self.assertEqual(background.pii_receipts["title"]["state"], "unconfirmed")
+
+    def test_created_at_fallback_demotes_pre_cutoff_receipt(self):
+        lesson = Lesson.objects.create(
+            tenant=self.tenant,
+            text="Stable placeholder-space lesson",
+            source_type="experience",
+        )
+        entry = StarJournalEntry.objects.create(
+            tenant=self.tenant,
+            star=lesson,
+            text="[PERSON_1] reflection",
+            pii_receipts={"text": {"state": "placeholder", "writer": "background"}},
+        )
+        StarJournalEntry.objects.filter(pk=entry.pk).update(created_at=self.cutoff - timedelta(seconds=1))
+
+        result = process_receipt_demotion_batch(
+            self.tenant,
+            "lessons.StarJournalEntry",
+            self.cutoff,
+            commit=True,
+        )
+
+        entry.refresh_from_db()
+        self.assertEqual(result.counts["runtime_pre_cutoff"], 1)
+        self.assertEqual(entry.pii_receipts["text"]["state"], "unconfirmed")
+
+    def test_store_without_time_discriminator_is_named_and_skipped(self):
+        attempt = DeliveryAttempt.objects.create(
+            tenant=self.tenant,
+            occurrence_key="w4-no-time-discriminator",
+            channel="telegram",
+            response_excerpt="[PERSON_1] accepted",
+            pii_receipts={"response_excerpt": {"state": "placeholder", "writer": "background"}},
+        )
+
+        with self.assertLogs("apps.pii.receipt_demotion", level="INFO") as logs:
+            result = process_receipt_demotion_batch(
+                self.tenant,
+                "router.DeliveryAttempt",
+                self.cutoff,
+                commit=True,
+            )
+
+        attempt.refresh_from_db()
+        self.assertTrue(result.skipped)
+        self.assertEqual(result.counts["time_discriminator_missing_skipped"], 0)
+        self.assertEqual(attempt.pii_receipts["response_excerpt"]["state"], "placeholder")
+        self.assertTrue(any("time_discriminator_missing_skipped=0" in line for line in logs.output))
 
     def test_non_recursive_json_zero_leaf_shape_demotes_placeholder_receipt(self):
         template = NoteTemplate.objects.create(

@@ -29,6 +29,7 @@ from apps.pii.entity_registry import canonical_key, get_name, inverted_names_ci,
 from apps.pii.redactor import MINT_ALL, MINT_NEVER, RedactionSession, next_placeholder_number
 from apps.pii.repair_sweep import _repair_query
 from apps.pii.store_registry import PlaceholderStore, registered_store, registered_stores, rewrite_json_path
+from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import PlaceholderMigrationCursor, Tenant
 
 logger = logging.getLogger(__name__)
@@ -376,6 +377,9 @@ def process_store_batch(
     advance_changed: bool = False,
 ) -> BatchResult:
     """Process one bounded primary-key window for a registered store."""
+    # A recycled worker connection may have had its session RLS variables
+    # cleared; without this reassertion, an empty scan can be stamped COMPLETE.
+    set_rls_context(tenant_id=tenant.pk, service_role=True)
     store = registered_store(store_label)
     batch_size = normalize_batch_size(batch_size)
     mode = PlaceholderMigrationCursor.Mode.COMMIT if commit else PlaceholderMigrationCursor.Mode.DRY_RUN

@@ -62,6 +62,14 @@ class HistoricalMigrationTests(TestCase):
             else {"description": {"state": "placeholder", "writer": "runtime", "redactions": []}},
         )
 
+    @patch("apps.pii.historical_migration.set_rls_context")
+    @patch("apps.pii.historical_migration.repair_pending_count", return_value=0)
+    def test_batch_reasserts_scan_rls_context_before_empty_completion(self, _repair, set_context):
+        result = process_store_batch(self.tenant, "journal.Task")
+
+        self.assertTrue(result.done)
+        set_context.assert_called_once_with(tenant_id=self.tenant.pk, service_role=True)
+
     @patch("apps.pii.historical_migration.repair_pending_count", return_value=0)
     def test_per_field_fence_reports_every_state_including_terminal(self, _repair):
         states = ["placeholder", "bypass", "unconfirmed", "residual", "terminal"]

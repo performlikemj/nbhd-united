@@ -36,6 +36,7 @@ content.
   scan/rewrite fence. Append-only models without it use PostgreSQL `xmin`, which
   is stronger than a content-only comparison because any row update changes the
   token. Neither path holds a content-row lock during rewriting.
+- Receipt demotion falls back from `updated_at` to `created_at`; stores with neither are reported as `time_discriminator_missing_skipped` and left untouched.
 - Batch pre-scan necessarily holds detected candidate values in process memory
   long enough to mint the tenant map. Values are never logged. The tenant row is
   locked only for one map/counter write; row rewrites happen after that

@@ -68,8 +68,10 @@ Set `W4_DEPLOY_CUTOFF` to the recorded timezone-aware production deployment
 time of `d24cf4b5` (example shape only: `2026-08-08T00:00:00Z`). The task rejects
 a missing or timezone-naive cutoff. It scans only flag-on tenants and demotes a
 `state=placeholder` receipt to `unconfirmed` when either (a) its writer is
-`runtime` and the row predates the cutoff, or (b) a registered non-`**` JSON
-field exposes zero selected string leaves. Reports are counts-only per store.
+`runtime` or `background` and the row's `updated_at` (falling back to
+`created_at`) predates the cutoff, or (b) a registered non-`**` JSON field
+exposes zero selected string leaves. Stores with neither time column are named
+as `time_discriminator_missing_skipped` and skipped; reports are counts-only.
 
 ```bash
 export W4_DEPLOY_CUTOFF='REQUIRED_ACTUAL_D24CF4B5_DEPLOY_TIME'
