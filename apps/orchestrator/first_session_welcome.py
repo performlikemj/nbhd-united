@@ -7,6 +7,7 @@ from django.utils import timezone
 
 FIRST_SESSION_WELCOME_KEY = "first_session"
 FIRST_SESSION_WELCOME_JOB_NAME = "_first_session_welcome"
+FIRST_SESSION_WELCOME_CLIENT_MSG_ID = "_first_session_welcome"
 FIRST_SESSION_WELCOME_QUICK_REPLIES = ["Tell you about me"]
 FIRST_SESSION_DISPLAY_NAME_MAX_LENGTH = 80
 
@@ -58,13 +59,23 @@ def seed_first_session_welcome(tenant):
         locked_tenant.save(update_fields=["welcomes_sent"])
     tenant.welcomes_sent = marks
 
+    from apps.router.chat_views import create_delivered_app_assistant_message
     from apps.router.proactive_context import record_proactive_outbound
+
+    message_text = compose_first_session_welcome(getattr(tenant.user, "display_name", ""))
+    create_delivered_app_assistant_message(
+        tenant=tenant,
+        user=tenant.user,
+        message_text=message_text,
+        client_msg_id=FIRST_SESSION_WELCOME_CLIENT_MSG_ID,
+        quick_replies=FIRST_SESSION_WELCOME_QUICK_REPLIES,
+    )
 
     return record_proactive_outbound(
         tenant=tenant,
         channel="app",
         channel_user_id=str(tenant.user_id),
-        message_text=compose_first_session_welcome(getattr(tenant.user, "display_name", "")),
+        message_text=message_text,
         job_name=FIRST_SESSION_WELCOME_JOB_NAME,
         quick_replies=FIRST_SESSION_WELCOME_QUICK_REPLIES,
     )
