@@ -82,6 +82,8 @@ from datetime import UTC, datetime
 
 from django.utils.dateparse import parse_datetime
 
+from apps.orchestrator.first_session_welcome import FIRST_SESSION_WELCOME_JOB_NAME
+
 logger = logging.getLogger(__name__)
 
 # Server-bounded page size. iOS loops via the cursor until a page is empty.
@@ -459,7 +461,13 @@ def build_since_page(tenant, main_thread_id: str, *, cursor: str | None, limit: 
         candidates.extend(_conv_rows(t, main_thread_id, entity_map))
 
     # Eval rows are internal probe evidence, never owner-facing feed messages.
-    pro_qs = ProactiveOutbound.objects.filter(tenant=tenant).exclude(channel=ProactiveOutbound.Channel.EVAL)
+    # The first-session job's USER-VISIBLE delivery is the AppChatMessage; its
+    # ProactiveOutbound row is audit-only.
+    pro_qs = (
+        ProactiveOutbound.objects.filter(tenant=tenant)
+        .exclude(channel=ProactiveOutbound.Channel.EVAL)
+        .exclude(job_name=FIRST_SESSION_WELCOME_JOB_NAME)
+    )
     for p in _page_slice(pro_qs, after_dt, fetch):
         candidates.extend(_proactive_rows(p, main_thread_id, entity_map))
 

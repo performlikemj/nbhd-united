@@ -7,19 +7,22 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
 from unittest.mock import patch
 
-from django.db import close_old_connections
+from django.db import close_old_connections, connection
 from django.test import SimpleTestCase, TestCase, TransactionTestCase, override_settings
+from django.test.utils import CaptureQueriesContext
+from rest_framework.test import APIClient
 
 from apps.orchestrator.first_session_welcome import (
     FIRST_SESSION_DISPLAY_NAME_MAX_LENGTH,
+    FIRST_SESSION_WELCOME_CLIENT_MSG_ID,
     FIRST_SESSION_WELCOME_KEY,
+    FIRST_SESSION_WELCOME_QUICK_REPLIES,
     FIRST_SESSION_WELCOME_TEMPLATE,
     compose_first_session_welcome,
     seed_first_session_welcome,
 )
 from apps.orchestrator.services import provision_tenant, repair_stale_tenant_provisioning
-from apps.router.chat_history import build_since_page
-from apps.router.models import ProactiveOutbound
+from apps.router.models import AppChatMessage, ChatThread, ProactiveOutbound
 from apps.tenants.models import Tenant, User
 
 
@@ -62,8 +65,10 @@ class FirstSessionWelcomePersistenceTest(TestCase):
             display_name="Mika",
         )
         self.tenant = Tenant.objects.create(user=self.user, status=Tenant.Status.ACTIVE)
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
 
-    def test_channel_less_user_gets_app_row_without_channel_resolution_or_push(self):
+    def test_fresh_tenant_gets_ready_app_assistant_row_through_sync_endpoint(self):
         with (
             patch("apps.router.cron_delivery.resolve_user_channel", side_effect=AssertionError("must not resolve")),
             patch("apps.common.apns.send_push") as send_push,
@@ -76,6 +81,64 @@ class FirstSessionWelcomePersistenceTest(TestCase):
         self.assertEqual(row.job_name, "_first_session_welcome")
         self.assertEqual(row.quick_replies, ["Tell you about me"])
         send_push.assert_not_called()
+
+        message = AppChatMessage.objects.get(tenant=self.tenant)
+        self.assertEqual(message.client_msg_id, FIRST_SESSION_WELCOME_CLIENT_MSG_ID)
+        self.assertEqual(message.user, self.user)
+        self.assertEqual(message.user_text, "")
+        self.assertEqual(message.reply_text, compose_first_session_welcome("Mika"))
+        self.assertEqual(message.status, AppChatMessage.Status.READY)
+        self.assertEqual(message.source, AppChatMessage.Source.TENANT)
+        self.assertEqual(message.error, "")
+        self.assertIsNotNone(message.replied_at)
+        self.assertEqual(message.quick_replies, FIRST_SESSION_WELCOME_QUICK_REPLIES)
+        self.assertTrue(message.thread.is_main)
+        self.assertEqual(message.thread.tenant, self.tenant)
+        self.assertEqual(message.thread.user, self.user)
+        self.assertEqual(message.thread.title, "Main")
+
+        response = self.client.get("/api/v1/chat/messages/")
+        self.assertEqual(response.status_code, 200, response.content)
+        greeting = compose_first_session_welcome("Mika")
+        self.assertEqual(sum(item["text"] == greeting for item in response.data["messages"]), 1)
+        app_rows = [item for item in response.data["messages"] if item["source"] == "app"]
+        self.assertEqual(
+            app_rows,
+            [
+                {
+                    "id": f"app:{message.id}:1",
+                    "client_msg_id": FIRST_SESSION_WELCOME_CLIENT_MSG_ID,
+                    "role": "assistant",
+                    "text": greeting,
+                    "created_at": message.replied_at.isoformat(),
+                    "source": "app",
+                    "thread_id": str(message.thread_id),
+                    "has_image": False,
+                    "has_document": False,
+                    "quick_replies": FIRST_SESSION_WELCOME_QUICK_REPLIES,
+                }
+            ],
+        )
+
+    def test_reseed_is_idempotent_for_message_thread_and_audit(self):
+        first = seed_first_session_welcome(self.tenant)
+
+        self.assertIsNone(seed_first_session_welcome(self.tenant))
+        self.assertIsNotNone(first)
+        self.assertEqual(AppChatMessage.objects.filter(tenant=self.tenant).count(), 1)
+        self.assertEqual(ChatThread.objects.filter(tenant=self.tenant, is_main=True).count(), 1)
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_delivery_sets_transaction_local_tenant_before_app_insert(self):
+        with CaptureQueriesContext(connection) as queries:
+            seed_first_session_welcome(self.tenant)
+
+        sql = [query["sql"] for query in queries]
+        guc_index = next(index for index, query in enumerate(sql) if "set_config('app.tenant_id'" in query)
+        insert_index = next(index for index, query in enumerate(sql) if 'INSERT INTO "app_chat_messages"' in query)
+        self.assertLess(guc_index, insert_index)
+        self.assertIn(str(self.tenant.id), sql[guc_index])
+        self.assertIn("true", sql[guc_index].lower())
 
     def test_retry_after_partial_failure_accepts_loss_without_respam(self):
         with patch(
@@ -91,6 +154,7 @@ class FirstSessionWelcomePersistenceTest(TestCase):
 
         record.assert_called_once()
         self.assertFalse(ProactiveOutbound.objects.filter(tenant=self.tenant).exists())
+        self.assertEqual(AppChatMessage.objects.filter(tenant=self.tenant).count(), 1)
 
     def test_hostile_name_cannot_corrupt_since_feed_rehydration(self):
         self.user.display_name = "[PERSON_1]\nMallory " + "x" * 200
@@ -98,16 +162,16 @@ class FirstSessionWelcomePersistenceTest(TestCase):
         self.tenant.pii_entity_map = {"[PERSON_1]": "CORRUPTED RENDER"}
         self.tenant.save(update_fields=["pii_entity_map"])
 
-        row = seed_first_session_welcome(self.tenant)
-        messages, _cursor = build_since_page(self.tenant, "main-thread", cursor=None, limit=100)
+        seed_first_session_welcome(self.tenant)
+        response = self.client.get("/api/v1/chat/messages/")
+        messages = response.data["messages"]
+        app_message = next(message for message in messages if message["source"] == "app")
 
-        self.assertEqual(len(messages), 1)
-        self.assertEqual(messages[0]["id"], f"cron:{row.id}")
-        self.assertEqual(messages[0]["role"], "assistant")
-        self.assertEqual(messages[0]["source"], "cron")
-        self.assertEqual(messages[0]["quick_replies"], ["Tell you about me"])
-        self.assertNotIn("[PERSON_", messages[0]["text"])
-        self.assertNotIn("CORRUPTED RENDER", messages[0]["text"])
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(app_message["role"], "assistant")
+        self.assertEqual(app_message["quick_replies"], ["Tell you about me"])
+        self.assertNotIn("[PERSON_", app_message["text"])
+        self.assertNotIn("CORRUPTED RENDER", app_message["text"])
 
 
 @contextmanager
@@ -168,6 +232,9 @@ class FirstSessionWelcomeProvisioningTest(TestCase):
             update_fields = kwargs.get("update_fields") or []
             if instance.pk == tenant.pk and instance.status == Tenant.Status.ACTIVE and "status" in update_fields:
                 observed_active_saves += 1
+                self.assertTrue(
+                    AppChatMessage.objects.filter(tenant=tenant, status=AppChatMessage.Status.READY).exists()
+                )
                 self.assertTrue(ProactiveOutbound.objects.filter(tenant=tenant, channel="app").exists())
             return original_save(instance, *args, **kwargs)
 
@@ -188,28 +255,28 @@ class FirstSessionWelcomeProvisioningTest(TestCase):
             provision_tenant(str(tenant.id))
 
         self.assertEqual(ProactiveOutbound.objects.filter(tenant=tenant).count(), 1)
+        self.assertEqual(AppChatMessage.objects.filter(tenant=tenant).count(), 1)
         tenant.refresh_from_db()
         self.assertIn(FIRST_SESSION_WELCOME_KEY, tenant.welcomes_sent)
 
-    def test_unexpected_welcome_failure_never_resets_active_status(self):
+    def test_app_delivery_failure_never_blocks_active_status(self):
         user = User.objects.create_user(username="welcome-failure", display_name="Failure")
         tenant = Tenant.objects.create(user=user, status=Tenant.Status.PENDING)
-
-        def fail_before_activation(_tenant):
-            self.assertEqual(Tenant.objects.get(pk=tenant.pk).status, Tenant.Status.PROVISIONING)
-            raise RuntimeError("welcome unavailable")
 
         with (
             _mock_provision_dependencies(),
             patch(
-                "apps.orchestrator.first_session_welcome.seed_first_session_welcome",
-                side_effect=fail_before_activation,
+                "apps.router.chat_views.create_delivered_app_assistant_message",
+                side_effect=RuntimeError("app chat unavailable"),
             ),
         ):
             provision_tenant(str(tenant.id))
 
         tenant.refresh_from_db()
         self.assertEqual(tenant.status, Tenant.Status.ACTIVE)
+        self.assertIn(FIRST_SESSION_WELCOME_KEY, tenant.welcomes_sent)
+        self.assertFalse(AppChatMessage.objects.filter(tenant=tenant).exists())
+        self.assertFalse(ProactiveOutbound.objects.filter(tenant=tenant).exists())
 
     def test_suppressed_welcome_activates_without_greeting_or_stamp(self):
         user = User.objects.create_user(username="welcome-suppressed", display_name="Suppressed")
@@ -239,6 +306,7 @@ class FirstSessionWelcomeProvisioningTest(TestCase):
 
         self.assertTrue(created)
         self.assertTrue(published)
+        self.assertEqual(AppChatMessage.objects.filter(tenant=tenant).count(), 1)
         self.assertEqual(ProactiveOutbound.objects.filter(tenant=tenant, channel="app").count(), 1)
         send_push.assert_not_called()
 
@@ -264,6 +332,7 @@ class FirstSessionWelcomeProvisioningTest(TestCase):
             )
 
         self.assertEqual(ProactiveOutbound.objects.filter(tenant=tenant, channel="app").count(), 1)
+        self.assertEqual(AppChatMessage.objects.filter(tenant=tenant).count(), 1)
 
     def test_active_tenant_direct_reentry_cannot_greet(self):
         user = User.objects.create_user(username="active-reentry", display_name="Existing")
@@ -340,5 +409,6 @@ class FirstSessionWelcomeConcurrencyTest(TransactionTestCase):
 
         self.assertEqual(errors, [])
         self.assertEqual(ProactiveOutbound.objects.filter(tenant=tenant).count(), 1)
+        self.assertEqual(AppChatMessage.objects.filter(tenant=tenant).count(), 1)
         tenant.refresh_from_db()
         self.assertIn(FIRST_SESSION_WELCOME_KEY, tenant.welcomes_sent)

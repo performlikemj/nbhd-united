@@ -26,7 +26,7 @@ from datetime import timedelta
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
+from django.db import IntegrityError, connection, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
@@ -257,6 +257,69 @@ def _get_or_create_main_thread(tenant, user) -> ChatThread:
         },
     )
     return thread
+
+
+def create_delivered_app_assistant_message(
+    *,
+    tenant,
+    user,
+    message_text: str,
+    client_msg_id: str,
+    quick_replies: list[str] | None = None,
+) -> AppChatMessage:
+    """Persist an assistant-only app delivery in the tenant's main thread.
+
+    ``AppChatMessage`` stores a logical user+assistant turn in one row.  An
+    empty ``user_text`` plus a READY ``reply_text`` is therefore the native
+    shape for a control-plane-authored assistant delivery: the ``?since=``
+    feed suppresses the empty user half and emits the assistant half exactly
+    like a completed tenant-runtime reply.
+
+    Provisioning calls this outside an owner request, so the tenant GUC is
+    pinned transaction-locally at the write chokepoint.  Encryption may reach
+    the key broker on a cold cache; compute both sidecars before opening that
+    transaction, preserving the no-network-inside-``atomic`` invariant.
+    """
+    from apps.pii.egress import redact_known_values
+
+    title = scrub_chat_thread_title("Main")
+    title_enc = _encrypt_chat_value(tenant, enc_columns.CHAT_THREAD_TITLE, title)
+    user_text_enc = _encrypt_chat_value(tenant, enc_columns.APP_CHAT_MESSAGE_USER_TEXT, "")
+    stored_text = clamp_reply_text(
+        redact_known_values(tenant, message_text, seam="app_assistant_delivery_storage").strip()
+    )
+    reply_redactions = placeholder_redactions(stored_text, getattr(tenant, "pii_entity_map", None))
+    replied_at = timezone.now()
+
+    with transaction.atomic():
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT set_config('app.tenant_id', %s, true)",
+                [str(tenant.id)],
+            )
+        thread, _created = ChatThread.objects.get_or_create(
+            tenant=tenant,
+            is_main=True,
+            defaults={
+                "user": user,
+                "title": title,
+                "title_enc": title_enc,
+            },
+        )
+        return AppChatMessage.objects.create(
+            tenant=tenant,
+            user=user,
+            thread=thread,
+            client_msg_id=client_msg_id,
+            user_text="",
+            user_text_enc=user_text_enc,
+            reply_text=stored_text,
+            status=AppChatMessage.Status.READY,
+            source=AppChatMessage.Source.TENANT,
+            replied_at=replied_at,
+            reply_redactions=reply_redactions or None,
+            quick_replies=quick_replies or None,
+        )
 
 
 # A tenant's main-thread id changes only through an explicit admin action, so the
