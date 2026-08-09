@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from datetime import timedelta
 
 from django.apps import apps as django_apps
 from django.db import IntegrityError, transaction
@@ -16,6 +17,7 @@ SERVICES_ID = "org.hoodunited.web"
 BUNDLE_ID = "org.hoodunited.nbhd"
 
 migration = importlib.import_module("apps.tenants.migrations.0149_backfill_apple_grants_and_outbox")
+catch_up_migration = importlib.import_module("apps.tenants.migrations.0151_catch_up_apple_grants_and_outbox")
 
 
 def _identity(
@@ -146,6 +148,60 @@ class AppleGrantSchemaTests(TestCase):
         self.assertEqual(unmatched.client_id, SERVICES_ID)
         self.assertEqual(unmatched.backfill_source, "services_default")
         self.assertTrue(unmatched.subject_verified)
+
+    def test_catch_up_updates_only_when_legacy_identity_token_is_newer(self):
+        identity = _identity(
+            username="grant-catch-up",
+            subject="grant-catch-up-subject",
+            audience=SERVICES_ID,
+            ciphertext="initial-legacy-ciphertext",
+        )
+        migration.backfill_apple_grants_and_outbox(django_apps, None)
+        grant = AppleGrant.objects.get(identity=identity, client_id=SERVICES_ID)
+        AppleGrant.objects.filter(id=grant.id).update(refresh_token_encrypted="newer-grant-ciphertext")
+        ExternalIdentity.objects.filter(id=identity.id).update(
+            refresh_token_encrypted="newest-legacy-ciphertext",
+            refresh_token_updated_at=timezone.now() + timedelta(minutes=1),
+        )
+
+        catch_up_migration.reconcile_apple_grants_and_outbox(django_apps, None)
+
+        grant.refresh_from_db()
+        self.assertEqual(grant.refresh_token_encrypted, "newest-legacy-ciphertext")
+
+        ExternalIdentity.objects.filter(id=identity.id).update(
+            refresh_token_encrypted="stale-legacy-ciphertext",
+            refresh_token_updated_at=timezone.now() - timedelta(days=1),
+        )
+        AppleGrant.objects.filter(id=grant.id).update(refresh_token_encrypted="keep-newer-grant")
+        catch_up_migration.reconcile_apple_grants_and_outbox(django_apps, None)
+        grant.refresh_from_db()
+        self.assertEqual(grant.refresh_token_encrypted, "keep-newer-grant")
+
+    def test_catch_up_refills_null_client_id_with_l1_provenance(self):
+        identity = _identity(
+            username="outbox-catch-up",
+            subject="outbox-catch-up-subject",
+            audience=BUNDLE_ID,
+        )
+        matched = AppleRevocationOutbox.objects.create(
+            token_ciphertext="matched-catch-up",
+            subject=identity.subject,
+            client_id=None,
+        )
+        unmatched = AppleRevocationOutbox.objects.create(
+            token_ciphertext="unmatched-catch-up",
+            subject=None,
+            subject_verified=False,
+            client_id=None,
+        )
+
+        catch_up_migration.reconcile_apple_grants_and_outbox(django_apps, None)
+
+        matched.refresh_from_db()
+        unmatched.refresh_from_db()
+        self.assertEqual((matched.client_id, matched.backfill_source), (BUNDLE_ID, "identity_audience"))
+        self.assertEqual((unmatched.client_id, unmatched.backfill_source), (SERVICES_ID, "services_default"))
 
 
 class UserExpandSchemaTests(TestCase):

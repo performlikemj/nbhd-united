@@ -58,6 +58,14 @@ class AppleGrant:
     refresh_token: str | None
 
 
+@dataclass(frozen=True)
+class AppleRawExchange:
+    """Apple token response before any ID-token claim is trusted."""
+
+    id_token: object
+    refresh_token: str | None
+
+
 _jwks_client = jwt.PyJWKClient(
     APPLE_JWKS_URL,
     cache_keys=True,
@@ -137,13 +145,13 @@ def apple_native_readiness_error() -> str | None:
     return None
 
 
-def generate_apple_client_secret() -> str:
+def generate_apple_client_secret(client_id: str | None = None) -> str:
     """Mint the five-minute ES256 client assertion Apple requires."""
 
     now = int(datetime.now(UTC).timestamp())
     payload = {
         "iss": settings.APPLE_SIWA_TEAM_ID,
-        "sub": settings.APPLE_SIWA_SERVICES_ID,
+        "sub": client_id or settings.APPLE_SIWA_SERVICES_ID,
         "aud": APPLE_ISSUER,
         "iat": now,
         "exp": now + APPLE_CLIENT_SECRET_TTL_SECONDS,
@@ -337,19 +345,26 @@ def verify_apple_id_token(
     )
 
 
-def exchange_apple_code(code: str, nonce_hash: str) -> AppleGrant:
-    """Exchange a one-time code, then verify only Apple's returned ID token."""
+def raw_exchange_apple_code(
+    code: str,
+    client_id: str,
+    *,
+    include_redirect_uri: bool,
+) -> AppleRawExchange:
+    """Exchange a code without trusting any claim in the returned ID token."""
 
+    data = {
+        "client_id": client_id,
+        "client_secret": generate_apple_client_secret(client_id),
+        "code": code,
+        "grant_type": "authorization_code",
+    }
+    if include_redirect_uri:
+        data["redirect_uri"] = settings.APPLE_SIWA_REDIRECT_URI
     try:
         response = httpx.post(
             APPLE_TOKEN_URL,
-            data={
-                "client_id": settings.APPLE_SIWA_SERVICES_ID,
-                "client_secret": generate_apple_client_secret(),
-                "code": code,
-                "grant_type": "authorization_code",
-                "redirect_uri": settings.APPLE_SIWA_REDIRECT_URI,
-            },
+            data=data,
             timeout=APPLE_HTTP_TIMEOUT_SECONDS,
         )
     except (httpx.HTTPError, OSError) as exc:
@@ -369,9 +384,6 @@ def exchange_apple_code(code: str, nonce_hash: str) -> AppleGrant:
     if not isinstance(body, dict):
         raise AppleUnavailable("token_malformed_json")
 
-    id_token = body.get("id_token")
-    if not isinstance(id_token, str) or not id_token:
-        raise AppleInvalidGrant("missing_id_token")
     refresh_token = body.get("refresh_token")
     if refresh_token is not None and (not isinstance(refresh_token, str) or not refresh_token):
         raise AppleInvalidGrant("invalid_refresh_token")
@@ -381,10 +393,25 @@ def exchange_apple_code(code: str, nonce_hash: str) -> AppleGrant:
         except UnicodeEncodeError as exc:
             raise AppleInvalidGrant("invalid_refresh_token") from exc
 
+    return AppleRawExchange(
+        id_token=body.get("id_token"),
+        refresh_token=refresh_token,
+    )
+
+
+def verify_apple_exchange(
+    raw_exchange: AppleRawExchange,
+    nonce_hash: str,
+    audience: str,
+) -> AppleGrant:
+    """Verify an exchanged ID token against one exact audience and nonce."""
+
+    if not isinstance(raw_exchange.id_token, str) or not raw_exchange.id_token:
+        raise AppleInvalidGrant("missing_id_token")
     verified = verify_apple_id_token(
-        id_token,
+        raw_exchange.id_token,
         nonce_hash,
-        {settings.APPLE_SIWA_SERVICES_ID},
+        {audience},
     )
     return AppleGrant(
         subject=verified.subject,
@@ -393,19 +420,24 @@ def exchange_apple_code(code: str, nonce_hash: str) -> AppleGrant:
         email=verified.email,
         email_verified=verified.email_verified,
         email_is_relay=verified.email_is_relay,
-        refresh_token=refresh_token,
+        refresh_token=raw_exchange.refresh_token,
     )
 
 
-def revoke_apple_refresh_token(refresh_token: str) -> int:
+def revoke_apple_refresh_token(
+    refresh_token: str,
+    *,
+    client_id: str | None = None,
+) -> int:
     """POST one refresh token and return only terminal-success statuses."""
 
+    client_id = client_id or settings.APPLE_SIWA_SERVICES_ID
     try:
         response = httpx.post(
             APPLE_REVOKE_URL,
             data={
-                "client_id": settings.APPLE_SIWA_SERVICES_ID,
-                "client_secret": generate_apple_client_secret(),
+                "client_id": client_id,
+                "client_secret": generate_apple_client_secret(client_id),
                 "token": refresh_token,
                 "token_type_hint": "refresh_token",
             },

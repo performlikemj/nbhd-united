@@ -596,6 +596,10 @@ APPLE_SIWA_TRANSACTION_TTL_SECONDS = env.int(
     "APPLE_SIWA_TRANSACTION_TTL_SECONDS",
     default=600,
 )
+APPLE_SIWA_NATIVE_SIGNUP_ENABLED = env.bool(
+    "APPLE_SIWA_NATIVE_SIGNUP_ENABLED",
+    default=False,
+)
 
 # Per-tenant OpenRouter sub-keys (PR #1.6).
 #

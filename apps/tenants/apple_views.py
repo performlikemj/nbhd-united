@@ -24,7 +24,8 @@ from .apple_client import (
     apple_native_bundle_id,
     apple_native_readiness_error,
     apple_readiness_error,
-    exchange_apple_code,
+    raw_exchange_apple_code,
+    verify_apple_exchange,
     verify_apple_id_token,
 )
 from .apple_models import AppleAuthTransaction
@@ -38,18 +39,25 @@ from .apple_services import (
     AppleResolutionRejected,
     AppleTransactionRejected,
     consume_apple_transaction,
+    enqueue_received_apple_refresh_token,
     enqueue_unpersisted_apple_grant,
+    get_apple_transaction_purpose,
     link_apple_identity,
     resolve_apple_auth,
     resolve_apple_native_auth,
+    resolve_apple_native_code_auth,
 )
 from .models import Tenant
 from .serializers import EmailTokenObtainPairSerializer
 from .services import ensure_tenant_provisioned
 from .throttling import (
+    AppleBeginDayThrottle,
     AppleBeginMinuteThrottle,
+    AppleCompleteDayThrottle,
     AppleCompleteMinuteThrottle,
+    AppleLinkDayThrottle,
     AppleLinkMinuteThrottle,
+    AppleNativeDayThrottle,
     AppleNativeMinuteThrottle,
 )
 
@@ -58,6 +66,33 @@ logger = logging.getLogger(__name__)
 
 def _invalid_grant() -> Response:
     return Response({"error": "invalid_grant"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _enqueue_unverified_refresh(raw_exchange, client_id: str) -> None:
+    try:
+        enqueue_received_apple_refresh_token(
+            raw_exchange.refresh_token,
+            client_id,
+            subject=None,
+            subject_verified=False,
+        )
+    except Exception:
+        logger.error(
+            "auth.apple.revocation_enqueue_failed client_id=%s subject_verified=false",
+            client_id,
+        )
+        raise
+
+
+def _enqueue_verified_grant(grant) -> None:
+    try:
+        enqueue_unpersisted_apple_grant(grant)
+    except Exception:
+        logger.error(
+            "auth.apple.revocation_enqueue_failed client_id=%s subject_verified=true",
+            grant.audience,
+        )
+        raise
 
 
 class AppleNotConfigured(APIException):
@@ -108,7 +143,7 @@ class AppleStrictParsingMixin:
 class AppleBeginView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
-    throttle_classes = [AppleBeginMinuteThrottle]
+    throttle_classes = [AppleBeginMinuteThrottle, AppleBeginDayThrottle]
 
     def parser_failure_response(self) -> Response:
         return Response({"error": "invalid_request"}, status=status.HTTP_400_BAD_REQUEST)
@@ -154,7 +189,7 @@ class AppleBeginView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
 
 class AppleCompleteView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
     permission_classes = [AllowAny]
-    throttle_classes = [AppleCompleteMinuteThrottle]
+    throttle_classes = [AppleCompleteMinuteThrottle, AppleCompleteDayThrottle]
 
     def post(self, request):
         serializer = AppleCompleteSerializer(data=request.data)
@@ -178,8 +213,13 @@ class AppleCompleteView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
             )
             return _invalid_grant()
 
+        client_id = settings.APPLE_SIWA_SERVICES_ID
         try:
-            grant = exchange_apple_code(data["code"], nonce_hash)
+            raw_exchange = raw_exchange_apple_code(
+                data["code"],
+                client_id,
+                include_redirect_uri=True,
+            )
         except AppleInvalidGrant as exc:
             logger.info(
                 "auth.apple.complete.invalid transaction_id=%s reason=%s",
@@ -198,61 +238,82 @@ class AppleCompleteView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        grant = None
+        grant_persisted = False
+        revocation_enqueued = False
         try:
-            resolution = resolve_apple_auth(grant)
-        except AppleResolutionRejected as exc:
-            logger.info(
-                "auth.apple.complete.invalid transaction_id=%s reason=%s",
-                transaction_id,
-                exc.reason,
-            )
             try:
-                enqueue_unpersisted_apple_grant(grant)
-            except Exception:
-                logger.warning(
-                    "auth.apple.revocation.enqueue_failed transaction_id=%s",
+                grant = verify_apple_exchange(raw_exchange, nonce_hash, client_id)
+            except AppleInvalidGrant as exc:
+                revocation_enqueued = True
+                _enqueue_unverified_refresh(raw_exchange, client_id)
+                logger.info(
+                    "auth.apple.complete.invalid transaction_id=%s reason=%s",
                     transaction_id,
-                    exc_info=True,
+                    exc.reason,
                 )
-            response_status = {
-                "link_required": status.HTTP_409_CONFLICT,
-                "signup_gated": status.HTTP_403_FORBIDDEN,
-            }.get(exc.error, status.HTTP_400_BAD_REQUEST)
-            return Response({"error": exc.error}, status=response_status)
-        except Exception:
-            try:
-                enqueue_unpersisted_apple_grant(grant)
-            except Exception:
+                return _invalid_grant()
+            except AppleUnavailable as exc:
+                revocation_enqueued = True
+                _enqueue_unverified_refresh(raw_exchange, client_id)
                 logger.warning(
-                    "auth.apple.revocation.enqueue_failed transaction_id=%s",
+                    "auth.apple.complete.unavailable transaction_id=%s reason=%s",
                     transaction_id,
-                    exc_info=True,
+                    exc.reason,
                 )
-            raise
+                return Response(
+                    {"error": "apple_unavailable"},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
 
-        # Phase C committed before minting. This serializer is mandatory because
-        # it carries the repo's pw_iat invalidation claim.
-        refresh = EmailTokenObtainPairSerializer.get_token(resolution.user)
-        logger.info(
-            "auth.apple.complete.success transaction_id=%s user_id=%s created=%s",
-            transaction_id,
-            resolution.user.id,
-            resolution.created,
-        )
-        return Response(
-            {
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-                "created": resolution.created,
-            },
-            status=status.HTTP_200_OK,
-        )
+            try:
+                resolution = resolve_apple_auth(grant)
+            except AppleResolutionRejected as exc:
+                logger.info(
+                    "auth.apple.complete.invalid transaction_id=%s reason=%s",
+                    transaction_id,
+                    exc.reason,
+                )
+                revocation_enqueued = True
+                _enqueue_verified_grant(grant)
+                response_status = {
+                    "link_required": status.HTTP_409_CONFLICT,
+                    "signup_gated": status.HTTP_403_FORBIDDEN,
+                }.get(exc.error, status.HTTP_400_BAD_REQUEST)
+                return Response({"error": exc.error}, status=response_status)
+
+            # The received token is now owned by a committed per-audience grant.
+            grant_persisted = True
+            # Phase C committed before minting. This serializer is mandatory because
+            # it carries the repo's pw_iat invalidation claim.
+            refresh = EmailTokenObtainPairSerializer.get_token(resolution.user)
+            logger.info(
+                "auth.apple.complete.success transaction_id=%s user_id=%s created=%s",
+                transaction_id,
+                resolution.user.id,
+                resolution.created,
+            )
+            return Response(
+                {
+                    "access": str(refresh.access_token),
+                    "refresh": str(refresh),
+                    "created": resolution.created,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception:
+            if raw_exchange.refresh_token and not grant_persisted and not revocation_enqueued:
+                if grant is None:
+                    _enqueue_unverified_refresh(raw_exchange, client_id)
+                else:
+                    _enqueue_verified_grant(grant)
+            raise
 
 
 class AppleNativeView(AppleNativeReadinessMixin, AppleStrictParsingMixin, APIView):
     authentication_classes = []
     permission_classes = [AllowAny]
-    throttle_classes = [AppleNativeMinuteThrottle]
+    throttle_classes = [AppleNativeMinuteThrottle, AppleNativeDayThrottle]
 
     def post(self, request):
         serializer = AppleNativeSerializer(data=request.data)
@@ -276,71 +337,195 @@ class AppleNativeView(AppleNativeReadinessMixin, AppleStrictParsingMixin, APIVie
             )
             return _invalid_grant()
 
+        authorization_code = data.get("authorization_code")
+        code_flow_enabled = bool(authorization_code and getattr(settings, "APPLE_SIWA_NATIVE_SIGNUP_ENABLED", False))
+        raw_exchange = None
+        grant = None
+        grant_persisted = False
+        revocation_enqueued = False
+        client_id = apple_native_bundle_id()
         try:
-            grant = verify_apple_id_token(
-                data["identity_token"],
-                nonce_hash,
-                {apple_native_bundle_id()},
-            )
-        except AppleInvalidGrant as exc:
-            logger.info(
-                "auth.apple.native.invalid transaction_id=%s reason=%s",
-                transaction_id,
-                exc.reason,
-            )
-            return _invalid_grant()
-        except AppleUnavailable as exc:
-            logger.warning(
-                "auth.apple.native.unavailable transaction_id=%s reason=%s",
-                transaction_id,
-                exc.reason,
-            )
-            return Response(
-                {"error": "apple_unavailable"},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
+            if not code_flow_enabled:
+                if authorization_code:
+                    logger.info(
+                        "auth.apple.native.legacy transaction_id=%s reason=signup_flag_disabled",
+                        transaction_id,
+                    )
+                try:
+                    grant = verify_apple_id_token(
+                        data["identity_token"],
+                        nonce_hash,
+                        {client_id},
+                    )
+                except AppleInvalidGrant as exc:
+                    logger.info(
+                        "auth.apple.native.invalid transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    return _invalid_grant()
+                except AppleUnavailable as exc:
+                    logger.warning(
+                        "auth.apple.native.unavailable transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    return Response(
+                        {"error": "apple_unavailable"},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
 
-        try:
-            resolution = resolve_apple_native_auth(grant)
-        except AppleResolutionRejected as exc:
-            logger.info(
-                "auth.apple.native.invalid transaction_id=%s reason=%s",
-                transaction_id,
-                exc.reason,
-            )
-            return Response(
-                {"error": exc.error},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+                try:
+                    resolution = resolve_apple_native_auth(grant)
+                except AppleResolutionRejected as exc:
+                    logger.info(
+                        "auth.apple.native.invalid transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    return Response(
+                        {"error": exc.error},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+            else:
+                try:
+                    raw_exchange = raw_exchange_apple_code(
+                        authorization_code,
+                        client_id,
+                        include_redirect_uri=False,
+                    )
+                except AppleInvalidGrant as exc:
+                    logger.info(
+                        "auth.apple.native.invalid transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    return _invalid_grant()
+                except AppleUnavailable as exc:
+                    logger.warning(
+                        "auth.apple.native.unavailable transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    return Response(
+                        {"error": "apple_unavailable"},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
 
-        try:
-            ensure_tenant_provisioned(resolution.user)
-        except Exception:
-            logger.exception(
-                "auth.apple.native.ensure_tenant_failed user_id=%s",
+                try:
+                    grant = verify_apple_exchange(raw_exchange, nonce_hash, client_id)
+                except AppleInvalidGrant as exc:
+                    revocation_enqueued = True
+                    _enqueue_unverified_refresh(raw_exchange, client_id)
+                    logger.info(
+                        "auth.apple.native.invalid transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    return _invalid_grant()
+                except AppleUnavailable as exc:
+                    revocation_enqueued = True
+                    _enqueue_unverified_refresh(raw_exchange, client_id)
+                    logger.warning(
+                        "auth.apple.native.unavailable transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    return Response(
+                        {"error": "apple_unavailable"},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
+
+                try:
+                    client_grant = verify_apple_id_token(
+                        data["identity_token"],
+                        nonce_hash,
+                        {client_id},
+                    )
+                    if client_grant.subject != grant.subject:
+                        raise AppleInvalidGrant("subject_mismatch")
+                    resolution = resolve_apple_native_code_auth(
+                        grant,
+                        given_name=data.get("given_name", ""),
+                        family_name=data.get("family_name", ""),
+                        terms_version=data.get("terms_version", ""),
+                    )
+                except AppleResolutionRejected as exc:
+                    revocation_enqueued = True
+                    _enqueue_verified_grant(grant)
+                    logger.info(
+                        "auth.apple.native.invalid transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    response_status = {
+                        "link_required": status.HTTP_409_CONFLICT,
+                        "signup_gated": status.HTTP_403_FORBIDDEN,
+                    }.get(exc.error, status.HTTP_400_BAD_REQUEST)
+                    return Response({"error": exc.error}, status=response_status)
+                except AppleInvalidGrant as exc:
+                    revocation_enqueued = True
+                    _enqueue_verified_grant(grant)
+                    logger.info(
+                        "auth.apple.native.invalid transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    return _invalid_grant()
+                except AppleUnavailable as exc:
+                    revocation_enqueued = True
+                    _enqueue_verified_grant(grant)
+                    logger.warning(
+                        "auth.apple.native.unavailable transaction_id=%s reason=%s",
+                        transaction_id,
+                        exc.reason,
+                    )
+                    return Response(
+                        {"error": "apple_unavailable"},
+                        status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
+                grant_persisted = True
+
+            try:
+                ensure_tenant_provisioned(resolution.user)
+            except Exception:
+                logger.exception(
+                    "auth.apple.native.ensure_tenant_failed user_id=%s",
+                    resolution.user.id,
+                )
+
+            refresh = EmailTokenObtainPairSerializer.get_token(resolution.user)
+            logger.info(
+                "auth.apple.native.success transaction_id=%s user_id=%s created=%s",
+                transaction_id,
                 resolution.user.id,
+                resolution.created,
             )
-
-        refresh = EmailTokenObtainPairSerializer.get_token(resolution.user)
-        logger.info(
-            "auth.apple.native.success transaction_id=%s user_id=%s created=%s",
-            transaction_id,
-            resolution.user.id,
-            resolution.created,
-        )
-        return Response(
-            {
-                "access": str(refresh.access_token),
-                "refresh": str(refresh),
-                "created": resolution.created,
-            },
-            status=status.HTTP_200_OK,
-        )
+            return Response(
+                {
+                    "access": str(refresh.access_token),
+                    "refresh": str(refresh),
+                    "created": resolution.created,
+                },
+                status=status.HTTP_200_OK,
+            )
+        except Exception:
+            if (
+                raw_exchange is not None
+                and raw_exchange.refresh_token
+                and not grant_persisted
+                and not revocation_enqueued
+            ):
+                if grant is None:
+                    _enqueue_unverified_refresh(raw_exchange, client_id)
+                else:
+                    _enqueue_verified_grant(grant)
+            raise
 
 
 class AppleLinkView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
     permission_classes = [IsAuthenticated]
-    throttle_classes = [AppleLinkMinuteThrottle]
+    throttle_classes = [AppleLinkMinuteThrottle, AppleLinkDayThrottle]
 
     def post(self, request):
         serializer = AppleLinkSerializer(data=request.data)
@@ -357,11 +542,33 @@ class AppleLinkView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
             )
             return _invalid_grant()
 
+        purpose = get_apple_transaction_purpose(transaction_id)
+        if purpose == "native_auth":
+            if not getattr(settings, "APPLE_SIWA_NATIVE_SIGNUP_ENABLED", False):
+                logger.info(
+                    "auth.apple.link.invalid transaction_id=%s reason=native_signup_disabled",
+                    transaction_id,
+                )
+                return _invalid_grant()
+            readiness_error = apple_native_readiness_error()
+            if readiness_error is not None:
+                logger.info(
+                    "auth.apple.link.not_configured transaction_id=%s reason=%s",
+                    transaction_id,
+                    readiness_error,
+                )
+                return Response(
+                    {"error": "not_configured"},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+        elif purpose != "web_auth":
+            purpose = "web_auth"
+
         try:
             nonce_hash = consume_apple_transaction(
                 transaction_id,
                 data["state"],
-                expected_purpose="web_auth",
+                expected_purpose=purpose,
             )
         except AppleTransactionRejected as exc:
             logger.info(
@@ -371,8 +578,13 @@ class AppleLinkView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
             )
             return _invalid_grant()
 
+        client_id = apple_native_bundle_id() if purpose == "native_auth" else settings.APPLE_SIWA_SERVICES_ID
         try:
-            grant = exchange_apple_code(data["code"], nonce_hash)
+            raw_exchange = raw_exchange_apple_code(
+                data["code"],
+                client_id,
+                include_redirect_uri=purpose == "web_auth",
+            )
         except AppleInvalidGrant as exc:
             logger.info(
                 "auth.apple.link.invalid transaction_id=%s reason=%s",
@@ -391,48 +603,68 @@ class AppleLinkView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        grant = None
+        grant_persisted = False
+        revocation_enqueued = False
         try:
-            link_apple_identity(request.user, grant)
-        except AppleResolutionRejected as exc:
-            logger.info(
-                "auth.apple.link.invalid transaction_id=%s reason=%s",
-                transaction_id,
-                exc.reason,
-            )
             try:
-                enqueue_unpersisted_apple_grant(grant)
-            except Exception:
-                logger.warning(
-                    "auth.apple.revocation.enqueue_failed transaction_id=%s",
+                grant = verify_apple_exchange(raw_exchange, nonce_hash, client_id)
+            except AppleInvalidGrant as exc:
+                revocation_enqueued = True
+                _enqueue_unverified_refresh(raw_exchange, client_id)
+                logger.info(
+                    "auth.apple.link.invalid transaction_id=%s reason=%s",
                     transaction_id,
-                    exc_info=True,
+                    exc.reason,
                 )
-            response_status = (
-                status.HTTP_409_CONFLICT
-                if exc.error in {"already_linked", "apple_id_in_use"}
-                else status.HTTP_400_BAD_REQUEST
-            )
-            return Response({"error": exc.error}, status=response_status)
-        except Exception:
-            try:
-                enqueue_unpersisted_apple_grant(grant)
-            except Exception:
+                return _invalid_grant()
+            except AppleUnavailable as exc:
+                revocation_enqueued = True
+                _enqueue_unverified_refresh(raw_exchange, client_id)
                 logger.warning(
-                    "auth.apple.revocation.enqueue_failed transaction_id=%s",
+                    "auth.apple.link.unavailable transaction_id=%s reason=%s",
                     transaction_id,
-                    exc_info=True,
+                    exc.reason,
                 )
-            raise
+                return Response(
+                    {"error": "apple_unavailable"},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
 
-        try:
-            tenant = request.user.tenant
-        except Tenant.DoesNotExist:
-            pass
-        else:
-            bump_tag(tenant.id, "tenant")
-        logger.info(
-            "auth.apple.link.success transaction_id=%s user_id=%s",
-            transaction_id,
-            request.user.id,
-        )
-        return Response({"linked": True}, status=status.HTTP_200_OK)
+            try:
+                link_apple_identity(request.user, grant)
+            except AppleResolutionRejected as exc:
+                logger.info(
+                    "auth.apple.link.invalid transaction_id=%s reason=%s",
+                    transaction_id,
+                    exc.reason,
+                )
+                revocation_enqueued = True
+                _enqueue_verified_grant(grant)
+                response_status = (
+                    status.HTTP_409_CONFLICT
+                    if exc.error in {"already_linked", "apple_id_in_use"}
+                    else status.HTTP_400_BAD_REQUEST
+                )
+                return Response({"error": exc.error}, status=response_status)
+
+            grant_persisted = True
+            try:
+                tenant = request.user.tenant
+            except Tenant.DoesNotExist:
+                pass
+            else:
+                bump_tag(tenant.id, "tenant")
+            logger.info(
+                "auth.apple.link.success transaction_id=%s user_id=%s",
+                transaction_id,
+                request.user.id,
+            )
+            return Response({"linked": True}, status=status.HTTP_200_OK)
+        except Exception:
+            if raw_exchange.refresh_token and not grant_persisted and not revocation_enqueued:
+                if grant is None:
+                    _enqueue_unverified_refresh(raw_exchange, client_id)
+                else:
+                    _enqueue_verified_grant(grant)
+            raise

@@ -142,12 +142,14 @@ class ExchangeMinuteThrottle(SimpleRateThrottle):
 
 
 class _AppleIpThrottle(SimpleRateThrottle):
-    """Apple popup endpoints keyed by the first Container Apps XFF hop."""
+    """Apple endpoints keyed by Container Apps' trusted rightmost XFF hop."""
 
     def get_cache_key(self, request, view):
         forwarded = request.META.get("HTTP_X_FORWARDED_FOR", "")
         if forwarded:
-            ident = forwarded.split(",")[0].strip()
+            # Container Apps appends instead of overwriting XFF and guarantees
+            # only the rightmost address. Earlier values are client-spoofable.
+            ident = forwarded.rsplit(",", 1)[-1].strip()
         else:
             ident = request.META.get("REMOTE_ADDR", "")
         return self.cache_format % {"scope": self.scope, "ident": ident or "anon"}
@@ -158,19 +160,39 @@ class AppleBeginMinuteThrottle(_AppleIpThrottle):
     rate = "30/minute"
 
 
+class AppleBeginDayThrottle(_AppleIpThrottle):
+    scope = "apple_begin_day"
+    rate = "200/day"
+
+
 class AppleCompleteMinuteThrottle(_AppleIpThrottle):
     scope = "apple_complete_minute"
     rate = "10/minute"
 
 
+class AppleCompleteDayThrottle(_AppleIpThrottle):
+    scope = "apple_complete_day"
+    rate = "50/day"
+
+
 class AppleNativeMinuteThrottle(_AppleIpThrottle):
     scope = "apple_native_minute"
-    rate = "30/minute"
+    rate = "10/minute"
+
+
+class AppleNativeDayThrottle(_AppleIpThrottle):
+    scope = "apple_native_day"
+    rate = "50/day"
 
 
 class AppleLinkMinuteThrottle(_UserScopedThrottle):
     scope = "apple_link_minute"
     rate = "10/minute"
+
+
+class AppleLinkDayThrottle(_UserScopedThrottle):
+    scope = "apple_link_day"
+    rate = "20/day"
 
 
 class LoginIpThrottle(SimpleRateThrottle):

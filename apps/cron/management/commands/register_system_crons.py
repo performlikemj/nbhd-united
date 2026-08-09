@@ -25,6 +25,12 @@ SYSTEM_CRONS = [
     ("reset-monthly-counters", "5 0 1 * *", "/api/cron/trigger/reset_monthly_counters/"),
     # Daily at 03:00 UTC — clean up expired Telegram tokens
     ("cleanup-expired-telegram-tokens", "0 3 * * *", "/api/cron/trigger/cleanup_expired_telegram_tokens/"),
+    # Every 30 min — republish stale Apple refresh-token revocation rows
+    (
+        "process-apple-revocation-outbox",
+        "*/30 * * * *",
+        "/api/cron/trigger/process_apple_revocation_outbox/",
+    ),
     # Daily at 04:00 UTC — refresh expiring OAuth integrations
     ("refresh-expiring-integrations", "0 4 * * *", "/api/cron/trigger/refresh_expiring_integrations/"),
     # Every minute — recover Sautai async jobs whose delayed poll successor was
