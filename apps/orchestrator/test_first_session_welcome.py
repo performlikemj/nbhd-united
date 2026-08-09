@@ -99,6 +99,8 @@ class FirstSessionWelcomePersistenceTest(TestCase):
 
         response = self.client.get("/api/v1/chat/messages/")
         self.assertEqual(response.status_code, 200, response.content)
+        greeting = compose_first_session_welcome("Mika")
+        self.assertEqual(sum(item["text"] == greeting for item in response.data["messages"]), 1)
         app_rows = [item for item in response.data["messages"] if item["source"] == "app"]
         self.assertEqual(
             app_rows,
@@ -107,7 +109,7 @@ class FirstSessionWelcomePersistenceTest(TestCase):
                     "id": f"app:{message.id}:1",
                     "client_msg_id": FIRST_SESSION_WELCOME_CLIENT_MSG_ID,
                     "role": "assistant",
-                    "text": compose_first_session_welcome("Mika"),
+                    "text": greeting,
                     "created_at": message.replied_at.isoformat(),
                     "source": "app",
                     "thread_id": str(message.thread_id),
