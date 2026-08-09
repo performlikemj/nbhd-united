@@ -96,6 +96,11 @@ class AppleStrictParsingMixin:
 
     def handle_exception(self, exc):
         if isinstance(exc, (ParseError, UnsupportedMediaType)):
+            logger.info(
+                "auth.apple.parse_rejected view=%s exc=%s",
+                type(self).__name__,
+                type(exc).__name__,
+            )
             return self.parser_failure_response()
         return super().handle_exception(exc)
 
@@ -111,6 +116,14 @@ class AppleBeginView(AppleReadinessMixin, AppleStrictParsingMixin, APIView):
     def post(self, request):
         serializer = AppleBeginSerializer(data=request.data)
         if not serializer.is_valid():
+            try:
+                error_fields = sorted(serializer.errors.keys())
+            except ValueError:
+                error_fields = ["non_field_errors"]
+            logger.info(
+                "auth.apple.begin.invalid reason=malformed_request fields=%s",
+                error_fields,
+            )
             return self.parser_failure_response()
 
         now = timezone.now()
