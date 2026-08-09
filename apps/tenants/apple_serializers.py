@@ -59,6 +59,14 @@ class AppleNativeSerializer(StrictRequestSerializer):
     transaction_id = StrictUUIDField()
     identity_token = StrictCharField(max_length=4096, trim_whitespace=False)
     state = StrictCharField(max_length=128, trim_whitespace=False)
+    authorization_code = StrictCharField(
+        max_length=4096,
+        required=False,
+        trim_whitespace=False,
+    )
+    given_name = StrictCharField(max_length=128, required=False, allow_blank=True)
+    family_name = StrictCharField(max_length=128, required=False, allow_blank=True)
+    terms_version = StrictCharField(max_length=20, required=False, allow_blank=True)
 
 
 class AppleLinkSerializer(AppleCompleteSerializer):
