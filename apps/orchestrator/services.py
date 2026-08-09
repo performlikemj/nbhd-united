@@ -456,7 +456,19 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
             openrouter_kv_secret_name=openrouter_kv_secret_name,
         )
 
-        # 4. Update tenant record
+        # 4. Seed the app's first-session assistant greeting before ACTIVE is
+        # observable. The helper stamps before writing for at-most-once
+        # delivery across provisioning retries. This is best-effort: a welcome
+        # failure must never prevent activation.
+        if send_first_session_welcome:
+            try:
+                from .first_session_welcome import seed_first_session_welcome
+
+                seed_first_session_welcome(tenant)
+            except Exception:
+                logger.warning("Could not seed first-session welcome for tenant %s", tenant_id, exc_info=True)
+
+        # 4a. Update tenant record
         tenant.container_id = result["name"]
         tenant.container_fqdn = result["fqdn"]
         tenant.managed_identity_id = identity["id"]
@@ -519,17 +531,7 @@ def provision_tenant(tenant_id: str, *, send_first_session_welcome: bool = True)
     except Exception:
         logger.warning("Could not send welcome email for tenant %s", tenant_id, exc_info=True)
 
-    # 4d. Seed the app's first-session assistant greeting. The helper stamps
-    # before writing for at-most-once delivery across provisioning retries.
-    if send_first_session_welcome:
-        try:
-            from .first_session_welcome import seed_first_session_welcome
-
-            seed_first_session_welcome(tenant)
-        except Exception:
-            logger.warning("Could not seed first-session welcome for tenant %s", tenant_id, exc_info=True)
-
-    # 4e. Seed USER.md with the platform-managed envelope so the container
+    # 4d. Seed USER.md with the platform-managed envelope so the container
     # picks up profile + state on first boot. force=True bypasses debounce.
     try:
         from .workspace_envelope import push_user_md
