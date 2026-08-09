@@ -349,6 +349,57 @@ class AppleReadinessTests(TestCase):
                 self.assertEqual(response.status_code, 503)
                 self.assertEqual(response.data, {"error": "not_configured"})
 
+    @override_settings(**READY_SETTINGS)
+    def test_broken_keyring_rejects_web_native_and_link_before_consume_or_exchange(self):
+        rows = [
+            AppleAuthTransaction.objects.create(
+                state=STATE,
+                nonce_hash="a" * 64,
+                expires_at=timezone.now() + timedelta(minutes=5),
+                purpose=purpose,
+            )
+            for purpose in ("web_auth", "native_auth", "web_auth")
+        ]
+        requests = (
+            (
+                reverse("auth-apple-complete"),
+                {"transaction_id": str(rows[0].id), "code": "x", "state": STATE},
+            ),
+            (
+                reverse("auth-apple-native"),
+                {
+                    "transaction_id": str(rows[1].id),
+                    "identity_token": "x",
+                    "authorization_code": "x",
+                    "state": STATE,
+                },
+            ),
+            (
+                reverse("auth-apple-link"),
+                {
+                    "transaction_id": str(rows[2].id),
+                    "code": "x",
+                    "state": STATE,
+                    "current_password": "x",
+                },
+            ),
+        )
+
+        with (
+            self.settings(APPLE_SIWA_TOKEN_ENC_KEYS=["broken-keyring"]),
+            patch("apps.tenants.apple_views.raw_exchange_apple_code") as exchange,
+        ):
+            responses = [self.client.post(url, body, format="json") for url, body in requests]
+
+        self.assertTrue(all(response.status_code == 503 for response in responses))
+        exchange.assert_not_called()
+        self.assertFalse(
+            AppleAuthTransaction.objects.filter(
+                id__in=[row.id for row in rows],
+                consumed_at__isnull=False,
+            ).exists()
+        )
+
 
 @override_settings(**READY_SETTINGS)
 class AppleBeginAndTransactionTests(AppleFixtureMixin, TestCase):
@@ -632,6 +683,80 @@ class ApplePhaseBTests(AppleFixtureMixin, TestCase):
         response, _ = self.post_complete(row, self.token_response(nonce=nonce))
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.data, {"error": "apple_unavailable"})
+
+    def test_unexpected_post_exchange_exception_outboxes_unverified_refresh(self):
+        row, nonce = self.mint_transaction()
+        self.client.raise_request_exception = False
+        with patch(
+            "apps.tenants.apple_views.verify_apple_exchange",
+            side_effect=RuntimeError("unexpected verifier failure"),
+        ):
+            response, _ = self.post_complete(
+                row,
+                self.token_response(nonce=nonce, refresh_token="web-broad-guard-refresh"),
+            )
+
+        self.assertEqual(response.status_code, 500)
+        outbox = AppleRevocationOutbox.objects.get()
+        self.assertIsNone(outbox.subject)
+        self.assertFalse(outbox.subject_verified)
+        self.assertEqual(outbox.client_id, SERVICES_ID)
+        self.assertEqual(
+            decrypt_apple_refresh_token(outbox.token_ciphertext),
+            "web-broad-guard-refresh",
+        )
+
+    def test_enqueue_failure_is_error_logged_and_propagates_without_token(self):
+        row, nonce = self.mint_transaction()
+        self.client.raise_request_exception = False
+        with (
+            patch(
+                "apps.tenants.apple_views.enqueue_received_apple_refresh_token",
+                side_effect=RuntimeError("outbox unavailable"),
+            ),
+            self.assertLogs("apps.tenants.apple_views", level="ERROR") as logs,
+        ):
+            response, _ = self.post_complete(
+                row,
+                self.token_response(
+                    nonce="wrong-nonce",
+                    refresh_token="never-log-enqueue-refresh",
+                ),
+            )
+
+        self.assertEqual(response.status_code, 500)
+        combined = "\n".join(logs.output)
+        self.assertIn("auth.apple.revocation_enqueue_failed", combined)
+        self.assertIn(f"client_id={SERVICES_ID}", combined)
+        self.assertIn("subject_verified=false", combined)
+        self.assertNotIn("never-log-enqueue-refresh", combined)
+
+    def test_response_failure_after_grant_commit_does_not_outbox_persisted_token(self):
+        user = self.make_user(email="response-failure@example.com")
+        identity = self.make_identity(user, subject="response-failure-subject")
+        row, nonce = self.mint_transaction()
+        self.client.raise_request_exception = False
+        with patch(
+            "apps.tenants.apple_views.Response",
+            side_effect=RuntimeError("response construction failed"),
+        ):
+            response, _ = self.post_complete(
+                row,
+                self.token_response(
+                    nonce=nonce,
+                    subject=identity.subject,
+                    email=user.email,
+                    refresh_token="committed-response-refresh",
+                ),
+            )
+
+        self.assertEqual(response.status_code, 500)
+        grant = AppleGrantRecord.objects.get(identity=identity, client_id=SERVICES_ID)
+        self.assertEqual(
+            decrypt_apple_refresh_token(grant.refresh_token_encrypted),
+            "committed-response-refresh",
+        )
+        self.assertFalse(AppleRevocationOutbox.objects.exists())
 
     def test_unknown_kid_refreshes_once_then_negative_caches(self):
         unknown_token = self.id_token(kid="unknown-kid")
@@ -1212,6 +1337,39 @@ class AppleExistingIdentityTests(AppleFixtureMixin, TestCase):
         self.assertEqual(identity.email_at_auth, "relay@privaterelay.appleid.com")
         self.assertTrue(identity.email_is_relay)
 
+    def test_web_sign_in_read_repairs_missing_or_stale_grant_from_newer_legacy_slot(self):
+        for grant_state in ("missing", "stale"):
+            with self.subTest(grant_state=grant_state):
+                user = self.make_user(email=f"repair-{grant_state}@example.com")
+                identity = self.make_identity(
+                    user,
+                    subject=f"repair-{grant_state}-subject",
+                    refresh_token="old-grant-token",
+                )
+                grant = AppleGrantRecord.objects.get(identity=identity, client_id=SERVICES_ID)
+                if grant_state == "missing":
+                    grant.delete()
+                legacy_ciphertext = encrypt_apple_refresh_token(f"legacy-{grant_state}-token")
+                ExternalIdentity.objects.filter(id=identity.id).update(
+                    refresh_token_encrypted=legacy_ciphertext,
+                    refresh_token_updated_at=timezone.now() + timedelta(seconds=1),
+                )
+                row, nonce = self.mint_transaction()
+
+                response, _ = self.post_complete(
+                    row,
+                    self.token_response(
+                        nonce=nonce,
+                        subject=identity.subject,
+                        email=user.email,
+                        refresh_token=None,
+                    ),
+                )
+
+                self.assertEqual(response.status_code, 200, response.content)
+                repaired = AppleGrantRecord.objects.get(identity=identity, client_id=SERVICES_ID)
+                self.assertEqual(repaired.refresh_token_encrypted, legacy_ciphertext)
+
     def test_inactive_identity_user_fails_closed(self):
         user = self.make_user(email="inactive@example.com", active=False)
         self.make_identity(user)
@@ -1693,6 +1851,26 @@ class AppleNativeCodeFlowTests(AppleFixtureMixin, TestCase):
             )
         return result, apple_post
 
+    def test_flag_on_old_219_shape_still_uses_legacy_sign_in_without_exchange(self):
+        user = self.make_user(email="native-219@example.com")
+        self.make_identity(user, subject="native-219-subject")
+        row, nonce = self.mint_transaction(purpose="native_auth")
+
+        with patch("apps.tenants.apple_client.httpx.post") as apple_post:
+            response = self.post_native(
+                row,
+                self.id_token(
+                    nonce=nonce,
+                    subject="native-219-subject",
+                    email=user.email,
+                    audience=BUNDLE_ID,
+                ),
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(response.data["created"])
+        apple_post.assert_not_called()
+
     def test_exchange_is_bundle_exact_omits_redirect_and_never_crosses_web_grant(self):
         user = self.make_user(email="native-known-code@example.com")
         identity = self.make_identity(user, refresh_token="web-stays-web")
@@ -1772,6 +1950,29 @@ class AppleNativeCodeFlowTests(AppleFixtureMixin, TestCase):
         self.assertIsNone(outbox.subject)
         self.assertFalse(outbox.subject_verified)
         self.assertEqual(outbox.client_id, BUNDLE_ID)
+
+    def test_unexpected_post_exchange_exception_outboxes_native_refresh(self):
+        row, nonce = self.mint_transaction(purpose="native_auth")
+        self.client.raise_request_exception = False
+        with patch(
+            "apps.tenants.apple_views.verify_apple_exchange",
+            side_effect=RuntimeError("unexpected native verifier failure"),
+        ):
+            response, _ = self.post_code(
+                row,
+                nonce,
+                refresh_token="native-broad-guard-refresh",
+            )
+
+        self.assertEqual(response.status_code, 500)
+        outbox = AppleRevocationOutbox.objects.get()
+        self.assertIsNone(outbox.subject)
+        self.assertFalse(outbox.subject_verified)
+        self.assertEqual(outbox.client_id, BUNDLE_ID)
+        self.assertEqual(
+            decrypt_apple_refresh_token(outbox.token_ciphertext),
+            "native-broad-guard-refresh",
+        )
 
     def test_client_identity_token_is_only_a_subject_cross_check(self):
         row, nonce = self.mint_transaction(purpose="native_auth")
@@ -1876,6 +2077,10 @@ class AppleNativeCodeFlowTests(AppleFixtureMixin, TestCase):
         self.assertEqual(User.objects.count(), 0)
         self.assertEqual(ExternalIdentity.objects.count(), 0)
         self.assertEqual(AppleGrantRecord.objects.count(), 0)
+        outbox = AppleRevocationOutbox.objects.get()
+        self.assertEqual(outbox.subject, "native-savepoint-failure")
+        self.assertTrue(outbox.subject_verified)
+        self.assertEqual(outbox.client_id, BUNDLE_ID)
 
     def test_native_code_secrets_never_appear_in_logs(self):
         row, nonce = self.mint_transaction(purpose="native_auth")
@@ -2080,6 +2285,31 @@ class AppleLinkTests(AppleFixtureMixin, TestCase):
                 ),
             )
         self.assertEqual(linked.status_code, 200, linked.content)
+
+    def test_unexpected_post_exchange_exception_outboxes_link_refresh(self):
+        row, nonce = self.mint_transaction()
+        self.client.raise_request_exception = False
+        with patch(
+            "apps.tenants.apple_views.verify_apple_exchange",
+            side_effect=RuntimeError("unexpected link verifier failure"),
+        ):
+            response = self.post_link(
+                row,
+                self.token_response(
+                    nonce=nonce,
+                    refresh_token="link-broad-guard-refresh",
+                ),
+            )
+
+        self.assertEqual(response.status_code, 500)
+        outbox = AppleRevocationOutbox.objects.get()
+        self.assertIsNone(outbox.subject)
+        self.assertFalse(outbox.subject_verified)
+        self.assertEqual(outbox.client_id, SERVICES_ID)
+        self.assertEqual(
+            decrypt_apple_refresh_token(outbox.token_ciphertext),
+            "link-broad-guard-refresh",
+        )
 
     def test_happy_link_and_me_state(self):
         row, nonce = self.mint_transaction()

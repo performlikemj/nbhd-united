@@ -11,6 +11,7 @@ import random
 import uuid
 from datetime import UTC, timedelta
 
+from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -18,7 +19,8 @@ from apps.cron.models import CronJob
 
 logger = logging.getLogger(__name__)
 
-APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS = 3
+APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS = 5
+APPLE_REVOCATION_DECRYPT_FAILURE_WINDOW = timedelta(hours=24)
 APPLE_REVOCATION_BATCH_SIZE = 10
 APPLE_REVOCATION_LEASE = timedelta(minutes=10)
 APPLE_REVOCATION_INVALID_CLIENT_TERMINAL = 5
@@ -70,8 +72,8 @@ def revoke_apple_token_task(outbox_id: str) -> dict:
     return {"status": "deferred"}
 
 
-def _apple_retry_at(now, prior_attempts: int):
-    delay = min(86400, 60 * (2 ** min(prior_attempts, 10)))
+def _apple_retry_at(now, attempts: int):
+    delay = min(86400, 60 * (2 ** min(attempts, 10)))
     return now + timedelta(seconds=delay + random.uniform(0, 30))
 
 
@@ -113,28 +115,43 @@ def process_apple_revocation_outbox(outbox_ids=None) -> list[dict]:
         )
         for row in rows:
             claim_time = timezone.now()
+            defaulted_client_id = row.client_id is None
+            if defaulted_client_id:
+                row.client_id = settings.APPLE_SIWA_SERVICES_ID
+                row.backfill_source = "worker_default"
             try:
                 refresh_token = decrypt_apple_refresh_token(row.token_ciphertext)
             except AppleTokenCryptoError:
                 attempts = row.attempts + 1
-                terminal = attempts >= APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS
+                continuing_failure = (
+                    row.attempts > 0 and row.last_error.endswith(":decrypt_failed") and row.last_attempt_at is not None
+                )
+                first_failure_at = row.last_attempt_at if continuing_failure else claim_time
+                terminal = (
+                    attempts >= APPLE_REVOCATION_MAX_DECRYPT_ATTEMPTS
+                    and claim_time - first_failure_at >= APPLE_REVOCATION_DECRYPT_FAILURE_WINDOW
+                )
                 row.attempts = attempts
-                row.last_attempt_at = claim_time
+                # For decrypt failures, last_attempt_at intentionally retains the
+                # first failure time so terminalization proves a 24-hour span.
+                # Operator recovery: clear last_error and reset attempts to requeue.
+                row.last_attempt_at = first_failure_at
                 row.claimed_at = None
                 row.consecutive_invalid_client = 0
                 row.last_error = f"{'terminal' if terminal else 'retry'}:decrypt_failed"
-                row.next_attempt_at = None if terminal else _apple_retry_at(claim_time, row.attempts - 1)
-                row.save(
-                    update_fields=[
-                        "attempts",
-                        "last_attempt_at",
-                        "claimed_at",
-                        "consecutive_invalid_client",
-                        "last_error",
-                        "next_attempt_at",
-                    ]
-                )
-                logger.warning(
+                row.next_attempt_at = None if terminal else _apple_retry_at(claim_time, attempts)
+                update_fields = [
+                    "attempts",
+                    "last_attempt_at",
+                    "claimed_at",
+                    "consecutive_invalid_client",
+                    "last_error",
+                    "next_attempt_at",
+                ]
+                if defaulted_client_id:
+                    update_fields.extend(["client_id", "backfill_source"])
+                row.save(update_fields=update_fields)
+                logger.error(
                     "auth.apple.revocation.decrypt_failed outbox_id=%s attempt=%s terminal=%s",
                     row.id,
                     attempts,
@@ -149,7 +166,10 @@ def process_apple_revocation_outbox(outbox_ids=None) -> list[dict]:
                 )
                 continue
             row.claimed_at = claim_time
-            row.save(update_fields=["claimed_at"])
+            update_fields = ["claimed_at"]
+            if defaulted_client_id:
+                update_fields.extend(["client_id", "backfill_source"])
+            row.save(update_fields=update_fields)
             claimed.append(
                 (
                     row.id,
@@ -164,18 +184,15 @@ def process_apple_revocation_outbox(outbox_ids=None) -> list[dict]:
     for row_id, claim_time, client_id, refresh_token, prior_attempts, prior_invalid_client in claimed:
         response_status = None
         failure_reason = ""
-        if not client_id:
-            failure_reason = "missing_client_id"
-        else:
-            try:
-                response_status = revoke_apple_refresh_token(
-                    refresh_token,
-                    client_id=client_id,
-                )
-            except AppleUnavailable as exc:
-                failure_reason = exc.reason
-            except Exception as exc:  # noqa: BLE001 - persist provider/client failures uniformly
-                failure_reason = f"client_error_{type(exc).__name__}"
+        try:
+            response_status = revoke_apple_refresh_token(
+                refresh_token,
+                client_id=client_id,
+            )
+        except AppleUnavailable as exc:
+            failure_reason = exc.reason
+        except Exception as exc:  # noqa: BLE001 - persist provider/client failures uniformly
+            failure_reason = f"client_error_{type(exc).__name__}"
 
         completed_at = timezone.now()
         attempts = prior_attempts + 1
@@ -201,7 +218,7 @@ def process_apple_revocation_outbox(outbox_ids=None) -> list[dict]:
             updates.update(
                 consecutive_invalid_client=invalid_client_streak,
                 last_error=("terminal:invalid_client" if terminal else f"retry:{failure_reason}"),
-                next_attempt_at=(None if terminal else _apple_retry_at(completed_at, prior_attempts)),
+                next_attempt_at=(None if terminal else _apple_retry_at(completed_at, attempts)),
             )
             status_value = "terminal" if terminal else "retry"
             reason_value = "invalid_client" if terminal else failure_reason

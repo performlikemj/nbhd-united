@@ -495,7 +495,7 @@ class AppleRevocationHandlerTests(TransactionTestCase):
         row.refresh_from_db()
         self.assertEqual(row.last_error, "terminal:decrypt_failed")
 
-    def test_corrupt_or_missing_old_key_ciphertext_becomes_terminal_after_three_attempts(self):
+    def test_missing_old_key_terminalizes_only_after_five_failures_spanning_24_hours(self):
         old_key = Fernet.generate_key().decode()
         with self.settings(APPLE_SIWA_TOKEN_ENC_KEYS=[old_key]):
             ciphertext = encrypt_apple_refresh_token("old-key-token")
@@ -505,23 +505,32 @@ class AppleRevocationHandlerTests(TransactionTestCase):
             client_id=SERVICES_ID,
         )
 
-        for _ in range(2):
-            self.assertEqual(
-                revoke_apple_token_task(str(row.id)),
-                {"status": "retry", "reason": "decrypt_failed"},
-            )
+        for _ in range(5):
+            with self.assertLogs("apps.cron.tasks", level="ERROR") as logs:
+                result = revoke_apple_token_task(str(row.id))
+            self.assertEqual(result, {"status": "retry", "reason": "decrypt_failed"})
+            self.assertIn("auth.apple.revocation.decrypt_failed", "\n".join(logs.output))
             AppleRevocationOutbox.objects.filter(id=row.id).update(next_attempt_at=None)
-        result = revoke_apple_token_task(str(row.id))
+
+        row.refresh_from_db()
+        self.assertEqual(row.attempts, 5)
+        self.assertEqual(row.last_error, "retry:decrypt_failed")
+        AppleRevocationOutbox.objects.filter(id=row.id).update(
+            last_attempt_at=timezone.now() - timedelta(hours=24, seconds=1),
+            next_attempt_at=None,
+        )
+        with self.assertLogs("apps.cron.tasks", level="ERROR"):
+            result = revoke_apple_token_task(str(row.id))
         self.assertEqual(result, {"status": "terminal", "reason": "decrypt_failed"})
         row.refresh_from_db()
         last_attempt_at = row.last_attempt_at
-        self.assertEqual(row.attempts, 3)
+        self.assertEqual(row.attempts, 6)
         self.assertEqual(row.last_error, "terminal:decrypt_failed")
         self.assertIsNone(row.revoked_at)
         duplicate = revoke_apple_token_task(str(row.id))
         self.assertEqual(duplicate, {"status": "terminal", "reason": "decrypt_failed"})
         row.refresh_from_db()
-        self.assertEqual(row.attempts, 3)
+        self.assertEqual(row.attempts, 6)
         self.assertEqual(row.last_attempt_at, last_attempt_at)
 
     def test_genuinely_corrupt_ciphertext_becomes_terminal(self):
@@ -530,16 +539,16 @@ class AppleRevocationHandlerTests(TransactionTestCase):
             subject="corrupt-subject",
             client_id=SERVICES_ID,
         )
-        for _ in range(2):
-            self.assertEqual(
-                revoke_apple_token_task(str(row.id)),
-                {"status": "retry", "reason": "decrypt_failed"},
-            )
-            AppleRevocationOutbox.objects.filter(id=row.id).update(next_attempt_at=None)
-        result = revoke_apple_token_task(str(row.id))
+        AppleRevocationOutbox.objects.filter(id=row.id).update(
+            attempts=4,
+            last_attempt_at=timezone.now() - timedelta(hours=24, seconds=1),
+            last_error="retry:decrypt_failed",
+        )
+        with self.assertLogs("apps.cron.tasks", level="ERROR"):
+            result = revoke_apple_token_task(str(row.id))
         self.assertEqual(result, {"status": "terminal", "reason": "decrypt_failed"})
         row.refresh_from_db()
-        self.assertEqual(row.attempts, 3)
+        self.assertEqual(row.attempts, 5)
         self.assertEqual(row.last_error, "terminal:decrypt_failed")
 
     def test_fresh_lease_is_skipped_and_ten_minute_lease_is_reclaimed(self):
@@ -615,6 +624,28 @@ class AppleRevocationHandlerTests(TransactionTestCase):
             2,
         )
 
+    def test_null_client_id_is_claimed_with_worker_services_default(self):
+        row = AppleRevocationOutbox.objects.create(
+            token_ciphertext=encrypt_apple_refresh_token("legacy-null-client-refresh"),
+            subject="legacy-null-client-subject",
+            client_id=None,
+        )
+        with patch(
+            "apps.tenants.apple_client.revoke_apple_refresh_token",
+            return_value=200,
+        ) as revoke:
+            result = revoke_apple_token_task(str(row.id))
+
+        self.assertEqual(result["status"], "revoked")
+        revoke.assert_called_once_with(
+            "legacy-null-client-refresh",
+            client_id=SERVICES_ID,
+        )
+        row.refresh_from_db()
+        self.assertEqual(row.client_id, SERVICES_ID)
+        self.assertEqual(row.backfill_source, "worker_default")
+        self.assertIsNotNone(row.revoked_at)
+
     def test_backoff_is_monotonic_and_invalid_client_streak_terminalizes_then_recovers(self):
         row = self.make_outbox()
         with (
@@ -633,7 +664,7 @@ class AppleRevocationHandlerTests(TransactionTestCase):
             second_delay = (row.next_attempt_at - row.last_attempt_at).total_seconds()
         self.assertEqual(first["status"], "retry")
         self.assertEqual(second["status"], "retry")
-        self.assertEqual((first_delay, second_delay), (60, 120))
+        self.assertEqual((first_delay, second_delay), (120, 240))
 
         for attempt in range(5):
             AppleRevocationOutbox.objects.filter(id=row.id).update(next_attempt_at=None)
@@ -692,6 +723,8 @@ class AppleRevocationHandlerTests(TransactionTestCase):
         select_for_update.assert_not_called()
 
     def test_task_is_registered(self):
+        from apps.cron.management.commands.register_system_crons import SYSTEM_CRONS
+
         self.assertEqual(
             TASK_MAP["revoke_apple_token"],
             "apps.cron.tasks.revoke_apple_token_task",
@@ -699,6 +732,15 @@ class AppleRevocationHandlerTests(TransactionTestCase):
         self.assertEqual(
             TASK_MAP["process_apple_revocation_outbox"],
             "apps.cron.tasks.republish_apple_revocation_outbox_task",
+        )
+        schedule = next(entry for entry in SYSTEM_CRONS if entry[0] == "process-apple-revocation-outbox")
+        self.assertEqual(
+            schedule,
+            (
+                "process-apple-revocation-outbox",
+                "*/30 * * * *",
+                "/api/cron/trigger/process_apple_revocation_outbox/",
+            ),
         )
 
 

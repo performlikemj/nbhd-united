@@ -143,12 +143,32 @@ def _write_legacy_web_grant(
     )
 
 
+def _read_repair_legacy_web_grant(
+    identity: ExternalIdentity,
+    client_id: str,
+) -> None:
+    """Repair a web grant written only to the legacy slot by an old revision."""
+
+    if not _is_web_lane(client_id) or not identity.refresh_token_encrypted:
+        return
+    web_grant = (
+        AppleGrantRecord.objects.select_for_update(of=("self",)).filter(identity=identity, client_id=client_id).first()
+    )
+    if web_grant is None or identity.refresh_token_updated_at > web_grant.rotated_at:
+        AppleGrantRecord.objects.update_or_create(
+            identity=identity,
+            client_id=client_id,
+            defaults={"refresh_token_encrypted": identity.refresh_token_encrypted},
+        )
+
+
 def _upsert_apple_grant(
     identity: ExternalIdentity,
     grant: AppleGrant,
     *,
     ciphertext: str | None = None,
 ) -> str | None:
+    _read_repair_legacy_web_grant(identity, grant.audience)
     if ciphertext is None:
         if not grant.refresh_token:
             return None
