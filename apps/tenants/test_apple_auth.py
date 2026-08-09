@@ -1629,7 +1629,7 @@ class AppleNativeTests(AppleFixtureMixin, TestCase):
 
         with (
             patch(
-                "apps.tenants.apple_views.ensure_tenant_provisioned",
+                "apps.tenants.apple_views.prepare_tenant_provisioning",
                 side_effect=RuntimeError("provisioning failed"),
             ) as provision,
             self.assertLogs("apps.tenants.apple_views", level="ERROR") as captured,
@@ -2022,6 +2022,51 @@ class AppleNativeCodeFlowTests(AppleFixtureMixin, TestCase):
         )
         access = AccessToken(response.data["access"])
         self.assertEqual(access["pw_iat"], int(user.password_last_changed_at.timestamp()))
+
+    def test_creation_response_does_not_wait_for_deferred_publish(self):
+        row, nonce = self.mint_transaction(purpose="native_auth")
+        publish_started = threading.Event()
+        release_publish = threading.Event()
+        publish_finished = threading.Event()
+
+        def hanging_publish(_tenant_id, _user_id):
+            publish_started.set()
+            release_publish.wait(timeout=5)
+            publish_finished.set()
+            return False
+
+        try:
+            with patch(
+                "apps.tenants.services._publish_tenant_provisioning",
+                side_effect=hanging_publish,
+            ):
+                with (
+                    self.assertLogs("apps.tenants.apple_views", level="INFO") as captured,
+                    self.captureOnCommitCallbacks(execute=True),
+                ):
+                    started_at = time.monotonic()
+                    response, _ = self.post_code(
+                        row,
+                        nonce,
+                        subject="native-deferred-subject",
+                        email="native-deferred@example.com",
+                        refresh_token="native-deferred-refresh",
+                    )
+                    elapsed = time.monotonic() - started_at
+                self.assertTrue(publish_started.wait(timeout=1))
+
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertTrue(response.data["created"])
+            self.assertLess(elapsed, 1.0)
+            self.assertFalse(publish_finished.is_set())
+            self.assertIn("stage=provision_kickoff_deferred", "\n".join(captured.output))
+
+            user = User.objects.get(email="native-deferred@example.com")
+            tenant = Tenant.objects.get(user=user)
+            self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
+        finally:
+            release_publish.set()
+            publish_finished.wait(timeout=1)
 
     def test_email_unavailable_and_missing_terms_are_distinct_logged_rejections(self):
         no_email_row, nonce = self.mint_transaction(purpose="native_auth")

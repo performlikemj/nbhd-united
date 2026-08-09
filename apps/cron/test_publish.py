@@ -13,10 +13,47 @@ fails loudly in CI / dev rather than silently in prod.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import Mock, patch
 
 from django.test import TestCase
 
+from apps.cron import publish
 from apps.cron.publish import publish_batch, publish_task
+
+
+class QStashClientBoundsTest(TestCase):
+    def tearDown(self):
+        if publish._qstash_client is not None:
+            publish._qstash_client[1].http._client.close()
+        publish._qstash_client = None
+        super().tearDown()
+
+    @patch("qstash.QStash")
+    def test_cached_client_pins_timeout_and_one_quick_retry(self, qstash_cls):
+        sdk_client = Mock()
+        original_httpx_client = Mock()
+        sdk_client.http._client = original_httpx_client
+        qstash_cls.return_value = sdk_client
+
+        self.assertIs(publish._get_qstash_client("token"), sdk_client)
+
+        retry = qstash_cls.call_args.kwargs["retry"]
+        self.assertEqual(retry["retries"], 1)
+        self.assertEqual(retry["backoff"](0), 100)
+        original_httpx_client.close.assert_called_once_with()
+
+        timeout = sdk_client.http._client.timeout
+        self.assertEqual(timeout.connect, 2.5)
+        self.assertEqual(timeout.read, 1.0)
+        self.assertEqual(timeout.write, 1.0)
+        self.assertEqual(timeout.pool, 0.25)
+
+        attempts = 1 + retry["retries"]
+        worst_case_seconds = (
+            attempts * (timeout.connect + timeout.read + timeout.write + timeout.pool)
+            + attempts * retry["backoff"](0) / 1000
+        )
+        self.assertLessEqual(worst_case_seconds, publish.QSTASH_TOTAL_TIMEOUT_SECONDS)
 
 
 class IdempotencyKeyValidatorTest(TestCase):

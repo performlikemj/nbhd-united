@@ -8,6 +8,7 @@ import secrets
 from datetime import timedelta
 
 from django.conf import settings
+from django.db import transaction
 from django.db.models import Subquery
 from django.utils import timezone
 from rest_framework import status
@@ -49,7 +50,7 @@ from .apple_services import (
 )
 from .models import Tenant
 from .serializers import EmailTokenObtainPairSerializer
-from .services import ensure_tenant_provisioned
+from .services import kickoff_tenant_provisioning, prepare_tenant_provisioning
 from .throttling import (
     AppleBeginDayThrottle,
     AppleBeginMinuteThrottle,
@@ -487,7 +488,21 @@ class AppleNativeView(AppleNativeReadinessMixin, AppleStrictParsingMixin, APIVie
                 grant_persisted = True
 
             try:
-                ensure_tenant_provisioned(resolution.user)
+                tenant, tenant_created = prepare_tenant_provisioning(resolution.user)
+                if tenant_created:
+                    logger.info(
+                        "tenant_provisioning tenant_id=%s user_id=%s stage=provision_kickoff_deferred error=",
+                        tenant.id,
+                        resolution.user.id,
+                    )
+                    transaction.on_commit(
+                        lambda: kickoff_tenant_provisioning(
+                            str(tenant.id),
+                            str(resolution.user.id),
+                            force_background=True,
+                        ),
+                        robust=True,
+                    )
             except Exception:
                 logger.exception(
                     "auth.apple.native.ensure_tenant_failed user_id=%s",

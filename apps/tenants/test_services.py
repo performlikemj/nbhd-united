@@ -1,11 +1,15 @@
 """Additional tenant service coverage."""
 
-from django.test import TestCase
+from unittest.mock import patch
+
+from django.test import TestCase, override_settings
 
 from apps.journal.models import Document
 from apps.journal.services import seed_default_documents_for_tenant
+from apps.orchestrator.services import _stale_provisioning_tenants_queryset
 
-from .services import create_tenant
+from .models import Tenant, User
+from .services import create_tenant, kickoff_tenant_provisioning, prepare_tenant_provisioning
 
 
 class TenantServiceTest(TestCase):
@@ -50,3 +54,34 @@ class TenantServiceTest(TestCase):
 
         self.assertFalse(result["created"]["tasks"])
         self.assertEqual(reseeded.markdown, "CUSTOM TASKS CONTENT")
+
+
+class DeferredProvisioningRepairTest(TestCase):
+    def test_never_published_provisioning_tenant_is_in_repair_sweep(self):
+        user = User.objects.create_user(
+            username="never-published@example.com",
+            email="never-published@example.com",
+        )
+        tenant, created = prepare_tenant_provisioning(user)
+
+        self.assertTrue(created)
+        self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
+        self.assertEqual(tenant.container_id, "")
+        self.assertEqual(tenant.container_fqdn, "")
+        self.assertTrue(_stale_provisioning_tenants_queryset().filter(id=tenant.id).exists())
+
+    @override_settings(QSTASH_TOKEN="configured", NBHD_DISABLE_BACKGROUND_THREADS=False)
+    @patch("apps.tenants.services.threading.Thread", side_effect=RuntimeError("thread unavailable"))
+    def test_kickoff_spawn_failure_is_contained_and_marks_pending(self, _thread):
+        user = User.objects.create_user(
+            username="kickoff-failure@example.com",
+            email="kickoff-failure@example.com",
+        )
+        tenant, _ = prepare_tenant_provisioning(user)
+
+        with self.assertLogs("apps.tenants.services", level="ERROR"):
+            kicked_off = kickoff_tenant_provisioning(str(tenant.id), str(user.id))
+
+        self.assertFalse(kicked_off)
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.status, Tenant.Status.PENDING)

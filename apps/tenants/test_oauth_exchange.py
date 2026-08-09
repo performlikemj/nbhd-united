@@ -10,11 +10,13 @@ users.
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import timedelta
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 from rest_framework.test import APIClient
@@ -395,3 +397,36 @@ class ExchangeProvisionsTenantTests(TestCase):
 
         tenant = Tenant.objects.get(user=self.user)
         self.assertEqual(tenant.status, Tenant.Status.PENDING)
+
+    @override_settings(QSTASH_TOKEN="configured", NBHD_DISABLE_BACKGROUND_THREADS=False)
+    def test_exchange_does_not_wait_for_qstash_publish(self):
+        publish_started = threading.Event()
+        release_publish = threading.Event()
+        publish_finished = threading.Event()
+
+        def hanging_publish(_tenant_id, _user_id):
+            publish_started.set()
+            release_publish.wait(timeout=5)
+            publish_finished.set()
+            return False
+
+        try:
+            with patch(
+                "apps.tenants.services._publish_tenant_provisioning",
+                side_effect=hanging_publish,
+            ):
+                started_at = time.monotonic()
+                resp = self._exchange()
+                elapsed = time.monotonic() - started_at
+                self.assertTrue(publish_started.wait(timeout=1))
+
+            self.assertEqual(resp.status_code, 200, resp.content)
+            self.assertIn("access", resp.data)
+            self.assertLess(elapsed, 1.0)
+            self.assertFalse(publish_finished.is_set())
+
+            tenant = Tenant.objects.get(user=self.user)
+            self.assertEqual(tenant.status, Tenant.Status.PROVISIONING)
+        finally:
+            release_publish.set()
+            publish_finished.wait(timeout=1)
