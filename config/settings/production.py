@@ -148,6 +148,11 @@ TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
 # means nobody, preserving the standard error notification path for the fleet.
 RETRY_DROPPED_TENANT_IDS = env("RETRY_DROPPED_TENANT_IDS", default="")
 
+# W4 historical migration/demotion commit allowlist. The Azure Container App
+# env var name MUST match W4_MIGRATION_TENANT_IDS exactly. Comma-separated
+# tenant UUIDs; empty means no production content or receipt writes.
+W4_MIGRATION_TENANT_IDS = env("W4_MIGRATION_TENANT_IDS", default="")
+
 # YardTalk one-time purchase + validation. The Price id is a Container App
 # config value; the HMAC key is a Key Vault-backed secretref.
 YARDTALK_STRIPE_PRICE_ID = env("YARDTALK_STRIPE_PRICE_ID", default="")

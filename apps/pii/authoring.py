@@ -168,14 +168,21 @@ def _registered_field_max_length(field: str, model_label: str) -> int | None:
     return next(iter(limits))
 
 
-def _residual_summary(tenant, text: str) -> dict[str, Any]:
-    """Count unknown PERSON/LOCATION detections without retaining their values.
+def _residual_summary(
+    tenant,
+    text: str,
+    *,
+    kinds_to_count: frozenset[str] | None = _RESIDUAL_KINDS,
+) -> dict[str, Any]:
+    """Count unknown detections without retaining their values.
 
     ``text`` must be the STORED text, not the pre-redaction input. The receipt
     describes what is at rest, and detected spans are matched against known
     bindings by exact value — on raw input the detector regularly over-captures
     ("Call Alice" comes back as one PERSON span), so the known-value lookup
-    misses and a fully-redacted field is recorded as residual forever.
+    misses and a fully-redacted field is recorded as residual forever. Runtime
+    and background callers use the default PERSON/LOCATION scope; W4 passes
+    ``None`` so every detectable type must have been pre-minted.
     """
     tier = getattr(tenant, "model_tier", "starter")
     policy = TIER_POLICIES.get(tier, TIER_POLICIES["starter"])
@@ -191,7 +198,7 @@ def _residual_summary(tenant, text: str) -> dict[str, Any]:
 
     kinds: dict[str, int] = {}
     for result in results:
-        if result.entity_type not in _RESIDUAL_KINDS:
+        if kinds_to_count is not None and result.entity_type not in kinds_to_count:
             continue
         if any(result.start < end and start < result.end for start, end in placeholder_ranges):
             continue
@@ -288,6 +295,9 @@ def author_text(
     live: bool = True,
     model_label: str | None = None,
     flag_off_legacy_redaction: bool = True,
+    _force_checked: bool = False,
+    _mint_policy_override: str | None = None,
+    _require_no_residual: bool = False,
 ) -> AuthoredText:
     """Author one text field under its writer-class mint policy.
 
@@ -309,11 +319,18 @@ def author_text(
     ``flag_off_legacy_redaction`` is ONLY an A4 compatibility switch. It does
     not alter flag-on policy: owner text still runs full checked authoring with
     ``MINT_ALL``.
+
+    The underscore-prefixed controls are reserved for W4 historical migration:
+    its batch pre-scan owns all MINT_ALL writes under one lock, so the later
+    row rewrite forces checked analysis with MINT_NEVER and refuses any
+    residual instead of opening another tenant lock.
     """
     if writer not in _WRITER_POLICIES:
         raise ValueError(f"unsupported writer class: {writer!r}")
+    if _mint_policy_override not in {None, MINT_ALL, MINT_NEVER, MINT_VALIDATED}:
+        raise ValueError(f"unsupported mint policy override: {_mint_policy_override!r}")
 
-    if not getattr(tenant, "layer1_placeholder_writes", False):
+    if not _force_checked and not getattr(tenant, "layer1_placeholder_writes", False):
         source_text = None
         if writer == "owner" and flag_off_legacy_redaction:
             # The legacy redactor substitutes placeholders, so this branch was
@@ -344,6 +361,8 @@ def author_text(
         )
 
     mint, allow_user_name = _WRITER_POLICIES[writer]
+    if _mint_policy_override is not None:
+        mint = _mint_policy_override
     authoring_input = text
     if writer in {"runtime", "background"}:
         # The checked redactor substitutes known values before its NER pass.
@@ -432,6 +451,25 @@ def author_text(
         "state": "placeholder",
         "redactions": [],
     }
+    if _require_no_residual:
+        try:
+            residual_spans = _residual_summary(tenant, stored, kinds_to_count=None)
+        except Exception:
+            logger.exception(
+                "pii_authoring_residual_detection_error tenant=%s seam=%s field=%s",
+                getattr(tenant, "id", "?"),
+                seam,
+                field,
+            )
+            receipt = {
+                "state": "unconfirmed",
+                "reason": "redaction-error",
+                "redactions": [],
+            }
+        else:
+            if residual_spans["count"]:
+                receipt["state"] = "residual"
+                receipt["residual_spans"] = residual_spans
     if writer in {"runtime", "background"}:
         # Runtime never mints, so detection is the only thing standing between a
         # model-composed raw name and a receipt that reads clean forever: the A7
@@ -524,6 +562,9 @@ def author_json_paths(
     live: bool = True,
     model_label: str | None = None,
     flag_off_legacy_redaction: bool = True,
+    _force_checked: bool = False,
+    _mint_policy_override: str | None = None,
+    _require_no_residual: bool = False,
 ) -> AuthoredJSON:
     """Author every string leaf selected by parsed registry path suffixes.
 
@@ -545,6 +586,9 @@ def author_json_paths(
             live=live,
             model_label=model_label,
             flag_off_legacy_redaction=flag_off_legacy_redaction,
+            _force_checked=_force_checked,
+            _mint_policy_override=_mint_policy_override,
+            _require_no_residual=_require_no_residual,
         )
         leaf_receipts.append(authored.receipt)
         return authored.text
@@ -561,7 +605,7 @@ def author_json_paths(
             # A terminal ``**`` accepts arbitrary JSON scalar/container shapes;
             # no visited leaf therefore means "nothing authorable", not drift.
             _author_leaf("")
-        elif not getattr(tenant, "layer1_placeholder_writes", False):
+        elif not _force_checked and not getattr(tenant, "layer1_placeholder_writes", False):
             # Flag-off is byte-identical even when a legacy payload does not
             # match today's registered shape; it must not emit a live error.
             _author_leaf("")

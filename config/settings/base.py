@@ -225,6 +225,11 @@ TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
 # empty means nobody so the retry ships dark and opens one tenant at a time.
 RETRY_DROPPED_TENANT_IDS = env("RETRY_DROPPED_TENANT_IDS", default="")
 
+# PII W4 historical migration/demotion commit gate. Comma-separated tenant
+# UUIDs; empty means nobody. Read-only dry-runs remain available before a
+# tenant is admitted to the canary ladder.
+W4_MIGRATION_TENANT_IDS = env("W4_MIGRATION_TENANT_IDS", default="")
+
 # Core AI on-device model (iOS 27 bring-your-own model) delivery.
 # Django serves only the small JWT-gated manifest (GET /api/v1/coreai/model/manifest/);
 # the big model files are hosted off-Django (Azure Blob / CDN) under COREAI_MODEL_BASE_URL.
