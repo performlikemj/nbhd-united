@@ -16,21 +16,7 @@ from .models import Tenant
 
 logger = logging.getLogger(__name__)
 
-
-def _line_quota_available() -> bool:
-    """Return True if the fleet-wide LINE quota has room for new users.
-
-    Failing closed: if we can't read the quota state for any reason, we
-    skip the LINE P.S. rather than offer a channel that may 429. The
-    user can still discover LINE on the dashboard later.
-    """
-    try:
-        from apps.router.models import LineQuotaState
-
-        return not LineQuotaState.get().is_exhausted
-    except Exception:
-        logger.warning("welcome_email.line_quota_lookup_failed", exc_info=True)
-        return False
+NBHD_APP_STORE_URL = "https://apps.apple.com/app/id6779158519"
 
 
 def send_welcome_email(tenant: Tenant) -> bool:
@@ -60,20 +46,11 @@ def send_welcome_email(tenant: Tenant) -> bool:
 
     video_url = getattr(django_settings, "WELCOME_VIDEO_URL", "") or ""
 
-    line_quota_available = _line_quota_available()
-    # When LINE is currently capped, dropping the "or LINE" half of the
-    # CTA keeps the email honest at send-time. The dashboard already
-    # disables the LINE option visually when exhausted; this avoids the
-    # awkward "you suggested LINE, then I couldn't pick it" UX.
-    channel_label = "Telegram or LINE" if line_quota_available else "Telegram"
-
     context = {
         "display_name": user.display_name or "there",
-        "telegram_connected": bool(user.telegram_chat_id),
+        "app_store_url": NBHD_APP_STORE_URL,
         "settings_url": settings_url,
         "video_url": video_url,
-        "line_quota_available": line_quota_available,
-        "channel_label": channel_label,
     }
 
     subject = render_to_string("email/welcome_subject.txt", context).strip()
@@ -102,6 +79,6 @@ def send_welcome_email(tenant: Tenant) -> bool:
         "welcome_email.sent tenant_id=%s recipient=%s telegram_connected=%s",
         tenant.id,
         recipient,
-        context["telegram_connected"],
+        bool(user.telegram_chat_id),
     )
     return True
