@@ -157,6 +157,28 @@ def _mock_provision_dependencies():
     OPENROUTER_PER_TENANT_KEYS_ENABLED=False,
 )
 class FirstSessionWelcomeProvisioningTest(TestCase):
+    def test_greeting_row_exists_before_active_is_observable(self):
+        user = User.objects.create_user(username="welcome-before-active", display_name="Ordered")
+        tenant = Tenant.objects.create(user=user, status=Tenant.Status.PENDING)
+        original_save = Tenant.save
+        observed_active_saves = 0
+
+        def save_with_order_check(instance, *args, **kwargs):
+            nonlocal observed_active_saves
+            update_fields = kwargs.get("update_fields") or []
+            if instance.pk == tenant.pk and instance.status == Tenant.Status.ACTIVE and "status" in update_fields:
+                observed_active_saves += 1
+                self.assertTrue(ProactiveOutbound.objects.filter(tenant=tenant, channel="app").exists())
+            return original_save(instance, *args, **kwargs)
+
+        with (
+            _mock_provision_dependencies(),
+            patch.object(Tenant, "save", autospec=True, side_effect=save_with_order_check),
+        ):
+            provision_tenant(str(tenant.id))
+
+        self.assertEqual(observed_active_saves, 1)
+
     def test_double_provision_creates_exactly_one_greeting(self):
         user = User.objects.create_user(username="double-provision", display_name="Double")
         tenant = Tenant.objects.create(user=user, status=Tenant.Status.PENDING)
@@ -173,17 +195,33 @@ class FirstSessionWelcomeProvisioningTest(TestCase):
         user = User.objects.create_user(username="welcome-failure", display_name="Failure")
         tenant = Tenant.objects.create(user=user, status=Tenant.Status.PENDING)
 
+        def fail_before_activation(_tenant):
+            self.assertEqual(Tenant.objects.get(pk=tenant.pk).status, Tenant.Status.PROVISIONING)
+            raise RuntimeError("welcome unavailable")
+
         with (
             _mock_provision_dependencies(),
             patch(
                 "apps.orchestrator.first_session_welcome.seed_first_session_welcome",
-                side_effect=RuntimeError("welcome unavailable"),
+                side_effect=fail_before_activation,
             ),
         ):
             provision_tenant(str(tenant.id))
 
         tenant.refresh_from_db()
         self.assertEqual(tenant.status, Tenant.Status.ACTIVE)
+
+    def test_suppressed_welcome_activates_without_greeting_or_stamp(self):
+        user = User.objects.create_user(username="welcome-suppressed", display_name="Suppressed")
+        tenant = Tenant.objects.create(user=user, status=Tenant.Status.PENDING)
+
+        with _mock_provision_dependencies():
+            provision_tenant(str(tenant.id), send_first_session_welcome=False)
+
+        tenant.refresh_from_db()
+        self.assertEqual(tenant.status, Tenant.Status.ACTIVE)
+        self.assertNotIn(FIRST_SESSION_WELCOME_KEY, tenant.welcomes_sent)
+        self.assertFalse(ProactiveOutbound.objects.filter(tenant=tenant).exists())
 
     def test_ensure_tenant_provisioned_entrance_greets(self):
         from apps.tenants.services import ensure_tenant_provisioned
