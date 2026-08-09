@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+import httpx
 from django.conf import settings
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,14 @@ def _publish_log_context(task_name: str, args, kwargs):
 # surfacing as a generic 400 deep inside the SDK.
 _DEDUP_FORBIDDEN = (":", " ", "\t", "\n", "\r")
 
+QSTASH_CONNECT_TIMEOUT_SECONDS = 2.5
+QSTASH_READ_TIMEOUT_SECONDS = 1.0
+QSTASH_WRITE_TIMEOUT_SECONDS = 1.0
+QSTASH_POOL_TIMEOUT_SECONDS = 0.25
+QSTASH_TOTAL_TIMEOUT_SECONDS = 10.0
+QSTASH_PUBLISH_RETRIES = 1
+QSTASH_RETRY_BACKOFF_MS = 100
+
 # One QStash client per (process, token). Constructing a client per publish
 # re-handshakes TLS to Upstash (~150-400ms) inside the request that called
 # publish_task — pure per-message latency. httpx.Client (used internally by
@@ -50,7 +59,26 @@ def _get_qstash_client(token: str):
     if _qstash_client is None or _qstash_client[0] != token:
         from qstash import QStash
 
-        _qstash_client = (token, QStash(token=token))
+        client = QStash(
+            token=token,
+            retry={
+                "retries": QSTASH_PUBLISH_RETRIES,
+                "backoff": lambda _attempt: QSTASH_RETRY_BACKOFF_MS,
+            },
+        )
+        # qstash-py 3.4 does not expose timeout injection. Replace its private
+        # transport client explicitly: the SDK default is 5s connect, 600s for
+        # all other phases, plus five retries — far beyond request budgets.
+        client.http._client.close()
+        client.http._client = httpx.Client(
+            timeout=httpx.Timeout(
+                connect=QSTASH_CONNECT_TIMEOUT_SECONDS,
+                read=QSTASH_READ_TIMEOUT_SECONDS,
+                write=QSTASH_WRITE_TIMEOUT_SECONDS,
+                pool=QSTASH_POOL_TIMEOUT_SECONDS,
+            )
+        )
+        _qstash_client = (token, client)
     return _qstash_client[1]
 
 

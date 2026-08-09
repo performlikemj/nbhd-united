@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import timedelta
 
-from django.db import IntegrityError, transaction
+from django.conf import settings
+from django.db import IntegrityError, close_old_connections, transaction
 from django.utils import timezone
 
 from apps.journal.services import (
@@ -21,34 +23,17 @@ logger = logging.getLogger(__name__)
 TRIAL_DAYS = 30
 
 
-def ensure_tenant_provisioned(user: User) -> tuple[Tenant, bool, bool]:
-    """Idempotently create + kick off provisioning of a trial tenant for ``user``.
+def prepare_tenant_provisioning(user: User) -> tuple[Tenant, bool]:
+    """Idempotently create the durable trial-tenant row for ``user``.
 
-    This is the single source of truth for "a brand-new user gets a backend
-    workspace". Every post-authentication chokepoint routes through it —
-    web onboarding (``OnboardTenantView``) and the iOS web-signup PKCE handoff
-    (``ExchangeView``) — so no path can leave an authenticated user stranded
-    without a tenant (the bug that 404'd every feature tab for handoff users).
-
-    Returns ``(tenant, created, provision_published)``:
-
-    * ``created`` is ``False`` when the user already had a tenant (pure no-op —
-      safe to call on every sign-in).
-    * ``provision_published`` is ``False`` only when the ``provision_tenant``
-      task could not be enqueued; the tenant is left at ``PENDING`` for the
-      ``repair-stale-provisioning`` cron to retry. Callers that must surface
-      that (the web onboarding 503) branch on it; best-effort callers ignore it.
+    External publication is deliberately separate so auth callers can commit
+    this repairable state before starting any network work.
     """
-    # Lazy import: ``apps.cron.publish`` pulls in QStash wiring — keep it out of
-    # this module's import-time graph (it is imported early by signals/models).
-    from apps.cron.publish import publish_task
-
     existing = Tenant.objects.filter(user=user).first()
     if existing is not None:
-        return existing, False, True
+        return existing, False
 
     now = timezone.now()
-    # OnboardTenantView and the iOS handoff both use this shared trial grant.
     try:
         with transaction.atomic():
             tenant = Tenant.objects.create(
@@ -61,7 +46,7 @@ def ensure_tenant_provisioned(user: User) -> tuple[Tenant, bool, bool]:
             )
     except IntegrityError:
         # A concurrent caller won the OneToOne(user) race — return their row.
-        return Tenant.objects.get(user=user), False, True
+        return Tenant.objects.get(user=user), False
 
     logger.info(
         "tenant_provisioning tenant_id=%s user_id=%s stage=tenant_created error=",
@@ -69,26 +54,126 @@ def ensure_tenant_provisioned(user: User) -> tuple[Tenant, bool, bool]:
         user.id,
     )
     seed_default_templates_for_tenant(tenant=tenant)
+    return tenant, True
+
+
+def _mark_provisioning_pending(tenant_id: str) -> None:
+    Tenant.objects.filter(id=tenant_id).update(
+        status=Tenant.Status.PENDING,
+        updated_at=timezone.now(),
+    )
+
+
+def _publish_tenant_provisioning(tenant_id: str, user_id: str) -> bool:
+    from apps.cron.publish import publish_task
 
     try:
-        publish_task("provision_tenant", str(tenant.id))
+        publish_task("provision_tenant", tenant_id)
         logger.info(
             "tenant_provisioning tenant_id=%s user_id=%s stage=publish_provision_task error=",
-            tenant.id,
-            user.id,
+            tenant_id,
+            user_id,
         )
+        return True
     except Exception as exc:
-        tenant.status = Tenant.Status.PENDING
-        tenant.save(update_fields=["status", "updated_at"])
+        try:
+            _mark_provisioning_pending(tenant_id)
+        except Exception:
+            logger.exception(
+                "tenant_provisioning tenant_id=%s user_id=%s stage=publish_failure_pending_mark_failed error=",
+                tenant_id,
+                user_id,
+            )
         logger.exception(
             "tenant_provisioning tenant_id=%s user_id=%s stage=publish_provision_task_failed error=%s",
-            tenant.id,
-            user.id,
+            tenant_id,
+            user_id,
             exc,
         )
-        return tenant, True, False
+        return False
 
-    return tenant, True, True
+
+def _publish_tenant_provisioning_in_thread(tenant_id: str, user_id: str) -> None:
+    try:
+        _publish_tenant_provisioning(tenant_id, user_id)
+    finally:
+        # A one-shot daemon thread must not pin a database pool slot after it
+        # finishes marking a failed publish PENDING.
+        close_old_connections()
+
+
+def kickoff_tenant_provisioning(
+    tenant_id: str,
+    user_id: str,
+    *,
+    force_background: bool = False,
+) -> bool:
+    """Start the publish without allowing kickoff failures to escape.
+
+    Production QStash calls run on a daemon thread so request handlers never
+    wait on the external publish. The no-QStash development/test fallback stays
+    synchronous unless ``force_background`` is requested by an auth path whose
+    latency contract requires it.
+    """
+    run_in_background = force_background or (
+        bool(getattr(settings, "QSTASH_TOKEN", "")) and not getattr(settings, "NBHD_DISABLE_BACKGROUND_THREADS", False)
+    )
+    if not run_in_background:
+        return _publish_tenant_provisioning(tenant_id, user_id)
+
+    try:
+        threading.Thread(
+            target=_publish_tenant_provisioning_in_thread,
+            args=(tenant_id, user_id),
+            daemon=True,
+            name=f"tenant-provision-{tenant_id[:8]}",
+        ).start()
+        return True
+    except Exception as exc:
+        try:
+            _mark_provisioning_pending(tenant_id)
+        except Exception:
+            logger.exception(
+                "tenant_provisioning tenant_id=%s user_id=%s stage=provision_kickoff_pending_mark_failed error=",
+                tenant_id,
+                user_id,
+            )
+        logger.exception(
+            "tenant_provisioning tenant_id=%s user_id=%s stage=provision_kickoff_failed error=%s",
+            tenant_id,
+            user_id,
+            exc,
+        )
+        return False
+
+
+def ensure_tenant_provisioned(user: User) -> tuple[Tenant, bool, bool]:
+    """Idempotently create + kick off provisioning of a trial tenant for ``user``.
+
+    This is the single source of truth for "a brand-new user gets a backend
+    workspace". Every post-authentication chokepoint routes through it —
+    web onboarding (``OnboardTenantView``) and the iOS web-signup PKCE handoff
+    (``ExchangeView``) — so no path can leave an authenticated user stranded
+    without a tenant (the bug that 404'd every feature tab for handoff users).
+
+    Returns ``(tenant, created, provision_kicked_off)``:
+
+    * ``created`` is ``False`` when the user already had a tenant (pure no-op —
+      safe to call on every sign-in).
+    * ``provision_kicked_off`` is ``False`` when the publish failed in the
+      synchronous fallback or a background thread could not start. The tenant
+      is left at ``PENDING`` for ``repair-stale-provisioning``. In production,
+      a successfully started background publish returns ``True`` immediately;
+      a later publish failure marks the row ``PENDING`` from that thread.
+    """
+    tenant, created = prepare_tenant_provisioning(user)
+    if not created:
+        return tenant, False, True
+
+    kicked_off = kickoff_tenant_provisioning(str(tenant.id), str(user.id))
+    if not kicked_off:
+        tenant.refresh_from_db(fields=["status", "updated_at"])
+    return tenant, True, kicked_off
 
 
 def create_tenant(
