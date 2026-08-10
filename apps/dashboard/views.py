@@ -21,6 +21,7 @@ from apps.journal.services import is_pristine_goals_scaffold
 from apps.tenants.models import Tenant
 
 _WEEKLY_SLUG_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_ISO_WEEKLY_SLUG_RE = re.compile(r"^(\d{4})-W(\d{2})$")
 
 
 def _clean_markdown_preview(markdown: str, max_chars: int = 180) -> str:
@@ -84,15 +85,22 @@ def _dedupe_legacy_goal_docs(docs: list[dict]) -> list[dict]:
 
 
 def _derive_week_bounds(slug: str, fallback: date) -> tuple[date, date]:
-    """Given a weekly document slug (YYYY-MM-DD, Monday) return (week_start, week_end).
+    """Return week bounds for a Monday-date or ISO-week document slug.
 
-    Falls back to the Monday/Sunday surrounding `fallback` if the slug isn't a
-    parseable date (older slugs, manual entries, etc.).
+    Falls back to the Monday/Sunday surrounding ``fallback`` if the slug is not
+    parseable (older slugs, manual entries, etc.).
     """
     match = _WEEKLY_SLUG_RE.match(slug or "")
     if match:
         try:
             start = date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
+            return start, start + timedelta(days=6)
+        except ValueError:
+            pass
+    match = _ISO_WEEKLY_SLUG_RE.match(slug or "")
+    if match:
+        try:
+            start = date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
             return start, start + timedelta(days=6)
         except ValueError:
             pass

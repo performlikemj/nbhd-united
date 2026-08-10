@@ -29,7 +29,7 @@ description: Review the week, synthesize patterns, and save a structured weekly 
 | Tool | Purpose |
 |------|---------|
 | `nbhd_journal_context` | Load recent daily notes + memory (days: 7) |
-| `nbhd_document_put` | Save weekly review document (kind: "weekly", slug: "YYYY-MM-DD" Monday of week) |
+| `nbhd_document_put` | Save weekly review document (kind: "weekly", slug: "YYYY-Www", e.g. "2026-W32") |
 | `nbhd_weekly_review_create` | Save structured weekly review (rating + wins/challenges/lessons/intentions) so it lights up the Horizons Weekly Pulse card |
 | `nbhd_journal_search` | Search past notes for specific topics if needed |
 
@@ -50,13 +50,13 @@ description: Review the week, synthesize patterns, and save a structured weekly 
 ```json
 {
   "kind": "weekly",
-  "slug": "YYYY-MM-DD",
-  "title": "Weekly Review — YYYY-MM-DD",
+  "slug": "YYYY-Www",
+  "title": "Weekly Review — YYYY-Www",
   "markdown": "Free-form markdown: patterns, wins, challenges, lessons, intentions, rating"
 }
 ```
 
-The slug should be the Monday of the review week (ISO date). The markdown body is free-form — include sections for patterns, wins, challenges, lessons learned, intentions for next week, and the user's week rating.
+The slug should be the ISO week (`YYYY-Www`, e.g. `2026-W32`). The markdown body is free-form — include sections for patterns, wins, challenges, lessons learned, intentions for next week, and the user's week rating.
 
 ### Save weekly review — step 2 of 2 (structured, feeds Horizons Weekly Pulse)
 

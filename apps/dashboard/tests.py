@@ -65,10 +65,15 @@ class CleanMarkdownPreviewTests(SimpleTestCase):
 
 
 class DeriveWeekBoundsTests(SimpleTestCase):
-    def test_parses_iso_monday_slug(self):
+    def test_parses_monday_date_slug(self):
         start, end = _derive_week_bounds("2026-04-06", date(2026, 4, 13))
         self.assertEqual(start, date(2026, 4, 6))
         self.assertEqual(end, date(2026, 4, 12))
+
+    def test_parses_iso_week_slug(self):
+        start, end = _derive_week_bounds("2026-W32", date(2026, 1, 1))
+        self.assertEqual(start, date(2026, 8, 3))
+        self.assertEqual(end, date(2026, 8, 9))
 
     def test_falls_back_to_week_of_fallback(self):
         # Wednesday 2026-04-15 → Monday is 2026-04-13

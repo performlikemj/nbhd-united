@@ -31,11 +31,11 @@ from apps.journal.models import Document
 
 VALID_KINDS: frozenset[str] = frozenset(c.value for c in Document.Kind)
 
-# Mirrors ``apps.journal.document_views._VALID_SLUG_RE`` (user-facing) but
-# allows ``.`` for legitimate ISO-date slugs like ``2026-05-15``. The leading
-# character must be alphanumeric so a slug can't start with ``/``, ``-``, or
-# ``.`` — defense against absolute paths, option flags, and hidden files.
-RUNTIME_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._/-]*$")
+# Exactly matches ``apps.journal.document_views._VALID_SLUG_RE`` so every slug
+# accepted at the runtime write boundary is addressable by the console read
+# API. The leading character must be alphanumeric so a slug can't start with
+# ``/`` or ``-`` — defense against absolute paths and option flags.
+RUNTIME_SLUG_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9\-/]*$")
 
 # Daily notes are keyed by ISO calendar date; a non-date slug corrupts the
 # date-cutoff filter in the journal context bundle (slug__gte text compare),
