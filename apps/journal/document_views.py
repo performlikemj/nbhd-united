@@ -625,10 +625,10 @@ class SidebarTreeView(APIView):
         if "daily" in tree:
             tree["daily"].sort(key=lambda x: x["slug"], reverse=True)
 
-        # Sort weekly reviews by slug (YYYY-MM-DD week-start date) descending so
-        # the [:12] cap keeps the 12 most-recent weeks, not the 12 most-recently-edited.
+        # Sort weekly reviews by most-recent touch so legacy naming conventions
+        # cannot bury a current review under the [:12] cap.
         if "weekly" in tree:
-            tree["weekly"].sort(key=lambda x: x["slug"], reverse=True)
+            tree["weekly"].sort(key=lambda x: x["updated_at"] or "", reverse=True)
 
         # Define the sidebar structure
         sidebar = [

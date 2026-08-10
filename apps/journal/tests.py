@@ -7,6 +7,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from django.test import TestCase, override_settings
+from django.utils import timezone
 from rest_framework.test import APIClient, APIRequestFactory, force_authenticate
 
 from apps.tenants.models import Tenant, User
@@ -1392,6 +1393,31 @@ class DocumentAPITest(TestCase):
         daily_node = next(n for n in resp.data if n["kind"] == "daily")
         self.assertEqual(len(daily_node["items"]), 1)
 
+    def test_sidebar_orders_weekly_reviews_by_updated_at(self):
+        now = timezone.now()
+        newer = Document.objects.create(
+            tenant=self.tenant,
+            kind="weekly",
+            slug="2026-W32",
+            title="Current weekly review",
+            markdown="",
+        )
+        older = Document.objects.create(
+            tenant=self.tenant,
+            kind="weekly",
+            slug="weekly-review",
+            title="Legacy weekly review",
+            markdown="",
+        )
+        Document.objects.filter(pk=newer.pk).update(updated_at=now)
+        Document.objects.filter(pk=older.pk).update(updated_at=now - timedelta(days=7))
+
+        resp = self.client.get("/api/v1/journal/tree/")
+
+        self.assertEqual(resp.status_code, 200)
+        weekly_items = next(node["items"] for node in resp.data if node["kind"] == "weekly")
+        self.assertEqual([item["slug"] for item in weekly_items], ["2026-W32", "weekly-review"])
+
     @patch("apps.common.llm_contracts.dj_tz.now")
     def test_tenant_local_today_is_in_sidebar_and_today_endpoint(self, mock_now):
         self.user.timezone = "Asia/Tokyo"
@@ -1548,7 +1574,7 @@ class RuntimeDocumentAPITest(TestCase):
                 markdown=f"# {slug}",
             )
 
-        guessed_slug = "weekly_review_2026-07-04"
+        guessed_slug = "2026-W23"
         resp = self.client.get(
             f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
             {"kind": "weekly", "slug": guessed_slug},
@@ -1695,8 +1721,7 @@ class RuntimeDocumentAPITest(TestCase):
         self.assertEqual(resp.data["error"], "invalid_slug")
 
     def test_put_accepts_legitimate_dated_slug(self):
-        # Regression: the runtime regex must allow `.` so ISO dates like
-        # `2026-05-15` are valid (they aren't path-hostile).
+        # ISO dates use hyphens, which remain valid in nested document slugs.
         resp = self.client.put(
             f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
             {"kind": "memory", "slug": "week-ahead/2026-05-15", "markdown": "ok"},
@@ -1705,6 +1730,19 @@ class RuntimeDocumentAPITest(TestCase):
         )
         self.assertIn(resp.status_code, [200, 201])
         self.assertEqual(resp.data["slug"], "week-ahead/2026-05-15")
+
+    def test_put_rejects_dot_and_underscore_slugs(self):
+        for slug in ("weekly.review", "weekly_review"):
+            with self.subTest(slug=slug):
+                resp = self.client.put(
+                    f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
+                    {"kind": "weekly", "slug": slug, "markdown": "not stored"},
+                    format="json",
+                    **self.headers,
+                )
+                self.assertEqual(resp.status_code, 400)
+                self.assertEqual(resp.data["error"], "invalid_slug")
+                self.assertFalse(Document.objects.filter(tenant=self.tenant, slug=slug).exists())
 
     def test_get_rejects_non_enum_kind(self):
         # Auto-create on GET previously seeded rows with any kind. Closed.
