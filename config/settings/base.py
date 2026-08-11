@@ -20,6 +20,15 @@ SECRET_KEY = env("SECRET_KEY")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 
+# Django 6.1 enforces this cap on request.body reads, including DRF JSON
+# parsing. iOS base64 document uploads legitimately reach ~14.1 MB (a 10 MiB
+# document × 4/3 plus the JSON envelope). The app-level typed caps in
+# apps/router/inbound_media.py, plus per-view caps such as datebook's 1 MiB,
+# remain the front-line, user-facing limits. This global value is the hard
+# backstop and must stay above base64(MAX_APP_DOCUMENT_BYTES + the oversize-test
+# margin).
+DATA_UPLOAD_MAX_MEMORY_SIZE = 16 * 1024 * 1024
+
 # Application definition
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -172,7 +181,7 @@ REST_FRAMEWORK = {
 # Simple JWT
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=60),
     "SIGNING_KEY": env("JWT_SECRET", default=SECRET_KEY),
     "TOKEN_OBTAIN_SERIALIZER": "apps.tenants.serializers.EmailTokenObtainPairSerializer",
     # NOTE: refresh-token rotation (ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION)
@@ -185,6 +194,7 @@ SIMPLE_JWT = {
     # silently sign the user out; (3) a scheduled `flushexpiredtokens` to reap the
     # OutstandingToken/BlacklistedToken rows rotation creates; (4) cross-tab refresh
     # coordination on web. Enable as a deliberate follow-up, not a drive-by.
+    # A 60-day lifetime is the stopgap for the weekly sign-out cliff until rotation ships.
 }
 
 # CORS
