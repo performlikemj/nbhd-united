@@ -696,19 +696,12 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     # bootstrap cap cannot silently truncate the capture behavior.
     if tenant is not None and getattr(tenant, "situational_context_enabled", False):
         situation_capture_gate = (
-            "## Current-location capture\n\n"
-            "When the user states or clearly implies that their CURRENT city/area changed — "
-            '"I\'m in Fukuoka", "we drove up to Gifu", "landed in Tokyo", "at the in-laws in '
-            'Nagoya this week", or "back home" — CALL `nbhd_update_situation` with that city label '
-            "THIS TURN, before replying. When it returns `ok:true`, acknowledge the capture in one "
-            "short clause in the normal reply (\"noted — I'll use Gifu while you're here\"). If the "
-            "user objects, do not record it again; drop the subject.\n\n"
-            "Current location ONLY: never record a place merely mentioned in news, someone else's "
-            "trip, or a FUTURE plan. Record future travel only once the user says they are actually "
-            "there or on the way now. Use only the user's own words in THIS conversation — never "
-            "guesses, sensors, documents, or third parties.\n\n"
-            "On multi-day trips, re-record when the user references still being away; a stale "
-            '`## Right now` section will nudge you. "Back home" or equivalent means record the home city.'
+            "## Current location\n\n"
+            "When the user states or clearly implies their CURRENT city/area changed, including "
+            '"back home", CALL `nbhd_update_situation` with that city THIS TURN before replying; '
+            "follow its response. Use only their own words from THIS conversation—never sensors, "
+            "documents, third parties, mentions, or future plans. Re-record on multi-day trips when "
+            "they say they're still away."
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + situation_capture_gate
 
@@ -820,11 +813,10 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     if tenant is not None and getattr(tenant, "sautai_enabled", False):
         sautai_gate = (
             "## Meal plans (sautai)\n\n"
-            "When the user asks about meal plans, meal prep, what to eat, or nutrition, search the "
-            "tool catalog for the sautai tools (`nbhd_generate_meal_plan` to create a plan, "
-            "`nbhd_get_meal_plan` to read the current one) and CALL the right one — they are not "
-            "pre-loaded. Never say a plan was created or describe its meals without a successful "
-            "tool result; follow the tool's response."
+            "For meal plans/prep, what to eat, or nutrition, search the catalog and CALL "
+            "`nbhd_generate_meal_plan` to create or `nbhd_get_meal_plan` to read; they are not "
+            "pre-loaded. Never claim or describe a plan without a successful tool result; follow "
+            "its response."
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + sautai_gate
 
@@ -834,21 +826,38 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
     # cannot become a truncated tail.
     if tenant is not None and getattr(tenant, "tour_guide_enabled", False):
         if places_search_delivery_ready(tenant):
-            tour_guide_gate = (
-                "## Tour guide\n\n"
-                "For what-to-do / where-to-eat / stops / itinerary / guide-card asks around a place — "
-                "or any message with a 📍 Current location line — call `nbhd_tour_guide` FIRST this turn "
-                "to load the format, then call `nbhd_places_search` before composing and follow both tool "
-                "responses exactly. Never ask where the user is when a recent 📍 message exists."
-            )
+            if getattr(tenant, "situational_context_enabled", False):
+                tour_guide_gate = (
+                    "## Tour guide\n\n"
+                    "For local ideas / food / stops / itineraries / guide cards — or any message with a 📍 "
+                    "line — call `nbhd_tour_guide` FIRST this turn, then `nbhd_places_search` before "
+                    "composing, and follow both responses exactly. Never ask where the user is when a recent "
+                    "📍 or fresh `## Right now` location exists; use that city."
+                )
+            else:
+                tour_guide_gate = (
+                    "## Tour guide\n\n"
+                    "For what-to-do / where-to-eat / stops / itinerary / guide-card asks around a place — "
+                    "or any message with a 📍 Current location line — call `nbhd_tour_guide` FIRST this turn "
+                    "to load the format, then call `nbhd_places_search` before composing and follow both tool "
+                    "responses exactly. Never ask where the user is when a recent 📍 message exists."
+                )
         elif tour_guide_delivery_ready(tenant):
-            tour_guide_gate = (
-                "## Tour guide\n\n"
-                "For what-to-do / where-to-eat / stops / itinerary / guide-card asks around a place — "
-                "or any message with a 📍 Current location line — call `nbhd_tour_guide` FIRST this turn "
-                "and follow the contract in its response exactly. Never ask where the user is when a "
-                "recent 📍 message exists."
-            )
+            if getattr(tenant, "situational_context_enabled", False):
+                tour_guide_gate = (
+                    "## Tour guide\n\n"
+                    "For local ideas / food / stops / itineraries / guide cards — or any message with a 📍 "
+                    "line — call `nbhd_tour_guide` FIRST this turn and follow its response exactly. Never ask "
+                    "where the user is when a recent 📍 or fresh `## Right now` location exists; use that city."
+                )
+            else:
+                tour_guide_gate = (
+                    "## Tour guide\n\n"
+                    "For what-to-do / where-to-eat / stops / itinerary / guide-card asks around a place — "
+                    "or any message with a 📍 Current location line — call `nbhd_tour_guide` FIRST this turn "
+                    "and follow the contract in its response exactly. Never ask where the user is when a "
+                    "recent 📍 message exists."
+                )
         else:
             tour_guide_gate = (
                 "## Tour guide\n\n"

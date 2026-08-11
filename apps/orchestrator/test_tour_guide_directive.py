@@ -30,6 +30,27 @@ _TOUR_GUIDE_DOC_CUE = "read `docs/tour-guide.md` THIS TURN"
 _TOUR_GUIDE_TOOL_CUE = "call `nbhd_tour_guide` FIRST this turn"
 _PLACES_SEARCH_TOOL_CUE = "then call `nbhd_places_search` before composing"
 _JOURNAL_SHAPING_MARKER = "## Journal shaping"
+_RIGHT_NOW_LOCATION_RULE = "recent 📍 or fresh `## Right now` location exists; use that city"
+_CURRENT_MAIN_TOOL_TOUR_GATE = (
+    "## Tour guide\n\n"
+    "For what-to-do / where-to-eat / stops / itinerary / guide-card asks around a place — "
+    "or any message with a 📍 Current location line — call `nbhd_tour_guide` FIRST this turn "
+    "and follow the contract in its response exactly. Never ask where the user is when a "
+    "recent 📍 message exists."
+)
+_SITUATION_TOOL_TOUR_GATE = (
+    "## Tour guide\n\n"
+    "For local ideas / food / stops / itineraries / guide cards — or any message with a 📍 "
+    "line — call `nbhd_tour_guide` FIRST this turn and follow its response exactly. Never ask "
+    "where the user is when a recent 📍 or fresh `## Right now` location exists; use that city."
+)
+_SITUATION_PLACES_TOUR_GATE = (
+    "## Tour guide\n\n"
+    "For local ideas / food / stops / itineraries / guide cards — or any message with a 📍 "
+    "line — call `nbhd_tour_guide` FIRST this turn, then `nbhd_places_search` before "
+    "composing, and follow both responses exactly. Never ask where the user is when a recent "
+    "📍 or fresh `## Right now` location exists; use that city."
+)
 _RECONCILED_OPENCLAW_VERSION = "2026.5.28"
 _FORMER_GATE_OPENCLAW_VERSION = "2026.5.29"
 _LEGACY_TOUR_GUIDE_GATE = (
@@ -77,6 +98,7 @@ class TourGuideGateTest(TestCase):
         self.assertIn(_TOUR_GUIDE_TOOL_CUE, agents_md)
         self.assertIn("follow the contract in its response exactly", agents_md)
         self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+        self.assertTrue(agents_md.endswith(_CURRENT_MAIN_TOOL_TOUR_GATE))
 
     def test_places_ready_gate_loads_format_then_searches_before_composing(self):
         tenant = create_tenant(display_name="Grounded Tool Gate", telegram_chat_id=943015)
@@ -90,6 +112,35 @@ class TourGuideGateTest(TestCase):
         self.assertIn(_PLACES_SEARCH_TOOL_CUE, agents_md)
         self.assertLess(agents_md.index("nbhd_tour_guide"), agents_md.index("nbhd_places_search"))
         self.assertNotIn(_TOUR_GUIDE_DOC_CUE, agents_md)
+
+    def test_situation_context_extends_both_verified_tool_variants(self):
+        readiness_cases = (
+            ("tour_guide_manifest_ok", _SITUATION_TOOL_TOUR_GATE),
+            ("places_search_manifest_ok", _SITUATION_PLACES_TOUR_GATE),
+        )
+        for offset, (readiness_field, expected_gate) in enumerate(readiness_cases):
+            with self.subTest(readiness_field=readiness_field):
+                tenant = create_tenant(
+                    display_name=f"Right Now {readiness_field}",
+                    telegram_chat_id=943020 + offset,
+                )
+                tenant.tour_guide_enabled = True
+                tenant.situational_context_enabled = True
+                setattr(tenant, readiness_field, True)
+                tenant.save(
+                    update_fields=[
+                        "tour_guide_enabled",
+                        "situational_context_enabled",
+                        readiness_field,
+                    ]
+                )
+
+                agents_md = _agents_md(tenant)
+                tour_gate = agents_md[agents_md.index(_TOUR_GUIDE_MARKER) :]
+
+                self.assertIn(_TOUR_GUIDE_TOOL_CUE, agents_md)
+                self.assertIn(_RIGHT_NOW_LOCATION_RULE, agents_md)
+                self.assertEqual(tour_gate.encode(), expected_gate.encode())
 
     def test_manifest_ok_disabled_tenant_gets_no_tour_guide_gate(self):
         tenant = create_tenant(display_name="Tour Guide Tool Off", telegram_chat_id=943007)
@@ -126,6 +177,18 @@ class TourGuideGateTest(TestCase):
         self.assertIn(_TOUR_GUIDE_DOC_CUE, rendered)
         self.assertNotIn(_TOUR_GUIDE_TOOL_CUE, rendered)
         self.assertEqual(rendered.encode(), expected_current_main.encode())
+
+    def test_situation_context_does_not_change_unverified_tour_gate_bytes(self):
+        tenant = create_tenant(display_name="Unverified Right Now", telegram_chat_id=943022)
+        tenant.tour_guide_enabled = True
+        tenant.situational_context_enabled = True
+        tenant.save(update_fields=["tour_guide_enabled", "situational_context_enabled"])
+
+        rendered = _agents_md(tenant)
+        tour_gate = rendered[rendered.index(_TOUR_GUIDE_MARKER) :]
+
+        self.assertEqual(tour_gate.encode(), _LEGACY_TOUR_GUIDE_GATE.encode())
+        self.assertNotIn(_RIGHT_NOW_LOCATION_RULE, tour_gate)
 
     def test_tool_gate_is_shorter_than_legacy_doc_read_gate(self):
         tenant = create_tenant(display_name="Tour Guide Gate Diet", telegram_chat_id=943009)
