@@ -19,6 +19,7 @@ from apps.billing.constants import (
     GEMMA_DISPLAY,
     GEMMA_MODEL,
 )
+from apps.datebook.readiness import datebook_delivery_ready
 from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
 from apps.orchestrator.tour_guide import (
     TOUR_GUIDE_CONTRACT_CARDS,
@@ -2150,6 +2151,18 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             (
                 str(getattr(settings, "OPENCLAW_FUEL_PLUGIN_ID", "nbhd-fuel-tools") or "").strip(),
                 str(getattr(settings, "OPENCLAW_FUEL_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-fuel-tools") or "").strip(),
+            )
+        )
+
+    # Datebook plugin — conditionally loaded only after the image manifest,
+    # tenant feature flag, and at least one consent scope are all ready.
+    if datebook_delivery_ready(tenant):
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_DATEBOOK_PLUGIN_ID", "nbhd-datebook-tools") or "").strip(),
+                str(
+                    getattr(settings, "OPENCLAW_DATEBOOK_PLUGIN_PATH", "/opt/nbhd/plugins/nbhd-datebook-tools") or ""
+                ).strip(),
             )
         )
 
