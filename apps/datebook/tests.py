@@ -364,6 +364,16 @@ class DatebookGateAndGatewayTests(TestCase):
             },
             format="json",
         )
+        stale_epoch = self.client.post(
+            "/api/v1/datebook/sync/open/",
+            {
+                "installation_id": "install-b",
+                "gateway_epoch": first.data["gateway_epoch"],
+                "client_run_id": "stale-epoch-run",
+                "events": {"authorization": "full_access", "coverage_complete": True},
+            },
+            format="json",
+        )
 
         self.assertEqual(first.status_code, 200)
         self.assertEqual(repeated.data["gateway_epoch"], first.data["gateway_epoch"])
@@ -372,6 +382,8 @@ class DatebookGateAndGatewayTests(TestCase):
         self.assertTrue(takeover.data["taken_over"])
         self.assertEqual(stale.status_code, 409)
         self.assertEqual(stale.data["error"], "stale_gateway")
+        self.assertEqual(stale_epoch.status_code, 409)
+        self.assertEqual(stale_epoch.data["error"], "stale_gateway")
         self.assertEqual(
             DatebookGateway.objects.filter(tenant=self.tenant, status=DatebookGateway.Status.ACTIVE).count(),
             1,
@@ -645,6 +657,67 @@ class DatebookSyncTests(DatebookAPIMixin, TestCase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(conflict.data["error"], "client_run_conflict")
 
+    def test_new_client_run_supersedes_staged_same_gateway_run(self):
+        consent = self.client.post(
+            "/api/v1/datebook/register/",
+            {"installation_id": "install-a", "events_consent": True, "reminders_consent": False},
+            format="json",
+        )
+        self.assertEqual(consent.status_code, 200, consent.data)
+        old = self.open_run("consent-toggle-events-only")
+        self.assertFalse(old.data["scopes"]["reminders"]["enabled"])
+        abandoned = _zoned_event("consent-toggle-abandoned")
+        self.assertEqual(self.stage_page(old.data["run_id"], events=[abandoned]).status_code, 200)
+
+        consent = self.client.post(
+            "/api/v1/datebook/register/",
+            {"installation_id": "install-a", "events_consent": True, "reminders_consent": True},
+            format="json",
+        )
+        self.assertEqual(consent.status_code, 200, consent.data)
+        # Open and commit both lock the active gateway row: a concurrent commit
+        # either finishes first, or resumes after this supersede and sees ABORTED.
+        replacement = self.open_run(
+            "consent-toggle-both",
+            reminders_auth="full_access",
+            reminders_complete=True,
+        )
+        self.assertTrue(replacement.data["scopes"]["reminders"]["enabled"])
+
+        old_run = SyncRun.objects.get(id=old.data["run_id"])
+        self.assertEqual(old_run.state, SyncRun.State.ABORTED)
+        self.assertFalse(old_run.requires_full_snapshot)
+        self.assertFalse(MirrorEvent.objects.filter(source_key=abandoned["source_key"]).exists())
+
+        event = _zoned_event("consent-toggle-event")
+        reminder = _reminder("consent-toggle-reminder")
+        page = self.stage_page(replacement.data["run_id"], events=[event], reminders=[reminder])
+        self.assertEqual(page.status_code, 200, page.data)
+        committed = self.commit(
+            replacement.data["run_id"],
+            events=self.manifest([event]),
+            reminders=self.manifest([reminder]),
+        )
+        self.assertEqual(committed.status_code, 200, committed.data)
+        self.assertEqual(
+            set(MirrorEvent.objects.filter(tenant=self.tenant, active=True).values_list("source_key", flat=True)),
+            {event["source_key"]},
+        )
+        self.assertEqual(
+            set(MirrorReminder.objects.filter(tenant=self.tenant, active=True).values_list("source_key", flat=True)),
+            {reminder["source_key"]},
+        )
+
+    def test_superseded_run_cannot_commit_from_zombie_client(self):
+        old = self.open_run("zombie-old")
+        replacement = self.open_run("zombie-replacement")
+        self.assertNotEqual(old.data["run_id"], replacement.data["run_id"])
+
+        zombie = self.commit(old.data["run_id"], events=self.manifest([]))
+
+        self.assertEqual(zombie.status_code, 409)
+        self.assertEqual(zombie.data["error"], "run_aborted")
+
     def test_datebook_request_body_is_bounded(self):
         response = self.client.post(
             "/api/v1/datebook/sync/open/",
@@ -722,12 +795,13 @@ class DatebookSyncTests(DatebookAPIMixin, TestCase):
         self.assertEqual(gateway.events_authorization, "denied")
 
     def test_stale_base_and_epoch_are_conflicts(self):
-        run1 = self.open_run("base-one")
         run2 = self.open_run("base-two")
         stale_item = _zoned_event("stale-base-staged")
         self.assertEqual(self.stage_page(run2.data["run_id"], events=[stale_item]).status_code, 200)
+        DatebookGateway.objects.filter(tenant=self.tenant, status=DatebookGateway.Status.ACTIVE).update(
+            current_generation=1
+        )
         empty_manifest = self.manifest([])
-        self.assertEqual(self.commit(run1.data["run_id"], events=empty_manifest).status_code, 200)
         stale_base = self.commit(run2.data["run_id"], events=empty_manifest)
         self.assertEqual(stale_base.status_code, 409)
         self.assertEqual(stale_base.data["error"], "stale_base_generation")
