@@ -20,6 +20,15 @@ SECRET_KEY = env("SECRET_KEY")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
 
+# Django 6.1 enforces this cap on request.body reads, including DRF JSON
+# parsing. iOS base64 document uploads legitimately reach ~14.1 MB (a 10 MiB
+# document × 4/3 plus the JSON envelope). The app-level typed caps in
+# apps/router/inbound_media.py, plus per-view caps such as datebook's 1 MiB,
+# remain the front-line, user-facing limits. This global value is the hard
+# backstop and must stay above base64(MAX_APP_DOCUMENT_BYTES + the oversize-test
+# margin).
+DATA_UPLOAD_MAX_MEMORY_SIZE = 16 * 1024 * 1024
+
 # Application definition
 INSTALLED_APPS = [
     "django.contrib.admin",
