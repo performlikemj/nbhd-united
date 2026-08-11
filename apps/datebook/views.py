@@ -1,0 +1,286 @@
+"""Consumer-JWT endpoints for the dormant Calendar & Reminders device lane."""
+
+from __future__ import annotations
+
+import json
+
+from django.utils.dateparse import parse_datetime
+from rest_framework import status
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from apps.pii.store_authoring import owner_store_representation
+from apps.tenants.authentication import JWTAuthenticationWithRLS
+from apps.tenants.models import Tenant
+
+from .readiness import datebook_delivery_ready
+from .services import (
+    ProtocolError,
+    claim_device_command,
+    commit_sync_run,
+    finish_device_command,
+    open_sync_run,
+    register_gateway,
+    stage_sync_page,
+    start_device_command,
+)
+from .throttles import DatebookCommandThrottle, DatebookReadThrottle, DatebookSyncPageThrottle
+
+MAX_DATEBOOK_REQUEST_BYTES = 1_048_576
+
+
+class DatebookAPIView(APIView):
+    authentication_classes = [JWTAuthenticationWithRLS]
+    permission_classes = [IsAuthenticated]
+
+    def tenant(self, request):
+        tenant = getattr(request.user, "tenant", None)
+        if tenant is None:
+            raise ProtocolError("no_tenant", status.HTTP_404_NOT_FOUND)
+        if tenant.status == Tenant.Status.SUSPENDED:
+            raise ProtocolError("suspended", status.HTTP_403_FORBIDDEN)
+        if not datebook_delivery_ready(tenant):
+            raise ProtocolError("datebook_disabled", status.HTTP_409_CONFLICT)
+        return tenant
+
+    def handle_exception(self, exc):
+        if isinstance(exc, ProtocolError):
+            return Response(exc.as_data(), status=exc.status_code)
+        return super().handle_exception(exc)
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        response["Cache-Control"] = "no-store"
+        return response
+
+    @staticmethod
+    def body(request) -> dict:
+        content_length = request.META.get("CONTENT_LENGTH")
+        try:
+            if content_length and int(content_length) > MAX_DATEBOOK_REQUEST_BYTES:
+                raise ProtocolError("request_too_large")
+        except (TypeError, ValueError):
+            raise ProtocolError("invalid_content_length") from None
+        data = request.data
+        if not isinstance(data, dict):
+            raise ProtocolError("invalid_body")
+        try:
+            encoded_size = len(
+                json.dumps(
+                    data,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode("utf-8")
+            )
+        except (TypeError, ValueError) as exc:
+            raise ProtocolError("invalid_body") from exc
+        if encoded_size > MAX_DATEBOOK_REQUEST_BYTES:
+            raise ProtocolError("request_too_large")
+        return data
+
+
+class GatewayRegisterView(DatebookAPIView):
+    throttle_classes = [DatebookReadThrottle]
+
+    def post(self, request):
+        tenant = self.tenant(request)
+        data = self.body(request)
+        gateway, taken_over = register_gateway(
+            tenant,
+            installation_id=data.get("installation_id"),
+            takeover=data.get("takeover", False),
+        )
+        return Response(
+            {
+                "installation_id": gateway.installation_id,
+                "gateway_epoch": gateway.gateway_epoch,
+                "generation": gateway.current_generation,
+                "taken_over": taken_over,
+            }
+        )
+
+
+def _run_data(run, *, idempotent: bool) -> dict:
+    return {
+        "run_id": str(run.id),
+        "client_run_id": run.client_run_id,
+        "idempotent": idempotent,
+        "server_now": run.server_now.isoformat(),
+        "event_window": {
+            "start": run.event_window_start.isoformat(),
+            "end": run.event_window_end.isoformat(),
+        },
+        "base_generation": run.base_generation,
+        "gateway_epoch": run.gateway_epoch,
+        "scopes": {
+            "events": {
+                "enabled": run.events_in_scope,
+                "authorization": run.events_authorization,
+                "coverage_complete": run.events_coverage_complete,
+                "committable": run.events_committable,
+                "full_snapshot_required": run.events_full_snapshot,
+            },
+            "reminders": {
+                "enabled": run.reminders_in_scope,
+                "authorization": run.reminders_authorization,
+                "coverage_complete": run.reminders_coverage_complete,
+                "committable": run.reminders_committable,
+                "full_snapshot_required": run.reminders_full_snapshot,
+            },
+        },
+    }
+
+
+class SyncOpenView(DatebookAPIView):
+    throttle_classes = [DatebookReadThrottle]
+
+    def post(self, request):
+        tenant = self.tenant(request)
+        data = self.body(request)
+        run, created = open_sync_run(
+            tenant,
+            installation_id=data.get("installation_id"),
+            gateway_epoch=data.get("gateway_epoch"),
+            client_run_id=data.get("client_run_id"),
+            events=data.get("events"),
+            reminders=data.get("reminders"),
+        )
+        return Response(_run_data(run, idempotent=not created))
+
+
+class SyncPageView(DatebookAPIView):
+    throttle_classes = [DatebookSyncPageThrottle]
+
+    def post(self, request):
+        tenant = self.tenant(request)
+        data = self.body(request)
+        outcome = stage_sync_page(
+            tenant,
+            run_id=data.get("run_id"),
+            page_index=data.get("page_index"),
+            installation_id=data.get("installation_id"),
+            gateway_epoch=data.get("gateway_epoch"),
+            events=data.get("events", []),
+            reminders=data.get("reminders", []),
+        )
+        return Response(outcome)
+
+
+class SyncCommitView(DatebookAPIView):
+    throttle_classes = [DatebookReadThrottle]
+
+    def post(self, request):
+        tenant = self.tenant(request)
+        data = self.body(request)
+        outcome = commit_sync_run(
+            tenant,
+            run_id=data.get("run_id"),
+            installation_id=data.get("installation_id"),
+            gateway_epoch=data.get("gateway_epoch"),
+            events=data.get("events"),
+            reminders=data.get("reminders"),
+        )
+        return Response(outcome)
+
+
+def _command_data(command, tenant) -> dict:
+    represented = owner_store_representation(
+        command,
+        tenant,
+        {
+            "id": str(command.id),
+            "request_id": command.request_id,
+            "command_type": command.command_type,
+            "state": command.state,
+            "item_count": command.item_count,
+            "target_installation_id": command.target_installation_id,
+            "target_gateway_epoch": command.target_gateway_epoch,
+            "destination_fingerprint": command.destination_fingerprint,
+            "destination_name": command.destination_name,
+            "display_text": command.display_text,
+            "payload": command.payload,
+            "lease_token": str(command.lease_token) if command.lease_token else None,
+            "lease_expires_at": command.lease_expires_at.isoformat() if command.lease_expires_at else None,
+            "expires_at": command.expires_at.isoformat(),
+            "target_at": command.target_at.isoformat() if command.target_at else None,
+            "execution_status": command.execution_status,
+            "mirror_status": command.mirror_status,
+            "safe_error": command.safe_error,
+            "result_display": command.result_display,
+            "pii_receipts": command.pii_receipts,
+        },
+        model_label="datebook.DeviceCommand",
+    )
+    return represented
+
+
+class CommandClaimView(DatebookAPIView):
+    throttle_classes = [DatebookCommandThrottle]
+
+    def post(self, request):
+        tenant = self.tenant(request)
+        data = self.body(request)
+        command = claim_device_command(
+            tenant,
+            installation_id=data.get("installation_id"),
+            gateway_epoch=data.get("gateway_epoch"),
+        )
+        return Response({"command": _command_data(command, tenant) if command else None})
+
+
+class CommandStartView(DatebookAPIView):
+    throttle_classes = [DatebookCommandThrottle]
+
+    def post(self, request, command_id):
+        tenant = self.tenant(request)
+        data = self.body(request)
+        command, idempotent = start_device_command(
+            tenant,
+            command_id=command_id,
+            lease_token=data.get("lease_token"),
+            installation_id=data.get("installation_id"),
+            gateway_epoch=data.get("gateway_epoch"),
+            destination_fingerprint=data.get("destination_fingerprint", ""),
+        )
+        return Response(
+            {
+                "command_id": str(command.id),
+                "state": command.state,
+                "execution_status": command.execution_status,
+                "idempotent": idempotent,
+            }
+        )
+
+
+class CommandResultView(DatebookAPIView):
+    throttle_classes = [DatebookCommandThrottle]
+
+    def post(self, request, command_id):
+        tenant = self.tenant(request)
+        data = self.body(request)
+        journaled_at = parse_datetime(data.get("journaled_at")) if isinstance(data.get("journaled_at"), str) else None
+        command, idempotent = finish_device_command(
+            tenant,
+            command_id=command_id,
+            lease_token=data.get("lease_token"),
+            result_id=data.get("result_id"),
+            execution_status=data.get("execution_status"),
+            mirror_status=data.get("mirror_status"),
+            safe_error=data.get("safe_error", ""),
+            result_identifiers=data.get("result_identifiers", {}),
+            result_display=data.get("result_display", ""),
+            journaled_at=journaled_at,
+        )
+        return Response(
+            {
+                "command_id": str(command.id),
+                "state": command.state,
+                "execution_status": command.execution_status,
+                "mirror_status": command.mirror_status,
+                "safe_error": command.safe_error,
+                "idempotent": idempotent,
+            }
+        )

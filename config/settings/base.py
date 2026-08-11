@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     "apps.actions",
     "apps.finance",
     "apps.fuel",
+    "apps.datebook",
     "apps.core",
     "apps.byo_models",
     "apps.insights",
@@ -168,6 +169,11 @@ REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "rest_framework.pagination.PageNumberPagination",
     "PAGE_SIZE": 20,
     "DEFAULT_THROTTLE_RATES": {
+        # A 400-item first snapshot is eight 50-item pages. These rates leave
+        # ample room for retries/recovery without inheriting HealthKit's 60/hr trap.
+        "datebook_sync_page": "600/hour",
+        "datebook_command": "1200/hour",
+        "datebook_read": "300/hour",
         "yardtalk_license_validate": "30/minute",
     },
 }

@@ -760,6 +760,30 @@ class Tenant(models.Model):
         ),
     )
 
+    # Calendar & Reminders mirror / device-command capability. All three
+    # rollout dimensions default closed; consent is recorded per EventKit scope.
+    datebook_manifest_ok = models.BooleanField(
+        default=False,
+        help_text=(
+            "Runtime image carries the verified datebook plugin manifest. "
+            "Set only after image verification; nothing reconciles this field."
+        ),
+    )
+    datebook_enabled = models.BooleanField(
+        default=False,
+        help_text="Enable the server-side Calendar & Reminders capability for this tenant.",
+    )
+    datebook_events_consent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Server timestamp of the tenant's Calendar third-party-AI consent.",
+    )
+    datebook_reminders_consent_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Server timestamp of the tenant's Reminders third-party-AI consent.",
+    )
+
     # sautai integration (nutrition/meal-plan generation) — Phase 0. Gates the
     # nbhd-sautai-tools plugin (config_generator) and the imperative AGENTS.md
     # gate (personas.py) that tells the agent to call nbhd_generate_meal_plan.
