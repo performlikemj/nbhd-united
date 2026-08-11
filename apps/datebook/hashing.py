@@ -193,7 +193,7 @@ def _event_time(item: dict) -> tuple[dict, dict]:
     if kind == TimeKind.ZONED:
         start = _utc_seconds(value.get("start_at"), "invalid_start_at")
         end = _utc_seconds(value.get("end_at"), "invalid_end_at")
-        if _datetime(end, "invalid_end_at", aware=True) <= _datetime(start, "invalid_start_at", aware=True):
+        if _datetime(end, "invalid_end_at", aware=True) < _datetime(start, "invalid_start_at", aware=True):
             _fail("invalid_time_order")
         tz_id = _tz_id(value.get("tz_id"), "invalid_tz_id")
         canonical = {"kind": kind, "start_at": start, "end_at": end, "tz_id": tz_id}
@@ -213,7 +213,7 @@ def _event_time(item: dict) -> tuple[dict, dict]:
     if kind == TimeKind.FLOATING:
         start = _local_seconds(value.get("start_local"), "invalid_start_local")
         end = _local_seconds(value.get("end_local"), "invalid_end_local")
-        if _datetime(end, "invalid_end_local", aware=False) <= _datetime(start, "invalid_start_local", aware=False):
+        if _datetime(end, "invalid_end_local", aware=False) < _datetime(start, "invalid_start_local", aware=False):
             _fail("invalid_time_order")
         start_dt = _datetime(start, "invalid_start_local", aware=False)
         end_dt = _datetime(end, "invalid_end_local", aware=False)

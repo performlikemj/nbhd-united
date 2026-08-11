@@ -293,12 +293,12 @@ class MirrorEvent(models.Model):
                 condition=(
                     Q(content_hash="")
                     | Q(time_kind="all_day", all_day_end_date_exclusive__gt=F("all_day_start_date"))
-                    | Q(time_kind="zoned", zoned_end_at__gt=F("zoned_start_at"))
+                    | Q(time_kind="zoned", zoned_end_at__gte=F("zoned_start_at"))
                     | Q(time_kind="floating", floating_end_date__gt=F("floating_start_date"))
                     | Q(
                         time_kind="floating",
                         floating_end_date=F("floating_start_date"),
-                        floating_end_time__gt=F("floating_start_time"),
+                        floating_end_time__gte=F("floating_start_time"),
                     )
                 ),
                 name="datebook_event_time_order",

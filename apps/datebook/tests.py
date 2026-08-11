@@ -621,6 +621,35 @@ class DatebookGateAndGatewayTests(TestCase):
 class DatebookSyncTests(DatebookAPIMixin, TestCase):
     chat_id = 920002
 
+    def test_zero_duration_timed_events_are_accepted_stored_and_hashed_stably(self):
+        zoned = _zoned_event(
+            "zero-zoned",
+            start=timezone.now().astimezone(UTC).replace(microsecond=123456),
+        )
+        zoned["time"]["end_at"] = zoned["time"]["start_at"]
+        zoned["content_hash"] = content_hash_v1("event", zoned)
+
+        floating = _floating_event("zero-floating")
+        floating["time"]["end_local"] = floating["time"]["start_local"]
+        floating["content_hash"] = content_hash_v1("event", floating)
+
+        opened = self.open_run("zero-duration-events")
+        page = self.stage_page(opened.data["run_id"], events=[zoned, floating])
+        self.assertEqual(page.status_code, 200, page.data)
+        self.assertEqual(page.data["events"]["accepted"], 2)
+        committed = self.commit(opened.data["run_id"], events=self.manifest([zoned, floating]))
+        self.assertEqual(committed.status_code, 200, committed.data)
+
+        zoned_row = MirrorEvent.objects.get(source_key=zoned["source_key"])
+        floating_row = MirrorEvent.objects.get(source_key=floating["source_key"])
+        self.assertTrue(zoned_row.active)
+        self.assertEqual(zoned_row.zoned_end_at, zoned_row.zoned_start_at)
+        self.assertEqual(zoned_row.content_hash, zoned["content_hash"])
+        self.assertEqual(zoned_row.content_hash, content_hash_v1("event", zoned))
+        self.assertTrue(floating_row.active)
+        self.assertEqual(floating_row.floating_end_date, floating_row.floating_start_date)
+        self.assertEqual(floating_row.floating_end_time, floating_row.floating_start_time)
+
     def test_open_and_page_are_idempotent_without_duplicate_staging(self):
         first = self.open_run("idempotent-open")
         second = self.open_run("idempotent-open")
@@ -1025,6 +1054,58 @@ class DatebookSyncTests(DatebookAPIMixin, TestCase):
 
 
 class ContentHashTests(TestCase):
+    def test_zero_duration_zoned_event_content_hash_vector(self):
+        item = _zoned_event(
+            "zero-duration-vector",
+            start=datetime(2026, 8, 12, 3, 4, 5, 987654, tzinfo=UTC),
+        )
+        item["time"]["end_at"] = item["time"]["start_at"]
+        item.pop("content_hash")
+
+        self.assertEqual(
+            content_hash_v1("event", item),
+            "aee96a8b033c94eb5913d4d0962d98e80aa3b75d3a8aa98d47317e10ce86dd48",
+        )
+
+    def test_inverted_timed_events_and_equal_all_day_are_invalid_time_order(self):
+        cases = [
+            (
+                _zoned_event(
+                    "inverted-zoned",
+                    start=datetime(2026, 8, 12, 3, 4, 5, tzinfo=UTC),
+                ),
+                {
+                    "kind": "zoned",
+                    "start_at": "2026-08-12T03:04:05Z",
+                    "end_at": "2026-08-12T03:04:04Z",
+                    "tz_id": "UTC",
+                },
+            ),
+            (
+                _floating_event("inverted-floating", day=datetime(2026, 8, 12).date()),
+                {
+                    "kind": "floating",
+                    "start_local": "2026-08-12T03:04:05",
+                    "end_local": "2026-08-12T03:04:04",
+                },
+            ),
+            (
+                _all_day_event("equal-all-day", day=datetime(2026, 8, 12).date()),
+                {
+                    "kind": "all_day",
+                    "start_date": "2026-08-12",
+                    "end_date_exclusive": "2026-08-12",
+                },
+            ),
+        ]
+        for item, invalid_time in cases:
+            with self.subTest(kind=invalid_time["kind"]):
+                item["time"] = invalid_time
+                item.pop("content_hash")
+                with self.assertRaises(ItemValidationError) as ctx:
+                    content_hash_v1("event", item)
+                self.assertEqual(ctx.exception.code, "invalid_time_order")
+
     def test_nfc_lf_truncation_sorted_keys_and_utc_seconds_vectors(self):
         start = datetime(2026, 8, 11, 12, 0, 0, 999999, tzinfo=UTC)
         decomposed = _zoned_event("canon-a", title="Cafe\u0301\r\n" + "x" * 300, start=start)
