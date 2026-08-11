@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.actions.models import ActionStatus, PendingAction
+from apps.actions.views import GateRespondView
 from apps.pii.store_authoring import owner_store_representation
 from apps.tenants.authentication import JWTAuthenticationWithRLS
 from apps.tenants.models import Tenant
@@ -29,6 +32,8 @@ from .services import (
 from .throttles import DatebookCommandThrottle, DatebookReadThrottle, DatebookSyncPageThrottle
 
 MAX_DATEBOOK_REQUEST_BYTES = 1_048_576
+MAX_PENDING_GATE_ACTIONS = 20
+DATEBOOK_GATE_REVIEW_WINDOW_SECONDS = 5 * 60
 
 
 class DatebookAPIView(APIView):
@@ -137,6 +142,76 @@ class GatewayRegisterView(DatebookAPIView):
                 "delivery_ready": datebook_delivery_ready(tenant),
             }
         )
+
+
+def _pending_gate_action_data(action: PendingAction, tenant: Tenant) -> dict:
+    represented = owner_store_representation(
+        action,
+        tenant,
+        {
+            "action_payload": action.action_payload,
+            "display_summary": action.display_summary,
+        },
+        model_label="actions.PendingAction",
+    )
+    return {
+        "action_id": action.id,
+        "action_type": action.action_type,
+        "payload": represented["action_payload"],
+        "display_summary": represented["display_summary"],
+        "expires_at": action.expires_at.isoformat(),
+    }
+
+
+class PendingGateActionsView(DatebookAPIView):
+    """List the owner's oldest pending datebook reviews; clients must load fast."""
+
+    throttle_classes = [DatebookReadThrottle]
+
+    def get(self, request):
+        tenant = self.tenant(request)
+        from .gate import DATEBOOK_ACTION_TYPES
+
+        actions = PendingAction.objects.filter(
+            tenant=tenant,
+            status=ActionStatus.PENDING,
+            expires_at__gt=timezone.now(),
+            action_type__in=DATEBOOK_ACTION_TYPES,
+        ).order_by("created_at", "id")[:MAX_PENDING_GATE_ACTIONS]
+        return Response(
+            {
+                "actions": [_pending_gate_action_data(action, tenant) for action in actions],
+                "review_window_seconds": DATEBOOK_GATE_REVIEW_WINDOW_SECONDS,
+            }
+        )
+
+
+class RespondGateActionView(DatebookAPIView):
+    """Resolve an owned datebook review through the shared locked seam."""
+
+    throttle_classes = [DatebookCommandThrottle]
+
+    def post(self, request, action_id: int):
+        tenant = self.tenant(request)
+        data = self.body(request)
+        from .gate import DATEBOOK_ACTION_TYPES
+
+        if not PendingAction.objects.filter(
+            id=action_id,
+            tenant=tenant,
+            action_type__in=DATEBOOK_ACTION_TYPES,
+        ).exists():
+            return Response({"error": "Action not found"}, status=status.HTTP_404_NOT_FOUND)
+        action, response_data, response_status = GateRespondView.resolve_action(
+            action_id=action_id,
+            response_action=data.get("response", ""),
+            tenant=tenant,
+        )
+        if action is not None:
+            from apps.actions.messaging import update_gate_message
+
+            update_gate_message(action)
+        return Response(response_data, status=response_status)
 
 
 def _run_data(run, *, idempotent: bool) -> dict:
