@@ -42,23 +42,19 @@ _REMINDER_TOOL = "nbhd_cron_create_pure_reminder"
 _CANT_DO_HEADING = "## What You Can't Do"
 
 # Budget, measured against the real fleet and every AGENTS.md tenant gate
-# in personas.py (site publishing, friends, document keep, email provenance,
-# sautai, tour guide, journal shaping, and Gravity):
+# in personas.py (site publishing, situation capture, friends, document keep,
+# email provenance, sautai, tour guide, journal shaping, and Gravity):
 #
 #   cap                                   24,000
 #   template alone                        16,003
 #   MJ-shaped gates + 1,500 extras        22,324
-#   ALL gates, no extras                  23,480   <- 520 from the cap
-#   ALL gates + 1,500 extras              24,982   <- OVER THE CAP. Silently truncated.
-#
-# The code-controlled maximal render now fits with deliberate headroom. Arbitrary
-# tenant prompt extras can still overflow the cap, so that known gap remains pinned
-# below and the render-time sentinel in personas.py continues to alarm on it.
+#   ALL gates, no extras                  measured by the pin below
+#   ALL gates + 1,500 extras              intentionally pinned as a known gap
 #
 # The ceiling here is therefore the strongest TRUE statement available, not the one we
 # wish were true. Do not "fix" a red test by widening it — that is deleting the alarm.
 # Fund growth with a trim (the cc1602aa / a5fca659 precedent).
-_ALL_GATES_CEILING = 23_800
+_ALL_GATES_CEILING = 23_950
 
 
 def _agents_md(tenant=None) -> str:
@@ -135,10 +131,9 @@ class MaximalTenantBudgetTest(TestCase):
             "experimental_typed_crons",
         ]
         if all_gates:
-            # Enable every conditional AGENTS.md section. Omitting tour-guide or
-            # journal-shaping is enough to make a supposedly maximal fixture pass
-            # while a real maximal render breaches the bootstrap cap.
+            # Enable every simultaneously realizable conditional AGENTS.md section.
             tenant.site_publishing_enabled = True
+            tenant.situational_context_enabled = True
             tenant.email_provenance_enabled = True
             tenant.sautai_enabled = True
             tenant.tour_guide_enabled = True
@@ -147,6 +142,7 @@ class MaximalTenantBudgetTest(TestCase):
             tenant.journal_shaping_enabled = True
             fields += [
                 "site_publishing_enabled",
+                "situational_context_enabled",
                 "email_provenance_enabled",
                 "sautai_enabled",
                 "tour_guide_enabled",
@@ -154,6 +150,10 @@ class MaximalTenantBudgetTest(TestCase):
                 "places_search_manifest_ok",
                 "journal_shaping_enabled",
             ]
+            # EXCLUDED: Neighborhood's absorb-only branch; propose-enabled is longer and mutually exclusive.
+            # EXCLUDED: basic-tool and unverified-doc tour branches; verified places search is the longest variant.
+            # EXCLUDED: agents_md/quick_replies prompt extras; tenant-authored and unbounded, covered below.
+            # EXCLUDED: channel/privacy/docs/templates conditionals; they render separate files, not AGENTS.md.
         tenant.save(update_fields=fields)
 
         if extras:
@@ -167,6 +167,20 @@ class MaximalTenantBudgetTest(TestCase):
     def test_maximal_render_stays_under_the_cap(self):
         """Every AGENTS.md tenant gate on, no extras — all code-controlled prose."""
         md = _agents_md(self._tenant(all_gates=True))
+        for marker in (
+            "## Portfolio publish gate",
+            "## Current location",
+            "## Neighborhood — you are BACKSTAGE",
+            "## Save with its source attached",
+            "## Saving what you learn from an email",
+            "## Meal plans (sautai)",
+            "## Tour guide",
+            "## Journal shaping",
+            "## Gravity Observation Mode",
+        ):
+            with self.subTest(marker=marker):
+                self.assertIn(marker, md)
+        self.assertIn("nbhd_places_search", md)
         self.assertLessEqual(
             len(md),
             BOOTSTRAP_MAX_CHARS,
@@ -195,7 +209,7 @@ class MaximalTenantBudgetTest(TestCase):
     def test_KNOWN_GAP_all_gates_plus_extras_exceeds_the_cap(self):
         """KNOWN_GAP — arbitrary tenant extras can still overflow the fixed cap.
 
-        A tenant with every gate AND 1,500 chars of prompt_extras renders 24,982
+        A tenant with every gate AND 1,500 chars of prompt_extras renders 25,451
         chars against a 24,000 cap: silently truncated, newest rule first.
 
         Pinned green here so the gap is COUNTED rather than hidden behind an

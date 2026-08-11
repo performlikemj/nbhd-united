@@ -23,6 +23,14 @@ from .services import (
     ProviderAccessToken,
 )
 
+_SITUATION_CAPTURE_GUIDANCE = (
+    "Acknowledge this capture in one short clause. If the user objects, do not record again and drop the subject."
+)
+_SITUATION_NEW_TRIP_GUIDANCE = (
+    "New trip: you may offer local ideas once ('want ideas for what's around while you're there?'). "
+    "If declined or ignored, never offer again this trip. If accepted, follow the Tour guide rule."
+)
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="shared-key")
 class RuntimeCurrentStatusViewTest(TestCase):
@@ -91,6 +99,8 @@ class RuntimeSituationUpdateViewTest(TestCase):
         seed_internal_key(self.tenant)
         self.tenant.situational_context_enabled = True
         self.tenant.save(update_fields=["situational_context_enabled"])
+        self.tenant.user.location_city = "Tokyo"
+        self.tenant.user.save(update_fields=["location_city"])
 
     def _headers(self) -> dict[str, str]:
         return {
@@ -108,7 +118,7 @@ class RuntimeSituationUpdateViewTest(TestCase):
         self.assertEqual(response.json()["error"], "internal_auth_failed")
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
-    def test_changed_label_records_observation_and_schedules_one_push(self, mock_push):
+    def test_changed_away_label_with_tour_off_returns_base_guidance_and_schedules_one_push(self, mock_push):
         response = self.client.post(
             self._url(),
             {"place_label": "  Osaka  "},
@@ -117,7 +127,10 @@ class RuntimeSituationUpdateViewTest(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True, "changed": True})
+        self.assertEqual(
+            response.json(),
+            {"ok": True, "changed": True, "guidance": _SITUATION_CAPTURE_GUIDANCE},
+        )
         situation = UserSituation.objects.get(tenant=self.tenant)
         self.assertEqual(situation.current_place_label, "Osaka")
         self.assertEqual(situation.current_place_source, "assistant")
@@ -131,8 +144,14 @@ class RuntimeSituationUpdateViewTest(TestCase):
             content_type="application/json",
             **self._headers(),
         )
-        self.assertEqual(first.json(), {"ok": True, "changed": True})
+        self.assertEqual(
+            first.json(),
+            {"ok": True, "changed": True, "guidance": _SITUATION_CAPTURE_GUIDANCE},
+        )
         mock_push.reset_mock()
+        self.tenant.tour_guide_enabled = True
+        self.tenant.places_search_manifest_ok = True
+        self.tenant.save(update_fields=["tour_guide_enabled", "places_search_manifest_ok"])
 
         response = self.client.post(
             self._url(),
@@ -142,8 +161,98 @@ class RuntimeSituationUpdateViewTest(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True, "changed": False})
+        self.assertEqual(
+            response.json(),
+            {"ok": True, "changed": False, "guidance": _SITUATION_CAPTURE_GUIDANCE},
+        )
         mock_push.assert_not_called()
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_changed_home_label_with_ready_tour_omits_new_trip_guidance(self, mock_push):
+        self.tenant.tour_guide_enabled = True
+        self.tenant.places_search_manifest_ok = True
+        self.tenant.save(update_fields=["tour_guide_enabled", "places_search_manifest_ok"])
+
+        response = self.client.post(
+            self._url(),
+            {"place_label": "Tokyo"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"ok": True, "changed": True, "guidance": _SITUATION_CAPTURE_GUIDANCE},
+        )
+        mock_push.assert_called_once_with(self.tenant)
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_changed_away_label_with_ready_tour_appends_new_trip_guidance(self, mock_push):
+        self.tenant.tour_guide_enabled = True
+        self.tenant.places_search_manifest_ok = True
+        self.tenant.save(update_fields=["tour_guide_enabled", "places_search_manifest_ok"])
+
+        response = self.client.post(
+            self._url(),
+            {"place_label": "Osaka"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "ok": True,
+                "changed": True,
+                "guidance": f"{_SITUATION_CAPTURE_GUIDANCE} {_SITUATION_NEW_TRIP_GUIDANCE}",
+            },
+        )
+        mock_push.assert_called_once_with(self.tenant)
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_changed_away_label_with_basic_ready_tour_appends_new_trip_guidance(self, mock_push):
+        self.tenant.tour_guide_enabled = True
+        self.tenant.tour_guide_manifest_ok = True
+        self.tenant.save(update_fields=["tour_guide_enabled", "tour_guide_manifest_ok"])
+
+        response = self.client.post(
+            self._url(),
+            {"place_label": "Osaka"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "ok": True,
+                "changed": True,
+                "guidance": f"{_SITUATION_CAPTURE_GUIDANCE} {_SITUATION_NEW_TRIP_GUIDANCE}",
+            },
+        )
+        mock_push.assert_called_once_with(self.tenant)
+
+    @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
+    def test_changed_away_label_with_unverified_tour_omits_new_trip_guidance(self, mock_push):
+        self.tenant.tour_guide_enabled = True
+        self.tenant.save(update_fields=["tour_guide_enabled"])
+
+        response = self.client.post(
+            self._url(),
+            {"place_label": "Osaka"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {"ok": True, "changed": True, "guidance": _SITUATION_CAPTURE_GUIDANCE},
+        )
+        mock_push.assert_called_once_with(self.tenant)
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
     def test_invalid_label_is_rejected_without_write_or_push(self, mock_push):
@@ -226,7 +335,10 @@ class RuntimeSituationUpdateViewTest(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True, "changed": True})
+        self.assertEqual(
+            response.json(),
+            {"ok": True, "changed": True, "guidance": _SITUATION_CAPTURE_GUIDANCE},
+        )
         self.tenant.user.refresh_from_db()
         self.assertEqual(self.tenant.user.location_lat, original_lat)
         self.assertEqual(self.tenant.user.location_lon, original_lon)

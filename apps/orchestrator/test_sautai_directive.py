@@ -67,8 +67,10 @@ class SautaiGateScopingTest(TestCase):
         self.assertIn(_SAUTAI_GATE_MARKER, agents_md)
         self.assertIn("nbhd_generate_meal_plan", agents_md)
         self.assertIn("nbhd_get_meal_plan", agents_md)
+        self.assertIn("search the catalog and CALL", agents_md)
+        self.assertIn("they are not pre-loaded", agents_md)
         # Never-fabricate rule is the load-bearing half of the gate.
-        self.assertIn("without a successful tool result", agents_md)
+        self.assertIn("Never claim or describe a plan without a successful tool result", agents_md)
 
     def test_flag_off_tenant_does_not_get_the_gate(self):
         tenant = create_tenant(display_name="Sautai Gate Off", telegram_chat_id=942002)

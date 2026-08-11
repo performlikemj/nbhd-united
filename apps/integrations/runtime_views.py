@@ -51,6 +51,7 @@ from apps.lessons.models import Lesson
 from apps.lessons.serializers import LessonSerializer
 from apps.lessons.services import search_lessons
 from apps.orchestrator.personas import get_persona
+from apps.orchestrator.tour_guide import places_search_delivery_ready, tour_guide_delivery_ready
 from apps.pii.egress import KnownValueResponseGuardMixin
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn, record_runtime_write_activity
 from apps.tenants.models import Tenant
@@ -80,6 +81,14 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SITUATION_CAPTURE_GUIDANCE = (
+    "Acknowledge this capture in one short clause. If the user objects, do not record again and drop the subject."
+)
+_SITUATION_NEW_TRIP_GUIDANCE = (
+    "New trip: you may offer local ideas once ('want ideas for what's around while you're there?'). "
+    "If declined or ignored, never offer again this trip. If accepted, follow the Tour guide rule."
+)
 
 _JOURNAL_EGRESS_TEXT_FIELDS = frozenset(
     {
@@ -3588,7 +3597,18 @@ class RuntimeSituationUpdateView(APIView):
 
             push_user_md_in_background(tenant)
 
-        return Response({"ok": True, "changed": changed})
+        guidance = _SITUATION_CAPTURE_GUIDANCE
+        home_city = str(getattr(tenant.user, "location_city", "") or "").strip()
+        if (
+            changed
+            and home_city
+            and place_label.casefold() != home_city.casefold()
+            and tenant.tour_guide_enabled
+            and (places_search_delivery_ready(tenant) or tour_guide_delivery_ready(tenant))
+        ):
+            guidance = f"{guidance} {_SITUATION_NEW_TRIP_GUIDANCE}"
+
+        return Response({"ok": True, "changed": changed, "guidance": guidance})
 
 
 _RECONCILE_STOPWORDS = frozenset(
