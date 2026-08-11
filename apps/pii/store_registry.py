@@ -261,6 +261,43 @@ _STORES = (
         receipts_field="pii_receipts",
     ),
     PlaceholderStore(
+        model_label="datebook.MirrorEvent",
+        flat_fields=("title", "location", "notes", "calendar_title", "source_title"),
+        json_paths=(
+            "staged_payload.title",
+            "staged_payload.location",
+            "staged_payload.notes",
+            "staged_payload.calendar_title",
+            "staged_payload.source_title",
+        ),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="datebook.MirrorReminder",
+        flat_fields=("title", "location", "notes", "list_title", "source_title"),
+        json_paths=(
+            "staged_payload.title",
+            "staged_payload.location",
+            "staged_payload.notes",
+            "staged_payload.list_title",
+            "staged_payload.source_title",
+        ),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
+        model_label="datebook.DeviceCommand",
+        flat_fields=("display_text", "destination_name", "result_display"),
+        json_paths=(
+            "payload.items[].title",
+            "payload.items[].location",
+            "payload.items[].notes",
+            "payload.items[].destination_name",
+            "payload.items[].calendar_title",
+            "payload.items[].list_title",
+        ),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
         model_label="finance.FinanceAccount",
         flat_fields=("nickname",),
         json_paths=(),
