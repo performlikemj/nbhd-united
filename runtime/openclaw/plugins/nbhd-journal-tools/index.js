@@ -1181,11 +1181,12 @@ export default function register(api) {
   api.registerTool(wrap({
     name: "nbhd_update_situation",
     description:
-      "Use when the user STATES where they currently are — for example, \"I'm back home\", \"just landed in Tokyo\", or \"in Kyoto this weekend\" — to record their CURRENT city. " +
+      "Call this THAT TURN when the user states or clearly implies their CURRENT city or area changed. " +
+      "Use only the user's own words in this conversation — never guesses, sensors, documents, third parties, mere place mentions, someone else's trip, or future plans; for future travel, wait until the user is actually there or on the way now. " +
+      "After an ok:true result, acknowledge in one short clause; re-record when the user says they are still away on a long trip. \"Back home\" means record their home city. " +
       "Pass a city-level label only. This context is transient and auto-expires after about 48 hours. " +
-      "After recording, acknowledge naturally (for example, \"Got it — marking you in Osaka\"). " +
       "NEVER use this for permanent home/base changes; use nbhd_update_profile instead, with explicit user confirmation. " +
-      "If unsure whether the statement describes the user's current location or a future plan, ask before calling.",
+      "If the user objects, do not record it again and drop the subject.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -1215,9 +1216,14 @@ export default function register(api) {
           body: { place_label: placeLabel },
         });
         if (payload.ok === false) {
+          const runtimeMessage = asTrimmedString(payload.message);
           return renderPayload({
             ...payload,
-            message: "The current-location label was not accepted. Ask the user for a city-level label and try again.",
+            message:
+              runtimeMessage ||
+              (payload.reason === "invalid_label"
+                ? "The current-location label was not accepted. Ask the user for a city-level label and try again."
+                : "The current location was not recorded."),
           });
         }
         return renderPayload(payload);

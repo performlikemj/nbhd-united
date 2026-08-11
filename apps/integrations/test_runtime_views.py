@@ -160,7 +160,7 @@ class RuntimeSituationUpdateViewTest(TestCase):
         mock_push.assert_not_called()
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
-    def test_flag_off_is_noop_without_write(self, mock_push):
+    def test_flag_off_returns_truthful_refusal_without_write(self, mock_push):
         self.tenant.situational_context_enabled = False
         self.tenant.save(update_fields=["situational_context_enabled"])
 
@@ -172,12 +172,19 @@ class RuntimeSituationUpdateViewTest(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True, "changed": False})
+        self.assertEqual(
+            response.json(),
+            {
+                "ok": False,
+                "reason": "situational_context_disabled",
+                "message": "Current-location capture is disabled for this workspace, so it was not recorded.",
+            },
+        )
         self.assertFalse(UserSituation.objects.filter(tenant=self.tenant).exists())
         mock_push.assert_not_called()
 
     @patch("apps.orchestrator.workspace_envelope.push_user_md_in_background")
-    def test_eval_sink_is_noop_without_write(self, mock_push):
+    def test_eval_sink_returns_truthful_refusal_without_write(self, mock_push):
         self.tenant.is_eval_sink = True
         self.tenant.save(update_fields=["is_eval_sink"])
 
@@ -189,7 +196,14 @@ class RuntimeSituationUpdateViewTest(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json(), {"ok": True, "changed": False})
+        self.assertEqual(
+            response.json(),
+            {
+                "ok": False,
+                "reason": "situational_context_disabled",
+                "message": "Current-location capture is disabled for this workspace, so it was not recorded.",
+            },
+        )
         self.assertFalse(UserSituation.objects.filter(tenant=self.tenant).exists())
         mock_push.assert_not_called()
 

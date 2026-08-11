@@ -51,17 +51,42 @@ class RightNowSectionTests(TestCase):
             body = render_situation(tenant)
         self.assertIn("Current location: Fukuoka", body)
         self.assertIn("today; home base Tokyo", body)
+        self.assertIn("_Use for day-shaping context:", body)
+        self.assertIn("Don't bring it up outside that; never share it outward._", body)
         self.assertIn("situation_rendered", "\n".join(logs.output))
         self.assertIn("fresh=1 traveling=1", "\n".join(logs.output))
 
-    def test_place_older_than_48_hours_is_omitted_and_logged(self):
+    def test_stale_away_place_inside_window_renders_reconfirmation_nudge_and_logs_decay(self):
         tenant = self._tenant()
         old = timezone.now() - timedelta(hours=49)
         self._situation(tenant, current_place_since=old, current_place_last_observed_at=old)
         with self.assertLogs("apps.tenants.envelope", level="INFO") as logs:
             body = render_situation(tenant)
-        self.assertEqual(body, "")
+        self.assertIn("Last known location: Fukuoka (stale, from", body)
+        self.assertIn("record it with nbhd_update_situation", body)
+        self.assertIn("confirm casually", body)
         self.assertIn("situation_decayed", "\n".join(logs.output))
+
+    def test_stale_away_place_beyond_window_is_omitted(self):
+        tenant = self._tenant()
+        old = timezone.now() - timedelta(days=15)
+        self._situation(tenant, current_place_since=old, current_place_last_observed_at=old)
+        self.assertEqual(render_situation(tenant), "")
+
+    def test_stale_home_place_is_omitted(self):
+        tenant = self._tenant()
+        old = timezone.now() - timedelta(hours=49)
+        self._situation(
+            tenant,
+            current_place_label="Tokyo",
+            current_place_since=old,
+            current_place_last_observed_at=old,
+        )
+        self.assertEqual(render_situation(tenant), "")
+
+    def test_no_situation_row_is_omitted(self):
+        tenant = self._tenant()
+        self.assertEqual(render_situation(tenant), "")
 
     def test_fresh_differing_device_timezone_renders(self):
         tenant = self._tenant(profile_tz="Asia/Tokyo")
@@ -118,7 +143,29 @@ class RightNowSectionTests(TestCase):
         )
         self.assertNotIn("Away 5+ days", render_situation(tenant))
 
-    def test_hard_cap_drops_nudge_then_timezone_before_truncating(self):
+    def test_hard_cap_drops_nudge_before_purpose_for_representative_full_section(self):
+        tenant = self._tenant(
+            home="Llanfairpwllgwyngyll, Isle of Anglesey, Wales",
+            profile_tz="America/Argentina/Buenos_Aires",
+        )
+        now = timezone.now()
+        self._situation(
+            tenant,
+            current_place_label="San Fernando del Valle de Catamarca, Argentina",
+            current_place_since=now - timedelta(days=6),
+            current_place_last_observed_at=now,
+            device_tz="America/Indiana/Indianapolis",
+            device_tz_since=now,
+            device_tz_last_observed_at=now,
+        )
+        body = render_situation(tenant)
+        self.assertLessEqual(len(body), 400)
+        self.assertNotIn("Away 5+ days", body)
+        self.assertIn("Device timezone", body)
+        self.assertIn("Current location", body)
+        self.assertIn("_Use for day-shaping context:", body)
+
+    def test_hard_cap_drops_purpose_last_before_truncating_required_place(self):
         tenant = self._tenant(home="H" * 255, profile_tz="America/Argentina/Buenos_Aires")
         now = timezone.now()
         self._situation(
@@ -134,6 +181,7 @@ class RightNowSectionTests(TestCase):
         self.assertLessEqual(len(body), 400)
         self.assertNotIn("Away 5+ days", body)
         self.assertNotIn("Device timezone", body)
+        self.assertNotIn("Use for day-shaping context", body)
         self.assertIn("Current location", body)
 
     def test_flag_off_and_eval_sink_omit_registered_section(self):

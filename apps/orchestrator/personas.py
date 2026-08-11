@@ -689,6 +689,29 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         )
         result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + site_publish_gate
 
+    # Current-location capture gate — behavioral, flag-gated, and imperative.
+    # The tool being available is not enough under toolSearch: like the site-
+    # publishing reconcile gate above, the agent needs an always-loaded cue to
+    # CALL it that turn. Keep this before the larger conditional blocks so the
+    # bootstrap cap cannot silently truncate the capture behavior.
+    if tenant is not None and getattr(tenant, "situational_context_enabled", False):
+        situation_capture_gate = (
+            "## Current-location capture\n\n"
+            "When the user states or clearly implies that their CURRENT city/area changed — "
+            '"I\'m in Fukuoka", "we drove up to Gifu", "landed in Tokyo", "at the in-laws in '
+            'Nagoya this week", or "back home" — CALL `nbhd_update_situation` with that city label '
+            "THIS TURN, before replying. When it returns `ok:true`, acknowledge the capture in one "
+            "short clause in the normal reply (\"noted — I'll use Gifu while you're here\"). If the "
+            "user objects, do not record it again; drop the subject.\n\n"
+            "Current location ONLY: never record a place merely mentioned in news, someone else's "
+            "trip, or a FUTURE plan. Record future travel only once the user says they are actually "
+            "there or on the way now. Use only the user's own words in THIS conversation — never "
+            "guesses, sensors, documents, or third parties.\n\n"
+            "On multi-day trips, re-record when the user references still being away; a stale "
+            '`## Right now` section will nudge you. "Back home" or equivalent means record the home city.'
+        )
+        result["NBHD_AGENTS_MD"] = result["NBHD_AGENTS_MD"] + "\n\n" + situation_capture_gate
+
     # Neighborhood backstage gate — behavioral, per-tenant (design §5.2). The
     # imperative "propose only, absorb quietly, never post" rules that keep the
     # agent invisible + the anti-confabulation line ("never claim shared without

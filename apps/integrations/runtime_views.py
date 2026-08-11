@@ -3556,6 +3556,15 @@ class RuntimeSituationUpdateView(APIView):
             return tenant_failure
         record_runtime_write_activity(tenant)
 
+        if not tenant.situational_context_enabled or tenant.is_eval_sink:
+            return Response(
+                {
+                    "ok": False,
+                    "reason": "situational_context_disabled",
+                    "message": "Current-location capture is disabled for this workspace, so it was not recorded.",
+                }
+            )
+
         from apps.tenants.situation import clean_place_label
 
         place_label = clean_place_label(request.data.get("place_label"))

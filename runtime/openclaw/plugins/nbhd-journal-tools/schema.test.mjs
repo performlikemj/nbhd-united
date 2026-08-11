@@ -131,12 +131,14 @@ test("situation tool is registered with the city-label policy and manifest contr
   assert.deepEqual(tool.parameters.required, ["place_label"]);
   assert.equal(tool.parameters.properties.place_label.type, "string");
   assert.equal(tool.parameters.additionalProperties, false);
-  assert.match(tool.description, /user STATES where they currently are/);
+  assert.match(tool.description, /Call this THAT TURN/);
   assert.match(tool.description, /CURRENT city/);
+  assert.match(tool.description, /never guesses, sensors, documents, third parties/);
+  assert.match(tool.description, /re-record when the user says they are still away/);
   assert.match(tool.description, /auto-expires after about 48 hours/);
   assert.match(tool.description, /NEVER use this for permanent home\/base changes/);
   assert.match(tool.description, /nbhd_update_profile/);
-  assert.match(tool.description, /future plan, ask before calling/);
+  assert.match(tool.description, /future travel, wait until the user is actually there or on the way now/);
 
   const manifest = JSON.parse(
     readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
@@ -190,11 +192,29 @@ test("situation tool posts only place_label and reports rejected labels graceful
     assert.match(rejected.details.json.message, /not accepted/);
 
     globalThis.fetch = async () => ({
+      ok: true,
+      status: 200,
+      async text() {
+        return JSON.stringify({
+          ok: false,
+          reason: "situational_context_disabled",
+          message: "Current-location capture is disabled for this workspace, so it was not recorded.",
+        });
+      },
+    });
+    const disabled = await tool.execute("call-3", { place_label: "Osaka" });
+    assert.deepEqual(disabled.details.json, {
+      ok: false,
+      reason: "situational_context_disabled",
+      message: "Current-location capture is disabled for this workspace, so it was not recorded.",
+    });
+
+    globalThis.fetch = async () => ({
       ok: false,
       status: 503,
       async text() { return JSON.stringify({ error: "unavailable" }); },
     });
-    const failed = await tool.execute("call-3", { place_label: "Osaka" });
+    const failed = await tool.execute("call-4", { place_label: "Osaka" });
     assert.equal(failed.details.json.ok, false);
     assert.equal(failed.details.json.reason, "runtime_request_failed");
     assert.match(failed.details.json.message, /not accepted/);
