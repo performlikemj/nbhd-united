@@ -1,5 +1,9 @@
 def datebook_delivery_ready(tenant) -> bool:
-    """The single rollout/consent gate for every datebook surface."""
+    """Gate agent-facing runtime, envelope, and config surfaces.
+
+    Consumer registration and sync/command endpoints use their narrower
+    bootstrap gates and must not call this manifest-aware helper.
+    """
 
     return bool(
         tenant

@@ -17,7 +17,7 @@ from apps.actions.models import (
     PendingAction,
 )
 from apps.actions.views import GateRespondView
-from apps.orchestrator.envelope_registry import suppress_refresh
+from apps.orchestrator.envelope_registry import all_sections, suppress_refresh
 from apps.router.line_webhook import LineWebhookView
 from apps.router.models import DeviceToken
 from apps.router.poller import TelegramPoller
@@ -134,6 +134,18 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
             "display_text",
         }
         self.assertEqual(_DatebookResponseGuard.pii_egress_text_fields, expected)
+
+    def test_runtime_and_envelope_still_require_manifest_readiness(self):
+        self.tenant.datebook_manifest_ok = False
+        self.tenant.save(update_fields=["datebook_manifest_ok"])
+        response = self.client.get(
+            f"/api/v1/datebook/runtime/{self.tenant.id}/datebook/agenda",
+            **self.headers,
+        )
+        section = next(section for section in all_sections() if section.key == "datebook")
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data, {"state": "datebook_disabled"})
+        self.assertFalse(section.enabled(self.tenant))
 
     @patch("apps.actions.messaging.send_gate_confirmation", return_value=False)
     def test_request_create_is_strict_and_returns_store_safe_undeliverable(self, _send):

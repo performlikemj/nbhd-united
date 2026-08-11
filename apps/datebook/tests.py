@@ -12,6 +12,7 @@ from django.utils import timezone
 from rest_framework.test import APIClient
 
 from apps.common.tenant_tz import tenant_tz
+from apps.orchestrator.envelope_registry import suppress_refresh
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
@@ -166,7 +167,11 @@ class DatebookAPIMixin:
         self.client.force_authenticate(user=self.tenant.user)
         registered = self.client.post(
             "/api/v1/datebook/register/",
-            {"installation_id": "install-a"},
+            {
+                "installation_id": "install-a",
+                "events_consent": True,
+                "reminders_consent": True,
+            },
             format="json",
         )
         self.assertEqual(registered.status_code, 200, registered.data)
@@ -258,7 +263,11 @@ class DatebookGateAndGatewayTests(TestCase):
     def test_feature_off_is_409_and_no_store(self):
         response = self.client.post(
             "/api/v1/datebook/register/",
-            {"installation_id": "install-a"},
+            {
+                "installation_id": "install-a",
+                "events_consent": True,
+                "reminders_consent": False,
+            },
             format="json",
         )
         self.assertEqual(response.status_code, 409)
@@ -270,7 +279,11 @@ class DatebookGateAndGatewayTests(TestCase):
         self.tenant.save(update_fields=["status"])
         response = self.client.post(
             "/api/v1/datebook/register/",
-            {"installation_id": "install-a"},
+            {
+                "installation_id": "install-a",
+                "events_consent": True,
+                "reminders_consent": False,
+            },
             format="json",
         )
         self.assertEqual(response.status_code, 403)
@@ -279,7 +292,11 @@ class DatebookGateAndGatewayTests(TestCase):
     def test_routes_require_consumer_authentication(self):
         response = APIClient().post(
             "/api/v1/datebook/register/",
-            {"installation_id": "install-a"},
+            {
+                "installation_id": "install-a",
+                "events_consent": True,
+                "reminders_consent": False,
+            },
             format="json",
         )
         self.assertEqual(response.status_code, 401)
@@ -312,12 +329,29 @@ class DatebookGateAndGatewayTests(TestCase):
                 "datebook_events_consent_at",
             ]
         )
-        first = self.client.post("/api/v1/datebook/register/", {"installation_id": "install-a"}, format="json")
-        repeated = self.client.post("/api/v1/datebook/register/", {"installation_id": "install-a"}, format="json")
-        denied = self.client.post("/api/v1/datebook/register/", {"installation_id": "install-b"}, format="json")
+        first = self.client.post(
+            "/api/v1/datebook/register/",
+            {"installation_id": "install-a", "events_consent": True, "reminders_consent": False},
+            format="json",
+        )
+        repeated = self.client.post(
+            "/api/v1/datebook/register/",
+            {"installation_id": "install-a", "events_consent": True, "reminders_consent": False},
+            format="json",
+        )
+        denied = self.client.post(
+            "/api/v1/datebook/register/",
+            {"installation_id": "install-b", "events_consent": True, "reminders_consent": False},
+            format="json",
+        )
         takeover = self.client.post(
             "/api/v1/datebook/register/",
-            {"installation_id": "install-b", "takeover": True},
+            {
+                "installation_id": "install-b",
+                "takeover": True,
+                "events_consent": True,
+                "reminders_consent": False,
+            },
             format="json",
         )
         stale = self.client.post(
@@ -342,6 +376,234 @@ class DatebookGateAndGatewayTests(TestCase):
             DatebookGateway.objects.filter(tenant=self.tenant, status=DatebookGateway.Status.ACTIVE).count(),
             1,
         )
+
+    def test_first_consent_bootstrap_works_without_manifest(self):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.datebook_enabled = True
+        self.tenant.datebook_manifest_ok = False
+        self.tenant.save(update_fields=["status", "datebook_enabled", "datebook_manifest_ok"])
+
+        registered = self.client.post(
+            "/api/v1/datebook/register/",
+            {
+                "installation_id": "bootstrap-install",
+                "events_consent": True,
+                "reminders_consent": False,
+            },
+            format="json",
+        )
+
+        self.assertEqual(registered.status_code, 200, registered.data)
+        self.assertEqual(registered.data["gateway_status"], DatebookGateway.Status.ACTIVE)
+        self.assertFalse(registered.data["taken_over"])
+        self.assertIsNotNone(registered.data["scopes"]["events"]["consent_at"])
+        self.assertIsNone(registered.data["scopes"]["reminders"]["consent_at"])
+        self.assertTrue(registered.data["scopes"]["events"]["full_snapshot_required"])
+        self.assertFalse(registered.data["delivery_ready"])
+
+        opened = self.client.post(
+            "/api/v1/datebook/sync/open/",
+            {
+                "installation_id": "bootstrap-install",
+                "gateway_epoch": registered.data["gateway_epoch"],
+                "client_run_id": "first-consent",
+                "events": {"authorization": "full_access", "coverage_complete": True},
+                "reminders": {"authorization": "full_access", "coverage_complete": True},
+            },
+            format="json",
+        )
+        self.assertEqual(opened.status_code, 200, opened.data)
+        self.assertTrue(opened.data["scopes"]["events"]["committable"])
+        self.assertFalse(opened.data["scopes"]["reminders"]["enabled"])
+        self.assertFalse(opened.data["scopes"]["reminders"]["committable"])
+
+    def test_register_requires_both_explicit_boolean_consents(self):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.datebook_enabled = True
+        self.tenant.save(update_fields=["status", "datebook_enabled"])
+
+        cases = [
+            ({"installation_id": "install-a"}, "invalid_events_consent"),
+            (
+                {"installation_id": "install-a", "events_consent": True},
+                "invalid_reminders_consent",
+            ),
+            (
+                {
+                    "installation_id": "install-a",
+                    "events_consent": "yes",
+                    "reminders_consent": False,
+                },
+                "invalid_events_consent",
+            ),
+            (
+                {
+                    "installation_id": "install-a",
+                    "events_consent": True,
+                    "reminders_consent": 1,
+                },
+                "invalid_reminders_consent",
+            ),
+        ]
+        for payload, error in cases:
+            with self.subTest(error=error, payload=payload):
+                response = self.client.post("/api/v1/datebook/register/", payload, format="json")
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.data, {"error": error})
+        self.assertFalse(DatebookGateway.objects.filter(tenant=self.tenant).exists())
+
+    def test_reregister_true_preserves_original_consent_timestamp(self):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.datebook_enabled = True
+        self.tenant.save(update_fields=["status", "datebook_enabled"])
+        payload = {
+            "installation_id": "install-a",
+            "events_consent": True,
+            "reminders_consent": False,
+        }
+        first = self.client.post("/api/v1/datebook/register/", payload, format="json")
+        second = self.client.post("/api/v1/datebook/register/", payload, format="json")
+        self.assertEqual(first.status_code, 200, first.data)
+        self.assertEqual(second.status_code, 200, second.data)
+        self.assertEqual(
+            second.data["scopes"]["events"]["consent_at"],
+            first.data["scopes"]["events"]["consent_at"],
+        )
+
+    def test_scope_revocation_cascades_and_reenable_requires_full_snapshot(self):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.datebook_enabled = True
+        self.tenant.datebook_manifest_ok = True
+        self.tenant.save(update_fields=["status", "datebook_enabled", "datebook_manifest_ok"])
+        payload = {
+            "installation_id": "install-a",
+            "events_consent": True,
+            "reminders_consent": True,
+        }
+        registered = self.client.post("/api/v1/datebook/register/", payload, format="json")
+        self.tenant.refresh_from_db()
+        gateway = DatebookGateway.objects.get(tenant=self.tenant, status=DatebookGateway.Status.ACTIVE)
+        gateway.current_generation = 7
+        gateway.events_full_snapshot_required = False
+        gateway.reminders_full_snapshot_required = False
+        gateway.events_authorization = "full_access"
+        gateway.events_last_complete_sync_at = timezone.now()
+        gateway.events_window_start = timezone.now() - timedelta(days=30)
+        gateway.events_window_end = timezone.now() + timedelta(days=180)
+        gateway.reminders_last_complete_sync_at = timezone.now()
+        gateway.save()
+        with suppress_refresh():
+            event = MirrorEvent.objects.create(
+                tenant=self.tenant,
+                source_key=_source_key("revoke-event"),
+                content_hash="a" * 64,
+                time_kind="all_day",
+                all_day_start_date=timezone.localdate(),
+                all_day_end_date_exclusive=timezone.localdate() + timedelta(days=1),
+                active=True,
+            )
+            reminder = MirrorReminder.objects.create(
+                tenant=self.tenant,
+                source_key=_source_key("revoke-reminder"),
+                content_hash="b" * 64,
+                due_kind="none",
+                active=True,
+            )
+        calendar_command, _ = create_device_command(
+            self.tenant,
+            request_id="revoke-calendar-command",
+            command_type=DeviceCommand.CommandType.CALENDAR_CREATE,
+            payload={"items": [{"title": "Event"}]},
+        )
+        reminder_command, _ = create_device_command(
+            self.tenant,
+            request_id="keep-reminder-command",
+            command_type=DeviceCommand.CommandType.REMINDER_CREATE,
+            payload={"items": [{"title": "Reminder"}]},
+        )
+        claimed = self.client.post(
+            "/api/v1/datebook/commands/claim/",
+            {
+                "installation_id": "install-a",
+                "gateway_epoch": registered.data["gateway_epoch"],
+            },
+            format="json",
+        )
+        self.assertEqual(claimed.data["command"]["command_type"], DeviceCommand.CommandType.CALENDAR_CREATE)
+        opened = self.client.post(
+            "/api/v1/datebook/sync/open/",
+            {
+                "installation_id": "install-a",
+                "gateway_epoch": registered.data["gateway_epoch"],
+                "client_run_id": "revoke-open-run",
+                "events": {"authorization": "full_access", "coverage_complete": True},
+                "reminders": {"authorization": "full_access", "coverage_complete": True},
+            },
+            format="json",
+        )
+
+        revoked = self.client.post(
+            "/api/v1/datebook/register/",
+            {
+                "installation_id": "install-a",
+                "events_consent": False,
+                "reminders_consent": True,
+            },
+            format="json",
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.data)
+        event.refresh_from_db()
+        reminder.refresh_from_db()
+        calendar_command.refresh_from_db()
+        reminder_command.refresh_from_db()
+        gateway.refresh_from_db()
+        self.assertFalse(event.active)
+        self.assertEqual(event.inactive_generation, 7)
+        self.assertTrue(reminder.active)
+        self.assertEqual(calendar_command.state, DeviceCommand.State.CANCELLED)
+        self.assertEqual(reminder_command.state, DeviceCommand.State.PENDING)
+        self.assertTrue(gateway.events_full_snapshot_required)
+        self.assertFalse(gateway.reminders_full_snapshot_required)
+        self.assertIsNone(gateway.events_last_complete_sync_at)
+        self.assertIsNone(gateway.events_window_start)
+        self.assertIsNone(gateway.events_window_end)
+        self.assertEqual(SyncRun.objects.get(id=opened.data["run_id"]).state, SyncRun.State.ABORTED)
+
+        reenabled = self.client.post("/api/v1/datebook/register/", payload, format="json")
+        self.assertEqual(reenabled.status_code, 200, reenabled.data)
+        self.assertTrue(reenabled.data["scopes"]["events"]["full_snapshot_required"])
+        next_run = self.client.post(
+            "/api/v1/datebook/sync/open/",
+            {
+                "installation_id": "install-a",
+                "gateway_epoch": registered.data["gateway_epoch"],
+                "client_run_id": "reenabled-run",
+                "events": {"authorization": "full_access", "coverage_complete": True},
+                "reminders": {"authorization": "full_access", "coverage_complete": True},
+            },
+            format="json",
+        )
+        self.assertTrue(next_run.data["scopes"]["events"]["full_snapshot_required"])
+
+    def test_both_revoked_makes_consumer_sync_require_consent(self):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.datebook_enabled = True
+        self.tenant.save(update_fields=["status", "datebook_enabled"])
+        self.client.post(
+            "/api/v1/datebook/register/",
+            {"installation_id": "install-a", "events_consent": True, "reminders_consent": True},
+            format="json",
+        )
+        revoked = self.client.post(
+            "/api/v1/datebook/register/",
+            {"installation_id": "install-a", "events_consent": False, "reminders_consent": False},
+            format="json",
+        )
+        denied = self.client.post("/api/v1/datebook/sync/open/", {}, format="json")
+        self.assertEqual(revoked.status_code, 200, revoked.data)
+        self.assertFalse(revoked.data["delivery_ready"])
+        self.assertEqual(denied.status_code, 409)
+        self.assertEqual(denied.data, {"error": "consent_required"})
 
 
 class DatebookSyncTests(DatebookAPIMixin, TestCase):
@@ -477,7 +739,12 @@ class DatebookSyncTests(DatebookAPIMixin, TestCase):
         self.assertEqual(self.stage_page(run3.data["run_id"], events=[staged]).status_code, 200)
         takeover = self.client.post(
             "/api/v1/datebook/register/",
-            {"installation_id": "install-b", "takeover": True},
+            {
+                "installation_id": "install-b",
+                "takeover": True,
+                "events_consent": True,
+                "reminders_consent": True,
+            },
             format="json",
         )
         self.assertEqual(takeover.status_code, 200)
@@ -554,7 +821,12 @@ class DatebookSyncTests(DatebookAPIMixin, TestCase):
 
         takeover = self.client.post(
             "/api/v1/datebook/register/",
-            {"installation_id": "install-b", "takeover": True},
+            {
+                "installation_id": "install-b",
+                "takeover": True,
+                "events_consent": True,
+                "reminders_consent": True,
+            },
             format="json",
         )
         new_epoch = takeover.data["gateway_epoch"]
@@ -840,7 +1112,12 @@ class DeviceCommandTests(DatebookAPIMixin, TestCase):
         command, _ = self.create_command("takeover-command")
         takeover = self.client.post(
             "/api/v1/datebook/register/",
-            {"installation_id": "install-b", "takeover": True},
+            {
+                "installation_id": "install-b",
+                "takeover": True,
+                "events_consent": True,
+                "reminders_consent": True,
+            },
             format="json",
         )
         self.assertEqual(takeover.status_code, 200)
