@@ -166,7 +166,7 @@ REST_FRAMEWORK = {
 # Simple JWT
 SIMPLE_JWT = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
-    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=60),
     "SIGNING_KEY": env("JWT_SECRET", default=SECRET_KEY),
     "TOKEN_OBTAIN_SERIALIZER": "apps.tenants.serializers.EmailTokenObtainPairSerializer",
     # NOTE: refresh-token rotation (ROTATE_REFRESH_TOKENS + BLACKLIST_AFTER_ROTATION)
@@ -179,6 +179,7 @@ SIMPLE_JWT = {
     # silently sign the user out; (3) a scheduled `flushexpiredtokens` to reap the
     # OutstandingToken/BlacklistedToken rows rotation creates; (4) cross-tab refresh
     # coordination on web. Enable as a deliberate follow-up, not a drive-by.
+    # A 60-day lifetime is the stopgap for the weekly sign-out cliff until rotation ships.
 }
 
 # CORS
