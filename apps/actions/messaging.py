@@ -1,7 +1,7 @@
 """Platform-agnostic gate confirmation messaging.
 
-Sends confirmation prompts with inline buttons to the user's preferred
-platform (Telegram or LINE), and edits the message after response.
+Sends Telegram/LINE prompts with inline buttons, or a generic iOS wake for the
+datebook review sheet, and updates messaging prompts after response.
 """
 
 from __future__ import annotations
@@ -312,23 +312,91 @@ def _edit_line_message(tenant: Tenant, action: PendingAction) -> None:
 
 
 # ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
+
+
+def _send_app_confirmation(tenant: Tenant, action: PendingAction) -> str | None:
+    """Wake the iOS review sheet once with a generic, installation-targeted push."""
+
+    from apps.datebook.gate import is_datebook_action_type
+
+    if not is_datebook_action_type(action.action_type):
+        return None
+
+    claim_id = f"app-gate-{action.id}"
+    claimed = PendingAction.objects.filter(
+        id=action.id,
+        tenant=tenant,
+        platform_channel="",
+        platform_message_id="",
+    ).update(
+        platform_channel="app",
+        platform_message_id=claim_id,
+    )
+    if not claimed:
+        action.refresh_from_db(fields=["platform_channel", "platform_message_id"])
+        if action.platform_channel == "app":
+            return action.platform_message_id or claim_id
+        return None
+
+    action.platform_channel = "app"
+    action.platform_message_id = claim_id
+
+    try:
+        from apps.datebook.models import DatebookGateway
+        from apps.router.push_views import _push_to_user_devices
+
+        installation_id = (
+            DatebookGateway.objects.filter(
+                tenant=tenant,
+                status=DatebookGateway.Status.ACTIVE,
+            )
+            .values_list("installation_id", flat=True)
+            .first()
+        )
+        _push_to_user_devices(
+            tenant.user,
+            body="Your assistant has a calendar request to review — open NBHD",
+            thread_id=None,
+            collapse_id=f"datebook-gate:{action.id}",
+            content_available=True,
+            extra={
+                "type": "datebook_gate",
+                "action_id": str(action.id),
+            },
+            installation_id=installation_id,
+        )
+    except Exception:
+        logger.warning(
+            "App gate push failed (non-fatal) for action %s tenant %s",
+            action.id,
+            tenant.id,
+            exc_info=True,
+        )
+    return claim_id
+
+
+# ---------------------------------------------------------------------------
 # Platform dispatcher
 # ---------------------------------------------------------------------------
 
 _SENDERS = {
     "telegram": (_send_telegram_confirmation, _edit_telegram_message),
     "line": (_send_line_confirmation, _edit_line_message),
+    "app": (_send_app_confirmation, None),
 }
 
 
 def _resolve_gate_channel(user) -> str | None:
     """Resolve the channel for an INTERACTIVE gate confirmation.
 
-    Deliberately NOT ``resolve_user_channel`` (which is now app-first): a gate
-    needs an actionable approve/deny surface, and those handlers exist ONLY in
-    the Telegram poller and LINE webhook — there is no in-app gate UI this cycle.
-    So gate delivery resolves to a LINKED MESSAGING channel (Telegram first,
-    then LINE) or fails fast; the app channel is never a gate target.
+    Deliberately NOT ``resolve_user_channel`` (which is app-first): gate buttons
+    stay on linked messaging channels in their established Telegram-then-LINE
+    order. The app review sheet is the fallback when a datebook gateway or APNs
+    token proves an app surface exists. Only datebook actions use that fallback,
+    because the consumer review endpoint deliberately excludes every other gate
+    type.
 
     Linked-Telegram-first (matching ``resolve_user_channel``'s messaging
     fallback) because it preserves prior behavior for the only both-linked cohort
@@ -338,59 +406,76 @@ def _resolve_gate_channel(user) -> str | None:
     the approval surface out from under an active Telegram user. LINE next covers
     line-only users.
 
-    This is the load-bearing exception to the app-first outbound routing: a
-    token-holding user who ALSO has Telegram linked (e.g. MJ) still gets gate
-    buttons on Telegram rather than hitting the app dead-end where the action
-    would silently expire with no prompt ever delivered. ``preferred_channel`` is
-    ignored for the same reason it is in ``resolve_user_channel`` (production noise
-    — every row is the schema default).
+    ``preferred_channel`` is ignored for the same reason it is in
+    ``resolve_user_channel`` (production noise — every row is the schema
+    default).
     """
     if getattr(user, "telegram_chat_id", None):
         return "telegram"
     if getattr(user, "line_user_id", None):
         return "line"
+
+    tenant = getattr(user, "tenant", None)
+    if tenant is None:
+        return None
+
+    from apps.datebook.models import DatebookGateway
+    from apps.router.models import DeviceToken
+
+    has_gateway = DatebookGateway.objects.filter(
+        tenant=tenant,
+        status=DatebookGateway.Status.ACTIVE,
+    ).exists()
+    has_device = DeviceToken.objects.filter(
+        user=user,
+        revoked_at__isnull=True,
+    ).exists()
+    if has_gateway or has_device:
+        return "app"
     return None
 
 
 def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
     """Send a confirmation prompt to the user on their delivery channel.
 
-    Resolves the channel via ``_resolve_gate_channel`` (LINKED Telegram/LINE
-    only) rather than the app-first ``resolve_user_channel`` used for plain
-    proactive sends. Gates need an interactive approve/deny surface, which today
-    exists only in the Telegram poller and LINE webhook — there is no in-app gate
-    UI — so a token-holding user with a linked messaging channel still gets the
-    buttons there, and a genuinely iOS-only user (DeviceToken but no Telegram/LINE)
-    fails fast instead of hitting a dead end.
+    Resolves via ``_resolve_gate_channel`` rather than the app-first proactive
+    resolver. Linked Telegram/LINE surfaces retain priority; app-only users get
+    a generic APNs wake for the in-app review sheet. The push contains only the
+    action id/type discriminator and never carries review content or an approval
+    action.
 
     Returns ``True`` if the confirmation was dispatched to a real channel,
-    ``False`` when no deliverable (messaging) channel exists (iOS-only / no surface).
+    ``False`` when no deliverable channel exists.
     The caller can use the return value to decide whether to return HTTP 202
     "pending" (real channel) or indicate "undeliverable" (no channel).
 
-    When no Telegram/LINE channel is linked we cannot deliver an actionable
-    confirmation. Rather than fail silently, log a clear, explicit warning so the
-    no-surface case is visible and diagnosable.
+    When no channel is linked, log a clear warning so the no-surface case is
+    visible and diagnosable.
     """
     if suppresses_real_transport(tenant):
         # Confirmation gates require a human approve/deny surface. An eval sink
         # has none, and must never reach a transport sender. Checked on the
         # tenant flag directly because ``_resolve_gate_channel`` reads linked
-        # Telegram/LINE ids without consulting ``resolve_user_channel`` — a
-        # stale linked id on an eval tenant would otherwise send real buttons.
+        # surfaces without consulting ``resolve_user_channel`` — a stale real
+        # channel on an eval tenant would otherwise emit.
         logger.info("Gate confirmation suppressed for eval-sink tenant %s", tenant.id)
         return False
     channel = _resolve_gate_channel(tenant.user)
+    if channel == "app":
+        from apps.datebook.gate import is_datebook_action_type
+
+        if not is_datebook_action_type(action.action_type):
+            logger.warning(
+                "Cannot deliver non-datebook gate action %s to app review sheet",
+                action.id,
+            )
+            return False
     sender, _ = _SENDERS.get(channel, (None, None))
 
     if not sender:
-        # ``channel`` is None — no linked Telegram/LINE surface (iOS-only or
-        # nothing linked at all). No actionable in-app gate path exists yet —
-        # return False so the caller can surface the undeliverable state instead
-        # of leaving the action to silently expire.
         logger.warning(
             "Cannot deliver gate confirmation for action %s (tenant %s): "
-            "no Telegram/LINE channel for resolved channel %r — action will "
+            "no Telegram/LINE/app channel for resolved channel %r — action will "
             "not be delivered",
             action.id,
             tenant.id,
@@ -399,6 +484,8 @@ def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
         return False
 
     msg_id = sender(tenant, action)
+    if channel == "app" and not msg_id:
+        return False
     if msg_id:
         action.platform_message_id = msg_id
         action.platform_channel = channel
