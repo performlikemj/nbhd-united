@@ -18,9 +18,14 @@ from apps.tenants.models import Tenant, User, UserSituation
 logger = logging.getLogger(__name__)
 
 PLACE_DECAY = timedelta(hours=48)
+STALE_NUDGE_WINDOW = timedelta(days=14)
 DEVICE_TZ_TTL = timedelta(days=7)
 AWAY_NUDGE_AFTER = timedelta(days=5)
 SITUATION_MAX_CHARS = 400
+_PLACE_PURPOSE_LINE = (
+    "_Use for day-shaping context: weather, clothing, local suggestions, workout logistics, and timing. "
+    "Don't bring it up outside that; never share it outward._"
+)
 
 # Agent-facing labels for the resolved delivery channel. Mirrors the marker
 # labels in apps/router/services.py (_CHANNEL_LABELS) so the Profile block and
@@ -127,8 +132,13 @@ def _format_place_observed_at(tenant: Tenant, observed_at, now) -> str:
     return local_observed.strftime("%b %d").replace(" 0", " ")
 
 
-def _cap_situation_lines(place_line: str, tz_line: str, nudge_line: str) -> str:
-    lines = [line for line in (place_line, tz_line, nudge_line) if line]
+def _cap_situation_lines(
+    place_line: str,
+    purpose_line: str,
+    tz_line: str,
+    nudge_line: str,
+) -> str:
+    lines = [line for line in (place_line, purpose_line, tz_line, nudge_line) if line]
     body = "\n".join(lines)
     if len(body) <= SITUATION_MAX_CHARS:
         return body
@@ -138,6 +148,9 @@ def _cap_situation_lines(place_line: str, tz_line: str, nudge_line: str) -> str:
         body = "\n".join(lines)
     if len(body) > SITUATION_MAX_CHARS and tz_line and tz_line in lines:
         lines.remove(tz_line)
+        body = "\n".join(lines)
+    if len(body) > SITUATION_MAX_CHARS and purpose_line and purpose_line in lines:
+        lines.remove(purpose_line)
         body = "\n".join(lines)
     if len(body) > SITUATION_MAX_CHARS:
         body = body[: SITUATION_MAX_CHARS - 1].rstrip() + "…"
@@ -152,7 +165,7 @@ def _cap_situation_lines(place_line: str, tz_line: str, nudge_line: str) -> str:
     order=13,
 )
 def render_situation(tenant: Tenant) -> str:
-    """Render fresh place/timezone signals and omit decayed observations."""
+    """Render fresh signals plus a re-confirmation nudge for stale trips."""
     try:
         situation = tenant.situation
     except UserSituation.DoesNotExist:
@@ -170,7 +183,8 @@ def render_situation(tenant: Tenant) -> str:
         and situation.current_place_last_observed_at
         and now - situation.current_place_last_observed_at <= PLACE_DECAY
     )
-    traveling = bool(place_fresh and place_label.casefold() != home.casefold())
+    known_away = bool(place_label and place_label.casefold() != home.casefold())
+    traveling = bool(place_fresh and known_away)
 
     if place_label and not place_fresh:
         logger.info(
@@ -180,10 +194,23 @@ def render_situation(tenant: Tenant) -> str:
         )
 
     place_line = ""
+    purpose_line = ""
     if place_fresh:
         as_of = _format_place_observed_at(tenant, situation.current_place_last_observed_at, now)
         home_clause = f"; home base {home or 'not set'}" if traveling else ""
         place_line = f"Current location: {place_label} (as of {as_of}{home_clause})."
+        purpose_line = _PLACE_PURPOSE_LINE
+    elif (
+        known_away
+        and situation.current_place_last_observed_at
+        and now - situation.current_place_last_observed_at <= STALE_NUDGE_WINDOW
+    ):
+        stale_from = _format_place_observed_at(tenant, situation.current_place_last_observed_at, now)
+        place_line = (
+            f"Last known location: {place_label} (stale, from {stale_from}). "
+            "If the user mentions where they are, record it with nbhd_update_situation; "
+            "if they seem to still be traveling, confirm casually."
+        )
 
     device_tz = (situation.device_tz or "").strip()
     device_tz_fresh = bool(
@@ -199,7 +226,7 @@ def render_situation(tenant: Tenant) -> str:
     if traveling and situation.current_place_since and now - situation.current_place_since >= AWAY_NUDGE_AFTER:
         nudge_line = "(Away 5+ days — consider asking whether to update the home base or shift the schedule.)"
 
-    body = _cap_situation_lines(place_line, tz_line, nudge_line)
+    body = _cap_situation_lines(place_line, purpose_line, tz_line, nudge_line)
     if body:
         logger.info(
             "situation_rendered tenant=%s fresh=%d traveling=%d age_s=%d",
