@@ -14,8 +14,8 @@ correct the call, so it retried the same broken request.
 
 The fix is a shared ``compactErrorDetail()`` helper. It is deliberately NOT a
 shared module: OpenClaw loads each plugin directory standalone, so the helper
-is copied verbatim into all 13 plugins. Copies rot. This test is the structural
-guard — it pins the canonical text and asserts all 13 copies are byte-identical
+is copied verbatim into all 14 plugins. Copies rot. This test is the structural
+guard — it pins the canonical text and asserts all 14 copies are byte-identical
 to it and to each other, so a hand-edit to one file fails CI instead of
 silently regressing that plugin's error transport.
 
@@ -51,6 +51,7 @@ PLUGIN_DIRS = [
     # Registers nbhd_record_commitment — a model-facing POST write to the
     # runtime, i.e. exactly the shape DRF answers with a validation body.
     "nbhd-agenda-tools",
+    "nbhd-datebook-tools",
 ]
 
 # nbhd-* plugin directories that do NOT need the canonical NBHD-runtime
@@ -121,7 +122,7 @@ HELPER_BLOCK_RE = re.compile(
     re.DOTALL,
 )
 
-# The canonical text, pinned. Edit here ONLY together with all 13 plugins.
+# The canonical text, pinned. Edit here ONLY together with all 14 plugins.
 CANONICAL_HELPER = """const TOOL_ERROR_DETAIL_MAX_CHARS = 2000;
 
 function clampErrorDetail(text) {
@@ -348,7 +349,11 @@ class PluginErrorTransportDriftTests(SimpleTestCase):
         suite = (_PLUGINS_DIR / "error-transport.test.js").read_text()
         for plugin_dir in PLUGIN_DIRS:
             with self.subTest(plugin=plugin_dir):
-                self.assertIn(f'dir: "{plugin_dir}"', suite)
+                if plugin_dir == "nbhd-datebook-tools":
+                    local_suite = (_PLUGINS_DIR / plugin_dir / "error-transport.test.js").read_text()
+                    self.assertIn("validation envelopes reach the model", local_suite)
+                else:
+                    self.assertIn(f'dir: "{plugin_dir}"', suite)
 
     def test_plugin_list_is_complete(self):
         # PLUGIN_DIRS used to be a hand-maintained list that CLAIMED to be

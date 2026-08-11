@@ -1,0 +1,22 @@
+{
+  "id": "nbhd-datebook-tools",
+  "name": "NBHD Calendar & Reminders Tools",
+  "description": "Dormant, review-gated native Apple Calendar and Reminders tools.",
+  "contracts": {
+    "tools": [
+      "nbhd_datebook_read",
+      "nbhd_datebook_add_event",
+      "nbhd_datebook_add_apple_reminder"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL env var."
+      }
+    }
+  }
+}

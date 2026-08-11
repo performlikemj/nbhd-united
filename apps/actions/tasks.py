@@ -20,7 +20,8 @@ def expire_stale_pending_actions() -> str:
     of other actions.
     """
     from .messaging import update_gate_message
-    from .models import ActionAuditLog, ActionStatus, PendingAction
+    from .models import ActionStatus, PendingAction
+    from .services import record_action_audit
 
     stale = PendingAction.objects.select_related("tenant__user").filter(
         status=ActionStatus.PENDING,
@@ -39,14 +40,7 @@ def expire_stale_pending_actions() -> str:
             continue
         action.status = ActionStatus.EXPIRED
 
-        ActionAuditLog.objects.create(
-            tenant=action.tenant,
-            action_type=action.action_type,
-            action_payload=action.action_payload,
-            display_summary=action.display_summary,
-            pii_receipts=action.pii_receipts,
-            result=ActionStatus.EXPIRED,
-        )
+        record_action_audit(action, ActionStatus.EXPIRED)
 
         try:
             update_gate_message(action)

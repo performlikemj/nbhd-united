@@ -6,5 +6,4 @@ class DatebookConfig(AppConfig):
     name = "apps.datebook"
 
     def ready(self) -> None:
-        # B2a owns envelope registration. B1 deliberately registers nothing.
-        return None
+        import apps.datebook.envelope  # noqa: F401

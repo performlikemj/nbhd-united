@@ -13,6 +13,8 @@ class ActionType(models.TextChoices):
     CALENDAR_DELETE = "calendar_delete", "Calendar: Delete Event"
     DRIVE_DELETE = "drive_delete", "Drive: Delete File"
     TASK_DELETE = "task_delete", "Tasks: Delete Task"
+    CALENDAR_CREATE = "calendar_create", "Calendar: Create Event"
+    REMINDER_CREATE = "reminder_create", "Reminders: Create Apple Reminder"
 
 
 class ActionStatus(models.TextChoices):
@@ -20,6 +22,20 @@ class ActionStatus(models.TextChoices):
     APPROVED = "approved", "Approved"
     DENIED = "denied", "Denied"
     EXPIRED = "expired", "Expired"
+
+
+class ActionAuditOutcome(models.TextChoices):
+    """Immutable gate decisions and downstream execution transitions."""
+
+    APPROVED = "approved", "Approved"
+    DENIED = "denied", "Denied"
+    EXPIRED = "expired", "Expired"
+    QUEUED = "queued", "Queued"
+    EXECUTED = "executed", "Executed"
+    FAILED = "failed", "Failed"
+    COMMAND_EXPIRED = "command_expired", "Command expired"
+    CANCELLED = "cancelled", "Cancelled"
+    AMBIGUOUS = "ambiguous", "Ambiguous"
 
 
 def default_expires_at():
@@ -48,6 +64,9 @@ class PendingAction(models.Model):
         choices=ActionStatus.choices,
         default=ActionStatus.PENDING,
     )
+    datebook_request_id = models.CharField(max_length=128, blank=True, default="")
+    datebook_command_id = models.UUIDField(null=True, blank=True, unique=True)
+    resolution_code = models.CharField(max_length=32, blank=True, default="")
 
     # Platform message tracking (for editing after response)
     platform_message_id = models.CharField(
@@ -72,6 +91,13 @@ class PendingAction(models.Model):
         indexes = [
             models.Index(fields=["tenant", "status"]),
             models.Index(fields=["expires_at"]),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "datebook_request_id"],
+                condition=~models.Q(datebook_request_id=""),
+                name="actions_datebook_request_unique",
+            )
         ]
 
     def __str__(self):
@@ -105,7 +131,7 @@ class GatePreference(models.Model):
 
 
 class ActionAuditLog(models.Model):
-    """Permanent record of every gated action — approved, denied, or expired."""
+    """Permanent immutable record of gate and downstream action transitions."""
 
     tenant = models.ForeignKey(
         "tenants.Tenant",
@@ -118,9 +144,11 @@ class ActionAuditLog(models.Model):
     pii_receipts = models.JSONField(default=dict, blank=True)
     result = models.CharField(
         max_length=16,
-        choices=ActionStatus.choices,
-        help_text="Final outcome: approved, denied, or expired.",
+        choices=ActionAuditOutcome.choices,
+        help_text="Immutable gate decision or downstream execution transition.",
     )
+    datebook_command_id = models.UUIDField(null=True, blank=True)
+    detail_code = models.CharField(max_length=32, blank=True, default="")
     responded_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

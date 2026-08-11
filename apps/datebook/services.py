@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import threading
 import uuid
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -15,6 +17,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime, parse_time
 
 from apps.common.tenant_tz import tenant_tz
+from apps.orchestrator.envelope_registry import suppress_refresh
 from apps.pii.store_authoring import author_store_fields
 from apps.tenants.models import Tenant
 
@@ -40,6 +43,8 @@ from .models import (
 )
 from .readiness import datebook_delivery_ready
 
+logger = logging.getLogger(__name__)
+
 EVENT_WINDOW_PAST_DAYS = 30
 EVENT_WINDOW_FUTURE_DAYS = 180
 MAX_PAGE_ITEMS = 50
@@ -51,7 +56,7 @@ COMMAND_DAILY_ITEM_CAP = 20
 COMMAND_PAYLOAD_BYTES = 32_000
 
 
-@dataclass(frozen=True)
+@dataclass
 class ProtocolError(Exception):
     code: str
     status_code: int = 400
@@ -116,17 +121,31 @@ def _assert_gateway(gateway, *, installation_id: str, gateway_epoch: int) -> Non
 
 
 def _cancel_never_started_commands(tenant, now) -> None:
-    DeviceCommand.objects.filter(
-        tenant=tenant,
-        state__in=[DeviceCommand.State.PENDING, DeviceCommand.State.LEASED],
-        started_at__isnull=True,
-    ).update(
-        state=DeviceCommand.State.CANCELLED,
-        lease_token=None,
-        lease_expires_at=None,
-        resolved_at=now,
-        updated_at=now,
+    from apps.actions.models import ActionAuditOutcome
+    from apps.actions.services import record_datebook_command_transition
+
+    commands = list(
+        DeviceCommand.objects.select_for_update().filter(
+            tenant=tenant,
+            state__in=[DeviceCommand.State.PENDING, DeviceCommand.State.LEASED],
+            started_at__isnull=True,
+        )
     )
+    for command in commands:
+        command.state = DeviceCommand.State.CANCELLED
+        command.lease_token = None
+        command.lease_expires_at = None
+        command.resolved_at = now
+        command.save(
+            update_fields=[
+                "state",
+                "lease_token",
+                "lease_expires_at",
+                "resolved_at",
+                "updated_at",
+            ]
+        )
+        record_datebook_command_transition(command, ActionAuditOutcome.CANCELLED)
 
 
 def _abort_active_sync_runs(tenant) -> None:
@@ -143,7 +162,7 @@ def register_gateway(tenant, *, installation_id, takeover: bool) -> tuple[Datebo
         raise ProtocolError("invalid_takeover")
     now = timezone.now()
 
-    with transaction.atomic():
+    with suppress_refresh(), transaction.atomic():
         Tenant.objects.select_for_update().get(pk=tenant.pk)
         active = (
             DatebookGateway.objects.select_for_update()
@@ -497,7 +516,7 @@ def stage_sync_page(
 
     event_clean, event_errors = _clean_page_items(events, clean_event_item)
     reminder_clean, reminder_errors = _clean_page_items(reminders, clean_reminder_item)
-    with transaction.atomic():
+    with suppress_refresh(), transaction.atomic():
         locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
         gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
@@ -740,9 +759,26 @@ def _publish_staged_rows(
 
 
 def push_visibility_refresh(_tenant_id: str) -> None:
-    """B2a seam: wire one post-generation envelope refresh here."""
+    """Push one committed mirror generation with the shared zero-debounce key."""
 
-    return None
+    def _run() -> None:
+        try:
+            from apps.orchestrator.workspace_envelope import push_user_md
+
+            push_user_md(_tenant_id, debounce_seconds=0)
+        except Exception:
+            logger.warning(
+                "Post-sync USER.md push failed for tenant %s",
+                str(_tenant_id)[:8],
+                exc_info=True,
+            )
+
+    from django.conf import settings
+
+    if getattr(settings, "NBHD_DISABLE_BACKGROUND_THREADS", False):
+        _run()
+        return
+    threading.Thread(target=_run, daemon=True).start()
 
 
 def commit_sync_run(
@@ -762,7 +798,7 @@ def commit_sync_run(
 
     # _CommitStopped is suppressed inside atomic so deliberate abort/cleanup
     # commits before the typed protocol error is raised outside the block.
-    with transaction.atomic(), suppress(_CommitStopped):
+    with suppress_refresh(), transaction.atomic(), suppress(_CommitStopped):
         locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
         gateway = _locked_active_gateway(locked_tenant)
         _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
@@ -920,10 +956,10 @@ def commit_sync_run(
                     "events": "committed" if run.events_committable else "not_committed",
                     "reminders": "committed" if run.reminders_committable else "not_committed",
                 }
+                transaction.on_commit(lambda tenant_id=str(tenant.id): push_visibility_refresh(tenant_id))
 
     if deferred_error is not None:
         raise deferred_error
-    push_visibility_refresh(str(tenant.id))
     return response
 
 
@@ -954,7 +990,94 @@ def _walk_prohibited_payload(value) -> None:
         raise ProtocolError("floats_not_allowed")
 
 
-def _validate_command_payload(payload) -> tuple[dict, int]:
+def _command_date(value, code: str):
+    parsed = parse_date(value) if isinstance(value, str) else None
+    if parsed is None or parsed.isoformat() != value:
+        raise ProtocolError(code)
+    return parsed
+
+
+def _command_datetime(value, code: str, *, aware: bool):
+    parsed = parse_datetime(value) if isinstance(value, str) else None
+    if parsed is None or (parsed.tzinfo is not None) is not aware:
+        raise ProtocolError(code)
+    return parsed
+
+
+def _validate_command_time(value) -> dict:
+    if not isinstance(value, dict):
+        raise ProtocolError("invalid_command_time")
+    kind = value.get("kind")
+    if kind == "all_day":
+        if set(value) != {"kind", "start_date", "end_date_exclusive"}:
+            raise ProtocolError("invalid_command_time")
+        start = _command_date(value["start_date"], "invalid_command_time")
+        end = _command_date(value["end_date_exclusive"], "invalid_command_time")
+    elif kind == "zoned":
+        if set(value) != {"kind", "start_at", "end_at", "tz_id"}:
+            raise ProtocolError("invalid_command_time")
+        start = _command_datetime(value["start_at"], "invalid_command_time", aware=True)
+        end = _command_datetime(value["end_at"], "invalid_command_time", aware=True)
+        if not isinstance(value["tz_id"], str) or not 1 <= len(value["tz_id"]) <= 63:
+            raise ProtocolError("invalid_command_time")
+    elif kind == "floating":
+        if set(value) != {"kind", "start_local", "end_local"}:
+            raise ProtocolError("invalid_command_time")
+        start = _command_datetime(value["start_local"], "invalid_command_time", aware=False)
+        end = _command_datetime(value["end_local"], "invalid_command_time", aware=False)
+    else:
+        raise ProtocolError("invalid_command_time")
+    if end <= start:
+        raise ProtocolError("invalid_command_time")
+    return dict(value)
+
+
+def _validate_command_due(value) -> dict:
+    if not isinstance(value, dict):
+        raise ProtocolError("invalid_command_due")
+    kind = value.get("kind")
+    if kind == "none":
+        if set(value) != {"kind"}:
+            raise ProtocolError("invalid_command_due")
+    elif kind == "all_day":
+        if set(value) != {"kind", "date"}:
+            raise ProtocolError("invalid_command_due")
+        _command_date(value["date"], "invalid_command_due")
+    elif kind == "zoned":
+        if set(value) != {"kind", "due_at", "tz_id"}:
+            raise ProtocolError("invalid_command_due")
+        _command_datetime(value["due_at"], "invalid_command_due", aware=True)
+        if not isinstance(value["tz_id"], str) or not 1 <= len(value["tz_id"]) <= 63:
+            raise ProtocolError("invalid_command_due")
+    elif kind == "floating":
+        if set(value) != {"kind", "due_local"}:
+            raise ProtocolError("invalid_command_due")
+        _command_datetime(value["due_local"], "invalid_command_due", aware=False)
+    else:
+        raise ProtocolError("invalid_command_due")
+    return dict(value)
+
+
+def _validate_command_alarm(value) -> dict:
+    if not isinstance(value, dict):
+        raise ProtocolError("invalid_command_alarm")
+    kind = value.get("kind")
+    if kind == "absolute":
+        if set(value) != {"kind", "trigger_at"}:
+            raise ProtocolError("invalid_command_alarm")
+        _command_datetime(value["trigger_at"], "invalid_command_alarm", aware=True)
+    elif kind == "relative":
+        if set(value) != {"kind", "offset_seconds"}:
+            raise ProtocolError("invalid_command_alarm")
+        offset = value["offset_seconds"]
+        if isinstance(offset, bool) or not isinstance(offset, int) or not -604_800 <= offset <= 0:
+            raise ProtocolError("invalid_command_alarm")
+    else:
+        raise ProtocolError("invalid_command_alarm")
+    return dict(value)
+
+
+def _validate_command_payload(payload, *, command_type=None) -> tuple[dict, int]:
     if not isinstance(payload, dict):
         raise ProtocolError("invalid_command_payload")
     if set(payload) != {"items"}:
@@ -999,6 +1122,19 @@ def _validate_command_payload(payload) -> tuple[dict, int]:
         for key in ("time", "due", "alarm"):
             if key in cleaned and not isinstance(cleaned[key], dict):
                 raise ProtocolError(f"invalid_command_{key}")
+        if command_type == DeviceCommand.CommandType.CALENDAR_CREATE:
+            if "time" not in cleaned or {"due", "priority", "list_title"}.intersection(cleaned):
+                raise ProtocolError("invalid_calendar_command_item")
+        elif command_type == DeviceCommand.CommandType.REMINDER_CREATE:
+            if {"time", "calendar_title"}.intersection(cleaned):
+                raise ProtocolError("invalid_reminder_command_item")
+            cleaned.setdefault("due", {"kind": "none"})
+        if "time" in cleaned:
+            cleaned["time"] = _validate_command_time(cleaned["time"])
+        if "due" in cleaned:
+            cleaned["due"] = _validate_command_due(cleaned["due"])
+        if "alarm" in cleaned:
+            cleaned["alarm"] = _validate_command_alarm(cleaned["alarm"])
         cleaned_items.append(cleaned)
     payload = {"items": cleaned_items}
     _walk_prohibited_payload(payload)
@@ -1010,6 +1146,7 @@ def _validate_command_payload(payload) -> tuple[dict, int]:
 def create_device_command(
     tenant,
     *,
+    command_id=None,
     request_id,
     command_type,
     payload,
@@ -1026,6 +1163,8 @@ def create_device_command(
         raise ProtocolError("invalid_request_id")
     if command_type not in DeviceCommand.CommandType.values:
         raise ProtocolError("invalid_command_type")
+    # Preserve B1's internal seam for existing callers; the B2a runtime entry
+    # performs the stricter command-type/tagged-time validation before gating.
     payload, item_count = _validate_command_payload(payload)
     display_text = normalize_text(display_text, 512)
     destination_name = normalize_text(destination_name, 256)
@@ -1034,6 +1173,11 @@ def create_device_command(
     if target_at is not None and (not isinstance(target_at, datetime) or target_at.tzinfo is None):
         raise ProtocolError("invalid_target_at")
     request_id = request_id.strip()
+    if command_id is not None:
+        try:
+            command_id = uuid.UUID(str(command_id))
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ProtocolError("invalid_command_id") from exc
     request_digest = _command_request_digest(
         command_type,
         payload,
@@ -1055,7 +1199,7 @@ def create_device_command(
             raise ProtocolError("datebook_disabled", 409)
         existing = DeviceCommand.objects.filter(tenant=locked_tenant, request_id=request_id).first()
         if existing is not None:
-            if existing.request_digest != request_digest:
+            if existing.request_digest != request_digest or (command_id is not None and existing.id != command_id):
                 raise ProtocolError("request_id_conflict", 409)
             return existing, False
         gateway = _locked_active_gateway(locked_tenant)
@@ -1083,6 +1227,7 @@ def create_device_command(
         )
         try:
             command = DeviceCommand.objects.create(
+                id=command_id or uuid.uuid4(),
                 tenant=locked_tenant,
                 request_id=request_id,
                 request_digest=request_digest,
@@ -1099,11 +1244,22 @@ def create_device_command(
                 target_at=target_at,
             )
         except IntegrityError:
-            command = DeviceCommand.objects.get(tenant=locked_tenant, request_id=request_id)
+            command = DeviceCommand.objects.filter(tenant=locked_tenant, request_id=request_id).first()
+            if command is None:
+                raise ProtocolError("command_id_conflict", 409) from None
             if command.request_digest != request_digest:
+                raise ProtocolError("request_id_conflict", 409) from None
+            if command_id is not None and command.id != command_id:
                 raise ProtocolError("request_id_conflict", 409) from None
             return command, False
         return command, True
+
+
+def datebook_command_generation(tenant) -> int:
+    """Monotonic tenant hint derived from the latest command update epoch."""
+
+    latest = DeviceCommand.objects.filter(tenant=tenant).aggregate(value=Max("updated_at"))["value"]
+    return int(latest.timestamp() * 1_000_000) if latest is not None else 0
 
 
 def _command_is_past(command, now) -> bool:
@@ -1111,6 +1267,9 @@ def _command_is_past(command, now) -> bool:
 
 
 def sweep_device_commands(*, tenant=None, now=None) -> dict[str, int]:
+    from apps.actions.models import ActionAuditOutcome
+    from apps.actions.services import record_datebook_command_transition
+
     now = now or timezone.now()
     counts = {"requeued": 0, "expired": 0, "ambiguous": 0}
     tenant_filter = {"tenant": tenant} if tenant is not None else {}
@@ -1134,24 +1293,36 @@ def sweep_device_commands(*, tenant=None, now=None) -> dict[str, int]:
             command.lease_token = None
             command.lease_expires_at = None
             command.save(update_fields=["state", "resolved_at", "lease_token", "lease_expires_at", "updated_at"])
-        expired = DeviceCommand.objects.filter(
-            Q(expires_at__lte=now) | Q(target_at__lte=now),
-            **tenant_filter,
-            state=DeviceCommand.State.PENDING,
-            started_at__isnull=True,
-        ).update(state=DeviceCommand.State.EXPIRED, resolved_at=now, updated_at=now)
-        counts["expired"] += expired
-        ambiguous = DeviceCommand.objects.filter(
-            **tenant_filter,
-            state=DeviceCommand.State.EXECUTING,
-            execution_deadline_at__lte=now,
-        ).update(
-            state=DeviceCommand.State.AMBIGUOUS,
-            execution_status=DeviceCommand.ExecutionStatus.AMBIGUOUS,
-            resolved_at=now,
-            updated_at=now,
+            if command.state == DeviceCommand.State.EXPIRED:
+                record_datebook_command_transition(command, ActionAuditOutcome.COMMAND_EXPIRED)
+        expiring = list(
+            DeviceCommand.objects.select_for_update().filter(
+                Q(expires_at__lte=now) | Q(target_at__lte=now),
+                **tenant_filter,
+                state=DeviceCommand.State.PENDING,
+                started_at__isnull=True,
+            )
         )
-        counts["ambiguous"] += ambiguous
+        for command in expiring:
+            command.state = DeviceCommand.State.EXPIRED
+            command.resolved_at = now
+            command.save(update_fields=["state", "resolved_at", "updated_at"])
+            counts["expired"] += 1
+            record_datebook_command_transition(command, ActionAuditOutcome.COMMAND_EXPIRED)
+        ambiguous_commands = list(
+            DeviceCommand.objects.select_for_update().filter(
+                **tenant_filter,
+                state=DeviceCommand.State.EXECUTING,
+                execution_deadline_at__lte=now,
+            )
+        )
+        for command in ambiguous_commands:
+            command.state = DeviceCommand.State.AMBIGUOUS
+            command.execution_status = DeviceCommand.ExecutionStatus.AMBIGUOUS
+            command.resolved_at = now
+            command.save(update_fields=["state", "execution_status", "resolved_at", "updated_at"])
+            counts["ambiguous"] += 1
+            record_datebook_command_transition(command, ActionAuditOutcome.AMBIGUOUS)
     return counts
 
 
@@ -1236,6 +1407,10 @@ def start_device_command(
             command.lease_expires_at = None
             command.resolved_at = now
             command.save(update_fields=["state", "lease_token", "lease_expires_at", "resolved_at", "updated_at"])
+            from apps.actions.models import ActionAuditOutcome
+            from apps.actions.services import record_datebook_command_transition
+
+            record_datebook_command_transition(command, ActionAuditOutcome.COMMAND_EXPIRED)
             deferred_error = ProtocolError("command_expired", 409)
         elif command.lease_expires_at <= now:
             command.state = DeviceCommand.State.PENDING
@@ -1386,4 +1561,11 @@ def finish_device_command(
         command.pii_receipts = receipts
         command.resolved_at = now
         command.save()
+        from apps.actions.models import ActionAuditOutcome
+        from apps.actions.services import record_datebook_command_transition
+
+        outcome = (
+            ActionAuditOutcome.EXECUTED if command.state == DeviceCommand.State.EXECUTED else ActionAuditOutcome.FAILED
+        )
+        record_datebook_command_transition(command, outcome, detail_code=command.safe_error)
         return command, False

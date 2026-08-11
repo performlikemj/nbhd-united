@@ -19,6 +19,7 @@ from .services import (
     ProtocolError,
     claim_device_command,
     commit_sync_run,
+    datebook_command_generation,
     finish_device_command,
     open_sync_run,
     register_gateway,
@@ -214,6 +215,7 @@ def _command_data(command, tenant) -> dict:
         },
         model_label="datebook.DeviceCommand",
     )
+    represented["datebook_command_generation"] = datebook_command_generation(tenant)
     return represented
 
 
@@ -228,7 +230,12 @@ class CommandClaimView(DatebookAPIView):
             installation_id=data.get("installation_id"),
             gateway_epoch=data.get("gateway_epoch"),
         )
-        return Response({"command": _command_data(command, tenant) if command else None})
+        return Response(
+            {
+                "command": _command_data(command, tenant) if command else None,
+                "datebook_command_generation": datebook_command_generation(tenant),
+            }
+        )
 
 
 class CommandStartView(DatebookAPIView):
@@ -250,6 +257,7 @@ class CommandStartView(DatebookAPIView):
                 "command_id": str(command.id),
                 "state": command.state,
                 "execution_status": command.execution_status,
+                "datebook_command_generation": datebook_command_generation(tenant),
                 "idempotent": idempotent,
             }
         )
@@ -281,6 +289,7 @@ class CommandResultView(DatebookAPIView):
                 "execution_status": command.execution_status,
                 "mirror_status": command.mirror_status,
                 "safe_error": command.safe_error,
+                "datebook_command_generation": datebook_command_generation(tenant),
                 "idempotent": idempotent,
             }
         )

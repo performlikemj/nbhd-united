@@ -1751,9 +1751,6 @@ class TelegramPoller:
         chat_id: int,
     ) -> None:
         """Handle action gate approve/deny callbacks."""
-        from apps.actions.messaging import update_gate_message
-        from apps.actions.models import ActionAuditLog, ActionStatus, PendingAction
-
         try:
             # Parse: gate_approve:123 or gate_deny:123
             parts = callback_data.split(":")
@@ -1762,80 +1759,36 @@ class TelegramPoller:
                 return
 
             action_str, action_id_str = parts[0], parts[1]
-            is_approve = action_str == "gate_approve"
+            response_action = "approve" if action_str == "gate_approve" else "deny"
             action_id = int(action_id_str)
+            from apps.actions.messaging import update_gate_message
+            from apps.actions.views import GateRespondView
 
-            action = PendingAction.objects.get(id=action_id, tenant=tenant)
-
-            # Already resolved?
-            if action.status != ActionStatus.PENDING:
-                self._answer_callback_query(callback_id, f"Already {action.status}")
-                return
-
-            # Expired? Use conditional UPDATE so the sweep cannot have already
-            # flipped the row between our is_expired check and the write.
-            if action.is_expired:
-                updated = PendingAction.objects.filter(
-                    id=action.id,
-                    status=ActionStatus.PENDING,
-                ).update(status=ActionStatus.EXPIRED)
-                if updated:
-                    action.status = ActionStatus.EXPIRED
-                    ActionAuditLog.objects.create(
-                        tenant=tenant,
-                        action_type=action.action_type,
-                        action_payload=action.action_payload,
-                        display_summary=action.display_summary,
-                        pii_receipts=action.pii_receipts,
-                        result=ActionStatus.EXPIRED,
-                    )
-                    update_gate_message(action)
-                self._answer_callback_query(callback_id, "⏰ Expired")
-                return
-
-            # Apply response using a conditional UPDATE so the sweep cannot
-            # clobber an approve that lands at the deadline boundary.
-            from django.utils import timezone
-
-            now = timezone.now()
-            new_status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
-            updated = PendingAction.objects.filter(
-                id=action.id,
-                status=ActionStatus.PENDING,
-            ).update(status=new_status, responded_at=now)
-            if not updated:
-                # Sweep flipped EXPIRED between our read and write; treat as expired.
-                action.refresh_from_db(fields=["status"])
-                self._answer_callback_query(callback_id, f"Already {action.status}")
-                return
-            action.status = new_status
-            action.responded_at = now
-
-            ActionAuditLog.objects.create(
+            action, data, response_status = GateRespondView.resolve_action(
+                action_id=action_id,
+                response_action=response_action,
                 tenant=tenant,
-                action_type=action.action_type,
-                action_payload=action.action_payload,
-                display_summary=action.display_summary,
-                pii_receipts=action.pii_receipts,
-                result=action.status,
-                responded_at=now,
             )
-
-            update_gate_message(action)
-
-            icon = "✅" if is_approve else "❌"
-            label = "Approved" if is_approve else "Denied"
-            self._answer_callback_query(callback_id, f"{icon} {label}")
+            if action is not None and response_status in (200, 410):
+                update_gate_message(action)
+            if response_status == 200:
+                icon = "✅" if response_action == "approve" else "❌"
+                label = "Approved" if response_action == "approve" else "Denied"
+                self._answer_callback_query(callback_id, f"{icon} {label}")
+            elif response_status == 410:
+                self._answer_callback_query(callback_id, "⏰ Expired")
+            elif response_status == 409:
+                self._answer_callback_query(callback_id, f"Already {data.get('status', 'resolved')}")
+            else:
+                self._answer_callback_query(callback_id, "Action not found")
 
             logger.info(
                 "Gate callback: tenant=%s action=%s result=%s",
                 tenant.id,
                 action_id,
-                action.status,
+                getattr(action, "status", data.get("status", "not_found")),
             )
 
-        except PendingAction.DoesNotExist:
-            self._answer_callback_query(callback_id, "Action not found")
         except Exception:
             logger.exception("Error handling gate callback")
             lang = getattr(tenant.user, "language", None) or "en"

@@ -29,9 +29,9 @@ from .models import (
     ActionAuditLog,
     ActionStatus,
     ActionType,
-    GatePreference,
     PendingAction,
 )
+from .services import record_action_audit, should_auto_approve
 
 logger = logging.getLogger(__name__)
 
@@ -60,17 +60,7 @@ def _validate_internal_auth(request, tenant_id: str):
 
 def _should_auto_approve(tenant: Tenant, action_type: str) -> bool:
     """Check if this action type should be auto-approved for this tenant."""
-    # Master switch off = auto-approve everything (user acknowledged risk)
-    if not tenant.gate_all_actions and tenant.gate_acknowledged_risk:
-        return True
-
-    # Check per-action-type preference
-    try:
-        pref = GatePreference.objects.get(tenant=tenant, action_type=action_type)
-        return not pref.require_confirmation
-    except GatePreference.DoesNotExist:
-        # Default: require confirmation
-        return False
+    return should_auto_approve(tenant, action_type)
 
 
 def _is_starter_tier(tenant: Tenant) -> bool:
@@ -140,6 +130,14 @@ class GateRequestView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        from apps.datebook.gate import is_datebook_action_type
+
+        if is_datebook_action_type(action_type):
+            return Response(
+                {"error": "datebook_actions_use_request_create"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
         record_runtime_write_activity(tenant)
 
         from apps.pii.store_authoring import author_store_fields
@@ -196,14 +194,7 @@ class GateRequestView(APIView):
         if not delivered:
             action.status = ActionStatus.EXPIRED
             action.save(update_fields=["status"])
-            ActionAuditLog.objects.create(
-                tenant=tenant,
-                action_type=action_type,
-                action_payload=action.action_payload,
-                display_summary=action.display_summary,
-                pii_receipts=action.pii_receipts,
-                result=ActionStatus.EXPIRED,
-            )
+            record_action_audit(action, ActionStatus.EXPIRED)
             logger.warning(
                 "Gate request undeliverable (no channel): %s | %s",
                 tenant.id,
@@ -271,14 +262,7 @@ class GatePollView(APIView):
             if updated:
                 action.status = ActionStatus.EXPIRED
                 # Log it
-                ActionAuditLog.objects.create(
-                    tenant_id=tenant_id,
-                    action_type=action.action_type,
-                    action_payload=action.action_payload,
-                    display_summary=action.display_summary,
-                    pii_receipts=action.pii_receipts,
-                    result=ActionStatus.EXPIRED,
-                )
+                record_action_audit(action, ActionStatus.EXPIRED)
                 # Clear the stale Approve/Deny buttons on the platform confirmation
                 # message, exactly as the user-response paths do. Without this the
                 # buttons linger indefinitely on timeout-expiry and a later tap is a
@@ -313,6 +297,64 @@ class GateRespondView(APIView):
 
     permission_classes = [AllowAny]
 
+    @classmethod
+    def resolve_action(cls, *, action_id: int, response_action: str, tenant=None):
+        """Resolve every channel through one locked gate/command transition seam."""
+
+        if response_action not in ("approve", "deny"):
+            return None, {"error": "action must be 'approve' or 'deny'"}, status.HTTP_400_BAD_REQUEST
+
+        with transaction.atomic():
+            actions = PendingAction.objects.select_for_update()
+            if tenant is not None:
+                actions = actions.filter(tenant=tenant)
+            try:
+                action = actions.get(id=action_id)
+            except PendingAction.DoesNotExist:
+                return None, {"error": "Action not found"}, status.HTTP_404_NOT_FOUND
+
+            if action.status != ActionStatus.PENDING:
+                return (
+                    action,
+                    {
+                        "error": f"Action already resolved: {action.status}",
+                        "status": action.status,
+                    },
+                    status.HTTP_409_CONFLICT,
+                )
+
+            from apps.datebook.gate import (
+                approve_datebook_action,
+                deny_datebook_action,
+                expire_datebook_action,
+                is_datebook_action_type,
+            )
+
+            if action.is_expired:
+                if is_datebook_action_type(action.action_type):
+                    data = expire_datebook_action(action)
+                else:
+                    action.status = ActionStatus.EXPIRED
+                    action.save(update_fields=["status"])
+                    record_action_audit(action, ActionStatus.EXPIRED)
+                    data = {"error": "Action expired", "status": "expired"}
+                return action, data, status.HTTP_410_GONE
+
+            now = timezone.now()
+            if is_datebook_action_type(action.action_type):
+                if response_action == "approve":
+                    data = approve_datebook_action(action, responded_at=now)
+                else:
+                    data = deny_datebook_action(action, responded_at=now)
+                data["status"] = action.status
+                return action, data, status.HTTP_200_OK
+
+            action.status = ActionStatus.APPROVED if response_action == "approve" else ActionStatus.DENIED
+            action.responded_at = now
+            action.save(update_fields=["status", "responded_at"])
+            record_action_audit(action, action.status, responded_at=now)
+            return action, {"status": action.status}, status.HTTP_200_OK
+
     def post(self, request, action_id: int):
         from django.conf import settings as django_settings
 
@@ -330,77 +372,18 @@ class GateRespondView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        response_action = request.data.get("action", "")
-        if response_action not in ("approve", "deny"):
-            return Response(
-                {"error": "action must be 'approve' or 'deny'"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        # Wrap the read-check-write in a single atomic block so select_for_update
-        # holds the row lock from fetch through final save, preventing the sweep
-        # from clobbering an in-flight Approve and vice-versa.
-        with transaction.atomic():
-            try:
-                action = PendingAction.objects.select_for_update().get(id=action_id)
-            except PendingAction.DoesNotExist:
-                return Response(
-                    {"error": "Action not found"},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
-
-            if action.status != ActionStatus.PENDING:
-                return Response(
-                    {
-                        "error": f"Action already resolved: {action.status}",
-                        "status": action.status,
-                    },
-                    status=status.HTTP_409_CONFLICT,
-                )
-
-            # Check expiry — re-evaluated under the row lock so the sweep cannot
-            # write EXPIRED between our status==PENDING check and our own write.
-            if action.is_expired:
-                action.status = ActionStatus.EXPIRED
-                action.save(update_fields=["status"])
-                ActionAuditLog.objects.create(
-                    tenant=action.tenant,
-                    action_type=action.action_type,
-                    action_payload=action.action_payload,
-                    display_summary=action.display_summary,
-                    pii_receipts=action.pii_receipts,
-                    result=ActionStatus.EXPIRED,
-                )
-                return Response(
-                    {"error": "Action expired", "status": "expired"},
-                    status=status.HTTP_410_GONE,
-                )
-
-            # Apply response (still under the row lock)
-            now = timezone.now()
-            if response_action == "approve":
-                action.status = ActionStatus.APPROVED
-            else:
-                action.status = ActionStatus.DENIED
-            action.responded_at = now
-            action.save(update_fields=["status", "responded_at"])
-
-            # Audit log
-            ActionAuditLog.objects.create(
-                tenant=action.tenant,
-                action_type=action.action_type,
-                action_payload=action.action_payload,
-                display_summary=action.display_summary,
-                pii_receipts=action.pii_receipts,
-                result=action.status,
-                responded_at=now,
-            )
+        action, data, response_status = self.resolve_action(
+            action_id=action_id,
+            response_action=request.data.get("action", ""),
+        )
+        if action is None:
+            return Response(data, status=response_status)
 
         logger.info(
             "Gate response: %s | %s | %s | %s",
             action.tenant_id,
             action.action_type,
-            action.status,
+            data.get("status", action.status),
             action.display_summary[:60],
         )
 
@@ -410,7 +393,4 @@ class GateRespondView(APIView):
 
         update_gate_message(action)
 
-        return Response(
-            {"status": action.status},
-            status=status.HTTP_200_OK,
-        )
+        return Response(data, status=response_status)

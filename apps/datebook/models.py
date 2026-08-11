@@ -510,6 +510,7 @@ class DeviceCommand(models.Model):
     expires_at = models.DateTimeField()
     target_at = models.DateTimeField(null=True, blank=True)
     resolved_at = models.DateTimeField(null=True, blank=True)
+    notified_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
