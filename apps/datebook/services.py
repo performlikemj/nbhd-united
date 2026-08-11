@@ -120,17 +120,17 @@ def _assert_gateway(gateway, *, installation_id: str, gateway_epoch: int) -> Non
         )
 
 
-def _cancel_never_started_commands(tenant, now) -> None:
+def _cancel_never_started_commands(tenant, now, *, command_types=None) -> None:
     from apps.actions.models import ActionAuditOutcome
     from apps.actions.services import record_datebook_command_transition
 
-    commands = list(
-        DeviceCommand.objects.select_for_update().filter(
-            tenant=tenant,
-            state__in=[DeviceCommand.State.PENDING, DeviceCommand.State.LEASED],
-            started_at__isnull=True,
-        )
+    commands_query = DeviceCommand.objects.select_for_update().filter(
+        tenant=tenant,
+        state__in=[DeviceCommand.State.PENDING, DeviceCommand.State.LEASED],
     )
+    if command_types is not None:
+        commands_query = commands_query.filter(command_type__in=command_types)
+    commands = list(commands_query)
     for command in commands:
         command.state = DeviceCommand.State.CANCELLED
         command.lease_token = None
@@ -148,97 +148,193 @@ def _cancel_never_started_commands(tenant, now) -> None:
         record_datebook_command_transition(command, ActionAuditOutcome.CANCELLED)
 
 
-def _abort_active_sync_runs(tenant) -> None:
-    for run in SyncRun.objects.select_for_update().filter(
+def _abort_active_sync_runs(tenant, *, scope: str | None = None) -> None:
+    runs = SyncRun.objects.select_for_update().filter(
         tenant=tenant,
         state__in=[SyncRun.State.OPEN, SyncRun.State.STAGED],
-    ):
+    )
+    if scope == "events":
+        runs = runs.filter(events_in_scope=True)
+    elif scope == "reminders":
+        runs = runs.filter(reminders_in_scope=True)
+    for run in runs:
         _abort_run(run, full_snapshot=True)
 
 
-def register_gateway(tenant, *, installation_id, takeover: bool) -> tuple[DatebookGateway, bool]:
+def _revoke_scope(tenant, gateway: DatebookGateway, *, scope: str, now) -> None:
+    """Revoke one scope and force its next enable through a full snapshot."""
+
+    if scope == "events":
+        model = MirrorEvent
+        command_type = DeviceCommand.CommandType.CALENDAR_CREATE
+        gateway.events_full_snapshot_required = True
+        gateway.events_authorization = AuthorizationStatus.NOT_DETERMINED
+        gateway.events_last_complete_sync_at = None
+        gateway.events_window_start = None
+        gateway.events_window_end = None
+        gateway_fields = [
+            "events_full_snapshot_required",
+            "events_authorization",
+            "events_last_complete_sync_at",
+            "events_window_start",
+            "events_window_end",
+        ]
+    else:
+        model = MirrorReminder
+        command_type = DeviceCommand.CommandType.REMINDER_CREATE
+        gateway.reminders_full_snapshot_required = True
+        gateway.reminders_authorization = AuthorizationStatus.NOT_DETERMINED
+        gateway.reminders_last_complete_sync_at = None
+        gateway_fields = [
+            "reminders_full_snapshot_required",
+            "reminders_authorization",
+            "reminders_last_complete_sync_at",
+        ]
+
+    _abort_active_sync_runs(tenant, scope=scope)
+    model.objects.select_for_update().filter(tenant=tenant).update(
+        active=False,
+        inactive_generation=gateway.current_generation,
+    )
+    _cancel_never_started_commands(tenant, now, command_types=[command_type])
+    gateway.save(update_fields=[*gateway_fields, "updated_at"])
+
+
+def _write_registration_consent(tenant, gateway: DatebookGateway, *, events_consent, reminders_consent, now) -> None:
+    tenant_fields = []
+    for scope, consent in (("events", events_consent), ("reminders", reminders_consent)):
+        field = f"datebook_{scope}_consent_at"
+        current = getattr(tenant, field)
+        if consent:
+            if current is None:
+                setattr(tenant, field, now)
+                tenant_fields.append(field)
+        else:
+            if current is not None:
+                setattr(tenant, field, None)
+                tenant_fields.append(field)
+            _revoke_scope(tenant, gateway, scope=scope, now=now)
+    if tenant_fields:
+        tenant.save(update_fields=[*tenant_fields, "updated_at"])
+
+
+def register_gateway(
+    tenant,
+    *,
+    installation_id,
+    takeover: bool,
+    events_consent,
+    reminders_consent,
+) -> tuple[DatebookGateway, bool, Tenant]:
+    """Register the gateway and write both consent scopes atomically."""
+
     installation_id = _installation_id(installation_id)
     if not isinstance(takeover, bool):
         raise ProtocolError("invalid_takeover")
+    if not isinstance(events_consent, bool):
+        raise ProtocolError("invalid_events_consent")
+    if not isinstance(reminders_consent, bool):
+        raise ProtocolError("invalid_reminders_consent")
     now = timezone.now()
 
     with suppress_refresh(), transaction.atomic():
-        Tenant.objects.select_for_update().get(pk=tenant.pk)
+        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        if locked_tenant.status == Tenant.Status.SUSPENDED:
+            raise ProtocolError("suspended", 403)
+        if not locked_tenant.datebook_enabled:
+            raise ProtocolError("datebook_disabled", 409)
         active = (
             DatebookGateway.objects.select_for_update()
-            .filter(tenant=tenant, status=DatebookGateway.Status.ACTIVE)
+            .filter(tenant=locked_tenant, status=DatebookGateway.Status.ACTIVE)
             .first()
         )
         if active is not None and active.installation_id == installation_id:
             active.last_seen_at = now
             active.save(update_fields=["last_seen_at", "updated_at"])
-            return active, False
-        if active is not None and not takeover:
+            gateway = active
+            taken_over = False
+        elif active is not None and not takeover:
             raise ProtocolError(
                 "stale_gateway",
                 409,
                 {"gateway_epoch": active.gateway_epoch, "takeover_required": True},
             )
-
-        max_epoch = DatebookGateway.objects.filter(tenant=tenant).aggregate(value=Max("gateway_epoch"))["value"] or 0
-        next_epoch = max_epoch + 1
-        current_generation = (
-            active.current_generation
-            if active is not None
-            else DatebookGateway.objects.filter(tenant=tenant).aggregate(value=Max("current_generation"))["value"] or 0
-        )
-        if active is not None:
-            active.status = DatebookGateway.Status.RETIRED
-            active.retired_at = now
-            active.save(update_fields=["status", "retired_at", "updated_at"])
-            _abort_active_sync_runs(tenant)
-            _cancel_never_started_commands(tenant, now)
-
-        gateway = (
-            DatebookGateway.objects.select_for_update().filter(tenant=tenant, installation_id=installation_id).first()
-        )
-        if gateway is None:
-            gateway = DatebookGateway.objects.create(
-                tenant=tenant,
-                installation_id=installation_id,
-                gateway_epoch=next_epoch,
-                current_generation=current_generation,
-                status=DatebookGateway.Status.ACTIVE,
-                last_seen_at=now,
-            )
         else:
-            gateway.gateway_epoch = next_epoch
-            gateway.current_generation = current_generation
-            gateway.events_full_snapshot_required = True
-            gateway.reminders_full_snapshot_required = True
-            gateway.events_authorization = AuthorizationStatus.NOT_DETERMINED
-            gateway.reminders_authorization = AuthorizationStatus.NOT_DETERMINED
-            gateway.events_last_complete_sync_at = None
-            gateway.reminders_last_complete_sync_at = None
-            gateway.events_window_start = None
-            gateway.events_window_end = None
-            gateway.status = DatebookGateway.Status.ACTIVE
-            gateway.retired_at = None
-            gateway.last_seen_at = now
-            gateway.save(
-                update_fields=[
-                    "gateway_epoch",
-                    "current_generation",
-                    "events_full_snapshot_required",
-                    "reminders_full_snapshot_required",
-                    "events_authorization",
-                    "reminders_authorization",
-                    "events_last_complete_sync_at",
-                    "reminders_last_complete_sync_at",
-                    "events_window_start",
-                    "events_window_end",
-                    "status",
-                    "retired_at",
-                    "last_seen_at",
-                    "updated_at",
-                ]
+            max_epoch = (
+                DatebookGateway.objects.filter(tenant=locked_tenant).aggregate(value=Max("gateway_epoch"))["value"] or 0
             )
-        return gateway, active is not None
+            next_epoch = max_epoch + 1
+            current_generation = (
+                active.current_generation
+                if active is not None
+                else DatebookGateway.objects.filter(tenant=locked_tenant).aggregate(value=Max("current_generation"))[
+                    "value"
+                ]
+                or 0
+            )
+            if active is not None:
+                active.status = DatebookGateway.Status.RETIRED
+                active.retired_at = now
+                active.save(update_fields=["status", "retired_at", "updated_at"])
+                _abort_active_sync_runs(locked_tenant)
+                _cancel_never_started_commands(locked_tenant, now)
+
+            gateway = (
+                DatebookGateway.objects.select_for_update()
+                .filter(tenant=locked_tenant, installation_id=installation_id)
+                .first()
+            )
+            if gateway is None:
+                gateway = DatebookGateway.objects.create(
+                    tenant=locked_tenant,
+                    installation_id=installation_id,
+                    gateway_epoch=next_epoch,
+                    current_generation=current_generation,
+                    status=DatebookGateway.Status.ACTIVE,
+                    last_seen_at=now,
+                )
+            else:
+                gateway.gateway_epoch = next_epoch
+                gateway.current_generation = current_generation
+                gateway.events_full_snapshot_required = True
+                gateway.reminders_full_snapshot_required = True
+                gateway.events_authorization = AuthorizationStatus.NOT_DETERMINED
+                gateway.reminders_authorization = AuthorizationStatus.NOT_DETERMINED
+                gateway.events_last_complete_sync_at = None
+                gateway.reminders_last_complete_sync_at = None
+                gateway.events_window_start = None
+                gateway.events_window_end = None
+                gateway.status = DatebookGateway.Status.ACTIVE
+                gateway.retired_at = None
+                gateway.last_seen_at = now
+                gateway.save(
+                    update_fields=[
+                        "gateway_epoch",
+                        "current_generation",
+                        "events_full_snapshot_required",
+                        "reminders_full_snapshot_required",
+                        "events_authorization",
+                        "reminders_authorization",
+                        "events_last_complete_sync_at",
+                        "reminders_last_complete_sync_at",
+                        "events_window_start",
+                        "events_window_end",
+                        "status",
+                        "retired_at",
+                        "last_seen_at",
+                        "updated_at",
+                    ]
+                )
+            taken_over = active is not None
+
+        _write_registration_consent(
+            locked_tenant,
+            gateway,
+            events_consent=events_consent,
+            reminders_consent=reminders_consent,
+            now=now,
+        )
+        return gateway, taken_over, locked_tenant
 
 
 def disable_datebook(tenant, *, purge: bool) -> None:

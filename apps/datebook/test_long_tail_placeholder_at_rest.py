@@ -33,7 +33,11 @@ class DatebookLongTailPlaceholderTests(TestCase):
         self.client.force_authenticate(user=self.tenant.user)
         registered = self.client.post(
             "/api/v1/datebook/register/",
-            {"installation_id": "install-a"},
+            {
+                "installation_id": "install-a",
+                "events_consent": True,
+                "reminders_consent": True,
+            },
             format="json",
         )
         self.epoch = registered.data["gateway_epoch"]

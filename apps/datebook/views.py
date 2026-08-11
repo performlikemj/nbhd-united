@@ -32,17 +32,28 @@ MAX_DATEBOOK_REQUEST_BYTES = 1_048_576
 
 
 class DatebookAPIView(APIView):
+    """Base for consumers gated by enablement plus at least one consent."""
+
     authentication_classes = [JWTAuthenticationWithRLS]
     permission_classes = [IsAuthenticated]
 
-    def tenant(self, request):
+    def authenticated_tenant(self, request):
         tenant = getattr(request.user, "tenant", None)
+        if tenant is None:
+            raise ProtocolError("no_tenant", status.HTTP_404_NOT_FOUND)
+        tenant = Tenant.objects.filter(pk=tenant.pk).first()
         if tenant is None:
             raise ProtocolError("no_tenant", status.HTTP_404_NOT_FOUND)
         if tenant.status == Tenant.Status.SUSPENDED:
             raise ProtocolError("suspended", status.HTTP_403_FORBIDDEN)
-        if not datebook_delivery_ready(tenant):
+        return tenant
+
+    def tenant(self, request):
+        tenant = self.authenticated_tenant(request)
+        if not tenant.datebook_enabled:
             raise ProtocolError("datebook_disabled", status.HTTP_409_CONFLICT)
+        if not (tenant.datebook_events_consent_at or tenant.datebook_reminders_consent_at):
+            raise ProtocolError("consent_required", status.HTTP_409_CONFLICT)
         return tenant
 
     def handle_exception(self, exc):
@@ -84,22 +95,46 @@ class DatebookAPIView(APIView):
 
 
 class GatewayRegisterView(DatebookAPIView):
+    """Bootstrap gateway registration using enablement, never consent/manifest."""
+
     throttle_classes = [DatebookReadThrottle]
 
     def post(self, request):
-        tenant = self.tenant(request)
+        tenant = self.authenticated_tenant(request)
+        if not tenant.datebook_enabled:
+            raise ProtocolError("datebook_disabled", status.HTTP_409_CONFLICT)
         data = self.body(request)
-        gateway, taken_over = register_gateway(
+        gateway, taken_over, tenant = register_gateway(
             tenant,
             installation_id=data.get("installation_id"),
             takeover=data.get("takeover", False),
+            events_consent=data.get("events_consent"),
+            reminders_consent=data.get("reminders_consent"),
         )
         return Response(
             {
                 "installation_id": gateway.installation_id,
                 "gateway_epoch": gateway.gateway_epoch,
                 "generation": gateway.current_generation,
+                "gateway_status": gateway.status,
                 "taken_over": taken_over,
+                "scopes": {
+                    "events": {
+                        "consent_at": (
+                            tenant.datebook_events_consent_at.isoformat() if tenant.datebook_events_consent_at else None
+                        ),
+                        "full_snapshot_required": gateway.events_full_snapshot_required,
+                    },
+                    "reminders": {
+                        "consent_at": (
+                            tenant.datebook_reminders_consent_at.isoformat()
+                            if tenant.datebook_reminders_consent_at
+                            else None
+                        ),
+                        "full_snapshot_required": gateway.reminders_full_snapshot_required,
+                    },
+                },
+                "delivery_ready": datebook_delivery_ready(tenant),
             }
         )
 
