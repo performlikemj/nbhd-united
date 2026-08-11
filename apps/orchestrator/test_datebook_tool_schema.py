@@ -1,4 +1,4 @@
-"""B2a packaging/schema guards for the dormant Calendar & Reminders plugin."""
+"""Packaging, schema, and B2b emission guards for Calendar & Reminders."""
 
 from __future__ import annotations
 
@@ -6,10 +6,12 @@ import itertools
 import json
 from pathlib import Path
 
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
 from apps.orchestrator.config_generator import generate_openclaw_config
+from apps.orchestrator.config_security import audit_config_security
+from apps.orchestrator.config_validator import validate_openclaw_config
 from apps.tenants.services import create_tenant
 
 _PLUGIN_DIR = Path(__file__).resolve().parents[2] / "runtime/openclaw/plugins/nbhd-datebook-tools"
@@ -53,28 +55,71 @@ class DatebookToolSchemaTests(SimpleTestCase):
         self.assertIn("synced ${ageHours}h ago", self.source)
 
 
-class DatebookPluginDormancyTests(TestCase):
+class DatebookPluginEmissionTests(TestCase):
     def setUp(self):
-        self.tenant = create_tenant(display_name="Datebook Dormant", telegram_chat_id=760011)
+        self.tenant = create_tenant(display_name="Datebook Emission", telegram_chat_id=760011)
 
-    def test_plugin_is_never_emitted_for_any_b2a_readiness_combination(self):
+    def _set_readiness(self, *, manifest_ok: bool, enabled: bool, events: bool, reminders: bool) -> None:
         now = timezone.now()
-        for manifest_ok, enabled, event_consent, reminder_consent in itertools.product((False, True), repeat=4):
+        self.tenant.datebook_manifest_ok = manifest_ok
+        self.tenant.datebook_enabled = enabled
+        self.tenant.datebook_events_consent_at = now if events else None
+        self.tenant.datebook_reminders_consent_at = now if reminders else None
+
+    def _assert_emission(self, *, emitted: bool) -> dict:
+        config = generate_openclaw_config(self.tenant)
+        plugins = config.get("plugins", {})
+        assertion = self.assertIn if emitted else self.assertNotIn
+        assertion(_PLUGIN_ID, plugins.get("allow", []))
+        assertion(_PLUGIN_ID, plugins.get("entries", {}))
+        assertion(
+            f"/opt/nbhd/plugins/{_PLUGIN_ID}",
+            plugins.get("load", {}).get("paths", []),
+        )
+        return config
+
+    def test_plugin_emission_matches_eight_combination_readiness_matrix(self):
+        for manifest_ok, enabled, consent in itertools.product((False, True), repeat=3):
             with self.subTest(
                 manifest_ok=manifest_ok,
                 enabled=enabled,
-                event_consent=event_consent,
-                reminder_consent=reminder_consent,
+                consent=consent,
             ):
-                self.tenant.datebook_manifest_ok = manifest_ok
-                self.tenant.datebook_enabled = enabled
-                self.tenant.datebook_events_consent_at = now if event_consent else None
-                self.tenant.datebook_reminders_consent_at = now if reminder_consent else None
-                config = generate_openclaw_config(self.tenant)
-                plugins = config.get("plugins", {})
-                self.assertNotIn(_PLUGIN_ID, plugins.get("allow", []))
-                self.assertNotIn(_PLUGIN_ID, plugins.get("entries", {}))
-                self.assertNotIn(
-                    f"/opt/nbhd/plugins/{_PLUGIN_ID}",
-                    plugins.get("load", {}).get("paths", []),
+                self._set_readiness(
+                    manifest_ok=manifest_ok,
+                    enabled=enabled,
+                    events=consent,
+                    reminders=False,
                 )
+                self._assert_emission(emitted=manifest_ok and enabled and consent)
+
+    def test_either_consent_scope_is_sufficient(self):
+        for events, reminders in ((True, False), (False, True), (True, True)):
+            with self.subTest(events=events, reminders=reminders):
+                self._set_readiness(
+                    manifest_ok=True,
+                    enabled=True,
+                    events=events,
+                    reminders=reminders,
+                )
+                self._assert_emission(emitted=True)
+
+    @override_settings(OPENCLAW_DATEBOOK_PLUGIN_ID="")
+    def test_empty_plugin_id_smoke_disables_ready_tenant(self):
+        self._set_readiness(manifest_ok=True, enabled=True, events=True, reminders=False)
+        self._assert_emission(emitted=False)
+
+    def test_ready_plugin_wiring_passes_validator_and_security_consistency(self):
+        self._set_readiness(manifest_ok=True, enabled=True, events=False, reminders=True)
+        config = self._assert_emission(emitted=True)
+
+        plugins = config["plugins"]
+        self.assertEqual(plugins["entries"][_PLUGIN_ID], {"enabled": True})
+        self.assertIn("group:plugins", config["tools"]["allow"])
+
+        validator_errors = [
+            issue for issue in validate_openclaw_config(config, strict=True) if issue.severity == "error"
+        ]
+        self.assertEqual(validator_errors, [])
+        plugin_findings = [finding for finding in audit_config_security(config) if finding.check == "plugin_orphans"]
+        self.assertEqual(plugin_findings, [])

@@ -421,6 +421,7 @@ OPENCLAW_REDDIT_PLUGIN_PATH = env(
     "OPENCLAW_REDDIT_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-reddit-tools",
 )
+OPENCLAW_DATEBOOK_PLUGIN_ID = env("OPENCLAW_DATEBOOK_PLUGIN_ID", default="nbhd-datebook-tools")
 OPENCLAW_SAUTAI_PLUGIN_ID = env("OPENCLAW_SAUTAI_PLUGIN_ID", default="nbhd-sautai-tools")
 OPENCLAW_SAUTAI_PLUGIN_PATH = env(
     "OPENCLAW_SAUTAI_PLUGIN_PATH",

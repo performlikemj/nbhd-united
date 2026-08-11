@@ -75,11 +75,11 @@ class PluginPackagingRepoStateTests(SimpleTestCase):
         errors = guard.find_packaging_errors(shippable, copied, emittable)
         self.assertEqual(errors, [], f"Dockerfile.openclaw plugin packaging is broken: {errors}")
 
-    def test_friends_agenda_and_dormant_datebook_are_packaged(self):
-        """Explicit pins, including B2a's shipped-but-not-emitted plugin."""
+    def test_friends_agenda_and_datebook_are_packaged(self):
+        """Explicit pins, including B2b's image-before-config Datebook wiring."""
         copied = guard.dockerfile_copied_plugins()
         self.assertIn("nbhd-friends-tools", copied)
         self.assertIn("nbhd-agenda-tools", copied)
         self.assertIn("nbhd-datebook-tools", copied)
         self.assertIn("nbhd-datebook-tools", guard.shippable_plugins())
-        self.assertNotIn("nbhd-datebook-tools", guard.config_emittable_plugins())
+        self.assertIn("nbhd-datebook-tools", guard.config_emittable_plugins())
