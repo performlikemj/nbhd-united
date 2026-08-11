@@ -352,7 +352,8 @@ def _push_to_user_devices(
     collapse_id: str | None,
     content_available: bool,
     extra: dict,
-) -> None:
+    installation_id: str | None = None,
+) -> dict:
     """Send one ``body`` alert to each of ``user``'s registered devices.
 
     Routes each device to the APNs host matching its stored ``environment`` — a
@@ -367,19 +368,25 @@ def _push_to_user_devices(
 
     tenant = getattr(user, "tenant", None)
     if suppresses_real_transport(tenant):
-        return
+        return {"token_count": 0, "used_fallback": False}
 
-    rows = list(
-        DeviceToken.objects.filter(
-            user=user,
-            revoked_at__isnull=True,
-            user__is_active=True,
-            # Only ACTIVE tenants can produce entitled user-visible replies.
-            tenant__status=Tenant.Status.ACTIVE,
-        ).values("token", "environment")
+    token_rows = DeviceToken.objects.filter(
+        user=user,
+        revoked_at__isnull=True,
+        user__is_active=True,
+        # Only ACTIVE tenants can produce entitled user-visible replies.
+        tenant__status=Tenant.Status.ACTIVE,
     )
+    used_fallback = False
+    if installation_id:
+        rows = list(token_rows.filter(installation_id=installation_id).values("token", "environment"))
+        if not rows:
+            used_fallback = True
+            rows = list(token_rows.values("token", "environment"))
+    else:
+        rows = list(token_rows.values("token", "environment"))
     if not rows:
-        return
+        return {"token_count": 0, "used_fallback": used_fallback}
 
     # Every user-visible alert push (reply-ready, error, proactive) carries the
     # absolute unread count so the app icon badge stays correct without the app
@@ -410,6 +417,7 @@ def _push_to_user_devices(
         stale.extend(res.get("unregistered") or [])
     if stale:
         DeviceToken.objects.filter(user=user, token__in=stale).delete()
+    return {"token_count": len(rows), "used_fallback": used_fallback}
 
 
 def notify_app_reply_ready(tenant, client_msg_ids, reply_text: str | None) -> None:

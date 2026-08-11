@@ -1549,72 +1549,23 @@ class LineWebhookView(View):
     @staticmethod
     def _handle_gate_postback(tenant, data: str) -> None:
         """Handle action gate approve/deny from LINE postback."""
-        from django.utils import timezone
-
         from apps.actions.messaging import update_gate_message
-        from apps.actions.models import ActionAuditLog, ActionStatus, PendingAction
+        from apps.actions.views import GateRespondView
 
         try:
             parts = data.split(":")
             if len(parts) != 2:
                 return
 
-            is_approve = parts[0] == "gate_approve"
+            response_action = "approve" if parts[0] == "gate_approve" else "deny"
             action_id = int(parts[1])
-
-            action = PendingAction.objects.get(id=action_id, tenant=tenant)
-
-            if action.status != ActionStatus.PENDING:
-                return
-
-            # Expired? Use conditional UPDATE so the sweep cannot have already
-            # flipped the row between our is_expired check and the write.
-            if action.is_expired:
-                updated = PendingAction.objects.filter(
-                    id=action.id,
-                    status=ActionStatus.PENDING,
-                ).update(status=ActionStatus.EXPIRED)
-                if updated:
-                    action.status = ActionStatus.EXPIRED
-                    ActionAuditLog.objects.create(
-                        tenant=tenant,
-                        action_type=action.action_type,
-                        action_payload=action.action_payload,
-                        display_summary=action.display_summary,
-                        pii_receipts=action.pii_receipts,
-                        result=ActionStatus.EXPIRED,
-                    )
-                    update_gate_message(action)
-                return
-
-            # Apply response using a conditional UPDATE so the sweep cannot
-            # clobber an approve that lands at the deadline boundary.
-            now = timezone.now()
-            new_status = ActionStatus.APPROVED if is_approve else ActionStatus.DENIED
-            updated = PendingAction.objects.filter(
-                id=action.id,
-                status=ActionStatus.PENDING,
-            ).update(status=new_status, responded_at=now)
-            if not updated:
-                # Sweep flipped EXPIRED between our read and write; nothing to do.
-                return
-            action.status = new_status
-            action.responded_at = now
-
-            ActionAuditLog.objects.create(
+            action, _response_data, response_status = GateRespondView.resolve_action(
+                action_id=action_id,
+                response_action=response_action,
                 tenant=tenant,
-                action_type=action.action_type,
-                action_payload=action.action_payload,
-                display_summary=action.display_summary,
-                pii_receipts=action.pii_receipts,
-                result=action.status,
-                responded_at=now,
             )
-
-            update_gate_message(action)
-
-        except PendingAction.DoesNotExist:
-            logger.warning("Gate postback: action %s not found", data)
+            if action is not None and response_status in (200, 410):
+                update_gate_message(action)
         except Exception:
             logger.exception("Error handling gate postback: %s", data)
 

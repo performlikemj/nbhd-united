@@ -21,3 +21,16 @@ class DatebookCommandThrottle(_DatebookUserThrottle):
 class DatebookReadThrottle(_DatebookUserThrottle):
     # Registration/open/commit are low-volume control calls, separate from bulk pages.
     scope = "datebook_read"
+
+
+class DatebookRuntimeCreateThrottle(SimpleRateThrottle):
+    """Separate tenant-scoped cap for internally authenticated create requests."""
+
+    scope = "datebook_runtime_create"
+    rate = "60/hour"
+
+    def get_cache_key(self, request, view):
+        tenant_id = request.headers.get("X-NBHD-Tenant-Id") or view.kwargs.get("tenant_id")
+        if not tenant_id:
+            return None
+        return self.cache_format % {"scope": self.scope, "ident": str(tenant_id)}

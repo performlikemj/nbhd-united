@@ -508,8 +508,9 @@ class DatebookSyncTests(DatebookAPIMixin, TestCase):
         item = _zoned_event("commit-idempotent-event")
         self.stage_page(opened.data["run_id"], events=[item])
         manifest = self.manifest([item])
-        first = self.commit(opened.data["run_id"], events=manifest)
-        second = self.commit(opened.data["run_id"], events=manifest)
+        with self.captureOnCommitCallbacks(execute=True):
+            first = self.commit(opened.data["run_id"], events=manifest)
+            second = self.commit(opened.data["run_id"], events=manifest)
         self.assertEqual(first.status_code, 200, first.data)
         self.assertEqual(second.status_code, 200, second.data)
         self.assertTrue(second.data["idempotent"])

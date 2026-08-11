@@ -350,6 +350,37 @@ def telegram_webhook(request):
     # Handle inline button callbacks (lessons, extraction)
     if "callback_query" in update and tenant is not None:
         callback_data = update["callback_query"].get("data", "")
+        if callback_data.startswith("gate_approve:") or callback_data.startswith("gate_deny:"):
+            from apps.actions.messaging import update_gate_message
+            from apps.actions.views import GateRespondView
+
+            try:
+                prefix, raw_action_id = callback_data.split(":", 1)
+                response_action = "approve" if prefix == "gate_approve" else "deny"
+                action, data, response_status = GateRespondView.resolve_action(
+                    action_id=int(raw_action_id),
+                    response_action=response_action,
+                    tenant=tenant,
+                )
+                if action is not None and response_status in (200, 410):
+                    update_gate_message(action)
+                if response_status == 200:
+                    text = "✅ Approved" if response_action == "approve" else "❌ Denied"
+                elif response_status == 410:
+                    text = "⏰ Expired"
+                elif response_status == 409:
+                    text = f"Already {data.get('status', 'resolved')}"
+                else:
+                    text = "Action not found"
+            except (TypeError, ValueError):
+                text = "Invalid callback"
+            return JsonResponse(
+                {
+                    "method": "answerCallbackQuery",
+                    "callback_query_id": update["callback_query"].get("id", ""),
+                    "text": text,
+                }
+            )
         if callback_data.startswith("lesson:"):
             return handle_lesson_callback(update, tenant)
         if callback_data.startswith("extract:"):

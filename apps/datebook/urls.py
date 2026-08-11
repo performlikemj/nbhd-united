@@ -1,4 +1,4 @@
-from django.urls import path
+from django.urls import include, path
 
 from .views import (
     CommandClaimView,
@@ -11,6 +11,7 @@ from .views import (
 )
 
 urlpatterns = [
+    path("runtime/<uuid:tenant_id>/datebook/", include("apps.datebook.runtime_urls")),
     path("register/", GatewayRegisterView.as_view(), name="datebook-register"),
     path("sync/open/", SyncOpenView.as_view(), name="datebook-sync-open"),
     path("sync/page/", SyncPageView.as_view(), name="datebook-sync-page"),
