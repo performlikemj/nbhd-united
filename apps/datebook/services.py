@@ -431,6 +431,18 @@ def open_sync_run(
             if existing_scopes != requested_scopes:
                 raise ProtocolError("client_run_conflict", 409)
             return existing, False
+        superseded_runs = (
+            SyncRun.objects.select_for_update()
+            .filter(
+                tenant=tenant,
+                gateway=gateway,
+                gateway_epoch=gateway.gateway_epoch,
+                state__in=[SyncRun.State.OPEN, SyncRun.State.STAGED],
+            )
+            .exclude(client_run_id=client_run_id)
+        )
+        for superseded_run in superseded_runs:
+            _abort_run(superseded_run, full_snapshot=False)
         try:
             run = SyncRun.objects.create(
                 tenant=tenant,
