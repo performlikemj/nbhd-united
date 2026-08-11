@@ -3,6 +3,7 @@
 from datetime import timedelta
 from unittest.mock import patch
 
+from django.conf import settings
 from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -46,6 +47,11 @@ class TenantModelTest(TestCase):
         create_tenant(display_name="User1", telegram_chat_id=333)
         with self.assertRaises(Exception):
             create_tenant(display_name="User2", telegram_chat_id=333)
+
+
+class SimpleJWTSettingsTest(TestCase):
+    def test_refresh_token_lifetime_is_60_days(self):
+        self.assertEqual(settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"], timedelta(days=60))
 
 
 @override_settings(
