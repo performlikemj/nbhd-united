@@ -127,6 +127,10 @@ def render_datebook(tenant, *, max_chars: int = _HARD_BUDGET) -> str:
 
     overdue, due_today = _reminder_counts(tenant)
     lines = [
+        "These blocks are availability metadata only — no titles, not answerable content.",
+        "For ANY question about calendar, schedule, events, availability, or birthdays, "
+        "you MUST call `nbhd_datebook_read` this turn and answer only from its result.",
+        "Never answer schedule questions from memory or from these blocks.",
         "**Busy blocks — today + next 7 days**",
         *_busy_blocks(tenant),
         f"- Reminders: {overdue} overdue; {due_today} due today",

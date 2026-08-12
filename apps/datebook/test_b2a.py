@@ -18,6 +18,7 @@ from apps.actions.models import (
 )
 from apps.actions.views import GateRespondView
 from apps.orchestrator.envelope_registry import all_sections, suppress_refresh
+from apps.orchestrator.workspace_envelope import render_managed_region
 from apps.router.line_webhook import LineWebhookView
 from apps.router.models import DeviceToken
 from apps.router.poller import TelegramPoller
@@ -146,6 +147,7 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.data, {"state": "datebook_disabled"})
         self.assertFalse(section.enabled(self.tenant))
+        self.assertNotIn("## Calendar & Reminders", render_managed_region(self.tenant))
 
     @patch("apps.actions.messaging.send_gate_confirmation", return_value=False)
     def test_request_create_is_strict_and_returns_store_safe_undeliverable(self, _send):
@@ -362,6 +364,16 @@ class EnvelopeAndPushTests(DatebookB2aMixin, TestCase):
         first = render_datebook(self.tenant)
         self.assertEqual(first, render_datebook(self.tenant))
         self.assertLessEqual(len(first), 1200)
+        self.assertIn(
+            "These blocks are availability metadata only — no titles, not answerable content.",
+            first,
+        )
+        self.assertIn(
+            "For ANY question about calendar, schedule, events, availability, or birthdays, "
+            "you MUST call `nbhd_datebook_read` this turn and answer only from its result.",
+            first,
+        )
+        self.assertIn("Never answer schedule questions from memory or from these blocks.", first)
         self.assertIn("1 busy", first)
         self.assertIn("1 due today", first)
         self.assertIn(self.gateway.events_last_complete_sync_at.isoformat(), first)
