@@ -516,6 +516,44 @@ def _build_morning_briefing_prompt(tenant) -> str:
     return _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_step=weather_step)
 
 
+_CONTEXTUAL_LOCATION_CONFIRM_ASK_BLOCK = (
+    "**Location:** USER.md: compare the user's own `Conversation so far` + recent journal "
+    "with `## Right now`. Named away city with no fresh match or ask in today's note → "
+    "weave in once: “Sounds like you're in <X>—want me to use it for weather and suggestions "
+    "here? Want things to do nearby?” Log with this check-in's content. Reply confirms → "
+    "`nbhd_update_situation`(X); decline/no reply → no re-ask this trip. Silent: vague/no "
+    "city, fresh match or recorded=home=stated. No sensors/third-party/guesses."
+)
+
+_HEARTBEAT_CONTEXTUAL_LOCATION_RULE = (
+    "Heartbeat: this is a check-item, not a mandate. A clear, undeduped mismatch may replace "
+    "`HEARTBEAT_OK` with this one ask; otherwise stay quiet."
+)
+
+
+def _with_contextual_location_confirm_ask(
+    prompt: str,
+    tenant,
+    *,
+    heartbeat: bool = False,
+) -> str:
+    if not tenant.situational_context_enabled:
+        return prompt
+
+    block = _CONTEXTUAL_LOCATION_CONFIRM_ASK_BLOCK
+    if heartbeat:
+        block = f"{block}\n{_HEARTBEAT_CONTEXTUAL_LOCATION_RULE}"
+
+    insertion_point = "\n\n**IMPORTANT:"
+    if insertion_point not in prompt:
+        raise ValueError("contextual location prompt has no IMPORTANT insertion point")
+    return prompt.replace(
+        insertion_point,
+        f"\n\n{block}{insertion_point}",
+        1,
+    )
+
+
 _EVENING_CHECKIN_PROMPT = (
     "It's evening check-in time. This runs as a scheduled task. Execute every step "
     "below in order. The journal-writing step (step 5) is MANDATORY — you MUST complete "
@@ -611,6 +649,14 @@ _EVENING_CHECKIN_PROMPT = (
     "**IMPORTANT: Send exactly ONE user-facing message via `nbhd_send_to_user`. "
     "After that message is sent, proceed to the FINAL STEP described below.**\n"
 )
+
+
+def _build_evening_checkin_prompt(tenant) -> str:
+    return _with_contextual_location_confirm_ask(
+        _EVENING_CHECKIN_PROMPT,
+        tenant,
+    )
+
 
 _PERSONAL_QUESTION_PROMPT = (
     "Personal-question cron. Pick ONE thoughtful, contextual question that "
@@ -814,12 +860,17 @@ _HEARTBEAT_CHECKIN_PROMPT = (
 
 
 def _build_heartbeat_checkin_prompt(tenant) -> str:
-    if not datebook_delivery_ready(tenant):
-        return _HEARTBEAT_CHECKIN_PROMPT
-    return _HEARTBEAT_CHECKIN_PROMPT.replace(
-        "Calendar — any events in the next 2-3 hours? (`nbhd_calendar_list_events`)",
-        "Calendar — call `nbhd_datebook_read` with `days_ahead=0, entity='events'`, "
-        "then check the returned times for events in the next 2-3 hours",
+    prompt = _HEARTBEAT_CHECKIN_PROMPT
+    if datebook_delivery_ready(tenant):
+        prompt = prompt.replace(
+            "Calendar — any events in the next 2-3 hours? (`nbhd_calendar_list_events`)",
+            "Calendar — call `nbhd_datebook_read` with `days_ahead=0, entity='events'`, "
+            "then check the returned times for events in the next 2-3 hours",
+        )
+    return _with_contextual_location_confirm_ask(
+        prompt,
+        tenant,
+        heartbeat=True,
     )
 
 
@@ -1716,7 +1767,7 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
             "payload": {
                 "kind": "agentTurn",
                 "message": _build_cron_message(
-                    _EVENING_CHECKIN_PROMPT,
+                    _build_evening_checkin_prompt(tenant),
                     "Evening Check-in",
                     foreground=True,
                     tenant=tenant,
