@@ -6,6 +6,7 @@ from apps.orchestrator.tool_policy import (
     _STARTER_ALLOW_2026_5_28,
     DENIED_TOOLS,
     STARTER_ALLOW,
+    datebook_calendar_deny_overlay,
     generate_tool_config,
     get_allowed_tools,
 )
@@ -52,6 +53,19 @@ class ToolPolicyTest(TestCase):
         self.assertIn("allow", config)
         self.assertIn("deny", config)
         self.assertIn("elevated", config)
+
+    def test_datebook_calendar_deny_overlay_is_version_pure(self):
+        self.assertEqual(
+            datebook_calendar_deny_overlay(),
+            (
+                "nbhd_calendar_list_events",
+                "nbhd_calendar_get_freebusy",
+            ),
+        )
+        self.assertNotIn(
+            "nbhd_calendar_list_events",
+            generate_tool_config("starter")["deny"],
+        )
 
 
 class VersionAwareToolPolicyTest(TestCase):

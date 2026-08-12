@@ -6,6 +6,7 @@ from datetime import UTC
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
+from django.utils import timezone
 
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
@@ -201,6 +202,24 @@ class ConfigGeneratorTest(TestCase):
         self.assertIn("gateway", tools["deny"])
         self.assertNotIn("group:automation", tools["deny"])
         self.assertNotIn("group:ui", tools["allow"])
+
+    def test_datebook_ready_calendar_reads_are_disabled_and_denied(self):
+        from .tool_policy import datebook_calendar_deny_overlay
+
+        expected = (
+            "nbhd_calendar_list_events",
+            "nbhd_calendar_get_freebusy",
+        )
+        self.assertEqual(datebook_calendar_deny_overlay(), expected)
+
+        self.tenant.datebook_manifest_ok = True
+        self.tenant.datebook_enabled = True
+        self.tenant.datebook_events_consent_at = timezone.now()
+        config = generate_openclaw_config(self.tenant)
+
+        self.assertIn("nbhd-datebook-tools", config["plugins"]["entries"])
+        for tool_name in expected:
+            self.assertIn(tool_name, config["tools"]["deny"])
 
     def test_memorysearch_default_disabled_for_tenants_without_flag(self):
         """The PR #525 SQLite-on-SMB corruption guarantees memory-core stays

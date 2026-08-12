@@ -252,6 +252,7 @@ export default function register(api) {
             enum: [
               "nbhd_calendar_list_events",
               "nbhd_calendar_get_freebusy",
+              "nbhd_datebook_read",
               "nbhd_gmail_list_messages",
               "nbhd_task_list",
               "nbhd_goal_list",
@@ -303,6 +304,7 @@ export default function register(api) {
               "nbhd_lessons_pending",
               "nbhd_journal_search",
               "nbhd_calendar_list_events",
+              "nbhd_datebook_read",
             ],
             description:
               "The read-only query to run at fire time. Choose by domain: tasks/goals/lessons/journal/calendar.",
@@ -323,7 +325,7 @@ export default function register(api) {
               "calendar_summary",
             ],
             description:
-              "The block type to render — MUST match the query_tool: nbhd_task_list→task_summary, nbhd_goal_list→goal_summary, nbhd_lessons_pending→lesson_summary, nbhd_journal_search→journal_summary, nbhd_calendar_list_events→calendar_summary.",
+              "The block type to render — MUST match the query_tool: nbhd_task_list→task_summary, nbhd_goal_list→goal_summary, nbhd_lessons_pending→lesson_summary, nbhd_journal_search→journal_summary, nbhd_calendar_list_events/nbhd_datebook_read→calendar_summary.",
           },
         },
         required: ["name", "schedule", "query_tool", "render_block"],

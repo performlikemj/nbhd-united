@@ -216,6 +216,7 @@ def _write_registration_consent(tenant, gateway: DatebookGateway, *, events_cons
             _revoke_scope(tenant, gateway, scope=scope, now=now)
     if tenant_fields:
         tenant.save(update_fields=[*tenant_fields, "updated_at"])
+        tenant.bump_pending_config()
 
 
 def register_gateway(
@@ -347,6 +348,7 @@ def disable_datebook(tenant, *, purge: bool) -> None:
         locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
         locked_tenant.datebook_enabled = False
         locked_tenant.save(update_fields=["datebook_enabled", "updated_at"])
+        locked_tenant.bump_pending_config()
         gateway = (
             DatebookGateway.objects.select_for_update()
             .filter(tenant=locked_tenant, status=DatebookGateway.Status.ACTIVE)

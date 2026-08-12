@@ -9,7 +9,8 @@ from pathlib import Path
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.utils import timezone
 
-from apps.orchestrator.config_generator import generate_openclaw_config
+from apps.integrations.models import Integration
+from apps.orchestrator.config_generator import build_cron_seed_jobs, generate_openclaw_config
 from apps.orchestrator.config_security import audit_config_security
 from apps.orchestrator.config_validator import validate_openclaw_config
 from apps.tenants.services import create_tenant
@@ -20,6 +21,10 @@ _TOOLS = {
     "nbhd_datebook_read",
     "nbhd_datebook_add_event",
     "nbhd_datebook_add_apple_reminder",
+}
+_GWS_CALENDAR_READS = {
+    "nbhd_calendar_list_events",
+    "nbhd_calendar_get_freebusy",
 }
 
 
@@ -78,6 +83,11 @@ class DatebookPluginEmissionTests(TestCase):
         )
         return config
 
+    @staticmethod
+    def _skill_names(config: dict) -> set[str]:
+        extra_dirs = config.get("skills", {}).get("load", {}).get("extraDirs", [])
+        return {path.rstrip("/").rsplit("/", 1)[-1] for path in extra_dirs}
+
     def test_plugin_emission_matches_eight_combination_readiness_matrix(self):
         for manifest_ok, enabled, consent in itertools.product((False, True), repeat=3):
             with self.subTest(
@@ -123,3 +133,58 @@ class DatebookPluginEmissionTests(TestCase):
         self.assertEqual(validator_errors, [])
         plugin_findings = [finding for finding in audit_config_security(config) if finding.check == "plugin_orphans"]
         self.assertEqual(plugin_findings, [])
+
+    def test_calendar_source_arbitration_flips_both_directions(self):
+        Integration.objects.create(
+            tenant=self.tenant,
+            provider=Integration.Provider.GOOGLE,
+            status=Integration.Status.ACTIVE,
+        )
+
+        self._set_readiness(manifest_ok=False, enabled=True, events=True, reminders=False)
+        not_ready = self._assert_emission(emitted=False)
+        self.assertTrue(_GWS_CALENDAR_READS.isdisjoint(not_ready["tools"]["deny"]))
+        self.assertIn("gws-calendar-agenda", self._skill_names(not_ready))
+
+        self._set_readiness(manifest_ok=True, enabled=True, events=True, reminders=False)
+        ready = self._assert_emission(emitted=True)
+        self.assertTrue(_GWS_CALENDAR_READS.issubset(ready["tools"]["deny"]))
+        self.assertNotIn("nbhd_gmail_list_messages", ready["tools"]["deny"])
+        self.assertNotIn("nbhd_gmail_get_message_detail", ready["tools"]["deny"])
+        self.assertNotIn("gws-calendar-agenda", self._skill_names(ready))
+        self.assertIn("gws-gmail-triage", self._skill_names(ready))
+        validator_errors = [
+            issue for issue in validate_openclaw_config(ready, strict=True) if issue.severity == "error"
+        ]
+        self.assertEqual(validator_errors, [])
+        self.assertEqual(audit_config_security(ready), [])
+
+        self._set_readiness(manifest_ok=True, enabled=True, events=False, reminders=False)
+        restored = self._assert_emission(emitted=False)
+        self.assertTrue(_GWS_CALENDAR_READS.isdisjoint(restored["tools"]["deny"]))
+        self.assertIn("gws-calendar-agenda", self._skill_names(restored))
+
+    def test_system_calendar_prompts_follow_datebook_readiness(self):
+        prompt_names = {"Week Ahead Review", "Heartbeat Check-in"}
+
+        self._set_readiness(manifest_ok=False, enabled=True, events=True, reminders=False)
+        not_ready_prompts = {
+            job["name"]: job["payload"]["message"]
+            for job in build_cron_seed_jobs(self.tenant)
+            if job["name"] in prompt_names
+        }
+        for prompt in not_ready_prompts.values():
+            self.assertIn("nbhd_calendar_list_events", prompt)
+            self.assertNotIn("nbhd_datebook_read", prompt)
+
+        self._set_readiness(manifest_ok=True, enabled=True, events=True, reminders=False)
+        ready_prompts = {
+            job["name"]: job["payload"]["message"]
+            for job in build_cron_seed_jobs(self.tenant)
+            if job["name"] in prompt_names
+        }
+        for prompt in ready_prompts.values():
+            self.assertIn("nbhd_datebook_read", prompt)
+            self.assertNotIn("nbhd_calendar_list_events", prompt)
+        self.assertIn("days_ahead=7, entity='events'", ready_prompts["Week Ahead Review"])
+        self.assertIn("days_ahead=0, entity='events'", ready_prompts["Heartbeat Check-in"])

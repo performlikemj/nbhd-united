@@ -154,6 +154,14 @@ DENIED_TOOLS = _DENIED_TOOLS_2026_4_5
 STARTER_ALLOW = _STARTER_ALLOW_2026_4_5
 
 
+def datebook_calendar_deny_overlay() -> tuple[str, ...]:
+    """Return Google calendar reads hidden when Datebook is canonical."""
+    return (
+        "nbhd_calendar_list_events",
+        "nbhd_calendar_get_freebusy",
+    )
+
+
 def _resolve_policy(version: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return (allow, deny) for the given OpenClaw version."""
     v = _parse_version(version)

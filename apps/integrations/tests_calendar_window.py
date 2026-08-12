@@ -33,9 +33,23 @@ class BuildWindowTests(TestCase):
         self.assertEqual(w.kind, "last_n_days")
         self.assertEqual(w.value, 7)
 
-    def test_int_kind_requires_value(self):
+    def test_int_kinds_default_missing_or_empty_values(self):
+        cases = (
+            ("last_n_days", None, 7),
+            ("next_n_days", "", 7),
+            ("last_n_weeks", " ", 1),
+            ("last_n_months", None, 1),
+        )
+        for kind, value_raw, expected in cases:
+            with self.subTest(kind=kind, value_raw=value_raw):
+                with self.assertLogs("apps.integrations.runtime_views", level="INFO") as logs:
+                    window = _build_window(kind, value_raw)
+                self.assertEqual(window.value, expected)
+                self.assertTrue(any("invalid_window_defaulted" in line for line in logs.output))
+
+    def test_int_kind_rejects_malformed_value(self):
         with self.assertRaises(ValueError):
-            _build_window("last_n_days", None)
+            _build_window("last_n_days", "garbage")
 
     def test_since_requires_date(self):
         w = _build_window("since", "2026-04-01")
@@ -133,9 +147,21 @@ class ResolveCalendarWindowTests(SimpleTestCase):
         self.assertEqual(result.status_code, 400)
         self.assertEqual(result.data["error"], "invalid_window")
 
-    def test_missing_value_for_int_kind_returns_400(self):
+    def test_missing_value_for_int_kind_uses_server_default(self):
+        with self.assertLogs("apps.integrations.runtime_views", level="INFO") as logs:
+            result = _resolve_calendar_window(
+                self._drf_request("window_kind=next_n_days"),
+                _fake_tenant(),
+            )
+        self.assertIsInstance(result, tuple)
+        time_min, time_max = result
+        self.assertTrue(time_min.startswith("2026-05-20T00:00:00"))
+        self.assertIn("-07:00", time_max)
+        self.assertTrue(any("invalid_window_defaulted" in line for line in logs.output))
+
+    def test_garbage_value_for_int_kind_returns_400(self):
         result = _resolve_calendar_window(
-            self._drf_request("window_kind=last_n_days"),
+            self._drf_request("window_kind=next_n_days&window_value=garbage"),
             _fake_tenant(),
         )
         self.assertIsInstance(result, Response)

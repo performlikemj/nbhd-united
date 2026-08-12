@@ -2,6 +2,24 @@ import { wrapTool } from "../../tool-logger.js";
 const wrap = (def) => wrapTool(def, { plugin: "nbhd-google-tools" });
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
+const CALENDAR_WINDOW_KINDS = Object.freeze([
+  "today",
+  "yesterday",
+  "tomorrow",
+  "all",
+  "last_n_days",
+  "next_n_days",
+  "last_n_weeks",
+  "last_n_months",
+  "this_week",
+  "last_week",
+  "month_to_date",
+  "last_month",
+  "year_to_date",
+  "last_year",
+  "since",
+  "between",
+]);
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -281,14 +299,15 @@ export default function register(api) {
       "window_kind options: today | yesterday | tomorrow | all | last_n_days | next_n_days | " +
       "last_n_weeks | last_n_months | this_week | last_week | month_to_date | last_month | " +
       "year_to_date | last_year | since | between. " +
-      "For value-bearing kinds, pass `window_value`: integer for last_n_*/next_n_days, " +
-      "\"YYYY-MM-DD\" for since, \"YYYY-MM-DD,YYYY-MM-DD\" for between. " +
+      "For count-bearing kinds, `window_value` is optional: the server defaults to 7 days, " +
+      "1 week, or 1 month as appropriate; when provided, pass an integer. " +
+      "For since/between, pass \"YYYY-MM-DD\" or \"YYYY-MM-DD,YYYY-MM-DD\". " +
       "If you must pass `time_min`/`time_max` directly, omit window_kind — they're mutually exclusive.",
     parameters: {
       type: "object",
       additionalProperties: false,
       properties: {
-        window_kind: { type: "string" },
+        window_kind: { type: "string", enum: CALENDAR_WINDOW_KINDS },
         window_value: { type: "string" },
         time_min: { type: "string" },
         time_max: { type: "string" },
@@ -326,7 +345,7 @@ export default function register(api) {
       type: "object",
       additionalProperties: false,
       properties: {
-        window_kind: { type: "string" },
+        window_kind: { type: "string", enum: CALENDAR_WINDOW_KINDS },
         window_value: { type: "string" },
         time_min: { type: "string" },
         time_max: { type: "string" },

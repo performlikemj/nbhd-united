@@ -463,8 +463,19 @@ def _build_window(kind: str, value_raw: str | None) -> Window:
     }:
         return Window(kind=kind)  # type: ignore[arg-type]
     if kind in {"last_n_days", "next_n_days", "last_n_weeks", "last_n_months"}:
-        if value_raw is None or value_raw == "":
-            raise ValueError(f"window_kind={kind!r} requires window_value=<int>")
+        if value_raw is None or value_raw.strip() == "":
+            default_value = {
+                "last_n_days": 7,
+                "next_n_days": 7,
+                "last_n_weeks": 1,
+                "last_n_months": 1,
+            }[kind]
+            logger.info(
+                "invalid_window_defaulted window_kind=%s window_value=%s",
+                kind,
+                default_value,
+            )
+            value_raw = str(default_value)
         return Window(kind=kind, value=int(value_raw))  # type: ignore[arg-type]
     if kind == "since":
         if not value_raw:

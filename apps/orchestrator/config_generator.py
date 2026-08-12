@@ -20,7 +20,11 @@ from apps.billing.constants import (
     GEMMA_MODEL,
 )
 from apps.datebook.readiness import datebook_delivery_ready
-from apps.orchestrator.tool_policy import OPENCLAW_CURRENT_VERSION, generate_tool_config
+from apps.orchestrator.tool_policy import (
+    OPENCLAW_CURRENT_VERSION,
+    datebook_calendar_deny_overlay,
+    generate_tool_config,
+)
 from apps.orchestrator.tour_guide import (
     TOUR_GUIDE_CONTRACT_CARDS,
     TOUR_GUIDE_CONTRACT_LINKS,
@@ -707,7 +711,7 @@ _WEEK_AHEAD_REVIEW_PROMPT_TEMPLATE = (
     "before sending the user message in step 10.\n\n"
     "Steps:\n"
     "1. Load journal context (`nbhd_journal_context`) and recent memory files\n"
-    "2. Check the calendar for the upcoming 7 days (`nbhd_calendar_list_events`)\n"
+    "2. {calendar_step}\n"
     "3. Review the tasks and goals loaded above. Check which tasks are open vs completed. "
     "If a **North Star** section is present in your loaded context, weigh the week against it — "
     "does this week move the user toward it? Let that frame the highlights, one line at most.\n"
@@ -749,7 +753,16 @@ def _build_week_ahead_review_prompt(tenant) -> str:
         travel_line = _WEEK_AHEAD_REVIEW_TRAVEL_LINE
     else:
         travel_line = _WEEK_AHEAD_REVIEW_LEGACY_TRAVEL_LINE
-    return _WEEK_AHEAD_REVIEW_PROMPT_TEMPLATE.format(travel_line=travel_line)
+    if datebook_delivery_ready(tenant):
+        calendar_step = (
+            "Check the calendar for the upcoming 7 days (`nbhd_datebook_read` with `days_ahead=7, entity='events'`)"
+        )
+    else:
+        calendar_step = "Check the calendar for the upcoming 7 days (`nbhd_calendar_list_events`)"
+    return _WEEK_AHEAD_REVIEW_PROMPT_TEMPLATE.format(
+        travel_line=travel_line,
+        calendar_step=calendar_step,
+    )
 
 
 _HEARTBEAT_CHECKIN_PROMPT = (
@@ -798,6 +811,17 @@ _HEARTBEAT_CHECKIN_PROMPT = (
     "**IMPORTANT: Do NOT message unless you have something genuinely NEW to say. "
     "Do NOT send multiple messages. Quality over quantity.**\n"
 )
+
+
+def _build_heartbeat_checkin_prompt(tenant) -> str:
+    if not datebook_delivery_ready(tenant):
+        return _HEARTBEAT_CHECKIN_PROMPT
+    return _HEARTBEAT_CHECKIN_PROMPT.replace(
+        "Calendar — any events in the next 2-3 hours? (`nbhd_calendar_list_events`)",
+        "Calendar — call `nbhd_datebook_read` with `days_ahead=0, entity='events'`, "
+        "then check the returned times for events in the next 2-3 hours",
+    )
+
 
 _WEEKLY_REFLECTION_PROMPT = (
     "It's Sunday evening — time for the weekly reflection. This runs in the main session "
@@ -1639,7 +1663,7 @@ def _build_heartbeat_cron(tenant: Tenant) -> dict | None:
             # guard that skips the sync on HEARTBEAT_OK runs, so silent hours
             # stay silent for both user and main session.
             "message": _build_cron_message(
-                _HEARTBEAT_CHECKIN_PROMPT,
+                _build_heartbeat_checkin_prompt(tenant),
                 "Heartbeat Check-in",
                 foreground=True,
                 tenant=tenant,
@@ -1909,9 +1933,22 @@ def build_cron_seed_jobs(tenant: Tenant) -> list[dict]:
     return jobs
 
 
-def _build_tools_section(tier: str, version: str = OPENCLAW_CURRENT_VERSION) -> dict[str, Any]:
+def _build_tools_section(
+    tier: str,
+    version: str = OPENCLAW_CURRENT_VERSION,
+    *,
+    tenant: Tenant | None = None,
+) -> dict[str, Any]:
     """Build documented OpenClaw tools policy for subscriber tier."""
     tools = generate_tool_config(tier, version=version)
+    # Server-owned calendar arbitration: once Datebook is deliverable, both
+    # Google read tools are unreachable even through group:plugins/toolSearch.
+    # Keep the Google plugin loaded because its Gmail tools remain canonical.
+    if datebook_delivery_ready(tenant):
+        deny = tools.setdefault("deny", [])
+        for tool_name in datebook_calendar_deny_overlay():
+            if tool_name not in deny:
+                deny.append(tool_name)
     tools["media"] = {
         "audio": {
             "enabled": True,
@@ -2419,7 +2456,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
         # Tools
-        "tools": _build_tools_section(tier, version=oc_version),
+        "tools": _build_tools_section(tier, version=oc_version, tenant=tenant),
         # Messages
         "messages": {
             "ackReactionScope": "group-mentions",
@@ -2653,8 +2690,9 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             gws_skill_names = [
                 "gws-shared",
                 "gws-gmail-triage",
-                "gws-calendar-agenda",
             ]
+            if not datebook_delivery_ready(tenant):
+                gws_skill_names.append("gws-calendar-agenda")
 
             skills_section = config.setdefault("skills", {})
             skills_section["load"] = skills_section.get("load", {})
