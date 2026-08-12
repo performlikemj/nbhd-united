@@ -10,8 +10,10 @@ Per pattern, exercises:
 from __future__ import annotations
 
 from django.test import SimpleTestCase, TestCase
+from django.utils import timezone
 
 from apps.cron.patterns import get_handler
+from apps.tenants.services import create_tenant
 
 # Mutation tools that must NEVER appear in any pattern's toolsAllow — this
 # is the structural fix for the 22:07-style cron-creates-duplicate-task
@@ -140,6 +142,15 @@ class QuoteUserIntentTests(SimpleTestCase):
         )
         self.assertEqual(payload.refresh_facts_via, "nbhd_calendar_list_events")
 
+    def test_payload_accepts_datebook_refresh(self):
+        payload = self.handler.validate_payload(
+            {
+                "text": "appointment Tuesday 3pm",
+                "refresh_facts_via": "nbhd_datebook_read",
+            }
+        )
+        self.assertEqual(payload.refresh_facts_via, "nbhd_datebook_read")
+
     def test_payload_rejects_refresh_not_in_allowlist(self):
         with self.assertRaises(Exception):
             self.handler.validate_payload(
@@ -159,6 +170,15 @@ class QuoteUserIntentTests(SimpleTestCase):
         allow = self.handler.get_tools_allow(payload)
         self.assertIn("nbhd_send_to_user", allow)
         self.assertIn("nbhd_calendar_list_events", allow)
+
+    def test_tools_allow_preserves_google_freebusy_when_not_ready(self):
+        payload = self.handler.validate_payload(
+            {
+                "text": "x",
+                "refresh_facts_via": "nbhd_calendar_get_freebusy",
+            }
+        )
+        self.assertIn("nbhd_calendar_get_freebusy", self.handler.get_tools_allow(payload))
 
     def test_tools_allow_has_no_mutations(self):
         payload = self.handler.validate_payload(
@@ -229,6 +249,15 @@ class DomainSummaryTests(SimpleTestCase):
         )
         self.assertEqual(payload.query_tool, "nbhd_task_list")
         self.assertEqual(payload.render_block, "task_summary")
+
+    def test_payload_accepts_datebook_calendar_pair(self):
+        payload = self.handler.validate_payload(
+            {
+                "query_tool": "nbhd_datebook_read",
+                "render_block": "calendar_summary",
+            }
+        )
+        self.assertEqual(payload.query_tool, "nbhd_datebook_read")
 
     def test_tools_allow_has_no_mutations(self):
         payload = self.handler.validate_payload(
@@ -324,6 +353,102 @@ class DailyBriefingTests(SimpleTestCase):
         contract = self.handler.get_outbound_contract(payload, name="Morning Briefing")
         self.assertEqual(contract["check"], {"kind": "marker", "marker": "[block: daily_briefing]"})
         self.assertEqual(contract["on_fail"], {"action": "revise_then_allow", "max_revisions": 1})
+
+
+class CalendarSourceArbitrationPatternTests(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Cron Calendar", telegram_chat_id=838383)
+
+    def _set_datebook_ready(self, ready: bool) -> None:
+        self.tenant.datebook_manifest_ok = ready
+        self.tenant.datebook_enabled = ready
+        self.tenant.datebook_events_consent_at = timezone.now() if ready else None
+
+    def test_daily_briefing_uses_google_calendar_when_not_ready(self):
+        handler = get_handler("daily_briefing")
+        payload = handler.validate_payload({})
+        data = handler.build_oc_data(
+            payload,
+            tenant=self.tenant,
+            name="Morning Briefing",
+            schedule=_RECURRING_SCHEDULE,
+        )
+
+        allow = data["payload"]["toolsAllow"]
+        message = data["payload"]["message"]
+        self.assertIn("nbhd_calendar_list_events", allow)
+        self.assertNotIn("nbhd_datebook_read", allow)
+        self.assertIn("nbhd_calendar_list_events", message)
+        self.assertNotIn("nbhd_datebook_read", message)
+
+    def test_daily_briefing_uses_datebook_exclusively_when_ready(self):
+        self._set_datebook_ready(True)
+        handler = get_handler("daily_briefing")
+        payload = handler.validate_payload({})
+        data = handler.build_oc_data(
+            payload,
+            tenant=self.tenant,
+            name="Morning Briefing",
+            schedule=_RECURRING_SCHEDULE,
+        )
+
+        allow = data["payload"]["toolsAllow"]
+        message = data["payload"]["message"]
+        self.assertIn("nbhd_datebook_read", allow)
+        self.assertNotIn("nbhd_calendar_list_events", allow)
+        self.assertIn("nbhd_datebook_read", message)
+        self.assertIn("days_ahead=0, entity='events'", message)
+        self.assertNotIn("nbhd_calendar_list_events", message)
+
+    def test_calendar_cron_payloads_follow_tenant_readiness(self):
+        quote_handler = get_handler("quote_user_intent")
+        quote = quote_handler.validate_payload(
+            {
+                "text": "check my appointment",
+                "refresh_facts_via": "nbhd_calendar_get_freebusy",
+            }
+        )
+        domain_handler = get_handler("domain_summary")
+        domain = domain_handler.validate_payload(
+            {
+                "query_tool": "nbhd_calendar_list_events",
+                "render_block": "calendar_summary",
+            }
+        )
+
+        self._set_datebook_ready(True)
+        quote_data = quote_handler.build_oc_data(
+            quote,
+            tenant=self.tenant,
+            name="Appointment",
+            schedule=_RECURRING_SCHEDULE,
+        )
+        domain_data = domain_handler.build_oc_data(
+            domain,
+            tenant=self.tenant,
+            name="Calendar",
+            schedule=_RECURRING_SCHEDULE,
+        )
+        for data in (quote_data, domain_data):
+            self.assertIn("nbhd_datebook_read", data["payload"]["toolsAllow"])
+            self.assertNotIn("nbhd_calendar_list_events", data["payload"]["toolsAllow"])
+            self.assertNotIn("nbhd_calendar_get_freebusy", data["payload"]["toolsAllow"])
+
+        self._set_datebook_ready(False)
+        datebook_domain = domain_handler.validate_payload(
+            {
+                "query_tool": "nbhd_datebook_read",
+                "render_block": "calendar_summary",
+            }
+        )
+        restored = domain_handler.build_oc_data(
+            datebook_domain,
+            tenant=self.tenant,
+            name="Calendar",
+            schedule=_RECURRING_SCHEDULE,
+        )
+        self.assertIn("nbhd_calendar_list_events", restored["payload"]["toolsAllow"])
+        self.assertNotIn("nbhd_datebook_read", restored["payload"]["toolsAllow"])
 
 
 class TaskHygieneTests(SimpleTestCase):

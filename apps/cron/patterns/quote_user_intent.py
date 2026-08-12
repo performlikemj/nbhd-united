@@ -28,7 +28,12 @@ from pydantic import Field, field_validator
 from apps.billing.constants import DEEPSEEK_FLASH_MODEL
 
 from . import register_handler
-from .base import PatternHandler, PatternPayload
+from .base import (
+    DATEBOOK_CALENDAR_READ_TOOL,
+    PatternHandler,
+    PatternPayload,
+    arbitrate_calendar_read_tool,
+)
 
 # Typed-cron patterns fire a platform-initiated agent turn — pin the cheap
 # NON-BYO worker model (DeepSeek V4 Flash), the same model the heartbeat and the
@@ -48,6 +53,7 @@ _REFRESH_TOOL_ALLOWLIST: frozenset[str] = frozenset(
     {
         "nbhd_calendar_list_events",
         "nbhd_calendar_get_freebusy",
+        DATEBOOK_CALENDAR_READ_TOOL,
         "nbhd_gmail_list_messages",
         "nbhd_task_list",
         "nbhd_goal_list",
@@ -100,11 +106,14 @@ class QuoteUserIntentHandler(PatternHandler):
         schedule: dict[str, Any],
     ) -> dict[str, Any]:
         text = payload.text.strip()
+        refresh_tool = (
+            arbitrate_calendar_read_tool(payload.refresh_facts_via, tenant) if payload.refresh_facts_via else None
+        )
 
-        if payload.refresh_facts_via:
+        if refresh_tool:
             message = (
                 "You are firing a scheduled reminder that the user "
-                f"asked you to keep. First call `{payload.refresh_facts_via}` "
+                f"asked you to keep. First call `{refresh_tool}` "
                 "to pull current context. Then call `nbhd_send_to_user` "
                 "exactly once with a short warm message that QUOTES the "
                 "verbatim user intent below — the quoted text must appear "
@@ -135,17 +144,22 @@ class QuoteUserIntentHandler(PatternHandler):
                 "message": message,
                 "model": _CRON_MODEL,
                 "lightContext": True,
-                "toolsAllow": self.get_tools_allow(payload),
+                "toolsAllow": self.get_tools_allow(payload, tenant=tenant),
                 "timeoutSeconds": _TURN_TIMEOUT_SECONDS,
             },
             "delivery": {"mode": "none"},
             "enabled": True,
         }
 
-    def get_tools_allow(self, payload: QuoteUserIntentPayload) -> list[str]:
+    def get_tools_allow(
+        self,
+        payload: QuoteUserIntentPayload,
+        *,
+        tenant: Any = None,
+    ) -> list[str]:
         tools = ["nbhd_send_to_user"]
         if payload.refresh_facts_via:
-            tools.append(payload.refresh_facts_via)
+            tools.append(arbitrate_calendar_read_tool(payload.refresh_facts_via, tenant))
         return tools
 
     def get_outbound_contract(

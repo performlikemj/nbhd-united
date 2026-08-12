@@ -68,6 +68,36 @@ test("registers exactly 4 Google tools (no journal duplicates)", () => {
   }
 });
 
+test("calendar schemas enumerate all server-supported window kinds without requiring a value", () => {
+  const { api, tools } = buildApi();
+  register(api);
+
+  const expectedKinds = [
+    "today",
+    "yesterday",
+    "tomorrow",
+    "all",
+    "last_n_days",
+    "next_n_days",
+    "last_n_weeks",
+    "last_n_months",
+    "this_week",
+    "last_week",
+    "month_to_date",
+    "last_month",
+    "year_to_date",
+    "last_year",
+    "since",
+    "between",
+  ];
+
+  for (const name of ["nbhd_calendar_list_events", "nbhd_calendar_get_freebusy"]) {
+    const schema = tools.get(name).parameters;
+    assert.deepEqual(schema.properties.window_kind.enum, expectedKinds);
+    assert.ok(!schema.required?.includes("window_value"));
+  }
+});
+
 test("runtime error payloads are surfaced with error code/detail", async () => {
   process.env.NBHD_TENANT_ID = "tenant-err";
   process.env.NBHD_INTERNAL_API_KEY = "shared-key";

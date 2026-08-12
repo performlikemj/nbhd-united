@@ -28,7 +28,12 @@ from pydantic import Field, field_validator, model_validator
 from apps.billing.constants import DEEPSEEK_FLASH_MODEL
 
 from . import register_handler
-from .base import PatternHandler, PatternPayload
+from .base import (
+    DATEBOOK_CALENDAR_READ_TOOL,
+    PatternHandler,
+    PatternPayload,
+    arbitrate_calendar_read_tool,
+)
 
 # Typed-cron patterns fire a platform-initiated agent turn — pin the cheap
 # NON-BYO worker model (DeepSeek V4 Flash), the same model the heartbeat and the
@@ -64,6 +69,10 @@ DOMAIN_SUMMARY_QUERY_TOOLS: dict[str, dict[str, str]] = {
     "nbhd_calendar_list_events": {
         "render_block": "calendar_summary",
         "description": "Calendar events in a date range (Google Calendar primary).",
+    },
+    DATEBOOK_CALENDAR_READ_TOOL: {
+        "render_block": "calendar_summary",
+        "description": "Calendar events in a date range (Apple Datebook primary).",
     },
 }
 
@@ -122,10 +131,11 @@ class DomainSummaryHandler(PatternHandler):
         name: str,
         schedule: dict[str, Any],
     ) -> dict[str, Any]:
-        tool_desc = DOMAIN_SUMMARY_QUERY_TOOLS[payload.query_tool]["description"]
+        query_tool = arbitrate_calendar_read_tool(payload.query_tool, tenant)
+        tool_desc = DOMAIN_SUMMARY_QUERY_TOOLS[query_tool]["description"]
         message = (
             "You are firing a scheduled domain summary. Steps:\n"
-            f"1. Call `{payload.query_tool}` with the args provided below. "
+            f"1. Call `{query_tool}` with the args provided below. "
             f"({tool_desc})\n"
             "2. Render the result as a concise, scannable summary the user can "
             "read on mobile. Lead with the key metric/count.\n"
@@ -148,15 +158,23 @@ class DomainSummaryHandler(PatternHandler):
                 "message": message,
                 "model": _CRON_MODEL,
                 "lightContext": False,
-                "toolsAllow": self.get_tools_allow(payload),
+                "toolsAllow": self.get_tools_allow(payload, tenant=tenant),
                 "timeoutSeconds": _TURN_TIMEOUT_SECONDS,
             },
             "delivery": {"mode": "none"},
             "enabled": True,
         }
 
-    def get_tools_allow(self, payload: DomainSummaryPayload) -> list[str]:
-        return ["nbhd_send_to_user", payload.query_tool]
+    def get_tools_allow(
+        self,
+        payload: DomainSummaryPayload,
+        *,
+        tenant: Any = None,
+    ) -> list[str]:
+        return [
+            "nbhd_send_to_user",
+            arbitrate_calendar_read_tool(payload.query_tool, tenant),
+        ]
 
     def get_outbound_contract(
         self,

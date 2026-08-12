@@ -260,6 +260,39 @@ class DatebookGateAndGatewayTests(TestCase):
         self.tenant.datebook_reminders_consent_at = timezone.now()
         self.assertTrue(datebook_delivery_ready(self.tenant))
 
+    def test_consent_writes_bump_pending_config_on_each_readiness_flip(self):
+        self.tenant.status = Tenant.Status.ACTIVE
+        self.tenant.datebook_manifest_ok = True
+        self.tenant.datebook_enabled = True
+        self.tenant.save(update_fields=["status", "datebook_manifest_ok", "datebook_enabled"])
+        initial_version = self.tenant.pending_config_version
+
+        granted = self.client.post(
+            "/api/v1/datebook/register/",
+            {
+                "installation_id": "config-bump",
+                "events_consent": True,
+                "reminders_consent": False,
+            },
+            format="json",
+        )
+        self.assertEqual(granted.status_code, 200, granted.data)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.pending_config_version, initial_version + 1)
+
+        revoked = self.client.post(
+            "/api/v1/datebook/register/",
+            {
+                "installation_id": "config-bump",
+                "events_consent": False,
+                "reminders_consent": False,
+            },
+            format="json",
+        )
+        self.assertEqual(revoked.status_code, 200, revoked.data)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.pending_config_version, initial_version + 2)
+
     def test_feature_off_is_409_and_no_store(self):
         response = self.client.post(
             "/api/v1/datebook/register/",
@@ -1307,11 +1340,13 @@ class DatebookDisableAndDeletionTests(DatebookAPIMixin, TestCase):
         )
         gateway = DatebookGateway.objects.get(tenant=self.tenant, status=DatebookGateway.Status.ACTIVE)
         epoch = gateway.gateway_epoch
+        pending_config_version = self.tenant.pending_config_version
         disable_datebook(self.tenant, purge=False)
         gateway.refresh_from_db()
         command.refresh_from_db()
         self.tenant.refresh_from_db()
         self.assertFalse(self.tenant.datebook_enabled)
+        self.assertEqual(self.tenant.pending_config_version, pending_config_version + 1)
         self.assertEqual(gateway.gateway_epoch, epoch + 1)
         self.assertEqual(command.state, DeviceCommand.State.CANCELLED)
         self.assertTrue(MirrorEvent.objects.filter(tenant=self.tenant).exists())
@@ -1319,6 +1354,8 @@ class DatebookDisableAndDeletionTests(DatebookAPIMixin, TestCase):
         self.assertFalse(MirrorEvent.objects.filter(source_key=staged["source_key"]).exists())
 
         disable_datebook(self.tenant, purge=True)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.pending_config_version, pending_config_version + 2)
         self.assertFalse(MirrorEvent.objects.filter(tenant=self.tenant).exists())
 
     def test_tenant_hard_delete_cascades_every_datebook_row(self):

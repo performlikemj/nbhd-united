@@ -33,7 +33,12 @@ from pydantic import Field, field_validator
 from apps.billing.constants import DEEPSEEK_FLASH_MODEL
 
 from . import register_handler
-from .base import PatternHandler, PatternPayload
+from .base import (
+    DATEBOOK_CALENDAR_READ_TOOL,
+    PatternHandler,
+    PatternPayload,
+    calendar_read_tool_for_tenant,
+)
 
 # Like the other typed-cron patterns (see #1167 / pure_reminder), the briefing
 # fires a platform-initiated agent turn, so its model MUST sit in the firing
@@ -129,6 +134,11 @@ class DailyBriefingHandler(PatternHandler):
         schedule: dict[str, Any],
     ) -> dict[str, Any]:
         sections_block = "\n".join(f"  - {s}" for s in payload.sections)
+        calendar_tool = calendar_read_tool_for_tenant(tenant)
+        if calendar_tool == DATEBOOK_CALENDAR_READ_TOOL:
+            calendar_instruction = "`nbhd_datebook_read` with `days_ahead=0, entity='events'` first"
+        else:
+            calendar_instruction = "`nbhd_calendar_list_events` first"
         message = (
             "You are composing the user's morning briefing. Tone: "
             f"{payload.warmth_level}. Compose ONE concise message — mobile-"
@@ -146,7 +156,7 @@ class DailyBriefingHandler(PatternHandler):
             "  - To count pending lessons, you MUST call `nbhd_lessons_pending` "
             "first and surface its count verbatim. Do not estimate.\n"
             "  - To mention today's calendar, you MUST call "
-            "`nbhd_calendar_list_events` first and quote event titles/times "
+            f"{calendar_instruction} and quote event titles/times "
             "as returned. Do not paraphrase times.\n"
             "  - Every factual claim in the briefing must trace to a tool "
             "result from this turn. Anything you can't ground via a tool "
@@ -170,19 +180,26 @@ class DailyBriefingHandler(PatternHandler):
                 "message": message,
                 "model": _CRON_MODEL,
                 "lightContext": False,
-                "toolsAllow": self.get_tools_allow(payload),
+                "toolsAllow": self.get_tools_allow(payload, tenant=tenant),
                 "timeoutSeconds": _TURN_TIMEOUT_SECONDS,
             },
             "delivery": {"mode": "none"},
             "enabled": True,
         }
 
-    def get_tools_allow(self, payload: DailyBriefingPayload) -> list[str]:
+    def get_tools_allow(
+        self,
+        payload: DailyBriefingPayload,
+        *,
+        tenant: Any = None,
+    ) -> list[str]:
         # nbhd_send_to_user + read-only queries. No mutations. The
         # explicit list is the structural guard: even if the prompt
         # somehow drifts to encourage mutation, the runtime can't
         # execute it because the tools aren't in the allowlist.
-        return ["nbhd_send_to_user", *_BRIEFING_QUERY_TOOLS]
+        calendar_tool = calendar_read_tool_for_tenant(tenant)
+        query_tools = [calendar_tool if tool == "nbhd_calendar_list_events" else tool for tool in _BRIEFING_QUERY_TOOLS]
+        return ["nbhd_send_to_user", *query_tools]
 
     def get_outbound_contract(
         self,

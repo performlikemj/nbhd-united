@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from django.test import TestCase
 from django.test.utils import override_settings
+from django.utils import timezone
 
 from apps.cron.models import CronCreationPath, CronJob
 from apps.tenants.services import create_tenant
@@ -129,6 +130,36 @@ class RuntimeCronCreateViewsTest(TestCase):
         self.assertEqual(resp.status_code, 201, resp.content)
         row = CronJob.objects.get(tenant=self.tenant, name="appt")
         self.assertIn("nbhd_calendar_list_events", row.data["payload"]["toolsAllow"])
+        self.assertNotIn("nbhd_datebook_read", row.data["payload"]["toolsAllow"])
+
+    def test_create_quote_user_intent_arbitrates_ready_tenant_to_datebook(self):
+        self.tenant.datebook_manifest_ok = True
+        self.tenant.datebook_enabled = True
+        self.tenant.datebook_events_consent_at = timezone.now()
+        self.tenant.save(
+            update_fields=[
+                "datebook_manifest_ok",
+                "datebook_enabled",
+                "datebook_events_consent_at",
+            ]
+        )
+        resp = self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/crons/quote_user_intent/",
+            data={
+                "name": "datebook-appt",
+                "schedule": {"kind": "cron", "expr": "0 9 * * 5", "tz": "Asia/Tokyo"},
+                "text": "cardiologist appointment Tuesday 3pm",
+                "refresh_facts_via": "nbhd_calendar_list_events",
+            },
+            content_type="application/json",
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 201, resp.content)
+        row = CronJob.objects.get(tenant=self.tenant, name="datebook-appt")
+        self.assertIn("nbhd_datebook_read", row.data["payload"]["toolsAllow"])
+        self.assertNotIn("nbhd_calendar_list_events", row.data["payload"]["toolsAllow"])
+        self.assertIn("nbhd_datebook_read", row.data["payload"]["message"])
+        self.assertNotIn("nbhd_calendar_list_events", row.data["payload"]["message"])
 
     def test_create_quote_user_intent_rejects_mutation_refresh(self):
         resp = self.client.post(

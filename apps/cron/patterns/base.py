@@ -49,6 +49,36 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
+GOOGLE_CALENDAR_READ_TOOL = "nbhd_calendar_list_events"
+GOOGLE_CALENDAR_FREEBUSY_TOOL = "nbhd_calendar_get_freebusy"
+DATEBOOK_CALENDAR_READ_TOOL = "nbhd_datebook_read"
+CALENDAR_READ_TOOLS = frozenset(
+    {
+        GOOGLE_CALENDAR_READ_TOOL,
+        GOOGLE_CALENDAR_FREEBUSY_TOOL,
+        DATEBOOK_CALENDAR_READ_TOOL,
+    }
+)
+
+
+def calendar_read_tool_for_tenant(tenant: Any) -> str:
+    """Choose the sole calendar read source from Datebook readiness."""
+    from apps.datebook.readiness import datebook_delivery_ready
+
+    if datebook_delivery_ready(tenant):
+        return DATEBOOK_CALENDAR_READ_TOOL
+    return GOOGLE_CALENDAR_READ_TOOL
+
+
+def arbitrate_calendar_read_tool(tool_name: str, tenant: Any) -> str:
+    """Map either accepted calendar read name to the tenant's live source."""
+    selected_tool = calendar_read_tool_for_tenant(tenant)
+    if selected_tool == DATEBOOK_CALENDAR_READ_TOOL and tool_name in CALENDAR_READ_TOOLS:
+        return selected_tool
+    if tool_name == DATEBOOK_CALENDAR_READ_TOOL:
+        return selected_tool
+    return tool_name
+
 
 class PatternPayload(BaseModel):
     """Marker base class for pattern payload schemas.

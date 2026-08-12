@@ -20,6 +20,7 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.utils import timezone
 
 
 class Command(BaseCommand):
@@ -67,6 +68,9 @@ class Command(BaseCommand):
                 tenant.site_publishing_enabled = True
                 tenant.journal_shaping_enabled = True
                 tenant.document_ingestion_enabled = True
+                tenant.datebook_manifest_ok = True
+                tenant.datebook_enabled = True
+                tenant.datebook_events_consent_at = timezone.now()
                 tenant.save()
 
             config_json = config_to_json(generate_openclaw_config(tenant))
