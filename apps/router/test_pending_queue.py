@@ -481,6 +481,8 @@ class PendingMessageTelegramTest(TestCase):
         urls = [call.args[0] for call in mock_post.call_args_list]
         self.assertTrue(any("/v1/chat/completions" in u for u in urls))
         self.assertTrue(any("api.telegram.org" in u for u in urls))
+        chat_call = next(call for call in mock_post.call_args_list if "/v1/chat/completions" in call.args[0])
+        self.assertEqual(chat_call.kwargs["headers"]["X-OpenClaw-Message-Channel"], "telegram")
 
     @patch("apps.router.pending_queue.httpx.post")
     def test_telegram_reply_sent_as_rendered_html(self, mock_post):
@@ -1151,6 +1153,7 @@ class StaleMessageGuardTest(TestCase):
         # Delivered → hard-deleted on drain (PR-3 privacy sweep).
         self.assertFalse(PendingMessage.objects.filter(id=msg.id).exists())
         mock_apology.assert_not_called()
+        self.assertEqual(mock_post.call_args.kwargs["headers"]["X-OpenClaw-Message-Channel"], "line")
 
     @patch("apps.router.pending_queue._send_apology_for_stale_pending_message")
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)

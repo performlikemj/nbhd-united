@@ -2476,6 +2476,7 @@ def _drain_line_batch(tenant: Tenant, batch: list[PendingMessage], timeout: floa
         "X-User-Timezone": user_tz,
         "X-Line-User-Id": line_user_id,
         "X-Channel": "line",
+        "X-OpenClaw-Message-Channel": "line",
     }
 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)
@@ -2600,6 +2601,7 @@ def _drain_telegram_batch(tenant: Tenant, batch: list[PendingMessage], timeout: 
         "X-User-Timezone": user_tz,
         "X-Telegram-Chat-Id": str(chat_id),
         "X-Channel": "telegram",
+        "X-OpenClaw-Message-Channel": "telegram",
     }
 
     # Send a typing pulse before the slow POST so the user sees activity.
@@ -2731,6 +2733,7 @@ def _drain_ios_batch(tenant: Tenant, batch: list[PendingMessage], timeout: float
         "Authorization": f"Bearer {gateway_token}",
         "X-User-Timezone": user_tz,
         "X-Channel": "ios",
+        "X-OpenClaw-Message-Channel": "ios",
     }
 
     resp = httpx.post(url, json=chat_payload, headers=headers, timeout=timeout)

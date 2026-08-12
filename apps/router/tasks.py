@@ -131,6 +131,7 @@ def _deliver_extraction_turn(tenant: Tenant, thread_id: str, turn_text: str) -> 
             "Authorization": f"Bearer {get_gateway_token_for_tenant(tenant)}",
             "X-User-Timezone": tenant_tz_name(tenant),
             "X-Channel": "ios",
+            "X-OpenClaw-Message-Channel": "ios",
         },
         timeout=_EXTRACTION_TURN_TIMEOUT,
     )

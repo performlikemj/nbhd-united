@@ -146,6 +146,7 @@ def request_datebook_action(
     command_payload: dict,
     display_summary: str,
     direct_user_originated: bool,
+    originating_channel: str | None = None,
 ) -> dict:
     """Create an idempotent gate request, respecting direct-turn auto-approve."""
 
@@ -193,7 +194,11 @@ def request_datebook_action(
 
     from apps.actions.messaging import send_gate_confirmation
 
-    if send_gate_confirmation(tenant, action):
+    if send_gate_confirmation(
+        tenant,
+        action,
+        originating_channel=originating_channel,
+    ):
         return _action_state(action)
 
     with transaction.atomic():
