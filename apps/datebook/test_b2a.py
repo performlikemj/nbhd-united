@@ -18,6 +18,7 @@ from apps.actions.models import (
 )
 from apps.actions.views import GateRespondView
 from apps.orchestrator.envelope_registry import all_sections, suppress_refresh
+from apps.orchestrator.workspace_envelope import render_managed_region
 from apps.router.line_webhook import LineWebhookView
 from apps.router.models import DeviceToken
 from apps.router.poller import TelegramPoller
@@ -146,6 +147,7 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
         self.assertEqual(response.status_code, 409)
         self.assertEqual(response.data, {"state": "datebook_disabled"})
         self.assertFalse(section.enabled(self.tenant))
+        self.assertNotIn("## Calendar & Reminders", render_managed_region(self.tenant))
 
     @patch("apps.actions.messaging.send_gate_confirmation", return_value=False)
     def test_request_create_is_strict_and_returns_store_safe_undeliverable(self, _send):
@@ -362,10 +364,63 @@ class EnvelopeAndPushTests(DatebookB2aMixin, TestCase):
         first = render_datebook(self.tenant)
         self.assertEqual(first, render_datebook(self.tenant))
         self.assertLessEqual(len(first), 1200)
+        self.assertIn(
+            "These blocks are availability metadata only — no titles, not answerable content.",
+            first,
+        )
+        self.assertIn(
+            "For ANY question about calendar, schedule, events, availability, or birthdays, "
+            "you MUST call `nbhd_datebook_read` this turn and answer only from its result.",
+            first,
+        )
+        self.assertIn("Never answer schedule questions from memory or from these blocks.", first)
         self.assertIn("1 busy", first)
         self.assertIn("1 due today", first)
         self.assertIn(self.gateway.events_last_complete_sync_at.isoformat(), first)
+        self.assertNotIn("further days omitted", first)
         self.assertNotIn("SECRET", first)
+
+    def test_envelope_overflow_drops_whole_busy_days_but_keeps_required_lines(self):
+        day_start = timezone.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        events = []
+        for day_offset in range(7):
+            for event_index in range(12):
+                start = day_start + timedelta(days=day_offset, hours=event_index * 2)
+                events.append(
+                    MirrorEvent(
+                        tenant=self.tenant,
+                        source_key=_source_key(f"overflow-{day_offset}-{event_index}"),
+                        content_hash="d" * 64,
+                        active=True,
+                        first_seen_generation=1,
+                        last_seen_generation=1,
+                        time_kind="zoned",
+                        zoned_start_at=start,
+                        zoned_end_at=start + timedelta(hours=1),
+                        tz_id="UTC",
+                    )
+                )
+        with suppress_refresh():
+            MirrorEvent.objects.bulk_create(events)
+
+        rendered = render_datebook(self.tenant)
+
+        self.assertLessEqual(len(rendered), 1200)
+        self.assertIn(
+            "These blocks are availability metadata only — no titles, not answerable content.",
+            rendered,
+        )
+        self.assertIn(
+            "For ANY question about calendar, schedule, events, availability, or birthdays, "
+            "you MUST call `nbhd_datebook_read` this turn and answer only from its result.",
+            rendered,
+        )
+        self.assertIn("Never answer schedule questions from memory or from these blocks.", rendered)
+        self.assertIn("- Reminders: 0 overdue; 0 due today", rendered)
+        self.assertIn(self.gateway.events_last_complete_sync_at.isoformat(), rendered)
+        self.assertIn(self.gateway.reminders_last_complete_sync_at.isoformat(), rendered)
+        self.assertIn("- (further days omitted — call nbhd_datebook_read)", rendered)
+        self.assertIn("12 busy", rendered)
 
     @patch("apps.datebook.notify.apns_configured", return_value=True)
     @patch("apps.router.push_views._push_to_user_devices", return_value={"token_count": 1, "used_fallback": False})
