@@ -16,6 +16,7 @@ from .readiness import datebook_delivery_ready
 _DAY_COUNT = 8
 _QUERY_CAP = 1000
 _HARD_BUDGET = 1200
+_OMITTED_DAYS_LINE = "- (further days omitted — call nbhd_datebook_read)"
 
 
 def _time_label(value: datetime, *, end_of_day: bool = False) -> str:
@@ -126,15 +127,28 @@ def render_datebook(tenant, *, max_chars: int = _HARD_BUDGET) -> str:
     """Render no content fields: only busy metadata, counts, and absolute freshness."""
 
     overdue, due_today = _reminder_counts(tenant)
-    lines = [
+    prefix = [
         "These blocks are availability metadata only — no titles, not answerable content.",
         "For ANY question about calendar, schedule, events, availability, or birthdays, "
         "you MUST call `nbhd_datebook_read` this turn and answer only from its result.",
         "Never answer schedule questions from memory or from these blocks.",
         "**Busy blocks — today + next 7 days**",
-        *_busy_blocks(tenant),
+    ]
+    suffix = [
         f"- Reminders: {overdue} overdue; {due_today} due today",
         _freshness_line(tenant),
     ]
-    body = "\n".join(lines)
-    return body[: max(0, min(max_chars, _HARD_BUDGET))]
+    busy_lines = _busy_blocks(tenant)
+    budget = max(0, min(max_chars, _HARD_BUDGET))
+
+    body = "\n".join([*prefix, *busy_lines, *suffix])
+    if len(body) <= budget:
+        return body
+
+    while busy_lines:
+        busy_lines.pop()
+        body = "\n".join([*prefix, *busy_lines, _OMITTED_DAYS_LINE, *suffix])
+        if len(body) <= budget:
+            return body
+
+    return "\n".join([*prefix, _OMITTED_DAYS_LINE, *suffix])
