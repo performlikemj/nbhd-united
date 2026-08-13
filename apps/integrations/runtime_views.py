@@ -86,8 +86,10 @@ _SITUATION_CAPTURE_GUIDANCE = (
     "Acknowledge this capture in one short clause. If the user objects, do not record again and drop the subject."
 )
 _SITUATION_NEW_TRIP_GUIDANCE = (
-    "New trip: you may offer local ideas once ('want ideas for what's around while you're there?'). "
-    "If declined or ignored, never offer again this trip. If accepted, follow the Tour guide rule."
+    "New trip: end your reply with this EXACT line (nothing after it): "
+    "[[quick-replies: Things to do nearby]] — the app renders it as a tappable chip. "
+    "Do not also compose a verbal offer. If the reply also carries a journal-link marker, "
+    "put that line first and this quick-replies line last."
 )
 
 _JOURNAL_EGRESS_TEXT_FIELDS = frozenset(

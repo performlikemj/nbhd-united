@@ -484,6 +484,30 @@ _MORNING_BRIEFING_PROMPT_TEMPLATE = (
 )
 
 
+_MORNING_BRIEFING_AWAY_TOUR_PILL_BLOCK = (
+    "If `## Right now` shows a fresh Current location away from home base, include "
+    "`Things to do nearby` among the quick-replies labels on the final marker line."
+)
+
+
+def _with_morning_briefing_away_tour_pill(prompt: str, tenant) -> str:
+    if not (
+        tenant.situational_context_enabled
+        and tenant.tour_guide_enabled
+        and (places_search_delivery_ready(tenant) or tour_guide_delivery_ready(tenant))
+    ):
+        return prompt
+
+    insertion_point = "\n\nWhen writing daily note sections,"
+    if insertion_point not in prompt:
+        raise ValueError("morning briefing prompt has no marker-contract insertion point")
+    return prompt.replace(
+        insertion_point,
+        f"\n\n{_MORNING_BRIEFING_AWAY_TOUR_PILL_BLOCK}{insertion_point}",
+        1,
+    )
+
+
 def _build_morning_briefing_prompt(tenant) -> str:
     """Build the morning briefing prompt with a pre-resolved weather search location.
 
@@ -513,7 +537,8 @@ def _build_morning_briefing_prompt(tenant) -> str:
         weather_step_template = _MORNING_BRIEFING_LEGACY_WEATHER_STEP
     weather_step = weather_step_template.format(location=location)
 
-    return _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_step=weather_step)
+    prompt = _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_step=weather_step)
+    return _with_morning_briefing_away_tour_pill(prompt, tenant)
 
 
 _CONTEXTUAL_LOCATION_CONFIRM_ASK_BLOCK = (
