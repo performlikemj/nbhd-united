@@ -3,7 +3,7 @@ name: Auto-merge Dependabot PRs
 on: pull_request
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 jobs:
@@ -16,9 +16,78 @@ jobs:
         uses: dependabot/fetch-metadata@v2
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
-      - name: Auto-merge patch and minor updates only
+      - name: Freshness-gate PAT-authored auto-merge
         if: steps.metadata.outputs.update-type != 'version-update:semver-major'
-        run: gh pr merge --auto --squash "$PR_URL"
+        shell: bash
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPOSITORY: ${{ github.repository }}
+          DEPENDABOT_MERGE_TOKEN: ${{ secrets.DEPENDABOT_MERGE_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${DEPENDABOT_MERGE_TOKEN:-}" ]]; then
+            echo "::error::DEPENDABOT_MERGE_TOKEN is missing or empty. Dependabot auto-merge is fail-closed; add the fine-grained PAT as a Dependabot secret and rerun this workflow."
+            exit 1
+          fi
+
+          pr_freshness() {
+            local refs base_sha head_sha
+            refs="$(
+              GH_TOKEN="${GITHUB_TOKEN}" gh api \
+                "repos/${REPOSITORY}/pulls/${PR_NUMBER}" \
+                --jq '"\(.base.sha)\t\(.head.sha)"'
+            )"
+            IFS=$'\t' read -r base_sha head_sha <<< "${refs}"
+            GH_TOKEN="${GITHUB_TOKEN}" gh api \
+              "repos/${REPOSITORY}/compare/${base_sha}...${head_sha}" \
+              --jq '.status'
+          }
+
+          request_rebase() {
+            echo "::notice::Dependabot PR #${PR_NUMBER} is behind its base branch; requesting a rebase instead of merging."
+            GH_TOKEN="${GITHUB_TOKEN}" gh pr comment "${PR_URL}" --body '@dependabot rebase'
+            echo "Rebase requested. The rebased push will rerun checks and this workflow."
+          }
+
+          freshness="$(pr_freshness)"
+          case "${freshness}" in
+            behind|diverged)
+              request_rebase
+              exit 0
+              ;;
+            ahead|identical)
+              ;;
+            *)
+              echo "::error::Unable to determine PR freshness (compare status: ${freshness}). Refusing to merge."
+              exit 1
+              ;;
+          esac
+
+          if merge_output="$(
+            GH_TOKEN="${DEPENDABOT_MERGE_TOKEN}" gh pr merge --auto --squash "${PR_URL}" 2>&1
+          )"; then
+            echo "${merge_output}"
+            echo "PAT-authored native auto-merge enabled; GitHub will merge only after required checks pass while the branch is up to date."
+            exit 0
+          fi
+
+          echo "${merge_output}"
+          freshness="$(pr_freshness)"
+          case "${freshness}" in
+            behind|diverged)
+              echo "Merge became blocked because main advanced; falling back to the rebase loop."
+              request_rebase
+              exit 0
+              ;;
+            ahead|identical)
+              echo "::error::PAT-authored auto-merge failed even though the PR is up to date. Refusing to fall back to GITHUB_TOKEN."
+              exit 1
+              ;;
+            *)
+              echo "::error::PAT-authored auto-merge failed, and PR freshness is unknown (compare status: ${freshness}). Refusing to merge."
+              exit 1
+              ;;
+          esac

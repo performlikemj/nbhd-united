@@ -21,7 +21,9 @@ The `/deploy` skill walks the full commit→push→verify sequence. This doc is 
 
 ## Merging
 
-- This repo has **no required status checks** — `gh pr merge --auto` merges instantly, before CI finishes. The *deploy* job is what's gated on tests, so prod stays safe, but a red commit can land on main. If you want green-before-merge, watch CI yourself first.
+- `main` requires `backend-test`, `frontend-test`, and `openclaw-config-smoke`, with **strict up-to-date branches**. `gh pr merge --auto` waits for those checks to pass and for the PR branch to include current `main`; when a human PR is behind, run `gh pr update-branch <n>`.
+- Dependabot patch/minor merges are enabled with the fine-grained PAT in the Dependabot secret `DEPENDABOT_MERGE_TOKEN`, so the resulting push to `main` always triggers CI/CD. A behind Dependabot PR gets an `@dependabot rebase` request and is reconsidered only after the rebased push reruns checks. Rotate the PAT via `/rotate-keys`.
+- Dependabot auto-merge fails closed: if `DEPENDABOT_MERGE_TOKEN` is missing or empty, eligible Dependabot PRs accumulate open with a visible workflow error; `main` never advances silently via `GITHUB_TOKEN`.
 - **Stacked-PR phantom merge**: before merging, `gh pr view <n> --json baseRefName` MUST be `main` — merging a PR based on a deleted/merged branch "succeeds" without ever advancing main. After ANY merge, verify main actually advanced (`git ls-tree origin/main <changed-file>`).
 - `gh pr checks --watch` / `gh run watch`: run **bare**, no pipe, no trailing `; echo` — anything after it steals the exit code and a red run reads as green. Confirm by reading the output, not `$?`.
 
