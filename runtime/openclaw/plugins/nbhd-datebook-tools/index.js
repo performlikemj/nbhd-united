@@ -119,6 +119,13 @@ function datebookPath(api, suffix) {
   return `/api/v1/datebook/runtime/${encodeURIComponent(runtime.tenantId)}/datebook${suffix}`;
 }
 
+function originatingChannel(toolContext) {
+  const channel = asTrimmedString(toolContext?.messageChannel).toLowerCase();
+  if (channel === "ios" || channel === "app") return "app";
+  if (channel === "telegram" || channel === "line") return channel;
+  return "";
+}
+
 function freshnessPart(label, scope, serverNow) {
   const stamp = asTrimmedString(scope?.last_complete_sync_at);
   if (!stamp) return `${label} has never completed a sync (${scope?.authorization || "unavailable"})`;
@@ -199,9 +206,10 @@ async function pollCommand(api, initial, startedAt) {
   return latest;
 }
 
-async function requestCreate(api, toolCallId, params, commandType) {
+async function requestCreate(api, toolContext, toolCallId, params, commandType) {
   const startedAt = Date.now();
   const input = asObject(params);
+  const requestChannel = originatingChannel(toolContext);
   const payload = await callRuntime(api, {
     path: datebookPath(api, "/request-create"),
     method: "POST",
@@ -211,6 +219,7 @@ async function requestCreate(api, toolCallId, params, commandType) {
       payload: { items: input.items },
       destination_name: asTrimmedString(input.destination_name),
       direct_user_originated: input.direct_user_originated === true,
+      ...(requestChannel ? { originating_channel: requestChannel } : {}),
     },
   });
   const latest = await pollCommand(api, payload, startedAt);
@@ -348,10 +357,10 @@ export default function register(api) {
     },
   }), { optional: true });
 
-  api.registerTool(wrap({
+  api.registerTool((toolContext) => wrap({
     name: "nbhd_datebook_add_event",
     description:
-      "Request creation of 1–5 native Apple Calendar events. This is not an assistant-delivered cron reminder. Every request normally requires review through a linked Telegram/LINE gate; iOS-only approval needs the app update. Never claim success while approval/device execution is pending: approved work is queued for up to 72 hours. Do not add attendees, invitations, recurrence, URLs, or alarms; an alarm is allowed only when the user explicitly requested it and it appears in the reviewed payload. Mirror reads may be stale, so never infer a safe destination from silence.",
+      "Request creation of 1–5 native Apple Calendar events. This is not an assistant-delivered cron reminder. Every request normally requires review on the current turn's originating channel: Telegram/LINE buttons or the NBHD app review sheet. Never claim success while approval/device execution is pending: approved work is queued for up to 72 hours. Do not add attendees, invitations, recurrence, URLs, or alarms; an alarm is allowed only when the user explicitly requested it and it appears in the reviewed payload. Mirror reads may be stale, so never infer a safe destination from silence.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -381,17 +390,17 @@ export default function register(api) {
     },
     async execute(toolCallId, params) {
       try {
-        return await requestCreate(api, toolCallId, params, "calendar_create");
+        return await requestCreate(api, toolContext, toolCallId, params, "calendar_create");
       } catch (error) {
         return renderText(error.message, { error: error.message });
       }
     },
   }), { optional: true });
 
-  api.registerTool(wrap({
+  api.registerTool((toolContext) => wrap({
     name: "nbhd_datebook_add_apple_reminder",
     description:
-      "Request creation of 1–5 Apple Reminders in the user's native list. Use nbhd_cron_create_pure_reminder instead when the user wants the assistant to deliver a future chat reminder. Every Apple Reminder request normally requires Telegram/LINE review; iOS-only approval needs the app update. Never promise creation while pending: approved work is queued for up to 72 hours. Do not add attendees, invitations, recurrence, URLs, or alarms; include an alarm only when explicitly requested in the reviewed payload. Mirror/list state may be stale.",
+      "Request creation of 1–5 Apple Reminders in the user's native list. Use nbhd_cron_create_pure_reminder instead when the user wants the assistant to deliver a future chat reminder. Every request normally requires review on the current turn's originating channel: Telegram/LINE buttons or the NBHD app review sheet. Never promise creation while pending: approved work is queued for up to 72 hours. Do not add attendees, invitations, recurrence, URLs, or alarms; include an alarm only when explicitly requested in the reviewed payload. Mirror/list state may be stale.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -422,7 +431,7 @@ export default function register(api) {
     },
     async execute(toolCallId, params) {
       try {
-        return await requestCreate(api, toolCallId, params, "reminder_create");
+        return await requestCreate(api, toolContext, toolCallId, params, "reminder_create");
       } catch (error) {
         return renderText(error.message, { error: error.message });
       }

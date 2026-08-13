@@ -224,6 +224,7 @@ class ExtractInboundDocumentTaskTest(TestCase):
         _, kwargs = mocks["post"].call_args
         self.assertEqual(kwargs["json"]["user"], "thread:abc-123")
         self.assertEqual(kwargs["headers"]["X-Channel"], "ios")
+        self.assertEqual(kwargs["headers"]["X-OpenClaw-Message-Channel"], "ios")
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertIn(_TEXT_LAYER_CONTENT, kwargs["json"]["messages"][0]["content"])
 

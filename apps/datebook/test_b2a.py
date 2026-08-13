@@ -209,6 +209,41 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
         self.assertEqual(status_response.data["state"], "approval_pending")
         self.assertEqual(status_response.data["datebook_command_generation"], 0)
 
+    @patch("apps.actions.messaging.send_gate_confirmation", return_value=True)
+    def test_request_create_forwards_normalized_originating_channel(self, send):
+        path = f"/api/v1/datebook/runtime/{self.tenant.id}/datebook/request-create"
+        response = self.client.post(
+            path,
+            {
+                "request_id": "origin-app",
+                "command_type": "calendar_create",
+                "payload": _event_payload(),
+                "direct_user_originated": True,
+                "originating_channel": "ios",
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 202, response.data)
+        self.assertEqual(send.call_args.kwargs["originating_channel"], "app")
+
+        rejected = self.client.post(
+            path,
+            {
+                "request_id": "origin-invalid",
+                "command_type": "calendar_create",
+                "payload": _event_payload(),
+                "direct_user_originated": True,
+                "originating_channel": "webchat",
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(rejected.status_code, 400, rejected.data)
+        self.assertEqual(rejected.data, {"state": "invalid_originating_channel"})
+        self.assertEqual(send.call_count, 1)
+
     @patch("apps.datebook.notify.notify_device_command")
     def test_auto_approved_claim_rehydrates_full_typed_payload_and_generation(self, _notify):
         GatePreference.objects.create(

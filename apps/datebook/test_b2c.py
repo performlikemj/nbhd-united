@@ -262,6 +262,73 @@ class DatebookGateAppDeliveryTests(DatebookB2aMixin, TestCase):
         action.refresh_from_db()
         self.assertEqual(action.platform_channel, "telegram")
 
+    def test_explicit_origin_selects_app_telegram_and_line(self):
+        self.tenant.user.line_user_id = "U" + "7" * 32
+        self.tenant.user.save(update_fields=["line_user_id"])
+
+        for index, origin in enumerate(("app", "telegram", "line")):
+            with self.subTest(origin=origin):
+                action = self._action_for_priority()
+                senders = {
+                    channel: mock.Mock(return_value=f"{channel}-gate-{index}")
+                    for channel in ("app", "telegram", "line")
+                }
+                with mock.patch.dict(
+                    messaging._SENDERS,
+                    {channel: (sender, None) for channel, sender in senders.items()},
+                ):
+                    delivered = send_gate_confirmation(
+                        self.tenant,
+                        action,
+                        originating_channel=origin,
+                    )
+
+                self.assertTrue(delivered)
+                senders[origin].assert_called_once_with(self.tenant, action)
+                for other in {"app", "telegram", "line"} - {origin}:
+                    senders[other].assert_not_called()
+                action.refresh_from_db()
+                self.assertEqual(action.platform_channel, origin)
+
+    @patch("apps.router.push_views._push_to_user_devices", return_value={"token_count": 0, "used_fallback": False})
+    def test_app_origin_without_reachable_push_stays_discoverable_and_never_falls_back(self, push):
+        self.gateway.status = self.gateway.Status.RETIRED
+        self.gateway.save(update_fields=["status"])
+        DeviceToken.objects.filter(user=self.tenant.user).delete()
+        telegram = mock.Mock(return_value="telegram-must-not-send")
+        line = mock.Mock(return_value="line-must-not-send")
+        with mock.patch.dict(
+            messaging._SENDERS,
+            {
+                "telegram": (telegram, None),
+                "line": (line, None),
+                "app": (messaging._send_app_confirmation, None),
+            },
+        ):
+            result = request_datebook_action(
+                self.tenant,
+                action_type=ActionType.CALENDAR_CREATE,
+                request_id="app-no-reachable-push",
+                command_payload=_command_gate_payload("app-no-reachable-push"),
+                display_summary="Create calendar event: planning",
+                direct_user_originated=False,
+                originating_channel="app",
+            )
+
+        self.assertEqual(result["state"], "approval_pending")
+        telegram.assert_not_called()
+        line.assert_not_called()
+        push.assert_called_once()
+        action = PendingAction.objects.get(id=result["action_id"])
+        self.assertEqual(action.platform_channel, "app")
+        self.assertEqual(action.status, ActionStatus.PENDING)
+
+        consumer = APIClient()
+        consumer.force_authenticate(user=self.tenant.user)
+        pending = consumer.get("/api/v1/datebook/gate/pending/")
+        self.assertEqual(pending.status_code, 200, pending.data)
+        self.assertIn(action.id, [item["action_id"] for item in pending.data["actions"]])
+
     def _action_for_priority(self):
         return PendingAction.objects.create(
             tenant=self.tenant,

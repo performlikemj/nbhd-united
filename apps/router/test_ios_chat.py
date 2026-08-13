@@ -139,6 +139,7 @@ class IOSChatRoutingTest(TestCase):
         sent = mock_post.call_args.kwargs
         self.assertEqual(sent["json"]["user"], f"thread:{main.id}")
         self.assertEqual(sent["headers"]["X-Channel"], "ios")
+        self.assertEqual(sent["headers"]["X-OpenClaw-Message-Channel"], "ios")
 
         # The reply was persisted; the client polls and gets it.
         poll = self.client.get("/api/v1/chat/messages/c1/")

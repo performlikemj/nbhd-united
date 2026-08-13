@@ -388,8 +388,13 @@ _SENDERS = {
 }
 
 
-def _resolve_gate_channel(user) -> str | None:
+def _resolve_gate_channel(user, *, originating_channel: str | None = None) -> str | None:
     """Resolve the channel for an INTERACTIVE gate confirmation.
+
+    An explicit originating channel is authoritative. ``ios`` normalizes to the
+    app review surface; Telegram/LINE keep their established senders and button
+    payloads. An invalid explicit value fails closed instead of crossing to a
+    linked channel.
 
     Deliberately NOT ``resolve_user_channel`` (which is app-first): gate buttons
     stay on linked messaging channels in their established Telegram-then-LINE
@@ -410,6 +415,14 @@ def _resolve_gate_channel(user) -> str | None:
     ``resolve_user_channel`` (production noise — every row is the schema
     default).
     """
+    if originating_channel:
+        normalized = originating_channel.strip().lower()
+        if normalized in {"app", "ios"}:
+            return "app"
+        if normalized in {"telegram", "line"}:
+            return normalized
+        return None
+
     if getattr(user, "telegram_chat_id", None):
         return "telegram"
     if getattr(user, "line_user_id", None):
@@ -435,7 +448,12 @@ def _resolve_gate_channel(user) -> str | None:
     return None
 
 
-def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
+def send_gate_confirmation(
+    tenant: Tenant,
+    action: PendingAction,
+    *,
+    originating_channel: str | None = None,
+) -> bool:
     """Send a confirmation prompt to the user on their delivery channel.
 
     Resolves via ``_resolve_gate_channel`` rather than the app-first proactive
@@ -460,7 +478,10 @@ def send_gate_confirmation(tenant: Tenant, action: PendingAction) -> bool:
         # channel on an eval tenant would otherwise emit.
         logger.info("Gate confirmation suppressed for eval-sink tenant %s", tenant.id)
         return False
-    channel = _resolve_gate_channel(tenant.user)
+    channel = _resolve_gate_channel(
+        tenant.user,
+        originating_channel=originating_channel,
+    )
     if channel == "app":
         from apps.datebook.gate import is_datebook_action_type
 

@@ -243,6 +243,7 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
             "command_type",
             "payload",
             "direct_user_originated",
+            "originating_channel",
             "destination_name",
             "destination_fingerprint",
         }
@@ -251,12 +252,17 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
         request_id = body.get("request_id")
         command_type = body.get("command_type")
         direct_user_originated = body.get("direct_user_originated", False)
+        originating_channel = body.get("originating_channel")
         if not isinstance(request_id, str) or not request_id.strip() or len(request_id.strip()) > 128:
             return Response({"state": "invalid_request_id"}, status=status.HTTP_400_BAD_REQUEST)
         if command_type not in DeviceCommand.CommandType.values:
             return Response({"state": "invalid_command_type"}, status=status.HTTP_400_BAD_REQUEST)
         if not isinstance(direct_user_originated, bool):
             return Response({"state": "invalid_provenance"}, status=status.HTTP_400_BAD_REQUEST)
+        if originating_channel not in {None, "app", "ios", "telegram", "line"}:
+            return Response({"state": "invalid_originating_channel"}, status=status.HTTP_400_BAD_REQUEST)
+        if originating_channel == "ios":
+            originating_channel = "app"
         if command_type == DeviceCommand.CommandType.CALENDAR_CREATE:
             action_type = ActionType.CALENDAR_CREATE
             consented = bool(tenant.datebook_events_consent_at)
@@ -296,6 +302,7 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
             command_payload=command_payload,
             display_summary=display_text,
             direct_user_originated=direct_user_originated,
+            originating_channel=originating_channel,
         )
         response_status = status.HTTP_202_ACCEPTED if result["state"] == "approval_pending" else status.HTTP_200_OK
         if result["state"] in {"daily_command_cap"}:
