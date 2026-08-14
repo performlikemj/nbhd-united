@@ -353,6 +353,7 @@ def _push_to_user_devices(
     content_available: bool,
     extra: dict,
     installation_id: str | None = None,
+    fallback_to_all: bool = True,
 ) -> dict:
     """Send one ``body`` alert to each of ``user``'s registered devices.
 
@@ -362,7 +363,8 @@ def _push_to_user_devices(
     and prunes any token APNs reports as unregistered (410) so the table
     self-heals. Shared by the app-turn (``_notify_turn``) and cron / proactive
     (``notify_proactive_ready``) push paths so the per-environment fan-out and
-    self-healing live in exactly one place.
+    self-healing live in exactly one place. Installation-targeted callers may
+    disable the legacy all-device fallback when the target is authoritative.
     """
     from apps.common.apns import send_push
 
@@ -380,7 +382,7 @@ def _push_to_user_devices(
     used_fallback = False
     if installation_id:
         rows = list(token_rows.filter(installation_id=installation_id).values("token", "environment"))
-        if not rows:
+        if not rows and fallback_to_all:
             used_fallback = True
             rows = list(token_rows.values("token", "environment"))
     else:

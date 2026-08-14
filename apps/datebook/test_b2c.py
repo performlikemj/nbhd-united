@@ -83,7 +83,7 @@ class DatebookGateConsumerTests(DatebookB2aMixin, TestCase):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response["Cache-Control"], "no-store")
-        self.assertEqual(response.data["review_window_seconds"], 300)
+        self.assertEqual(response.data["review_window_seconds"], 86_400)
         self.assertEqual(
             [item["action_id"] for item in response.data["actions"]],
             [action.id for action in actions[:20]],
@@ -93,6 +93,8 @@ class DatebookGateConsumerTests(DatebookB2aMixin, TestCase):
         self.assertEqual(first["payload"]["destination_name"], "Home Calendar")
         self.assertIn("start_at", first["payload"]["payload"]["items"][0]["time"])
         self.assertEqual(first["display_summary"], "Create calendar event: Alice planning 0")
+        self.assertEqual(first["originating_channel"], "")
+        self.assertIn("created_at", first)
         self.assertNotIn(other.id, [item["action_id"] for item in response.data["actions"]])
 
     @patch("apps.datebook.notify.notify_device_command")
@@ -119,15 +121,12 @@ class DatebookGateConsumerTests(DatebookB2aMixin, TestCase):
             format="json",
         )
         self.assertEqual(deny_response.status_code, 200)
-        self.assertEqual(
-            deny_response.data,
-            {
-                "action_id": denied.id,
-                "command_id": str(denied.datebook_command_id),
-                "state": "denied",
-                "status": "denied",
-            },
-        )
+        self.assertEqual(deny_response.data["action_id"], denied.id)
+        self.assertEqual(deny_response.data["command_id"], str(denied.datebook_command_id))
+        self.assertEqual(deny_response.data["state"], "denied")
+        self.assertEqual(deny_response.data["status"], "denied")
+        self.assertEqual(deny_response.data["approval_surface"], "app")
+        self.assertEqual(deny_response.data["delivery_state"], "available")
 
         conflict = self.consumer.post(
             f"/api/v1/datebook/gate/{denied.id}/respond/",
@@ -137,7 +136,7 @@ class DatebookGateConsumerTests(DatebookB2aMixin, TestCase):
         self.assertEqual(conflict.status_code, 409)
         self.assertEqual(
             conflict.data,
-            {"error": "Action already resolved: denied", "status": "denied"},
+            {"error": "action_already_resolved", "status": "denied"},
         )
 
         expired = self._requested_action("consumer-expired")
@@ -148,14 +147,10 @@ class DatebookGateConsumerTests(DatebookB2aMixin, TestCase):
             format="json",
         )
         self.assertEqual(expired_response.status_code, 410)
-        self.assertEqual(
-            expired_response.data,
-            {
-                "action_id": expired.id,
-                "command_id": str(expired.datebook_command_id),
-                "state": "expired",
-            },
-        )
+        self.assertEqual(expired_response.data["action_id"], expired.id)
+        self.assertEqual(expired_response.data["command_id"], str(expired.datebook_command_id))
+        self.assertEqual(expired_response.data["state"], "stale_review")
+        self.assertIn("24-hour review window expired", expired_response.data["guidance"])
         self.assertEqual(expired_response["Cache-Control"], "no-store")
 
     def test_respond_is_tenant_scoped(self):
@@ -192,36 +187,43 @@ class DatebookGateConsumerTests(DatebookB2aMixin, TestCase):
 class DatebookGateAppDeliveryTests(DatebookB2aMixin, TestCase):
     chat_id = 927002
 
+    @patch("apps.datebook.notify.apns_configured", return_value=True)
     @patch("apps.router.push_views._push_to_user_devices", return_value={"token_count": 0, "used_fallback": False})
-    def test_ios_only_gateway_gets_generic_targeted_idempotent_app_delivery(self, push):
+    def test_ios_only_gateway_gets_generic_targeted_on_commit_invalidation(self, push, _configured):
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.line_user_id = None
         self.tenant.user.save(update_fields=["telegram_chat_id", "line_user_id"])
-        result = request_datebook_action(
-            self.tenant,
-            action_type=ActionType.CALENDAR_CREATE,
-            request_id="app-gate-delivery",
-            command_payload=_command_gate_payload("app-gate-delivery", title="PII MUST STAY OFF PUSH"),
-            display_summary="PII MUST STAY OFF PUSH",
-            direct_user_originated=False,
-        )
+        with self.captureOnCommitCallbacks(execute=True):
+            result = request_datebook_action(
+                self.tenant,
+                action_type=ActionType.CALENDAR_CREATE,
+                request_id="app-gate-delivery",
+                command_payload=_command_gate_payload("app-gate-delivery", title="PII MUST STAY OFF PUSH"),
+                display_summary="PII MUST STAY OFF PUSH",
+                direct_user_originated=False,
+            )
         action = PendingAction.objects.get(id=result["action_id"])
 
         self.assertEqual(result["state"], "approval_pending")
         self.assertEqual(action.status, ActionStatus.PENDING)
+        self.assertEqual(result["approval_surface"], "app")
+        self.assertEqual(result["delivery_state"], "available")
+        self.assertIn("the approval is in this conversation", result["guidance"])
         self.assertEqual(action.platform_channel, "app")
+        self.assertEqual(action.platform_message_id, "")
         self.assertTrue(send_gate_confirmation(self.tenant, action))
         push.assert_called_once()
         kwargs = push.call_args.kwargs
         self.assertEqual(kwargs["installation_id"], "install-a")
-        self.assertEqual(kwargs["extra"], {"type": "datebook_gate", "action_id": str(action.id)})
-        self.assertEqual(kwargs["collapse_id"], f"datebook-gate:{action.id}")
+        self.assertEqual(kwargs["extra"], {"type": "datebook_gate_changed"})
+        self.assertEqual(kwargs["collapse_id"], f"datebook-gate-changed:{self.tenant.id}")
+        self.assertFalse(kwargs["fallback_to_all"])
         self.assertTrue(kwargs["content_available"])
         self.assertNotIn("PII MUST", kwargs["body"])
         self.assertNotIn("approve", kwargs["body"].lower())
 
     @patch("apps.router.push_views._push_to_user_devices", return_value={"token_count": 1, "used_fallback": False})
-    def test_registered_device_is_app_fallback_without_active_gateway(self, push):
+    def test_registered_device_keeps_app_surface_without_active_gateway_push(self, push):
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.line_user_id = None
         self.tenant.user.save(update_fields=["telegram_chat_id", "line_user_id"])
@@ -240,8 +242,8 @@ class DatebookGateAppDeliveryTests(DatebookB2aMixin, TestCase):
         self.assertTrue(delivered)
         action.refresh_from_db()
         self.assertEqual(action.platform_channel, "app")
-        push.assert_called_once()
-        self.assertIsNone(push.call_args.kwargs["installation_id"])
+        self.assertEqual(action.delivery_state, "available")
+        push.assert_not_called()
 
     def test_telegram_remains_ahead_of_app_for_gateway_tenant(self):
         action = self._action_for_priority()
@@ -290,20 +292,24 @@ class DatebookGateAppDeliveryTests(DatebookB2aMixin, TestCase):
                 action.refresh_from_db()
                 self.assertEqual(action.platform_channel, origin)
 
+    @patch("apps.datebook.notify.apns_configured", return_value=True)
     @patch("apps.router.push_views._push_to_user_devices", return_value={"token_count": 0, "used_fallback": False})
-    def test_app_origin_without_reachable_push_stays_discoverable_and_never_falls_back(self, push):
+    def test_app_origin_without_reachable_push_stays_discoverable_and_never_falls_back(self, push, _configured):
         self.gateway.status = self.gateway.Status.RETIRED
         self.gateway.save(update_fields=["status"])
         DeviceToken.objects.filter(user=self.tenant.user).delete()
         telegram = mock.Mock(return_value="telegram-must-not-send")
         line = mock.Mock(return_value="line-must-not-send")
-        with mock.patch.dict(
-            messaging._SENDERS,
-            {
-                "telegram": (telegram, None),
-                "line": (line, None),
-                "app": (messaging._send_app_confirmation, None),
-            },
+        with (
+            mock.patch.dict(
+                messaging._SENDERS,
+                {
+                    "telegram": (telegram, None),
+                    "line": (line, None),
+                    "app": (messaging._send_app_confirmation, None),
+                },
+            ),
+            self.captureOnCommitCallbacks(execute=True),
         ):
             result = request_datebook_action(
                 self.tenant,
@@ -318,7 +324,7 @@ class DatebookGateAppDeliveryTests(DatebookB2aMixin, TestCase):
         self.assertEqual(result["state"], "approval_pending")
         telegram.assert_not_called()
         line.assert_not_called()
-        push.assert_called_once()
+        push.assert_not_called()
         action = PendingAction.objects.get(id=result["action_id"])
         self.assertEqual(action.platform_channel, "app")
         self.assertEqual(action.status, ActionStatus.PENDING)

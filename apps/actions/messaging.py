@@ -1,12 +1,14 @@
 """Platform-agnostic gate confirmation messaging.
 
-Sends Telegram/LINE prompts with inline buttons, or a generic iOS wake for the
-datebook review sheet, and updates messaging prompts after response.
+Sends Telegram/LINE prompts with inline buttons, claims the durable iOS review
+surface, and updates messaging prompts after response. Datebook invalidation
+pushes live in ``apps.datebook.notify``.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from django.conf import settings
 
@@ -18,30 +20,46 @@ from .models import ActionStatus, PendingAction
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class GateSendResult:
+    """Transport acceptance and its independently truthful platform message id."""
+
+    accepted: bool
+    platform_message_id: str = ""
+
+
+def _review_window_text(action: PendingAction, *, markdown: bool = False) -> str:
+    from apps.datebook.gate import is_datebook_action_type
+
+    action_type = getattr(action, "action_type", "")
+    text = "Review within 24 hours" if is_datebook_action_type(action_type) else "Expires in 5 minutes"
+    return f"_{text}_" if markdown else text
+
+
 # ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------
 
 
-def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | None:
+def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> GateSendResult:
     """Send a Telegram message with inline approve/deny buttons.
 
-    Returns the Telegram message_id (str) on success, None on failure.
+    A 200 without a real Telegram message id is accepted but never called sent.
     """
     if suppresses_real_transport(tenant):
-        return None
+        return GateSendResult(False)
 
     import httpx
 
     bot_token = getattr(settings, "TELEGRAM_BOT_TOKEN", "").strip()
     if not bot_token:
         logger.warning("Cannot send gate confirmation: no Telegram bot token")
-        return None
+        return GateSendResult(False)
 
     chat_id = tenant.user.telegram_chat_id
     if not chat_id:
         logger.warning("Tenant %s has no Telegram chat_id", tenant.id)
-        return None
+        return GateSendResult(False)
 
     from apps.pii.redactor import rehydrate_for_tenant
 
@@ -52,7 +70,7 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | 
         f"Your agent wants to:\n"
         f"*{_escape_markdown(summary)}*\n\n"
         "This action cannot be undone\\.\n\n"
-        "_Expires in 5 minutes_"
+        f"{_review_window_text(action, markdown=True)}"
     )
 
     keyboard = {
@@ -77,7 +95,7 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | 
         )
         if resp.status_code == 200:
             data = resp.json()
-            return str(data.get("result", {}).get("message_id", ""))
+            return GateSendResult(True, str(data.get("result", {}).get("message_id") or ""))
         else:
             # Fall back to plain text if Markdown fails
             resp2 = httpx.post(
@@ -88,8 +106,7 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | 
                         "⚠️ Action Confirmation Required\n\n"
                         f"Your agent wants to:\n"
                         f"{summary}\n\n"
-                        "This action cannot be undone.\n\n"
-                        "Expires in 5 minutes"
+                        "This action cannot be undone.\n\n" + _review_window_text(action)
                     ),
                     "reply_markup": keyboard,
                 },
@@ -97,12 +114,12 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> str | 
             )
             if resp2.status_code == 200:
                 data = resp2.json()
-                return str(data.get("result", {}).get("message_id", ""))
+                return GateSendResult(True, str(data.get("result", {}).get("message_id") or ""))
             logger.warning("sendMessage failed (%s): %s", resp2.status_code, resp2.text[:200])
-            return None
+            return GateSendResult(False)
     except Exception:
         logger.exception("Failed to send gate confirmation for tenant %s", tenant.id)
-        return None
+        return GateSendResult(False)
 
 
 def _edit_telegram_message(tenant: Tenant, action: PendingAction) -> None:
@@ -153,25 +170,25 @@ def _edit_telegram_message(tenant: Tenant, action: PendingAction) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> str | None:
+def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> GateSendResult:
     """Send a LINE Flex Message with approve/deny buttons.
 
-    Returns a placeholder message ID on success, None on failure.
+    LINE acceptance is distinct from a real response ``sentMessages[].id``.
     """
     if suppresses_real_transport(tenant):
-        return None
+        return GateSendResult(False)
 
     import httpx
 
     channel_token = getattr(settings, "LINE_CHANNEL_ACCESS_TOKEN", "").strip()
     if not channel_token:
         logger.warning("Cannot send gate confirmation: no LINE channel token")
-        return None
+        return GateSendResult(False)
 
     line_user_id = tenant.user.line_user_id
     if not line_user_id:
         logger.warning("Tenant %s has no LINE user_id", tenant.id)
-        return None
+        return GateSendResult(False)
 
     from apps.pii.redactor import rehydrate_for_tenant
 
@@ -205,7 +222,7 @@ def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> str | None
                 },
                 {
                     "type": "text",
-                    "text": "Expires in 5 minutes",
+                    "text": _review_window_text(action),
                     "color": "#999999",
                     "size": "xs",
                     "margin": "sm",
@@ -260,13 +277,17 @@ def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> str | None
             timeout=10,
         )
         if resp.status_code == 200:
-            # LINE push API doesn't return message_id directly
-            return f"line-push-{action.id}"
+            try:
+                sent_messages = resp.json().get("sentMessages") or []
+                message_id = str(sent_messages[0].get("id") or "") if sent_messages else ""
+            except (AttributeError, IndexError, TypeError, ValueError):
+                message_id = ""
+            return GateSendResult(True, message_id)
         logger.warning("LINE push failed (%s): %s", resp.status_code, resp.text[:200])
-        return None
+        return GateSendResult(False)
     except Exception:
         logger.exception("Failed to send LINE gate confirmation for tenant %s", tenant.id)
-        return None
+        return GateSendResult(False)
 
 
 def _edit_line_message(tenant: Tenant, action: PendingAction) -> None:
@@ -316,65 +337,14 @@ def _edit_line_message(tenant: Tenant, action: PendingAction) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _send_app_confirmation(tenant: Tenant, action: PendingAction) -> str | None:
-    """Wake the iOS review sheet once with a generic, installation-targeted push."""
+def _send_app_confirmation(tenant: Tenant, action: PendingAction) -> GateSendResult:
+    """Claim the durable in-app surface; gate-changed owns the APNs wake."""
 
     from apps.datebook.gate import is_datebook_action_type
 
     if not is_datebook_action_type(action.action_type):
-        return None
-
-    claim_id = f"app-gate-{action.id}"
-    claimed = PendingAction.objects.filter(
-        id=action.id,
-        tenant=tenant,
-        platform_channel="",
-        platform_message_id="",
-    ).update(
-        platform_channel="app",
-        platform_message_id=claim_id,
-    )
-    if not claimed:
-        action.refresh_from_db(fields=["platform_channel", "platform_message_id"])
-        if action.platform_channel == "app":
-            return action.platform_message_id or claim_id
-        return None
-
-    action.platform_channel = "app"
-    action.platform_message_id = claim_id
-
-    try:
-        from apps.datebook.models import DatebookGateway
-        from apps.router.push_views import _push_to_user_devices
-
-        installation_id = (
-            DatebookGateway.objects.filter(
-                tenant=tenant,
-                status=DatebookGateway.Status.ACTIVE,
-            )
-            .values_list("installation_id", flat=True)
-            .first()
-        )
-        _push_to_user_devices(
-            tenant.user,
-            body="Your assistant has a calendar request to review — open NBHD",
-            thread_id=None,
-            collapse_id=f"datebook-gate:{action.id}",
-            content_available=True,
-            extra={
-                "type": "datebook_gate",
-                "action_id": str(action.id),
-            },
-            installation_id=installation_id,
-        )
-    except Exception:
-        logger.warning(
-            "App gate push failed (non-fatal) for action %s tenant %s",
-            action.id,
-            tenant.id,
-            exc_info=True,
-        )
-    return claim_id
+        return GateSendResult(False)
+    return GateSendResult(True)
 
 
 # ---------------------------------------------------------------------------
@@ -458,12 +428,12 @@ def send_gate_confirmation(
 
     Resolves via ``_resolve_gate_channel`` rather than the app-first proactive
     resolver. Linked Telegram/LINE surfaces retain priority; app-only users get
-    a generic APNs wake for the in-app review sheet. The push contains only the
-    action id/type discriminator and never carries review content or an approval
-    action.
+    the durable in-app review surface. The independent, PII-free
+    ``datebook_gate_changed`` notification wakes that surface.
 
-    Returns ``True`` if the confirmation was dispatched to a real channel,
-    ``False`` when no deliverable channel exists.
+    Returns ``True`` when a confirmation surface was selected and invoked,
+    ``False`` when no deliverable surface exists. Transport acceptance and real
+    message IDs are persisted separately in ``delivery_state``.
     The caller can use the return value to decide whether to return HTTP 202
     "pending" (real channel) or indicate "undeliverable" (no channel).
 
@@ -504,13 +474,30 @@ def send_gate_confirmation(
         )
         return False
 
-    msg_id = sender(tenant, action)
-    if channel == "app" and not msg_id:
-        return False
-    if msg_id:
-        action.platform_message_id = msg_id
-        action.platform_channel = channel
-        action.save(update_fields=["platform_message_id", "platform_channel"])
+    raw_result = sender(tenant, action)
+    if isinstance(raw_result, GateSendResult):
+        send_result = raw_result
+    elif isinstance(raw_result, str):
+        # Compatibility for injected/custom senders while the built-ins use the
+        # explicit accepted/id contract above.
+        send_result = GateSendResult(bool(raw_result), raw_result)
+    else:
+        send_result = GateSendResult(False)
+
+    action.platform_channel = channel
+    action.platform_message_id = send_result.platform_message_id
+    if channel == "app" and send_result.accepted:
+        action.delivery_state = "available"
+    elif send_result.platform_message_id:
+        action.delivery_state = "sent"
+    elif send_result.accepted:
+        action.delivery_state = "accepted"
+    else:
+        action.delivery_state = "failed"
+    action.save(update_fields=["platform_message_id", "platform_channel", "delivery_state"])
+    # Preserve the gate-routing contract: reaching a selected sender keeps the
+    # review pending even when its transport cannot confirm delivery. The
+    # independently persisted delivery_state is the truthful narration fact.
     return True
 
 

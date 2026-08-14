@@ -33,6 +33,7 @@ from .hashing import (
 )
 from .models import (
     AuthorizationStatus,
+    DatebookDestinationDefault,
     DatebookGateway,
     DeviceCommand,
     MirrorEvent,
@@ -280,6 +281,10 @@ def register_gateway(
                 _abort_active_sync_runs(locked_tenant)
                 _cancel_never_started_commands(locked_tenant, now)
 
+            # Defaults are installation + epoch scoped. A takeover/reinstall
+            # must never let a stale fingerprint fall back to its display name.
+            DatebookDestinationDefault.objects.filter(tenant=locked_tenant).delete()
+
             gateway = (
                 DatebookGateway.objects.select_for_update()
                 .filter(tenant=locked_tenant, installation_id=installation_id)
@@ -366,6 +371,7 @@ def disable_datebook(tenant, *, purge: bool) -> None:
                     "updated_at",
                 ]
             )
+        DatebookDestinationDefault.objects.filter(tenant=locked_tenant).delete()
         _abort_active_sync_runs(locked_tenant)
         _cancel_never_started_commands(locked_tenant, now)
         if purge:

@@ -68,6 +68,48 @@ class DatebookGateway(models.Model):
         indexes = [models.Index(fields=["tenant", "status"], name="datebook_gateway_active_idx")]
 
 
+class DatebookDestinationDefault(models.Model):
+    """One installation-scoped writable destination learned from owner approval."""
+
+    class EntityType(models.TextChoices):
+        CALENDAR = "calendar", "Calendar"
+        REMINDER = "reminder", "Reminder"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="datebook_destination_defaults",
+    )
+    entity_type = models.CharField(max_length=16, choices=EntityType.choices)
+    name = models.CharField(max_length=256)
+    fingerprint = models.CharField(max_length=64)
+    target_installation_id = models.CharField(max_length=64)
+    gateway_epoch = models.PositiveBigIntegerField()
+    pii_receipts = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "datebook_destination_defaults"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "entity_type"],
+                name="datebook_dest_default_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(gateway_epoch__gte=1),
+                name="datebook_dest_default_epoch",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["tenant", "entity_type"],
+                name="datebook_dest_default_idx",
+            )
+        ]
+
+
 class SyncRun(models.Model):
     class State(models.TextChoices):
         OPEN = "open", "Open"

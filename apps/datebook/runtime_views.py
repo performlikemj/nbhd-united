@@ -295,20 +295,25 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
             "destination_fingerprint": destination_fingerprint,
             "target_at": target_at.isoformat() if target_at else None,
         }
-        result = request_datebook_action(
-            tenant,
-            action_type=action_type,
-            request_id=request_id.strip(),
-            command_payload=command_payload,
-            display_summary=display_text,
-            direct_user_originated=direct_user_originated,
-            originating_channel=originating_channel,
-        )
+        try:
+            result = request_datebook_action(
+                tenant,
+                action_type=action_type,
+                request_id=request_id.strip(),
+                command_payload=command_payload,
+                display_summary=display_text,
+                direct_user_originated=direct_user_originated,
+                originating_channel=originating_channel,
+            )
+        except ProtocolError as exc:
+            return Response({"state": exc.code, **exc.extra}, status=exc.status_code)
         response_status = status.HTTP_202_ACCEPTED if result["state"] == "approval_pending" else status.HTTP_200_OK
         if result["state"] in {"daily_command_cap"}:
             response_status = status.HTTP_429_TOO_MANY_REQUESTS
         elif result["state"] in {"datebook_disabled", "no_active_gateway"}:
             response_status = status.HTTP_409_CONFLICT
+        elif result["state"] == "stale_review":
+            response_status = status.HTTP_410_GONE
         return Response(result, status=response_status)
 
 

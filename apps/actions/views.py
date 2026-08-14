@@ -252,40 +252,44 @@ class GatePollView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Check for expiry — use conditional UPDATE so we don't clobber a
-        # concurrent APPROVED/DENIED write from the user's button tap.
+        datebook_state = None
+        # Check for expiry — datebook gates use their locked typed transition;
+        # generic gates retain the existing conditional update contract.
         if action.is_expired:
-            updated = PendingAction.objects.filter(
-                id=action.id,
-                status=ActionStatus.PENDING,
-            ).update(status=ActionStatus.EXPIRED)
+            from apps.datebook.gate import datebook_action_state, is_datebook_action_type
+
+            if is_datebook_action_type(action.action_type):
+                datebook_state = datebook_action_state(action)
+                action.refresh_from_db()
+                updated = datebook_state["state"] == "stale_review"
+            else:
+                updated = PendingAction.objects.filter(
+                    id=action.id,
+                    status=ActionStatus.PENDING,
+                ).update(status=ActionStatus.EXPIRED)
+                if updated:
+                    action.status = ActionStatus.EXPIRED
+                    record_action_audit(action, ActionStatus.EXPIRED)
+                else:
+                    # Another writer already resolved the row; re-read so the
+                    # response below reflects the actual final status.
+                    action.refresh_from_db(fields=["status"])
+
             if updated:
-                action.status = ActionStatus.EXPIRED
-                # Log it
-                record_action_audit(action, ActionStatus.EXPIRED)
-                # Clear the stale Approve/Deny buttons on the platform confirmation
-                # message, exactly as the user-response paths do. Without this the
-                # buttons linger indefinitely on timeout-expiry and a later tap is a
-                # confusing no-op (GateRespondView returns 410). Never let a
-                # messaging hiccup break the poll response the container needs.
+                # Clear stale platform buttons without allowing a messaging
+                # failure to break the runtime's terminal response.
                 try:
                     from .messaging import update_gate_message
 
                     update_gate_message(action)
                 except Exception:
                     logger.warning("Failed to refresh gate message on expiry for action %s", action.id, exc_info=True)
-            else:
-                # Another writer already resolved the row; re-read so the
-                # response below reflects the actual final status.
-                action.refresh_from_db(fields=["status"])
 
-        return Response(
-            {
-                "action_id": action.id,
-                "status": action.status,
-            },
-            status=status.HTTP_200_OK,
-        )
+        data = {"action_id": action.id, "status": action.status}
+        if datebook_state is not None:
+            data.update(datebook_state)
+            data["status"] = action.status
+        return Response(data, status=status.HTTP_200_OK)
 
 
 class GateRespondView(APIView):
@@ -298,7 +302,15 @@ class GateRespondView(APIView):
     permission_classes = [AllowAny]
 
     @classmethod
-    def resolve_action(cls, *, action_id: int, response_action: str, tenant=None):
+    def resolve_action(
+        cls,
+        *,
+        action_id: int,
+        response_action: str,
+        tenant=None,
+        destination_override=None,
+        set_default: bool = False,
+    ):
         """Resolve every channel through one locked gate/command transition seam."""
 
         if response_action not in ("approve", "deny"):
@@ -317,13 +329,14 @@ class GateRespondView(APIView):
                 return (
                     action,
                     {
-                        "error": f"Action already resolved: {action.status}",
+                        "error": "action_already_resolved",
                         "status": action.status,
                     },
                     status.HTTP_409_CONFLICT,
                 )
 
             from apps.datebook.gate import (
+                STALE_REVIEW_REASON,
                 approve_datebook_action,
                 deny_datebook_action,
                 expire_datebook_action,
@@ -332,7 +345,7 @@ class GateRespondView(APIView):
 
             if action.is_expired:
                 if is_datebook_action_type(action.action_type):
-                    data = expire_datebook_action(action)
+                    data = expire_datebook_action(action, reason=STALE_REVIEW_REASON)
                 else:
                     action.status = ActionStatus.EXPIRED
                     action.save(update_fields=["status"])
@@ -342,8 +355,22 @@ class GateRespondView(APIView):
 
             now = timezone.now()
             if is_datebook_action_type(action.action_type):
+                from apps.datebook.services import ProtocolError
+
+                if not isinstance(set_default, bool):
+                    return action, {"error": "invalid_set_default"}, status.HTTP_400_BAD_REQUEST
+                if response_action == "deny" and (destination_override is not None or set_default):
+                    return action, {"error": "destination_options_require_approval"}, status.HTTP_400_BAD_REQUEST
                 if response_action == "approve":
-                    data = approve_datebook_action(action, responded_at=now)
+                    try:
+                        data = approve_datebook_action(
+                            action,
+                            responded_at=now,
+                            destination_override=destination_override,
+                            set_default=set_default,
+                        )
+                    except ProtocolError as exc:
+                        return action, exc.as_data(), exc.status_code
                 else:
                     data = deny_datebook_action(action, responded_at=now)
                 data["status"] = action.status
@@ -391,6 +418,7 @@ class GateRespondView(APIView):
         # so a messaging hiccup cannot roll back the committed status change).
         from .messaging import update_gate_message
 
-        update_gate_message(action)
+        if response_status in {status.HTTP_200_OK, status.HTTP_410_GONE}:
+            update_gate_message(action)
 
         return Response(data, status=response_status)

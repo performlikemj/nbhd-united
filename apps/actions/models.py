@@ -67,6 +67,18 @@ class PendingAction(models.Model):
     datebook_request_id = models.CharField(max_length=128, blank=True, default="")
     datebook_command_id = models.UUIDField(null=True, blank=True, unique=True)
     resolution_code = models.CharField(max_length=32, blank=True, default="")
+    originating_channel = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="Immutable request provenance: app, telegram, line, or blank legacy origin.",
+    )
+    delivery_state = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        help_text="Truthful confirmation delivery fact; only sent implies a real platform message id.",
+    )
 
     # Platform message tracking (for editing after response)
     platform_message_id = models.CharField(
@@ -149,6 +161,10 @@ class ActionAuditLog(models.Model):
     )
     datebook_command_id = models.UUIDField(null=True, blank=True)
     detail_code = models.CharField(max_length=32, blank=True, default="")
+    requested_destination_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    approved_destination_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    default_destination_old_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    default_destination_new_fingerprint = models.CharField(max_length=64, blank=True, default="")
     responded_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
