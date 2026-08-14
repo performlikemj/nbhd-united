@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 # Provider JWTs are valid up to 1h; Apple rejects tokens older than that and
 # rate-limits regeneration. Refresh well inside the window.
 _JWT_TTL_SECONDS = 3000  # 50 min
+_APNS_CONNECT_TIMEOUT_SECONDS = 2.0
+_APNS_REQUEST_TIMEOUT_SECONDS = 3.0
+_APNS_POOL_TIMEOUT_SECONDS = 1.0
 
 # Module-level cache of the signed provider JWT. {"token": str, "iat": int}.
 _jwt_cache: dict = {"token": None, "iat": 0}
@@ -75,7 +78,15 @@ def _http2_client(sandbox: bool):
     import httpx
 
     try:
-        return httpx.Client(http2=True, base_url=f"https://{_apns_host(sandbox)}", timeout=10.0)
+        return httpx.Client(
+            http2=True,
+            base_url=f"https://{_apns_host(sandbox)}",
+            timeout=httpx.Timeout(
+                _APNS_REQUEST_TIMEOUT_SECONDS,
+                connect=_APNS_CONNECT_TIMEOUT_SECONDS,
+                pool=_APNS_POOL_TIMEOUT_SECONDS,
+            ),
+        )
     except Exception:  # noqa: BLE001 — h2 missing surfaces as a runtime error
         return None
 

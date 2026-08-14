@@ -175,6 +175,18 @@ class PushStatusTest(TestCase):
 
 
 class ApnsSenderTest(TestCase):
+    @patch("httpx.Client")
+    def test_http2_client_uses_short_split_timeouts(self, client):
+        from apps.common.apns import _http2_client
+
+        _http2_client(sandbox=False)
+
+        timeout = client.call_args.kwargs["timeout"]
+        self.assertEqual(timeout.connect, 2.0)
+        self.assertEqual(timeout.read, 3.0)
+        self.assertEqual(timeout.write, 3.0)
+        self.assertEqual(timeout.pool, 1.0)
+
     def test_skips_when_not_configured(self):
         from apps.common.apns import send_push
 
