@@ -16,6 +16,7 @@ from apps.orchestrator.config_validator import validate_openclaw_config
 from apps.tenants.services import create_tenant
 
 _PLUGIN_DIR = Path(__file__).resolve().parents[2] / "runtime/openclaw/plugins/nbhd-datebook-tools"
+_AUTOMATION_PLUGIN_DIR = Path(__file__).resolve().parents[2] / "runtime/openclaw/plugins/nbhd-automation-tools"
 _PLUGIN_ID = "nbhd-datebook-tools"
 _TOOLS = {
     "nbhd_datebook_read",
@@ -65,6 +66,25 @@ class DatebookToolSchemaTests(SimpleTestCase):
         self.assertIn("MAX_POLL_MS = 10000", self.source)
         self.assertIn("wrapExternalContent(JSON.stringify(payload.items", self.source)
         self.assertIn("synced ${ageHours}h ago", self.source)
+
+
+class CronReminderToolDescriptionTests(SimpleTestCase):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.source = (_AUTOMATION_PLUGIN_DIR / "index.js").read_text()
+
+    def test_pure_reminder_description_is_chat_only_when_datebook_is_ready(self):
+        self.assertIn("This tool sends chat pings; it is NOT the Apple Reminders app.", self.source)
+        self.assertIn(
+            "For datebook-ready tenants, prefer nbhd_datebook_add_apple_reminder for 'remind me' asks.",
+            self.source,
+        )
+        self.assertIn(
+            "Use this tool only when the user explicitly requests an in-chat ping, nudge, or message, "
+            "or when recurring scheduled check-in content is inherently conversational.",
+            self.source,
+        )
 
 
 class DatebookPluginEmissionTests(TestCase):
