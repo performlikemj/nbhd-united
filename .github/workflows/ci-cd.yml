@@ -365,6 +365,12 @@ jobs:
           node --test runtime/openclaw/plugins/nbhd-doc-taint-guard/test.js
           node --test runtime/openclaw/evals/upload_security_corpus.test.js
 
+      - name: Run pinned OpenClaw origin-propagation smoke
+        # Exercises the authenticated HTTP handler, actual pinned agent runtime,
+        # real loaded datebook plugin factory, and captured Django-runtime POST.
+        run: |
+          ./scripts/openclaw_origin_propagation_smoke.sh
+
       - name: Audit OpenClaw chmod call-site inventory
         # Diffs the chmod-family callee shapes in the pinned OpenClaw npm
         # package against runtime/openclaw/chmod-audit-baseline.txt. Fails

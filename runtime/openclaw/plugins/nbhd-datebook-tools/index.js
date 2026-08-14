@@ -123,6 +123,16 @@ function originatingChannel(toolContext) {
   const channel = asTrimmedString(toolContext?.messageChannel).toLowerCase();
   if (channel === "ios" || channel === "app") return "app";
   if (channel === "telegram" || channel === "line") return channel;
+  // openclaw@2026.5.28 accepts `ios` on /v1/chat/completions and carries it
+  // through the embedded run, but drops unknown (non-native) channels before
+  // constructing plugin tool factories. The same factory does receive the
+  // canonical session key derived from Django's trusted `user` payload. App
+  // turns always use `user: "thread:<uuid>"`; match that exact shape so a
+  // headerless background/legacy turn still takes the no-origin path.
+  const sessionKey = asTrimmedString(toolContext?.sessionKey);
+  if (/^agent:main:openai-user:thread:[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(sessionKey)) {
+    return "app";
+  }
   return "";
 }
 
