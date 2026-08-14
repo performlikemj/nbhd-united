@@ -76,15 +76,27 @@ test("create tools forward the runtime-provided originating channel", async () =
   }
 });
 
-test("create tools relay server guidance and preserve delivery facts", async () => {
+test("app-surface creates return server guidance without polling command status", async () => {
   const guidance = "Waiting for your approval; the approval is in this conversation. Review it within 24 hours.";
-  globalThis.fetch = async () => new Response(JSON.stringify({
-    state: "approval_pending",
-    command_id: "",
-    approval_surface: "app",
-    delivery_state: "available",
-    guidance,
-  }), { status: 202 });
+  const requestPaths = [];
+  globalThis.fetch = async (url) => {
+    const requestPath = new URL(url).pathname;
+    requestPaths.push(requestPath);
+    if (requestPath.endsWith("/datebook/request-create")) {
+      return new Response(JSON.stringify({
+        state: "approval_pending",
+        command_id: "command-app",
+        approval_surface: "app",
+        delivery_state: "available",
+        guidance,
+      }), { status: 202 });
+    }
+    return new Response(JSON.stringify({
+      state: "approved_queued",
+      command_id: "command-app",
+      guidance: "Unexpected command-status poll.",
+    }), { status: 200 });
+  };
 
   const tool = toolsForContext({ messageChannel: "ios" }).get("nbhd_datebook_add_apple_reminder");
   const result = await tool.execute("call-guidance", {
@@ -95,4 +107,44 @@ test("create tools relay server guidance and preserve delivery facts", async () 
   assert.equal(result.content[0].text, guidance);
   assert.equal(result.details.approval_surface, "app");
   assert.equal(result.details.delivery_state, "available");
+  assert.deepEqual(requestPaths, [
+    "/api/v1/datebook/runtime/tenant-test/datebook/request-create",
+  ]);
+});
+
+test("telegram-surface creates keep polling command status", async () => {
+  const guidance = "Approved and queued for delivery.";
+  const requestPaths = [];
+  globalThis.fetch = async (url) => {
+    const requestPath = new URL(url).pathname;
+    requestPaths.push(requestPath);
+    if (requestPath.endsWith("/datebook/request-create")) {
+      return new Response(JSON.stringify({
+        state: "approval_pending",
+        command_id: "command-telegram",
+        approval_surface: "telegram",
+        delivery_state: "available",
+      }), { status: 202 });
+    }
+    return new Response(JSON.stringify({
+      state: "approved_queued",
+      command_id: "command-telegram",
+      approval_surface: "telegram",
+      delivery_state: "delivered",
+      guidance,
+    }), { status: 200 });
+  };
+
+  const tool = toolsForContext({ messageChannel: "telegram" }).get("nbhd_datebook_add_apple_reminder");
+  const result = await tool.execute("call-telegram-poll", {
+    items: [{ title: "Buy milk" }],
+    direct_user_originated: true,
+  });
+
+  assert.equal(result.content[0].text, guidance);
+  assert.equal(result.details.state, "approved_queued");
+  assert.deepEqual(requestPaths, [
+    "/api/v1/datebook/runtime/tenant-test/datebook/request-create",
+    "/api/v1/datebook/runtime/tenant-test/datebook/command-status/command-telegram",
+  ]);
 });
