@@ -336,7 +336,6 @@ class GateRespondView(APIView):
                 )
 
             from apps.datebook.gate import (
-                STALE_REVIEW_REASON,
                 approve_datebook_action,
                 deny_datebook_action,
                 expire_datebook_action,
@@ -345,7 +344,7 @@ class GateRespondView(APIView):
 
             if action.is_expired:
                 if is_datebook_action_type(action.action_type):
-                    data = expire_datebook_action(action, reason=STALE_REVIEW_REASON)
+                    data = expire_datebook_action(action)
                 else:
                     action.status = ActionStatus.EXPIRED
                     action.save(update_fields=["status"])
