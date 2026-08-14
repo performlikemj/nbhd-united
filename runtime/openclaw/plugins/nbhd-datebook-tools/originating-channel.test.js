@@ -25,13 +25,13 @@ after(() => {
   }
 });
 
-function toolsForChannel(messageChannel) {
+function toolsForContext(toolContext) {
   const tools = new Map();
   register({
     pluginConfig: {},
     registerTool(definition) {
       const tool = typeof definition === "function"
-        ? definition({ messageChannel })
+        ? definition(toolContext)
         : definition;
       tools.set(tool.name, tool);
     },
@@ -40,11 +40,24 @@ function toolsForChannel(messageChannel) {
 }
 
 test("create tools forward the runtime-provided originating channel", async () => {
-  for (const [messageChannel, expected] of [
-    ["ios", "app"],
-    ["telegram", "telegram"],
-    ["line", "line"],
-    ["webchat", undefined],
+  for (const [label, toolContext, expected] of [
+    ["future-ios-context", { messageChannel: "ios" }, "app"],
+    ["telegram", { messageChannel: "telegram" }, "telegram"],
+    ["line", { messageChannel: "line" }, "line"],
+    [
+      "pinned-ios-context",
+      {
+        messageChannel: undefined,
+        sessionKey: "agent:main:openai-user:thread:00000000-0000-4000-8000-000000000001",
+      },
+      "app",
+    ],
+    ["legacy", { messageChannel: "webchat", sessionKey: "agent:main:openai-user:background" }, undefined],
+    [
+      "different-agent",
+      { sessionKey: "agent:assistant:openai-user:thread:00000000-0000-4000-8000-000000000001" },
+      undefined,
+    ],
   ]) {
     let requestBody;
     globalThis.fetch = async (_url, options) => {
@@ -54,8 +67,8 @@ test("create tools forward the runtime-provided originating channel", async () =
         command_id: "command-test",
       }), { status: 200 });
     };
-    const tool = toolsForChannel(messageChannel).get("nbhd_datebook_add_apple_reminder");
-    await tool.execute(`call-${messageChannel}`, {
+    const tool = toolsForContext(toolContext).get("nbhd_datebook_add_apple_reminder");
+    await tool.execute(`call-${label}`, {
       items: [{ title: "Buy milk" }],
       direct_user_originated: true,
     });

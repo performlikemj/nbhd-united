@@ -244,6 +244,27 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
         self.assertEqual(rejected.data, {"state": "invalid_originating_channel"})
         self.assertEqual(send.call_count, 1)
 
+    @patch("apps.router.push_views._push_to_user_devices", return_value={"token_count": 1, "used_fallback": False})
+    def test_request_create_with_ios_origin_stamps_app_channel(self, push):
+        response = self.client.post(
+            f"/api/v1/datebook/runtime/{self.tenant.id}/datebook/request-create",
+            {
+                "request_id": "origin-app-row",
+                "command_type": "calendar_create",
+                "payload": _event_payload(),
+                "direct_user_originated": True,
+                "originating_channel": "ios",
+            },
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 202, response.data)
+        action = PendingAction.objects.get(datebook_request_id="origin-app-row")
+        self.assertEqual(action.platform_channel, "app")
+        self.assertEqual(action.status, ActionStatus.PENDING)
+        push.assert_called_once()
+
     @patch("apps.datebook.notify.notify_device_command")
     def test_auto_approved_claim_rehydrates_full_typed_payload_and_generation(self, _notify):
         GatePreference.objects.create(
