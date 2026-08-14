@@ -4,7 +4,7 @@ from datetime import timedelta
 from unittest import mock
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
@@ -184,6 +184,7 @@ class DatebookGateConsumerTests(DatebookB2aMixin, TestCase):
         self.assertEqual(non_datebook.status, ActionStatus.PENDING)
 
 
+@override_settings(NBHD_DISABLE_BACKGROUND_THREADS=True)
 class DatebookGateAppDeliveryTests(DatebookB2aMixin, TestCase):
     chat_id = 927002
 

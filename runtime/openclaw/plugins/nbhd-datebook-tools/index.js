@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { wrapExternalContent } from "../../external-content-wrap.js";
 import { wrapTool } from "../../tool-logger.js";
@@ -6,6 +6,8 @@ import { wrapTool } from "../../tool-logger.js";
 const wrap = (definition) => wrapTool(definition, { plugin: "nbhd-datebook-tools" });
 const DEFAULT_REQUEST_TIMEOUT_MS = 20000;
 const MAX_POLL_MS = 10000;
+const LOGICAL_REQUEST_ID_TTL_MS = 2 * 60 * 1000;
+const logicalRequestIds = new Map();
 
 function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -13,6 +15,14 @@ function asObject(value) {
 
 function asTrimmedString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }
 
 function getRuntimeConfig(api) {
@@ -106,7 +116,9 @@ async function callRuntime(api, { path, method = "GET", query, body, timeoutMs =
     return asObject(payload);
   } catch (error) {
     if (error && error.name === "AbortError") {
-      throw new Error(`NBHD runtime request timed out after ${boundedTimeoutMs}ms`);
+      const timeoutError = new Error(`NBHD runtime request timed out after ${boundedTimeoutMs}ms`);
+      timeoutError.code = "runtime_timeout";
+      throw timeoutError;
     }
     throw error;
   } finally {
@@ -134,6 +146,41 @@ function originatingChannel(toolContext) {
     return "app";
   }
   return "";
+}
+
+function stableLogicalRequestId(api, toolContext, toolCallId, input, commandType) {
+  const runtime = getRuntimeConfig(api);
+  const now = Date.now();
+  for (const [key, cached] of logicalRequestIds) {
+    if (cached.expiresAt <= now) logicalRequestIds.delete(key);
+  }
+  const logicalKey = createHash("sha256").update(canonicalJson({
+    tenant_id: runtime.tenantId,
+    session_key: asTrimmedString(toolContext?.sessionKey),
+    originating_channel: originatingChannel(toolContext),
+    command_type: commandType,
+    input,
+  })).digest("hex");
+  const cached = logicalRequestIds.get(logicalKey);
+  if (cached) return cached.requestId;
+
+  const callId = asTrimmedString(toolCallId);
+  const requestId = callId && callId.length <= 128 ? callId : randomUUID();
+  logicalRequestIds.set(logicalKey, {
+    requestId,
+    expiresAt: now + LOGICAL_REQUEST_ID_TTL_MS,
+  });
+  return requestId;
+}
+
+function requestStillProcessingError(requestId) {
+  const error = new Error(
+    "request_still_processing: The Calendar & Reminders request is still being processed. " +
+      "DO NOT re-call this tool; the approval will appear shortly.",
+  );
+  error.code = "request_still_processing";
+  error.requestId = requestId;
+  return error;
 }
 
 function freshnessPart(label, scope, serverNow) {
@@ -222,24 +269,30 @@ async function requestCreate(api, toolContext, toolCallId, params, commandType) 
   const startedAt = Date.now();
   const input = asObject(params);
   const requestChannel = originatingChannel(toolContext);
-  const payload = await callRuntime(api, {
-    path: datebookPath(api, "/request-create"),
-    method: "POST",
-    body: {
-      request_id: asTrimmedString(toolCallId) || randomUUID(),
-      command_type: commandType,
-      payload: { items: input.items },
-      destination_name: asTrimmedString(input.destination_name),
-      direct_user_originated: input.direct_user_originated === true,
-      ...(requestChannel ? { originating_channel: requestChannel } : {}),
-    },
-  });
-  const latest = await pollCommand(api, payload, startedAt);
-  const narration = asTrimmedString(latest.guidance) || commandNarration(latest);
-  const suffix = latest.state === "approval_pending" && !asTrimmedString(latest.guidance)
-    ? " Approval is still pending and can be reviewed within 24 hours."
-    : "";
-  return renderText(`${narration}${suffix}`, latest);
+  const requestId = stableLogicalRequestId(api, toolContext, toolCallId, input, commandType);
+  try {
+    const payload = await callRuntime(api, {
+      path: datebookPath(api, "/request-create"),
+      method: "POST",
+      body: {
+        request_id: requestId,
+        command_type: commandType,
+        payload: { items: input.items },
+        destination_name: asTrimmedString(input.destination_name),
+        direct_user_originated: input.direct_user_originated === true,
+        ...(requestChannel ? { originating_channel: requestChannel } : {}),
+      },
+    });
+    const latest = await pollCommand(api, payload, startedAt);
+    const narration = asTrimmedString(latest.guidance) || commandNarration(latest);
+    const suffix = latest.state === "approval_pending" && !asTrimmedString(latest.guidance)
+      ? " Approval is still pending and can be reviewed within 24 hours."
+      : "";
+    return renderText(`${narration}${suffix}`, latest);
+  } catch (error) {
+    if (error && error.code === "runtime_timeout") throw requestStillProcessingError(requestId);
+    throw error;
+  }
 }
 
 const alarmSchema = {
@@ -405,6 +458,7 @@ export default function register(api) {
       try {
         return await requestCreate(api, toolContext, toolCallId, params, "calendar_create");
       } catch (error) {
+        if (error && error.code === "request_still_processing") throw error;
         return renderText(error.message, { error: error.message });
       }
     },
@@ -446,6 +500,7 @@ export default function register(api) {
       try {
         return await requestCreate(api, toolContext, toolCallId, params, "reminder_create");
       } catch (error) {
+        if (error && error.code === "request_still_processing") throw error;
         return renderText(error.message, { error: error.message });
       }
     },

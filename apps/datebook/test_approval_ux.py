@@ -67,7 +67,7 @@ class DatebookApprovalUXTests(DatebookB2aMixin, TestCase):
         self.assertGreaterEqual(generic.expires_at, before + timedelta(minutes=5))
         self.assertLessEqual(generic.expires_at, after + timedelta(minutes=5))
 
-    @patch("apps.datebook.notify.notify_datebook_gate_changed")
+    @patch("apps.datebook.notify.dispatch_datebook_gate_changed")
     def test_idempotent_retry_after_review_window_returns_typed_stale_outcome(self, changed):
         action = self._request("retry-stale")
         PendingAction.objects.filter(pk=action.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
@@ -108,7 +108,11 @@ class DatebookApprovalUXTests(DatebookB2aMixin, TestCase):
 
         explicit = self._request(
             "resolution-explicit",
-            command_payload={"destination_name": "Personal", "destination_fingerprint": ""},
+            command_payload={
+                **_command_gate_payload("resolution-explicit", title="Explicit planning"),
+                "destination_name": "Personal",
+                "destination_fingerprint": "",
+            },
         )
         self.assertEqual(explicit.action_payload["destination_kind"], "explicit")
         self.assertEqual(explicit.action_payload["destination_name"], "Personal")
@@ -117,7 +121,11 @@ class DatebookApprovalUXTests(DatebookB2aMixin, TestCase):
         default.save(update_fields=["gateway_epoch"])
         stale = self._request(
             "resolution-stale",
-            command_payload={"destination_name": "", "destination_fingerprint": ""},
+            command_payload={
+                **_command_gate_payload("resolution-stale", title="Stale planning"),
+                "destination_name": "",
+                "destination_fingerprint": "",
+            },
         )
         self.assertEqual(stale.action_payload["destination_kind"], "device_default")
         self.assertEqual(stale.action_payload["destination_name"], "")
@@ -374,7 +382,7 @@ class DatebookDeliveryTruthTests(DatebookB2aMixin, TestCase):
                 self.tenant,
                 action_type=ActionType.CALENDAR_CREATE,
                 request_id="telegram-real-id",
-                command_payload=_command_gate_payload("telegram-real-id"),
+                command_payload=_command_gate_payload("telegram-real-id", title="Real id event"),
                 display_summary="Create event",
                 direct_user_originated=True,
                 originating_channel="telegram",
@@ -406,7 +414,7 @@ class DatebookDeliveryTruthTests(DatebookB2aMixin, TestCase):
 class DatebookGateChangedTests(DatebookB2aMixin, TestCase):
     chat_id = 928003
 
-    @patch("apps.datebook.notify.notify_datebook_gate_changed")
+    @patch("apps.datebook.notify.dispatch_datebook_gate_changed")
     @patch("apps.actions.messaging.send_gate_confirmation", return_value=True)
     def test_creation_emits_on_commit_for_every_origin(self, _send, changed):
         for origin in ("app", "telegram", "line"):
@@ -415,7 +423,7 @@ class DatebookGateChangedTests(DatebookB2aMixin, TestCase):
                     self.tenant,
                     action_type=ActionType.CALENDAR_CREATE,
                     request_id=f"create-{origin}",
-                    command_payload=_command_gate_payload(f"create-{origin}"),
+                    command_payload=_command_gate_payload(f"create-{origin}", title=f"Create {origin}"),
                     display_summary="Create event",
                     direct_user_originated=True,
                     originating_channel=origin,
@@ -423,14 +431,14 @@ class DatebookGateChangedTests(DatebookB2aMixin, TestCase):
         self.assertEqual(changed.call_count, 3)
         self.assertEqual([call.args for call in changed.call_args_list], [(self.tenant.id,)] * 3)
 
-    @patch("apps.datebook.notify.notify_datebook_gate_changed")
+    @patch("apps.datebook.notify.dispatch_datebook_gate_changed")
     @patch("apps.actions.messaging.send_gate_confirmation", return_value=True)
     def test_every_terminal_transition_emits_on_commit(self, _send, changed):
         approve = request_datebook_action(
             self.tenant,
             action_type=ActionType.CALENDAR_CREATE,
             request_id="terminal-approve",
-            command_payload=_command_gate_payload("terminal-approve"),
+            command_payload=_command_gate_payload("terminal-approve", title="Approve event"),
             display_summary="Create event",
             direct_user_originated=True,
         )
@@ -438,7 +446,7 @@ class DatebookGateChangedTests(DatebookB2aMixin, TestCase):
             self.tenant,
             action_type=ActionType.CALENDAR_CREATE,
             request_id="terminal-deny",
-            command_payload=_command_gate_payload("terminal-deny"),
+            command_payload=_command_gate_payload("terminal-deny", title="Deny event"),
             display_summary="Create event",
             direct_user_originated=True,
         )
@@ -446,7 +454,7 @@ class DatebookGateChangedTests(DatebookB2aMixin, TestCase):
             self.tenant,
             action_type=ActionType.CALENDAR_CREATE,
             request_id="terminal-expire",
-            command_payload=_command_gate_payload("terminal-expire"),
+            command_payload=_command_gate_payload("terminal-expire", title="Expire event"),
             display_summary="Create event",
             direct_user_originated=True,
         )
@@ -469,7 +477,7 @@ class DatebookGateChangedTests(DatebookB2aMixin, TestCase):
         self.assertEqual(data["state"], "stale_review")
         self.assertEqual(changed.call_count, 3)
 
-    @patch("apps.datebook.notify.notify_datebook_gate_changed")
+    @patch("apps.datebook.notify.dispatch_datebook_gate_changed")
     @patch("apps.actions.messaging.update_gate_message")
     @patch("apps.actions.messaging.send_gate_confirmation", return_value=True)
     def test_expiry_sweep_records_typed_stale_review_and_emits_on_commit(self, _send, _edit, changed):

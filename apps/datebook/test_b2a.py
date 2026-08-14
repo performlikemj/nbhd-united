@@ -349,7 +349,7 @@ class ReviewGateAndAuditTests(DatebookB2aMixin, TestCase):
             self.tenant,
             action_type=ActionType.CALENDAR_CREATE,
             request_id="background-stays-gated",
-            command_payload=_command_gate_payload("background-stays-gated"),
+            command_payload=_command_gate_payload("background-stays-gated", title="Background planning"),
             display_summary="Create calendar event: [PERSON_1] planning",
             direct_user_originated=False,
         )

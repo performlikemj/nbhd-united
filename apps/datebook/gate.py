@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import unicodedata
 import uuid
 from copy import deepcopy
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
@@ -22,11 +24,14 @@ from .services import ProtocolError
 DATEBOOK_ACTION_TYPES = frozenset({ActionType.CALENDAR_CREATE, ActionType.REMINDER_CREATE})
 DATEBOOK_GATE_REVIEW_WINDOW = timedelta(hours=24)
 DATEBOOK_GATE_REVIEW_WINDOW_SECONDS = int(DATEBOOK_GATE_REVIEW_WINDOW.total_seconds())
+DATEBOOK_DUPLICATE_WINDOW = timedelta(minutes=2)
 DEVICE_DEFAULT_DESTINATION = "device_default"
 UNDELIVERABLE_REASON = "needs_app_update_or_linked_chat"
 UNDELIVERABLE_MESSAGE = "This calendar request needs the app update or a linked chat channel to approve."
 STALE_REVIEW_REASON = "stale_review"
 STALE_REVIEW_MESSAGE = "The 24-hour review window expired. Nothing was queued or created."
+
+logger = logging.getLogger(__name__)
 
 
 def is_datebook_action_type(action_type: str) -> bool:
@@ -259,6 +264,77 @@ def _rehydrated_command_fields(action: PendingAction) -> dict:
     return dict(represented_payload)
 
 
+def _normalized_title(value) -> str:
+    if not isinstance(value, str):
+        return ""
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _target_minute(value) -> str | None:
+    if value in (None, ""):
+        return ""
+    parsed = value if isinstance(value, datetime) else parse_datetime(value) if isinstance(value, str) else None
+    if parsed is None or timezone.is_naive(parsed):
+        return None
+    return parsed.astimezone(UTC).replace(second=0, microsecond=0).isoformat()
+
+
+def _logical_request_signature(command_payload: dict) -> tuple[str, tuple[str, ...], str] | None:
+    if not isinstance(command_payload, dict):
+        return None
+    payload = command_payload.get("payload")
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list) or not items:
+        return None
+    titles = tuple(sorted(_normalized_title(item.get("title")) for item in items if isinstance(item, dict)))
+    if len(titles) != len(items) or any(not title for title in titles):
+        return None
+    target_minute = _target_minute(command_payload.get("target_at"))
+    if target_minute is None:
+        return None
+    command_type = command_payload.get("command_type")
+    if not isinstance(command_type, str) or not command_type:
+        return None
+    return command_type, titles, target_minute
+
+
+def _recent_duplicate_action(
+    tenant: Tenant,
+    *,
+    action_type: str,
+    command_payload: dict,
+) -> PendingAction | None:
+    """Find an identical recent pending gate after the tenant row is locked."""
+
+    signature = _logical_request_signature(command_payload)
+    if signature is None:
+        return None
+    recent = (
+        PendingAction.objects.filter(
+            tenant=tenant,
+            action_type=action_type,
+            status=ActionStatus.PENDING,
+            created_at__gte=timezone.now() - DATEBOOK_DUPLICATE_WINDOW,
+        )
+        .select_related("tenant")
+        .order_by("-created_at")[:20]
+    )
+    for candidate in recent:
+        try:
+            candidate_signature = _logical_request_signature(_rehydrated_command_fields(candidate))
+        except Exception:
+            logger.warning(
+                "datebook duplicate guard skipped unreadable action tenant=%s action=%s",
+                tenant.id,
+                candidate.id,
+                exc_info=True,
+            )
+            continue
+        if candidate_signature == signature:
+            return candidate
+    return None
+
+
 def _approved_target(fields: dict, destination_override, *, set_default: bool) -> tuple[dict, dict]:
     requested = fields.get("requested_destination")
     if not isinstance(requested, dict):
@@ -286,10 +362,10 @@ def _approved_target(fields: dict, destination_override, *, set_default: bool) -
 
 
 def _schedule_gate_changed(action: PendingAction) -> None:
-    from .notify import notify_datebook_gate_changed
+    from .notify import dispatch_datebook_gate_changed
 
     tenant_id = action.tenant_id
-    transaction.on_commit(lambda tenant_id=tenant_id: notify_datebook_gate_changed(tenant_id))
+    transaction.on_commit(lambda tenant_id=tenant_id: dispatch_datebook_gate_changed(tenant_id))
 
 
 def _persist_destination_default(action: PendingAction, approved: dict, command: DeviceCommand) -> tuple[str, str]:
@@ -421,9 +497,9 @@ def approve_datebook_action(
         default_destination_new_fingerprint=default_new,
     )
 
-    from .notify import notify_device_command
+    from .notify import dispatch_device_command
 
-    transaction.on_commit(lambda command=command: notify_device_command(command))
+    transaction.on_commit(lambda command=command: dispatch_device_command(command))
     _schedule_gate_changed(action)
     return _action_state(action)
 
@@ -482,6 +558,20 @@ def request_datebook_action(
             ).first()
             if existing is not None:
                 return datebook_action_state(existing)
+            duplicate = _recent_duplicate_action(
+                locked_tenant,
+                action_type=action_type,
+                command_payload=command_payload,
+            )
+            if duplicate is not None:
+                raise ProtocolError(
+                    "duplicate_request",
+                    409,
+                    {
+                        "existing_action_id": duplicate.id,
+                        "message": "An identical approval is already pending. Do not create another.",
+                    },
+                )
             resolved_payload = _resolve_requested_destination(locked_tenant, action_type, command_payload)
             resolved_payload["direct_user_originated"] = direct_user_originated
             authored, receipts = author_store_fields(
