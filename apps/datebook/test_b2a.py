@@ -32,6 +32,16 @@ from .runtime_views import _DatebookResponseGuard
 from .services import create_device_command
 from .tests import _ready_tenant, _source_key
 
+_APPLE_REMINDER_DEFAULT = (
+    'For user-authored "remind me" requests — including bare or ambiguous wording — '
+    "you MUST call `nbhd_datebook_add_apple_reminder` by default."
+)
+_CHAT_PING_EXCEPTION = (
+    "Use `nbhd_cron_create_pure_reminder` ONLY for an explicit in-chat ping, nudge, or message, "
+    "or an inherently conversational recurring check-in. If genuinely unsure, choose the "
+    "approval-gated Apple reminder."
+)
+
 
 def _event_payload(*, title="[PERSON_1] planning"):
     start = timezone.now() + timedelta(days=1)
@@ -393,6 +403,23 @@ class ReviewGateAndAuditTests(DatebookB2aMixin, TestCase):
 class EnvelopeAndPushTests(DatebookB2aMixin, TestCase):
     chat_id = 926003
 
+    def test_delivery_ready_envelope_routes_remind_me_to_apple_by_default(self):
+        rendered = render_managed_region(self.tenant)
+
+        self.assertIn("## Calendar & Reminders", rendered)
+        self.assertIn(_APPLE_REMINDER_DEFAULT, rendered)
+        self.assertIn(_CHAT_PING_EXCEPTION, rendered)
+
+    def test_non_ready_envelope_omits_reminder_routing_contract(self):
+        self.tenant.datebook_manifest_ok = False
+        self.tenant.save(update_fields=["datebook_manifest_ok"])
+
+        rendered = render_managed_region(self.tenant)
+
+        self.assertNotIn("## Calendar & Reminders", rendered)
+        self.assertNotIn(_APPLE_REMINDER_DEFAULT, rendered)
+        self.assertNotIn(_CHAT_PING_EXCEPTION, rendered)
+
     def test_envelope_is_metadata_only_deterministic_and_hard_bounded(self):
         today = timezone.localdate()
         with suppress_refresh():
@@ -434,6 +461,8 @@ class EnvelopeAndPushTests(DatebookB2aMixin, TestCase):
             first,
         )
         self.assertIn("Never answer schedule questions from memory or from these blocks.", first)
+        self.assertIn(_APPLE_REMINDER_DEFAULT, first)
+        self.assertIn(_CHAT_PING_EXCEPTION, first)
         self.assertIn("1 busy", first)
         self.assertIn("1 due today", first)
         self.assertIn(self.gateway.events_last_complete_sync_at.isoformat(), first)
@@ -476,6 +505,8 @@ class EnvelopeAndPushTests(DatebookB2aMixin, TestCase):
             rendered,
         )
         self.assertIn("Never answer schedule questions from memory or from these blocks.", rendered)
+        self.assertIn(_APPLE_REMINDER_DEFAULT, rendered)
+        self.assertIn(_CHAT_PING_EXCEPTION, rendered)
         self.assertIn("- Reminders: 0 overdue; 0 due today", rendered)
         self.assertIn(self.gateway.events_last_complete_sync_at.isoformat(), rendered)
         self.assertIn(self.gateway.reminders_last_complete_sync_at.isoformat(), rendered)

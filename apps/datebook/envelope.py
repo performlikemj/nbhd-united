@@ -132,6 +132,11 @@ def render_datebook(tenant, *, max_chars: int = _HARD_BUDGET) -> str:
         "For ANY question about calendar, schedule, events, availability, or birthdays, "
         "you MUST call `nbhd_datebook_read` this turn and answer only from its result.",
         "Never answer schedule questions from memory or from these blocks.",
+        'For user-authored "remind me" requests — including bare or ambiguous wording — '
+        "you MUST call `nbhd_datebook_add_apple_reminder` by default.",
+        "Use `nbhd_cron_create_pure_reminder` ONLY for an explicit in-chat ping, nudge, or message, "
+        "or an inherently conversational recurring check-in. If genuinely unsure, choose the "
+        "approval-gated Apple reminder.",
         "**Busy blocks — today + next 7 days**",
     ]
     suffix = [
