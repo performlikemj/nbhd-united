@@ -84,7 +84,9 @@ async function stopChild(child) {
 function fakeRuntime() {
   const observations = {
     datebookBody: undefined,
+    datebookResponse: undefined,
     requiredParameters: undefined,
+    toolResultText: undefined,
   };
   const server = http.createServer(async (request, response) => {
     try {
@@ -96,6 +98,9 @@ function fakeRuntime() {
         if (advertised) observations.requiredParameters = advertised.function.parameters.required;
         const hasToolResult = Array.isArray(body.messages)
           && body.messages.some((message) => message?.role === "tool");
+        if (hasToolResult) {
+          observations.toolResultText = body.messages.find((message) => message?.role === "tool")?.content;
+        }
         const base = {
           id: "chatcmpl-origin-repro",
           object: "chat.completion.chunk",
@@ -152,10 +157,14 @@ function fakeRuntime() {
       }
       if (request.url?.endsWith("/datebook/request-create")) {
         observations.datebookBody = body;
-        sendJson(response, 202, {
-          state: "approved_queued",
-          command_id: "command-origin-repro",
-        });
+        observations.datebookResponse = {
+          state: "approval_pending",
+          command_id: "",
+          approval_surface: "app",
+          delivery_state: "available",
+          guidance: "Waiting for your approval; the approval is in this conversation. Review it within 24 hours.",
+        };
+        sendJson(response, 202, observations.datebookResponse);
         return;
       }
       sendJson(response, 404, { error: "not_found" });
@@ -293,4 +302,8 @@ test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugi
   assert.equal(observations.datebookBody?.originating_channel, "app");
   assert.equal(observations.datebookBody?.command_type, "reminder_create");
   assert.equal(observations.datebookBody?.direct_user_originated, true);
+  assert.match(observations.toolResultText, /the approval is in this conversation/);
+  assert.match(observations.toolResultText, /within 24 hours/);
+  assert.equal(observations.datebookResponse?.approval_surface, "app");
+  assert.equal(observations.datebookResponse?.delivery_state, "available");
 });

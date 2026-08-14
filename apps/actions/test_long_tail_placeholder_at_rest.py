@@ -123,9 +123,10 @@ class ActionLongTailPlaceholderTests(TestCase):
         )
         sent = SimpleNamespace(status_code=200, json=lambda: {"result": {"message_id": 41}}, text="")
         with patch("httpx.post", return_value=sent) as http_post:
-            message_id = _send_telegram_confirmation(self.tenant, action)
+            send_result = _send_telegram_confirmation(self.tenant, action)
 
-        self.assertEqual(message_id, "41")
+        self.assertTrue(send_result.accepted)
+        self.assertEqual(send_result.platform_message_id, "41")
         outbound = http_post.call_args.kwargs["json"]["text"]
         self.assertIn("Alice", outbound)
         self.assertNotIn("[PERSON_1]", outbound)

@@ -7,10 +7,41 @@ import logging
 from django.utils import timezone
 
 from apps.common.apns import apns_configured
+from apps.tenants.models import Tenant
 
-from .models import DeviceCommand
+from .models import DatebookGateway, DeviceCommand
 
 logger = logging.getLogger(__name__)
+
+
+def notify_datebook_gate_changed(tenant_id) -> None:
+    """Send one PII-free invalidation to the active gateway installation only."""
+
+    if not apns_configured():
+        return
+    try:
+        gateway = (
+            DatebookGateway.objects.select_related("tenant__user")
+            .filter(tenant_id=tenant_id, status=DatebookGateway.Status.ACTIVE)
+            .first()
+        )
+        if gateway is None or gateway.tenant.status != Tenant.Status.ACTIVE:
+            return
+
+        from apps.router.push_views import _push_to_user_devices
+
+        _push_to_user_devices(
+            gateway.tenant.user,
+            body="Your Calendar & Reminders approvals changed — open NBHD",
+            thread_id=None,
+            collapse_id=f"datebook-gate-changed:{tenant_id}",
+            content_available=True,
+            extra={"type": "datebook_gate_changed"},
+            installation_id=gateway.installation_id,
+            fallback_to_all=False,
+        )
+    except Exception:
+        logger.warning("datebook gate-changed push failed (non-fatal) tenant=%s", tenant_id, exc_info=True)
 
 
 def notify_device_command(command: DeviceCommand) -> None:

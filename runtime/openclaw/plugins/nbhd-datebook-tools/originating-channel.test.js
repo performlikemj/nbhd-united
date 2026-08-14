@@ -75,3 +75,24 @@ test("create tools forward the runtime-provided originating channel", async () =
     assert.equal(requestBody.originating_channel, expected);
   }
 });
+
+test("create tools relay server guidance and preserve delivery facts", async () => {
+  const guidance = "Waiting for your approval; the approval is in this conversation. Review it within 24 hours.";
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    state: "approval_pending",
+    command_id: "",
+    approval_surface: "app",
+    delivery_state: "available",
+    guidance,
+  }), { status: 202 });
+
+  const tool = toolsForContext({ messageChannel: "ios" }).get("nbhd_datebook_add_apple_reminder");
+  const result = await tool.execute("call-guidance", {
+    items: [{ title: "Buy milk" }],
+    direct_user_originated: true,
+  });
+
+  assert.equal(result.content[0].text, guidance);
+  assert.equal(result.details.approval_surface, "app");
+  assert.equal(result.details.delivery_state, "available");
+});

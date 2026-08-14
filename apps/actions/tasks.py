@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from django.db import transaction
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,12 @@ def expire_stale_pending_actions() -> str:
     not abort the sweep, so one broken platform channel cannot stall expiry
     of other actions.
     """
+    from apps.datebook.gate import (
+        STALE_REVIEW_REASON,
+        expire_datebook_action,
+        is_datebook_action_type,
+    )
+
     from .messaging import update_gate_message
     from .models import ActionStatus, PendingAction
     from .services import record_action_audit
@@ -30,17 +37,25 @@ def expire_stale_pending_actions() -> str:
 
     count = 0
     for action in stale:
-        # Conditional update: only flip PENDING→EXPIRED; skip if another writer
-        # (e.g. a concurrent Approve) has already resolved the row.
-        updated = PendingAction.objects.filter(
-            id=action.id,
-            status=ActionStatus.PENDING,
-        ).update(status=ActionStatus.EXPIRED)
-        if not updated:
-            continue
-        action.status = ActionStatus.EXPIRED
+        if is_datebook_action_type(action.action_type):
+            with transaction.atomic():
+                locked = PendingAction.objects.select_for_update().select_related("tenant__user").get(pk=action.pk)
+                if locked.status != ActionStatus.PENDING or locked.expires_at >= timezone.now():
+                    continue
+                expire_datebook_action(locked, reason=STALE_REVIEW_REASON)
+                action = locked
+        else:
+            # Conditional update: only flip PENDING→EXPIRED; skip if another writer
+            # (e.g. a concurrent Approve) has already resolved the row.
+            updated = PendingAction.objects.filter(
+                id=action.id,
+                status=ActionStatus.PENDING,
+            ).update(status=ActionStatus.EXPIRED)
+            if not updated:
+                continue
+            action.status = ActionStatus.EXPIRED
 
-        record_action_audit(action, ActionStatus.EXPIRED)
+            record_action_audit(action, ActionStatus.EXPIRED)
 
         try:
             update_gate_message(action)

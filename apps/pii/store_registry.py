@@ -298,6 +298,12 @@ _STORES = (
         receipts_field="pii_receipts",
     ),
     PlaceholderStore(
+        model_label="datebook.DatebookDestinationDefault",
+        flat_fields=("name",),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
         model_label="finance.FinanceAccount",
         flat_fields=("nickname",),
         json_paths=(),

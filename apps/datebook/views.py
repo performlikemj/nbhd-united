@@ -33,7 +33,6 @@ from .throttles import DatebookCommandThrottle, DatebookReadThrottle, DatebookSy
 
 MAX_DATEBOOK_REQUEST_BYTES = 1_048_576
 MAX_PENDING_GATE_ACTIONS = 20
-DATEBOOK_GATE_REVIEW_WINDOW_SECONDS = 5 * 60
 
 
 class DatebookAPIView(APIView):
@@ -159,6 +158,8 @@ def _pending_gate_action_data(action: PendingAction, tenant: Tenant) -> dict:
         "action_type": action.action_type,
         "payload": represented["action_payload"],
         "display_summary": represented["display_summary"],
+        "originating_channel": action.originating_channel,
+        "created_at": action.created_at.isoformat(),
         "expires_at": action.expires_at.isoformat(),
     }
 
@@ -170,7 +171,7 @@ class PendingGateActionsView(DatebookAPIView):
 
     def get(self, request):
         tenant = self.tenant(request)
-        from .gate import DATEBOOK_ACTION_TYPES
+        from .gate import DATEBOOK_ACTION_TYPES, DATEBOOK_GATE_REVIEW_WINDOW_SECONDS
 
         actions = PendingAction.objects.filter(
             tenant=tenant,
@@ -206,8 +207,10 @@ class RespondGateActionView(DatebookAPIView):
             action_id=action_id,
             response_action=data.get("response", ""),
             tenant=tenant,
+            destination_override=data.get("destination_override"),
+            set_default=data.get("set_default", False),
         )
-        if action is not None:
+        if action is not None and response_status in {status.HTTP_200_OK, status.HTTP_410_GONE}:
             from apps.actions.messaging import update_gate_message
 
             update_gate_message(action)

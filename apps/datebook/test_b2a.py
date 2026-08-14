@@ -244,8 +244,7 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
         self.assertEqual(rejected.data, {"state": "invalid_originating_channel"})
         self.assertEqual(send.call_count, 1)
 
-    @patch("apps.router.push_views._push_to_user_devices", return_value={"token_count": 1, "used_fallback": False})
-    def test_request_create_with_ios_origin_stamps_app_channel(self, push):
+    def test_request_create_with_ios_origin_stamps_app_surface_truthfully(self):
         response = self.client.post(
             f"/api/v1/datebook/runtime/{self.tenant.id}/datebook/request-create",
             {
@@ -262,11 +261,12 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
         self.assertEqual(response.status_code, 202, response.data)
         action = PendingAction.objects.get(datebook_request_id="origin-app-row")
         self.assertEqual(action.platform_channel, "app")
+        self.assertEqual(action.delivery_state, "available")
+        self.assertEqual(action.platform_message_id, "")
         self.assertEqual(action.status, ActionStatus.PENDING)
-        push.assert_called_once()
 
     @patch("apps.datebook.notify.notify_device_command")
-    def test_auto_approved_claim_rehydrates_full_typed_payload_and_generation(self, _notify):
+    def test_reviewed_claim_rehydrates_full_typed_payload_and_generation(self, _notify):
         GatePreference.objects.create(
             tenant=self.tenant,
             action_type=ActionType.CALENDAR_CREATE,
@@ -287,9 +287,16 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
                 format="json",
                 **self.headers,
             )
-        self.assertEqual(created.data["state"], "approved_queued")
+        self.assertEqual(created.data["state"], "approval_pending")
         consumer = APIClient()
         consumer.force_authenticate(user=self.tenant.user)
+        approved = consumer.post(
+            f"/api/v1/datebook/gate/{created.data['action_id']}/respond/",
+            {"response": "approve"},
+            format="json",
+        )
+        self.assertEqual(approved.status_code, 200, approved.data)
+        self.assertEqual(approved.data["state"], "approved_queued")
         claimed = consumer.post(
             "/api/v1/datebook/commands/claim/",
             {"installation_id": "install-a", "gateway_epoch": self.gateway.gateway_epoch},
@@ -313,12 +320,15 @@ class ReviewGateAndAuditTests(DatebookB2aMixin, TestCase):
 
     @patch("apps.actions.messaging.send_gate_confirmation", return_value=True)
     @patch("apps.datebook.notify.notify_device_command")
-    def test_auto_approval_requires_direct_origin_and_records_immutable_transitions(self, notify, _send):
+    def test_model_direct_origin_never_auto_approves_datebook(self, notify, _send):
+        from apps.actions.services import should_auto_approve
+
         GatePreference.objects.create(
             tenant=self.tenant,
             action_type=ActionType.CALENDAR_CREATE,
             require_confirmation=False,
         )
+        self.assertFalse(should_auto_approve(self.tenant, ActionType.CALENDAR_CREATE))
         with self.captureOnCommitCallbacks(execute=True):
             result = request_datebook_action(
                 self.tenant,
@@ -328,18 +338,12 @@ class ReviewGateAndAuditTests(DatebookB2aMixin, TestCase):
                 display_summary="Create calendar event: [PERSON_1] planning",
                 direct_user_originated=True,
             )
-        self.assertEqual(result["state"], "approved_queued")
-        command = DeviceCommand.objects.get(id=result["command_id"])
-        self.assertEqual(command.state, DeviceCommand.State.PENDING)
-        notify.assert_called_once()
-        self.assertEqual(
-            list(
-                ActionAuditLog.objects.filter(datebook_command_id=command.id)
-                .order_by("id")
-                .values_list("result", flat=True)
-            ),
-            [ActionAuditOutcome.APPROVED, ActionAuditOutcome.QUEUED],
-        )
+        self.assertEqual(result["state"], "approval_pending")
+        action = PendingAction.objects.get(id=result["action_id"])
+        self.assertIs(action.action_payload["direct_user_originated"], True)
+        self.assertFalse(DeviceCommand.objects.filter(id=result["command_id"]).exists())
+        notify.assert_not_called()
+        self.assertFalse(ActionAuditLog.objects.filter(tenant=self.tenant).exists())
 
         pending = request_datebook_action(
             self.tenant,
