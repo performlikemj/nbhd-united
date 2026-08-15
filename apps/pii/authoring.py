@@ -295,6 +295,7 @@ def author_text(
     live: bool = True,
     model_label: str | None = None,
     flag_off_legacy_redaction: bool = True,
+    defer_detection: bool = False,
     _force_checked: bool = False,
     _mint_policy_override: str | None = None,
     _require_no_residual: bool = False,
@@ -320,6 +321,14 @@ def author_text(
     not alter flag-on policy: owner text still runs full checked authoring with
     ``MINT_ALL``.
 
+    ``defer_detection`` is the bounded-request escape hatch for runtime-authored
+    durable work. It applies the deterministic known-value transform, performs
+    no neural detection or live cache telemetry, and stamps an ``unconfirmed``
+    receipt for the repair sweep. Runtime writers cannot mint, so deferring the
+    detector changes only when unknown residuals are classified; known values
+    are still placeholdered before persistence. Owner/background writers may
+    not use this mode.
+
     The underscore-prefixed controls are reserved for W4 historical migration:
     its batch pre-scan owns all MINT_ALL writes under one lock, so the later
     row rewrite forces checked analysis with MINT_NEVER and refuses any
@@ -327,6 +336,8 @@ def author_text(
     """
     if writer not in _WRITER_POLICIES:
         raise ValueError(f"unsupported writer class: {writer!r}")
+    if defer_detection and writer != "runtime":
+        raise ValueError("defer_detection is only supported for runtime writers")
     if _mint_policy_override not in {None, MINT_ALL, MINT_NEVER, MINT_VALIDATED}:
         raise ValueError(f"unsupported mint policy override: {_mint_policy_override!r}")
 
@@ -357,6 +368,33 @@ def author_text(
             checked=False,
             live=live,
             source_text=source_text,
+            model_label=model_label,
+        )
+
+    if defer_detection:
+        stored = _redact_active_known_values(tenant, text, seam=f"{seam}:known-deferred")
+        max_length = _registered_field_max_length(field, model_label) if model_label is not None else None
+        if max_length is not None and len(text) <= max_length:
+            stored = truncate_placeholder_safe(stored, max_length)
+        receipt = (
+            {"state": "placeholder", "reason": "empty-input", "redactions": []}
+            if not text
+            else {
+                "state": "unconfirmed",
+                "reason": "detector-deferred",
+                "redactions": [],
+            }
+        )
+        return _finalize(
+            tenant,
+            stored,
+            receipt,
+            seam=seam,
+            writer=writer,
+            field=field,
+            checked=False,
+            live=live,
+            source_text=text,
             model_label=model_label,
         )
 
@@ -562,6 +600,7 @@ def author_json_paths(
     live: bool = True,
     model_label: str | None = None,
     flag_off_legacy_redaction: bool = True,
+    defer_detection: bool = False,
     _force_checked: bool = False,
     _mint_policy_override: str | None = None,
     _require_no_residual: bool = False,
@@ -586,6 +625,7 @@ def author_json_paths(
             live=live,
             model_label=model_label,
             flag_off_legacy_redaction=flag_off_legacy_redaction,
+            defer_detection=defer_detection,
             _force_checked=_force_checked,
             _mint_policy_override=_mint_policy_override,
             _require_no_residual=_require_no_residual,

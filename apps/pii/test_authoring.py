@@ -208,6 +208,38 @@ class AuthorTextTests(TestCase):
         detect.assert_not_called()
         residual.assert_not_called()
 
+    def test_deferred_runtime_authoring_masks_known_values_and_marks_repair_without_detector_or_cache(self):
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        with (
+            patch("apps.pii.authoring.redact_user_message_checked") as checked,
+            patch("apps.pii.authoring._residual_summary") as residual,
+            patch("apps.pii.alerts.record_live_write_outcome") as record_live,
+        ):
+            authored = author_text(
+                self.tenant,
+                "Call Alice and Dana Whitfield",
+                seam="test.deferred-runtime",
+                writer="runtime",
+                field="description",
+                defer_detection=True,
+            )
+
+        self.assertEqual(authored.text, "Call [PERSON_1] and Dana Whitfield")
+        self.assertEqual(
+            authored.receipt,
+            {
+                "state": "unconfirmed",
+                "reason": "detector-deferred",
+                "redactions": [{"placeholder": "[PERSON_1]"}],
+                "writer": "runtime",
+            },
+        )
+        self.assertIn(authored.receipt["state"], REPAIR_STATES)
+        checked.assert_not_called()
+        residual.assert_not_called()
+        record_live.assert_not_called()
+
     def test_redaction_error_uses_independent_known_value_path_and_marks_repair(self):
         self.tenant.layer1_placeholder_writes = True
         self.tenant.save(update_fields=["layer1_placeholder_writes"])
