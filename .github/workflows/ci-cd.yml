@@ -437,22 +437,18 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Keep this consumer tag matched to the Django Dockerfile (two-place rule).
-          PII_MODEL_TAG=deberta-finetuned-pii-v2
-          # Content marker forces a one-time bundle rebuild without changing that pair.
-          PII_MODEL_BUNDLE_TAG=deberta-v2-liquid-b8c9cf3d
+          PII_MODEL_TAG=pii-models-v3-deberta-liquid
           if az acr repository show \
               --name ${{ env.REGISTRY }} \
-              --image pii-model:${PII_MODEL_BUNDLE_TAG} >/dev/null 2>&1; then
-            echo "pii-model:${PII_MODEL_BUNDLE_TAG} already in ACR — skipping HuggingFace download"
+              --image pii-model:${PII_MODEL_TAG} >/dev/null 2>&1; then
+            echo "pii-model:${PII_MODEL_TAG} already in ACR — skipping HuggingFace download"
           else
-            echo "pii-model:${PII_MODEL_BUNDLE_TAG} missing — building from HuggingFace (one-time)"
+            echo "pii-model:${PII_MODEL_TAG} missing — building from HuggingFace (one-time)"
             docker build --platform linux/amd64 \
               -f Dockerfile.pii-model \
               -t ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_TAG} \
-              -t ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_BUNDLE_TAG} \
               .
             docker push ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_TAG}
-            docker push ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_BUNDLE_TAG}
           fi
 
       - name: Build and push Django image

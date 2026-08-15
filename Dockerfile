@@ -40,7 +40,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # warm-up instead of downloading hundreds of MB inside the readiness window.
 ENV PII_MODEL_PATH=/app/pii-model \
     HF_HUB_OFFLINE=1
-COPY --from=nbhdunited.azurecr.io/pii-model:deberta-finetuned-pii-v2 /pii-model /app/pii-model
+COPY --from=nbhdunited.azurecr.io/pii-model:pii-models-v3-deberta-liquid /pii-model /app/pii-model
 
 COPY . .
 
