@@ -283,7 +283,9 @@ async function requestCreate(api, toolContext, toolCallId, params, commandType) 
         ...(requestChannel ? { originating_channel: requestChannel } : {}),
       },
     });
-    const latest = await pollCommand(api, payload, startedAt);
+    const latest = payload.approval_surface === "app"
+      ? payload
+      : await pollCommand(api, payload, startedAt);
     const narration = asTrimmedString(latest.guidance) || commandNarration(latest);
     const suffix = latest.state === "approval_pending" && !asTrimmedString(latest.guidance)
       ? " Approval is still pending and can be reviewed within 24 hours."
