@@ -456,8 +456,9 @@ class EnvelopeAndPushTests(DatebookB2aMixin, TestCase):
             first,
         )
         self.assertIn(
-            "For ANY question about calendar, schedule, events, availability, or birthdays, "
-            "you MUST call `nbhd_datebook_read` this turn and answer only from its result.",
+            "For ANY question about calendar, schedule, events, availability, birthdays, reminders, "
+            "to-dos, or task completion, you MUST call `nbhd_datebook_read` this turn and answer only "
+            "from its result.",
             first,
         )
         self.assertIn("Never answer schedule questions from memory or from these blocks.", first)
@@ -500,8 +501,9 @@ class EnvelopeAndPushTests(DatebookB2aMixin, TestCase):
             rendered,
         )
         self.assertIn(
-            "For ANY question about calendar, schedule, events, availability, or birthdays, "
-            "you MUST call `nbhd_datebook_read` this turn and answer only from its result.",
+            "For ANY question about calendar, schedule, events, availability, birthdays, reminders, "
+            "to-dos, or task completion, you MUST call `nbhd_datebook_read` this turn and answer only "
+            "from its result.",
             rendered,
         )
         self.assertIn("Never answer schedule questions from memory or from these blocks.", rendered)
