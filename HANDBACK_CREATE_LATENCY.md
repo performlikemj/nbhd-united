@@ -89,3 +89,16 @@ Security audit: PASS
 === FRONTEND LEG: PASS ===
 === DOCKER CI-PARITY GATE: PASS ===
 ```
+
+## App-surface poll skip
+
+- Follow-up branch anchor: `fix/skip-poll-app-surface` from `origin/main` at `e86d215b`.
+- This hand-back was already present in the worktree from `origin/main`, so no copy from the sibling `create-latency` worktree was needed.
+- Datebook create tools now return the original runtime payload immediately when it carries `approval_surface: "app"`. The server guidance and delivery facts reach the model without any `command-status` request, allowing the in-app card/island to remain the approval surface and refresh at the turn boundary.
+- Telegram and LINE retain the existing inline `pollCommand` behavior unchanged.
+- Node regression coverage uses mocked runtime responses with non-empty command IDs: the app case asserts that the only request is `request-create`, while the Telegram case asserts the subsequent `command-status` request and terminal response.
+- The pinned OpenClaw smoke does not assert polling or timing, so its source was unchanged. It passed against OpenClaw `2026.5.28` under local Node `22.23.2` (**1/1 PASS**).
+- Focused datebook plugin origin/error tests: **6/6 PASS**.
+- Full `make docker-gate`: **PASS**.
+  - Backend: Ruff, format, secret scan, migration drift, migrations, Django checks, **7,846 tests PASS** in 1,107.425 s (**2 skipped**), config validator, and security audit.
+  - Frontend: install, ESLint (**0 errors; 4 existing warnings**), TypeScript/static build, and 43 generated pages.
