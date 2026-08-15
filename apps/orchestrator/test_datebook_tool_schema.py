@@ -47,6 +47,8 @@ class DatebookToolSchemaTests(SimpleTestCase):
         self.assertIn("nbhd_cron_create_pure_reminder", self.source)
         self.assertIn("attendees", self.source)
         self.assertIn("alarm only when", self.source)
+        self.assertIn("always set items[].due", self.source)
+        self.assertIn("never use alarm instead of due", self.source)
         self.assertIn("queued for up to 72 hours", self.source)
         self.assertIn("Mirror/list state may be stale", self.source)
         capability = "THE calendar and reminders tool"

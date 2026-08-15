@@ -76,6 +76,42 @@ test("create tools forward the runtime-provided originating channel", async () =
   }
 });
 
+test("reminder create forwards due and alarm without changing nested JSON", async () => {
+  let requestBody;
+  globalThis.fetch = async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({
+      state: "approval_pending",
+      command_id: "command-due-trace",
+      approval_surface: "app",
+      delivery_state: "available",
+    }), { status: 202 });
+  };
+  const item = {
+    title: "Water balcony herbs",
+    due: {
+      kind: "zoned",
+      due_at: "2099-08-16T08:00:00+09:00",
+      tz_id: "Asia/Tokyo",
+    },
+    alarm: {
+      kind: "absolute",
+      trigger_at: "2099-08-16T08:00:00+09:00",
+    },
+  };
+  const expectedItem = structuredClone(item);
+
+  const tool = toolsForContext({ messageChannel: "ios" }).get("nbhd_datebook_add_apple_reminder");
+  await tool.execute("call-due-trace", {
+    items: [item],
+    direct_user_originated: true,
+  });
+
+  assert.deepEqual(item, expectedItem);
+  assert.deepEqual(requestBody.payload.items, [expectedItem]);
+  assert.equal(JSON.stringify(requestBody.payload.items[0]), JSON.stringify(expectedItem));
+});
+
 test("app-surface creates return server guidance without polling command status", async () => {
   const guidance = "Waiting for your approval; the approval is in this conversation. Review it within 24 hours.";
   const requestPaths = [];
