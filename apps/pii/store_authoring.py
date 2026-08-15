@@ -17,6 +17,7 @@ def author_store_fields(
     writer: WriterClass,
     receipts: Any = None,
     flag_off_legacy_redaction: bool = False,
+    defer_detection: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Author supplied registered fields, preserving receipts for omitted ones."""
     store = registered_store(model_label)
@@ -35,6 +36,7 @@ def author_store_fields(
             field=field,
             model_label=model_label,
             flag_off_legacy_redaction=flag_off_legacy_redaction,
+            defer_detection=defer_detection,
         )
         authored_data[field] = authored.text
         next_receipts[field] = authored.receipt
@@ -51,6 +53,7 @@ def author_store_fields(
             field=field,
             model_label=model_label,
             flag_off_legacy_redaction=flag_off_legacy_redaction,
+            defer_detection=defer_detection,
         )
         authored_data[field] = authored.value
         next_receipts[field] = authored.receipt

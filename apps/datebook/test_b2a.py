@@ -220,7 +220,7 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
         self.assertEqual(status_response.data["datebook_command_generation"], 0)
 
     @patch("apps.actions.messaging.send_gate_confirmation", return_value=True)
-    def test_request_create_forwards_normalized_originating_channel(self, send):
+    def test_request_create_normalizes_and_persists_app_surface_in_bounded_insert(self, send):
         path = f"/api/v1/datebook/runtime/{self.tenant.id}/datebook/request-create"
         response = self.client.post(
             path,
@@ -236,7 +236,12 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
         )
 
         self.assertEqual(response.status_code, 202, response.data)
-        self.assertEqual(send.call_args.kwargs["originating_channel"], "app")
+        self.assertEqual(response.data["approval_surface"], "app")
+        self.assertEqual(response.data["delivery_state"], "available")
+        action = PendingAction.objects.get(datebook_request_id="origin-app")
+        self.assertEqual(action.originating_channel, "app")
+        self.assertEqual(action.platform_channel, "app")
+        send.assert_not_called()
 
         rejected = self.client.post(
             path,
@@ -252,7 +257,7 @@ class RuntimeSurfaceTests(DatebookB2aMixin, TestCase):
         )
         self.assertEqual(rejected.status_code, 400, rejected.data)
         self.assertEqual(rejected.data, {"state": "invalid_originating_channel"})
-        self.assertEqual(send.call_count, 1)
+        send.assert_not_called()
 
     def test_request_create_with_ios_origin_stamps_app_surface_truthfully(self):
         response = self.client.post(

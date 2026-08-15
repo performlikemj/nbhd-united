@@ -5,15 +5,18 @@ from __future__ import annotations
 import logging
 import unicodedata
 import uuid
+from contextlib import contextmanager
 from copy import deepcopy
 from datetime import UTC, datetime, time, timedelta
 
-from django.db import IntegrityError, transaction
+from django.conf import settings
+from django.db import IntegrityError, OperationalError, connection, transaction
 from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
 from apps.actions.models import ActionAuditOutcome, ActionStatus, ActionType, PendingAction
 from apps.actions.services import record_action_audit
+from apps.common.eval_sink import suppresses_real_transport
 from apps.pii.store_authoring import author_store_fields, owner_store_representation
 from apps.tenants.models import Tenant
 
@@ -26,6 +29,12 @@ DATEBOOK_GATE_REVIEW_WINDOW = timedelta(hours=24)
 DATEBOOK_GATE_REVIEW_WINDOW_SECONDS = int(DATEBOOK_GATE_REVIEW_WINDOW.total_seconds())
 DATEBOOK_GATE_APPROVAL_FLOOR = timedelta(minutes=5)
 DATEBOOK_DUPLICATE_WINDOW = timedelta(minutes=2)
+DATEBOOK_CREATE_LOCK_TIMEOUT_MS = 2_000
+DATEBOOK_CREATE_STATEMENT_TIMEOUT_MS = 5_000
+DATEBOOK_CREATE_RETRY_STATE = "request_temporarily_unavailable"
+DATEBOOK_CREATE_RETRY_GUIDANCE = (
+    "Nothing was created yet. Calendar & Reminders is temporarily busy; retry this request later."
+)
 DEVICE_DEFAULT_DESTINATION = "device_default"
 UNDELIVERABLE_REASON = "needs_app_update_or_linked_chat"
 UNDELIVERABLE_MESSAGE = "This calendar request needs the app update or a linked chat channel to approve."
@@ -36,6 +45,56 @@ TARGET_PASSED_MESSAGE = "The item's time passed before approval. Nothing was que
 STALE_REVIEW_REASONS = frozenset({STALE_REVIEW_REASON, TARGET_PASSED_REASON})
 
 logger = logging.getLogger(__name__)
+
+
+def _bounded_timeout_setting(name: str, default: int) -> int:
+    try:
+        value = int(getattr(settings, name, default))
+    except (TypeError, ValueError):
+        return default
+    return min(max(value, 1), 60_000)
+
+
+@contextmanager
+def datebook_create_db_budget():
+    """Bound every database statement and row-lock wait in request-create."""
+
+    with transaction.atomic():
+        if connection.vendor == "postgresql":
+            lock_ms = _bounded_timeout_setting(
+                "DATEBOOK_REQUEST_CREATE_LOCK_TIMEOUT_MS",
+                DATEBOOK_CREATE_LOCK_TIMEOUT_MS,
+            )
+            statement_ms = _bounded_timeout_setting(
+                "DATEBOOK_REQUEST_CREATE_STATEMENT_TIMEOUT_MS",
+                DATEBOOK_CREATE_STATEMENT_TIMEOUT_MS,
+            )
+            with connection.cursor() as cursor:
+                cursor.execute("SET LOCAL lock_timeout = %s", [f"{lock_ms}ms"])
+                cursor.execute("SET LOCAL statement_timeout = %s", [f"{statement_ms}ms"])
+        yield
+
+
+def datebook_create_retry_data() -> dict:
+    return {
+        "state": DATEBOOK_CREATE_RETRY_STATE,
+        "retriable": True,
+        "created": False,
+        "guidance": DATEBOOK_CREATE_RETRY_GUIDANCE,
+    }
+
+
+def _create_db_unavailable(tenant: Tenant, exc: OperationalError) -> ProtocolError:
+    logger.warning(
+        "datebook request-create database budget exhausted tenant=%s error_type=%s",
+        tenant.id,
+        type(exc).__name__,
+    )
+    return ProtocolError(
+        DATEBOOK_CREATE_RETRY_STATE,
+        503,
+        {key: value for key, value in datebook_create_retry_data().items() if key != "state"},
+    )
 
 
 def is_datebook_action_type(action_type: str) -> bool:
@@ -192,7 +251,7 @@ def _action_state(action: PendingAction) -> dict:
 
 
 def datebook_action_state(action: PendingAction) -> dict:
-    with transaction.atomic():
+    with datebook_create_db_budget():
         action = PendingAction.objects.select_for_update().get(pk=action.pk)
         if action.is_expired:
             return expire_datebook_action(action)
@@ -621,13 +680,18 @@ def request_datebook_action(
     if action_type not in DATEBOOK_ACTION_TYPES:
         raise ValueError("invalid datebook action type")
 
-    existing = PendingAction.objects.filter(tenant=tenant, datebook_request_id=request_id).first()
-    if existing is not None:
-        return datebook_action_state(existing)
+    try:
+        with datebook_create_db_budget():
+            existing = PendingAction.objects.filter(tenant=tenant, datebook_request_id=request_id).first()
+        if existing is not None:
+            return datebook_action_state(existing)
+    except OperationalError as exc:
+        raise _create_db_unavailable(tenant, exc) from exc
 
     reserved_command_id = uuid.uuid4()
+    app_review_available = originating_channel == "app" and not suppresses_real_transport(tenant)
     try:
-        with transaction.atomic():
+        with datebook_create_db_budget():
             locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
             existing = PendingAction.objects.filter(
                 tenant=locked_tenant,
@@ -667,6 +731,7 @@ def request_datebook_action(
                 model_label="actions.PendingAction",
                 seam="datebook.runtime.review.request",
                 writer="runtime",
+                defer_detection=True,
             )
             gate_now = timezone.now()
             action = PendingAction.objects.create(
@@ -678,24 +743,46 @@ def request_datebook_action(
                 datebook_request_id=request_id,
                 datebook_command_id=reserved_command_id,
                 originating_channel=originating_channel or "",
+                platform_channel="app" if app_review_available else "",
+                delivery_state="available" if app_review_available else "",
                 expires_at=_datebook_gate_expires_at(now=gate_now, target_at=target_at),
             )
             _schedule_gate_changed(action)
+    except OperationalError as exc:
+        raise _create_db_unavailable(tenant, exc) from exc
     except IntegrityError:
-        action = PendingAction.objects.get(tenant=tenant, datebook_request_id=request_id)
-        return datebook_action_state(action)
+        try:
+            with datebook_create_db_budget():
+                action = PendingAction.objects.get(tenant=tenant, datebook_request_id=request_id)
+            return datebook_action_state(action)
+        except OperationalError as exc:
+            raise _create_db_unavailable(tenant, exc) from exc
+
+    # The app review sheet is a durable database surface, not a network
+    # transport. Stamp it during the bounded insert above and avoid the generic
+    # sender's second, formerly unbudgeted action.save() on the canary path.
+    if app_review_available:
+        return _action_state(action)
 
     from apps.actions.messaging import send_gate_confirmation
 
-    if send_gate_confirmation(
-        tenant,
-        action,
-        originating_channel=originating_channel,
-    ):
+    try:
+        with datebook_create_db_budget():
+            delivered = send_gate_confirmation(
+                tenant,
+                action,
+                originating_channel=originating_channel,
+            )
+    except OperationalError as exc:
+        raise _create_db_unavailable(tenant, exc) from exc
+    if delivered:
         return _action_state(action)
 
-    with transaction.atomic():
-        action = PendingAction.objects.select_for_update().get(pk=action.pk)
-        if action.status == ActionStatus.PENDING:
-            return expire_datebook_action(action, reason=UNDELIVERABLE_REASON)
-    return _action_state(action)
+    try:
+        with datebook_create_db_budget():
+            action = PendingAction.objects.select_for_update().get(pk=action.pk)
+            if action.status == ActionStatus.PENDING:
+                return expire_datebook_action(action, reason=UNDELIVERABLE_REASON)
+        return _action_state(action)
+    except OperationalError as exc:
+        raise _create_db_unavailable(tenant, exc) from exc
