@@ -41,6 +41,9 @@ def _detect_names(text, _entities, _threshold):
 
 class HistoricalMigrationTests(TestCase):
     def setUp(self):
+        authoring_detector = patch("apps.pii.authoring._detect_pii", side_effect=_detect_names)
+        authoring_detector.start()
+        self.addCleanup(authoring_detector.stop)
         user = User.objects.create_user(username=f"w4-{uuid.uuid4()}", password="x", display_name="Owner")
         self.tenant = Tenant.objects.create(
             user=user,
@@ -318,7 +321,10 @@ class HistoricalMigrationTests(TestCase):
             pii_receipts={"name": {"state": "placeholder", "writer": "runtime", "redactions": []}},
         )
 
-        with self.assertLogs("apps.pii.historical_migration", level="INFO") as logs:
+        with (
+            patch("apps.pii.redactor._detect_pii", side_effect=_detect_names),
+            self.assertLogs("apps.pii.historical_migration", level="INFO") as logs,
+        ):
             totals = migrate_tenant_registered_stores(
                 self.tenant,
                 commit=True,

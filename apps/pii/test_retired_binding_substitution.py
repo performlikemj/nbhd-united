@@ -91,6 +91,9 @@ class RetiredBindingKnownOnlyPathsTest(TestCase):
     """The reuse-only seams (mint nothing) must honour retirement too."""
 
     def setUp(self):
+        self.model_patch = patch("apps.pii.engine.get_pii_pipeline", return_value=lambda _text: [])
+        self.model_patch.start()
+        self.addCleanup(self.model_patch.stop)
         self.tenant = create_tenant(display_name="Test Owner", telegram_chat_id=910102)
 
     def test_redact_known_entities_skips_retired(self):
