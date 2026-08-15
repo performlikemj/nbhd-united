@@ -1193,6 +1193,20 @@ def _validate_command_alarm(value) -> dict:
     return dict(value)
 
 
+def _command_due_from_absolute_alarm(value) -> dict | None:
+    """Derive a dated reminder from an explicit absolute alarm when due is omitted."""
+
+    if not isinstance(value, dict) or value.get("kind") != "absolute":
+        return None
+    trigger_at = value.get("trigger_at")
+    parsed = _command_datetime(trigger_at, "invalid_command_alarm", aware=True)
+    return {
+        "kind": "zoned",
+        "due_at": trigger_at,
+        "tz_id": str(parsed.tzinfo),
+    }
+
+
 def _validate_command_payload(payload, *, command_type=None) -> tuple[dict, int]:
     if not isinstance(payload, dict):
         raise ProtocolError("invalid_command_payload")
@@ -1244,6 +1258,10 @@ def _validate_command_payload(payload, *, command_type=None) -> tuple[dict, int]
         elif command_type == DeviceCommand.CommandType.REMINDER_CREATE:
             if {"time", "calendar_title"}.intersection(cleaned):
                 raise ProtocolError("invalid_reminder_command_item")
+            if "due" not in cleaned:
+                derived_due = _command_due_from_absolute_alarm(cleaned.get("alarm"))
+                if derived_due is not None:
+                    cleaned["due"] = derived_due
             cleaned.setdefault("due", {"kind": "none"})
         if "time" in cleaned:
             cleaned["time"] = _validate_command_time(cleaned["time"])

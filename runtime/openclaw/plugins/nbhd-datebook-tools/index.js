@@ -303,6 +303,7 @@ async function requestCreate(api, toolContext, toolCallId, params, commandType) 
 }
 
 const alarmSchema = {
+  description: "Optional explicit alert only; never use alarm instead of due for reminders or instead of time for events.",
   oneOf: [
     {
       type: "object",
@@ -359,6 +360,8 @@ const eventTimeSchema = {
 };
 
 const reminderDueSchema = {
+  description:
+    "When the user names a due date or time, always set items[].due. A named time uses kind=zoned with due_at and tz_id.",
   oneOf: [
     {
       type: "object",
@@ -474,7 +477,7 @@ export default function register(api) {
   api.registerTool((toolContext) => wrap({
     name: "nbhd_datebook_add_apple_reminder",
     description:
-      "CREATE 1–5 to-dos in the user's native Apple Reminders lists. Use this whenever the user asks to add a native reminder or list item; use nbhd_cron_create_pure_reminder instead for a future assistant chat message. Every request requires review within 24 hours on its originating surface, and the server response supplies the exact guidance to relay. Pass destination_name only when the user explicitly names a list; never choose one from mirror context. Pending approval or device execution is not success, and approved work is queued for up to 72 hours. Include an alarm only when explicitly requested in the reviewed payload.",
+      "CREATE 1–5 to-dos in the user's native Apple Reminders lists. Use this whenever the user asks to add a native reminder or list item; use nbhd_cron_create_pure_reminder instead for a future assistant chat message. Every request requires review within 24 hours on its originating surface, and the server response supplies the exact guidance to relay. Pass destination_name only when the user explicitly names a list; never choose one from mirror context. Pending approval or device execution is not success, and approved work is queued for up to 72 hours. When the user names a due date or time, always set items[].due; a named time uses kind=zoned with due_at and tz_id. Include an alarm only when explicitly requested, and never use alarm instead of due.",
     parameters: {
       type: "object",
       additionalProperties: false,
