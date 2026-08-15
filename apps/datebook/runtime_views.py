@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, time
 from uuid import UUID
 
 from django.utils import timezone
@@ -19,7 +18,7 @@ from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
 from .agenda import agenda_items, agenda_window
-from .gate import datebook_action_state, request_datebook_action
+from .gate import datebook_action_state, earliest_datebook_target_at, request_datebook_action
 from .models import DatebookGateway, DeviceCommand
 from .readiness import datebook_delivery_ready
 from .services import (
@@ -107,36 +106,6 @@ def _scope_status(tenant: Tenant, gateway: DatebookGateway | None, scope: str) -
         "last_complete_sync_at": _iso(getattr(gateway, f"{scope}_last_complete_sync_at", None)) if gateway else None,
         "gateway_status": gateway.status if gateway else "unavailable",
     }
-
-
-def _first_target_at(tenant: Tenant, command_type: str, payload: dict):
-    """Return the earliest absolute execution cutoff represented by a batch."""
-
-    from django.utils.dateparse import parse_date, parse_datetime
-
-    from apps.common.tenant_tz import tenant_tz
-
-    candidates = []
-    key = "time" if command_type == DeviceCommand.CommandType.CALENDAR_CREATE else "due"
-    for item in payload["items"]:
-        tagged = item.get(key, {"kind": "none"})
-        kind = tagged.get("kind")
-        if kind == "all_day":
-            raw = tagged.get("start_date") or tagged.get("date")
-            parsed = parse_date(raw) if isinstance(raw, str) else None
-            if parsed is not None:
-                candidates.append(datetime.combine(parsed, time.max, tzinfo=tenant_tz(tenant)))
-        elif kind == "zoned":
-            raw = tagged.get("start_at") or tagged.get("due_at")
-            parsed = parse_datetime(raw) if isinstance(raw, str) else None
-            if parsed is not None:
-                candidates.append(parsed)
-        elif kind == "floating":
-            raw = tagged.get("start_local") or tagged.get("due_local")
-            parsed = parse_datetime(raw) if isinstance(raw, str) else None
-            if parsed is not None:
-                candidates.append(parsed.replace(tzinfo=tenant_tz(tenant)))
-    return min(candidates) if candidates else None
 
 
 def _display_summary(command_type: str, payload: dict) -> str:
@@ -285,7 +254,7 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
         if not isinstance(destination_fingerprint, str) or len(destination_fingerprint) > 64:
             return Response({"state": "invalid_destination_fingerprint"}, status=status.HTTP_400_BAD_REQUEST)
         display_text = _display_summary(command_type, payload)
-        target_at = _first_target_at(tenant, command_type, payload)
+        target_at = earliest_datebook_target_at(tenant, command_type, payload)
         command_payload = {
             "request_id": request_id.strip(),
             "command_type": command_type,

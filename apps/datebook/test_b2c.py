@@ -97,6 +97,33 @@ class DatebookGateConsumerTests(DatebookB2aMixin, TestCase):
         self.assertIn("created_at", first)
         self.assertNotIn(other.id, [item["action_id"] for item in response.data["actions"]])
 
+    def test_pending_list_returns_clamped_expiry_unchanged(self):
+        target = timezone.now() + timedelta(hours=2)
+        command_payload = _command_gate_payload("pending-clamped-expiry")
+        command_payload["payload"]["items"][0]["time"] = {
+            "kind": "zoned",
+            "start_at": target.isoformat(),
+            "end_at": (target + timedelta(hours=1)).isoformat(),
+            "tz_id": "UTC",
+        }
+        command_payload["target_at"] = None
+        with patch("apps.actions.messaging.send_gate_confirmation", return_value=True):
+            result = request_datebook_action(
+                self.tenant,
+                action_type=ActionType.CALENDAR_CREATE,
+                request_id="pending-clamped-expiry",
+                command_payload=command_payload,
+                display_summary="Create calendar event: planning",
+                direct_user_originated=False,
+            )
+        action = PendingAction.objects.get(pk=result["action_id"])
+
+        response = self.consumer.get("/api/v1/datebook/gate/pending/")
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(action.expires_at, target)
+        self.assertEqual(response.data["actions"][0]["expires_at"], action.expires_at.isoformat())
+
     @patch("apps.datebook.notify.notify_device_command")
     def test_respond_approve_uses_shared_seam_and_returns_created_command_id(self, _notify):
         action = self._requested_action("consumer-approve")

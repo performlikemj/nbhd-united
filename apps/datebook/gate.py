@@ -6,11 +6,11 @@ import logging
 import unicodedata
 import uuid
 from copy import deepcopy
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from django.utils.dateparse import parse_datetime
+from django.utils.dateparse import parse_date, parse_datetime
 
 from apps.actions.models import ActionAuditOutcome, ActionStatus, ActionType, PendingAction
 from apps.actions.services import record_action_audit
@@ -24,18 +24,70 @@ from .services import ProtocolError
 DATEBOOK_ACTION_TYPES = frozenset({ActionType.CALENDAR_CREATE, ActionType.REMINDER_CREATE})
 DATEBOOK_GATE_REVIEW_WINDOW = timedelta(hours=24)
 DATEBOOK_GATE_REVIEW_WINDOW_SECONDS = int(DATEBOOK_GATE_REVIEW_WINDOW.total_seconds())
+DATEBOOK_GATE_APPROVAL_FLOOR = timedelta(minutes=5)
 DATEBOOK_DUPLICATE_WINDOW = timedelta(minutes=2)
 DEVICE_DEFAULT_DESTINATION = "device_default"
 UNDELIVERABLE_REASON = "needs_app_update_or_linked_chat"
 UNDELIVERABLE_MESSAGE = "This calendar request needs the app update or a linked chat channel to approve."
 STALE_REVIEW_REASON = "stale_review"
 STALE_REVIEW_MESSAGE = "The 24-hour review window expired. Nothing was queued or created."
+TARGET_PASSED_REASON = "target_passed"
+TARGET_PASSED_MESSAGE = "The item's time passed before approval. Nothing was queued or created."
+STALE_REVIEW_REASONS = frozenset({STALE_REVIEW_REASON, TARGET_PASSED_REASON})
 
 logger = logging.getLogger(__name__)
 
 
 def is_datebook_action_type(action_type: str) -> bool:
     return action_type in DATEBOOK_ACTION_TYPES
+
+
+def earliest_datebook_target_at(tenant: Tenant, command_type: str, payload: dict) -> datetime | None:
+    """Return the earliest absolute due/start time represented by a batch."""
+
+    from apps.common.tenant_tz import tenant_tz
+
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if not isinstance(items, list):
+        return None
+    candidates = []
+    key = "time" if command_type == DeviceCommand.CommandType.CALENDAR_CREATE else "due"
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        tagged = item.get(key, {"kind": "none"})
+        if not isinstance(tagged, dict):
+            continue
+        kind = tagged.get("kind")
+        if kind == "all_day":
+            raw = tagged.get("start_date") or tagged.get("date")
+            parsed = parse_date(raw) if isinstance(raw, str) else None
+            if parsed is not None:
+                candidates.append(datetime.combine(parsed, time.max, tzinfo=tenant_tz(tenant)))
+        elif kind == "zoned":
+            raw = tagged.get("start_at") or tagged.get("due_at")
+            parsed = parse_datetime(raw) if isinstance(raw, str) else None
+            if parsed is not None and timezone.is_aware(parsed):
+                candidates.append(parsed)
+        elif kind == "floating":
+            raw = tagged.get("start_local") or tagged.get("due_local")
+            parsed = parse_datetime(raw) if isinstance(raw, str) else None
+            if parsed is not None and timezone.is_naive(parsed):
+                candidates.append(parsed.replace(tzinfo=tenant_tz(tenant)))
+    return min(candidates) if candidates else None
+
+
+def _datebook_gate_expires_at(*, now: datetime, target_at: datetime | None) -> datetime:
+    deadline = now + DATEBOOK_GATE_REVIEW_WINDOW
+    if target_at is not None:
+        deadline = min(deadline, target_at)
+    return max(now + DATEBOOK_GATE_APPROVAL_FLOOR, deadline)
+
+
+def _stale_review_message(action: PendingAction) -> str:
+    if action.resolution_code == TARGET_PASSED_REASON:
+        return TARGET_PASSED_MESSAGE
+    return STALE_REVIEW_MESSAGE
 
 
 def _delivery_facts(action: PendingAction) -> tuple[str, str]:
@@ -71,7 +123,7 @@ def _guidance(action: PendingAction, *, state: str, surface: str, delivery_state
             "Review it within 24 hours."
         )
     if state == STALE_REVIEW_REASON:
-        return STALE_REVIEW_MESSAGE
+        return _stale_review_message(action)
     if state == "undeliverable":
         return UNDELIVERABLE_MESSAGE
     if state == "denied":
@@ -115,14 +167,14 @@ def _action_state(action: PendingAction) -> dict:
                 "message": UNDELIVERABLE_MESSAGE,
                 "guidance": UNDELIVERABLE_MESSAGE,
             }
-        state = STALE_REVIEW_REASON if action.resolution_code == STALE_REVIEW_REASON else "expired"
+        state = STALE_REVIEW_REASON if action.resolution_code in STALE_REVIEW_REASONS else "expired"
         data = {
             **base,
             "state": state,
             "guidance": _guidance(action, state=state, surface=surface, delivery_state=delivery_state),
         }
         if state == STALE_REVIEW_REASON:
-            data["message"] = STALE_REVIEW_MESSAGE
+            data["message"] = _stale_review_message(action)
         return data
     if action.resolution_code and action.resolution_code != ActionAuditOutcome.QUEUED:
         state = action.resolution_code
@@ -143,7 +195,7 @@ def datebook_action_state(action: PendingAction) -> dict:
     with transaction.atomic():
         action = PendingAction.objects.select_for_update().get(pk=action.pk)
         if action.is_expired:
-            return expire_datebook_action(action, reason=STALE_REVIEW_REASON)
+            return expire_datebook_action(action)
         return _action_state(action)
 
 
@@ -277,6 +329,29 @@ def _target_minute(value) -> str | None:
     if parsed is None or timezone.is_naive(parsed):
         return None
     return parsed.astimezone(UTC).replace(second=0, microsecond=0).isoformat()
+
+
+def _datebook_expiry_reason(action: PendingAction) -> str:
+    try:
+        target_at = _rehydrated_command_fields(action).get("target_at")
+    except Exception:
+        logger.warning(
+            "datebook expiry could not read target tenant=%s action=%s",
+            action.tenant_id,
+            action.id,
+            exc_info=True,
+        )
+        return STALE_REVIEW_REASON
+    target_at = (
+        target_at
+        if isinstance(target_at, datetime)
+        else parse_datetime(target_at)
+        if isinstance(target_at, str)
+        else None
+    )
+    if target_at is not None and timezone.is_aware(target_at) and target_at <= action.expires_at:
+        return TARGET_PASSED_REASON
+    return STALE_REVIEW_REASON
 
 
 def _logical_request_signature(command_payload: dict) -> tuple[str, tuple[str, ...], str] | None:
@@ -514,7 +589,9 @@ def deny_datebook_action(action: PendingAction, *, responded_at) -> dict:
     return _action_state(action)
 
 
-def expire_datebook_action(action: PendingAction, *, reason: str = "") -> dict:
+def expire_datebook_action(action: PendingAction, *, reason: str | None = None) -> dict:
+    if reason is None:
+        reason = _datebook_expiry_reason(action)
     action.status = ActionStatus.EXPIRED
     action.resolution_code = reason
     action.responded_at = timezone.now()
@@ -539,7 +616,7 @@ def request_datebook_action(
     direct_user_originated: bool,
     originating_channel: str | None = None,
 ) -> dict:
-    """Create an idempotent 24-hour gate; model provenance never authorizes it."""
+    """Create an idempotent gate bounded by 24 hours and the batch's earliest target."""
 
     if action_type not in DATEBOOK_ACTION_TYPES:
         raise ValueError("invalid datebook action type")
@@ -558,10 +635,17 @@ def request_datebook_action(
             ).first()
             if existing is not None:
                 return datebook_action_state(existing)
+            canonical_payload = deepcopy(command_payload)
+            target_at = earliest_datebook_target_at(
+                locked_tenant,
+                canonical_payload.get("command_type"),
+                canonical_payload.get("payload"),
+            )
+            canonical_payload["target_at"] = target_at.isoformat() if target_at else None
             duplicate = _recent_duplicate_action(
                 locked_tenant,
                 action_type=action_type,
-                command_payload=command_payload,
+                command_payload=canonical_payload,
             )
             if duplicate is not None:
                 raise ProtocolError(
@@ -572,7 +656,7 @@ def request_datebook_action(
                         "message": "An identical approval is already pending. Do not create another.",
                     },
                 )
-            resolved_payload = _resolve_requested_destination(locked_tenant, action_type, command_payload)
+            resolved_payload = _resolve_requested_destination(locked_tenant, action_type, canonical_payload)
             resolved_payload["direct_user_originated"] = direct_user_originated
             authored, receipts = author_store_fields(
                 locked_tenant,
@@ -584,6 +668,7 @@ def request_datebook_action(
                 seam="datebook.runtime.review.request",
                 writer="runtime",
             )
+            gate_now = timezone.now()
             action = PendingAction.objects.create(
                 tenant=locked_tenant,
                 action_type=action_type,
@@ -593,7 +678,7 @@ def request_datebook_action(
                 datebook_request_id=request_id,
                 datebook_command_id=reserved_command_id,
                 originating_channel=originating_channel or "",
-                expires_at=timezone.now() + DATEBOOK_GATE_REVIEW_WINDOW,
+                expires_at=_datebook_gate_expires_at(now=gate_now, target_at=target_at),
             )
             _schedule_gate_changed(action)
     except IntegrityError:

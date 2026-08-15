@@ -51,9 +51,23 @@ class DatebookApprovalUXTests(DatebookB2aMixin, TestCase):
         self.assertEqual(result["state"], "approval_pending")
         return PendingAction.objects.get(pk=result["action_id"])
 
-    def test_datebook_uses_24_hours_while_generic_actions_keep_five_minutes(self):
+    def _reminder_request(self, request_id: str, items: list[dict]) -> PendingAction:
+        return self._request(
+            request_id,
+            action_type=ActionType.REMINDER_CREATE,
+            command_payload={
+                "command_type": DeviceCommand.CommandType.REMINDER_CREATE,
+                "payload": {"items": items},
+                "target_at": None,
+            },
+        )
+
+    def test_undated_datebook_uses_24_hours_while_generic_actions_keep_five_minutes(self):
         before = timezone.now()
-        action = self._request("window-datebook")
+        action = self._reminder_request(
+            "window-datebook",
+            [{"title": "Planning", "due": {"kind": "none"}}],
+        )
         generic = PendingAction.objects.create(
             tenant=self.tenant,
             action_type=ActionType.GMAIL_DELETE,
@@ -67,18 +81,109 @@ class DatebookApprovalUXTests(DatebookB2aMixin, TestCase):
         self.assertGreaterEqual(generic.expires_at, before + timedelta(minutes=5))
         self.assertLessEqual(generic.expires_at, after + timedelta(minutes=5))
 
+    def test_dated_gate_clamps_to_item_time_or_24_hour_cap(self):
+        now = timezone.now()
+        within_window = now + timedelta(hours=2)
+        within_payload = _command_gate_payload("dated-within-window")
+        within_payload["payload"]["items"][0]["time"] = {
+            "kind": "zoned",
+            "start_at": within_window.isoformat(),
+            "end_at": (within_window + timedelta(hours=1)).isoformat(),
+            "tz_id": "UTC",
+        }
+        within_payload["target_at"] = None
+
+        within = self._request(
+            "dated-within-window",
+            command_payload=within_payload,
+        )
+
+        self.assertEqual(within.expires_at, within_window)
+        after = timezone.now()
+        beyond_window = after + timedelta(days=2)
+        beyond_payload = _command_gate_payload("dated-beyond-window")
+        beyond_payload["payload"]["items"][0]["time"] = {
+            "kind": "zoned",
+            "start_at": beyond_window.isoformat(),
+            "end_at": (beyond_window + timedelta(hours=1)).isoformat(),
+            "tz_id": "UTC",
+        }
+        beyond_payload["target_at"] = None
+
+        beyond = self._request(
+            "dated-beyond-window",
+            command_payload=beyond_payload,
+        )
+        completed = timezone.now()
+
+        self.assertGreaterEqual(beyond.expires_at, after + DATEBOOK_GATE_REVIEW_WINDOW)
+        self.assertLessEqual(beyond.expires_at, completed + DATEBOOK_GATE_REVIEW_WINDOW)
+
+    def test_mixed_batch_ignores_undated_items_and_uses_earliest_dated_item(self):
+        later = timezone.now() + timedelta(hours=8)
+        earliest = timezone.now() + timedelta(hours=3)
+
+        action = self._reminder_request(
+            "mixed-batch",
+            [
+                {"title": "No due date", "due": {"kind": "none"}},
+                {
+                    "title": "Later",
+                    "due": {"kind": "zoned", "due_at": later.isoformat(), "tz_id": "UTC"},
+                },
+                {
+                    "title": "Earliest",
+                    "due": {"kind": "zoned", "due_at": earliest.isoformat(), "tz_id": "UTC"},
+                },
+            ],
+        )
+
+        self.assertEqual(action.expires_at, earliest)
+
+    def test_item_time_at_or_before_floor_still_gets_five_minutes(self):
+        for offset in (timedelta(seconds=90), -timedelta(minutes=10)):
+            with self.subTest(offset=offset):
+                before = timezone.now()
+                target = before + offset
+                payload = _command_gate_payload(f"floor-{offset.total_seconds()}")
+                payload["payload"]["items"][0]["time"] = {
+                    "kind": "zoned",
+                    "start_at": target.isoformat(),
+                    "end_at": (target + timedelta(hours=1)).isoformat(),
+                    "tz_id": "UTC",
+                }
+                payload["target_at"] = None
+
+                action = self._request(
+                    f"floor-{offset.total_seconds()}",
+                    command_payload=payload,
+                )
+                after = timezone.now()
+
+                self.assertGreaterEqual(action.expires_at, before + timedelta(minutes=5))
+                self.assertLessEqual(action.expires_at, after + timedelta(minutes=5))
+                self.assertGreater(action.expires_at, target)
+
     @patch("apps.datebook.notify.dispatch_datebook_gate_changed")
     def test_idempotent_retry_after_review_window_returns_typed_stale_outcome(self, changed):
-        action = self._request("retry-stale")
+        action = self._reminder_request(
+            "retry-stale",
+            [{"title": "No due date", "due": {"kind": "none"}}],
+        )
         PendingAction.objects.filter(pk=action.pk).update(expires_at=timezone.now() - timedelta(seconds=1))
 
         with self.captureOnCommitCallbacks(execute=True):
             result = request_datebook_action(
                 self.tenant,
-                action_type=ActionType.CALENDAR_CREATE,
+                action_type=ActionType.REMINDER_CREATE,
                 request_id="retry-stale",
-                command_payload=_command_gate_payload("retry-stale"),
-                display_summary="Create event",
+                command_payload={
+                    **_command_gate_payload("retry-stale"),
+                    "command_type": DeviceCommand.CommandType.REMINDER_CREATE,
+                    "payload": {"items": [{"title": "No due date", "due": {"kind": "none"}}]},
+                    "target_at": None,
+                },
+                display_summary="Create reminder",
                 direct_user_originated=True,
             )
 
@@ -86,6 +191,39 @@ class DatebookApprovalUXTests(DatebookB2aMixin, TestCase):
         self.assertEqual(result["message"], "The 24-hour review window expired. Nothing was queued or created.")
         action.refresh_from_db()
         self.assertEqual(action.status, ActionStatus.EXPIRED)
+        changed.assert_called_once_with(self.tenant.id)
+
+    @patch("apps.datebook.notify.dispatch_datebook_gate_changed")
+    def test_idempotent_retry_after_item_time_uses_due_passed_narration(self, changed):
+        target = timezone.now() + timedelta(minutes=10)
+        payload = _command_gate_payload("retry-target-passed")
+        payload["payload"]["items"][0]["time"] = {
+            "kind": "zoned",
+            "start_at": target.isoformat(),
+            "end_at": (target + timedelta(hours=1)).isoformat(),
+            "tz_id": "UTC",
+        }
+        action = self._request("retry-target-passed", command_payload=payload)
+
+        with (
+            patch("apps.datebook.gate.timezone.now", return_value=action.expires_at + timedelta(seconds=1)),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            result = request_datebook_action(
+                self.tenant,
+                action_type=ActionType.CALENDAR_CREATE,
+                request_id="retry-target-passed",
+                command_payload=payload,
+                display_summary="Create event",
+                direct_user_originated=True,
+            )
+
+        self.assertEqual(result["state"], "stale_review")
+        self.assertEqual(result["message"], "The item's time passed before approval. Nothing was queued or created.")
+        self.assertEqual(result["guidance"], result["message"])
+        action.refresh_from_db()
+        self.assertEqual(action.status, ActionStatus.EXPIRED)
+        self.assertEqual(action.resolution_code, "target_passed")
         changed.assert_called_once_with(self.tenant.id)
 
     def test_resolution_order_and_stale_default_never_falls_back_by_name(self):
@@ -483,28 +621,40 @@ class DatebookGateChangedTests(DatebookB2aMixin, TestCase):
     def test_expiry_sweep_records_typed_stale_review_and_emits_on_commit(self, _send, _edit, changed):
         from apps.actions.tasks import expire_stale_pending_actions
 
+        target = timezone.now() + timedelta(minutes=10)
+        command_payload = _command_gate_payload("sweep-expire")
+        command_payload["payload"]["items"][0]["time"] = {
+            "kind": "zoned",
+            "start_at": target.isoformat(),
+            "end_at": (target + timedelta(hours=1)).isoformat(),
+            "tz_id": "UTC",
+        }
         result = request_datebook_action(
             self.tenant,
             action_type=ActionType.CALENDAR_CREATE,
             request_id="sweep-expire",
-            command_payload=_command_gate_payload("sweep-expire"),
+            command_payload=command_payload,
             display_summary="Create event",
             direct_user_originated=True,
         )
-        PendingAction.objects.filter(pk=result["action_id"]).update(expires_at=timezone.now() - timedelta(seconds=1))
+        action = PendingAction.objects.get(pk=result["action_id"])
+        self.assertEqual(action.expires_at, target)
 
-        with self.captureOnCommitCallbacks(execute=True):
+        with (
+            patch("apps.actions.tasks.timezone.now", return_value=target + timedelta(seconds=1)),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
             summary = expire_stale_pending_actions()
 
-        action = PendingAction.objects.get(pk=result["action_id"])
+        action.refresh_from_db()
         self.assertEqual(summary, "Expired 1 actions")
         self.assertEqual(action.status, ActionStatus.EXPIRED)
-        self.assertEqual(action.resolution_code, "stale_review")
+        self.assertEqual(action.resolution_code, "target_passed")
         self.assertTrue(
             ActionAuditLog.objects.filter(
                 tenant=self.tenant,
                 result=ActionStatus.EXPIRED,
-                detail_code="stale_review",
+                detail_code="target_passed",
             ).exists()
         )
         changed.assert_called_once_with(self.tenant.id)
