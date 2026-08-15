@@ -129,8 +129,9 @@ def render_datebook(tenant, *, max_chars: int = _HARD_BUDGET) -> str:
     overdue, due_today = _reminder_counts(tenant)
     prefix = [
         "These blocks are availability metadata only — no titles, not answerable content.",
-        "For ANY question about calendar, schedule, events, availability, or birthdays, "
-        "you MUST call `nbhd_datebook_read` this turn and answer only from its result.",
+        "For ANY question about calendar, schedule, events, availability, birthdays, reminders, "
+        "to-dos, or task completion, you MUST call `nbhd_datebook_read` this turn and answer only "
+        "from its result.",
         "Never answer schedule questions from memory or from these blocks.",
         'For user-authored "remind me" requests — including bare or ambiguous wording — '
         "you MUST call `nbhd_datebook_add_apple_reminder` by default.",
