@@ -1,4 +1,4 @@
-"""PII redaction policies and label mappings.
+"""PII redaction policies and neural-engine label mappings.
 
 The token-classification model (``lakshyakh93/deberta_finetuned_pii``)
 emits ~60 labels covering names, addresses, phones, financial PII, IDs,
@@ -88,6 +88,68 @@ DEBERTA_LABEL_MAP = {
     # identifying PII. (NUMBER in particular fires on credit-card digits
     # we already catch via Presidio's Luhn-validated CreditCardRecognizer.)
 }
+
+# LiquidAI's pinned detector emits these 40 domain-qualified types after its
+# shipped hybrid decoder. ``None`` is deliberate: those values are sensitive
+# context or broad business metadata rather than identifying PII, and the
+# existing placeholder taxonomy has no honest destination for them. Identifier,
+# name-like, and location-like types fail closed into the closest existing type.
+LIQUID_LABEL_MAP = {
+    # Identity
+    "identity.person_name": "PERSON",
+    "identity.ssn": "ID_DOCUMENT",
+    "identity.national_id": "ID_DOCUMENT",
+    "identity.passport": "ID_DOCUMENT",
+    "identity.drivers_license": "ID_DOCUMENT",
+    "identity.date_of_birth": "DATE_OF_BIRTH",
+    "identity.tax_id": "ID_DOCUMENT",
+    # Contact and location
+    "contact.email": "EMAIL_ADDRESS",
+    "contact.phone": "PHONE_NUMBER",
+    "contact.address": "LOCATION",
+    "contact.postal_code": "LOCATION",
+    "contact.ip_address": "IP_ADDRESS",
+    "location.gps_coordinates": "LOCATION",
+    # Financial
+    "financial.credit_card": "CREDIT_CARD",
+    "financial.iban": "IBAN_CODE",
+    "financial.bank_account": "ACCOUNT",
+    "financial.swift_bic": "ACCOUNT",
+    "financial.crypto_wallet": "CRYPTO_ADDRESS",
+    "financial.amount": None,
+    # Credentials
+    "credential.api_key": "PASSWORD",
+    "credential.password": "PASSWORD",
+    "credential.private_key": "PASSWORD",
+    "credential.jwt": "PASSWORD",
+    "credential.connection_string": "PASSWORD",
+    "developer.login_credentials": "PASSWORD",
+    # Online and device identifiers
+    "online.username": "PERSON",
+    "online.url": None,
+    "device.mac_address": "IP_ADDRESS",
+    "device.imei": "PHONE_NUMBER",
+    "developer.device_id": "ID_DOCUMENT",
+    # Healthcare identifiers; conditions and treatments remain contextual.
+    "healthcare.medical_record": "ID_DOCUMENT",
+    "healthcare.health_plan_id": "ID_DOCUMENT",
+    "healthcare.condition": None,
+    "healthcare.medication": None,
+    # Organization, special-category context, and legal identifiers.
+    "org.company_name": None,
+    "special.religion": None,
+    "special.political": None,
+    "special.orientation": None,
+    "special.health_status": None,
+    "legal.case_number": "ID_DOCUMENT",
+}
+
+# ``redactor.py`` intentionally remains unchanged and imports the historical
+# DEBERTA_LABEL_MAP name. Extend that lookup with mapped Liquid labels so either
+# engine produces the same canonical entity types at the existing seam.
+DEBERTA_LABEL_MAP.update(
+    {raw_label: entity_type for raw_label, entity_type in LIQUID_LABEL_MAP.items() if entity_type is not None}
+)
 
 # Raw labels that signal real street/address context around a BUILDINGNUMBER
 # hit (see redactor._detect_pii). Derived from the map so it can never drift:

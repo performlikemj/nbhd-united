@@ -13,6 +13,11 @@ from apps.tenants.services import create_tenant
 class AnnotatedModelContextTests(TestCase):
     _next_chat_id = 91_000_000
 
+    def setUp(self):
+        self.model_patch = patch("apps.pii.engine.get_pii_pipeline", return_value=lambda _text: [])
+        self.model_patch.start()
+        self.addCleanup(self.model_patch.stop)
+
     def _tenant(self, entity_map):
         type(self)._next_chat_id += 1
         tenant = create_tenant(display_name="Owner", telegram_chat_id=type(self)._next_chat_id)

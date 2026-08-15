@@ -1,8 +1,8 @@
-"""Lazy-singleton PII detection engines.
+"""Flag-gated lazy-singleton PII detection engines.
 
-Uses a DeBERTa-v3 token-classification model fine-tuned for PII detection
-(``lakshyakh93/deberta_finetuned_pii``) plus Presidio pattern recognizers
-for deterministic financial PII (credit card Luhn, IBAN checksum).
+Uses either the production DeBERTa-v3 token-classification model
+(``lakshyakh93/deberta_finetuned_pii``) or the pinned LiquidAI detector,
+plus one engine-independent set of Presidio pattern recognizers.
 
 The DeBERTa model loads on first use (~554 MB on disk, ~600 MB RAM)
 via vanilla PyTorch on CPU. We deliberately do NOT route through
@@ -27,6 +27,11 @@ _pipeline: object | None = None
 # (cheap, no retry storm) while still letting callers handle the failure.
 _pipeline_load_error: Exception | None = None
 _pattern_recognizers = None
+
+_DETECTOR_ENGINE_ENV = "PII_DETECTOR_ENGINE"
+_DEFAULT_DETECTOR_ENGINE = "deberta"
+_SUPPORTED_DETECTOR_ENGINES = frozenset({_DEFAULT_DETECTOR_ENGINE, "liquid"})
+_warned_unknown_detector_engines: set[str] = set()
 
 # HuggingFace repo for the PII model. ``lakshyakh93/deberta_finetuned_pii``
 # is DeBERTa-v3-base fine-tuned on ai4privacy (Apache 2.0). 554 MB safetensors
@@ -57,8 +62,26 @@ _MODEL_PATH = os.environ.get(
 )
 
 
-def get_pii_pipeline():
-    """Return a shared token-classification pipeline, initializing on first call.
+def get_pii_detector_engine() -> str:
+    """Return the configured neural engine name, failing safely to DeBERTa."""
+    requested = os.environ.get(_DETECTOR_ENGINE_ENV, _DEFAULT_DETECTOR_ENGINE)
+    normalized = requested.strip().lower()
+    if normalized in _SUPPORTED_DETECTOR_ENGINES:
+        return normalized
+
+    if requested not in _warned_unknown_detector_engines:
+        logger.warning(
+            "Unknown %s=%r; falling back to %s",
+            _DETECTOR_ENGINE_ENV,
+            requested,
+            _DEFAULT_DETECTOR_ENGINE,
+        )
+        _warned_unknown_detector_engines.add(requested)
+    return _DEFAULT_DETECTOR_ENGINE
+
+
+def get_deberta_pii_pipeline():
+    """Return the shared DeBERTa pipeline, initializing it on first call.
 
     Caches both success and failure: if the model load raises once
     (missing weights, OOM, etc.), the exception is cached and re-raised
@@ -87,7 +110,7 @@ def get_pii_pipeline():
             aggregation_strategy="simple",
             device="cpu",
         )
-        logger.info("PII detection model loaded from %s", _MODEL_PATH)
+        logger.info("DeBERTa PII detection model loaded from %s", model_path)
     except Exception as exc:
         # Logged once at error level here; subsequent callers catch the
         # re-raised exception silently and fall back to pattern recognizers.
@@ -101,6 +124,20 @@ def get_pii_pipeline():
         raise
 
     return _pipeline
+
+
+def get_pii_pipeline():
+    """Return the selected engine's shared token-classification callable.
+
+    Each implementation owns an independent lazy singleton and cached load
+    error. A selected model failure is therefore re-raised until process
+    restart; callers can continue with the shared Presidio recognizers.
+    """
+    if get_pii_detector_engine() == "liquid":
+        from apps.pii.liquid_engine import get_liquid_pii_pipeline
+
+        return get_liquid_pii_pipeline()
+    return get_deberta_pii_pipeline()
 
 
 def get_pattern_recognizers():
@@ -118,6 +155,7 @@ def get_pattern_recognizers():
     """
     global _pattern_recognizers
     if _pattern_recognizers is None:
+        import regex
         from presidio_analyzer.predefined_recognizers import (
             CreditCardRecognizer,
             EmailRecognizer,
@@ -126,6 +164,32 @@ def get_pattern_recognizers():
         )
 
         phone_recognizer = PhoneRecognizer(supported_regions=_PHONE_SUPPORTED_REGIONS)
+
+        class _DualBoundaryEmailRecognizer:
+            """Run Presidio's stock email regex with Unicode and ASCII boundaries."""
+
+            def __init__(self):
+                self._unicode = EmailRecognizer()
+                self._ascii = EmailRecognizer()
+                # Presidio's stock pattern uses ``\b``. Unicode semantics have
+                # no boundary between Japanese text and ``taro`` in
+                # ``さんとtaro@example.jpに``; the ASCII pass catches that case.
+                # Keeping a separate stock recognizer preserves all existing
+                # Unicode-boundary behavior and avoids shared regex-cache races.
+                self._ascii.global_regex_flags |= regex.ASCII
+
+            def analyze(self, *, text, entities):
+                unique = {}
+                for result in self._unicode.analyze(text=text, entities=entities):
+                    unique[(result.entity_type, result.start, result.end)] = result
+                for result in self._ascii.analyze(text=text, entities=entities):
+                    key = (result.entity_type, result.start, result.end)
+                    previous = unique.get(key)
+                    if previous is None or result.score > previous.score:
+                        unique[key] = result
+                return sorted(unique.values(), key=lambda result: (result.start, result.end))
+
+        email_recognizer = _DualBoundaryEmailRecognizer()
         # Override Presidio's flat 0.4 so validated numbers clear the tier
         # threshold; libphonenumber validation is the real gate (see constant).
         phone_recognizer.SCORE = _PHONE_RECOGNIZER_SCORE
@@ -133,7 +197,7 @@ def get_pattern_recognizers():
         _pattern_recognizers = {
             "CREDIT_CARD": CreditCardRecognizer(),
             "IBAN_CODE": IbanRecognizer(),
-            "EMAIL_ADDRESS": EmailRecognizer(),
+            "EMAIL_ADDRESS": email_recognizer,
             "PHONE_NUMBER": phone_recognizer,
         }
         logger.info("Presidio pattern recognizers initialized (credit card, IBAN, email, phone)")

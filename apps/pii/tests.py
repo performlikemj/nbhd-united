@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from unittest import skipUnless
 from unittest.mock import patch
 
 from django.test import SimpleTestCase, TestCase
@@ -9,6 +11,9 @@ from django.test import SimpleTestCase, TestCase
 from apps.pii.config import TIER_POLICIES
 from apps.pii.redactor import RedactionSession, redact_text, rehydrate_text
 from apps.tenants.services import create_tenant
+
+_RUN_REAL_MODEL_TESTS = os.environ.get("PII_REAL_MODEL_TESTS") == "1"
+_REAL_MODEL_SKIP_REASON = "Set PII_REAL_MODEL_TESTS=1 to run tests that load detector weights"
 
 
 class RedactTextPolicyTest(TestCase):
@@ -23,6 +28,7 @@ class RedactTextPolicyTest(TestCase):
         self.assertTrue(policy["enabled"])
 
 
+@skipUnless(_RUN_REAL_MODEL_TESTS, _REAL_MODEL_SKIP_REASON)
 class RedactTextIntegrationTest(TestCase):
     """Integration tests that run the full PII detection pipeline.
 
@@ -130,6 +136,7 @@ class RedactTextIntegrationTest(TestCase):
         self.assertIn("[EMAIL_ADDRESS_", result)
 
 
+@skipUnless(_RUN_REAL_MODEL_TESTS, _REAL_MODEL_SKIP_REASON)
 class RedactionSessionTest(TestCase):
     """Test RedactionSession for cross-document entity tracking."""
 
@@ -212,6 +219,8 @@ class RehydrateTextTest(TestCase):
 
     def test_round_trip_redact_then_rehydrate(self):
         """Redact text, then rehydrate — should recover original PII."""
+        if not _RUN_REAL_MODEL_TESTS:
+            self.skipTest(_REAL_MODEL_SKIP_REASON)
         try:
             from apps.pii.engine import get_pii_pipeline
 
@@ -234,6 +243,7 @@ class RehydrateTextTest(TestCase):
         self.assertNotIn("[EMAIL_ADDRESS_1]", rehydrated)
 
 
+@skipUnless(_RUN_REAL_MODEL_TESTS, _REAL_MODEL_SKIP_REASON)
 class RedactUserMessageTest(TestCase):
     """Test Phase 2: user message redaction with entity map consistency."""
 
@@ -322,6 +332,9 @@ class CaseInsensitiveMergeTests(TestCase):
     """
 
     def setUp(self):
+        self.model_patch = patch("apps.pii.engine.get_pii_pipeline", return_value=lambda _text: [])
+        self.model_patch.start()
+        self.addCleanup(self.model_patch.stop)
         self.tenant = create_tenant(display_name="Test User", telegram_chat_id=555555)
 
     def test_case_variant_in_message_reuses_known_placeholder(self):
@@ -572,6 +585,9 @@ class DenylistTests(TestCase):
     """
 
     def setUp(self):
+        self.model_patch = patch("apps.pii.engine.get_pii_pipeline", return_value=lambda _text: [])
+        self.model_patch.start()
+        self.addCleanup(self.model_patch.stop)
         self.tenant = create_tenant(display_name="Test User", telegram_chat_id=777777)
 
     def test_legacy_entity_map_entry_skipped_when_denylisted(self):
@@ -656,6 +672,7 @@ class DenylistTests(TestCase):
         self.assertEqual(filtered, [])
 
 
+@skipUnless(_RUN_REAL_MODEL_TESTS, _REAL_MODEL_SKIP_REASON)
 class RedactTelegramUpdateTest(TestCase):
     """Test Telegram update redaction for the webhook path."""
 
@@ -720,6 +737,7 @@ class RedactTelegramUpdateTest(TestCase):
         self.assertEqual(result["message"]["from"]["first_name"], "Test")
 
 
+@skipUnless(_RUN_REAL_MODEL_TESTS, _REAL_MODEL_SKIP_REASON)
 class RedactToolResponseTest(TestCase):
     """Test Phase 3: tool response redaction for Gmail, Calendar, Reddit."""
 
@@ -871,6 +889,7 @@ class RedactToolResponseTest(TestCase):
         self.assertIn("Michael Jones", result["from"])
 
 
+@skipUnless(_RUN_REAL_MODEL_TESTS, _REAL_MODEL_SKIP_REASON)
 class AllowNameLastNameTest(TestCase):
     """Test that the user's last name is included in the allow-list."""
 

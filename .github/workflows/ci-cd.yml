@@ -436,7 +436,8 @@ jobs:
       - name: Ensure PII model image
         if: steps.freshness.outputs.superseded != 'true'
         run: |
-          PII_MODEL_TAG=deberta-finetuned-pii-v2
+          # Keep this consumer tag matched to the Django Dockerfile (two-place rule).
+          PII_MODEL_TAG=pii-models-v3-deberta-liquid
           if az acr repository show \
               --name ${{ env.REGISTRY }} \
               --image pii-model:${PII_MODEL_TAG} >/dev/null 2>&1; then

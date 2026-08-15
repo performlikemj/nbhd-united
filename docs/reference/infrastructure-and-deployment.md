@@ -39,7 +39,7 @@ Resource group `rg-nbhd-prod`, region `westus2`. Env names in
    once reinstalled the CUDA build and corrupted `transformers` imports — reading
    the version from the file makes that skew impossible.
 2. **PII model as a frozen ACR layer** ([`Dockerfile:34`](../../Dockerfile)):
-   `COPY --from=nbhdunited.azurecr.io/pii-model:deberta-finetuned-pii-v2`. ~554 MB
+   `COPY --from=nbhdunited.azurecr.io/pii-model:pii-models-v3-deberta-liquid`. ~554 MB
    DeBERTa-v3 + ai4privacy, pulled from *our own* ACR, never HuggingFace, so
    deploys never hit HF 429s. Placed before `COPY . .` so app changes don't
    invalidate it. **Bump the tag in `Dockerfile:34` and the CI "Ensure PII model
@@ -90,7 +90,7 @@ Runs as `USER node`; `ENTRYPOINT` is `nbhd-openclaw-entrypoint`
 |---|---|---|---|
 | `django` | `<github.sha>` (+ `:latest`) | `:latest` moves | [`ci-cd.yml:371`](../../.github/workflows/ci-cd.yml) |
 | `nbhd-openclaw` | `<ocver>-<shortsha>` e.g. `2026.5.28-a1b2c3d` | **never moves; no `:latest`** | [`ci-cd.yml:403`](../../.github/workflows/ci-cd.yml) |
-| `pii-model` | `deberta-finetuned-pii-v2` | immutable | built once, [`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml) |
+| `pii-model` | `pii-models-v3-deberta-liquid` | immutable | built once, [`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml) |
 
 OpenClaw deliberately has **no `:latest`** ([`ci-cd.yml:404`](../../.github/workflows/ci-cd.yml)):
 a moving tag could pull an unvalidated build into a tenant on the next

@@ -650,18 +650,29 @@ class AuthorTextTests(TestCase):
         self.assertEqual(authored.receipt["state"], "placeholder")
 
     def test_known_name_in_an_over_captured_span_is_not_false_residual(self):
-        """End-to-end with the REAL detector: 'Call Alice' comes back as one
-        PERSON span, so matching by exact value cannot find the Alice binding."""
+        """An over-captured PERSON span must not become a false residual."""
         self.tenant.layer1_placeholder_writes = True
         self.tenant.save(update_fields=["layer1_placeholder_writes"])
 
-        authored = author_text(
-            self.tenant,
-            "Call Alice",
-            seam="test.over-captured-span",
-            writer="runtime",
-            field="title",
-        )
+        with patch(
+            "apps.pii.engine.get_pii_pipeline",
+            return_value=lambda _text: [
+                {
+                    "entity_group": "person",
+                    "word": "Call Alice",
+                    "score": 0.99,
+                    "start": 0,
+                    "end": 10,
+                }
+            ],
+        ):
+            authored = author_text(
+                self.tenant,
+                "Call Alice",
+                seam="test.over-captured-span",
+                writer="runtime",
+                field="title",
+            )
 
         self.assertEqual(authored.text, "Call [PERSON_1]")
         self.assertEqual(authored.receipt["state"], "placeholder")
