@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from django.db import OperationalError
 from django.utils import timezone
 from rest_framework import status
 from rest_framework.permissions import AllowAny
@@ -18,7 +19,13 @@ from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
 from .agenda import agenda_items, agenda_window
-from .gate import datebook_action_state, earliest_datebook_target_at, request_datebook_action
+from .gate import (
+    datebook_action_state,
+    datebook_create_db_budget,
+    datebook_create_retry_data,
+    earliest_datebook_target_at,
+    request_datebook_action,
+)
 from .models import DatebookGateway, DeviceCommand
 from .readiness import datebook_delivery_ready
 from .services import (
@@ -193,10 +200,14 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
     throttle_classes = [DatebookRuntimeCreateThrottle]
 
     def post(self, request, tenant_id):
-        auth_error = _internal_auth_or_401(request, tenant_id)
-        if auth_error:
-            return auth_error
-        tenant = _tenant_or_404(tenant_id)
+        try:
+            with datebook_create_db_budget():
+                auth_error = _internal_auth_or_401(request, tenant_id)
+                if auth_error:
+                    return auth_error
+                tenant = _tenant_or_404(tenant_id)
+        except OperationalError:
+            return Response(datebook_create_retry_data(), status=status.HTTP_503_SERVICE_UNAVAILABLE)
         if isinstance(tenant, Response):
             return tenant
         if not datebook_delivery_ready(tenant):
@@ -246,7 +257,11 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
         except ProtocolError as exc:
             return Response({"state": exc.code}, status=exc.status_code)
 
-        record_runtime_write_activity(tenant)
+        try:
+            with datebook_create_db_budget():
+                record_runtime_write_activity(tenant)
+        except OperationalError:
+            return Response(datebook_create_retry_data(), status=status.HTTP_503_SERVICE_UNAVAILABLE)
         destination_name = body.get("destination_name", "")
         destination_fingerprint = body.get("destination_fingerprint", "")
         if not isinstance(destination_name, str) or len(destination_name) > 256:

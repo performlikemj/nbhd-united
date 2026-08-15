@@ -108,6 +108,9 @@ async function callRuntime(api, { path, method = "GET", query, body, timeoutMs =
     if (!response.ok) {
       const normalized = asObject(payload);
       if (!normalized.error && typeof normalized.state === "string") normalized.error = normalized.state;
+      if (response.status === 503 && normalized.error === "request_temporarily_unavailable") {
+        return normalized;
+      }
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
       const detail = compactErrorDetail(normalized);
       const detailSuffix = detail ? ` (${detail})` : "";
@@ -175,8 +178,10 @@ function stableLogicalRequestId(api, toolContext, toolCallId, input, commandType
 
 function requestStillProcessingError(requestId) {
   const error = new Error(
-    "request_still_processing: The Calendar & Reminders request is still being processed. " +
-      "DO NOT re-call this tool; the approval will appear shortly.",
+    "request_still_processing: Nothing was created in Apple Calendar or Reminders yet. " +
+      "The server did not confirm whether an approval request was recorded. " +
+      "DO NOT re-call this tool automatically, and do not promise that an approval will appear shortly. " +
+      "Tell the user the create timed out and ask them to try again if no approval is visible.",
   );
   error.code = "request_still_processing";
   error.requestId = requestId;
