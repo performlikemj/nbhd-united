@@ -322,12 +322,13 @@ def author_text(
     ``MINT_ALL``.
 
     ``defer_detection`` is the bounded-request escape hatch for runtime-authored
-    durable work. It applies the deterministic known-value transform, performs
-    no neural detection or live cache telemetry, and stamps an ``unconfirmed``
-    receipt for the repair sweep. Runtime writers cannot mint, so deferring the
-    detector changes only when unknown residuals are classified; known values
-    are still placeholdered before persistence. Owner/background writers may
-    not use this mode.
+    durable work and for server-composed background defaults reached from the
+    same request paths. It applies the deterministic known-value transform,
+    performs no neural detection or live cache telemetry, and stamps an
+    ``unconfirmed`` receipt for the repair sweep. Runtime/background writers do
+    not mint on this deferred path, so deferring the detector changes only when
+    unknown residuals are classified; known values are still placeholdered
+    before persistence. Owner writers may not use this mode.
 
     The underscore-prefixed controls are reserved for W4 historical migration:
     its batch pre-scan owns all MINT_ALL writes under one lock, so the later
@@ -336,8 +337,8 @@ def author_text(
     """
     if writer not in _WRITER_POLICIES:
         raise ValueError(f"unsupported writer class: {writer!r}")
-    if defer_detection and writer != "runtime":
-        raise ValueError("defer_detection is only supported for runtime writers")
+    if defer_detection and writer not in {"runtime", "background"}:
+        raise ValueError("defer_detection is only supported for runtime/background writers")
     if _mint_policy_override not in {None, MINT_ALL, MINT_NEVER, MINT_VALIDATED}:
         raise ValueError(f"unsupported mint policy override: {_mint_policy_override!r}")
 

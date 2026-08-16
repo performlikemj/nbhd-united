@@ -124,6 +124,71 @@ test("omission-prone tools name their required params in the description", () =>
   }
 });
 
+test("platform issue sender omits absent optional strings and preserves supplied context", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalTenantId = process.env.NBHD_TENANT_ID;
+  const originalInternalKey = process.env.NBHD_INTERNAL_API_KEY;
+  const tools = {};
+  const api = {
+    pluginConfig: { apiBaseUrl: "https://nbhd.test" },
+    registerTool(def) { tools[def.name] = def; },
+    registerHook() {},
+    on() {},
+    logger: { info() {}, warn() {}, error() {}, debug() {} },
+  };
+  process.env.NBHD_TENANT_ID = "tenant-123";
+  process.env.NBHD_INTERNAL_API_KEY = "internal-key";
+
+  try {
+    register(api);
+    let request;
+    globalThis.fetch = async (url, options) => {
+      request = { url: String(url), options };
+      return {
+        ok: true,
+        status: 201,
+        async text() { return JSON.stringify({ id: "issue-1", status: "logged" }); },
+      };
+    };
+
+    await tools["nbhd_platform_issue_report"].execute("call-1", {
+      category: "tool_error",
+      summary: "journal write timed out",
+    });
+
+    assert.equal(
+      request.url,
+      "https://nbhd.test/api/v1/integrations/runtime/tenant-123/platform-issue/report/",
+    );
+    assert.deepEqual(JSON.parse(request.options.body), {
+      category: "tool_error",
+      severity: "low",
+      summary: "journal write timed out",
+    });
+
+    await tools["nbhd_platform_issue_report"].execute("call-2", {
+      category: "tool_error",
+      severity: "high",
+      tool_name: "  nbhd_daily_note_set_section  ",
+      summary: "  journal write timed out  ",
+      detail: "  request exceeded 20 seconds  ",
+    });
+    assert.deepEqual(JSON.parse(request.options.body), {
+      category: "tool_error",
+      severity: "high",
+      summary: "journal write timed out",
+      tool_name: "nbhd_daily_note_set_section",
+      detail: "request exceeded 20 seconds",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalTenantId === undefined) delete process.env.NBHD_TENANT_ID;
+    else process.env.NBHD_TENANT_ID = originalTenantId;
+    if (originalInternalKey === undefined) delete process.env.NBHD_INTERNAL_API_KEY;
+    else process.env.NBHD_INTERNAL_API_KEY = originalInternalKey;
+  }
+});
+
 test("situation tool is registered with the city-label policy and manifest contract", () => {
   const tools = collectTools();
   const tool = tools["nbhd_update_situation"];

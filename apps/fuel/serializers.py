@@ -26,12 +26,14 @@ class _FuelPiiSerializerMixin(OwnerStoreSerializerMixin):
         if self.context.get("pii_preauthored"):
             return super().create(validated_data)
         tenant = validated_data.get("tenant") or self.context["tenant"]
+        writer = self.context.get("pii_writer", "owner")
         authored, receipts = author_store_fields(
             tenant,
             validated_data,
             model_label=self.pii_model_label,
             seam=f"fuel.{self.pii_model_label}.create",
-            writer=self.context.get("pii_writer", "owner"),
+            writer=writer,
+            defer_detection=writer == "runtime",
         )
         authored["pii_receipts"] = receipts
         return super().create(authored)
@@ -39,13 +41,15 @@ class _FuelPiiSerializerMixin(OwnerStoreSerializerMixin):
     def update(self, instance, validated_data):
         if self.context.get("pii_preauthored"):
             return super().update(instance, validated_data)
+        writer = self.context.get("pii_writer", "owner")
         authored, receipts = author_store_fields(
             instance.tenant,
             validated_data,
             model_label=self.pii_model_label,
             seam=f"fuel.{self.pii_model_label}.update",
-            writer=self.context.get("pii_writer", "owner"),
+            writer=writer,
             receipts=instance.pii_receipts,
+            defer_detection=writer == "runtime",
         )
         authored["pii_receipts"] = receipts
         return super().update(instance, authored)

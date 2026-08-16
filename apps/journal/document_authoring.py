@@ -60,9 +60,24 @@ def merge_field_receipt(
     prior_rank = _STATE_RANK.get(prior_state, _LEGACY_RANK)
     new_rank = _STATE_RANK.get(receipt.get("state"), _LEGACY_RANK)
 
-    # A terminal receipt is an exhausted repair result. A later append cannot
-    # launder it back into an active unconfirmed state at the same rank.
-    winner = prior if prior_state == "terminal" else receipt if new_rank <= prior_rank else prior
+    # A terminal receipt is an exhausted repair result. Ordinary failures stay
+    # sticky, but a detector-deferred fragment is genuinely NEW unchecked text:
+    # reactivate the field so the sweep inspects it and reset the old attempt
+    # metadata by choosing the fresh receipt wholesale.
+    reactivates_terminal = (
+        prior_state == "terminal"
+        and receipt.get("state") == "unconfirmed"
+        and receipt.get("reason") == "detector-deferred"
+    )
+    winner = (
+        receipt
+        if reactivates_terminal
+        else prior
+        if prior_state == "terminal"
+        else receipt
+        if new_rank <= prior_rank
+        else prior
+    )
     if isinstance(winner, dict):
         merged = dict(winner)
     else:
@@ -96,6 +111,7 @@ def get_or_create_authored_document(
     title: str,
     markdown_factory,
     seam: str,
+    defer_detection: bool = False,
 ):
     """Get a document, authoring its DEFAULT body when one has to be created.
 
@@ -113,8 +129,12 @@ def get_or_create_authored_document(
     flag-off, owner means the legacy redactor, which is real detection and real
     minting on a path that had neither before P3. A4 requires flag-off to change
     nothing, and background is the only class that is a pure passthrough there.
-    Flag-on it gets full detection plus MINT_VALIDATED, with anything unmintable
-    recorded as ``residual`` for the repair sweep.
+    By default, flag-on gets full detection plus MINT_VALIDATED, with anything
+    unmintable recorded as ``residual`` for the repair sweep. Runtime request
+    callers pass ``defer_detection=True`` so a first-touch default body keeps
+    background provenance while doing only synchronous known-value masking and
+    recording an ``unconfirmed`` / ``detector-deferred`` receipt. Owner request
+    callers retain the checked default.
 
     The row is looked up BEFORE the body is rendered or authored so the common
     path — the document already exists — costs one SELECT and no NER, rather than
@@ -134,6 +154,7 @@ def get_or_create_authored_document(
         writer="background",
         field="markdown",
         model_label="journal.Document",
+        defer_detection=defer_detection,
     )
     return Document.objects.get_or_create(
         tenant=tenant,

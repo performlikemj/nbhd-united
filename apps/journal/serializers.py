@@ -96,6 +96,7 @@ class JournalEntryRuntimeSerializer(serializers.ModelSerializer):
             model_label="journal.JournalEntry",
             seam="journal.entry.create.runtime",
             writer="runtime",
+            defer_detection=True,
         )
         return JournalEntry.objects.create(tenant=tenant, pii_receipts=receipts, **authored)
 
@@ -168,6 +169,7 @@ class WeeklyReviewRuntimeSerializer(serializers.ModelSerializer):
             model_label="journal.WeeklyReview",
             seam="journal.weekly_review.create.runtime",
             writer="runtime",
+            defer_detection=True,
         )
         return WeeklyReview.objects.create(tenant=tenant, pii_receipts=receipts, **authored)
 

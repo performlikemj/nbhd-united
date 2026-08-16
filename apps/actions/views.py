@@ -148,6 +148,7 @@ class GateRequestView(APIView):
             model_label="actions.PendingAction",
             seam="actions.runtime.gate_request",
             writer="runtime",
+            defer_detection=True,
         )
         stored_payload = authored["action_payload"]
         stored_summary = authored["display_summary"]

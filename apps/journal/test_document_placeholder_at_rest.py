@@ -6,8 +6,8 @@ Three properties, per writer class, per seam:
    byte-identical passthroughs; owner writes keep the legacy unchecked
    redaction they already ran (``bypass``/``legacy-redact`` receipt).
 2. **Flag ON stores placeholder-space text plus an honest receipt.** Owner
-   writes mint; runtime writes never mint and record what they could not
-   redact as ``residual``.
+   writes mint; runtime request writes mask known values synchronously and
+   defer deep classification under an ``unconfirmed`` receipt.
 3. **The owner still sees real values** — reads rehydrate and carry per-field
    receipts, and searches for a real name still find the placeholder-stored
    document.
@@ -317,14 +317,12 @@ class RuntimeDocumentWriteTests(_DocumentPiiBase):
         # The runtime read stays in placeholder space — no rehydration.
         self.assertEqual(resp.data["markdown"], "[PERSON_1] and Bob met")
 
-    def test_put_records_a_model_composed_name_as_residual(self):
-        """MINT_NEVER without residual detection would store a raw name under a
-        receipt that reads clean forever — the A7 fence skips ``placeholder``."""
+    def test_put_defers_classification_of_a_model_composed_name(self):
+        """Unknown runtime text stays repair-eligible without request-path NER."""
         detection = [type("R", (), {"entity_type": "PERSON", "start": 0, "end": 3, "score": 0.99})()]
         with (
-            patch("apps.pii.redactor._detect_pii", return_value=[]),
-            patch("apps.pii.authoring._detect_pii", return_value=detection),
-            patch("apps.pii.authoring._filter_results", side_effect=lambda results, *a, **kw: results),
+            patch("apps.pii.redactor._detect_pii", return_value=[]) as redactor_detect,
+            patch("apps.pii.authoring._detect_pii", return_value=detection) as authoring_detect,
         ):
             self.client.put(
                 f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
@@ -334,8 +332,10 @@ class RuntimeDocumentWriteTests(_DocumentPiiBase):
             )
 
         doc = Document.objects.get(tenant=self.tenant, kind="project", slug="reno")
-        self.assertEqual(doc.pii_receipts["markdown"]["state"], "residual")
-        self.assertEqual(doc.pii_receipts["markdown"]["residual_spans"]["kinds"], {"PERSON": 1})
+        self.assertEqual(doc.pii_receipts["markdown"]["state"], "unconfirmed")
+        self.assertEqual(doc.pii_receipts["markdown"]["reason"], "detector-deferred")
+        redactor_detect.assert_not_called()
+        authoring_detect.assert_not_called()
 
     def test_document_append_merges_receipt(self):
         Document.objects.create(tenant=self.tenant, kind="project", slug="reno", title="R", markdown="start")
@@ -350,16 +350,18 @@ class RuntimeDocumentWriteTests(_DocumentPiiBase):
         self.assertEqual(resp.status_code, 201)
         doc = Document.objects.get(tenant=self.tenant, kind="project", slug="reno")
         self.assertIn("[PERSON_1] stopped by", doc.markdown)
-        # The pre-existing body carried no receipt, so the merged state is the
-        # pessimistic one — an unchecked half must not read as verified.
-        self.assertEqual(doc.pii_receipts["markdown"]["state"], "bypass")
+        # The deferred fragment makes the whole stored field repair-eligible;
+        # an unchecked older half must not read as verified either.
+        self.assertEqual(doc.pii_receipts["markdown"]["state"], "unconfirmed")
+        self.assertEqual(doc.pii_receipts["markdown"]["reason"], "detector-deferred")
 
-    def test_append_to_a_document_this_seam_created_stays_verified(self):
-        """The counterpart: a body this seam authored on creation is checked.
+    def test_append_to_a_document_this_seam_created_stays_repair_eligible(self):
+        """A first-touch body and fragment both carry deferred provenance.
 
         Without authoring the default body, the flagship append surface would
         carry a permanent ``bypass`` receipt and the owner would never get entity
-        affordances on their daily notes.
+        affordances on their daily notes. The runtime request must still avoid
+        waiting on the detector, so hourly repair performs deep classification.
         """
         with patch("apps.pii.redactor._detect_pii", return_value=[]):
             self.client.post(
@@ -370,7 +372,8 @@ class RuntimeDocumentWriteTests(_DocumentPiiBase):
             )
 
         doc = Document.objects.get(tenant=self.tenant, kind="ideas", slug="ideas")
-        self.assertEqual(doc.pii_receipts["markdown"]["state"], "placeholder")
+        self.assertEqual(doc.pii_receipts["markdown"]["state"], "unconfirmed")
+        self.assertEqual(doc.pii_receipts["markdown"]["reason"], "detector-deferred")
         self.assertEqual(doc.pii_receipts["markdown"]["redactions"], [{"placeholder": "[PERSON_1]"}])
 
     def test_daily_note_append_authors_the_fragment(self):
@@ -398,7 +401,8 @@ class RuntimeDocumentWriteTests(_DocumentPiiBase):
             )
             doc = Document.objects.get(tenant=self.tenant, kind="memory", slug="long-term")
             self.assertIn("[PERSON_1] is a neighbour", doc.markdown)
-            self.assertEqual(doc.pii_receipts["markdown"]["state"], "placeholder")
+            self.assertEqual(doc.pii_receipts["markdown"]["state"], "unconfirmed")
+            self.assertEqual(doc.pii_receipts["markdown"]["reason"], "detector-deferred")
 
             self.client.put(
                 f"/api/v1/integrations/runtime/{self.tenant.id}/long-term-memory/",
@@ -985,14 +989,14 @@ class ReplaceLaneReceiptCoherenceTests(_DocumentPiiBase):
         doc = self._doc()
         b_receipt = {"state": "residual", "redactions": [], "writer": "background"}
 
-        def _commit_b(*args, **kwargs):
+        def _commit_b(_tenant, text, **_kwargs):
             Document.objects.filter(pk=doc.pk).update(
                 title="b title",
                 pii_receipts={"title": b_receipt},
             )
-            return []
+            return text.replace("Alice", "[PERSON_1]")
 
-        with patch("apps.pii.redactor._detect_pii", side_effect=_commit_b):
+        with patch("apps.pii.authoring._redact_active_known_values", side_effect=_commit_b):
             resp = self.client.put(
                 f"/api/v1/integrations/runtime/{self.tenant.id}/document/",
                 {"kind": "project", "slug": "reno", "markdown": "Alice rewrote it"},
@@ -1063,6 +1067,36 @@ class MergeFieldReceiptTests(TestCase):
         self.assertEqual(merged["markdown"]["state"], "terminal")
         self.assertEqual(merged["markdown"]["terminal_reason"], "repair-attempts-exhausted")
         self.assertEqual(merged["markdown"]["writer"], "runtime")
+
+    def test_detector_deferred_append_reactivates_terminal_receipt(self):
+        terminal = {
+            "state": "terminal",
+            "terminal_from": "unconfirmed",
+            "terminal_reason": "repair-attempts-exhausted",
+            "repair_attempts": 3,
+            "writer": "background",
+        }
+        merged = merge_field_receipt(
+            {"markdown": terminal},
+            "markdown",
+            {
+                "state": "unconfirmed",
+                "reason": "detector-deferred",
+                "redactions": [],
+                "writer": "runtime",
+            },
+            stored_text="old body plus [PERSON_1] in a new append",
+        )
+
+        self.assertEqual(
+            merged["markdown"],
+            {
+                "state": "unconfirmed",
+                "reason": "detector-deferred",
+                "redactions": [{"placeholder": "[PERSON_1]"}],
+                "writer": "runtime",
+            },
+        )
 
     def test_a_field_with_no_prior_receipt_enters_as_unchecked(self):
         merged = merge_field_receipt(

@@ -840,12 +840,11 @@ _DOCUMENT_STORE = "journal.Document"
 def _author_runtime_document(tenant, text: str, *, seam: str, field: str):
     """Author one agent-written Document field (runtime writer class).
 
-    ``MINT_NEVER`` + known-value scrub + residual detection per directive §A1:
-    the agent composes from text that already passed chat ingress, so minting
-    here would coin placeholders for spans the ingress redactor already judged.
-    What the agent CAN do is compose a name itself, which is what the residual
-    receipt records — a name the model wrote lands as ``state="residual"`` and
-    the repair sweep picks it up, instead of a false-clean ``placeholder``.
+    Known bindings are scrubbed synchronously, but deep detection is deferred:
+    the agent composes from text that already passed chat ingress, and a neural
+    pass must never hold the runtime request open. The write therefore carries
+    an honest ``state="unconfirmed"`` / ``reason="detector-deferred"`` receipt
+    for the hourly repair sweep instead of claiming the stored field is clean.
     """
     from apps.pii.authoring import author_text
 
@@ -856,6 +855,7 @@ def _author_runtime_document(tenant, text: str, *, seam: str, field: str):
         writer="runtime",
         field=field,
         model_label=_DOCUMENT_STORE,
+        defer_detection=True,
     )
 
 
@@ -876,6 +876,7 @@ def _author_runtime_lifecycle_input(tenant, data, *, seam, model_label, receipts
             writer="runtime",
             field=field,
             model_label=model_label,
+            defer_detection=True,
         )
         out[field] = authored.text
         next_receipts[field] = authored.receipt
@@ -916,6 +917,7 @@ def _reauthor_runtime_lifecycle_instance(instance, *, seam):
             writer="runtime",
             field=field,
             model_label=instance._meta.label,
+            defer_detection=True,
         )
         if authored.text != getattr(instance, field):
             setattr(instance, field, authored.text)
@@ -1396,9 +1398,10 @@ class RuntimeTaskDetailView(APIView):
         if not Task.objects.filter(tenant=tenant, id=task_id).exists():
             return Response({"error": "task_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        # Authoring runs BEFORE the transaction opens: it is the PII path, which
-        # may reach a detector outside this process, and invariants §8 forbids
-        # external calls inside ``atomic()`` (app_user idles out at 60s).
+        # Authoring runs BEFORE the transaction opens. Runtime authoring is now
+        # deliberately detector-free (known-value masking + a deferred receipt),
+        # and keeping all PII work outside ``atomic()`` preserves invariant §8 if
+        # that implementation grows another external dependency later.
         #
         # Seeded with NO existing receipts on purpose, so ``authored_receipts``
         # holds ONLY the fields this request actually authored. Seeding it from
@@ -1908,6 +1911,7 @@ class RuntimeDailyNotesView(KnownValueResponseGuardMixin, APIView):
             title=_default_title("daily", slug),
             markdown_factory=lambda: _default_markdown("daily", slug, tenant=tenant),
             seam="journal.daily_note.default_body.runtime",
+            defer_detection=True,
         )
         return Response(
             {
@@ -1997,6 +2001,7 @@ class RuntimeDailyNoteAppendView(APIView):
             title=_default_title("daily", slug),
             markdown_factory=lambda: _default_markdown("daily", slug, tenant=tenant),
             seam="journal.daily_note.default_body.runtime",
+            defer_detection=True,
         )
 
         section_slug = request.data.get("section_slug")
@@ -2092,6 +2097,7 @@ class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
             title=_default_title("memory", "long-term"),
             markdown_factory=lambda: _default_markdown("memory", "long-term", tenant=tenant),
             seam="journal.memory.default_body.runtime",
+            defer_detection=True,
         )
         return Response(
             {"tenant_id": str(tenant.id), "markdown": doc.markdown},
@@ -2134,8 +2140,9 @@ class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
 
         if section:
             # A scoped write merges into a body it did not supply, so a brand-new
-            # row gets the template — authored on creation so the section merge
-            # below has a checked half to fold into.
+            # row gets the template — known-value masked on creation with a
+            # detector-deferred receipt for the repair sweep, so the section
+            # merge below has honest provenance to fold into.
             doc, _created = get_or_create_authored_document(
                 tenant,
                 kind="memory",
@@ -2143,6 +2150,7 @@ class RuntimeUserMemoryView(KnownValueResponseGuardMixin, APIView):
                 title=_default_title("memory", "long-term"),
                 markdown_factory=lambda: _default_markdown("memory", "long-term", tenant=tenant),
                 seam="journal.memory.default_body.runtime",
+                defer_detection=True,
             )
         else:
             doc, _created = Document.objects.get_or_create(
@@ -2448,6 +2456,7 @@ class RuntimeSessionMarkProcessedView(APIView):
             seam="integrations.runtime.session.processed_summary",
             writer="runtime",
             receipts=session.pii_receipts,
+            defer_detection=True,
         )
         session.processed_at = tz.now()
         session.processed_summary = authored["processed_summary"]
@@ -2535,6 +2544,7 @@ class RuntimeLessonCreateView(KnownValueResponseGuardMixin, APIView):
             model_label="lessons.Lesson",
             seam="integrations.runtime.lesson.create",
             writer="runtime",
+            defer_detection=True,
         )
         lesson = Lesson.objects.create(
             tenant=tenant,
@@ -3334,6 +3344,7 @@ class RuntimeDocumentAppendView(KnownValueResponseGuardMixin, APIView):
             title=_default_title(kind, slug),
             markdown_factory=lambda: _default_markdown(kind, slug, tenant=tenant),
             seam="journal.document.default_body.runtime",
+            defer_detection=True,
         )
 
         authored = _author_runtime_document(
@@ -5072,6 +5083,7 @@ class RuntimeSautaiGeneratePlanView(APIView):
             model_label="integrations.SautaiMealPlanJob",
             seam="integrations.runtime.sautai.user_prompt",
             writer="runtime",
+            defer_detection=True,
         )
         stored_user_prompt = authored_prompt["user_prompt"]
 
@@ -5929,6 +5941,7 @@ class RuntimeJournalTemplateUpdateView(APIView):
             seam="integrations.runtime.note_template_update",
             writer="runtime",
             receipts=template.pii_receipts,
+            defer_detection=True,
         )
         template.sections = authored["sections"]
         template.pii_receipts = receipts

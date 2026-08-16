@@ -1085,9 +1085,11 @@ class RuntimeMemorySyncViewTest(TestCase):
         self.assertEqual(created.text, "Ask [PERSON_1] for constraints")
         self.assertEqual(created.context, "Notes from [PERSON_1]")
         self.assertEqual(created.pii_receipts["text"]["writer"], "runtime")
-        self.assertEqual(created.pii_receipts["text"]["state"], "placeholder")
+        self.assertEqual(created.pii_receipts["text"]["state"], "unconfirmed")
+        self.assertEqual(created.pii_receipts["text"]["reason"], "detector-deferred")
         self.assertEqual(created.pii_receipts["context"]["writer"], "runtime")
-        self.assertEqual(created.pii_receipts["context"]["state"], "placeholder")
+        self.assertEqual(created.pii_receipts["context"]["state"], "unconfirmed")
+        self.assertEqual(created.pii_receipts["context"]["reason"], "detector-deferred")
         lesson_payload = response.json()["lesson"]
         self.assertEqual(lesson_payload["text"], created.text)
         self.assertEqual(lesson_payload["context"], created.context)

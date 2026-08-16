@@ -116,6 +116,7 @@ class RuntimePurposeProposeView(APIView):
             model_label="journal.Purpose",
             seam="journal.purpose.propose.runtime",
             writer="runtime",
+            defer_detection=True,
         )
         purpose = Purpose.objects.create(
             tenant=tenant,
@@ -213,6 +214,7 @@ class RuntimePurposeUpdateView(APIView):
             seam="journal.purpose.update.runtime",
             writer="runtime",
             receipts=purpose.pii_receipts,
+            defer_detection=True,
         )
 
         update_fields: list[str] = []

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from django.test import Client, SimpleTestCase, override_settings
 
+from apps.pii.config import DEFAULT_DETECTOR_ENGINE
 from config.containerapp_deploy import prepare_deployment
 
 
@@ -19,6 +20,7 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
                             "env": [
                                 {"name": "DATABASE_URL", "secretRef": "database-url"},
                                 {"name": "SENTRY_RELEASE", "value": "old-sha"},
+                                {"name": "PII_DETECTOR_ENGINE", "value": "liquid"},
                             ],
                             "probes": [
                                 {"type": "Liveness", "tcpSocket": {"port": 8000}},
@@ -41,6 +43,7 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
             environment={
                 "OPENCLAW_IMAGE_TAG": "oc-sha",
                 "SENTRY_RELEASE": "new-sha",
+                "PII_DETECTOR_ENGINE": DEFAULT_DETECTOR_ENGINE,
             },
         )
 
@@ -57,6 +60,10 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
         self.assertEqual(
             next(item for item in container["env"] if item["name"] == "OPENCLAW_IMAGE_TAG")["value"],
             "oc-sha",
+        )
+        self.assertEqual(
+            next(item for item in container["env"] if item["name"] == "PII_DETECTOR_ENGINE")["value"],
+            "deberta",
         )
         self.assertEqual(result["properties"]["configuration"], original["properties"]["configuration"])
 
@@ -114,8 +121,39 @@ class PrepareContainerAppDeploymentTests(SimpleTestCase):
                 environment={},
             )
 
+    def test_unsupported_pii_detector_engine_fails_closed(self):
+        with self.assertRaisesMessage(
+            ValueError,
+            "unsupported PII_DETECTOR_ENGINE 'experimental'; expected one of: deberta, liquid",
+        ):
+            prepare_deployment(
+                self.definition,
+                container_name="django",
+                image="registry/new:sha",
+                environment={"PII_DETECTOR_ENGINE": "experimental"},
+            )
+
     def test_ci_deploy_applies_the_prepared_readiness_spec(self):
         workflow = (Path(__file__).parents[1] / ".github/workflows/ci-cd.yml").read_text()
 
         self.assertIn("python3 -m config.containerapp_deploy", workflow)
         self.assertIn('--yaml "$DEPLOY_SPEC"', workflow)
+        self.assertIn("PII_DETECTOR_ENGINE: deberta", workflow)
+        self.assertIn("PII_MODEL_TAG=deberta-only-a038061af92047b0", workflow)
+        self.assertIn("--build-arg INCLUDE_LIQUID=false", workflow)
+        self.assertIn("shelved Liquid bundle present in serving image", workflow)
+        self.assertNotIn("PII_MODEL_TAG=pii-models-v3", workflow)
+        self.assertNotIn("PII_MODEL_TAG=deberta-finetuned-pii-v2", workflow)
+        self.assertIn("--pii-detector-engine ${{ env.PII_DETECTOR_ENGINE }}", workflow)
+
+        dockerfile = (Path(__file__).parents[1] / "Dockerfile").read_text()
+        self.assertIn(
+            "COPY --from=nbhdunited.azurecr.io/pii-model:deberta-only-a038061af92047b0",
+            dockerfile,
+        )
+        self.assertNotIn("pii-models-v3", dockerfile)
+        self.assertNotIn("deberta-finetuned-pii-v2", dockerfile)
+
+        model_dockerfile = (Path(__file__).parents[1] / "Dockerfile.pii-model").read_text()
+        self.assertIn("ARG INCLUDE_LIQUID=false", model_dockerfile)
+        self.assertIn("revision='a038061af92047b0afbbd5ca07d7aa0521789379'", model_dockerfile)

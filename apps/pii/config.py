@@ -9,6 +9,20 @@ Presidio's pattern recognizers (credit card Luhn, IBAN checksum, email
 regex fallback) live in ``apps/pii/engine.py:get_pattern_recognizers``.
 """
 
+# Detector rollout contract. DeBERTa remains the safe production default;
+# Liquid is retained only as an explicit, flag-gated option.
+DEFAULT_DETECTOR_ENGINE = "deberta"
+SUPPORTED_DETECTOR_ENGINES = frozenset({DEFAULT_DETECTOR_ENGINE, "liquid"})
+
+
+def resolve_detector_engine(requested: str | None) -> str:
+    """Normalize a detector selection, falling back safely to DeBERTa."""
+    normalized = (requested or "").strip().lower()
+    if normalized in SUPPORTED_DETECTOR_ENGINES:
+        return normalized
+    return DEFAULT_DETECTOR_ENGINE
+
+
 # Map the underlying model's token-classification labels to our internal
 # entity types. The key name stays ``DEBERTA_LABEL_MAP`` for backwards
 # compatibility with imports across the codebase; the underlying model

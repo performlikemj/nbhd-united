@@ -20,6 +20,12 @@ from __future__ import annotations
 import logging
 import os
 
+from apps.pii.config import (
+    DEFAULT_DETECTOR_ENGINE,
+    SUPPORTED_DETECTOR_ENGINES,
+    resolve_detector_engine,
+)
+
 logger = logging.getLogger(__name__)
 
 _pipeline: object | None = None
@@ -29,8 +35,6 @@ _pipeline_load_error: Exception | None = None
 _pattern_recognizers = None
 
 _DETECTOR_ENGINE_ENV = "PII_DETECTOR_ENGINE"
-_DEFAULT_DETECTOR_ENGINE = "deberta"
-_SUPPORTED_DETECTOR_ENGINES = frozenset({_DEFAULT_DETECTOR_ENGINE, "liquid"})
 _warned_unknown_detector_engines: set[str] = set()
 
 # HuggingFace repo for the PII model. ``lakshyakh93/deberta_finetuned_pii``
@@ -64,20 +68,21 @@ _MODEL_PATH = os.environ.get(
 
 def get_pii_detector_engine() -> str:
     """Return the configured neural engine name, failing safely to DeBERTa."""
-    requested = os.environ.get(_DETECTOR_ENGINE_ENV, _DEFAULT_DETECTOR_ENGINE)
+    requested = os.environ.get(_DETECTOR_ENGINE_ENV, DEFAULT_DETECTOR_ENGINE)
     normalized = requested.strip().lower()
-    if normalized in _SUPPORTED_DETECTOR_ENGINES:
-        return normalized
+    resolved = resolve_detector_engine(requested)
+    if normalized in SUPPORTED_DETECTOR_ENGINES:
+        return resolved
 
     if requested not in _warned_unknown_detector_engines:
         logger.warning(
             "Unknown %s=%r; falling back to %s",
             _DETECTOR_ENGINE_ENV,
             requested,
-            _DEFAULT_DETECTOR_ENGINE,
+            DEFAULT_DETECTOR_ENGINE,
         )
         _warned_unknown_detector_engines.add(requested)
-    return _DEFAULT_DETECTOR_ENGINE
+    return resolved
 
 
 def get_deberta_pii_pipeline():

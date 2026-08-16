@@ -156,6 +156,7 @@ class RuntimeCoreProfileView(APIView):
                 seam="core.runtime.profile.update",
                 writer="runtime",
                 receipts=profile.pii_receipts,
+                defer_detection=True,
             )
             for field, value in authored.items():
                 setattr(profile, field, value)
@@ -228,6 +229,7 @@ class RuntimeMeditationCreateView(APIView):
             model_label="core.MeditationSession",
             seam="core.runtime.meditation.create",
             writer="runtime",
+            defer_detection=True,
         )
 
         # Serialize creation per tenant so repeated runtime calls cannot create

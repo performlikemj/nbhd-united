@@ -7,10 +7,16 @@ from types import SimpleNamespace
 from unittest import skipUnless
 from unittest.mock import Mock, patch
 
+from django.conf import settings
 from django.test import SimpleTestCase
 
 from apps.pii import engine, liquid_engine
-from apps.pii.config import DEBERTA_LABEL_MAP, LIQUID_LABEL_MAP
+from apps.pii.config import (
+    DEBERTA_LABEL_MAP,
+    DEFAULT_DETECTOR_ENGINE,
+    LIQUID_LABEL_MAP,
+    resolve_detector_engine,
+)
 from apps.pii.redactor import redact_text
 
 
@@ -35,6 +41,13 @@ class DetectorEngineSelectionTests(SimpleTestCase):
 
         deberta.assert_called_once_with()
         liquid.assert_not_called()
+
+    def test_settings_and_config_resolver_default_to_deberta(self):
+        self.assertEqual(DEFAULT_DETECTOR_ENGINE, "deberta")
+        self.assertEqual(settings.PII_DETECTOR_ENGINE, "deberta")
+        self.assertEqual(resolve_detector_engine(None), "deberta")
+        self.assertEqual(resolve_detector_engine(""), "deberta")
+        self.assertEqual(resolve_detector_engine("unsupported"), "deberta")
 
     def test_explicit_liquid_engine(self):
         expected = object()
