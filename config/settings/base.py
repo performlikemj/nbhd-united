@@ -8,6 +8,8 @@ from pathlib import Path
 
 import environ
 
+from apps.pii.config import resolve_detector_engine
+
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 env = environ.Env(
@@ -19,6 +21,12 @@ environ.Env.read_env(BASE_DIR / ".env")
 SECRET_KEY = env("SECRET_KEY")
 DEBUG = env("DEBUG")
 ALLOWED_HOSTS = env("ALLOWED_HOSTS")
+
+# Neural PII detector rollout gate. Invalid/blank values fail safely to the
+# established DeBERTa engine; Liquid remains available only by explicit opt-in.
+PII_DETECTOR_ENGINE = resolve_detector_engine(
+    env("PII_DETECTOR_ENGINE", default="deberta"),
+)
 
 # Django 6.1 enforces this cap on request.body reads, including DRF JSON
 # parsing. iOS base64 document uploads legitimately reach ~14.1 MB (a 10 MiB

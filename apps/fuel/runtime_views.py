@@ -228,6 +228,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             model_label="fuel.Workout",
             seam="fuel.runtime.workout.create",
             writer="runtime",
+            defer_detection=True,
         )
 
         try:
@@ -406,6 +407,7 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 seam="fuel.runtime.workout.update",
                 writer="runtime",
                 receipts=workout.pii_receipts,
+                defer_detection=True,
             )
             for field, value in authored.items():
                 setattr(workout, field, value)
@@ -495,6 +497,7 @@ class RuntimeWorkoutSkipView(_FuelResponseGuard, APIView):
             seam="fuel.runtime.workout.skip",
             writer="runtime",
             receipts=workout.pii_receipts,
+            defer_detection=True,
         )
         workout.status = WorkoutStatus.SKIPPED
         workout.skip_reason = authored["skip_reason"]
@@ -546,6 +549,7 @@ class RuntimeWorkoutCompleteView(_FuelResponseGuard, APIView):
                 seam="fuel.runtime.workout.complete",
                 writer="runtime",
                 receipts=workout.pii_receipts,
+                defer_detection=True,
             )
             workout.notes = authored["notes"]
             workout.pii_receipts = receipts
@@ -870,6 +874,7 @@ class RuntimeFuelProfileView(_FuelResponseGuard, APIView):
                 seam="fuel.runtime.profile.update",
                 writer="runtime",
                 receipts=profile.pii_receipts,
+                defer_detection=True,
             )
             for field, value in authored.items():
                 setattr(profile, field, value)
@@ -1026,6 +1031,7 @@ class RuntimeSleepView(APIView):
             model_label="fuel.SleepLog",
             seam="fuel.runtime.sleep.upsert",
             writer="runtime",
+            defer_detection=True,
         )
         entry, created = SleepLog.objects.update_or_create(
             tenant=tenant,
@@ -1329,6 +1335,7 @@ def _author_plan_expansion_inputs(tenant, schedule_json, weeks, week_overrides=N
                 model_label="fuel.Workout",
                 seam=f"fuel.{writer}.plan.expand",
                 writer=writer,
+                defer_detection=writer == "runtime",
             )
     return authored_workouts
 
@@ -1718,6 +1725,7 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             model_label="fuel.WorkoutPlan",
             seam="fuel.runtime.plan.create",
             writer="runtime",
+            defer_detection=True,
         )
         authored_workouts = _author_plan_expansion_inputs(
             tenant,
@@ -1906,6 +1914,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                 seam="fuel.runtime.plan.update",
                 writer="runtime",
                 receipts=plan.pii_receipts,
+                defer_detection=True,
             )
             for field, value in authored.items():
                 setattr(plan, field, value)

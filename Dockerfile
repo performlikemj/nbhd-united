@@ -32,15 +32,16 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # PII detection model (~554 MB, DeBERTa-v3 + ai4privacy, Apache-2.0). Pulled as a
 # frozen layer from our own ACR — NOT from HuggingFace — so deploys never hit HF
-# rate limits (429s used to kill the build). The pii-model:<tag> image is built
-# once by the "Ensure PII model image" step in .github/workflows/ci-cd.yml; bump
-# the tag THERE and HERE together when changing the model. See Dockerfile.pii-model.
+# rate limits (429s used to kill the build). CI builds this content-named tag once
+# from the pinned DeBERTa-only recipe, then reuses it; bump the tag THERE and HERE
+# together when changing the pinned model content.
 # Placed before `COPY . .` so app-code changes never invalidate this layer.
 # Keep production serving offline: a missing baked model must fail during worker
 # warm-up instead of downloading hundreds of MB inside the readiness window.
-ENV PII_MODEL_PATH=/app/pii-model \
+ENV PII_DETECTOR_ENGINE=deberta \
+    PII_MODEL_PATH=/app/pii-model \
     HF_HUB_OFFLINE=1
-COPY --from=nbhdunited.azurecr.io/pii-model:pii-models-v3-deberta-liquid /pii-model /app/pii-model
+COPY --from=nbhdunited.azurecr.io/pii-model:deberta-only-a038061af92047b0 /pii-model /app/pii-model
 
 COPY . .
 

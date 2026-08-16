@@ -32,9 +32,9 @@ class ReportIssueSerializer(serializers.Serializer):
         choices=PlatformIssueLog.Severity.choices,
         default=PlatformIssueLog.Severity.LOW,
     )
-    tool_name = serializers.CharField(max_length=100, required=False, default="")
+    tool_name = serializers.CharField(max_length=100, required=False, allow_blank=True, default="")
     summary = serializers.CharField(max_length=500)
-    detail = serializers.CharField(required=False, default="", max_length=2000)
+    detail = serializers.CharField(required=False, allow_blank=True, default="", max_length=2000)
 
 
 class PlatformIssueReportView(APIView):

@@ -381,6 +381,7 @@ def record_transaction(
         model_label="finance.FinanceTransaction",
         seam="finance.transaction.record",
         writer=writer,
+        defer_detection=writer == "runtime",
     )
 
     with db_transaction.atomic():

@@ -495,6 +495,7 @@ def set_daily_note_sections(
         field="markdown",
         model_label="journal.DailyNote",
         flag_off_legacy_redaction=False,
+        defer_detection=writer == "runtime",
     )
     note.markdown = authored.text
     note.pii_receipts = {**(note.pii_receipts or {}), "markdown": authored.receipt}
@@ -550,6 +551,7 @@ def append_log_to_note(
             field="markdown",
             model_label="journal.DailyNote",
             flag_off_legacy_redaction=False,
+            defer_detection=author == "agent",
         )
         note.markdown = authored.text
         note.pii_receipts = {**(note.pii_receipts or {}), "markdown": authored.receipt}

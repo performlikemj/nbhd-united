@@ -3,19 +3,20 @@
 # transient 429s that otherwise kill the build + deploy with it).
 #
 # The Django Dockerfile consumes this via `COPY --from=<registry>/pii-model:<tag>`.
-# CI's "Ensure PII model image" step (.github/workflows/ci-cd.yml) builds + pushes
-# this only when the tag is missing from ACR, so HuggingFace is hit at most once
-# per tag, ever. To bump the model: change the tag in BOTH this repo's ci-cd.yml
-# and the Django Dockerfile COPY line — the next deploy builds the new tag.
+# The default output is DeBERTa-only. The dormant Liquid bundle remains
+# reproducible via `--build-arg INCLUDE_LIQUID=true`; mint it under a NEW tag and
+# switch the runtime engine in the same coordinated rollout. Never reuse a tag
+# across those two shapes.
 #
 # Models:
 # - lakshyakh93/deberta_finetuned_pii @ a038061af92047b0afbbd5ca07d7aa0521789379
 # - LiquidAI/LFM2.5-Encoder-350M-PII-Detector
 #   @ b8c9cf3d2d6ae52501b35a27ba46f271449c9ce2
 #
-# DeBERTa stays at /pii-model for backwards compatibility; Liquid is nested at
-# /pii-model/liquid. `ignore_patterns` drops only training-state artifacts,
-# never weights, tokenizers, trust_remote_code modeling files, or decode helpers.
+# DeBERTa stays at /pii-model for backwards compatibility. On the explicit dual
+# build, Liquid is nested at /pii-model/liquid. `ignore_patterns` drops only
+# training-state artifacts, never weights, tokenizers, trust_remote_code
+# modeling files, or decode helpers.
 FROM python:3.12-slim AS dl
 
 # Match the huggingface-hub pin in requirements.txt so snapshot_download's API +
@@ -31,12 +32,15 @@ RUN for i in 1 2 3 4 5; do \
     done; \
     echo "HF DeBERTa download failed after 5 attempts" >&2; exit 1
 
-RUN for i in 1 2 3 4 5; do \
-      python -c "from huggingface_hub import snapshot_download; snapshot_download('LiquidAI/LFM2.5-Encoder-350M-PII-Detector', revision='b8c9cf3d2d6ae52501b35a27ba46f271449c9ce2', local_dir='/pii-model/liquid', ignore_patterns=['optimizer.pt', 'rng_state.pth', 'scheduler.pt', 'trainer_state.json', 'training_args.bin', '*.msgpack', '*.h5'])" && exit 0; \
-      echo "HF Liquid download attempt $i failed; retrying in $((i*20))s..."; \
-      sleep $((i*20)); \
-    done; \
-    echo "HF Liquid download failed after 5 attempts" >&2; exit 1
+ARG INCLUDE_LIQUID=false
+RUN if [ "$INCLUDE_LIQUID" = "true" ]; then \
+      for i in 1 2 3 4 5; do \
+        python -c "from huggingface_hub import snapshot_download; snapshot_download('LiquidAI/LFM2.5-Encoder-350M-PII-Detector', revision='b8c9cf3d2d6ae52501b35a27ba46f271449c9ce2', local_dir='/pii-model/liquid', ignore_patterns=['optimizer.pt', 'rng_state.pth', 'scheduler.pt', 'trainer_state.json', 'training_args.bin', '*.msgpack', '*.h5'])" && exit 0; \
+        echo "HF Liquid download attempt $i failed; retrying in $((i*20))s..."; \
+        sleep $((i*20)); \
+      done; \
+      echo "HF Liquid download failed after 5 attempts" >&2; exit 1; \
+    fi
 
 # Final image is just the files — no Python, no base OS — so the layer the Django
 # build pulls is the model and nothing else.

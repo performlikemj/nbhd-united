@@ -39,19 +39,25 @@ Resource group `rg-nbhd-prod`, region `westus2`. Env names in
    once reinstalled the CUDA build and corrupted `transformers` imports — reading
    the version from the file makes that skew impossible.
 2. **PII model as a frozen ACR layer** ([`Dockerfile:34`](../../Dockerfile)):
-   `COPY --from=nbhdunited.azurecr.io/pii-model:pii-models-v3-deberta-liquid`. ~554 MB
-   DeBERTa-v3 + ai4privacy, pulled from *our own* ACR, never HuggingFace, so
-   deploys never hit HF 429s. Placed before `COPY . .` so app changes don't
-   invalidate it. **Bump the tag in `Dockerfile:34` and the CI "Ensure PII model
-   image" step together** ([`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml)) —
-   they must match.
+   `COPY --from=nbhdunited.azurecr.io/pii-model:deberta-only-a038061af92047b0`. ~554 MB
+   DeBERTa-v3 + ai4privacy, pulled into the Django build from *our own* ACR, so
+   ordinary deploys do not hit HF 429s. The first deploy of a new content tag
+   mints that ACR layer from the pinned HF revision. Placed before `COPY . .` so
+   app changes don't invalidate it. The old `deberta-finetuned-pii-v2` alias is
+   not a safe rollback target: the Liquid lane briefly pushed a dual bundle
+   under that name. CI now
+   builds/verifies a content-named DeBERTa-only tag and asserts the Django image
+   has no `/app/pii-model/liquid` directory. **Bump the tag in `Dockerfile:34`
+   and the CI model-image step together** ([`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml)).
 3. `collectstatic` with a placeholder secret key ([`Dockerfile:38`](../../Dockerfile)),
    then `CMD ["./startup.sh"]`. Image is ~2.56 GB by design (PII ML stack).
 
 The PII model itself is built by [`Dockerfile.pii-model`](../../Dockerfile.pii-model):
 a two-stage `snapshot_download` (5× retry/backoff for HF 429s) → `FROM scratch`
 so the layer Django pulls is *only* weights. The repo ships `pytorch_model.bin`
-(no safetensors), so the `.bin` must survive `ignore_patterns`.
+(no safetensors), so the `.bin` must survive `ignore_patterns`. The recipe's
+default is DeBERTa-only; `INCLUDE_LIQUID=true` retains the shelved dual build as
+an explicit opt-in that must use a separate immutable tag.
 
 ### `nbhd-openclaw` — per-tenant runtime ([`Dockerfile.openclaw`](../../Dockerfile.openclaw))
 
@@ -90,7 +96,7 @@ Runs as `USER node`; `ENTRYPOINT` is `nbhd-openclaw-entrypoint`
 |---|---|---|---|
 | `django` | `<github.sha>` (+ `:latest`) | `:latest` moves | [`ci-cd.yml:371`](../../.github/workflows/ci-cd.yml) |
 | `nbhd-openclaw` | `<ocver>-<shortsha>` e.g. `2026.5.28-a1b2c3d` | **never moves; no `:latest`** | [`ci-cd.yml:403`](../../.github/workflows/ci-cd.yml) |
-| `pii-model` | `pii-models-v3-deberta-liquid` | immutable | built once, [`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml) |
+| `pii-model` | `deberta-only-a038061af92047b0` | immutable by convention/content tag | deploy builds once, then verifies, [`ci-cd.yml:355`](../../.github/workflows/ci-cd.yml) |
 
 OpenClaw deliberately has **no `:latest`** ([`ci-cd.yml:404`](../../.github/workflows/ci-cd.yml)):
 a moving tag could pull an unvalidated build into a tenant on the next
@@ -112,7 +118,7 @@ flowchart TD
   M -- no --> STOP[PR checks only; nothing deploys]
   M -- yes --> DB[deploy-backend]
   M -- yes --> DF[deploy-frontend]
-  DB --> B1[ensure pii-model in ACR]
+  DB --> B1[ensure pinned DeBERTa-only pii-model]
   B1 --> B2[build+push django:sha]
   B2 --> B3[PII smoke + golden-set guard]
   B3 --> B4[build+push nbhd-openclaw:ocver-sha]
@@ -144,7 +150,7 @@ broken image never deploys (see [`workflow.md`](../agents/workflow.md)).
 | Plugin packaging guard | `openclaw-config-smoke` | plugin in config but missing from image ([`ci-cd.yml:232`](../../.github/workflows/ci-cd.yml)) | yes |
 | OpenClaw doctor + maximal-flags config strict-validate | `openclaw-config-smoke` | friends + all experimental gates ([`ci-cd.yml:252`](../../.github/workflows/ci-cd.yml)) | yes |
 | redact/chmod/toolcall sidecar `node --test` | `openclaw-config-smoke` | runtime shims + plugin unit tests | yes |
-| Ensure pii-model image | `deploy-backend` | one-time HF pull into ACR | yes |
+| Ensure pinned DeBERTa-only pii-model image | `deploy-backend` | exact DeBERTa revision; Liquid directory absent from serving image | yes |
 | Build+push `django:<sha>` | `deploy-backend` | — | yes |
 | PII stack smoke (`+cpu` torch, weights present) + golden-set | `deploy-backend` | PII regression pre-deploy ([`ci-cd.yml:380`](../../.github/workflows/ci-cd.yml)) | yes |
 | Build+push `nbhd-openclaw:<tag>` | `deploy-backend` | — | yes |

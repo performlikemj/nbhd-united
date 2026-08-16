@@ -14,6 +14,8 @@ import argparse
 import json
 from pathlib import Path
 
+from apps.pii.config import DEFAULT_DETECTOR_ENGINE, SUPPORTED_DETECTOR_ENGINES
+
 _READINESS_PROBE = {
     "failureThreshold": 48,
     "httpGet": {
@@ -50,6 +52,11 @@ def prepare_deployment(
 
     env_entries = container.setdefault("env", [])
     for name, value in environment.items():
+        if name == "PII_DETECTOR_ENGINE":
+            value = value.strip().lower()
+            if value not in SUPPORTED_DETECTOR_ENGINES:
+                supported = ", ".join(sorted(SUPPORTED_DETECTOR_ENGINES))
+                raise ValueError(f"unsupported PII_DETECTOR_ENGINE {value!r}; expected one of: {supported}")
         matching_entries = [entry for entry in env_entries if entry.get("name") == name]
         if len(matching_entries) > 1:
             raise ValueError(f"environment variable {name!r} is defined more than once")
@@ -74,6 +81,11 @@ def main() -> None:
     parser.add_argument("--openclaw-image-tag", required=True)
     parser.add_argument("--sentry-release", required=True)
     parser.add_argument("--django-base-url", required=True)
+    parser.add_argument(
+        "--pii-detector-engine",
+        choices=sorted(SUPPORTED_DETECTOR_ENGINES),
+        default=DEFAULT_DETECTOR_ENGINE,
+    )
     args = parser.parse_args()
 
     app = json.loads(args.spec.read_text())
@@ -85,6 +97,7 @@ def main() -> None:
             "OPENCLAW_IMAGE_TAG": args.openclaw_image_tag,
             "SENTRY_RELEASE": args.sentry_release,
             "DJANGO_BASE_URL": args.django_base_url,
+            "PII_DETECTOR_ENGINE": args.pii_detector_engine,
         },
     )
     args.spec.write_text(json.dumps(app, separators=(",", ":")))

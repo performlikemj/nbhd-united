@@ -147,6 +147,7 @@ class RuntimeFinanceAccountsView(_FinanceResponseGuard, APIView):
             model_label="finance.FinanceAccount",
             seam="finance.runtime.account.upsert",
             writer="runtime",
+            defer_detection=True,
         )
         stored_nickname = authored["nickname"]
 
@@ -477,6 +478,7 @@ class RuntimeFinancePayoffView(APIView):
                 model_label="finance.PayoffPlan",
                 seam="finance.runtime.payoff_plan",
                 writer="runtime",
+                defer_detection=True,
             )
             # Deactivate existing plans
             PayoffPlan.objects.filter(tenant=tenant, is_active=True).update(is_active=False)

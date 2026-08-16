@@ -472,6 +472,7 @@ def apply_reconciliation(
             model_label="fuel.Workout",
             seam=f"fuel.{writer}.plan.reconcile",
             writer=writer,
+            defer_detection=writer == "runtime",
         )
         return authored, receipts
 
@@ -487,6 +488,7 @@ def apply_reconciliation(
             model_label="fuel.Workout",
             seam=f"fuel.{writer}.plan.reconcile",
             writer=writer,
+            defer_detection=writer == "runtime",
         )
         authored_creations.append((spec, authored, receipts))
 

@@ -4,14 +4,23 @@ from datetime import date
 from unittest.mock import patch
 from uuid import UUID
 
-from django.db import DataError
+from django.db import DataError, connection
 from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
 
 from apps.fuel.models import Workout, WorkoutCategory
-from apps.journal.models import JournalEntry, PendingTaskAction, Purpose, Task
+from apps.journal.models import Goal, JournalEntry, PendingTaskAction, Purpose, Task
 from apps.pii.authoring import AuthoredText
 from apps.pii.redactor import RedactionOutcome
-from apps.pii.repair_sweep import MAX_REPAIR_ATTEMPTS, _check_rate_alert, repair_tenant
+from apps.pii.repair_sweep import (
+    DEFAULT_TEXT_BUDGET,
+    MAX_DETECTOR_CALLS_PER_SWEEP,
+    MAX_DETECTOR_CALLS_PER_TEXT,
+    MAX_REPAIR_ATTEMPTS,
+    _check_rate_alert,
+    repair_tenant,
+    sweep_placeholder_repairs,
+)
 from apps.tenants.models import Tenant, User
 
 
@@ -70,7 +79,7 @@ class RepairSweepTests(TestCase):
                 receipt={"state": "placeholder", "redactions": redactions, "writer": "background"},
             )
 
-        with patch("apps.pii.authoring.author_text", side_effect=authored) as author:
+        with patch("apps.pii.repair_sweep.author_text", side_effect=authored) as author:
             first = repair_tenant(self.tenant, alert=False)
             second = repair_tenant(self.tenant, alert=False)
 
@@ -106,7 +115,7 @@ class RepairSweepTests(TestCase):
                 receipt={"state": "placeholder", "redactions": redactions, "writer": "background"},
             )
 
-        with patch("apps.pii.authoring.author_text", side_effect=authored) as author:
+        with patch("apps.pii.repair_sweep.author_text", side_effect=authored) as author:
             first = repair_tenant(self.tenant, alert=False)
             second = repair_tenant(self.tenant, alert=False)
 
@@ -129,6 +138,91 @@ class RepairSweepTests(TestCase):
         self.assertEqual(second["fields_attempted"], 0)
         self.assertEqual(author.call_count, 3)
         self.assertTrue(all(call.kwargs["model_label"] == "fuel.Workout" for call in author.call_args_list))
+
+    def test_recursive_json_converges_across_hard_bounded_chunks_without_data_loss(self):
+        workout = Workout.objects.create(
+            tenant=self.tenant,
+            date=date(2026, 8, 9),
+            category=WorkoutCategory.OTHER,
+            activity="Circuit",
+            detail_json={"one": "Alice 1", "two": "Alice 2", "three": ["Alice 3", "Alice 4", "Alice 5"]},
+            pii_receipts={"detail_json": {"state": "unconfirmed", "reason": "detector-deferred"}},
+        )
+
+        def authored(_tenant, text, **_kwargs):
+            return AuthoredText(
+                text=text.replace("Alice", "[PERSON_1]"),
+                receipt={
+                    "state": "placeholder",
+                    "redactions": [{"placeholder": "[PERSON_1]"}],
+                    "writer": "background",
+                },
+            )
+
+        with patch("apps.pii.repair_sweep.author_text", side_effect=authored) as author:
+            first = repair_tenant(self.tenant, max_texts=2, alert=False)
+            workout.refresh_from_db()
+            first_value = workout.detail_json
+            first_receipt = workout.pii_receipts["detail_json"]
+
+            second = repair_tenant(self.tenant, max_texts=2, alert=False)
+            workout.refresh_from_db()
+            second_value = workout.detail_json
+            second_receipt = workout.pii_receipts["detail_json"]
+
+            third = repair_tenant(self.tenant, max_texts=2, alert=False)
+
+        workout.refresh_from_db()
+        self.assertEqual(first["texts_authored"], 2)
+        self.assertEqual(second["texts_authored"], 2)
+        self.assertEqual(third["texts_authored"], 1)
+        self.assertEqual(first_receipt["reason"], "repair-batch-partial")
+        self.assertEqual(first_receipt["repair_progress"]["cursor"], 2)
+        self.assertNotIn("repair_attempts", first_receipt)
+        self.assertEqual(second_receipt["reason"], "repair-batch-partial")
+        self.assertEqual(second_receipt["repair_progress"]["cursor"], 4)
+        self.assertNotIn("repair_attempts", second_receipt)
+        self.assertEqual(first_value["one"], "[PERSON_1] 1")
+        self.assertEqual(first_value["two"], "[PERSON_1] 2")
+        self.assertEqual(first_value["three"], ["Alice 3", "Alice 4", "Alice 5"])
+        self.assertEqual(second_value["three"], ["[PERSON_1] 3", "[PERSON_1] 4", "Alice 5"])
+        self.assertEqual(
+            workout.detail_json,
+            {
+                "one": "[PERSON_1] 1",
+                "two": "[PERSON_1] 2",
+                "three": ["[PERSON_1] 3", "[PERSON_1] 4", "[PERSON_1] 5"],
+            },
+        )
+        self.assertEqual(workout.pii_receipts["detail_json"]["state"], "placeholder")
+        self.assertNotIn("repair_progress", workout.pii_receipts["detail_json"])
+        self.assertNotIn("repair_attempts", workout.pii_receipts["detail_json"])
+        self.assertEqual(author.call_count, 5)
+
+    def test_text_budget_spans_multiple_flat_fields_on_one_row(self):
+        task = Task.objects.create(
+            tenant=self.tenant,
+            title="raw title",
+            description="raw description",
+            pii_receipts={
+                "title": {"state": "unconfirmed"},
+                "description": {"state": "unconfirmed"},
+            },
+        )
+
+        def repaired(_tenant, text, **_kwargs):
+            return AuthoredText(text=f"fixed {text}", receipt={"state": "placeholder", "redactions": []})
+
+        with patch("apps.pii.repair_sweep.author_text", side_effect=repaired) as author:
+            first = repair_tenant(self.tenant, max_texts=1, alert=False)
+            second = repair_tenant(self.tenant, max_texts=1, alert=False)
+
+        task.refresh_from_db()
+        self.assertEqual(first["texts_authored"], 1)
+        self.assertEqual(second["texts_authored"], 1)
+        self.assertEqual(task.title, "fixed raw title")
+        self.assertEqual(task.description, "fixed raw description")
+        self.assertEqual(author.call_count, 2)
 
     def test_shape_mismatch_terminalizes_after_bounded_persisted_attempts(self):
         purpose = Purpose.objects.create(
@@ -319,6 +413,235 @@ class RepairSweepTests(TestCase):
         self.assertEqual(poison.pii_receipts["title"]["repair_attempts"], MAX_REPAIR_ATTEMPTS)
         self.assertEqual(good.title, "fixed good")
 
+    def test_concurrent_request_write_wins_after_detector_work(self):
+        task = Task.objects.create(
+            tenant=self.tenant,
+            title="stale raw",
+            pii_receipts={"title": {"state": "unconfirmed", "reason": "detector-deferred"}},
+        )
+
+        def concurrent_write(_tenant, _text, **_kwargs):
+            Task.objects.filter(pk=task.pk).update(
+                title="request won",
+                pii_receipts={"title": {"state": "unconfirmed", "reason": "new-request"}},
+            )
+            return AuthoredText(text="sweep result", receipt={"state": "placeholder", "redactions": []})
+
+        with patch("apps.pii.repair_sweep.author_text", side_effect=concurrent_write):
+            result = repair_tenant(self.tenant, alert=False)
+
+        task.refresh_from_db()
+        self.assertEqual(task.title, "request won")
+        self.assertEqual(task.pii_receipts["title"]["reason"], "new-request")
+        self.assertEqual(result["conflicts"], 1)
+        self.assertEqual(result["fields_repaired"], 0)
+        self.assertEqual(result["texts_authored"], 1)
+
+    def test_save_failure_fallback_also_respects_concurrent_request_write(self):
+        task = Task.objects.create(
+            tenant=self.tenant,
+            title="stale raw",
+            pii_receipts={"title": {"state": "unconfirmed", "reason": "detector-deferred"}},
+        )
+        repaired = AuthoredText(text="sweep result", receipt={"state": "placeholder", "redactions": []})
+
+        def fail_after_request_write(*_args, **_kwargs):
+            Task.objects.filter(pk=task.pk).update(
+                title="request won",
+                pii_receipts={"title": {"state": "placeholder", "reason": "new-request"}},
+            )
+            raise DataError("simulated stale save")
+
+        with (
+            patch("apps.pii.repair_sweep.author_text", return_value=repaired),
+            patch("apps.pii.repair_sweep._save_if_unchanged", side_effect=fail_after_request_write),
+        ):
+            result = repair_tenant(self.tenant, alert=False)
+
+        task.refresh_from_db()
+        self.assertEqual(task.title, "request won")
+        self.assertEqual(task.pii_receipts["title"]["reason"], "new-request")
+        self.assertEqual(result["errors"], 1)
+        self.assertEqual(result["conflicts"], 1)
+        self.assertEqual(result["fields_repaired"], 0)
+
+    def test_store_rotation_reaches_later_registry_stores_under_one_text_budget(self):
+        task = Task.objects.create(
+            tenant=self.tenant,
+            title="task raw",
+            pii_receipts={"title": {"state": "unconfirmed"}},
+        )
+        goal = Goal.objects.create(
+            tenant=self.tenant,
+            title="goal raw",
+            pii_receipts={"title": {"state": "unconfirmed"}},
+        )
+        repaired = AuthoredText(text="fixed", receipt={"state": "placeholder", "redactions": []})
+
+        with patch("apps.pii.repair_sweep.author_text", return_value=repaired):
+            result = repair_tenant(self.tenant, max_texts=1, store_offset=1, alert=False)
+
+        task.refresh_from_db()
+        goal.refresh_from_db()
+        self.assertEqual(result["texts_authored"], 1)
+        self.assertEqual(goal.title, "fixed")
+        self.assertEqual(task.title, "task raw")
+
+    def test_capacity_stepped_tenant_rotation_reaches_high_ids_across_ticks(self):
+        self.tenant.layer1_placeholder_writes = False
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        tenant_ids = []
+        for index in range(6):
+            user = User.objects.create_user(username=f"repair-fair-{index}", password="x")
+            tenant = Tenant.objects.create(
+                id=UUID(int=100 + index),
+                user=user,
+                status=Tenant.Status.ACTIVE,
+                layer1_placeholder_writes=True,
+            )
+            tenant_ids.append(tenant.id)
+            Task.objects.create(
+                tenant=tenant,
+                title=f"raw {index}",
+                pii_receipts={"title": {"state": "unconfirmed"}},
+            )
+
+        def repaired(_tenant, text, **_kwargs):
+            return AuthoredText(text=f"fixed {text}", receipt={"state": "placeholder", "redactions": []})
+
+        with (
+            patch("apps.pii.repair_sweep.author_text", side_effect=repaired) as author,
+            patch("apps.pii.repair_sweep._check_rate_alert", return_value=False),
+        ):
+            for tick in range(3):
+                result = sweep_placeholder_repairs(
+                    batch_size=2,
+                    text_budget=2,
+                    tenant_batch_size=1,
+                    tenant_text_budget=1,
+                    fairness_tick=tick,
+                )
+                self.assertEqual(result["texts_authored"], 2)
+
+        repaired_tenants = {
+            row.tenant_id
+            for row in Task.objects.filter(tenant_id__in=tenant_ids).only("tenant_id", "title")
+            if row.title.startswith("fixed")
+        }
+        self.assertEqual(repaired_tenants, set(tenant_ids))
+        self.assertEqual(author.call_count, 6)
+        self.assertEqual(MAX_DETECTOR_CALLS_PER_TEXT, 2)
+        self.assertEqual(MAX_DETECTOR_CALLS_PER_SWEEP, DEFAULT_TEXT_BUDGET * MAX_DETECTOR_CALLS_PER_TEXT)
+
+    def test_fleet_rotation_loads_only_ids_before_fetching_one_tenant_payload(self):
+        result = {
+            "rows_seen": 1,
+            "fields_attempted": 1,
+            "texts_authored": 1,
+            "fields_repaired": 1,
+            "unconfirmed": 0,
+            "residual": 0,
+            "terminal": 0,
+            "conflicts": 0,
+            "errors": 0,
+        }
+        with (
+            patch("apps.pii.repair_sweep.repair_tenant", return_value=result) as repair,
+            CaptureQueriesContext(connection) as queries,
+        ):
+            sweep_placeholder_repairs(
+                batch_size=1,
+                text_budget=1,
+                tenant_batch_size=1,
+                tenant_text_budget=1,
+                fairness_tick=0,
+            )
+
+        self.assertEqual(len(queries), 3)
+        self.assertNotIn("pii_entity_map", queries[0]["sql"].lower())
+        self.assertNotIn("pii_entity_map", queries[1]["sql"].lower())
+        self.assertIn("pii_entity_map", queries[2]["sql"].lower())
+        self.assertEqual(repair.call_args.args[0].pk, self.tenant.pk)
+
+    def test_nonpositive_per_tenant_budget_returns_without_querying(self):
+        with self.assertNumQueries(0):
+            result = sweep_placeholder_repairs(tenant_text_budget=0)
+
+        self.assertEqual(result["rows_seen"], 0)
+        self.assertEqual(result["texts_authored"], 0)
+
+    def test_oversized_sweep_arguments_cannot_raise_hard_caps(self):
+        for index in range(4):
+            user = User.objects.create_user(username=f"repair-cap-{index}", password="x")
+            Tenant.objects.create(
+                user=user,
+                status=Tenant.Status.ACTIVE,
+                layer1_placeholder_writes=True,
+            )
+
+        def consume_budget(_tenant, *, max_rows, max_texts, **_kwargs):
+            self.assertLessEqual(max_rows, 4)
+            self.assertLessEqual(max_texts, 4)
+            return {
+                "rows_seen": max_rows,
+                "fields_attempted": max_texts,
+                "texts_authored": max_texts,
+                "fields_repaired": max_texts,
+                "unconfirmed": 0,
+                "residual": 0,
+                "terminal": 0,
+                "conflicts": 0,
+                "errors": 0,
+            }
+
+        with patch("apps.pii.repair_sweep.repair_tenant", side_effect=consume_budget) as repair:
+            result = sweep_placeholder_repairs(
+                batch_size=10_000,
+                text_budget=10_000,
+                tenant_batch_size=10_000,
+                tenant_text_budget=10_000,
+                fairness_tick=0,
+            )
+
+        self.assertEqual(result["rows_seen"], 16)
+        self.assertEqual(result["texts_authored"], 16)
+        self.assertEqual(repair.call_count, 4)
+
+    def test_empty_fleet_scan_is_tenant_bounded_and_rotates_next_hour(self):
+        self.tenant.layer1_placeholder_writes = False
+        self.tenant.save(update_fields=["layer1_placeholder_writes"])
+        tenant_ids = []
+        for index in range(7):
+            user = User.objects.create_user(username=f"repair-empty-{index}", password="x")
+            tenant = Tenant.objects.create(
+                id=UUID(int=200 + index),
+                user=user,
+                status=Tenant.Status.ACTIVE,
+                layer1_placeholder_writes=True,
+            )
+            tenant_ids.append(tenant.id)
+        no_work = {
+            "rows_seen": 0,
+            "fields_attempted": 0,
+            "texts_authored": 0,
+            "fields_repaired": 0,
+            "unconfirmed": 0,
+            "residual": 0,
+            "terminal": 0,
+            "conflicts": 0,
+            "errors": 0,
+        }
+
+        with patch("apps.pii.repair_sweep.repair_tenant", return_value=no_work) as repair:
+            sweep_placeholder_repairs(fairness_tick=0)
+            first_ids = [call.args[0].pk for call in repair.call_args_list]
+            repair.reset_mock()
+            sweep_placeholder_repairs(fairness_tick=1)
+            second_ids = [call.args[0].pk for call in repair.call_args_list]
+
+        self.assertEqual(first_ids, tenant_ids[:4])
+        self.assertEqual(second_ids, [*tenant_ids[4:], tenant_ids[0]])
+
     def test_reauthor_truncation_prevents_poison_row_from_wedging_sweep(self):
         task = Task.objects.create(
             tenant=self.tenant,
@@ -425,5 +748,5 @@ class RepairSweepTests(TestCase):
         from apps.cron.management.commands.register_system_crons import SYSTEM_CRONS
 
         entry = next(item for item in SYSTEM_CRONS if item[0] == "placeholder-repair-sweep")
-        self.assertEqual(entry[1], "0 * * * *")
+        self.assertEqual(entry[1], "13 * * * *")
         self.assertEqual(entry[2], "/api/cron/trigger/placeholder_repair_sweep/")

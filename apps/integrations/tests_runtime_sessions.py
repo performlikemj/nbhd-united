@@ -239,7 +239,8 @@ class RuntimeSessionMarkProcessedViewTest(TestCase):
         self.session.refresh_from_db()
         self.assertEqual(self.session.processed_summary, placeholder_summary)
         self.assertEqual(self.session.pii_receipts["processed_summary"]["writer"], "runtime")
-        self.assertEqual(self.session.pii_receipts["processed_summary"]["state"], "placeholder")
+        self.assertEqual(self.session.pii_receipts["processed_summary"]["state"], "unconfirmed")
+        self.assertEqual(self.session.pii_receipts["processed_summary"]["reason"], "detector-deferred")
 
     def test_idempotent_when_already_processed(self):
         first = self.client.post(

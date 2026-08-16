@@ -1002,16 +1002,19 @@ export default function register(api) {
         const input = asObject(params);
         const summary = asTrimmedString(input.summary);
         if (!summary) throw new Error("summary is required");
+        const toolName = asTrimmedString(input.tool_name);
+        const detail = asTrimmedString(input.detail);
+        const body = {
+          category: asTrimmedString(input.category) || "other",
+          severity: asTrimmedString(input.severity) || "low",
+          summary,
+        };
+        if (toolName) body.tool_name = toolName;
+        if (detail) body.detail = detail;
         const payload = await callRuntime(api, {
           path: tenantPath(api, "/platform-issue/report/"),
           method: "POST",
-          body: {
-            category: asTrimmedString(input.category) || "other",
-            severity: asTrimmedString(input.severity) || "low",
-            tool_name: asTrimmedString(input.tool_name),
-            summary,
-            detail: asTrimmedString(input.detail),
-          },
+          body,
         });
         return renderPayload(payload);
       },

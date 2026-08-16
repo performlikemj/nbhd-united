@@ -45,6 +45,7 @@ env:
   RESOURCE_GROUP: rg-nbhd-prod
   DJANGO_APP: nbhd-django-westus2
   SWA_NAME: nbhd-united-frontend
+  PII_DETECTOR_ENGINE: deberta
 
 # Serialize the pipeline so concurrent merges can never race the production
 # deploy. The app runs in single-revision mode (Telegram poller 409 avoidance),
@@ -429,27 +430,27 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         run: az acr login --name ${{ env.REGISTRY }}
 
-      # The PII model is cached as an immutable layer in our own ACR so the Django
-      # build below never re-pulls it from HuggingFace (HF 429s used to fail the
-      # deploy). This step only touches HF when the tag is missing — i.e. once per
-      # tag, ever. Bump PII_MODEL_TAG here + the COPY line in Dockerfile together.
-      - name: Ensure PII model image
+      # This content tag names the pinned DeBERTa revision and the default
+      # DeBERTa-only recipe shape. The old v2 alias was briefly overwritten by
+      # the dual-model lane, so it is not a safe rollback target. Bump this tag
+      # and the COPY line in Dockerfile together when the pinned content changes.
+      - name: Ensure pinned DeBERTa-only PII model image
         if: steps.freshness.outputs.superseded != 'true'
         run: |
           # Keep this consumer tag matched to the Django Dockerfile (two-place rule).
-          PII_MODEL_TAG=pii-models-v3-deberta-liquid
-          if az acr repository show \
+          PII_MODEL_TAG=deberta-only-a038061af92047b0
+          if ! az acr repository show \
               --name ${{ env.REGISTRY }} \
               --image pii-model:${PII_MODEL_TAG} >/dev/null 2>&1; then
-            echo "pii-model:${PII_MODEL_TAG} already in ACR — skipping HuggingFace download"
-          else
-            echo "pii-model:${PII_MODEL_TAG} missing — building from HuggingFace (one-time)"
+            echo "pii-model:${PII_MODEL_TAG} missing — building the pinned DeBERTa-only artifact"
             docker build --platform linux/amd64 \
+              --build-arg INCLUDE_LIQUID=false \
               -f Dockerfile.pii-model \
               -t ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_TAG} \
               .
             docker push ${{ env.REGISTRY }}.azurecr.io/pii-model:${PII_MODEL_TAG}
           fi
+          echo "Pinned DeBERTa-only pii-model:${PII_MODEL_TAG} is available in ACR."
 
       - name: Build and push Django image
         if: steps.freshness.outputs.superseded != 'true'
@@ -464,13 +465,12 @@ jobs:
       - name: Smoke-test PII stack in Django image
         if: steps.freshness.outputs.superseded != 'true'
         run: |
-          # Guards two regressions that have shipped before: (1) torch reinstalled
-          # as the CUDA wheel (loses +cpu) which corrupts transformers' AutoModel
-          # imports; (2) the pii-model layer carrying no weights file. Fail here,
-          # before deploy, rather than as a silent PII degrade in prod.
+          # Guards three regressions that have shipped before: (1) torch
+          # reinstalled as the CUDA wheel; (2) a weightless model layer; (3) the
+          # shelved Liquid bundle leaking back into the serving Django image.
           docker run --rm --entrypoint python \
             ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
-            -c "import os, torch; assert '+cpu' in torch.__version__, f'torch is not the CPU build: {torch.__version__}'; from transformers import AutoModelForTokenClassification; files = os.listdir('/app/pii-model'); assert any(f.endswith(('.bin', '.safetensors')) for f in files), f'no model weights in /app/pii-model: {files}'; print('PII smoke OK:', torch.__version__, '| weights:', [f for f in files if f.endswith(('.bin', '.safetensors'))])"
+            -c "import os, torch; assert '+cpu' in torch.__version__, f'torch is not the CPU build: {torch.__version__}'; from transformers import AutoModelForTokenClassification; files = os.listdir('/app/pii-model'); assert any(f.endswith(('.bin', '.safetensors')) for f in files), f'no model weights in /app/pii-model: {files}'; assert not os.path.exists('/app/pii-model/liquid'), 'shelved Liquid bundle present in serving image'; print('PII smoke OK:', torch.__version__, '| weights:', [f for f in files if f.endswith(('.bin', '.safetensors'))])"
 
           # Golden-set regression guard: run the REAL detect+filter chain over
           # apps/pii/golden_set.json against the model baked into the image.
@@ -564,7 +564,8 @@ jobs:
             --image ${{ env.REGISTRY }}.azurecr.io/django:${{ github.sha }} \
             --openclaw-image-tag ${{ env.OC_IMAGE_TAG }} \
             --sentry-release ${{ github.sha }} \
-            --django-base-url https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io
+            --django-base-url https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io \
+            --pii-detector-engine ${{ env.PII_DETECTOR_ENGINE }}
           az containerapp update \
             --name ${{ env.DJANGO_APP }} \
             --resource-group ${{ env.RESOURCE_GROUP }} \

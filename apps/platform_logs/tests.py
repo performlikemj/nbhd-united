@@ -127,6 +127,22 @@ class PlatformIssueReportTests(TestCase):
         self.assertEqual(resp2.status_code, 201)
         self.assertEqual(PlatformIssueLog.objects.count(), 2)
 
+    def test_explicit_blank_detail_is_accepted(self):
+        """Old runtime images send an explicit blank for omitted detail."""
+        payload = {**self.valid_payload, "detail": ""}
+        resp = self.client.post(self.url, payload, format="json", **self.headers)
+        self.assertEqual(resp.status_code, 201)
+        issue = PlatformIssueLog.objects.get(id=resp.json()["id"])
+        self.assertEqual(issue.detail, "")
+
+    def test_explicit_blank_tool_name_is_accepted(self):
+        """tool_name is optional in the API and blank at the model layer."""
+        payload = {**self.valid_payload, "tool_name": "", "detail": "diagnostic context"}
+        resp = self.client.post(self.url, payload, format="json", **self.headers)
+        self.assertEqual(resp.status_code, 201)
+        issue = PlatformIssueLog.objects.get(id=resp.json()["id"])
+        self.assertEqual(issue.tool_name, "")
+
     def _set_entity_map(self, entity_map: dict) -> None:
         self.tenant.pii_entity_map = entity_map
         self.tenant.save(update_fields=["pii_entity_map"])

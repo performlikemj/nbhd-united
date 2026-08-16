@@ -1358,6 +1358,7 @@ def create_device_command(
             model_label="datebook.DeviceCommand",
             seam="datebook.runtime.command.create",
             writer="runtime",
+            defer_detection=True,
         )
         try:
             command = DeviceCommand.objects.create(
