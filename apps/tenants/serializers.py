@@ -117,6 +117,7 @@ class TenantSerializer(serializers.ModelSerializer):
             "finance_enabled",
             "gravity_available",
             "fuel_enabled",
+            "datebook_enabled",
             "core_enabled",
             "constellation_enabled",
             "friends_enabled",
