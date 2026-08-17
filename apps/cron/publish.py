@@ -39,32 +39,54 @@ def _publish_log_context(task_name: str, args, kwargs):
 # surfacing as a generic 400 deep inside the SDK.
 _DEDUP_FORBIDDEN = (":", " ", "\t", "\n", "\r")
 
-QSTASH_CONNECT_TIMEOUT_SECONDS = 2.5
-QSTASH_READ_TIMEOUT_SECONDS = 1.0
-QSTASH_WRITE_TIMEOUT_SECONDS = 1.0
+QSTASH_CONNECT_TIMEOUT_SECONDS = 1.0
+QSTASH_WRITE_TIMEOUT_SECONDS = 0.25
+QSTASH_BATCH_WRITE_TIMEOUT_SECONDS = 1.0
 QSTASH_POOL_TIMEOUT_SECONDS = 0.25
+QSTASH_REQUEST_TOTAL_TIMEOUT_SECONDS = 4.0
 QSTASH_TOTAL_TIMEOUT_SECONDS = 10.0
 QSTASH_PUBLISH_RETRIES = 1
 QSTASH_RETRY_BACKOFF_MS = 100
 
-# One QStash client per (process, token). Constructing a client per publish
+# The SDK sleeps after every failed attempt, including the last. Derive the
+# read allowances so the phase limits and backoff enforce real wall budgets:
+# request = 1 * (1 + 2.5 + .25 + .25) = 4s; batch = 2 * (1 + 2.65 + 1 + .25 + .1) = 10s.
+QSTASH_READ_TIMEOUT_SECONDS = QSTASH_REQUEST_TOTAL_TIMEOUT_SECONDS - (
+    QSTASH_CONNECT_TIMEOUT_SECONDS + QSTASH_WRITE_TIMEOUT_SECONDS + QSTASH_POOL_TIMEOUT_SECONDS
+)
+QSTASH_BATCH_READ_TIMEOUT_SECONDS = QSTASH_TOTAL_TIMEOUT_SECONDS / (1 + QSTASH_PUBLISH_RETRIES) - (
+    QSTASH_CONNECT_TIMEOUT_SECONDS
+    + QSTASH_BATCH_WRITE_TIMEOUT_SECONDS
+    + QSTASH_POOL_TIMEOUT_SECONDS
+    + QSTASH_RETRY_BACKOFF_MS / 1000
+)
+
+# One QStash client per (process, token, publish profile). Constructing a
+# client per publish
 # re-handshakes TLS to Upstash (~150-400ms) inside the request that called
 # publish_task — pure per-message latency. httpx.Client (used internally by
 # the SDK) is thread-safe, so sharing across gthread workers is fine.
 _qstash_client: tuple[str, Any] | None = None
+_qstash_batch_client: tuple[str, Any] | None = None
 
 
-def _get_qstash_client(token: str):
-    global _qstash_client
-    if _qstash_client is None or _qstash_client[0] != token:
+def _get_qstash_client(token: str, *, batch: bool = False):
+    global _qstash_batch_client, _qstash_client
+    cached = _qstash_batch_client if batch else _qstash_client
+    if cached is None or cached[0] != token:
         from qstash import QStash
 
-        client = QStash(
-            token=token,
-            retry={
+        retry = (
+            {
                 "retries": QSTASH_PUBLISH_RETRIES,
                 "backoff": lambda _attempt: QSTASH_RETRY_BACKOFF_MS,
-            },
+            }
+            if batch
+            else False
+        )
+        client = QStash(
+            token=token,
+            retry=retry,
         )
         # qstash-py 3.4 does not expose timeout injection. Replace its private
         # transport client explicitly: the SDK default is 5s connect, 600s for
@@ -73,13 +95,17 @@ def _get_qstash_client(token: str):
         client.http._client = httpx.Client(
             timeout=httpx.Timeout(
                 connect=QSTASH_CONNECT_TIMEOUT_SECONDS,
-                read=QSTASH_READ_TIMEOUT_SECONDS,
-                write=QSTASH_WRITE_TIMEOUT_SECONDS,
+                read=QSTASH_BATCH_READ_TIMEOUT_SECONDS if batch else QSTASH_READ_TIMEOUT_SECONDS,
+                write=QSTASH_BATCH_WRITE_TIMEOUT_SECONDS if batch else QSTASH_WRITE_TIMEOUT_SECONDS,
                 pool=QSTASH_POOL_TIMEOUT_SECONDS,
             )
         )
-        _qstash_client = (token, client)
-    return _qstash_client[1]
+        cached = (token, client)
+        if batch:
+            _qstash_batch_client = cached
+        else:
+            _qstash_client = cached
+    return cached[1]
 
 
 def publish_task(
@@ -213,7 +239,7 @@ def publish_batch(
         return count
 
     try:
-        client = _get_qstash_client(qstash_token)
+        client = _get_qstash_client(qstash_token, batch=True)
         messages = []
         for task in tasks:
             task_name, args, kwargs = task[0], task[1], task[2]

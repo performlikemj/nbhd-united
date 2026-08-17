@@ -959,6 +959,29 @@ class TriggerTaskArgValidationTest(TestCase):
         mock_task.assert_called_once_with("fake-tenant-uuid")
 
     @patch("apps.cron.views.verify_qstash_signature", return_value=True)
+    def test_task_failure_logs_one_error_event_with_traceback(self, mock_verify):
+        with (
+            patch(
+                "apps.tenants.tasks.reset_daily_counters_task",
+                autospec=True,
+                side_effect=RuntimeError("task exploded"),
+            ),
+            self.assertLogs("apps.cron.views", level="ERROR") as logs,
+        ):
+            response = self.client.post(
+                "/api/v1/cron/trigger/reset_daily_counters/",
+                data=b"",
+                content_type="application/json",
+            )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.json()["error"], "task exploded")
+        self.assertEqual(len(logs.records), 1)
+        self.assertEqual(logs.records[0].levelname, "ERROR")
+        self.assertIn("Task reset_daily_counters failed", logs.records[0].getMessage())
+        self.assertIsNotNone(logs.records[0].exc_info)
+
+    @patch("apps.cron.views.verify_qstash_signature", return_value=True)
     def test_too_many_positional_args_returns_400(self, mock_verify):
         with patch("apps.orchestrator.tasks.apply_single_tenant_config_task", autospec=True) as mock_task:
             response = self.client.post(
