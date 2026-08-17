@@ -1821,11 +1821,13 @@ def drain_pending_messages_for_tenant_task(
 
     except Exception as exc:
         container_down = _delivery_failure_has_down_container(tenant, exc)
-        if container_down:
+        proxy_gateway_down = _delivery_failure_is_proxy_gateway_down(exc)
+        recoverable_boot_failure = container_down or proxy_gateway_down
+        if recoverable_boot_failure:
             # Idle hibernation can race a drain that loaded the tenant just
             # before hibernated_at was stamped. Refresh the two recovery fields
-            # after the failed POST so timeout-family failures see the current
-            # wake/hibernate state.
+            # after the failed POST so container-down and proxy-gateway failures
+            # see the current wake/hibernate state.
             try:
                 tenant.refresh_from_db(fields=["hibernated_at", "last_wake_at"])
             except Exception:
@@ -1901,21 +1903,24 @@ def drain_pending_messages_for_tenant_task(
                 )
 
         # Boot grace: the container was woken moments ago (this drain or the
-        # webhook path) and its replica isn't serving yet. Not the message's
-        # fault — release the lease, keep the attempt counters, retry soon.
+        # webhook path) and either its replica or the gateway behind its proxy
+        # isn't serving yet. Not the message's fault — release the lease, keep
+        # the attempt counters, retry soon.
         # Without this, the shorter _WAKE_DEFER_SECONDS would burn all
         # _MAX_DELIVERY_ATTEMPTS during a slow cold boot.
         if (
-            container_down
+            recoverable_boot_failure
             and tenant.last_wake_at is not None
             and (timezone.now() - tenant.last_wake_at).total_seconds() < _WAKE_BOOT_GRACE_SECONDS
         ):
             for row in batch:
                 row.delivery_in_flight_until = None
                 row.save(update_fields=["delivery_in_flight_until"])
+            boot_state = "gateway still booting behind proxy" if proxy_gateway_down else "still booting after wake"
             logger.info(
-                "drain_pending: tenant %s still booting after wake — deferring drain %ds (no attempt burned)",
+                "drain_pending: tenant %s %s — deferring drain %ds (no attempt burned)",
                 tenant_id[:8],
+                boot_state,
                 _WAKE_DEFER_SECONDS,
             )
             _mark_ios_waking(channel, batch)
@@ -2134,6 +2139,18 @@ def _delivery_failure_has_down_container(tenant: Tenant, exc: Exception) -> bool
     if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)):
         return not _is_tenant_container_live(tenant)
     return False
+
+
+def _delivery_failure_is_proxy_gateway_down(exc: Exception) -> bool:
+    """Detect the tenant proxy's structured gateway-unreachable response."""
+    try:
+        if not isinstance(exc, httpx.HTTPStatusError) or exc.response.status_code != 502:
+            return False
+        body = exc.response.json()
+        return isinstance(body, dict) and body.get("error") == "bad_gateway"
+    except Exception:
+        # Defensive — malformed/unreadable responses stay generic failures.
+        return False
 
 
 def _notify_waking(tenant: Tenant, channel: str, channel_user_id: str) -> None:
