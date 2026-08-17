@@ -559,8 +559,7 @@ def trigger_task(request, task_name):
             }
         )
     except Exception as e:
-        logger.error("[%s] Task %s failed: %s", execution_id, task_name, e)
-        logger.error(traceback.format_exc())
+        logger.exception("[%s] Task %s failed", execution_id, task_name)
         return JsonResponse(
             {
                 "status": "error",

@@ -23,37 +23,57 @@ from apps.cron.publish import publish_batch, publish_task
 
 class QStashClientBoundsTest(TestCase):
     def tearDown(self):
-        if publish._qstash_client is not None:
-            publish._qstash_client[1].http._client.close()
+        for cached in (publish._qstash_client, publish._qstash_batch_client):
+            if cached is not None:
+                cached[1].http._client.close()
         publish._qstash_client = None
+        publish._qstash_batch_client = None
         super().tearDown()
 
     @patch("qstash.QStash")
-    def test_cached_client_pins_timeout_and_one_quick_retry(self, qstash_cls):
-        sdk_client = Mock()
-        original_httpx_client = Mock()
-        sdk_client.http._client = original_httpx_client
-        qstash_cls.return_value = sdk_client
+    def test_cached_clients_pin_request_and_batch_timeout_budgets(self, qstash_cls):
+        request_client = Mock()
+        request_original_httpx_client = Mock()
+        request_client.http._client = request_original_httpx_client
+        batch_client = Mock()
+        batch_original_httpx_client = Mock()
+        batch_client.http._client = batch_original_httpx_client
+        qstash_cls.side_effect = [request_client, batch_client]
 
-        self.assertIs(publish._get_qstash_client("token"), sdk_client)
+        self.assertIs(publish._get_qstash_client("token"), request_client)
+        self.assertIs(publish._get_qstash_client("token", batch=True), batch_client)
 
-        retry = qstash_cls.call_args.kwargs["retry"]
-        self.assertEqual(retry["retries"], 1)
-        self.assertEqual(retry["backoff"](0), 100)
-        original_httpx_client.close.assert_called_once_with()
+        self.assertIs(qstash_cls.call_args_list[0].kwargs["retry"], False)
+        retry = qstash_cls.call_args_list[1].kwargs["retry"]
+        self.assertEqual(retry["retries"], publish.QSTASH_PUBLISH_RETRIES)
+        self.assertEqual(retry["backoff"](0), publish.QSTASH_RETRY_BACKOFF_MS)
+        request_original_httpx_client.close.assert_called_once_with()
+        batch_original_httpx_client.close.assert_called_once_with()
 
-        timeout = sdk_client.http._client.timeout
-        self.assertEqual(timeout.connect, 2.5)
-        self.assertEqual(timeout.read, 1.0)
-        self.assertEqual(timeout.write, 1.0)
-        self.assertEqual(timeout.pool, 0.25)
-
-        attempts = 1 + retry["retries"]
-        worst_case_seconds = (
-            attempts * (timeout.connect + timeout.read + timeout.write + timeout.pool)
-            + attempts * retry["backoff"](0) / 1000
+        request_timeout = request_client.http._client.timeout
+        self.assertEqual(request_timeout.connect, 1.0)
+        self.assertEqual(request_timeout.read, 2.5)
+        self.assertEqual(request_timeout.write, 0.25)
+        self.assertEqual(request_timeout.pool, 0.25)
+        self.assertEqual(
+            request_timeout.connect + request_timeout.read + request_timeout.write + request_timeout.pool,
+            publish.QSTASH_REQUEST_TOTAL_TIMEOUT_SECONDS,
         )
-        self.assertLessEqual(worst_case_seconds, publish.QSTASH_TOTAL_TIMEOUT_SECONDS)
+
+        batch_timeout = batch_client.http._client.timeout
+        self.assertEqual(batch_timeout.connect, 1.0)
+        self.assertEqual(batch_timeout.read, 2.65)
+        self.assertEqual(batch_timeout.write, 1.0)
+        self.assertEqual(batch_timeout.pool, 0.25)
+        attempts = 1 + retry["retries"]
+        worst_case_seconds = attempts * (
+            batch_timeout.connect
+            + batch_timeout.read
+            + batch_timeout.write
+            + batch_timeout.pool
+            + retry["backoff"](0) / 1000
+        )
+        self.assertAlmostEqual(worst_case_seconds, publish.QSTASH_TOTAL_TIMEOUT_SECONDS)
 
 
 class IdempotencyKeyValidatorTest(TestCase):
