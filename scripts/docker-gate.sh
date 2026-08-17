@@ -3,6 +3,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+DOCKER_GATE_CACHE_DIR="${DOCKER_GATE_CACHE:-$HOME/.cache/nbhd-docker-gate}"
 SNAPSHOT=""
 NETWORK=""
 POSTGRES_CONTAINER=""
@@ -113,7 +114,7 @@ rm -rf /var/lib/apt/lists/*
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 pip install "ruff==0.15.21"
-python -m spacy download en_core_web_sm
+pip install --no-deps https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl || python -m spacy download en_core_web_sm
 
 echo "--- Run ruff lint ---"
 ruff check .
@@ -197,6 +198,7 @@ BACKEND_SCRIPT
     --name "$BACKEND_CONTAINER" \
     --network "container:$POSTGRES_CONTAINER" \
     --mount "type=bind,source=$SNAPSHOT,target=/repo,readonly" \
+    --volume "$DOCKER_GATE_CACHE_DIR/pip:/root/.cache/pip" \
     --workdir /workspace \
     python:3.12 \
     bash -euo pipefail -c "$backend_script"
@@ -223,6 +225,7 @@ FRONTEND_SCRIPT
   docker run --rm \
     --name "$FRONTEND_CONTAINER" \
     --mount "type=bind,source=$SNAPSHOT,target=/repo,readonly" \
+    --volume "$DOCKER_GATE_CACHE_DIR/npm:/root/.npm" \
     --workdir /workspace \
     node:22 \
     bash -euo pipefail -c "$frontend_script"
@@ -234,6 +237,10 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 if ! docker info >/dev/null 2>&1; then
   echo "Docker daemon is unavailable." >&2
+  exit 1
+fi
+if ! mkdir -p "$DOCKER_GATE_CACHE_DIR/pip" "$DOCKER_GATE_CACHE_DIR/npm"; then
+  echo "Failed to create docker-gate cache directories." >&2
   exit 1
 fi
 if ! create_snapshot; then
