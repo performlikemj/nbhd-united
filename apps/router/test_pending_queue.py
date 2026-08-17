@@ -1531,12 +1531,12 @@ class PendingMessageColdStartCoalesceTest(TestCase):
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-key")
 class WakeBootGraceTest(TestCase):
-    """Container-down errors shortly after a hibernation wake mean "still
-    booting", not "delivery failed": the drain must release the lease,
+    """Container-down and proxy gateway-down errors shortly after a wake mean
+    "still booting", not "delivery failed": the drain must release the lease,
     keep the attempt counters (cap is only 3; OpenClaw cold boots can take
-    30-150s), and retry shortly. Past the grace window a down container is
-    a real failure again. iOS turns get ``waking_at`` stamped so polling
-    clients can show honest wake copy instead of indefinite typing dots."""
+    30-150s), and retry shortly. Past the grace window they are real failures
+    again. iOS turns get ``waking_at`` stamped so polling clients can show
+    honest wake copy instead of indefinite typing dots."""
 
     @staticmethod
     def _container_404(url, *args, **kwargs):
@@ -1553,6 +1553,14 @@ class WakeBootGraceTest(TestCase):
         ok.is_success = True
         ok.status_code = 200
         return ok
+
+    @staticmethod
+    def _proxy_502(body):
+        request = httpx.Request(
+            "POST",
+            "https://oc-pq.example.com/v1/chat/completions",
+        )
+        return httpx.Response(502, json=body, request=request)
 
     @patch("apps.cron.publish.publish_task")
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
@@ -1736,6 +1744,131 @@ class WakeBootGraceTest(TestCase):
 
         msg.refresh_from_db()
         self.assertEqual(msg.delivery_attempts, 1)
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.router.pending_queue._looks_like_openrouter_credit_limit", return_value=False)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_proxy_gateway_502_during_boot_grace_defers_without_attempt_burn(
+        self, mock_post, _mock_credit, mock_publish
+    ):
+        mock_post.return_value = self._proxy_502(
+            {
+                "error": "bad_gateway",
+                "detail": "upstream 18789 unreachable",
+            }
+        )
+
+        user = _make_user(line_user_id="U_proxy_booting")
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(
+            hibernated_at=None,
+            last_wake_at=timezone.now() - timedelta(seconds=30),
+        )
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_proxy_booting",
+            payload={
+                "message_text": "are you awake?",
+                "user_param": "U_proxy_booting",
+                "user_timezone": "UTC",
+            },
+            user_text="are you awake?",
+        )
+
+        with self.assertLogs("apps.router.pending_queue", level="INFO") as logs:
+            result = drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_proxy_booting")
+
+        self.assertTrue(result.get("booting"))
+        self.assertTrue(any("gateway still booting behind proxy" in line for line in logs.output))
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_status, PendingMessage.Status.PENDING)
+        self.assertEqual(msg.delivery_attempts, 0)
+        self.assertIsNone(msg.delivery_in_flight_until)
+        drain_calls = [
+            call
+            for call in mock_publish.call_args_list
+            if call.args and call.args[0] == "drain_pending_messages_for_tenant"
+        ]
+        self.assertEqual(drain_calls[-1].kwargs.get("delay_seconds"), _WAKE_DEFER_SECONDS)
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.router.pending_queue._looks_like_openrouter_credit_limit", return_value=False)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_proxy_gateway_502_after_boot_grace_keeps_bounded_failure_semantics(
+        self, mock_post, _mock_credit, mock_publish
+    ):
+        mock_post.return_value = self._proxy_502(
+            {
+                "error": "bad_gateway",
+                "detail": "upstream 18789 unreachable",
+            }
+        )
+
+        user = _make_user(line_user_id="U_proxy_failed")
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(
+            hibernated_at=None,
+            last_wake_at=timezone.now() - timedelta(seconds=_WAKE_BOOT_GRACE_SECONDS + 60),
+        )
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_proxy_failed",
+            payload={
+                "message_text": "are you there?",
+                "user_param": "U_proxy_failed",
+                "user_timezone": "UTC",
+            },
+            user_text="are you there?",
+        )
+
+        with self.assertRaises(RuntimeError):
+            drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_proxy_failed")
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_attempts, 1)
+        self.assertIsNone(msg.delivery_in_flight_until)
+        mock_publish.assert_not_called()
+
+    @patch("apps.cron.publish.publish_task")
+    @patch("apps.router.pending_queue._looks_like_openrouter_credit_limit", return_value=False)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_nonmatching_502_during_boot_grace_keeps_bounded_failure_semantics(
+        self, mock_post, _mock_credit, mock_publish
+    ):
+        mock_post.return_value = self._proxy_502(
+            {
+                "error": "maintenance",
+                "detail": "temporary failure",
+            }
+        )
+
+        user = _make_user(line_user_id="U_other_502")
+        tenant = _make_tenant(user)
+        Tenant.objects.filter(id=tenant.id).update(
+            hibernated_at=None,
+            last_wake_at=timezone.now() - timedelta(seconds=30),
+        )
+        msg = PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_other_502",
+            payload={
+                "message_text": "try this",
+                "user_param": "U_other_502",
+                "user_timezone": "UTC",
+            },
+            user_text="try this",
+        )
+
+        with self.assertRaises(RuntimeError):
+            drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_other_502")
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.delivery_attempts, 1)
+        self.assertIsNone(msg.delivery_in_flight_until)
+        mock_publish.assert_not_called()
 
     @patch("apps.cron.publish.publish_task")
     @patch("apps.orchestrator.hibernation.wake_hibernated_tenant")
