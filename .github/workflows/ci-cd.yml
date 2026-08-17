@@ -127,7 +127,7 @@ jobs:
           # unpinned release broke main with zero code changes on 2026-07-25. Bump the pin
           # and reformat the repo together in the same deliberate-chore PR.
           pip install "ruff==0.15.21"
-          python -m spacy download en_core_web_sm
+          pip install --no-deps https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl || python -m spacy download en_core_web_sm
 
       - name: Run ruff lint
         run: ruff check .
