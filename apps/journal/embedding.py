@@ -10,6 +10,8 @@ import logging
 import re
 from datetime import date
 
+from django.db import transaction
+
 from apps.journal.models import Document, DocumentChunk
 from apps.tenants.models import Tenant
 
@@ -80,13 +82,9 @@ def embed_daily_note(tenant: Tenant, for_date: date) -> int:
     # Prefix each chunk with date for context
     dated_chunks = [f"[{for_date}] {chunk}" for chunk in raw_chunks]
 
-    # Delete old chunks for this document (idempotent re-embedding)
-    deleted, _ = DocumentChunk.objects.filter(document=doc).delete()
-    if deleted:
-        logger.info("embed: deleted %d old chunks for doc %s", deleted, str(doc.id)[:8])
-
-    # Embed and create chunks
-    created = 0
+    # Prepare embeddings before opening the replacement transaction. External
+    # calls must not hold a database transaction or its document-row lock.
+    new_chunks = []
     for i, chunk_text in enumerate(dated_chunks):
         try:
             from apps.pii.authoring import author_text
@@ -120,16 +118,29 @@ def embed_daily_note(tenant: Tenant, for_date: date) -> int:
             logger.exception("embed: failed to embed chunk %d for tenant %s", i, str(tenant.id)[:8])
             continue
 
-        DocumentChunk.objects.create(
-            tenant=tenant,
-            document=doc,
-            chunk_index=i,
-            text=authored.text,
-            pii_receipts={"text": authored.receipt},
-            embedding=embedding,
-            source_date=for_date,
+        new_chunks.append(
+            DocumentChunk(
+                tenant=tenant,
+                document=doc,
+                chunk_index=i,
+                text=authored.text,
+                pii_receipts={"text": authored.receipt},
+                embedding=embedding,
+                source_date=for_date,
+            )
         )
-        created += 1
 
+    # Serialize replacements for this document, and make deletion plus insert
+    # one atomic operation. A database failure cannot leave a partial
+    # replacement, and overlapping runs cannot collide on the unique key.
+    with transaction.atomic():
+        Document.objects.select_for_update().get(pk=doc.pk)
+        deleted, _ = DocumentChunk.objects.filter(document=doc).delete()
+        DocumentChunk.objects.bulk_create(new_chunks)
+
+    if deleted:
+        logger.info("embed: deleted %d old chunks for doc %s", deleted, str(doc.id)[:8])
+
+    created = len(new_chunks)
     logger.info("embed: created %d chunks for tenant %s date %s", created, str(tenant.id)[:8], for_date)
     return created
