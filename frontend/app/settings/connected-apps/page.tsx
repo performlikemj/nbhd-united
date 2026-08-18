@@ -209,7 +209,26 @@ function Modal({
 type Preset = "yardtalk" | "custom";
 type Step = "preset" | "form" | "reveal";
 
-const ALL_SCOPES: PATScope[] = ["sessions:write", "sessions:read"];
+const ALL_SCOPES: PATScope[] = ["sessions:write", "sessions:read", "yardtalk:read"];
+
+const SCOPE_INFO: Record<PATScope, { label: string; grants: string }> = {
+  "sessions:write": {
+    label: "Push sessions",
+    grants: "POST /api/v1/sessions/create/ — push work sessions",
+  },
+  "sessions:read": {
+    label: "Read sessions back",
+    grants: "GET /api/v1/sessions/ — read your sessions back",
+  },
+  "yardtalk:read": {
+    label: "Read YardTalk membership status",
+    grants: "GET /api/v1/yardtalk/entitlement/ — read YardTalk membership status",
+  },
+};
+
+// YardTalk pushes sessions AND checks membership on every launch; a token
+// without yardtalk:read leaves the app stuck asking you to re-link.
+const YARDTALK_SCOPES: PATScope[] = ["sessions:write", "yardtalk:read"];
 
 const EXPIRY_OPTIONS: { label: string; value: number | null }[] = [
   { label: "Never", value: null },
@@ -223,7 +242,7 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
   const [step, setStep] = useState<Step>("preset");
   const [preset, setPreset] = useState<Preset>("yardtalk");
   const [name, setName] = useState("YardTalk");
-  const [scopes, setScopes] = useState<PATScope[]>(["sessions:write"]);
+  const [scopes, setScopes] = useState<PATScope[]>(YARDTALK_SCOPES);
   const [expiresInDays, setExpiresInDays] = useState<number | null>(null);
   const [minted, setMinted] = useState<PATCreateResponse | null>(null);
   const [copied, setCopied] = useState(false);
@@ -233,7 +252,7 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
     setStep("preset");
     setPreset("yardtalk");
     setName("YardTalk");
-    setScopes(["sessions:write"]);
+    setScopes(YARDTALK_SCOPES);
     setExpiresInDays(null);
     setMinted(null);
     setCopied(false);
@@ -253,7 +272,7 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
     setPreset(p);
     if (p === "yardtalk") {
       setName("YardTalk");
-      setScopes(["sessions:write"]);
+      setScopes(YARDTALK_SCOPES);
       setExpiresInDays(null);
     } else {
       setName("");
@@ -321,7 +340,8 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
             >
               <span className="font-headline text-base font-semibold text-ink">YardTalk</span>
               <span className="mt-1 text-xs text-ink-muted">
-                macOS app. Pushes work-session summaries with screen-recording context.
+                macOS app. Pushes work-session summaries with screen-recording context, and checks
+                your membership status.
               </span>
             </button>
             <button
@@ -402,7 +422,7 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
                         />
                         <span className="font-mono text-xs">{scope}</span>
                         <span className="text-xs text-ink-faint">
-                          {scope === "sessions:write" ? "Push sessions" : "Read sessions back"}
+                          {SCOPE_INFO[scope].label}
                         </span>
                       </label>
                     );
@@ -505,7 +525,7 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
             </div>
           </div>
 
-          <SetupInstructions preset={preset} />
+          <SetupInstructions preset={preset} scopes={minted.scopes} />
 
           {errorMsg ? (
             <p className="mt-4 rounded-xl border border-rose-border bg-rose-bg px-4 py-2.5 text-sm text-rose-text">
@@ -528,7 +548,7 @@ function ConnectAppModal({ open, onClose }: { open: boolean; onClose: () => void
   );
 }
 
-function SetupInstructions({ preset }: { preset: Preset }) {
+function SetupInstructions({ preset, scopes }: { preset: Preset; scopes: PATScope[] }) {
   if (preset === "yardtalk") {
     return (
       <div className="mt-5 rounded-panel border border-border bg-surface-elevated p-4 text-sm text-ink-muted">
@@ -543,8 +563,18 @@ function SetupInstructions({ preset }: { preset: Preset }) {
   }
   return (
     <div className="mt-5 rounded-panel border border-border bg-surface-elevated p-4 text-sm text-ink-muted">
-      <p className="font-medium text-ink">Push a session</p>
-      <pre className="mt-2 overflow-x-auto rounded-lg bg-bg/60 p-3 font-mono text-[11px] text-ink">
+      <p className="font-medium text-ink">What this token can do</p>
+      <ul className="mt-2 list-inside list-disc space-y-1 text-xs">
+        {scopes.map((scope) => (
+          <li key={scope}>{SCOPE_INFO[scope]?.grants ?? scope}</li>
+        ))}
+      </ul>
+      {/* The curl only works with sessions:write — showing it to a read-only
+          token would hand the user a request that 403s. */}
+      {scopes.includes("sessions:write") ? (
+        <>
+          <p className="mt-4 font-medium text-ink">Push a session</p>
+          <pre className="mt-2 overflow-x-auto rounded-lg bg-bg/60 p-3 font-mono text-[11px] text-ink">
 {`curl -X POST https://nbhd.example.com/api/v1/sessions/create/ \\
   -H "Authorization: Bearer pat_…" \\
   -H "Idempotency-Key: $(uuidgen)" \\
@@ -557,7 +587,9 @@ function SetupInstructions({ preset }: { preset: Preset }) {
     "session_end":   "2026-04-28T15:00:00Z",
     "summary": "what got done"
   }'`}
-      </pre>
+          </pre>
+        </>
+      ) : null}
     </div>
   );
 }
