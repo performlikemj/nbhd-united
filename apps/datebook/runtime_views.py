@@ -118,9 +118,71 @@ def _scope_status(tenant: Tenant, gateway: DatebookGateway | None, scope: str) -
 def _display_summary(command_type: str, payload: dict) -> str:
     labels = [item["title"] for item in payload["items"]]
     noun = "calendar event" if command_type == DeviceCommand.CommandType.CALENDAR_CREATE else "Apple Reminder"
+    recurrence_lines = [_recurrence_summary(item.get("recurrence")) for item in payload["items"]]
+    if any(recurrence_lines):
+        if len(labels) == 1:
+            return f"Create {noun}: {labels[0]}\n{recurrence_lines[0]}"
+
+        header = f"Create {len(labels)} {noun}s:\n"
+        rules = [line or "Does not repeat" for line in recurrence_lines]
+        fixed_length = len(header) + sum(len(f"{index}. {rule} — ") for index, rule in enumerate(rules, 1))
+        fixed_length += len(rules) - 1
+        title_budget = max(0, (500 - fixed_length) // len(labels))
+        lines = [
+            f"{index}. {rule} — {_bounded_summary_title(label, title_budget)}"
+            for index, (label, rule) in enumerate(zip(labels, rules, strict=True), 1)
+        ]
+        return header + "\n".join(lines)
     if len(labels) == 1:
         return f"Create {noun}: {labels[0]}"[:500]
     return f"Create {len(labels)} {noun}s: {', '.join(labels)}"[:500]
+
+
+def _bounded_summary_title(title: str, limit: int) -> str:
+    if len(title) <= limit:
+        return title
+    if limit <= 1:
+        return "…"[:limit]
+    head_length = (limit - 1) // 2
+    tail_length = limit - 1 - head_length
+    return f"{title[:head_length]}…{title[-tail_length:]}"
+
+
+def _recurrence_summary(recurrence) -> str:
+    if not isinstance(recurrence, dict):
+        return ""
+    frequency = recurrence["freq"]
+    interval = recurrence.get("interval", 1)
+    if interval == 1:
+        text = f"Repeats {frequency}"
+    else:
+        units = {
+            "daily": "days",
+            "weekly": "weeks",
+            "monthly": "months",
+            "yearly": "years",
+        }
+        text = f"Repeats every {interval} {units[frequency]}"
+
+    weekdays = recurrence.get("weekdays")
+    if weekdays:
+        labels = {
+            "mo": "Mon",
+            "tu": "Tue",
+            "we": "Wed",
+            "th": "Thu",
+            "fr": "Fri",
+            "sa": "Sat",
+            "su": "Sun",
+        }
+        text += f" on {', '.join(labels[day] for day in weekdays)}"
+
+    end = recurrence["end"]
+    if end["type"] == "count":
+        return f"{text} ×{end['count']}"
+    if end["type"] == "until":
+        return f"{text} until {end['date']}"
+    return f"{text} (no end)"
 
 
 class RuntimeAgendaView(_DatebookRuntimeView):
