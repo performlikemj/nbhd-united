@@ -99,13 +99,6 @@ def _already_removed(exc: GatewayError) -> bool:
     return "not found" in message or "no such" in message or "missing id" in message
 
 
-def _is_oc_tool_error_500(exc: GatewayError) -> bool:
-    if exc.status_code != 500:
-        return False
-    message = str(exc).lower()
-    return "tool_error" in message or "tool execution failed" in message
-
-
 def _sweep_ghost_jobs(
     tenant,
     jobs: list[dict],
@@ -152,17 +145,49 @@ def _sweep_ghost_jobs(
             try:
                 cron_remove(tenant, job_id=job_id)
             except GatewayError as exc:
-                if _already_removed(exc):
+                if attempt == 2 and _already_removed(exc):
                     swept += 1
                     break
-                if _is_oc_tool_error_500(exc) and attempt == 1:
+
+                if attempt == 1:
+                    try:
+                        verify_result = invoke_gateway_tool(
+                            tenant,
+                            "cron.list",
+                            {"includeDisabled": True},
+                        )
+                    except GatewayError as verify_exc:
+                        logger.warning(
+                            "cron_ghost_sweep_verify_failed tenant=%s job=%s name=%s "
+                            "remove_status=%s list_status=%s attempt=1/2",
+                            tenant.id,
+                            job_id,
+                            job.get("name") or "",
+                            exc.status_code,
+                            verify_exc.status_code,
+                        )
+                    else:
+                        live_ids = {_live_job_id(live_job) for live_job in _extract_live_jobs(verify_result)}
+                        if job_id not in live_ids:
+                            swept += 1
+                            logger.info(
+                                "cron_ghost_sweep_remove_converged tenant=%s job=%s name=%s remove_status=%s",
+                                tenant.id,
+                                job_id,
+                                job.get("name") or "",
+                                exc.status_code,
+                            )
+                            break
+
                     logger.warning(
-                        "cron_ghost_sweep_remove_retry tenant=%s job=%s name=%s status=500 attempt=1/2",
+                        "cron_ghost_sweep_remove_retry tenant=%s job=%s name=%s status=%s attempt=1/2",
                         tenant.id,
                         job_id,
                         job.get("name") or "",
+                        exc.status_code,
                     )
                     continue
+
                 failed += 1
                 logger.warning(
                     "cron_ghost_sweep_remove_failed tenant=%s job=%s name=%s status=%s attempt=%s/2",
