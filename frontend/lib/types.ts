@@ -917,7 +917,7 @@ export interface FuelProfile {
 }
 
 // Personal Access Tokens (Connected Apps)
-export type PATScope = "sessions:write" | "sessions:read";
+export type PATScope = "sessions:write" | "sessions:read" | "yardtalk:read";
 
 export interface PersonalAccessToken {
   id: string;

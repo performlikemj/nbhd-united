@@ -201,6 +201,26 @@ class PATManagementTest(TestCase):
             ["sessions:read", "sessions:write"],
         )
 
+    def test_create_pat_with_yardtalk_read_scope(self):
+        """The YardTalk console preset mints sessions:write + yardtalk:read.
+
+        Why: yardtalk:read gates GET /api/v1/yardtalk/entitlement/. A mint that
+        silently drops it hands the macOS app a token that 403s forever, which
+        surfaces as a permanent "re-link your nbhd account" warning.
+        """
+        response = self.client.post(
+            "/api/v1/auth/tokens/create/",
+            {"name": "YardTalk", "scopes": ["sessions:write", "yardtalk:read"]},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(
+            sorted(response.json()["scopes"]),
+            ["sessions:write", "yardtalk:read"],
+        )
+        pat = PersonalAccessToken.objects.get(id=response.json()["id"])
+        self.assertEqual(sorted(pat.scopes), ["sessions:write", "yardtalk:read"])
+
     def test_create_pat_rejects_unknown_scope(self):
         response = self.client.post(
             "/api/v1/auth/tokens/create/",

@@ -55,8 +55,11 @@ cited source, not inferred from docstrings.
 `PersonalAccessToken.scopes` (`apps/tenants/pat_models.py:53`) is a
 user-visible JSONField (shown in the token-creation UI,
 `apps/tenants/pat_views.py:90`), restricted at creation to
-`ALLOWED_PAT_SCOPES = {"sessions:write", "sessions:read"}`
-(`apps/tenants/permissions.py:12`). The enforcement class `HasPATScope`
+`ALLOWED_PAT_SCOPES = {"sessions:write", "sessions:read", "yardtalk:read"}`
+(`apps/tenants/permissions.py:12`) — `yardtalk:read` gates
+`GET /api/v1/yardtalk/entitlement/` via `HasYardTalkReadScope`
+(`permissions.py:42`), the membership check the YardTalk macOS app runs.
+The enforcement class `HasPATScope`
 (`permissions.py:15`) is explicit that **JWT requests bypass scope checks
 entirely** (`:24-29`, "JWT requests pass through") — by design, since a JWT
 represents full session-level access. That's correct for JWT. The problem is
