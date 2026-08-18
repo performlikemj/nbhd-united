@@ -37,6 +37,26 @@ def is_mock() -> bool:
 _provisioner_credential = None
 _container_client = None
 
+_OPENCLAW_PROXY_PORT = 8080
+_OPENCLAW_READINESS_PATH = "/proxy-health"
+
+
+def _gateway_readiness_probe_payload() -> dict[str, Any]:
+    """Return the readiness-only probe used by new tenant containers."""
+    return {
+        "type": "Readiness",
+        "httpGet": {
+            "path": _OPENCLAW_READINESS_PATH,
+            "port": _OPENCLAW_PROXY_PORT,
+            "scheme": "HTTP",
+        },
+        "initialDelaySeconds": 3,
+        "periodSeconds": 5,
+        "timeoutSeconds": 2,
+        "failureThreshold": 3,
+        "successThreshold": 1,
+    }
+
 
 def _get_provisioner_credential():
     """Get credential for the provisioning identity (elevated permissions).
@@ -1247,6 +1267,12 @@ def create_container_app(
                         # uses settings.OPENCLAW_IMAGE_TAG; this was the lone gap.
                         "image": f"{settings.AZURE_ACR_SERVER}/nbhd-openclaw:{settings.OPENCLAW_IMAGE_TAG}",
                         "resources": {"cpu": 0.5, "memory": "1.0Gi"},
+                        # Gateway reachability affects readiness, not liveness:
+                        # transient listener outages must drain traffic without
+                        # creating a restart loop. Azure continues to supply its
+                        # default TCP startup and liveness probes for the two
+                        # probe types omitted here.
+                        "probes": [_gateway_readiness_probe_payload()],
                         "env": [
                             {"name": "ANTHROPIC_API_KEY", "secretRef": "anthropic-key"},
                             {"name": "OPENAI_API_KEY", "secretRef": "openai-key"},
@@ -1716,6 +1742,37 @@ def _ensure_index_cache_in_template(app) -> bool:
     return _ensure_empty_dir_mount_in_template(app, _INDEX_CACHE_VOLUME, _INDEX_CACHE_PATH)
 
 
+def _ensure_gateway_readiness_probe_in_template(app) -> None:
+    """Put the strict gateway check on readiness during fleet image bumps."""
+    from azure.mgmt.appcontainers.models import ContainerAppProbe, ContainerAppProbeHttpGet
+
+    for container in app.template.containers:
+        if container.name != "openclaw":
+            continue
+
+        probes = list(getattr(container, "probes", None) or [])
+        probes = [
+            probe for probe in probes if str(getattr(probe, "type", "")).lower().rsplit(".", 1)[-1] != "readiness"
+        ]
+        probes.append(
+            ContainerAppProbe(
+                type="Readiness",
+                http_get=ContainerAppProbeHttpGet(
+                    path=_OPENCLAW_READINESS_PATH,
+                    port=_OPENCLAW_PROXY_PORT,
+                    scheme="HTTP",
+                ),
+                initial_delay_seconds=3,
+                period_seconds=5,
+                timeout_seconds=2,
+                failure_threshold=3,
+                success_threshold=1,
+            )
+        )
+        container.probes = probes
+        break
+
+
 def ensure_plugin_runtime_deps_mount(container_name: str) -> bool:
     """Idempotently add the plugin-runtime-deps EmptyDir mount to an
     existing Container App.
@@ -1755,8 +1812,8 @@ def update_container_image(container_name: str, image: str) -> None:
     """Update the container image of an existing Container App.
 
     This triggers a new revision, effectively restarting the container.
-    Also ensures the plugin-runtime-deps EmptyDir mount is present so
-    image bumps roll out the volume fix in the same revision.
+    Also ensures the EmptyDir mounts and gateway readiness probe are present
+    so fleet image bumps roll out the template fixes in the same revision.
     """
     import hashlib
 
@@ -1777,6 +1834,7 @@ def update_container_image(container_name: str, image: str) -> None:
 
     _ensure_plugin_runtime_deps_in_template(app)
     _ensure_index_cache_in_template(app)
+    _ensure_gateway_readiness_probe_in_template(app)
 
     # Generate a unique revision suffix from the image tag to avoid
     # "revision with suffix already exists" errors.

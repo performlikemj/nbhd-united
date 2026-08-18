@@ -95,6 +95,24 @@ class AzureClientTest(SimpleTestCase):
         # sets after every deploy), NOT a hardcoded ``:latest`` — which never
         # exists in ACR and caused MANIFEST_UNKNOWN on every fresh provision.
         self.assertEqual(container["image"], "nbhdunited.azurecr.io/nbhd-openclaw:2026.5.28-test")
+        self.assertEqual(
+            container["probes"],
+            [
+                {
+                    "type": "Readiness",
+                    "httpGet": {
+                        "path": "/proxy-health",
+                        "port": 8080,
+                        "scheme": "HTTP",
+                    },
+                    "initialDelaySeconds": 3,
+                    "periodSeconds": 5,
+                    "timeoutSeconds": 2,
+                    "failureThreshold": 3,
+                    "successThreshold": 1,
+                }
+            ],
+        )
 
         env_entries = container["env"]
         env_map = {entry["name"]: entry for entry in env_entries}
@@ -425,6 +443,13 @@ class UpdateContainerImageTest(SimpleTestCase):
         )
 
         self.assertEqual(container.image, "nbhdunited.azurecr.io/nbhd-openclaw:abc123")
+        self.assertEqual(len(container.probes), 1)
+        readiness = container.probes[0]
+        self.assertEqual(readiness.type, "Readiness")
+        self.assertEqual(readiness.http_get.path, "/proxy-health")
+        self.assertEqual(readiness.http_get.port, 8080)
+        self.assertEqual(readiness.timeout_seconds, 2)
+        self.assertEqual(readiness.failure_threshold, 3)
         mock_client.container_apps.get.assert_called_once_with("rg-test", "oc-tenant")
         mock_client.container_apps.begin_create_or_update.assert_called_once_with(
             "rg-test",
