@@ -1093,7 +1093,7 @@ def _command_request_digest(command_type, payload, display_text, destination_nam
 
 
 def _walk_prohibited_payload(value) -> None:
-    prohibited = {"attendees", "invitees", "recurrence", "recurrence_rule", "url", "urls"}
+    prohibited = {"attendees", "invitees", "recurrence_rule", "url", "urls"}
     if isinstance(value, dict):
         if prohibited.intersection(value):
             raise ProtocolError("unsupported_command_field")
@@ -1107,7 +1107,10 @@ def _walk_prohibited_payload(value) -> None:
 
 
 def _command_date(value, code: str):
-    parsed = parse_date(value) if isinstance(value, str) else None
+    try:
+        parsed = parse_date(value) if isinstance(value, str) else None
+    except ValueError:
+        parsed = None
     if parsed is None or parsed.isoformat() != value:
         raise ProtocolError(code)
     return parsed
@@ -1193,6 +1196,75 @@ def _validate_command_alarm(value) -> dict:
     return dict(value)
 
 
+def _command_item_start_date(item: dict):
+    tagged = item.get("time") or item.get("due")
+    if not isinstance(tagged, dict):
+        return None
+    kind = tagged.get("kind")
+    if kind == "all_day":
+        raw = tagged.get("start_date") or tagged.get("date")
+        return _command_date(raw, "invalid_recurrence")
+    if kind == "zoned":
+        raw = tagged.get("start_at") or tagged.get("due_at")
+        return _command_datetime(raw, "invalid_recurrence", aware=True).date()
+    if kind == "floating":
+        raw = tagged.get("start_local") or tagged.get("due_local")
+        return _command_datetime(raw, "invalid_recurrence", aware=False).date()
+    return None
+
+
+def _validate_command_recurrence(value, *, start_date) -> dict:
+    if not isinstance(value, dict):
+        raise ProtocolError("invalid_recurrence")
+    _walk_prohibited_payload(value)
+    if not {"freq", "end"}.issubset(value) or not set(value).issubset({"freq", "interval", "weekdays", "end"}):
+        raise ProtocolError("invalid_recurrence")
+
+    frequency = value["freq"]
+    if not isinstance(frequency, str) or frequency not in {"daily", "weekly", "monthly", "yearly"}:
+        raise ProtocolError("invalid_recurrence")
+
+    if "interval" in value:
+        interval = value["interval"]
+        if isinstance(interval, bool) or not isinstance(interval, int) or not 1 <= interval <= 99:
+            raise ProtocolError("invalid_recurrence")
+
+    if "weekdays" in value:
+        weekdays = value["weekdays"]
+        valid_weekdays = {"mo", "tu", "we", "th", "fr", "sa", "su"}
+        if (
+            frequency != "weekly"
+            or not isinstance(weekdays, list)
+            or not 1 <= len(weekdays) <= 7
+            or any(not isinstance(day, str) or day not in valid_weekdays for day in weekdays)
+            or len(set(weekdays)) != len(weekdays)
+        ):
+            raise ProtocolError("invalid_recurrence")
+
+    end = value["end"]
+    if not isinstance(end, dict):
+        raise ProtocolError("invalid_recurrence")
+    end_type = end.get("type")
+    if end_type == "count":
+        if set(end) != {"type", "count"}:
+            raise ProtocolError("invalid_recurrence")
+        count = end["count"]
+        if isinstance(count, bool) or not isinstance(count, int) or not 2 <= count <= 366:
+            raise ProtocolError("invalid_recurrence")
+    elif end_type == "until":
+        if set(end) != {"type", "date"}:
+            raise ProtocolError("invalid_recurrence")
+        until = _command_date(end["date"], "invalid_recurrence")
+        if start_date is None or until < start_date:
+            raise ProtocolError("invalid_recurrence")
+    elif end_type == "never":
+        if set(end) != {"type"}:
+            raise ProtocolError("invalid_recurrence")
+    else:
+        raise ProtocolError("invalid_recurrence")
+    return dict(value)
+
+
 def _command_due_from_absolute_alarm(value) -> dict | None:
     """Derive a dated reminder from an explicit absolute alarm when due is omitted."""
 
@@ -1226,6 +1298,7 @@ def _validate_command_payload(payload, *, command_type=None) -> tuple[dict, int]
         "due",
         "priority",
         "alarm",
+        "recurrence",
     }
     cleaned_items = []
     for item in items:
@@ -1269,6 +1342,11 @@ def _validate_command_payload(payload, *, command_type=None) -> tuple[dict, int]
             cleaned["due"] = _validate_command_due(cleaned["due"])
         if "alarm" in cleaned:
             cleaned["alarm"] = _validate_command_alarm(cleaned["alarm"])
+        if "recurrence" in cleaned:
+            cleaned["recurrence"] = _validate_command_recurrence(
+                cleaned["recurrence"],
+                start_date=_command_item_start_date(cleaned),
+            )
         cleaned_items.append(cleaned)
     payload = {"items": cleaned_items}
     _walk_prohibited_payload(payload)

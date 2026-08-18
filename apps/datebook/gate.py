@@ -20,7 +20,7 @@ from apps.common.eval_sink import suppresses_real_transport
 from apps.pii.store_authoring import author_store_fields, owner_store_representation
 from apps.tenants.models import Tenant
 
-from .hashing import HASH_RE
+from .hashing import HASH_RE, canonical_json_bytes
 from .models import DatebookDestinationDefault, DatebookGateway, DeviceCommand
 from .services import ProtocolError
 
@@ -362,6 +362,45 @@ def _resolve_requested_destination(tenant: Tenant, action_type: str, command_pay
     return fields
 
 
+def _author_pending_datebook_fields(
+    tenant: Tenant,
+    *,
+    action_payload: dict,
+    display_summary: str,
+    seam: str,
+    writer: str,
+    defer_detection: bool = False,
+) -> tuple[dict, dict]:
+    shielded_payload = deepcopy(action_payload)
+    recurrences = {}
+    payload = shielded_payload.get("payload")
+    items = payload.get("items") if isinstance(payload, dict) else None
+    if isinstance(items, list):
+        for index, item in enumerate(items):
+            if isinstance(item, dict) and "recurrence" in item:
+                # Protocol enums and ISO dates are not user-authored text. Keep
+                # them outside placeholder authoring so the device wire object
+                # remains exact even when an enum collides with an entity name.
+                recurrences[index] = deepcopy(item["recurrence"])
+                item["recurrence"] = None
+
+    authored, receipts = author_store_fields(
+        tenant,
+        {
+            "action_payload": shielded_payload,
+            "display_summary": display_summary,
+        },
+        model_label="actions.PendingAction",
+        seam=seam,
+        writer=writer,
+        defer_detection=defer_detection,
+    )
+    authored_items = authored["action_payload"]["payload"]["items"]
+    for index, recurrence in recurrences.items():
+        authored_items[index]["recurrence"] = recurrence
+    return authored, receipts
+
+
 def _rehydrated_command_fields(action: PendingAction) -> dict:
     represented = owner_store_representation(
         action,
@@ -413,15 +452,26 @@ def _datebook_expiry_reason(action: PendingAction) -> str:
     return STALE_REVIEW_REASON
 
 
-def _logical_request_signature(command_payload: dict) -> tuple[str, tuple[str, ...], str] | None:
+def _logical_request_signature(command_payload: dict) -> tuple | None:
     if not isinstance(command_payload, dict):
         return None
     payload = command_payload.get("payload")
     items = payload.get("items") if isinstance(payload, dict) else None
     if not isinstance(items, list) or not items:
         return None
-    titles = tuple(sorted(_normalized_title(item.get("title")) for item in items if isinstance(item, dict)))
-    if len(titles) != len(items) or any(not title for title in titles):
+    normalized_items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        recurrence_signature = b""
+        if "recurrence" in item:
+            recurrence = deepcopy(item["recurrence"])
+            if isinstance(recurrence, dict):
+                recurrence.setdefault("interval", 1)
+            recurrence_signature = canonical_json_bytes(recurrence)
+        normalized_items.append((_normalized_title(item.get("title")), recurrence_signature))
+    titles = tuple(sorted(title for title, _recurrence in normalized_items))
+    if len(normalized_items) != len(items) or any(not title for title in titles):
         return None
     target_minute = _target_minute(command_payload.get("target_at"))
     if target_minute is None:
@@ -429,6 +479,8 @@ def _logical_request_signature(command_payload: dict) -> tuple[str, tuple[str, .
     command_type = command_payload.get("command_type")
     if not isinstance(command_type, str) or not command_type:
         return None
+    if any(recurrence for _title, recurrence in normalized_items):
+        return command_type, tuple(sorted(normalized_items)), target_minute
     return command_type, titles, target_minute
 
 
@@ -573,10 +625,10 @@ def approve_datebook_action(
         {"display_summary": action.display_summary},
         model_label="actions.PendingAction",
     )["display_summary"]
-    authored, receipts = author_store_fields(
+    authored, receipts = _author_pending_datebook_fields(
         action.tenant,
-        {"action_payload": fields, "display_summary": represented_summary},
-        model_label="actions.PendingAction",
+        action_payload=fields,
+        display_summary=represented_summary,
         seam="datebook.owner.review.approved_target",
         writer="owner",
     )
@@ -722,13 +774,10 @@ def request_datebook_action(
                 )
             resolved_payload = _resolve_requested_destination(locked_tenant, action_type, canonical_payload)
             resolved_payload["direct_user_originated"] = direct_user_originated
-            authored, receipts = author_store_fields(
+            authored, receipts = _author_pending_datebook_fields(
                 locked_tenant,
-                {
-                    "action_payload": resolved_payload,
-                    "display_summary": display_summary,
-                },
-                model_label="actions.PendingAction",
+                action_payload=resolved_payload,
+                display_summary=display_summary,
                 seam="datebook.runtime.review.request",
                 writer="runtime",
                 defer_detection=True,

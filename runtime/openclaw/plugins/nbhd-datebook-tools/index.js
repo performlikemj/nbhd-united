@@ -394,11 +394,73 @@ const reminderDueSchema = {
   ],
 };
 
+const recurrenceEndSchema = {
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        type: { const: "count" },
+        count: { type: "integer", minimum: 2, maximum: 366 },
+      },
+      required: ["type", "count"],
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        type: { const: "until" },
+        date: { type: "string", pattern: "^\\d{4}-\\d{2}-\\d{2}$" },
+      },
+      required: ["type", "date"],
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      properties: { type: { const: "never" } },
+      required: ["type"],
+    },
+  ],
+};
+
+const recurrenceSchema = {
+  oneOf: [
+    {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        freq: { const: "weekly" },
+        interval: { type: "integer", minimum: 1, maximum: 99, default: 1 },
+        weekdays: {
+          type: "array",
+          minItems: 1,
+          maxItems: 7,
+          uniqueItems: true,
+          items: { type: "string", enum: ["mo", "tu", "we", "th", "fr", "sa", "su"] },
+        },
+        end: recurrenceEndSchema,
+      },
+      required: ["freq", "end"],
+    },
+    {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        freq: { type: "string", enum: ["daily", "monthly", "yearly"] },
+        interval: { type: "integer", minimum: 1, maximum: 99, default: 1 },
+        end: recurrenceEndSchema,
+      },
+      required: ["freq", "end"],
+    },
+  ],
+};
+
 const commonItemProperties = {
   title: { type: "string", maxLength: 256 },
   location: { type: "string", maxLength: 512 },
   notes: { type: "string", maxLength: 4000 },
   alarm: alarmSchema,
+  recurrence: recurrenceSchema,
 };
 
 export default function register(api) {
@@ -436,7 +498,7 @@ export default function register(api) {
   api.registerTool((toolContext) => wrap({
     name: "nbhd_datebook_add_event",
     description:
-      "CREATE 1–5 events in the user's native Apple Calendar. Use this whenever the user asks to add, schedule, or put an event on their calendar; this is not an assistant-delivered cron reminder. Every request requires review within 24 hours on its originating surface, and the server response supplies the exact guidance to relay. Pass destination_name only when the user explicitly names a calendar; never choose one from mirror context. Pending approval or device execution is not success, and approved work is queued for up to 72 hours. Do not add attendees, invitations, recurrence, URLs, or alarms; an alarm is allowed only when the user explicitly requested it and it appears in the reviewed payload.",
+      "CREATE 1–5 events in the user's native Apple Calendar. Use this whenever the user asks to add, schedule, or put an event on their calendar; this is not an assistant-delivered cron reminder. Every request requires review within 24 hours on its originating surface, and the server response supplies the exact guidance to relay. Pass destination_name only when the user explicitly names a calendar; never choose one from mirror context. Pending approval or device execution is not success, and approved work is queued for up to 72 hours. Do not add attendees, invitations, URLs, or alarms; an alarm is allowed only when the user explicitly requested it and it appears in the reviewed payload. Use recurrence only when the user asked for a repeating item or when proactively suggesting one and explicitly saying so. You can NEVER modify or delete a calendar or reminder item after creation because no such tools exist; if asked to change or remove one, tell the user to do it in Apple Calendar/Reminders.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -477,7 +539,7 @@ export default function register(api) {
   api.registerTool((toolContext) => wrap({
     name: "nbhd_datebook_add_apple_reminder",
     description:
-      "CREATE 1–5 to-dos in the user's native Apple Reminders lists. Use this whenever the user asks to add a native reminder or list item; use nbhd_cron_create_pure_reminder instead for a future assistant chat message. Every request requires review within 24 hours on its originating surface, and the server response supplies the exact guidance to relay. Pass destination_name only when the user explicitly names a list; never choose one from mirror context. Pending approval or device execution is not success, and approved work is queued for up to 72 hours. When the user names a due date or time, always set items[].due; a named time uses kind=zoned with due_at and tz_id. Include an alarm only when explicitly requested, and never use alarm instead of due.",
+      "CREATE 1–5 to-dos in the user's native Apple Reminders lists. Use this whenever the user asks to add a native reminder or list item; use nbhd_cron_create_pure_reminder instead for a future assistant chat message. Every request requires review within 24 hours on its originating surface, and the server response supplies the exact guidance to relay. Pass destination_name only when the user explicitly names a list; never choose one from mirror context. Pending approval or device execution is not success, and approved work is queued for up to 72 hours. When the user names a due date or time, always set items[].due; a named time uses kind=zoned with due_at and tz_id. Include an alarm only when explicitly requested, and never use alarm instead of due. Use recurrence only when the user asked for a repeating item or when proactively suggesting one and explicitly saying so. You can NEVER modify or delete a calendar or reminder item after creation because no such tools exist; if asked to change or remove one, tell the user to do it in Apple Calendar/Reminders.",
     parameters: {
       type: "object",
       additionalProperties: false,
