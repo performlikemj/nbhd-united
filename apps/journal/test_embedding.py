@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 from unittest.mock import patch
 
+from django.db import IntegrityError
 from django.test import TestCase
 
 from apps.journal.embedding import chunk_markdown, embed_daily_note
@@ -125,11 +126,77 @@ class TestEmbedDailyNote(TestCase):
         self.assertEqual(indexed_inputs, list(DocumentChunk.objects.values_list("text", flat=True)))
 
     @patch("apps.lessons.services.generate_embedding", return_value=FAKE_EMBEDDING)
-    def test_idempotent_reembedding(self, mock_embed):
+    def test_reembedding_replaces_existing_chunks(self, mock_embed):
         count1 = embed_daily_note(self.tenant, date.today())
         count2 = embed_daily_note(self.tenant, date.today())
         self.assertEqual(count1, count2)
-        self.assertEqual(DocumentChunk.objects.filter(tenant=self.tenant).count(), count2)
+        chunks = list(DocumentChunk.objects.filter(document=self.doc).order_by("chunk_index"))
+        self.assertEqual(len(chunks), count2)
+        self.assertEqual([chunk.chunk_index for chunk in chunks], list(range(count2)))
+        self.assertEqual(
+            [chunk.text for chunk in chunks], [f"[{date.today()}] {text}" for text in chunk_markdown(SAMPLE_NOTE)]
+        )
+
+    @patch("apps.lessons.services.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_partial_chunk_state_completes_on_reembedding(self, mock_embed):
+        DocumentChunk.objects.create(
+            tenant=self.tenant,
+            document=self.doc,
+            chunk_index=0,
+            text="stale partial chunk",
+            embedding=FAKE_EMBEDDING,
+            source_date=date.today(),
+        )
+
+        count = embed_daily_note(self.tenant, date.today())
+
+        chunks = list(DocumentChunk.objects.filter(document=self.doc).order_by("chunk_index"))
+        self.assertEqual(len(chunks), count)
+        self.assertGreater(count, 1)
+        self.assertEqual([chunk.chunk_index for chunk in chunks], list(range(count)))
+        self.assertNotIn("stale partial chunk", [chunk.text for chunk in chunks])
+
+    @patch("apps.lessons.services.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_reembedding_after_source_change_removes_stale_chunks(self, mock_embed):
+        embed_daily_note(self.tenant, date.today())
+        old_texts = set(DocumentChunk.objects.filter(document=self.doc).values_list("text", flat=True))
+        new_note = "## Updated\n\n" + "Completely new journal content after editing the source document. " * 3
+        self.doc.markdown = new_note
+        self.doc.save(update_fields=["markdown"])
+
+        count = embed_daily_note(self.tenant, date.today())
+
+        chunks = list(DocumentChunk.objects.filter(document=self.doc).order_by("chunk_index"))
+        self.assertEqual(len(chunks), count)
+        self.assertEqual(
+            [chunk.text for chunk in chunks], [f"[{date.today()}] {text}" for text in chunk_markdown(new_note)]
+        )
+        self.assertTrue(old_texts.isdisjoint(chunk.text for chunk in chunks))
+
+    @patch("apps.journal.embedding.DocumentChunk.objects.bulk_create")
+    @patch("apps.lessons.services.generate_embedding", return_value=FAKE_EMBEDDING)
+    def test_persistence_failure_rolls_back_chunk_replacement(self, mock_embed, mock_bulk_create):
+        original = DocumentChunk.objects.create(
+            tenant=self.tenant,
+            document=self.doc,
+            chunk_index=0,
+            text="previous complete chunk",
+            embedding=FAKE_EMBEDDING,
+            source_date=date.today(),
+        )
+
+        def create_one_then_fail(chunks):
+            chunks[0].save(force_insert=True)
+            raise IntegrityError("simulated chunk persistence failure")
+
+        mock_bulk_create.side_effect = create_one_then_fail
+
+        with self.assertRaises(IntegrityError):
+            embed_daily_note(self.tenant, date.today())
+
+        chunks = list(DocumentChunk.objects.filter(document=self.doc))
+        self.assertEqual([chunk.id for chunk in chunks], [original.id])
+        self.assertEqual(chunks[0].text, "previous complete chunk")
 
     def test_no_doc_returns_zero(self):
         count = embed_daily_note(self.tenant, date(2020, 1, 1))
