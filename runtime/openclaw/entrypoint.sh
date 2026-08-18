@@ -235,33 +235,49 @@ GATEWAY_PID=$!
 node /opt/nbhd/proxy.js &
 PROXY_PID=$!
 
+# Forward termination signals to both children, including while the gateway
+# readiness guard below is still waiting.
+trap 'kill $GATEWAY_PID $PROXY_PID 2>/dev/null; wait' SIGTERM SIGINT
+
+# The proxy binds independently of the gateway, so its listening socket is not
+# proof that this container can serve traffic. Refuse to announce readiness (or
+# remain alive for TCP-only platform probes) unless the gateway's own health
+# endpoint becomes reachable.
+GATEWAY_READY=0
+for _gateway_attempt in $(seq 1 30); do
+    if curl -sS -f -m 2 "http://127.0.0.1:18789/healthz" >/dev/null 2>&1; then
+        GATEWAY_READY=1
+        break
+    fi
+    sleep 2
+done
+
+if [ "$GATEWAY_READY" -ne 1 ]; then
+    echo "[entrypoint] FATAL: gateway health check failed after 30 attempts; exiting for restart" >&2
+    kill "$GATEWAY_PID" "$PROXY_PID" 2>/dev/null || true
+    wait || true
+    exit 1
+fi
+
 # Container-started hook — fire-and-forget POST to Django so the
 # postgres-canonical reconciler can rebuild SQLite from Postgres truth
 # the moment we're ready, instead of waiting for the hourly fleet
 # reconcile. Quietly skipped if env vars are missing.
 (
     if [ -n "${NBHD_API_BASE_URL:-}" ] && [ -n "${NBHD_INTERNAL_API_KEY:-}" ] && [ -n "${NBHD_TENANT_ID:-}" ]; then
-        # Wait for the gateway's HTTP surface to come up (max ~60s).
-        for _hook_attempt in $(seq 1 30); do
-            if curl -sS -f -m 2 "http://127.0.0.1:18789/healthz" >/dev/null 2>&1; then
-                break
-            fi
-            sleep 2
-        done
         URL="${NBHD_API_BASE_URL%/}/api/cron/runtime/${NBHD_TENANT_ID}/container-started/"
         # -sS keeps curl quiet on success but still prints its error to stderr
         # (visible in container logs); we also capture the exit code so a silent
         # failure is impossible. Fire-and-forget + non-fatal by design.
-        curl -sS -X POST -m 10 \
+        if curl -sS -X POST -m 10 \
             -H "X-NBHD-Internal-Key: ${NBHD_INTERNAL_API_KEY}" \
             -H "X-NBHD-Tenant-Id: ${NBHD_TENANT_ID}" \
             -H "Content-Length: 0" \
             "$URL" \
-            >/dev/null
-        rc=$?
-        if [ "$rc" -eq 0 ]; then
+            >/dev/null; then
             echo "[entrypoint] container-started hook OK"
         else
+            rc=$?
             echo "[entrypoint] container-started hook failed rc=$rc (non-fatal)" >&2
         fi
     fi
@@ -321,9 +337,6 @@ PROXY_PID=$!
         fi
     fi
 ) &
-
-# Forward termination signals to both children
-trap 'kill $GATEWAY_PID $PROXY_PID 2>/dev/null; wait' SIGTERM SIGINT
 
 # Wait for either child to exit, then shut down the other
 wait -n "$GATEWAY_PID" "$PROXY_PID" 2>/dev/null
