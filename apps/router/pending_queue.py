@@ -2387,9 +2387,10 @@ def _build_batch_chat_content(
     Returns ``(content, user_param, user_timezone)``.
 
     Singleton batches (``len(batch) == 1``) preserve the existing per-row
-    on-the-wire shape: the row's pre-decorated ``payload.message_text``
-    flows straight through, with markers as baked in at enqueue time (the
-    producer already stamped the active channel into that text).
+    on-the-wire shape except that a recognized ``[Now: ...]`` marker is
+    rebuilt at drain time. This keeps load-bearing proactive, reply, voice,
+    photo, and document framing from ``payload.message_text`` intact while
+    preventing a container wake from making the clock stale.
 
     Coalesced batches (``len(batch) > 1``) build a fresh prompt at drain
     time using ``format_coalesced_user_content``: the datetime + coalesced
@@ -2401,7 +2402,7 @@ def _build_batch_chat_content(
     rebuilt marker so the coalesced path keeps the same per-turn channel
     signal the singleton (producer-baked) path carries.
     """
-    from apps.router.services import format_coalesced_user_content
+    from apps.router.services import build_datetime_context, format_coalesced_user_content
 
     if len(batch) == 1:
         msg = batch[0]
@@ -2409,6 +2410,13 @@ def _build_batch_chat_content(
         content = payload.get("message_text") or ""
         user_param = payload.get("user_param") or msg.channel_user_id or fallback_user_id
         user_tz = payload.get("user_timezone") or "UTC"
+        if payload.get("user_timezone") and isinstance(content, str):
+            content = re.sub(
+                r"(?m)^\[Now: \d{4}-\d{2}-\d{2} \d{2}:\d{2} [^\r\n]+ \([A-Za-z]+\)\]\r?\n",
+                build_datetime_context(user_tz),
+                content,
+                count=1,
+            )
         return content, user_param, user_tz
 
     # Coalesced: build markers fresh from the latest row's context so the

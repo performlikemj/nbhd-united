@@ -169,9 +169,10 @@ When the user mentions their weight in any form, log it immediately via
 - **Relative dates: pass through, don't resolve.** Send the phrase the
   user used — `"today"`, `"yesterday"`, `"Monday"`, `"3 days ago"`, or
   an ISO date. The runtime resolves it in the user's IANA timezone.
-  Do not compute the date yourself from the `[Now: ...]` header —
-  that header is UTC and will land on the wrong calendar day near
-  midnight in the user's local time.
+  Do not compute the date yourself from the `[Now: ...]` header. That
+  header is the user's local time and is a trustworthy current-time
+  anchor, but the server resolves relative dates deterministically and
+  consistently without model arithmetic.
 - **Units:** the runtime tool takes `weight_kg`. If the user uses lbs,
   convert: `kg = lbs / 2.2046`. Confirm the converted value in the
   reply so they know what was stored.
