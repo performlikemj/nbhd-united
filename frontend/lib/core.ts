@@ -3,7 +3,7 @@
 // (Replaces the earlier `core-mock.ts`: the arc + types are real domain data;
 // the rendered sessions now come from `/api/v1/core/sessions/`.)
 
-import type { MeditationSession } from "@/lib/types";
+import type { MeditationPhaseArcEntry, MeditationSession } from "@/lib/types";
 
 export interface MeditationPhase {
   name: string;
@@ -29,9 +29,11 @@ export interface CoreStats {
   lastSatLabel: string;
 }
 
-// The fixed meditation arc — matches the render-manifest scaffolding the backend
-// enforces (apps/core/compose.py). The session API doesn't echo phases back
-// (they're invariant), so the timeline reads from this constant.
+// The CLASSIC arc — every sit used to have exactly this shape, so the timeline
+// was drawn from this constant alone. Sits now choose their own arc (fixed
+// bookends, 1-5 middle phases; apps/core/render.py), and the API reports the real
+// one as `phase_arc`. This stays as the fallback for a sit that has no arc to
+// report — an older session, or a backend that predates the field.
 export const PHASES: MeditationPhase[] = [
   { name: "arrival", label: "Arrival", weight: 60 },
   { name: "breath_anchor", label: "Breath", weight: 75 },
@@ -40,6 +42,34 @@ export const PHASES: MeditationPhase[] = [
   { name: "integration", label: "Integration", weight: 60 },
   { name: "closing", label: "Closing", weight: 45 },
 ];
+
+// Every phase name the backend's arc grammar allows. Unknown names still render
+// (prettified) rather than disappearing — the vocabulary can grow server-side
+// before this map catches up, and a missing segment would misreport the sit.
+const PHASE_LABELS: Record<string, string> = {
+  arrival: "Arrival",
+  breath_anchor: "Breath",
+  body_scan: "Body scan",
+  core_practice: "Core practice",
+  integration: "Integration",
+  settle: "Settle",
+  open_sit: "Open sit",
+  re_anchor: "Re-anchor",
+  teaching: "Teaching",
+  closing: "Closing",
+};
+
+function phaseLabel(name: string): string {
+  return PHASE_LABELS[name] ?? name.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+}
+
+/** The timeline's phases for a session: its real arc, or the classic fallback. */
+export function phasesFromArc(arc?: MeditationPhaseArcEntry[] | null): MeditationPhase[] {
+  const phases = (arc ?? [])
+    .filter((p) => p && typeof p.name === "string" && p.name.length > 0 && p.seconds > 0)
+    .map((p) => ({ name: p.name, label: phaseLabel(p.name), weight: p.seconds }));
+  return phases.length ? phases : PHASES;
+}
 
 // ── Day math (timezone-aware) ────────────────────────────────────────────────
 // The backend stamps `MeditationSession.date` in the TENANT's local timezone

@@ -94,6 +94,32 @@ def _valid_manifest(*, total: int = 600) -> dict:
     }
 
 
+def _arc_manifest(names: list, *, total: int = 600) -> dict:
+    """A manifest for ANY legal arc — one spoken cue plus a flex silence per phase.
+
+    ``_valid_manifest`` above is deliberately the classic six-phase shape (it is
+    also the back-compat fixture); this one exists to compose the arcs the old
+    fixed list could never express.
+    """
+    share = max(1, round(total / len(names)))
+    phases = []
+    for name in names:
+        segments = [{"type": "speech", "text": f"Rest here, in {name}.", "tone": "soft"}]
+        if name != "closing":
+            segments.append({"type": "silence", "seconds": "flex"})
+        phases.append({"name": name, "target_seconds": share, "segments": segments})
+    return {
+        "schema_version": 1,
+        "title": "An arc",
+        "theme": "whatever shape today wants",
+        "voice": "Achernar",
+        "global_tone": "soft, slow, warm",
+        "total_target_seconds": total,
+        "ambient": None,
+        "phases": phases,
+    }
+
+
 # ═════════════════════════════════════════════════════════════════════
 # 1. Pure: manifest validation
 # ═════════════════════════════════════════════════════════════════════
@@ -111,10 +137,12 @@ class ManifestValidationTests(UnitTestCase):
         self.assertTrue(render.validate_manifest({"phases": []}))
 
     def test_wrong_phase_order_rejected(self):
+        # The arc still has fixed bookends: swapping arrival out of first place is
+        # rejected (the message names the bookend now, not the whole fixed list).
         m = _valid_manifest()
         m["phases"][0]["name"], m["phases"][1]["name"] = "breath_anchor", "arrival"
         errors = render.validate_manifest(m)
-        self.assertTrue(any("exactly, in order" in e for e in errors))
+        self.assertTrue(any("first phase must be 'arrival'" in e for e in errors), errors)
 
     def test_silence_out_of_range_rejected(self):
         m = _valid_manifest()
@@ -149,11 +177,20 @@ class ManifestValidationTests(UnitTestCase):
 
     def test_too_few_speech_segments_rejected(self):
         m = _valid_manifest()
-        # Strip speech from 3 phases → only 3 spoken segments remain (< MIN 4).
-        for i in (0, 1, 2):
+        # Strip speech from 4 phases → only 2 spoken segments remain (< MIN 3).
+        for i in (0, 1, 2, 3):
             m["phases"][i]["segments"] = [{"type": "silence", "seconds": 40}]
         errors = render.validate_manifest(m)
-        self.assertTrue(any("too few spoken" in e for e in errors))
+        self.assertTrue(any("too few spoken" in e for e in errors), errors)
+
+    def test_three_spoken_moments_is_the_floor(self):
+        # The most spacious sit a person can be given: settle in, one re-anchoring
+        # cue, one sentence to carry out. The floor was 4 until 2026-08-20, which
+        # made exactly this sit illegal.
+        m = _valid_manifest()
+        for i in (0, 1, 2):
+            m["phases"][i]["segments"] = [{"type": "silence", "seconds": 40}]
+        self.assertEqual(render.validate_manifest(m), [])
 
     def test_too_many_speech_segments_rejected(self):
         m = _valid_manifest()
@@ -215,6 +252,75 @@ class ManifestValidationTests(UnitTestCase):
         self.assertEqual(render.validate_manifest(m), [])
 
 
+class PhaseArcGrammarTests(UnitTestCase):
+    """The arc grammar (2026-08-20): fixed bookends, the middle is the composer's.
+
+    Until this, ``validate_manifest`` hard-rejected every arc but one six-phase
+    list, so structural variety was impossible by construction and every sit had
+    the same six movements — MJ, 2026-08-19: "everything seems the same."
+    """
+
+    def test_classic_arc_still_valid(self):
+        self.assertEqual(render.validate_manifest(_arc_manifest(render.CLASSIC_ARC)), [])
+
+    def test_spacious_arc_valid(self):
+        # Mostly the person's own time, with one re-anchoring cue in the middle.
+        arc = ["arrival", "settle", "open_sit", "re_anchor", "open_sit", "closing"]
+        self.assertEqual(render.validate_manifest(_arc_manifest(arc)), [])
+
+    def test_lesson_led_arc_valid(self):
+        arc = ["arrival", "breath_anchor", "teaching", "core_practice", "integration", "closing"]
+        self.assertEqual(render.validate_manifest(_arc_manifest(arc)), [])
+
+    def test_shortest_legal_arc_valid(self):
+        self.assertEqual(render.validate_manifest(_arc_manifest(["arrival", "open_sit", "closing"])), [])
+
+    def test_arc_not_opening_on_arrival_rejected(self):
+        errors = render.validate_manifest(_arc_manifest(["settle", "open_sit", "closing"]))
+        self.assertTrue(any("first phase must be 'arrival'" in e for e in errors), errors)
+
+    def test_arc_not_ending_on_closing_rejected(self):
+        errors = render.validate_manifest(_arc_manifest(["arrival", "open_sit", "integration"]))
+        self.assertTrue(any("last phase must be 'closing'" in e for e in errors), errors)
+
+    def test_unknown_middle_phase_rejected(self):
+        errors = render.validate_manifest(_arc_manifest(["arrival", "vibes", "closing"]))
+        self.assertTrue(any("not allowed between the bookends" in e for e in errors), errors)
+        self.assertTrue(any("vibes" in e for e in errors), errors)
+
+    def test_bookend_name_used_as_a_middle_phase_rejected(self):
+        # arrival and closing are bookends; a sit does not arrive twice.
+        errors = render.validate_manifest(_arc_manifest(["arrival", "settle", "arrival", "closing"]))
+        self.assertTrue(any("not allowed between the bookends" in e for e in errors), errors)
+
+    def test_consecutive_duplicate_rejected(self):
+        # Two turns at the same phase back-to-back is one longer phase, not two.
+        errors = render.validate_manifest(_arc_manifest(["arrival", "open_sit", "open_sit", "closing"]))
+        self.assertTrue(any("repeat back-to-back" in e for e in errors), errors)
+
+    def test_no_middle_phase_rejected(self):
+        errors = render.validate_manifest(_arc_manifest(["arrival", "closing"]))
+        self.assertTrue(any("phases between" in e for e in errors), errors)
+
+    def test_sixth_middle_phase_rejected(self):
+        arc = ["arrival", "settle", "body_scan", "core_practice", "integration", "open_sit", "teaching", "closing"]
+        errors = render.validate_manifest(_arc_manifest(arc))
+        self.assertTrue(any("phases between" in e for e in errors), errors)
+
+    def test_manifest_stored_under_the_old_validator_still_passes(self):
+        """Same-day resume must survive the grammar change.
+
+        A stored manifest is re-validated when a failed render is resumed
+        (``_is_recoverable_render_failure`` → ``compose_meditation``, which skips
+        authoring only if the persisted manifest still validates). The grammar is
+        a SUPERSET of the old fixed list, so a sit composed yesterday resumes
+        today instead of being re-composed from scratch — or failing outright.
+        """
+        stored = _valid_manifest()  # byte-for-byte the pre-2026-08-20 shape
+        self.assertEqual([p["name"] for p in stored["phases"]], render.CLASSIC_ARC)
+        self.assertEqual(render.validate_manifest(stored), [])
+
+
 # ═════════════════════════════════════════════════════════════════════
 # 2. Pure: planning + timing math
 # ═════════════════════════════════════════════════════════════════════
@@ -251,6 +357,76 @@ class RenderMathTests(UnitTestCase):
             {"type": "silence", "seconds": 150},
         ]
         self.assertGreater(render.estimate_total_seconds(m), 300)
+
+    def test_repeated_phase_name_keeps_its_own_budget(self):
+        """A phase name that recurs is TWO phases, each with its own time budget.
+
+        The arc grammar allows ``open_sit`` → ``re_anchor`` → ``open_sit``. The
+        timing math keys on the phase's POSITION; while it keyed on the NAME it
+        pooled both phases' silences and then counted the pool once per phase —
+        here that doubles ~450s of held silence into ~900s and the sit is rejected
+        as a runaway, even though it lands comfortably under its target.
+        """
+        m = {
+            "schema_version": 1,
+            "title": "Two long holds",
+            "theme": "mostly your own time",
+            "voice": "Achernar",
+            "global_tone": "soft, slow, warm",
+            "total_target_seconds": 610,
+            "ambient": None,
+            "phases": [
+                {
+                    "name": "arrival",
+                    "target_seconds": 60,
+                    "segments": [
+                        {"type": "speech", "text": "Let yourself arrive.", "tone": "warm"},
+                        {"type": "silence", "seconds": "flex"},
+                    ],
+                },
+                {
+                    "name": "open_sit",
+                    "target_seconds": 300,
+                    "segments": [
+                        {"type": "speech", "text": "Just sit.", "tone": "soft"},
+                        {"type": "silence", "seconds": 150},
+                        {"type": "silence", "seconds": 150},
+                    ],
+                },
+                {
+                    "name": "re_anchor",
+                    "target_seconds": 40,
+                    "segments": [
+                        {"type": "speech", "text": "Come back to the breath.", "tone": "calm"},
+                        {"type": "silence", "seconds": "flex"},
+                    ],
+                },
+                {
+                    "name": "open_sit",
+                    "target_seconds": 180,
+                    "segments": [
+                        {"type": "speech", "text": "And rest again.", "tone": "soft"},
+                        {"type": "silence", "seconds": 150},
+                    ],
+                },
+                {
+                    "name": "closing",
+                    "target_seconds": 30,
+                    "segments": [{"type": "speech", "text": "Carry the quiet with you.", "tone": "warm"}],
+                },
+            ],
+        }
+        # Truth: 60 (flex fills) + ~301 + 40 (flex fills) + ~152 + ~2 ≈ 555s.
+        self.assertAlmostEqual(render.estimate_total_seconds(m), 555, delta=6)
+        self.assertEqual(render.validate_manifest(m), [])
+
+    def test_plan_segments_tags_each_phase_with_its_position(self):
+        # The flex reconciliation looks phases up by position, so a repeated name
+        # must not collapse two phases into one key.
+        plan = render.plan_segments(_arc_manifest(["arrival", "open_sit", "re_anchor", "open_sit", "closing"]))
+        by_index = {(seg.phase, seg.phase_index) for seg in plan}
+        self.assertIn(("open_sit", 1), by_index)
+        self.assertIn(("open_sit", 3), by_index)
 
     def test_plan_segments_order_and_kinds(self):
         plan = render.plan_segments(_valid_manifest())
@@ -1329,6 +1505,69 @@ class MeditationSessionSerializerRetryTests(TestCase):
         self.assertIs(data["retryable"], False)
 
 
+class MeditationPhaseArcSerializerTests(TestCase):
+    """``phase_arc``: the sit's real shape, for a timeline that tells the truth.
+
+    The web timeline used to be drawn from a hard-coded six-phase constant
+    because every sit had that shape. Arcs vary now, so the API has to say what
+    this sit actually was — control values only (phase name + its seconds), never
+    the narration.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Phase Arc", telegram_chat_id=900404)
+
+    def _session(self, manifest) -> MeditationSession:
+        return MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=date.today(),
+            status=MeditationStatus.READY,
+            manifest=manifest,
+        )
+
+    def test_phase_arc_is_derived_from_the_manifest(self):
+        from apps.core.serializers import MeditationSessionSerializer
+
+        arc = ["arrival", "settle", "open_sit", "re_anchor", "open_sit", "closing"]
+        session = self._session(_arc_manifest(arc))
+        data = MeditationSessionSerializer(session).data
+        self.assertEqual([p["name"] for p in data["phase_arc"]], arc)
+        self.assertTrue(all(p["seconds"] > 0 for p in data["phase_arc"]))
+
+    def test_phase_arc_carries_no_prose(self):
+        from apps.core.serializers import MeditationSessionSerializer
+
+        manifest = _valid_manifest()
+        manifest["phases"][0]["intent"] = "settle the nervous system"
+        session = self._session(manifest)
+        data = MeditationSessionSerializer(session).data
+        # Only the two control keys cross the seam — no intent, no segment text.
+        for phase in data["phase_arc"]:
+            self.assertEqual(set(phase), {"name", "seconds"})
+        rendered = json.dumps(data["phase_arc"])
+        self.assertNotIn("settle the nervous system", rendered)
+        self.assertNotIn("Welcome. Let yourself arrive.", rendered)
+
+    def test_phase_arc_is_null_for_a_session_without_a_manifest(self):
+        from apps.core.serializers import MeditationSessionSerializer
+
+        # An old row (or a sit that failed before authoring) has an empty manifest.
+        self.assertIsNone(MeditationSessionSerializer(self._session({})).data["phase_arc"])
+        # The column is NOT NULL, but the field is read defensively anyway — the
+        # timeline must degrade to the classic arc, never raise on a bad row.
+        unsaved = MeditationSession(tenant=self.tenant, date=date.today(), manifest=None)
+        self.assertIsNone(MeditationSessionSerializer(unsaved).data["phase_arc"])
+
+    def test_phase_arc_skips_phases_without_a_usable_budget(self):
+        from apps.core.serializers import MeditationSessionSerializer
+
+        manifest = _valid_manifest()
+        del manifest["phases"][1]["target_seconds"]
+        names = [p["name"] for p in MeditationSessionSerializer(self._session(manifest)).data["phase_arc"]]
+        self.assertNotIn("breath_anchor", names)
+        self.assertEqual(names[0], "arrival")
+
+
 class MeditationRetryMigrationTests(TestCase):
     def test_existing_failed_rows_are_backfilled_by_error_prefix(self):
         from importlib import import_module
@@ -1384,7 +1623,7 @@ class RealFfmpegRenderTests(UnitTestCase):
             "closing": 3,
         }
         phases = []
-        for name in render.REQUIRED_PHASES:
+        for name in render.CLASSIC_ARC:
             segs = [{"type": "speech", "text": "Breathe in.", "tone": "calm"}]
             if name != "closing":
                 segs.append({"type": "silence", "seconds": "flex"})
@@ -1513,10 +1752,47 @@ class ComposeAuthoringTests(SimpleTestCase):
         self.assertIn("one carryable sentence", system)
 
         # DENSITY — spacious vs. guided, expressed only through segment composition.
+        # A spacious arc may now go all the way down to the validator's floor of 3.
         self.assertIn("DENSITY", system)
         self.assertIn("SPACIOUS", system)
         self.assertIn("GUIDED", system)
+        self.assertIn("as low as 3 spoken moments", system)
         self.assertIn("Never name the density and never add a key for it", system)
+
+    def test_assembled_prompt_teaches_the_phase_arc_grammar(self):
+        """The model is told the arc is its choice — and told the exact grammar.
+
+        Phase 2 opened the validator to any legal arc; a prompt that still said
+        "EXACTLY these 6 phases, IN THIS ORDER" would have kept every sit the same
+        shape anyway, which was the whole complaint.
+        """
+        with patch(
+            "apps.core.compose.chat_completion",
+            return_value=self._ok(json.dumps(_valid_manifest())),
+        ) as cc:
+            compose.author_manifest({"additional_context": "work stress"})
+
+        messages = cc.call_args[0][1]
+        system = next(m["content"] for m in messages if m["role"] == "system")
+
+        self.assertIn("PHASE ARC", system)
+        self.assertIn("FIRST phase is always arrival", system)
+        self.assertIn("LAST is always closing", system)
+        self.assertIn("Between them put 1 to 5 phases", system)
+        self.assertIn("never twice in a row", system)
+        # Every name the validator accepts in the middle must be offered.
+        for name in render.MIDDLE_PHASES:
+            self.assertIn(name, system)
+        # The three named example arcs.
+        self.assertIn("arrival, settle, open_sit, re_anchor, open_sit, closing", system)
+        self.assertIn("arrival, breath_anchor, teaching, core_practice, integration, closing", system)
+        self.assertIn(", ".join(render.CLASSIC_ARC), system)
+        # The old fixed-arc instruction is gone, not merely contradicted.
+        self.assertNotIn("EXACTLY these 6 phases", system)
+        # A wisdom lesson can live in its own phase now.
+        self.assertIn("within core_practice or a teaching phase", system)
+        # The spoken-moment band matches the validator's floor.
+        self.assertIn("3-10 spoken moments", system)
 
     def test_look_back_block_reaches_the_model_as_user_context(self):
         """End-to-end wiring: a gathered look-back lands in the composed prompt."""
@@ -1705,6 +1981,15 @@ class ComposeTargetLengthTests(UnitTestCase):
     def test_format_signals_states_target_minutes(self):
         self.assertIn("5 minutes", compose._format_signals({}, 300.0))
 
+    def test_pacing_reference_no_longer_prescribes_six_phases(self):
+        # The per-phase budgets are a sense of scale for the classic arc, not the
+        # arc to compose — the old line ("the six should sum to ~600s") would have
+        # contradicted the grammar the system prompt now teaches.
+        rendered = compose._format_signals({}, 600.0)
+        self.assertIn("Whichever arc you choose", rendered)
+        self.assertNotIn("the six should sum", rendered)
+        self.assertIn("core_practice~210s", rendered)
+
 
 # ═════════════════════════════════════════════════════════════════════
 # 8. Compose — signals, consumer view, task, service orchestration (DB)
@@ -1715,17 +2000,24 @@ class GatherSignalsTests(TestCase):
     def setUp(self):
         self.tenant = create_tenant(display_name="Gather", telegram_chat_id=900500)
 
-    def test_includes_profile_context_and_last_theme(self):
+    def test_includes_profile_context_and_the_look_back(self):
         from apps.core.models import CoreProfile
 
         CoreProfile.objects.create(tenant=self.tenant, additional_context="please help me wind down at night")
         MeditationSession.objects.create(
-            tenant=self.tenant, date=date.today(), status=MeditationStatus.READY, theme="letting go of work"
+            tenant=self.tenant,
+            date=date.today(),
+            status=MeditationStatus.READY,
+            title="Last night's sit",
+            theme="letting go of work",
         )
         sig = services.gather_meditation_signals(self.tenant)
         self.assertEqual(sig["tenant_id"], str(self.tenant.id))
         self.assertIn("wind down", sig["additional_context"])
-        self.assertIn("letting go", sig["last_meditation_theme"])
+        # The single "last theme" signal is gone — recent_meditations carries the
+        # same theme, plus the nine sits before it.
+        self.assertNotIn("last_meditation_theme", sig)
+        self.assertEqual(sig["recent_meditations"][0]["theme"], "letting go of work")
 
     def test_includes_preferred_duration(self):
         from apps.core.models import CoreProfile
@@ -2051,17 +2343,19 @@ class MeditationSignalGatheringTests(TestCase):
         defaults.update(kwargs)
         return Lesson.objects.create(**defaults)
 
-    def test_profile_context_and_last_theme(self):
+    def test_profile_context_and_the_look_back_supersede_the_last_theme(self):
         CoreProfile.objects.create(tenant=self.tenant, additional_context="going through a big move")
         MeditationSession.objects.create(
             tenant=self.tenant,
             date=timezone.now().date(),
             status=MeditationStatus.READY,
+            title="Wide Open Room",
             theme="letting go of control",
         )
         signals = services.gather_meditation_signals(self.tenant)
         self.assertEqual(signals["additional_context"], "going through a big move")
-        self.assertEqual(signals["last_meditation_theme"], "letting go of control")
+        self.assertNotIn("last_meditation_theme", signals)
+        self.assertEqual(signals["recent_meditations"][0]["theme"], "letting go of control")
 
     def test_gathers_active_constellation_star(self):
         star = self._star(galaxy_note="protect the off-days", star_stage="radiant")
@@ -2255,6 +2549,15 @@ class MeditationLookBackTests(TestCase):
         # Newest kept, oldest gone.
         self.assertIn("Title 20", lines[0])
         self.assertNotIn("Title 1 ", "\n".join(lines))
+
+    def test_last_meditation_theme_line_is_gone(self):
+        # Phase 2 retired the single "vary from your last theme" line: the RECENT
+        # MEDITATIONS block above carries that theme and the nine before it. A
+        # stale key left in a signals dict must not resurrect the old line.
+        rendered = compose._format_signals({"last_meditation_theme": "letting go of work"})
+        self.assertNotIn("last meditation's theme", rendered)
+        self.assertNotIn("letting go of work", rendered)
+        self.assertIn("little specific signal this week", rendered)
 
     def test_dead_recent_themes_key_is_no_longer_read(self):
         # The pre-v2 branch read signals["recent_themes"], which nothing ever set.

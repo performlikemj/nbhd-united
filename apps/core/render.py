@@ -77,14 +77,41 @@ DEFAULT_MODEL = "gemini-2.5-flash-preview-tts"  # cheapest + accessible on low t
 DEFAULT_VOICE = "Achernar"  # calm; Aoede ("breezy") is the other candidate
 
 # ---- manifest schema bounds ------------------------------------------------
-REQUIRED_PHASES = [
-    "arrival",
+# The phase ARC grammar. Until 2026-08-20 this was a single hard-coded list and
+# any other shape was rejected, so every sit had the same six movements forever
+# (MJ: "everything seems the same"). The bookends stay fixed — a sit arrives and
+# it lands — but what happens between them is the composer's judgment. The
+# classic arc below is still a legal instance of the grammar, which is what makes
+# this a SUPERSET: every manifest ever stored still validates.
+ARRIVAL_PHASE = "arrival"
+CLOSING_PHASE = "closing"
+CLASSIC_ARC = [
+    ARRIVAL_PHASE,
     "breath_anchor",
     "body_scan",
     "core_practice",
     "integration",
-    "closing",
+    CLOSING_PHASE,
 ]
+# What may appear BETWEEN the bookends. The first four are the classic middle;
+# the rest name shapes the fixed arc could never express — a long unguided sit,
+# a brief re-anchoring cue, an explicit teaching moment.
+MIDDLE_PHASES = frozenset(
+    {
+        "breath_anchor",
+        "body_scan",
+        "core_practice",
+        "integration",
+        "settle",
+        "open_sit",
+        "re_anchor",
+        "teaching",
+    }
+)
+# One middle phase is the shortest real sit; five is where an arc stops being a
+# shape and becomes a list. (The classic arc uses four.)
+MIN_MIDDLE_PHASES = 1
+MAX_MIDDLE_PHASES = 5
 SILENCE_MIN = 3.0
 SILENCE_MAX = 150.0  # was 30 — a guided sit often holds in silence for a minute or more;
 # the composer chooses these durations holistically (silence is free to render).
@@ -92,7 +119,11 @@ MAX_SPEECH_CHARS = 600  # one narration line longer than this is almost certainl
 # Bound the *count* of spoken segments (not their placement). Floor keeps a sit from
 # being near-empty; ceiling caps TTS calls so a render stays under the low-tier Gemini
 # per-minute cap + the render deadline. Where the words fall is the composer's call.
-MIN_SPEECH_SEGMENTS = 4
+# The floor was 4 until 2026-08-20, which quietly outlawed the most spacious sit a
+# person can be given: settle in, one re-anchor when attention has drifted, one
+# sentence to carry out. Three IS that sit — fewer than three and there is no arc
+# left to hear, so the floor stays.
+MIN_SPEECH_SEGMENTS = 3
 MAX_SPEECH_SEGMENTS = 12
 # Total-length ceiling. The composer owns pacing, but a sit must not balloon far
 # past its target — uncapped explicit silences (each ≤150s, unbounded in count)
@@ -124,6 +155,44 @@ def estimate_speech_seconds(text: str) -> float:
     return max(1.2, len(text.split()) / WORDS_PER_SEC)
 
 
+def _phase_arc_errors(names: list) -> list[str]:
+    """Grammar errors for the sit's phase arc (empty == a legal arc).
+
+    The bookends are fixed and the middle is the composer's: 1-5 phases from
+    ``MIDDLE_PHASES``. A phase may recur across the sit (a spacious arc often
+    returns to ``open_sit`` after a re-anchor) but never back-to-back — that is
+    one longer phase written twice, not two phases.
+    """
+    errors: list[str] = []
+    if names[0] != ARRIVAL_PHASE:
+        errors.append(f"the first phase must be '{ARRIVAL_PHASE}'; got {names[0]!r}")
+    if names[-1] != CLOSING_PHASE:
+        errors.append(f"the last phase must be '{CLOSING_PHASE}'; got {names[-1]!r}")
+    middle = names[1:-1]
+    if not (MIN_MIDDLE_PHASES <= len(middle) <= MAX_MIDDLE_PHASES):
+        errors.append(
+            f"a sit needs {MIN_MIDDLE_PHASES}-{MAX_MIDDLE_PHASES} phases between "
+            f"'{ARRIVAL_PHASE}' and '{CLOSING_PHASE}'; got {len(middle)}"
+        )
+    # ``isinstance`` first: a model can emit a non-string name, and both the
+    # membership test and the de-dupe below would raise on an unhashable one —
+    # validate_manifest must always return errors, never throw.
+    unknown = [n for n in middle if not isinstance(n, str) or n not in MIDDLE_PHASES]
+    if unknown:
+        errors.append(
+            f"phase name(s) not allowed between the bookends: {unknown}; choose from: {sorted(MIDDLE_PHASES)}"
+        )
+    repeated: list[str] = []
+    for first, second in zip(middle, middle[1:]):
+        if isinstance(first, str) and first == second and first not in repeated:
+            repeated.append(first)
+    if repeated:
+        errors.append(
+            f"phase(s) {repeated} repeat back-to-back — put a different phase between two turns at the same one"
+        )
+    return errors
+
+
 def validate_manifest(manifest: object) -> list[str]:
     """Return a list of human-readable validation errors (empty == valid).
 
@@ -131,7 +200,9 @@ def validate_manifest(manifest: object) -> list[str]:
     long each silence holds — so validation only guards what the renderer needs and
     what protects the spend, NOT the artistic shape:
 
-    * all 6 phases present, in order;
+    * the phase arc obeys the grammar: opens on ``arrival``, ends on ``closing``,
+      1-5 middle phases from ``MIDDLE_PHASES``, none repeated back-to-back
+      (``CLASSIC_ARC`` is one legal instance among many);
     * every explicit ``silence.seconds`` in ``[3, 150]`` (or the literal ``"flex"``);
       long holds are fine — a phase may be mostly, or entirely, silence;
     * ``closing`` ENDS on a (non-empty) speech segment — so it lands rather than
@@ -153,9 +224,11 @@ def validate_manifest(manifest: object) -> list[str]:
         return ["manifest.phases must be a non-empty list"]
 
     names = [p.get("name") if isinstance(p, dict) else None for p in phases]
-    if names != REQUIRED_PHASES:
-        # Positional checks below assume the canonical arc — bail early.
-        return [f"phases must be exactly, in order: {REQUIRED_PHASES}; got {names}"]
+    arc_errors = _phase_arc_errors(names)
+    if arc_errors:
+        # The positional check below (closing ENDS on speech) reads phases[-1] as
+        # the closing phase — meaningless until the bookends are right, so bail.
+        return arc_errors
 
     errors: list[str] = []
     speech_count = 0
@@ -237,6 +310,12 @@ class PlannedSegment:
 
     ``seconds`` carries the duration for a fixed silence; flex silences are
     resolved per-phase after the speech is measured (see ``reconcile_phase_flex``).
+
+    ``phase`` is the phase's NAME (filenames, logs) and ``phase_index`` its
+    POSITION in the arc. Timing math must key on the position: since the arc
+    grammar allows a name to recur (``open_sit`` after a ``re_anchor``), keying
+    on the name would merge two distinct phases into one budget and mistime
+    every flex silence in both.
     """
 
     phase: str
@@ -244,12 +323,13 @@ class PlannedSegment:
     text: str = ""
     tone: str = ""
     seconds: float = 0.0
+    phase_index: int = 0
 
 
 def plan_segments(manifest: dict) -> list[PlannedSegment]:
     """Flatten the manifest into an ordered list of segments (the stitch order)."""
     plan: list[PlannedSegment] = []
-    for phase in manifest["phases"]:
+    for phase_index, phase in enumerate(manifest["phases"]):
         name = phase["name"]
         for seg in phase["segments"]:
             if seg.get("type") == "speech":
@@ -259,12 +339,20 @@ def plan_segments(manifest: dict) -> list[PlannedSegment]:
                         kind="speech",
                         text=(seg.get("text") or "").strip(),
                         tone=(seg.get("tone") or "").strip(),
+                        phase_index=phase_index,
                     )
                 )
             elif seg.get("seconds") == "flex":
-                plan.append(PlannedSegment(phase=name, kind="flex"))
+                plan.append(PlannedSegment(phase=name, kind="flex", phase_index=phase_index))
             else:
-                plan.append(PlannedSegment(phase=name, kind="silence", seconds=float(seg["seconds"])))
+                plan.append(
+                    PlannedSegment(
+                        phase=name,
+                        kind="silence",
+                        seconds=float(seg["seconds"]),
+                        phase_index=phase_index,
+                    )
+                )
     return plan
 
 
@@ -303,25 +391,26 @@ def estimate_total_seconds(manifest: dict) -> float:
     length varies — so the ceiling carries a tolerance.
     """
     plan = plan_segments(manifest)
-    phase_speech: dict[str, float] = defaultdict(float)
-    phase_fixed: dict[str, float] = defaultdict(float)
-    phase_flex: dict[str, int] = defaultdict(int)
+    # Keyed by phase POSITION, not name — a repeated name is two separate phases
+    # with two separate budgets (see ``PlannedSegment``).
+    phase_speech: dict[int, float] = defaultdict(float)
+    phase_fixed: dict[int, float] = defaultdict(float)
+    phase_flex: dict[int, int] = defaultdict(int)
     for seg in plan:
         if seg.kind == "speech":
-            phase_speech[seg.phase] += estimate_speech_seconds(seg.text)
+            phase_speech[seg.phase_index] += estimate_speech_seconds(seg.text)
         elif seg.kind == "silence":
-            phase_fixed[seg.phase] += seg.seconds
+            phase_fixed[seg.phase_index] += seg.seconds
         elif seg.kind == "flex":
-            phase_flex[seg.phase] += 1
+            phase_flex[seg.phase_index] += 1
     total = 0.0
-    for phase in manifest["phases"]:
-        name = phase["name"]
+    for index, phase in enumerate(manifest["phases"]):
         try:
             target = float(phase.get("target_seconds") or 0.0)
         except (TypeError, ValueError):
             target = 0.0
-        flex_secs = reconcile_phase_flex(target, phase_speech[name], phase_fixed[name], phase_flex[name])
-        total += phase_speech[name] + phase_fixed[name] + phase_flex[name] * flex_secs
+        flex_secs = reconcile_phase_flex(target, phase_speech[index], phase_fixed[index], phase_flex[index])
+        total += phase_speech[index] + phase_fixed[index] + phase_flex[index] * flex_secs
     return total
 
 
@@ -711,22 +800,23 @@ def render_manifest_to_audio(
                         quota_failed += 1
 
         # ---- flex reconciliation per phase (split slack across flex points) ----
-        phase_speech: dict[str, float] = defaultdict(float)
-        phase_fixed: dict[str, float] = defaultdict(float)
-        phase_flex_count: dict[str, int] = defaultdict(int)
-        phase_target = {p["name"]: float(p["target_seconds"]) for p in manifest["phases"]}
+        # Keyed by phase POSITION: the arc grammar lets a name recur, and keying
+        # on the name would pool two phases' speech into one budget and hand both
+        # the wrong flex length (see ``PlannedSegment``).
+        phase_speech: dict[int, float] = defaultdict(float)
+        phase_fixed: dict[int, float] = defaultdict(float)
+        phase_flex_count: dict[int, int] = defaultdict(int)
+        phase_target = {i: float(p["target_seconds"]) for i, p in enumerate(manifest["phases"])}
         for index, seg in enumerate(plan):
             if seg.kind == "speech":
-                phase_speech[seg.phase] += speech_dur.get(index, 0.0)
+                phase_speech[seg.phase_index] += speech_dur.get(index, 0.0)
             elif seg.kind == "silence":
-                phase_fixed[seg.phase] += seg.seconds
+                phase_fixed[seg.phase_index] += seg.seconds
             elif seg.kind == "flex":
-                phase_flex_count[seg.phase] += 1
+                phase_flex_count[seg.phase_index] += 1
         phase_flex_secs = {
-            name: reconcile_phase_flex(
-                phase_target[name], phase_speech[name], phase_fixed[name], phase_flex_count[name]
-            )
-            for name in phase_target
+            i: reconcile_phase_flex(phase_target[i], phase_speech[i], phase_fixed[i], phase_flex_count[i])
+            for i in phase_target
         }
 
         # ---- assemble in manifest order ----
@@ -735,7 +825,7 @@ def render_manifest_to_audio(
             if seg.kind == "speech":
                 ordered.append(speech_paths[index])
             else:
-                seconds = phase_flex_secs[seg.phase] if seg.kind == "flex" else seg.seconds
+                seconds = phase_flex_secs[seg.phase_index] if seg.kind == "flex" else seg.seconds
                 silence = workdir / f"sil_{index:03d}_{seg.phase}.wav"
                 _make_silence(seconds, silence)
                 ordered.append(silence)

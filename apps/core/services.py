@@ -83,7 +83,6 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
     makes the judgment. All sources are in-app, consented, and best-effort:
 
     * ``CoreProfile.additional_context`` — free-text the user typed for this.
-    * the last meditation's theme — so today's sit varies from it.
     * ``recent_meditations`` — the last few sits that actually reached the person
       (date + title + theme), so the guide can vary the title, the imagery, and
       the wisdom it draws on instead of re-composing yesterday.
@@ -108,16 +107,6 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
             signals["preferred_duration_minutes"] = profile.preferred_duration_minutes
     except Exception:
         logger.debug("gather_meditation_signals: profile read failed", exc_info=True)
-    try:
-        last = (
-            MeditationSession.objects.filter(tenant=tenant, status=MeditationStatus.READY)
-            .order_by("-date", "-created_at")
-            .first()
-        )
-        if last and (last.theme or "").strip():
-            signals["last_meditation_theme"] = last.theme.strip()[:200]
-    except Exception:
-        logger.debug("gather_meditation_signals: last-meditation read failed", exc_info=True)
     try:
         recent = _recent_meditation_entries(tenant)
         if recent:
