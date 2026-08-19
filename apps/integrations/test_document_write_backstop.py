@@ -227,7 +227,7 @@ class DocumentWriteBackstopRealIngressTest(TestCase):
         # it — unlike the UUID-keyed fuel transitions. Guard it.
         acct = self.rt.post(
             f"/api/v1/finance/runtime/{self.tenant.id}/accounts/",
-            {"nickname": "Checking", "current_balance": "500"},
+            {"nickname": "Checking", "account_type": "checking", "current_balance": "500"},
             format="json",
             **self._rt_headers(),
         )

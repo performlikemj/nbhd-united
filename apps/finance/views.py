@@ -11,6 +11,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .contracts import FinanceInputError
 from .models import FinanceAccount, FinanceSnapshot, FinanceTransaction, PayoffPlan
 
 logger = logging.getLogger(__name__)
@@ -200,18 +201,28 @@ class FinanceTransactionListView(APIView):
                 account_id=body.get("account_id") or body.get("account"),
                 account_nickname=body.get("account_nickname"),
             )
+        # An ambiguous nickname is a 400 the client must resolve, not a 404.
+        except FinanceInputError as exc:
+            return Response(exc.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
         except AccountNotFound as exc:
             return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
 
-        payload, created = record_transaction(
-            tenant=tenant,
-            account=account,
-            amount=amount,
-            transaction_type=body.get("transaction_type", "payment"),
-            txn_date=txn_date,
-            description=body.get("description") or "",
-            writer="owner",
-        )
+        # The shared service rejects a verb that does not fit the account (a
+        # payment into savings, a transfer, an overdrawing withdrawal). No
+        # telemetry here: this is console/app traffic, not tool traffic, and
+        # mixing the two would distort the tool rates.
+        try:
+            payload, created = record_transaction(
+                tenant=tenant,
+                account=account,
+                amount=amount,
+                transaction_type=body.get("transaction_type", "payment"),
+                txn_date=txn_date,
+                description=body.get("description") or "",
+                writer="owner",
+            )
+        except FinanceInputError as exc:
+            return Response(exc.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
         return Response(
             _owner_transaction_payload(tenant, payload),
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,

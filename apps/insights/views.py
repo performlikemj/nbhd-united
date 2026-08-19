@@ -181,6 +181,30 @@ _DIFF_FUNCS = {
 }
 
 
+def _validate_compare_order(a, b):
+    """Refuse a comparison whose periods are not older-then-newer.
+
+    The delta is computed as ``b − a`` and read out as change over time, so
+    swapping the arguments silently inverts the sign: $400 of debt paid off
+    reports as $400 added. Equal timestamps (the same snapshot passed twice)
+    are refused for the same reason — a delta of zero that means nothing.
+    """
+    if a.ts < b.ts:
+        return None
+    return Response(
+        {
+            "error": "snapshots_out_of_order",
+            "message": (
+                "period_a must be the EARLIER snapshot and period_b the later one — the delta is "
+                "computed as period_b minus period_a. Swap them and call again."
+            ),
+            "period_a_ts": a.ts.isoformat(),
+            "period_b_ts": b.ts.isoformat(),
+        },
+        status=status.HTTP_400_BAD_REQUEST,
+    )
+
+
 class PillarCompareView(APIView):
     """Return both snapshots plus a pillar-specific computed diff."""
 
@@ -208,6 +232,8 @@ class PillarCompareView(APIView):
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         a, b = snaps[a_id], snaps[b_id]
+        if err := _validate_compare_order(a, b):
+            return err
         diff_func = _DIFF_FUNCS.get(pillar)
         diff = diff_func(a.payload, b.payload) if diff_func else {}
 
