@@ -32,6 +32,12 @@ class FinanceAccount(models.Model):
         AccountType.OTHER_DEBT,
     }
 
+    ASSET_TYPES = {
+        AccountType.SAVINGS,
+        AccountType.CHECKING,
+        AccountType.EMERGENCY_FUND,
+    }
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="finance_accounts")
     account_type = models.CharField(max_length=32, choices=AccountType.choices)
@@ -101,6 +107,24 @@ class FinanceTransaction(models.Model):
         TRANSFER = "transfer", "Transfer"
         REFUND = "refund", "Refund"
         INTEREST = "interest", "Interest Charge"
+        DEPOSIT = "deposit", "Deposit"
+        WITHDRAWAL = "withdrawal", "Withdrawal"
+
+    # Which verbs are meaningful against which kind of account. A "payment" into
+    # a savings account used to subtract-and-clamp — the money vanished and the
+    # tool still reported success. The pairing is now enforced in
+    # ``services.record_transaction`` rather than implied by the balance math.
+    # ``transfer`` is in neither set: it is accepted by the schema but has no
+    # single-account meaning, so it is rejected with instructions to book legs.
+    DEBT_ACCOUNT_VERBS = frozenset(
+        {
+            TransactionType.PAYMENT,
+            TransactionType.CHARGE,
+            TransactionType.REFUND,
+            TransactionType.INTEREST,
+        }
+    )
+    ASSET_ACCOUNT_VERBS = frozenset({TransactionType.DEPOSIT, TransactionType.WITHDRAWAL})
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(Tenant, on_delete=models.CASCADE, related_name="finance_transactions")

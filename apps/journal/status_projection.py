@@ -51,10 +51,24 @@ def current_period_bounds(today: date) -> tuple[date, date]:
     return first, today.replace(day=last_day)
 
 
+DUE_DAY_MIN = 1
+DUE_DAY_MAX = 31
+
+
+def is_schedulable_due_day(due_day) -> bool:
+    """True when ``due_day`` is a real day-of-month we can build a date from."""
+    return isinstance(due_day, int) and not isinstance(due_day, bool) and DUE_DAY_MIN <= due_day <= DUE_DAY_MAX
+
+
 def effective_due_date(year: int, month: int, due_day: int) -> date:
-    """``due_day`` clamped to the month length (day 31 in Feb -> 28/29)."""
+    """``due_day`` clamped to the month length (day 31 in Feb -> 28/29).
+
+    Also floored at day 1: ``date(y, m, 0)`` raises, and this runs inside a
+    status provider whose exceptions cost the tenant their whole finance
+    section. Callers should still gate on ``is_schedulable_due_day``.
+    """
     last_day = calendar.monthrange(year, month)[1]
-    return date(year, month, min(due_day, last_day))
+    return date(year, month, min(max(due_day, DUE_DAY_MIN), last_day))
 
 
 def obligation_for_account(account: FinanceAccount, paid_amount: Decimal, today: date) -> dict | None:
@@ -68,7 +82,10 @@ def obligation_for_account(account: FinanceAccount, paid_amount: Decimal, today:
     """
     if not account.is_debt:
         return None
-    if account.due_day is None or not account.minimum_payment:
+    # ``is None`` was not enough: due_day=0 passed the check and then raised
+    # inside effective_due_date, and a raising provider is dropped whole — the
+    # tenant lost their ENTIRE finance status, every obligation, over one bad row.
+    if not is_schedulable_due_day(account.due_day) or not account.minimum_payment:
         return None
 
     minimum = account.minimum_payment
@@ -175,10 +192,29 @@ def _provide_finance(tenant: Tenant, today: date) -> dict:
     paid_by_account = {row["account_id"]: (row["total"] or Decimal("0")) for row in paid_rows}
 
     obligations: list[dict] = []
+    unschedulable = 0
     for account in FinanceAccount.objects.filter(tenant=tenant, is_active=True):
+        if account.due_day is not None and not is_schedulable_due_day(account.due_day):
+            unschedulable += 1
         ob = obligation_for_account(account, paid_by_account.get(account.id, Decimal("0")), today)
         if ob is not None:
             obligations.append(ob)
+
+    if unschedulable:
+        # One event per build, not per row: this says legacy out-of-range due_days
+        # are still on file for this tenant, which is otherwise invisible now that
+        # the projection skips them instead of exploding.
+        from apps.platform_logs.telemetry import emit_tool_event
+
+        emit_tool_event(
+            namespace="finance",
+            tool_name="journal-status-finance",
+            tenant_id=getattr(tenant, "id", None),
+            outcome="normalized",
+            reason_code="due_day_out_of_range",
+            detail={"field_count": unschedulable},
+        )
+
     return {"obligations": obligations}
 
 

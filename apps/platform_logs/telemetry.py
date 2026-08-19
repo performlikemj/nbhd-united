@@ -56,6 +56,21 @@ DETAIL_ALLOWLIST: dict[str, frozenset[str]] = {
     "fuel": frozenset({"weekday_key_style", "start_today_reject", "date_source"}),
     "cron": frozenset({"tz_missing", "dow_source", "schedule_kind"}),
     "datebook": frozenset({"origin", "image_before_config"}),
+    # Wave 1 money-truth fixes. Deliberately shape-only: an account nickname, a
+    # balance, or an APR value never appears here — `bound` and `*_count` say
+    # WHICH WAY the input was wrong and HOW MANY rows were involved, which is all
+    # a rate query needs.
+    "finance": frozenset(
+        {
+            "account_kind",  # asset | debt
+            "txn_type",  # payment | deposit | withdrawal | ...
+            "bound",  # low | high | unparseable | same — which side of a range failed
+            "field_count",  # partial update: fields the body actually carried
+            "candidate_count",  # ambiguous nickname: how many accounts matched
+            "match_tier",  # iexact | icontains
+            "date_source",  # body | tenant_today
+        }
+    ),
 }
 
 
