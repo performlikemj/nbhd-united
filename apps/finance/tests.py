@@ -342,18 +342,20 @@ class RuntimeFinanceViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
-    def test_invalid_account_type_defaults_to_other_debt(self):
+    def test_invalid_account_type_is_rejected(self):
+        """An unknown type used to be filed as ``other_debt`` — a debt the user
+        never had, counted against them in every total from then on."""
         response = self.client.post(
             self._url("/accounts/"),
             data={"nickname": "Stuff", "account_type": "magic_beans", "current_balance": 500},
             content_type="application/json",
             **self._headers(),
         )
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(
-            FinanceAccount.objects.first().account_type,
-            "other_debt",
-        )
+        self.assertEqual(response.status_code, 400)
+        body = response.json()
+        self.assertEqual(body["error"], "unknown_account_type")
+        self.assertIn("savings", body["details"][0]["allowed"])
+        self.assertFalse(FinanceAccount.objects.exists())
 
     def test_list_accounts(self):
         FinanceAccount.objects.create(
@@ -2470,3 +2472,47 @@ class FinanceEnvelopeTenantLocalDateTests(TestCase):
         with patch.object(fe, "tenant_today", return_value=date(2026, 6, 20)):
             body2 = fe.render_finance(self.tenant)
         self.assertNotIn("Upcoming due dates", body2)
+
+
+class FinanceEnvelopeDueDayGuardTests(TestCase):
+    """A stored out-of-range due_day must not invent an upcoming due date.
+
+    ``(due_day - today.day) % 31`` is only meaningful for a real day of the
+    month: due_day=0 wraps into the next-7-days bucket for a third of the month
+    and prints "due on day 0" into USER.md.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="FinEnvDueDay", telegram_chat_id=900912)
+
+    def _debt(self, nickname, due_day):
+        return FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type="credit_card",
+            nickname=nickname,
+            current_balance=Decimal("1200.00"),
+            minimum_payment=Decimal("50.00"),
+            due_day=due_day,
+            is_active=True,
+        )
+
+    def test_zero_due_day_is_not_reported_as_upcoming(self):
+        from unittest.mock import patch
+
+        import apps.finance.envelope as fe
+
+        self._debt("BrokenCC", due_day=0)
+        # Local 25th: (0 - 25) % 31 == 6, inside the 7-day window under the old code.
+        with patch.object(fe, "tenant_today", return_value=date(2026, 6, 25)):
+            body = fe.render_finance(self.tenant)
+        self.assertNotIn("Upcoming due dates", body)
+
+    def test_valid_due_day_still_reported(self):
+        from unittest.mock import patch
+
+        import apps.finance.envelope as fe
+
+        self._debt("GoodCC", due_day=28)
+        with patch.object(fe, "tenant_today", return_value=date(2026, 6, 25)):
+            body = fe.render_finance(self.tenant)
+        self.assertIn("Upcoming due dates", body)

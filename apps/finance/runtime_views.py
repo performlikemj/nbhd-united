@@ -7,17 +7,21 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from uuid import UUID
 
+from dateutil.relativedelta import relativedelta
 from rest_framework import status
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.common.tenant_tz import tenant_today
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.pii.egress import KnownValueResponseGuardMixin
+from apps.platform_logs.telemetry import emit_tool_event
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
+from .contracts import FinanceInputError
 from .models import FinanceAccount, PayoffPlan
 from .services import (
     AccountNotFound,
@@ -31,10 +35,58 @@ from .services import (
 
 logger = logging.getLogger(__name__)
 
+# Namespace for every enrichment event in this app. The detail keys are
+# allowlisted in apps/platform_logs/telemetry.py; anything else is dropped at
+# write time, which is why account nicknames and balances cannot leak here.
+TELEMETRY_NAMESPACE = "finance"
+
+DUE_DAY_MIN = 1
+DUE_DAY_MAX = 31
+APR_MIN = Decimal("0")
+APR_MAX = Decimal("100")
+# The DB column is DecimalField(max_digits=5, decimal_places=2): a third decimal
+# place is not storable, so accepting one means storing a number nobody sent.
+APR_MAX_DECIMAL_PLACES = 2
+# max_digits on the money columns. A value past these quantizes to "too many
+# digits" inside Django's DecimalField and surfaces as a 500 rather than a 400.
+MAX_MONEY = Decimal("9999999999.99")  # 12,2 — current_balance, credit_limit
+MAX_MINIMUM_PAYMENT = Decimal("99999999.99")  # 10,2
+
+_MISSING = object()
+
 
 class _FinanceResponseGuard(KnownValueResponseGuardMixin):
     pii_egress_seam = "finance_runtime_response"
-    pii_egress_text_fields = frozenset({"nickname", "description", "display_name", "account_name", "notes", "summary"})
+    pii_egress_text_fields = frozenset(
+        {
+            "nickname",
+            "description",
+            "display_name",
+            "account_name",
+            "notes",
+            "summary",
+            # Candidate nicknames echoed by an ambiguous-match rejection.
+            "candidates",
+        }
+    )
+
+
+def _emit(tool_name: str, tenant_id, *, outcome: str, reason_code: str, detail: dict | None = None) -> None:
+    """Record one finance enrichment event. Fail-open, content-free by construction."""
+    emit_tool_event(
+        namespace=TELEMETRY_NAMESPACE,
+        tool_name=tool_name,
+        tenant_id=tenant_id,
+        outcome=outcome,
+        reason_code=reason_code,
+        detail=detail or {},
+    )
+
+
+def _reject(exc: FinanceInputError, tool_name: str, tenant_id) -> Response:
+    """Turn a validation refusal into its 400 envelope plus its telemetry."""
+    _emit(tool_name, tenant_id, outcome="rejected", reason_code=exc.reason_code, detail=exc.telemetry)
+    return Response(exc.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
 
 def _internal_auth_or_401(request, tenant_id: UUID) -> Response | None:
@@ -70,6 +122,157 @@ def _parse_decimal(value, field_name: str) -> Decimal:
         return Decimal(str(value))
     except (InvalidOperation, ValueError) as exc:
         raise ValueError(f"{field_name} must be a valid number") from exc
+
+
+def _parse_account_type(value, *, required: bool) -> str | None:
+    """Validate ``account_type``, or raise.
+
+    Unknown values used to fall back to ``other_debt``: the user's savings
+    account was silently filed as a debt and counted against them in every total
+    from then on. An omitted type on create is now equally loud — the plugin
+    declares it required, so silence there means the call is malformed.
+    """
+    account_type = str(value or "").strip().lower()
+    if not account_type:
+        if required:
+            raise FinanceInputError(
+                "account_type_required",
+                "account_type is required when creating an account. Pick the closest value from `allowed`.",
+                field="account_type",
+                reason_code="account_type_missing",
+                allowed=sorted(FinanceAccount.AccountType.values),
+            )
+        return None
+    if account_type not in FinanceAccount.AccountType.values:
+        raise FinanceInputError(
+            "unknown_account_type",
+            "That account_type is not recognised. Use one of `allowed` — do not guess a debt type.",
+            field="account_type",
+            reason_code="unknown_account_type",
+            allowed=sorted(FinanceAccount.AccountType.values),
+        )
+    return account_type
+
+
+def _parse_due_day(value) -> int | None:
+    """Validate ``due_day`` as a real day-of-month, or raise.
+
+    Out-of-range values are not cosmetic. ``due_day=0`` reaches
+    ``date(year, month, 0)`` in the journal status projection and raises inside
+    the provider, which drops the tenant's ENTIRE finance status from the
+    snapshot; the USER.md due-date window reads it modulo 31 and invents a due
+    date. Both consumers are guarded too, but the value never gets in from here.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        day = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise FinanceInputError(
+            "due_day_invalid",
+            "due_day must be a whole number between 1 and 31.",
+            field="due_day",
+            reason_code="due_day_out_of_range",
+            telemetry={"bound": "unparseable"},
+        ) from None
+    if day < DUE_DAY_MIN or day > DUE_DAY_MAX:
+        raise FinanceInputError(
+            "due_day_out_of_range",
+            (
+                f"due_day must be between {DUE_DAY_MIN} and {DUE_DAY_MAX}. If the user has no fixed "
+                "due date, omit the field instead of sending 0."
+            ),
+            field="due_day",
+            reason_code="due_day_out_of_range",
+            telemetry={"bound": "low" if day < DUE_DAY_MIN else "high"},
+        )
+    return day
+
+
+def _parse_interest_rate(value) -> Decimal | None:
+    """Validate an APR as a PERCENTAGE, or raise.
+
+    Three failure modes, all previously silent: an unparseable rate became NULL
+    (an unknown APR, which the payoff engine then treats as 0% and reports a
+    payoff date that is too optimistic); a rate of 1000 or more parsed fine and
+    then blew up as a 500 inside the DecimalField; and a fractional rate like
+    ``0.229`` for "22.9%" stored a rate 100× too small after being rounded to
+    two places. NULL stays available for a genuinely unknown APR — but only by
+    omitting the field or sending null, never as the residue of a bad parse.
+    """
+    if value is None or value == "":
+        return None
+    try:
+        rate = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise FinanceInputError(
+            "apr_unparseable",
+            "interest_rate must be a number, e.g. 22.9 for 22.9% APR. Omit it if the APR is unknown.",
+            field="interest_rate",
+            reason_code="apr_unparseable",
+            telemetry={"bound": "unparseable"},
+        ) from None
+    if not rate.is_finite():
+        raise FinanceInputError(
+            "apr_unparseable",
+            "interest_rate must be a finite number, e.g. 22.9 for 22.9% APR.",
+            field="interest_rate",
+            reason_code="apr_unparseable",
+            telemetry={"bound": "unparseable"},
+        )
+    if rate < APR_MIN or rate > APR_MAX:
+        raise FinanceInputError(
+            "apr_out_of_band",
+            (f"interest_rate is an annual percentage between {APR_MIN} and {APR_MAX}. Send 22.9 for 22.9% APR."),
+            field="interest_rate",
+            reason_code="apr_out_of_band",
+            telemetry={"bound": "low" if rate < APR_MIN else "high"},
+        )
+    if rate.as_tuple().exponent < -APR_MAX_DECIMAL_PLACES:
+        raise FinanceInputError(
+            "apr_precision",
+            (
+                "interest_rate stores at most 2 decimal places. If you meant 22.9%, send 22.9 — "
+                "not 0.229, which would record a rate 100x too small."
+            ),
+            field="interest_rate",
+            reason_code="apr_precision",
+            telemetry={"bound": "precision"},
+        )
+    return rate
+
+
+def _parse_money(value, *, field: str, maximum: Decimal) -> Decimal | None:
+    """Validate one money field, or raise. ``None``/``""`` clears it."""
+    if value is None or value == "":
+        return None
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, ValueError):
+        raise FinanceInputError(
+            "invalid_number",
+            f"{field} must be a number in dollars, e.g. 1200.50.",
+            field=field,
+            reason_code="invalid_number",
+            telemetry={"bound": "unparseable"},
+        ) from None
+    if not amount.is_finite():
+        raise FinanceInputError(
+            "invalid_number",
+            f"{field} must be a finite number in dollars.",
+            field=field,
+            reason_code="invalid_number",
+            telemetry={"bound": "unparseable"},
+        )
+    if abs(amount) > maximum:
+        raise FinanceInputError(
+            "amount_out_of_range",
+            f"{field} is larger than this ledger can store (max {maximum}). Check the units.",
+            field=field,
+            reason_code="amount_out_of_range",
+            telemetry={"bound": "high"},
+        )
+    return amount
 
 
 class RuntimeFinanceAccountsView(_FinanceResponseGuard, APIView):
@@ -123,21 +326,55 @@ class RuntimeFinanceAccountsView(_FinanceResponseGuard, APIView):
             return blocked
 
         body = request.data
+        tool = "runtime-finance-accounts"
         nickname = (body.get("nickname") or "").strip()
         if not nickname:
-            return Response(
-                {"error": "nickname is required"},
-                status=status.HTTP_400_BAD_REQUEST,
+            return _reject(
+                FinanceInputError(
+                    "nickname_required",
+                    "nickname is required — it is how the user refers to the account.",
+                    field="nickname",
+                ),
+                tool,
+                tenant_id,
             )
 
+        # Fields the caller actually sent. This is the whole fix for the update
+        # path: the old code read every optional field with .get() and wrote the
+        # resulting None straight into the row, so "update the balance" wiped the
+        # APR, the minimum payment, the credit limit and the due day. An omitted
+        # field now means "leave it alone"; an explicit null still clears it.
+        optional_parsers = (
+            ("interest_rate", _parse_interest_rate),
+            ("minimum_payment", lambda v: _parse_money(v, field="minimum_payment", maximum=MAX_MINIMUM_PAYMENT)),
+            ("credit_limit", lambda v: _parse_money(v, field="credit_limit", maximum=MAX_MONEY)),
+            ("due_day", _parse_due_day),
+        )
+        supplied: dict = {}
         try:
-            balance = _parse_decimal(body.get("current_balance"), "current_balance")
-        except ValueError as exc:
-            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            for field, parser in optional_parsers:
+                raw = body.get(field, _MISSING)
+                if raw is not _MISSING:
+                    supplied[field] = parser(raw)
 
-        account_type = body.get("account_type", "other_debt")
-        if account_type not in FinanceAccount.AccountType.values:
-            account_type = "other_debt"
+            raw_balance = body.get("current_balance", _MISSING)
+            if raw_balance is not _MISSING:
+                balance = _parse_money(raw_balance, field="current_balance", maximum=MAX_MONEY)
+                # Unlike the optional columns, a balance has no "unknown" state:
+                # an explicit null is a malformed instruction, not a clear.
+                if balance is None:
+                    raise FinanceInputError(
+                        "current_balance_required",
+                        "current_balance cannot be null. Omit it to leave the stored balance alone.",
+                        field="current_balance",
+                    )
+                supplied["current_balance"] = balance
+
+            raw_type = body.get("account_type", _MISSING)
+            if raw_type is not _MISSING:
+                supplied["account_type"] = _parse_account_type(raw_type, required=False)
+        except FinanceInputError as exc:
+            return _reject(exc, tool, tenant_id)
 
         from apps.pii.store_authoring import author_store_fields
 
@@ -152,24 +389,62 @@ class RuntimeFinanceAccountsView(_FinanceResponseGuard, APIView):
         stored_nickname = authored["nickname"]
 
         # Upsert by placeholder-space nickname (fuzzy: case-insensitive)
-        account, created = FinanceAccount.objects.update_or_create(
+        account = FinanceAccount.objects.filter(
             tenant=tenant,
-            nickname__iexact=stored_nickname,
             is_active=True,
-            defaults={
-                "nickname": stored_nickname,
-                "pii_receipts": receipts,
-                "account_type": account_type,
-                "current_balance": balance,
-                "interest_rate": _safe_decimal(body.get("interest_rate")),
-                "minimum_payment": _safe_decimal(body.get("minimum_payment")),
-                "credit_limit": _safe_decimal(body.get("credit_limit")),
-                "due_day": _safe_int(body.get("due_day")),
-            },
-        )
-        if created and account.original_balance is None:
-            account.original_balance = balance
-            account.save(update_fields=["original_balance"])
+            nickname__iexact=stored_nickname,  # guard: encrypted-predicate
+        ).first()
+        created = account is None
+
+        account_type = supplied.get("account_type")
+        try:
+            if created:
+                # Create still demands the fields that define the account: a row
+                # with no type and no balance is not a partial update, it is a
+                # malformed call.
+                account_type = _parse_account_type(account_type, required=True)
+                if supplied.get("current_balance") is None:
+                    raise FinanceInputError(
+                        "current_balance_required",
+                        "current_balance is required when creating an account.",
+                        field="current_balance",
+                    )
+            elif account_type is None:
+                # An explicit null account_type on update would blank the column;
+                # there is no such thing as a typeless account, so ignore it.
+                supplied.pop("account_type", None)
+        except FinanceInputError as exc:
+            return _reject(exc, tool, tenant_id)
+
+        if created:
+            balance = supplied["current_balance"]
+            account = FinanceAccount.objects.create(
+                tenant=tenant,
+                nickname=stored_nickname,
+                pii_receipts=receipts,
+                account_type=account_type,
+                current_balance=balance,
+                original_balance=balance,
+                interest_rate=supplied.get("interest_rate"),
+                minimum_payment=supplied.get("minimum_payment"),
+                credit_limit=supplied.get("credit_limit"),
+                due_day=supplied.get("due_day"),
+            )
+        else:
+            account.nickname = stored_nickname
+            account.pii_receipts = receipts
+            for field, value in supplied.items():
+                setattr(account, field, value)
+            account.save(
+                update_fields=["nickname", "pii_receipts", *supplied.keys(), "updated_at"],
+            )
+            _emit(
+                tool,
+                tenant_id,
+                outcome="accepted",
+                reason_code="partial_update_fields",
+                detail={"field_count": len(supplied)},
+            )
 
         return Response(
             {
@@ -201,8 +476,11 @@ class RuntimeFinanceTransactionsView(_FinanceResponseGuard, APIView):
             return blocked
 
         body = request.data
+        tool = "runtime-finance-transactions"
         try:
             account = resolve_account(tenant, account_nickname=body.get("account_nickname"))
+        except FinanceInputError as exc:
+            return _reject(exc, tool, tenant_id)
         except AccountNotFound as exc:
             return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
 
@@ -211,31 +489,52 @@ class RuntimeFinanceTransactionsView(_FinanceResponseGuard, APIView):
         except ValueError as exc:
             return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        txn_date = body.get("date")
-        if txn_date:
+        # The tenant's calendar day, not the server's. The dedup key includes the
+        # date, so a UTC "today" made a retry that crossed 00:00 UTC (09:00 JST)
+        # look like a brand-new payment and debited the account a second time.
+        today = tenant_today(tenant)
+        raw_date = body.get("date")
+        date_source = "tenant_today"
+        if raw_date:
             try:
-                txn_date = date.fromisoformat(txn_date)
+                txn_date = date.fromisoformat(raw_date)
+                date_source = "body"
             except (TypeError, ValueError):
-                txn_date = date.today()
+                txn_date = today
         else:
-            txn_date = date.today()
+            txn_date = today
+        if date_source == "tenant_today":
+            _emit(
+                tool,
+                tenant_id,
+                outcome="normalized",
+                reason_code="tenant_date_applied",
+                detail={"date_source": date_source},
+            )
 
-        payload, created = record_transaction(
-            tenant=tenant,
-            account=account,
-            amount=amount,
-            transaction_type=body.get("transaction_type", "payment"),
-            txn_date=txn_date,
-            description=body.get("description") or "",
-            writer="runtime",
-        )
+        try:
+            payload, created = record_transaction(
+                tenant=tenant,
+                account=account,
+                amount=amount,
+                transaction_type=body.get("transaction_type", "payment"),
+                txn_date=txn_date,
+                description=body.get("description") or "",
+                writer="runtime",
+            )
+        except FinanceInputError as exc:
+            return _reject(exc, tool, tenant_id)
+
+        if created and payload.get("transaction_type") == "deposit":
+            _emit(tool, tenant_id, outcome="accepted", reason_code="deposit_recorded", detail={"txn_type": "deposit"})
+
         return Response(
             payload,
             status=status.HTTP_201_CREATED if created else status.HTTP_200_OK,
         )
 
 
-class RuntimeFinanceBalanceUpdateView(APIView):
+class RuntimeFinanceBalanceUpdateView(_FinanceResponseGuard, APIView):
     """POST: update an account balance directly."""
 
     permission_classes = [AllowAny]
@@ -253,17 +552,17 @@ class RuntimeFinanceBalanceUpdateView(APIView):
             return blocked
 
         body = request.data
+        tool = "runtime-finance-balance"
         nickname = (body.get("account_nickname") or body.get("nickname") or "").strip()
 
-        account = None
-        if nickname:
-            account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__iexact=nickname).first()
-            if not account:
-                account = FinanceAccount.objects.filter(
-                    tenant=tenant, is_active=True, nickname__icontains=nickname
-                ).first()
-
-        if not account:
+        # Shared resolution: this path used to keep its own copy of the fuzzy
+        # match, so it inherited the same sticky first()-wins pick and skipped
+        # the placeholder-space variants the rest of finance searches on.
+        try:
+            account = resolve_account(tenant, account_nickname=nickname)
+        except FinanceInputError as exc:
+            return _reject(exc, tool, tenant_id)
+        except AccountNotFound:
             return Response(
                 {"error": f"No account found matching '{nickname}'"},
                 status=status.HTTP_404_NOT_FOUND,
@@ -287,7 +586,7 @@ class RuntimeFinanceBalanceUpdateView(APIView):
         )
 
 
-class RuntimeFinanceArchiveAccountView(APIView):
+class RuntimeFinanceArchiveAccountView(_FinanceResponseGuard, APIView):
     """POST: archive an account (soft-delete, hides from totals/calculations)."""
 
     permission_classes = [AllowAny]
@@ -312,11 +611,11 @@ class RuntimeFinanceArchiveAccountView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__iexact=nickname).first()
-        if not account:
-            account = FinanceAccount.objects.filter(tenant=tenant, is_active=True, nickname__icontains=nickname).first()
-
-        if not account:
+        try:
+            account = resolve_account(tenant, account_nickname=nickname)
+        except FinanceInputError as exc:
+            return _reject(exc, "runtime-finance-archive-account", tenant_id)
+        except AccountNotFound:
             return Response(
                 {"error": f"No active account found matching '{nickname}'"},
                 status=status.HTTP_404_NOT_FOUND,
@@ -335,7 +634,7 @@ class RuntimeFinanceArchiveAccountView(APIView):
         )
 
 
-class RuntimeFinanceUnarchiveAccountView(APIView):
+class RuntimeFinanceUnarchiveAccountView(_FinanceResponseGuard, APIView):
     """POST: restore a previously archived account."""
 
     permission_classes = [AllowAny]
@@ -360,13 +659,11 @@ class RuntimeFinanceUnarchiveAccountView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        account = FinanceAccount.objects.filter(tenant=tenant, is_active=False, nickname__iexact=nickname).first()
-        if not account:
-            account = FinanceAccount.objects.filter(
-                tenant=tenant, is_active=False, nickname__icontains=nickname
-            ).first()
-
-        if not account:
+        try:
+            account = resolve_account(tenant, account_nickname=nickname, is_active=False)
+        except FinanceInputError as exc:
+            return _reject(exc, "runtime-finance-unarchive-account", tenant_id)
+        except AccountNotFound:
             return Response(
                 {"error": f"No archived account found matching '{nickname}'"},
                 status=status.HTTP_404_NOT_FOUND,
@@ -440,6 +737,7 @@ class RuntimeFinancePayoffView(APIView):
             is_active=True,
         ).exclude(account_type__in=["savings", "checking", "emergency_fund"])
 
+        scored = [a for a in debt_accounts if a.current_balance > 0]
         debts = [
             DebtInput(
                 nickname=a.nickname,
@@ -447,8 +745,7 @@ class RuntimeFinancePayoffView(APIView):
                 interest_rate=a.interest_rate or Decimal("0"),
                 minimum_payment=a.minimum_payment or Decimal("0"),
             )
-            for a in debt_accounts
-            if a.current_balance > 0
+            for a in scored
         ]
 
         if not debts:
@@ -459,11 +756,29 @@ class RuntimeFinancePayoffView(APIView):
                 }
             )
 
+        # A NULL APR is treated as 0% by the engine above, which quietly makes the
+        # projected payoff date earlier than reality. The math is unchanged here
+        # (that is a separate decision); this records how often the substitution
+        # fires so the size of the lie is measurable rather than assumed.
+        null_apr_count = sum(1 for a in scored if a.interest_rate is None)
+        if null_apr_count:
+            _emit(
+                "runtime-finance-payoff",
+                tenant_id,
+                outcome="normalized",
+                reason_code="null_apr_as_zero",
+                detail={"field_count": null_apr_count},
+            )
+
+        # Payoff schedules start next month in the TENANT's calendar, not the
+        # server's — the stored payoff_date is a user-facing promise.
+        start_date = (tenant_today(tenant) + relativedelta(months=1)).replace(day=1)
+
         if strategy and strategy in ("snowball", "avalanche", "hybrid"):
-            result = calculate_payoff(debts, monthly_budget, strategy)
+            result = calculate_payoff(debts, monthly_budget, strategy, start_date)
             results = {strategy: payoff_result_to_dict(result)}
         else:
-            all_results = compare_strategies(debts, monthly_budget)
+            all_results = compare_strategies(debts, monthly_budget, start_date)
             results = {k: payoff_result_to_dict(v) for k, v in all_results.items()}
 
         # Save active plan if strategy specified
@@ -554,21 +869,3 @@ class RuntimeFinanceSummaryView(_FinanceResponseGuard, APIView):
                 else None,
             }
         )
-
-
-def _safe_decimal(value) -> Decimal | None:
-    if value is None or value == "":
-        return None
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return None
-
-
-def _safe_int(value) -> int | None:
-    if value is None or value == "":
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None

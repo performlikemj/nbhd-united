@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from django.db.models import Sum
 
+from apps.common.tenant_tz import tenant_today
 from apps.tenants.models import Tenant
 
 from .models import FinanceAccount, FinanceSnapshot, FinanceTransaction
@@ -21,9 +22,6 @@ def create_monthly_snapshots(snapshot_date: date | None = None) -> int:
     Intended to be called on the 1st of each month via QStash.
     Returns the number of snapshots created.
     """
-    if snapshot_date is None:
-        snapshot_date = date.today().replace(day=1)
-
     # Coarse ORM filter, then the authoritative per-tenant gate. ``finance_active``
     # is a PROPERTY (stored flag AND ``settings.GRAVITY_ENABLED``), not a DB column,
     # so it can't live in ``.filter()``. Checking it here means the platform-wide
@@ -37,16 +35,22 @@ def create_monthly_snapshots(snapshot_date: date | None = None) -> int:
     for tenant in tenants:
         if not tenant.finance_active:
             continue
+        # Each tenant's month starts at THEIR midnight. The cron fires once for
+        # the fleet, so a bare UTC ``today`` filed a Tokyo tenant's 1st-of-month
+        # snapshot under the previous month for the first nine hours of it — and
+        # the (tenant, date) uniqueness means that wrong row is the one that
+        # sticks. An explicit ``snapshot_date`` still wins, for backfills.
+        tenant_snapshot_date = snapshot_date or tenant_today(tenant).replace(day=1)
         try:
             # _create_snapshot_for_tenant returns None on the duplicate-skip and
             # no-accounts-skip paths. Only count rows actually written so the
             # return value matches the docstring ("number of snapshots created").
-            if _create_snapshot_for_tenant(tenant, snapshot_date) is not None:
+            if _create_snapshot_for_tenant(tenant, tenant_snapshot_date) is not None:
                 created_count += 1
         except Exception:
             logger.exception("Failed to create finance snapshot for tenant %s", tenant.id)
 
-    logger.info("Created %d finance snapshots for %s", created_count, snapshot_date)
+    logger.info("Created %d finance snapshots for %s", created_count, snapshot_date or "each tenant's local month")
     return created_count
 
 

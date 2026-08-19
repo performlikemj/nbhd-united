@@ -72,6 +72,21 @@ DETAIL_ALLOWLIST: dict[str, frozenset[str]] = {
     # "one tool is teaching the model badly" from "the whole cron surface is".
     "cron": frozenset({"tz_missing", "dow_source", "schedule_kind", "pattern"}),
     "datebook": frozenset({"origin", "image_before_config"}),
+    # Wave 1 money-truth fixes. Deliberately shape-only: an account nickname, a
+    # balance, or an APR value never appears here — `bound` and `*_count` say
+    # WHICH WAY the input was wrong and HOW MANY rows were involved, which is all
+    # a rate query needs.
+    "finance": frozenset(
+        {
+            "account_kind",  # asset | debt
+            "txn_type",  # payment | deposit | withdrawal | ...
+            "bound",  # low | high | unparseable | same — which side of a range failed
+            "field_count",  # partial update: fields the body actually carried
+            "candidate_count",  # ambiguous nickname: how many accounts matched
+            "match_tier",  # iexact | icontains
+            "date_source",  # body | tenant_today
+        }
+    ),
 }
 
 

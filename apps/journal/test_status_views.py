@@ -349,3 +349,62 @@ class JournalStatusEndpointTests(TestCase):
         resp = self.client.get("/api/v1/journal/status/")
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.data["open_tasks"], [])
+
+
+class OutOfRangeDueDayTests(TestCase):
+    """A single bad ``due_day`` must not cost the tenant their finance status.
+
+    ``due_day=0`` passed the old ``is None`` gate, reached
+    ``date(year, month, 0)`` inside ``effective_due_date``, and raised. A raising
+    provider is dropped whole, so ONE malformed row silently deleted every
+    obligation from the snapshot the assistant grounds on.
+    """
+
+    def setUp(self):
+        self.user = User.objects.create_user(username="duedayuser", password="x")
+        self.tenant = Tenant.objects.create(
+            user=self.user,
+            status="active",
+            experimental_typed_journal_lifecycle=True,
+            finance_enabled=True,
+        )
+
+    def _account(self, nickname, due_day):
+        return FinanceAccount.objects.create(
+            tenant=self.tenant,
+            account_type=FinanceAccount.AccountType.STUDENT_LOAN,
+            nickname=nickname,
+            current_balance=Decimal("1000.00"),
+            minimum_payment=Decimal("25.00"),
+            due_day=due_day,
+            is_active=True,
+        )
+
+    def test_zero_due_day_does_not_drop_the_finance_section(self):
+        self._account("Broken Loan", 0)
+        self._account("Good Loan", 5)
+
+        result = build_journal_status(self.tenant, today=date(2026, 6, 4))
+
+        self.assertNotIn("unavailable", result)
+        self.assertEqual([o["nickname"] for o in result["obligations"]], ["Good Loan"])
+
+    def test_out_of_range_due_day_is_reported_as_telemetry(self):
+        from apps.platform_logs.models import ToolContractEvent
+
+        self._account("Broken Loan", 45)
+        build_journal_status(self.tenant, today=date(2026, 6, 4))
+
+        event = ToolContractEvent.objects.get(reason_code="due_day_out_of_range")
+        self.assertEqual(event.namespace, "finance")
+        self.assertEqual(event.detail["field_count"], 1)
+
+    def test_absent_due_day_is_not_flagged(self):
+        from apps.platform_logs.models import ToolContractEvent
+
+        self._account("No Due Date", None)
+        build_journal_status(self.tenant, today=date(2026, 6, 4))
+        self.assertFalse(ToolContractEvent.objects.filter(reason_code="due_day_out_of_range").exists())
+
+    def test_effective_due_date_floors_at_day_one(self):
+        self.assertEqual(effective_due_date(2026, 6, 0), date(2026, 6, 1))
