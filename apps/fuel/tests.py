@@ -6789,3 +6789,466 @@ class WorkoutDateCascadeTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data[0]["metric"], "est_1rm")
         self.assertEqual(response.data[0]["display"], "est. 1RM 101.3 kg (from 80 kg × 8)")
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Weekday NAME keys + start-anchor enforcement
+#
+# 2026-08-19: the user asked for a workout "today" (Wednesday). The model
+# passed the correct start_date with schedule_json key "3" — Thursday under
+# this product's Mon=0 contract, Wednesday under ISO/cron numbering — and the
+# session landed a day late. "3" was a legal weekday, so the validator took it,
+# and the advisory start_date_note in the response went unread. Two layers
+# close it: weekday NAMES (no convention to slip between) and a hard 400 when
+# a plan anchored on today has no session today.
+# ═════════════════════════════════════════════════════════════════════
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class WeekdayNameScheduleKeyTests(TestCase):
+    """schedule_json accepts weekday names, normalizes them to the canonical
+    int-string storage form, and refuses two spellings of the same day."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Weekday Names", telegram_chat_id=800501)
+        seed_internal_key(self.tenant)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+        cron_patch = patch("apps.fuel.runtime_views._manage_fuel_cron", return_value=None)
+        cron_patch.start()
+        self.addCleanup(cron_patch.stop)
+
+    def _url(self):
+        return f"/api/v1/fuel/runtime/{self.tenant.id}/plans/"
+
+    def _post(self, body):
+        return self.client.post(self._url(), data=body, format="json", **self.headers)
+
+    def test_full_names_normalize_to_canonical_int_keys(self):
+        resp = self._post(
+            {
+                "name": "Named Days",
+                "weeks": 1,
+                "days_per_week": 3,
+                "start_date": "2026-06-15",  # Monday
+                "schedule_json": {
+                    "monday": {"category": "strength", "activity": "Upper Pull", **_STRENGTH_DETAIL},
+                    "Wednesday": {"category": "cardio", "activity": "Tempo Run"},
+                    "FRIDAY": {"category": "strength", "activity": "Lower Power", **_STRENGTH_DETAIL},
+                },
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        plan = WorkoutPlan.objects.get(id=resp.data["id"])
+        # Storage stays int-keyed: PlanSlot.weekday, the reconciler, and the
+        # cron builder all read this shape. No migration, no consumer change.
+        self.assertEqual(sorted(plan.schedule_json.keys()), ["0", "2", "4"])
+        workouts = list(Workout.objects.filter(plan=plan).order_by("date"))
+        self.assertEqual([str(w.date) for w in workouts], ["2026-06-15", "2026-06-17", "2026-06-19"])
+        self.assertEqual([w.date.weekday() for w in workouts], [0, 2, 4])
+        self.assertEqual(sorted(PlanSlot.objects.filter(plan=plan).values_list("weekday", flat=True)), [0, 2, 4])
+
+    def test_abbreviations_accepted(self):
+        resp = self._post(
+            {
+                "name": "Abbrev Days",
+                "weeks": 1,
+                "days_per_week": 2,
+                "start_date": "2026-06-15",
+                "schedule_json": {
+                    "tue": {"category": "cardio", "activity": "Easy Run"},
+                    "thurs": {"category": "cardio", "activity": "Intervals"},
+                },
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        plan = WorkoutPlan.objects.get(id=resp.data["id"])
+        self.assertEqual(sorted(plan.schedule_json.keys()), ["1", "3"])
+
+    def test_mixed_names_and_legacy_integers(self):
+        resp = self._post(
+            {
+                "name": "Mixed Keys",
+                "weeks": 1,
+                "days_per_week": 2,
+                "start_date": "2026-06-15",
+                "schedule_json": {
+                    "0": {"category": "strength", "activity": "Squat", **_STRENGTH_DETAIL},
+                    "thursday": {"category": "cardio", "activity": "Row"},
+                },
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        plan = WorkoutPlan.objects.get(id=resp.data["id"])
+        self.assertEqual(sorted(plan.schedule_json.keys()), ["0", "3"])
+
+    def test_duplicate_after_normalization_rejected(self):
+        resp = self._post(
+            {
+                "name": "Dup Days",
+                "weeks": 1,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "schedule_json": {
+                    "2": {"category": "cardio", "activity": "Run A"},
+                    "wednesday": {"category": "cardio", "activity": "Run B"},
+                },
+            }
+        )
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertEqual(resp.data["error"], "invalid_schedule")
+        self.assertIn("wednesday", resp.data["detail"])
+        self.assertFalse(WorkoutPlan.objects.filter(tenant=self.tenant).exists())
+
+    def test_invalid_weekday_name_rejected(self):
+        resp = self._post(
+            {
+                "name": "Bad Day",
+                "weeks": 1,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "schedule_json": {"wodensday": {"category": "cardio", "activity": "Run"}},
+            }
+        )
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertEqual(resp.data["error"], "invalid_schedule")
+        self.assertIn("wodensday", resp.data["detail"])
+        self.assertIn("monday..sunday", resp.data["detail"])
+
+    def test_out_of_range_integer_still_rejected(self):
+        resp = self._post(
+            {
+                "name": "Day Seven",
+                "weeks": 1,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "schedule_json": {"7": {"category": "cardio", "activity": "Run"}},
+            }
+        )
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertIn("out of range", resp.data["detail"])
+
+    def test_name_keyed_create_matches_int_keyed_create(self):
+        """Storage round-trip: the two spellings must be indistinguishable
+        downstream — same stored template, same materialized calendar, same
+        summary payload."""
+        body = {
+            "weeks": 2,
+            "days_per_week": 2,
+            "start_date": "2026-06-15",
+        }
+        int_resp = self._post(
+            {
+                **body,
+                "name": "Int Keyed",
+                "schedule_json": {
+                    "0": {"category": "strength", "activity": "Push", "target_rpe": 8, **_STRENGTH_DETAIL},
+                    "3": {"category": "cardio", "activity": "Tempo", "duration_minutes": 40},
+                },
+            }
+        )
+        name_resp = self._post(
+            {
+                **body,
+                "name": "Name Keyed",
+                "concurrent": True,
+                "schedule_json": {
+                    "monday": {"category": "strength", "activity": "Push", "target_rpe": 8, **_STRENGTH_DETAIL},
+                    "thursday": {"category": "cardio", "activity": "Tempo", "duration_minutes": 40},
+                },
+            }
+        )
+        self.assertEqual(int_resp.status_code, 201, int_resp.data)
+        self.assertEqual(name_resp.status_code, 201, name_resp.data)
+
+        int_plan = WorkoutPlan.objects.get(id=int_resp.data["id"])
+        name_plan = WorkoutPlan.objects.get(id=name_resp.data["id"])
+        self.assertEqual(int_plan.schedule_json, name_plan.schedule_json)
+        self.assertEqual(int_resp.data["workouts_created"], name_resp.data["workouts_created"])
+        self.assertEqual(int_resp.data["first_workout_date"], name_resp.data["first_workout_date"])
+
+        def _calendar(plan):
+            return [
+                (str(w.date), w.category, w.activity, w.duration_minutes, w.rpe)
+                for w in Workout.objects.filter(plan=plan).order_by("date")
+            ]
+
+        self.assertEqual(_calendar(int_plan), _calendar(name_plan))
+
+        # The summary endpoint (what the assistant reads back) sees both plans
+        # identically apart from the name.
+        summary = self.client.get(f"/api/v1/fuel/runtime/{self.tenant.id}/summary/", **self.headers)
+        self.assertEqual(summary.status_code, 200, summary.data)
+        by_name = {p["name"]: p for p in summary.data["active_plans"]}
+        self.assertEqual(by_name["Int Keyed"]["workout_count"], by_name["Name Keyed"]["workout_count"])
+
+    def test_week_overrides_accept_names_including_rest_days(self):
+        resp = self._post(
+            {
+                "name": "Override Names",
+                "weeks": 4,
+                "days_per_week": 2,
+                "start_date": "2026-06-15",
+                "schedule_json": {
+                    "monday": {"category": "strength", "activity": "Push", **_STRENGTH_DETAIL},
+                    "wednesday": {"category": "cardio", "activity": "Run"},
+                },
+                "week_overrides": {
+                    "3": {
+                        "monday": {"category": "strength", "activity": "Deload", "target_rpe": 5, **_STRENGTH_DETAIL},
+                        "wednesday": None,
+                    }
+                },
+            }
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        plan = WorkoutPlan.objects.get(id=resp.data["id"])
+        self.assertEqual(plan.week_overrides, {"3": {"0": plan.week_overrides["3"]["0"], "2": None}})
+        self.assertEqual(plan.week_overrides["3"]["0"]["activity"], "Deload")
+        # Week 4 (offset 3) rests Wednesday: 2026-07-08 has no session.
+        dates = {str(w.date) for w in Workout.objects.filter(plan=plan)}
+        self.assertIn("2026-07-06", dates)
+        self.assertNotIn("2026-07-08", dates)
+
+    def test_week_overrides_duplicate_weekday_rejected(self):
+        resp = self._post(
+            {
+                "name": "Override Dup",
+                "weeks": 2,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "schedule_json": {"monday": {"category": "cardio", "activity": "Run"}},
+                "week_overrides": {"1": {"monday": None, "0": {"category": "cardio", "activity": "Row"}}},
+            }
+        )
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertEqual(resp.data["error"], "invalid_week_overrides")
+        self.assertIn("monday", resp.data["detail"])
+
+    def test_update_path_accepts_names_and_keeps_supplied_detail(self):
+        created = self._post(
+            {
+                "name": "Update Names",
+                "weeks": 2,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "schedule_json": {"monday": {"category": "strength", "activity": "Push", **_STRENGTH_DETAIL}},
+            }
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        plan_id = created.data["id"]
+
+        new_detail = {
+            "exercises": [{"name": "Overhead Press", "sets": [{"type": "weighted_reps", "reps": 3, "weight": 45}]}]
+        }
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{plan_id}/",
+            data={
+                "schedule_json": {
+                    "tuesday": {"category": "strength", "activity": "Press Day", "detail_json": new_detail}
+                }
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        plan = WorkoutPlan.objects.get(id=plan_id)
+        self.assertEqual(list(plan.schedule_json.keys()), ["1"])
+        # The name-keyed payload DID supply detail_json — the strip-injected-key
+        # loop must not mistake it for an omission and blank the prescription.
+        self.assertEqual(plan.schedule_json["1"]["detail_json"]["exercises"][0]["name"], "Overhead Press")
+
+    def test_update_path_rejects_duplicate_weekday(self):
+        created = self._post(
+            {
+                "name": "Update Dup",
+                "weeks": 2,
+                "days_per_week": 1,
+                "start_date": "2026-06-15",
+                "schedule_json": {"monday": {"category": "cardio", "activity": "Run"}},
+            }
+        )
+        self.assertEqual(created.status_code, 201, created.data)
+        resp = self.client.patch(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/{created.data['id']}/",
+            data={
+                "schedule_json": {
+                    "1": {"category": "cardio", "activity": "Run A"},
+                    "tuesday": {"category": "cardio", "activity": "Run B"},
+                }
+            },
+            format="json",
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertEqual(resp.data["error"], "invalid_schedule")
+
+
+@override_settings(NBHD_INTERNAL_API_KEY="test-internal-key")
+class PlanStartsTodayEnforcementTests(TestCase):
+    """A plan anchored on TODAY must train today — enforced with a 400, not a
+    note in the response the model can skip."""
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Start Today", telegram_chat_id=800502)
+        self.tenant.user.timezone = "Asia/Tokyo"
+        self.tenant.user.save(update_fields=["timezone"])
+        seed_internal_key(self.tenant)
+        self.client = APIClient()
+        self.headers = {
+            "HTTP_X_NBHD_INTERNAL_KEY": "test-internal-key",
+            "HTTP_X_NBHD_TENANT_ID": str(self.tenant.id),
+        }
+        cron_patch = patch("apps.fuel.runtime_views._manage_fuel_cron", return_value=None)
+        cron_patch.start()
+        self.addCleanup(cron_patch.stop)
+
+    def _post(self, body):
+        return self.client.post(
+            f"/api/v1/fuel/runtime/{self.tenant.id}/plans/", data=body, format="json", **self.headers
+        )
+
+    def test_start_today_without_todays_weekday_is_rejected(self):
+        """The exact production payload: Wednesday start, weekday key '3'."""
+        with patch("apps.fuel.runtime_views.today_in_tenant_tz", return_value=date(2026, 8, 19)):
+            resp = self._post(
+                {
+                    "name": "Gym Now",
+                    "weeks": 1,
+                    "days_per_week": 1,
+                    "start_date": "2026-08-19",  # Wednesday
+                    "schedule_json": {"3": {"category": "strength", "activity": "Full Body", **_STRENGTH_DETAIL}},
+                }
+            )
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertEqual(resp.data["error"], "validation_failed")
+        self.assertEqual(resp.data["weekday"], 2)
+        self.assertEqual(resp.data["weekday_name"], "wednesday")
+        self.assertEqual(resp.data["start_date"], "2026-08-19")
+        self.assertIn("wednesday", resp.data["message"])
+        self.assertEqual(resp.data["details"][0]["type"], "missing_start_weekday")
+        self.assertEqual(resp.data["details"][0]["loc"], ["schedule_json", "wednesday"])
+        self.assertFalse(WorkoutPlan.objects.filter(tenant=self.tenant).exists())
+        self.assertFalse(Workout.objects.filter(tenant=self.tenant).exists())
+
+    def test_start_today_with_todays_weekday_by_name_succeeds(self):
+        with patch("apps.fuel.runtime_views.today_in_tenant_tz", return_value=date(2026, 8, 19)):
+            resp = self._post(
+                {
+                    "name": "Gym Now Fixed",
+                    "weeks": 1,
+                    "days_per_week": 1,
+                    "start_date": "2026-08-19",
+                    "schedule_json": {
+                        "wednesday": {"category": "strength", "activity": "Full Body", **_STRENGTH_DETAIL}
+                    },
+                }
+            )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["first_workout_date"], "2026-08-19")
+        self.assertIsNone(resp.data["start_date_note"])
+
+    def test_retry_of_rejected_payload_is_not_waved_through_as_dedup(self):
+        """The gate runs before the idempotency short-circuit, so a repeated
+        bad payload keeps failing instead of returning a 200 'deduped'."""
+        body = {
+            "name": "Gym Now",
+            "weeks": 1,
+            "days_per_week": 1,
+            "start_date": "2026-08-19",
+            "schedule_json": {"3": {"category": "strength", "activity": "Full Body", **_STRENGTH_DETAIL}},
+        }
+        with patch("apps.fuel.runtime_views.today_in_tenant_tz", return_value=date(2026, 8, 19)):
+            first = self._post(body)
+            second = self._post(body)
+        self.assertEqual(first.status_code, 400, first.data)
+        self.assertEqual(second.status_code, 400, second.data)
+
+    def test_future_start_date_is_untouched(self):
+        """'Start next Monday' with a Thursday-only cadence stays legal — the
+        advisory note still describes where the calendar really begins."""
+        with patch("apps.fuel.runtime_views.today_in_tenant_tz", return_value=date(2026, 8, 19)):
+            resp = self._post(
+                {
+                    "name": "Next Monday",
+                    "weeks": 1,
+                    "days_per_week": 1,
+                    "start_date": "2026-08-24",  # Monday, five days out
+                    "schedule_json": {"thursday": {"category": "cardio", "activity": "Run"}},
+                }
+            )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertEqual(resp.data["first_workout_date"], "2026-08-27")
+        self.assertIn("2026-08-27", resp.data["start_date_note"])
+
+    def test_week_zero_override_can_satisfy_or_break_the_start_day(self):
+        # Base template lacks Wednesday, but week 0's override adds it → legal.
+        with patch("apps.fuel.runtime_views.today_in_tenant_tz", return_value=date(2026, 8, 19)):
+            ok = self._post(
+                {
+                    "name": "Override Adds Today",
+                    "weeks": 2,
+                    "days_per_week": 1,
+                    "start_date": "2026-08-19",
+                    "schedule_json": {"friday": {"category": "cardio", "activity": "Run"}},
+                    "week_overrides": {"0": {"wednesday": {"category": "cardio", "activity": "Opener"}}},
+                }
+            )
+        self.assertEqual(ok.status_code, 201, ok.data)
+
+        # Base template HAS Wednesday, but week 0 rests it → rejected.
+        with patch("apps.fuel.runtime_views.today_in_tenant_tz", return_value=date(2026, 8, 19)):
+            bad = self._post(
+                {
+                    "name": "Override Rests Today",
+                    "weeks": 2,
+                    "days_per_week": 1,
+                    "concurrent": True,
+                    "start_date": "2026-08-19",
+                    "schedule_json": {"wednesday": {"category": "cardio", "activity": "Run"}},
+                    "week_overrides": {"0": {"wednesday": None}},
+                }
+            )
+        self.assertEqual(bad.status_code, 400, bad.data)
+        self.assertEqual(bad.data["details"][0]["type"], "missing_start_weekday")
+
+    def test_gate_anchors_on_tenant_timezone_not_utc(self):
+        """UTC-evening boundary: 2026-08-18 22:00Z is already Wednesday
+        2026-08-19 07:00 in Asia/Tokyo. A UTC-anchored gate would compute
+        'today' as Tuesday and demand a tuesday key — rejecting the correct
+        wednesday payload and waving through a tuesday one."""
+        from datetime import datetime
+
+        frozen = datetime(2026, 8, 18, 22, 0, tzinfo=UTC)
+        with patch("apps.common.llm_contracts.dj_tz.now", return_value=frozen):
+            good = self._post(
+                {
+                    "name": "JST Wednesday",
+                    "weeks": 1,
+                    "days_per_week": 1,
+                    "start_date": "2026-08-19",
+                    "schedule_json": {
+                        "wednesday": {"category": "strength", "activity": "Full Body", **_STRENGTH_DETAIL}
+                    },
+                }
+            )
+            utc_day = self._post(
+                {
+                    "name": "UTC Tuesday",
+                    "weeks": 1,
+                    "days_per_week": 1,
+                    "concurrent": True,
+                    "start_date": "2026-08-19",
+                    "schedule_json": {"tuesday": {"category": "strength", "activity": "Full Body", **_STRENGTH_DETAIL}},
+                }
+            )
+        # Tenant-local today IS 2026-08-19 (Wednesday) → the wednesday plan lands.
+        self.assertEqual(good.status_code, 201, good.data)
+        self.assertEqual(good.data["first_workout_date"], "2026-08-19")
+        # ...and the tuesday cadence for the same start_date is rejected, naming
+        # wednesday. Under a UTC anchor these two assertions would swap.
+        self.assertEqual(utc_day.status_code, 400, utc_day.data)
+        self.assertEqual(utc_day.data["weekday_name"], "wednesday")

@@ -13,7 +13,7 @@ from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.common.llm_contracts import resolve_relative_date, today_in_tenant_tz
+from apps.common.llm_contracts import WEEKDAY_INDEX, WEEKDAY_NAMES, resolve_relative_date, today_in_tenant_tz
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.pii.egress import KnownValueResponseGuardMixin
 from apps.router.document_write_guard import assert_write_allowed_for_document_turn, record_runtime_write_activity
@@ -1124,6 +1124,35 @@ def _has_prescription(detail) -> bool:
     return any(isinstance(detail.get(key), list) and detail.get(key) for key in ("exercises", "skills"))
 
 
+_WEEKDAY_KEY_HINT = "a weekday name (monday..sunday, or mon..sun) or a legacy integer 0-6 (0=Mon..6=Sun)"
+
+
+def _normalize_weekday_key(day_key) -> tuple[int | None, str | None]:
+    """Resolve one weekday key to a canonical index (Monday=0..Sunday=6).
+
+    Accepts weekday NAMES ("wednesday", "wed" — case- and whitespace-
+    insensitive) alongside the legacy integer strings "0".."6". Names are what
+    the tool contract now leads with, because an integer index is silently
+    corruptible: three weekday-numbering conventions coexist in this product
+    (Python Mon=0, ISO Mon=1, cron Sun=0), and on 2026-08-19 the model passed
+    "3" for a Wednesday — a perfectly legal key that landed the user's workout
+    on Thursday. A name has no competing convention to slip into.
+
+    Returns ``(weekday_int, None)`` on success, ``(None, error_detail)`` on a
+    key this contract does not recognise.
+    """
+    token = str(day_key).strip().lower()
+    if token in WEEKDAY_INDEX:
+        return WEEKDAY_INDEX[token], None
+    try:
+        day_int = int(token)
+    except (TypeError, ValueError):
+        return None, f"weekday key '{day_key}' must be {_WEEKDAY_KEY_HINT}"
+    if day_int < 0 or day_int > 6:
+        return None, f"weekday key '{day_key}' out of range — use {_WEEKDAY_KEY_HINT}"
+    return day_int, None
+
+
 def _validate_normalize_schedule(schedule_json, *, require_detail=True):
     """Validate weekday keys + normalize/validate each day's prescription.
 
@@ -1146,19 +1175,29 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True):
     from .set_contract import normalize_detail, validate_detail
 
     normalized: dict = {}
+    seen_keys: dict[int, str] = {}
     for day_str, workout_def in schedule_json.items():
-        try:
-            day_int = int(day_str)
-        except (TypeError, ValueError):
+        day_int, key_err = _normalize_weekday_key(day_str)
+        if key_err is not None:
             return None, Response(
-                {"error": "invalid_schedule", "detail": f"weekday key '{day_str}' must be an integer 0-6"},
+                {"error": "invalid_schedule", "detail": key_err},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        if day_int < 0 or day_int > 6:
+        # Names and integers both normalize onto one canonical key, so the same
+        # weekday can arrive twice under two spellings ("2" and "wednesday").
+        # Silently letting the last one win would drop a whole training day.
+        if day_int in seen_keys:
             return None, Response(
-                {"error": "invalid_schedule", "detail": f"weekday key '{day_str}' out of range (0=Mon..6=Sun)"},
+                {
+                    "error": "invalid_schedule",
+                    "detail": (
+                        f"weekday keys '{seen_keys[day_int]}' and '{day_str}' both mean "
+                        f"{WEEKDAY_NAMES[day_int]} — send each training day exactly once"
+                    ),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        seen_keys[day_int] = day_str
         if not isinstance(workout_def, dict):
             return None, Response(
                 {"error": "invalid_schedule", "detail": f"day {day_str} value must be a workout object"},
@@ -1177,6 +1216,7 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True):
         if verr is not None:
             payload = dict(verr.as_tool_result())
             payload["weekday"] = day_int
+            payload["weekday_name"] = WEEKDAY_NAMES[day_int]
             return None, Response(payload, status=status.HTTP_400_BAD_REQUEST)
 
         # A strength/calisthenics day with no exercises passes validate_detail
@@ -1204,7 +1244,7 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True):
                 ),
                 details=[
                     {
-                        "loc": ["schedule_json", str(day_int), "detail_json", "exercises"],
+                        "loc": ["schedule_json", WEEKDAY_NAMES[day_int], "detail_json", "exercises"],
                         "msg": "strength/calisthenics days require a non-empty exercises list",
                         "type": "missing_prescription",
                         "example": _EMPTY_PRESCRIPTION_EXAMPLE,
@@ -1213,6 +1253,7 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True):
             )
             payload = dict(pres_err.as_tool_result())
             payload["weekday"] = day_int
+            payload["weekday_name"] = WEEKDAY_NAMES[day_int]
             return None, Response(payload, status=status.HTTP_400_BAD_REQUEST)
 
         target_rpe = workout_def.get("target_rpe", workout_def.get("rpe"))
@@ -1277,14 +1318,29 @@ def _validate_normalize_week_overrides(week_overrides):
 
         day_defs: dict = {}
         rest_days: dict = {}
+        seen_keys: dict[int, str] = {}
         for day_str, val in override.items():
-            try:
-                day_int = int(day_str)
-            except (TypeError, ValueError):
+            day_int, key_err = _normalize_weekday_key(day_str)
+            if key_err is not None:
                 return None, Response(
-                    {"error": "invalid_week_overrides", "detail": f"weekday key '{day_str}' must be an integer 0-6"},
+                    {"error": "invalid_week_overrides", "detail": key_err},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
+            # Same collision as the base template, and worse here: a duplicate
+            # split across the rest-day and day-def buckets would merge with the
+            # rest day winning, silently deleting a session the caller asked for.
+            if day_int in seen_keys:
+                return None, Response(
+                    {
+                        "error": "invalid_week_overrides",
+                        "detail": (
+                            f"week {wk}: weekday keys '{seen_keys[day_int]}' and '{day_str}' both mean "
+                            f"{WEEKDAY_NAMES[day_int]} — send each weekday exactly once"
+                        ),
+                    },
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            seen_keys[day_int] = day_str
             if val is None:
                 rest_days[str(day_int)] = None
             else:
@@ -1579,6 +1635,70 @@ def _plan_start_metadata(plan: WorkoutPlan) -> dict[str, str | None]:
     }
 
 
+def _reject_start_today_without_session(tenant, plan_start, normalized_schedule, normalized_overrides):
+    """400 when a plan starting TODAY has no session on today's weekday.
+
+    A hard reject, not advice. On 2026-08-19 the model asked for a workout
+    "today" (Wednesday), sent the correct ``start_date`` with weekday key "3"
+    (Thursday under ISO/cron numbering), and the session landed a day late. The
+    advisory ``start_date_note`` from :func:`_plan_start_metadata` was returned
+    and never read; hard 400s out of the schedule validator, in that same
+    transcript, DID drive the model to self-correct. So the start-anchor rule
+    that ``rules/fuel.md`` has always declared is enforced here instead of
+    asked for.
+
+    Scope is deliberately narrow — only ``start_date == today`` in the tenant's
+    timezone. "Start next Monday" with any cadence stays legal, and an
+    off-cadence FUTURE start keeps the advisory note (the caller may genuinely
+    want the program to begin at the next matching weekday).
+    """
+    if plan_start != today_in_tenant_tz(tenant):
+        return None
+
+    wanted = plan_start.weekday()
+    name = WEEKDAY_NAMES[wanted]
+    # Mirror the week-0 merge in _expand_plan_workouts: an override can add the
+    # day the base template lacks, or rest a day the base template has.
+    override_0 = (normalized_overrides or {}).get("0")
+    if isinstance(override_0, dict) and str(wanted) in override_0:
+        has_session = override_0[str(wanted)] is not None
+    else:
+        has_session = str(wanted) in (normalized_schedule or {})
+    if has_session:
+        return None
+
+    from apps.common.llm_contracts import LLMValidationError
+
+    start_err = LLMValidationError(
+        message=(
+            f"This plan starts TODAY ({plan_start.isoformat()}, a {name.capitalize()}), but "
+            f"schedule_json has no {name} session — the first workout would land on a later day, "
+            f'which is not what the user asked for. Add a "{name}" day to schedule_json and '
+            "rotate the split so today is day 1, then retry. Weekday keys are NAMES "
+            "(monday..sunday); do not translate the day into an index."
+        ),
+        details=[
+            {
+                "loc": ["schedule_json", name],
+                "msg": f"start_date {plan_start.isoformat()} is a {name}, but schedule_json has no {name} day",
+                "type": "missing_start_weekday",
+                "example": {
+                    name: {
+                        "category": "strength",
+                        "activity": "Full Body",
+                        "detail_json": _EMPTY_PRESCRIPTION_EXAMPLE,
+                    }
+                },
+            }
+        ],
+    )
+    payload = dict(start_err.as_tool_result())
+    payload["weekday"] = wanted
+    payload["weekday_name"] = name
+    payload["start_date"] = plan_start.isoformat()
+    return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+
+
 class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
     """GET: list plans. POST: create plan + expand into planned workouts."""
 
@@ -1674,6 +1794,13 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             today = today_in_tenant_tz(tenant)
             days_ahead = (7 - today.weekday()) % 7 or 7
             plan_start = today + timedelta(days=days_ahead)
+
+        # Start-anchor enforcement: a plan the caller anchored on TODAY must
+        # train today. Checked before the idempotency short-circuit so a retry
+        # of a bad payload can never be waved through as a 200 dedup.
+        start_err = _reject_start_today_without_session(tenant, plan_start, normalized_schedule, normalized_overrides)
+        if start_err is not None:
+            return start_err
 
         # Single-active-plan invariant: a new plan REPLACES any current active
         # plan unless the caller explicitly asks for concurrent programs. This
@@ -1876,8 +2003,19 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             # "clear it" instruction, which would wipe a workout's existing
             # prescription. Preserve the "silence = leave alone" contract by
             # stripping the injected key for days that supplied no detail_json.
+            # Re-key the caller's raw payload onto the canonical weekday keys
+            # first: with name keys accepted, ``raw_schedule["wednesday"]`` no
+            # longer answers to normalized key "2", and a straight lookup would
+            # miss — stripping a detail_json the caller really did send, i.e.
+            # silently discarding a prescription edit. Validation above already
+            # proved every key resolves.
+            raw_by_weekday = {}
+            for raw_key, raw_val in raw_schedule.items():
+                day_int, _ = _normalize_weekday_key(raw_key)
+                if day_int is not None:
+                    raw_by_weekday[str(day_int)] = raw_val
             for day_str, day_def in normalized_schedule.items():
-                src = raw_schedule.get(day_str, {})
+                src = raw_by_weekday.get(day_str, {})
                 if isinstance(day_def, dict) and "detail_json" not in (src if isinstance(src, dict) else {}):
                     day_def.pop("detail_json", None)
             plan.schedule_json = normalized_schedule
