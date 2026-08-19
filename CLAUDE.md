@@ -10,7 +10,8 @@ This file is a router, not the manual. Deep context lives in `docs/agents/` — 
 |---|---|
 | Touching tenants, containers, provisioning, messaging flow, OpenClaw config | `docs/agents/architecture.md` |
 | Changing message routing, file-share writes, crons, revisions, timezones, transactions | `docs/agents/invariants.md` — permanent rules; each one broke production once |
-| Debugging production, reading logs, "assistant silent", timeouts, wake/hibernation | `docs/agents/debugging.md` |
+| Debugging production, reading logs, "assistant silent", timeouts, wake/hibernation | `docs/agents/debugging.md` — starts with the debugging ladder (telemetry → error logs → consent-gated raw data) |
+| Adding telemetry to a tool, or querying tool call/reject/error rates | `docs/agents/telemetry.md` |
 | Committing, pushing, merging PRs, deploying, writing migrations | `docs/agents/workflow.md` |
 | Writing Django/backend code | `docs/agents/backend.md` |
 | Writing frontend code or anything visual | `docs/agents/frontend.md` + `DESIGN.md` |
