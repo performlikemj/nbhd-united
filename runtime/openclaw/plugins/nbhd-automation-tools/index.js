@@ -169,21 +169,37 @@ const SCHEDULE_SCHEMA = {
     expr: {
       type: "string",
       description:
-        "Cron expression (5 or 6 fields). Required when kind='cron'. Evaluate in the user's timezone (tz).",
+        "Cron expression, EXACTLY 5 fields: minute hour day-of-month month day-of-week. " +
+        "Seconds precision is not supported and a 6-field expression is rejected. " +
+        "day-of-week is 0=Sunday, 1=Monday, ... 6=Saturday (7 also means Sunday); " +
+        "names like MON,TUE,SUN and ranges like MON-FRI work too. Note this is NOT " +
+        "the 0=Monday convention used by the fuel/workout tools. Required when " +
+        "kind='cron'. Evaluated in the user's timezone (tz).",
     },
     tz: {
       type: "string",
       description:
-        "IANA timezone for cron expressions (e.g. 'Asia/Tokyo'). Required when kind='cron' so the schedule fires in the user's local time.",
+        "IANA timezone for cron expressions, in Area/Location form (e.g. 'Asia/Tokyo'). " +
+        "Optional — when omitted it defaults to the user's own timezone, which is " +
+        "almost always what you want. Never use an 'Etc/*' name: their sign is " +
+        "inverted ('Etc/GMT+9' is UTC MINUS 9), and they are rejected.",
     },
     at: {
       type: "string",
       description:
-        "ISO-8601 timestamp for one-shots. Required when kind='at'. Include the timezone offset (e.g. '2026-05-29T15:00:00+09:00').",
+        "When to fire a one-shot. Required when kind='at'. Either a relative duration " +
+        "— '20m', '2h', '1d', the easiest correct answer for 'remind me in N minutes' — " +
+        "or an ISO-8601 timestamp WITH the user's timezone offset " +
+        "(e.g. '2026-05-29T15:00:00+09:00'). A timestamp without an offset is rejected: " +
+        "it would be read as UTC and fire hours away from what the user meant.",
     },
     everyMs: {
       type: "number",
-      description: "Interval in milliseconds for recurring 'every' schedules.",
+      minimum: 60000,
+      description:
+        "Interval in MILLISECONDS for recurring 'every' schedules. Minimum 60000 " +
+        "(one minute). Hourly = 3600000, every 15 minutes = 900000, daily = 86400000. " +
+        "Sending seconds here (3600 for 'hourly') would fire every 3.6 seconds.",
     },
   },
   required: ["kind"],
