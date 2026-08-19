@@ -86,6 +86,19 @@ _SYSTEM_PROMPT = (
     "speak to guide attention, then leave long, unhurried space for the person to actually practice. YOU "
     "decide where words are needed, where silence is needed, and how long each silence holds. Never force "
     "words in where stillness would serve better.\n\n"
+    # The signals below are read straight from placeholder-space storage (journal,
+    # daily notes, constellation, goals, the last sit's theme) and are NOT rehydrated
+    # before they reach this prompt, so redaction tokens routinely appear in the input.
+    # The entity legend only shows up when the tenant has annotated entries, so this
+    # note is the permanent explanation.
+    "PRIVACY PLACEHOLDERS IN YOUR INPUT:\n"
+    "The signals you are given are privacy-scrubbed. A token like [PERSON_1], [LOCATION_2] or "
+    "[EMAIL_ADDRESS_3] — sometimes annotated, e.g. [PERSON_1|a coworker] — is a REDACTION PLACEHOLDER "
+    "standing in for one piece of this person's private data. Treat each as an opaque proper noun: the "
+    "same token always means the same thing, different tokens mean different things. Never guess, invent, "
+    "expand, translate, or reason about the identity behind one. If a token must survive into your output, "
+    "copy it through character-for-character — but for this task none should: narration is second-person, "
+    'so write "you" rather than naming anyone. A token left in spoken text gets read aloud as brackets.\n\n'
     "Output a JSON object with EXACTLY these keys:\n"
     "  schema_version: 1\n"
     "  title: a short, evocative title (<= 60 chars)\n"
