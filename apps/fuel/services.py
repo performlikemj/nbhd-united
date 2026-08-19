@@ -803,14 +803,31 @@ def aggregate_strength_progress(workouts) -> dict:
     return by_lift
 
 
-def aggregate_cardio_progress(workouts) -> dict:
-    """Build pace and distance trends from cardio workouts."""
+def aggregate_cardio_progress(workouts, *, tenant=None) -> dict:
+    """Build pace and distance trends from cardio workouts.
+
+    Malformed rows are SKIPPED and counted, never fatal. ``distance_km`` went
+    unvalidated on the write paths for a long time, and the bare ``float()``
+    this used to do meant one row carrying "5 miles" took the user's whole
+    cardio Progress view down with a 500 — on every load, permanently, with no
+    way back short of editing the row. The write paths now reject non-numeric
+    values (``set_contract.validate_flat_detail``), but rows written before
+    that still exist, so the read side has to survive them on its own.
+
+    ``skipped_rows`` appears in the result only when something was stepped
+    over, so the damage is visible in the response instead of silent. ``tenant``
+    is optional and used only to attribute the telemetry event.
+    """
     pace_points = []
     dist_points = []
     total_km = 0.0
+    skipped = 0
 
     for w in sorted(workouts, key=lambda w: w.date):
         d = w.detail_json or {}
+        if not isinstance(d, dict):
+            skipped += 1
+            continue
         if d.get("pace"):
             parts = str(d["pace"]).split(":")
             try:
@@ -819,11 +836,28 @@ def aggregate_cardio_progress(workouts) -> dict:
             except (ValueError, IndexError):
                 pass
         if d.get("distance_km"):
-            km = float(d["distance_km"])
+            try:
+                km = float(d["distance_km"])
+            except (TypeError, ValueError):
+                skipped += 1
+                continue
             total_km += km
             dist_points.append({"date": str(w.date), "value": km})
 
-    return {"pace": pace_points, "distance": dist_points, "total_km": round(total_km, 1)}
+    result = {"pace": pace_points, "distance": dist_points, "total_km": round(total_km, 1)}
+    if skipped:
+        from apps.platform_logs.telemetry import emit_tool_event
+
+        result["skipped_rows"] = skipped
+        emit_tool_event(
+            tool_name="fuel-cardio-progress",
+            outcome="normalized",
+            namespace="fuel",
+            tenant_id=getattr(tenant, "id", None),
+            reason_code="cardio_legacy_row_skipped",
+            detail={"cardio_rows_skipped": skipped},
+        )
+    return result
 
 
 def aggregate_hiit_progress(workouts) -> dict:

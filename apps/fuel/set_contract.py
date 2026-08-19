@@ -41,6 +41,8 @@ __all__ = [
     "coerce_set",
     "normalize_detail",
     "validate_detail",
+    "validate_flat_detail",
+    "FLAT_NUMERIC_FIELDS",
     "split_detail_errors",
 ]
 
@@ -281,6 +283,111 @@ def validate_detail(detail: Any, category: str) -> tuple[Any, Any]:
     except ValidationError as exc:
         return coerced, LLMValidationError.from_pydantic(exc)
     return coerced, None
+
+
+# ── Flat (cardio / HIIT / mobility) detail contract ───────────────────
+
+# Fields in the FLAT by-category detail shape that MUST hold numbers. The read
+# side treats them as such — ``aggregate_cardio_progress`` calls a bare
+# ``float()`` on ``distance_km`` — so a value like "5 miles" is not a display
+# nit: it raises on every load of that user's cardio Progress view, forever,
+# because nothing downstream can recover from it. Validate at the faucet.
+FLAT_NUMERIC_FIELDS = (
+    "distance_km",
+    "avg_hr",
+    "peak_hr",
+    "calories",
+    "elevation",
+    "rounds",
+    "work_s",
+    "rest_s",
+    "avg_power",
+)
+
+# Categories carrying the flat shape. strength/calisthenics go through the
+# discriminated set contract above instead.
+FLAT_DETAIL_CATEGORIES = ("cardio", "hiit", "mobility")
+
+
+def _coerce_number(value: Any) -> tuple[Any, bool]:
+    """Return ``(number, ok)``.
+
+    Accepts ints/floats and strings that parse cleanly as either. Rejects
+    bools (``float(True)`` is 1.0 — a true distance is nonsense), containers,
+    and text carrying units. Integral strings stay ints so a round count does
+    not become 8.0.
+    """
+    if isinstance(value, bool):
+        return None, False
+    if isinstance(value, (int, float)):
+        return value, True
+    if not isinstance(value, str):
+        return None, False
+    text = value.strip()
+    if not text:
+        return None, False
+    try:
+        return int(text), True
+    except ValueError:
+        pass
+    try:
+        return float(text), True
+    except ValueError:
+        return None, False
+
+
+def validate_flat_detail(detail: Any, category: str) -> tuple[Any, Any]:
+    """Enforce numeric types on a cardio / HIIT / mobility ``detail_json``.
+
+    Returns ``(detail, error_or_None)``. A numeric string is coerced in place
+    (the caller persists the returned dict); anything that cannot parse as a
+    number yields an ``LLMValidationError`` naming the field, so the assistant
+    resends "5" instead of "5 miles" in the same loop. Absent and ``None``
+    fields are left alone — silence means "not measured", which every consumer
+    already handles.
+
+    Pure: never raises, never mutates the input.
+    """
+    if not isinstance(detail, dict) or category not in FLAT_DETAIL_CATEGORIES:
+        return detail, None
+
+    out: dict | None = None
+    bad: list[dict] = []
+    for field in FLAT_NUMERIC_FIELDS:
+        if field not in detail:
+            continue
+        raw = detail[field]
+        if raw is None:
+            continue
+        num, ok = _coerce_number(raw)
+        if not ok:
+            bad.append(
+                {
+                    "loc": ["detail_json", field],
+                    "msg": f"{field} must be a number (e.g. 5 or 5.2) — no units, no words",
+                    "type": "cardio_detail_invalid",
+                }
+            )
+            continue
+        if isinstance(raw, str):
+            if out is None:
+                out = dict(detail)
+            out[field] = num
+
+    if bad:
+        from apps.common.llm_contracts import LLMValidationError
+
+        fields = ", ".join(str(err["loc"][-1]) for err in bad)
+        return detail, LLMValidationError(
+            message=(
+                f"These detail_json fields must be plain numbers: {fields}. "
+                "Send the value only — the unit is fixed by the field name "
+                "(distance_km is kilometres, work_s/rest_s are seconds). Convert "
+                "first if the user gave you miles or minutes, then retry."
+            ),
+            details=bad,
+        )
+    return (out if out is not None else detail), None
 
 
 def _error_offender(detail: Any, loc: list) -> tuple[Any, str | None]:

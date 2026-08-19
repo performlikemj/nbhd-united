@@ -53,7 +53,21 @@ DETAIL_ALLOWLIST: dict[str, frozenset[str]] = {
     # Generic capture at the runtime middleware. Common keys only, by design:
     # the middleware knows nothing tool-specific, so it must not invent flags.
     "runtime": frozenset(),
-    "fuel": frozenset({"weekday_key_style", "start_today_reject", "date_source"}),
+    "fuel": frozenset(
+        {
+            "weekday_key_style",
+            "start_today_reject",
+            "date_source",
+            # Wave 2 fix pack — shape-only flags for the legal-but-wrong paths.
+            "category",  # WorkoutCategory value (ours, post-normalization)
+            "field",  # which flat-detail numeric field was malformed
+            "cardio_rows_skipped",  # legacy rows the progress aggregate stepped over
+            "preferred_days_style",  # int | name | mixed
+            "rpe_clamped",
+            "weeks",  # the plan's legal week count
+            "week_key",  # the out-of-range override key
+        }
+    ),
     # "pattern" is the typed cron pattern (pure_reminder, ...) — it separates
     # "one tool is teaching the model badly" from "the whole cron surface is".
     "cron": frozenset({"tz_missing", "dow_source", "schedule_kind", "pattern"}),

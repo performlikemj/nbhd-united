@@ -271,6 +271,11 @@ class FuelLongTailPlaceholderTests(TestCase):
         self._enable_placeholder_writes()
         payload = {
             **self._plan_payload("Alice Runtime Plan"),
+            # Two weeks so the week-1 override below is inside the plan. This
+            # fixture used to ride on a 1-week plan, which the create path now
+            # rejects: an override keyed to a week the plan does not have was
+            # being stored and echoed back as if it had taken effect.
+            "weeks": 2,
             "concurrent": True,
             "week_overrides": {
                 "1": {
@@ -297,7 +302,8 @@ class FuelLongTailPlaceholderTests(TestCase):
         self.assertEqual(first.data["name"], "[PERSON_1] Runtime Plan")
         self.assertNotIn("pii_receipts", first.data)
         plan = WorkoutPlan.objects.get(tenant=self.tenant)
-        child = Workout.objects.get(plan=plan)
+        # Week 0's session — the one the week-0 override further down retemplates.
+        child = Workout.objects.filter(plan=plan).order_by("date").first()
         self.assertEqual(plan.pii_receipts["name"]["writer"], "runtime")
         self.assertEqual(plan.schedule_json["0"]["activity"], "Run with [PERSON_1]")
         self.assertEqual(plan.week_overrides["1"]["0"]["detail_json"]["cue"], "Ask [PERSON_1]")
