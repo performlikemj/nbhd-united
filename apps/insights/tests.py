@@ -385,6 +385,24 @@ class InsightsApiTests(TestCase):
         resp = self.client.get("/api/v1/insights/compare/?pillar=gravity")
         self.assertEqual(resp.status_code, 400)
 
+    def test_compare_rejects_swapped_periods(self):
+        """The delta is b - a and is read as change over time, so swapping the
+        arguments inverts the sign: $500 of debt paid off reports as $500 added."""
+        older = self._make_snapshot(self.tenant, days_ago=14, debt="2000")
+        newer = self._make_snapshot(self.tenant, days_ago=0, debt="1500")
+        resp = self.client.get(f"/api/v1/insights/compare/?pillar=gravity&period_a={newer.id}&period_b={older.id}")
+        self.assertEqual(resp.status_code, 400)
+        body = resp.json()
+        self.assertEqual(body["error"], "snapshots_out_of_order")
+        self.assertEqual(body["period_a_ts"], newer.ts.isoformat())
+        self.assertEqual(body["period_b_ts"], older.ts.isoformat())
+
+    def test_compare_rejects_the_same_snapshot_twice(self):
+        snap = self._make_snapshot(self.tenant, days_ago=3)
+        resp = self.client.get(f"/api/v1/insights/compare/?pillar=gravity&period_a={snap.id}&period_b={snap.id}")
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"], "snapshots_out_of_order")
+
 
 @override_settings(NBHD_INTERNAL_API_KEY="test-runtime-key")
 class RuntimeInsightsViewTests(TestCase):
@@ -505,6 +523,21 @@ class RuntimeInsightsViewTests(TestCase):
         )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json()["totals_delta"]["debt"], "-500")
+
+    def test_runtime_compare_rejects_swapped_periods(self):
+        from apps.platform_logs.models import ToolContractEvent
+
+        older = self._make_snapshot(self.tenant, days_ago=14, debt="2000")
+        newer = self._make_snapshot(self.tenant, days_ago=0, debt="1500")
+        resp = self.client.get(
+            self._compare_url(pillar="gravity", period_a=newer.id, period_b=older.id),
+            **self._headers(),
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.json()["error"], "snapshots_out_of_order")
+        self.assertTrue(
+            ToolContractEvent.objects.filter(namespace="finance", reason_code="snapshots_out_of_order").exists()
+        )
 
 
 # ── Phase 2 ──────────────────────────────────────────────────────────────

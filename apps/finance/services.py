@@ -13,9 +13,17 @@ from dateutil.relativedelta import relativedelta
 from django.db import transaction as db_transaction
 from django.db.models import Q
 
+from apps.common.tenant_tz import tenant_today
+
+from .contracts import FinanceInputError
 from .models import FinanceAccount, FinanceTransaction
 
 logger = logging.getLogger(__name__)
+
+# How many matching nicknames we name back to the caller when a fuzzy match is
+# ambiguous. Enough for the model to ask a useful question, bounded so a tenant
+# with dozens of near-identical accounts cannot turn an error into a data dump.
+MAX_AMBIGUOUS_CANDIDATES = 5
 
 
 @dataclass
@@ -263,19 +271,48 @@ class AccountNotFound(Exception):
     """No active account matched the supplied id or nickname."""
 
 
-def resolve_account(tenant, *, account_id=None, account_nickname=None) -> FinanceAccount:
-    """Resolve an active ``FinanceAccount`` for ``tenant``.
+class AmbiguousAccount(FinanceInputError):
+    """More than one account matched the supplied nickname.
 
-    Prefers an explicit ``account_id``; otherwise falls back to a fuzzy
-    nickname match (case-insensitive exact, then ``icontains``). Raises
-    ``AccountNotFound`` when nothing matches.
+    Picking the first row is not a harmless tie-break: the mis-picked account is
+    the one whose ``updated_at`` the write refreshes, and the default ordering is
+    ``-updated_at``, so the wrong account wins every subsequent match. One bad
+    guess becomes permanent. The caller has to disambiguate instead.
+    """
+
+    def __init__(self, candidates: list[str], *, tier: str):
+        super().__init__(
+            "ambiguous_account",
+            (
+                "That name matches more than one account. Ask the user which one they mean, "
+                "then call again with the exact nickname from `candidates`."
+            ),
+            field="account_nickname",
+            telemetry={"candidate_count": len(candidates), "match_tier": tier},
+            candidates=candidates,
+        )
+        self.candidates = candidates
+        self.tier = tier
+
+
+def resolve_account(tenant, *, account_id=None, account_nickname=None, is_active: bool = True) -> FinanceAccount:
+    """Resolve one ``FinanceAccount`` for ``tenant``.
+
+    Prefers an explicit ``account_id``; otherwise falls back to a fuzzy nickname
+    match (case-insensitive exact, then ``icontains``). Exactly one match is
+    required at whichever tier hits first — several matches raise
+    ``AmbiguousAccount``, nothing at all raises ``AccountNotFound``.
+
+    ``is_active`` selects which side of the archive line to search, so the
+    archive/unarchive/balance paths share this resolution instead of each
+    keeping its own copy of the fuzzy match.
     """
     if account_id:
         try:
             uuid.UUID(str(account_id))
         except (ValueError, TypeError, AttributeError):
             raise AccountNotFound(f"No account found with id '{account_id}'") from None
-        account = FinanceAccount.objects.filter(id=account_id, tenant=tenant, is_active=True).first()
+        account = FinanceAccount.objects.filter(id=account_id, tenant=tenant, is_active=is_active).first()
         if account is None:
             raise AccountNotFound(f"No account found with id '{account_id}'")
         return account
@@ -290,14 +327,110 @@ def resolve_account(tenant, *, account_id=None, account_nickname=None) -> Financ
         for variant in variants:
             exact_query |= Q(nickname__iexact=variant)  # guard: encrypted-predicate
             contains_query |= Q(nickname__icontains=variant)  # guard: encrypted-predicate
-        base = FinanceAccount.objects.filter(tenant=tenant, is_active=True)
-        account = base.filter(exact_query).first()
-        if account is None:
-            account = base.filter(contains_query).first()
-        if account is not None:
-            return account
+        base = FinanceAccount.objects.filter(tenant=tenant, is_active=is_active)
+        for tier, tier_query in (("iexact", exact_query), ("icontains", contains_query)):
+            matches = list(base.filter(tier_query).order_by("nickname")[: MAX_AMBIGUOUS_CANDIDATES + 1])
+            if not matches:
+                continue
+            if len(matches) > 1:
+                raise AmbiguousAccount([a.nickname for a in matches[:MAX_AMBIGUOUS_CANDIDATES]], tier=tier)
+            return matches[0]
 
     raise AccountNotFound(f"No account found matching '{account_nickname or account_id or ''}'")
+
+
+_TXN = FinanceTransaction.TransactionType
+
+
+def _account_kind(account: FinanceAccount) -> str:
+    return "debt" if account.is_debt else "asset"
+
+
+def validate_transaction_type(raw, account: FinanceAccount) -> str:
+    """Return the verb to record, or raise ``FinanceInputError``.
+
+    The pairing is the whole point. ``payment`` against a savings account used to
+    subtract-and-clamp-at-zero — a $500 deposit reported success and destroyed
+    the amount — and ``transfer`` recorded a row that moved nothing while echoing
+    the untouched balance back as ``new_balance``. Both are now refusals the
+    model can act on.
+    """
+    transaction_type = str(raw or "").strip().lower() or _TXN.PAYMENT.value
+
+    if transaction_type not in _TXN.values:
+        raise FinanceInputError(
+            "unknown_transaction_type",
+            "That transaction_type is not a recognised verb. Use one of `allowed`.",
+            field="transaction_type",
+            telemetry={"account_kind": _account_kind(account)},
+            allowed=sorted(_TXN.values),
+        )
+
+    if transaction_type == _TXN.TRANSFER:
+        raise FinanceInputError(
+            "transfer_unsupported",
+            (
+                "A transfer touches two accounts, so it cannot be recorded as one row. "
+                "Record it as two calls: a `withdrawal` from the source account and a "
+                "`deposit` into the destination (or a `payment` if the destination is a debt)."
+            ),
+            field="transaction_type",
+            reason_code="transfer_unsupported",
+            telemetry={"account_kind": _account_kind(account), "txn_type": transaction_type},
+        )
+
+    if account.is_debt and transaction_type in FinanceTransaction.ASSET_ACCOUNT_VERBS:
+        raise FinanceInputError(
+            "debt_account_wrong_verb",
+            (
+                "`deposit` and `withdrawal` describe an asset account. This account is a debt: "
+                "use `payment` to pay it down, `charge` to add to it, `interest` for accrued "
+                "interest, or `refund` for money returned against it."
+            ),
+            field="transaction_type",
+            reason_code="debt_deposit_rejected",
+            telemetry={"account_kind": "debt", "txn_type": transaction_type},
+            allowed=sorted(FinanceTransaction.DEBT_ACCOUNT_VERBS),
+        )
+
+    if not account.is_debt and transaction_type in FinanceTransaction.DEBT_ACCOUNT_VERBS:
+        raise FinanceInputError(
+            "asset_account_wrong_verb",
+            (
+                "This is a savings/checking/emergency-fund account, so `payment`, `charge`, "
+                "`interest` and `refund` do not apply. Use `deposit` for money going in and "
+                "`withdrawal` for money coming out."
+            ),
+            field="transaction_type",
+            reason_code="asset_payment_rejected",
+            telemetry={"account_kind": "asset", "txn_type": transaction_type},
+            allowed=sorted(FinanceTransaction.ASSET_ACCOUNT_VERBS),
+        )
+
+    return transaction_type
+
+
+def _assert_not_overdrawn(account: FinanceAccount, amount: Decimal, transaction_type: str) -> None:
+    """Refuse a withdrawal that would take an asset account below zero.
+
+    The old clamp (``max(0, balance - amount)``) is what made the original bug
+    invisible: the balance landed on a legal-looking 0 and the amount that could
+    not be withdrawn was simply gone. A refusal keeps the ledger honest.
+    """
+    if transaction_type != _TXN.WITHDRAWAL:
+        return
+    if account.current_balance - amount >= Decimal("0"):
+        return
+    raise FinanceInputError(
+        "withdrawal_exceeds_balance",
+        (
+            "That withdrawal is larger than the account balance. Confirm the amount with the "
+            "user — or update the balance first if the account is out of date."
+        ),
+        field="amount",
+        reason_code="withdrawal_rejected_overdraw",
+        telemetry={"account_kind": "asset", "txn_type": transaction_type},
+    )
 
 
 def record_transaction(
@@ -321,10 +454,18 @@ def record_transaction(
     is the forward fix for the 2026-05 incident where agent retries triple-
     recorded the same loan payment. ``select_for_update`` serialises concurrent
     writes per account, so the dedup check and balance mutation are atomic.
+
+    The dedup key includes the date, so the date has to be the one the USER is
+    living in: with a bare ``date.today()`` a retry that straddled 00:00 UTC
+    (09:00 in Tokyo) landed on a different key and debited the account twice.
+    ``txn_date`` therefore defaults to the tenant-local day.
+
+    Raises ``FinanceInputError`` when the verb does not fit the account (a
+    payment into savings, a transfer, a withdrawal past zero) — nothing is
+    written and the caller returns the envelope to the model.
     """
-    if transaction_type not in FinanceTransaction.TransactionType.values:
-        transaction_type = "payment"
-    txn_date = txn_date or date.today()
+    transaction_type = validate_transaction_type(transaction_type, account)
+    txn_date = txn_date or tenant_today(tenant)
     description = (description or "")[:256]
 
     def _existing_for(locked_account):
@@ -367,11 +508,14 @@ def record_transaction(
 
     # Fast duplicate path before detector work. The account lock is released
     # before authoring; a second locked check below closes the concurrent race.
+    # A duplicate wins over the overdraw check on purpose: a re-recorded
+    # withdrawal changes no balance, so there is nothing to overdraw.
     with db_transaction.atomic():
         locked = FinanceAccount.objects.select_for_update().get(pk=account.pk)
         existing = _existing_for(locked)
         if existing is not None:
             return _dedup_result(locked, existing)
+        _assert_not_overdrawn(locked, amount, transaction_type)
 
     from apps.pii.store_authoring import author_store_fields
 
@@ -389,6 +533,9 @@ def record_transaction(
         existing = _existing_for(locked)
         if existing is not None:
             return _dedup_result(locked, existing)
+        # Re-checked under the lock: the balance may have moved while we were
+        # authoring. Raising here rolls the block back, so nothing is recorded.
+        _assert_not_overdrawn(locked, amount, transaction_type)
         txn_row = FinanceTransaction.objects.create(
             tenant=tenant,
             account=locked,
@@ -398,10 +545,15 @@ def record_transaction(
             pii_receipts=receipts,
             date=txn_date,
         )
-        if transaction_type in ("payment", "refund"):
+        if transaction_type in (_TXN.PAYMENT, _TXN.REFUND):
+            # Debt only (asset accounts cannot reach here). The zero floor is an
+            # overpayment landing on "paid off", not a swallowed amount.
             locked.current_balance = max(Decimal("0"), locked.current_balance - amount)
-        elif transaction_type in ("charge", "interest"):
+        elif transaction_type in (_TXN.CHARGE, _TXN.INTEREST) or transaction_type == _TXN.DEPOSIT:
             locked.current_balance += amount
+        elif transaction_type == _TXN.WITHDRAWAL:
+            # No clamp: _assert_not_overdrawn already refused the below-zero case.
+            locked.current_balance -= amount
         locked.save(update_fields=["current_balance", "updated_at"])
 
     return (

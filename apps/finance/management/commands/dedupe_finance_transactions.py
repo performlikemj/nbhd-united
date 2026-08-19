@@ -112,10 +112,11 @@ class Command(BaseCommand):
 
             for dup in duplicates:
                 to_delete_ids.append(dup.id)
-                # Reverse the balance impact: payments/refunds reduced balance, so add back
-                if dup.transaction_type in ("payment", "refund"):
+                # Reverse the balance impact: payments/refunds/withdrawals reduced
+                # the balance, so add back; charges/interest/deposits raised it.
+                if dup.transaction_type in ("payment", "refund", "withdrawal"):
                     balance_adjustments[str(cluster["account_id"])] += dup.amount
-                elif dup.transaction_type in ("charge", "interest"):
+                elif dup.transaction_type in ("charge", "interest", "deposit"):
                     balance_adjustments[str(cluster["account_id"])] -= dup.amount
 
             if verbose:

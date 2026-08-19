@@ -159,7 +159,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_finance_add_account",
       description:
-        "Add or update a financial account (debt or savings). If an account with the same nickname already exists, it will be updated. Use for tracking credit cards, loans, savings accounts, etc.",
+        "Add or update a financial account (debt or savings). If an account with the same nickname already exists, it is UPDATED: fields you omit keep their stored values, so send only what changed (sending just nickname + current_balance no longer wipes the APR, minimum payment, credit limit or due day). account_type is required when creating — never guess it; ask the user whether it is a debt or a savings/checking account.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -184,7 +184,10 @@ export default function register(api) {
           },
           interest_rate: {
             type: "number",
-            description: "Annual percentage rate (APR). E.g. 22.9 for 22.9%.",
+            minimum: 0,
+            maximum: 100,
+            description:
+              "Annual percentage rate (APR) as a PERCENT, max 2 decimal places. E.g. 22.9 for 22.9% — not 0.229. Omit when the APR is unknown; do not send 0, which the payoff engine treats as an interest-free debt.",
           },
           minimum_payment: {
             type: "number",
@@ -196,16 +199,22 @@ export default function register(api) {
           },
           due_day: {
             type: "integer",
-            description: "Day of month payment is due (1-31).",
+            minimum: 1,
+            maximum: 31,
+            description: "Day of month payment is due, 1-31. Omit it when there is no fixed due date — never send 0.",
           },
         },
         required: ["nickname", "account_type", "current_balance"],
       },
       async execute(_id, params) {
         const input = asObject(params);
+        // No default account_type: filing an unknown account as "other_debt"
+        // invented a debt the user never had and counted it against them in
+        // every total. An omitted type is a malformed call — let the backend
+        // say so.
         const body = {
           nickname: asTrimmedString(input.nickname),
-          account_type: asTrimmedString(input.account_type) || "other_debt",
+          account_type: asTrimmedString(input.account_type),
           current_balance: input.current_balance,
         };
         if (input.interest_rate !== undefined) body.interest_rate = input.interest_rate;
@@ -268,27 +277,33 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_finance_record_payment",
       description:
-        "Record a payment toward an account. Automatically updates the account balance. Fuzzy-matches account by nickname.",
+        "Record money moving against ONE account, updating its balance. Fuzzy-matches the account by nickname; if the name matches more than one account you get the candidates back and must ask the user which one.\n\n" +
+        "The verb has to match the kind of account:\n" +
+        "  • DEBT (credit card, loan, mortgage, medical, other_debt): payment (pays it down), charge (adds to it), interest (accrued interest), refund (money returned against it).\n" +
+        "  • ASSET (savings, checking, emergency_fund): deposit (money in), withdrawal (money out).\n\n" +
+        "A payment into a savings account is rejected — use deposit. Moving money BETWEEN accounts is not one transaction: record the source withdrawal and the destination deposit (or payment, if the destination is a debt) as two separate calls.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           account_nickname: {
             type: "string",
-            description: "Nickname of the account to pay (fuzzy matched).",
+            description: "Nickname of the account (fuzzy matched).",
           },
           amount: {
             type: "number",
-            description: "Payment amount in dollars.",
+            description: "Amount in dollars.",
           },
           date: {
             type: "string",
-            description: "Payment date in YYYY-MM-DD format. Defaults to today.",
+            description:
+              "Transaction date in YYYY-MM-DD format. Defaults to today in the USER's timezone.",
           },
           transaction_type: {
             type: "string",
-            enum: ["payment", "charge", "transfer", "refund", "interest"],
-            description: "Type of transaction. Defaults to payment.",
+            enum: ["payment", "charge", "refund", "interest", "deposit", "withdrawal"],
+            description:
+              "Debt accounts: payment | charge | interest | refund. Asset accounts (savings, checking, emergency_fund): deposit | withdrawal. Defaults to payment.",
           },
           description: {
             type: "string",

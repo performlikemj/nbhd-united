@@ -34,6 +34,7 @@ from rest_framework.views import APIView
 
 from apps.integrations.internal_auth import InternalAuthError, validate_internal_runtime_request
 from apps.pii.egress import KnownValueResponseGuardMixin
+from apps.platform_logs.telemetry import emit_tool_event
 from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
@@ -57,6 +58,7 @@ from .views import (
     _serialize_snapshot,
     _serialize_voice_pref,
     _upsert_voice_pref_impl,
+    _validate_compare_order,
     _validate_record_body,
     _validate_voice_pref_body,
 )
@@ -197,6 +199,18 @@ class RuntimePillarCompareView(APIView):
             return Response({"error": "not_found"}, status=status.HTTP_404_NOT_FOUND)
 
         a, b = snaps[a_id], snaps[b_id]
+        if err := _validate_compare_order(a, b):
+            # Namespaced with the Wave 1 money-truth fixes: this is the same class
+            # of failure (a legal-looking answer with the sign inverted).
+            emit_tool_event(
+                namespace="finance",
+                tool_name="runtime-insights-compare",
+                tenant_id=tenant_id,
+                outcome="rejected",
+                reason_code="snapshots_out_of_order",
+                detail={"bound": "same" if a.ts == b.ts else "high"},
+            )
+            return err
         diff_func = _DIFF_FUNCS.get(pillar)
         diff = diff_func(a.payload, b.payload) if diff_func else {}
 

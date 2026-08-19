@@ -77,7 +77,15 @@ def render_finance(tenant: Tenant, *, max_chars: int = 1000) -> str:
     # UTC could window due dates (and the recent-tx lookback below) against the
     # wrong calendar day. Anchors on ``tenant_today`` like the Fuel/Core sections.
     today = tenant_today(tenant)
-    upcoming = [a for a in debts if a.due_day and 0 <= ((a.due_day - today.day) % 31) <= 7 and a.minimum_payment]
+    # The ``% 31`` window only means anything for a real day-of-month. A legacy
+    # row with due_day=0 (or 45) wraps into the next-7-days bucket and prints an
+    # invented due date; the writer now rejects those values, this skips the ones
+    # already stored.
+    upcoming = [
+        a
+        for a in debts
+        if a.due_day and 1 <= a.due_day <= 31 and 0 <= ((a.due_day - today.day) % 31) <= 7 and a.minimum_payment
+    ]
     if upcoming:
         due_lines = ["**Upcoming due dates** (next 7 days):"]
         for a in upcoming[:5]:
