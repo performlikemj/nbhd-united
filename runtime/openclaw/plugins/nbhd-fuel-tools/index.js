@@ -250,7 +250,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_log_workout",
       description:
-        'Log a workout from natural language. Infer the category from the activity name (e.g. "deadlift" → strength, "ran" → cardio, "yoga" → mobility). Default to today\'s date and status "done". Do NOT ask follow-up questions — log what the user gave you and confirm briefly.',
+        'Log a workout from natural language. Infer the category from the activity name (e.g. "deadlift" → strength, "ran" → cardio, "yoga" → mobility). Default to today\'s date and status "done". Confirm briefly and do not interrogate the user. TWO hard server rules: (1) a strength or calisthenics workout MUST carry at least one exercise with sets in detail_json.exercises — an empty list is a 400, because a workout with no exercises is invisible in the app; if the user gave you no detail, ask once for the lifts, or log it under the category that matches what they actually described. (2) numeric detail_json fields are numbers only — distance_km is kilometres and work_s/rest_s are seconds, so convert first and send 8.05, never "5 miles".',
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -271,8 +271,9 @@ export default function register(api) {
           },
           status: {
             type: "string",
-            enum: ["done", "planned"],
-            description: 'Whether the workout is completed or planned. Defaults to "done".',
+            enum: ["done", "planned", "skipped", "rescheduled", "in_progress", "rest"],
+            description:
+              'Whether the workout is completed or planned. Defaults to "done". Use "skipped" when the user says they MISSED or skipped a session — it keeps the session in their adherence history. Never log a missed session as "done": a status outside this list is now a 400 rather than being quietly rewritten to "done".',
           },
           duration_minutes: {
             type: "integer",
@@ -434,8 +435,9 @@ export default function register(api) {
           },
           status: {
             type: "string",
-            enum: ["done", "planned"],
-            description: 'Change status, e.g. mark a planned workout as "done".',
+            enum: ["done", "planned", "skipped", "rescheduled", "in_progress", "rest"],
+            description:
+              'Change status, e.g. mark a planned workout as "done", or "skipped" when the user says they missed it. A value outside this list is a 400 — it is no longer silently ignored.',
           },
           date: { type: "string", description: "New date in YYYY-MM-DD format." },
           duration_minutes: { type: "integer", description: "Updated duration in minutes." },
@@ -694,9 +696,12 @@ export default function register(api) {
           },
           preferred_days: {
             type: "array",
-            items: { type: "integer", minimum: 0, maximum: 6 },
+            items: {
+              type: "string",
+              enum: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"],
+            },
             description:
-              "Preferred training days as weekday indices: 0=Monday, 1=Tuesday, 2=Wednesday, 3=Thursday, 4=Friday, 5=Saturday, 6=Sunday.",
+              'Preferred training days as weekday NAMES, e.g. ["monday","wednesday","friday"]. Write the name, never a number: the numbering conventions in play disagree (Python Mon=0, ISO Mon=1, cron Sun=0), and a wrong index silently moves a training day. Legacy integer indices (0=Mon..6=Sun) are still accepted by the server but must not be used in new calls. Sending a value that is neither is a 400 — the list is never partially stored.',
           },
           preferred_time: {
             type: "string",
@@ -721,8 +726,11 @@ export default function register(api) {
           if (Array.isArray(input.equipment)) body.equipment = input.equipment.map(String);
           if (input.days_per_week !== undefined)
             body.days_per_week = parseInteger(input.days_per_week, { defaultValue: undefined, min: 1, max: 7 });
-          if (Array.isArray(input.preferred_days))
-            body.preferred_days = input.preferred_days.filter((d) => typeof d === "number" && d >= 0 && d <= 6);
+          // Pass the list through verbatim (names or legacy indices) and let the
+          // server arbitrate. The old client-side number filter dropped every
+          // string silently, so a list of weekday names arrived as [] and wiped
+          // the stored preference with a 200.
+          if (Array.isArray(input.preferred_days)) body.preferred_days = input.preferred_days;
           if (input.preferred_time) body.preferred_time = asTrimmedString(input.preferred_time);
           if (input.additional_context) body.additional_context = asTrimmedString(input.additional_context);
 
@@ -881,6 +889,11 @@ export default function register(api) {
             description:
               'New weekly schedule template, keyed by weekday NAME ("monday".."sunday"; "mon".."sun" also accepted). Example: {"tuesday": {"category":"strength","activity":"Push","detail_json":{"exercises":[...]}}}. Legacy integer keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls — the numbering conventions disagree and a wrong index silently moves the session to another day. Triggers workout regeneration for remaining weeks.',
           },
+          week_overrides: {
+            type: "object",
+            description:
+              'Replace the plan\'s per-week progression/deload map. Keys are 0-indexed ABSOLUTE plan weeks ("0" is always the plan\'s FIRST week, never "the first week left") and must be within the plan\'s length — a key of "9" on a 4-week plan is a 400. Each value is a partial schedule_json (keyed by weekday NAME) merged over the base template for that week; map a weekday to null to make it a rest day that week. Sent as a whole map: it REPLACES the stored one, so include the overrides you want to keep. Triggers workout regeneration.',
+          },
         },
         required: ["plan_id"],
       },
@@ -899,6 +912,7 @@ export default function register(api) {
           if (input.days_per_week !== undefined)
             body.days_per_week = parseInteger(input.days_per_week, { defaultValue: undefined, min: 1, max: 7 });
           if (input.schedule_json) body.schedule_json = asObject(input.schedule_json);
+          if (input.week_overrides) body.week_overrides = asObject(input.week_overrides);
 
           const payload = await callRuntime(api, {
             path: fuelPath(api, `/plans/${encodeURIComponent(planId)}/`),

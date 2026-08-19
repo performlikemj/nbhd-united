@@ -758,7 +758,7 @@ class WorkoutProgressView(APIView):
             )
         elif cat == "cardio":
             workouts = list(base_qs.only("date", "detail_json").order_by("date")[:365])
-            data = aggregate_cardio_progress(workouts)
+            data = aggregate_cardio_progress(workouts, tenant=tenant)
         elif cat == "hiit":
             workouts = list(base_qs.only("date", "duration_minutes", "detail_json").order_by("date")[:365])
             data = aggregate_hiit_progress(workouts)
@@ -1692,7 +1692,13 @@ class WorkoutPlanDetailView(APIView):
         authored_workouts = None
         if prospective_schedule != old_schedule or prospective_weeks != old_weeks:
             today = today_in_tenant_tz(tenant)
-            elapsed_days = (today - plan.start_date).days
+            # Anchor on the start date this PATCH is about to SAVE, not the one
+            # currently on the row: the regen below runs after ``serializer.save()``
+            # and derives its own elapsed-week base from the new value. Reading the
+            # old one here would key the authored inputs to a different set of
+            # weeks than the expansion looks them up under.
+            prospective_start = authored_plan.get("start_date") or plan.start_date
+            elapsed_days = (today - prospective_start).days
             elapsed_weeks = max(0, elapsed_days // 7)
             remaining_weeks = max(0, prospective_weeks - elapsed_weeks)
             if remaining_weeks > 0:
@@ -1701,6 +1707,7 @@ class WorkoutPlanDetailView(APIView):
                     prospective_schedule,
                     remaining_weeks,
                     writer="owner",
+                    week_index_base=elapsed_weeks,
                 )
         serializer.validated_data.clear()
         serializer.validated_data.update(authored_plan)

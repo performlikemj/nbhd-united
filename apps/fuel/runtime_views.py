@@ -150,6 +150,107 @@ def _get_tenant_or_404(tenant_id: UUID) -> Tenant | Response:
         )
 
 
+def _emit_fuel_event(tenant, *, tool_name, outcome, reason_code="", detail=None):
+    """Call-site telemetry for the fuel tool contract (namespace ``fuel``).
+
+    The generic runtime middleware already records accept/reject/latency per
+    endpoint; what it cannot know is WHY. These events carry the reason a fuel
+    call was rejected — or was silently normalized — so a contract drift is
+    found because a number moved, not because someone tripped over it in a
+    conversation months later. Shape-only values; never caller text (see
+    ``docs/agents/telemetry.md``).
+    """
+    from apps.platform_logs.telemetry import emit_tool_event
+
+    emit_tool_event(
+        tool_name=tool_name,
+        outcome=outcome,
+        namespace="fuel",
+        tenant_id=getattr(tenant, "id", None),
+        reason_code=reason_code,
+        detail=detail or {},
+    )
+
+
+_STATUS_HINT = ", ".join(WorkoutStatus.values)
+
+# Statuses describing a session that did not happen. Nothing was performed and
+# nothing is prescribed, so the empty-prescription guard does not apply to them.
+_NO_PRESCRIPTION_STATUSES = frozenset({WorkoutStatus.SKIPPED, WorkoutStatus.RESCHEDULED, WorkoutStatus.REST})
+
+
+def _reject_unknown_status(tenant, value, *, tool_name):
+    """400 for a workout status outside :class:`WorkoutStatus`.
+
+    This used to be a silent coercion to "done" on the create path, which is
+    the worst possible default: a user telling the assistant "I missed leg
+    day" had their missed session recorded as a completed workout, inflating
+    adherence with training that never happened. Reject instead, and name the
+    legal values so the model picks the right one in-loop.
+    """
+    from apps.common.llm_contracts import LLMValidationError
+
+    _emit_fuel_event(tenant, tool_name=tool_name, outcome="rejected", reason_code="unknown_status_rejected")
+    shown = str(value)[:40]
+    err = LLMValidationError(
+        message=(
+            f"'{shown}' is not a workout status. Use one of: {_STATUS_HINT}. "
+            'A session the user did not do is "skipped" (keep it for adherence) or '
+            '"rescheduled" — never "done".'
+        ),
+        details=[
+            {
+                "loc": ["status"],
+                "msg": f"status must be one of: {_STATUS_HINT}",
+                "type": "unknown_status",
+                "allowed": list(WorkoutStatus.values),
+            }
+        ],
+    )
+    return Response(err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
+
+
+def _weekday_key_style(keys) -> str:
+    """Which spelling a caller used for weekday keys: name / int / mixed / none.
+
+    Both spellings are accepted, but they are not equally safe — an integer
+    index is silently corruptible across the three numbering conventions in
+    this product, which is how a Wednesday session once landed on Thursday.
+    Measuring the split is how we know when the legacy integer surface has
+    actually stopped being used.
+    """
+    saw_int = False
+    saw_name = False
+    for key in keys:
+        token = str(key).strip().lower()
+        if token in WEEKDAY_INDEX:
+            saw_name = True
+            continue
+        try:
+            int(token)
+        except (TypeError, ValueError):
+            continue
+        saw_int = True
+    if saw_int and saw_name:
+        return "mixed"
+    if saw_name:
+        return "name"
+    if saw_int:
+        return "int"
+    return "none"
+
+
+def _emit_weekday_key_style(tenant, keys, *, tool_name):
+    style = _weekday_key_style(keys)
+    _emit_fuel_event(
+        tenant,
+        tool_name=tool_name,
+        outcome="accepted" if style == "name" else "normalized",
+        reason_code="weekday_key_style",
+        detail={"weekday_key_style": style},
+    )
+
+
 class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
     """POST: log a workout from the AI assistant."""
 
@@ -175,7 +276,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
 
         workout_status = data.get("status", "done")
         if workout_status not in WorkoutStatus.values:
-            workout_status = "done"
+            return _reject_unknown_status(tenant, workout_status, tool_name="runtime-fuel-log")
 
         # Coerce duration_minutes and rpe to int, tolerating non-numeric input
         duration = data.get("duration_minutes")
@@ -185,12 +286,20 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             except (TypeError, ValueError):
                 duration = None
 
+        # The 1-10 clamp stays — an out-of-range rpe is a scale confusion, not a
+        # reason to drop the whole log — but it is no longer invisible: the
+        # stored value is echoed back and the clamp is counted, so "rpe 99"
+        # doesn't quietly become a 10 the model still believes is a 99.
         rpe = data.get("rpe")
+        rpe_clamped = False
         if rpe is not None:
             try:
-                rpe = max(1, min(10, int(rpe)))
+                raw_rpe = int(rpe)
             except (TypeError, ValueError):
                 rpe = None
+            else:
+                rpe = max(1, min(10, raw_rpe))
+                rpe_clamped = rpe != raw_rpe
 
         # Resolve date in the tenant's timezone (handles "today" / "yesterday"
         # / ISO; falls back to today-in-tenant-tz when uninterpretable).
@@ -209,12 +318,80 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         # so a mis-classified set ("plank" as reps+weight) can't be stored.
         # Local import: matches this module's idiom (detect_prs) and keeps
         # the lint-autofix from reaping it between edits.
-        from .set_contract import normalize_detail, validate_detail
+        from .set_contract import normalize_detail, validate_detail, validate_flat_detail
 
         detail_json, category = normalize_detail(data.get("detail_json", {}) or {}, category, activity=activity)[:2]
         detail_json, verr = validate_detail(detail_json, category)
         if verr is not None:
             return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
+
+        # Cardio/HIIT/mobility numbers must actually be numbers. Unvalidated,
+        # a distance of "5 miles" persists fine and then raises on every load
+        # of that user's cardio Progress view for good.
+        detail_json, flat_err = validate_flat_detail(detail_json, category)
+        if flat_err is not None:
+            _emit_fuel_event(
+                tenant,
+                tool_name="runtime-fuel-log",
+                outcome="rejected",
+                reason_code="cardio_detail_invalid",
+                detail={"category": category, "field": str(flat_err.details[0]["loc"][-1])},
+            )
+            return Response(flat_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
+
+        # A strength/calisthenics log with no exercises is an invisible
+        # workout: the row exists, the Fuel tab shows the activity name, and
+        # opening it reveals nothing to do or to review. The PLAN path has
+        # rejected this since #1481 and its comment predicted this exact hole
+        # on the log path — on 2026-08-19 the canary fell into it (three set
+        # rejections, then a 201 carrying skills=[]). Same envelope, so the
+        # model adds a real prescription and retries in-loop.
+        #
+        # Exempt the statuses where there is nothing to prescribe: a session the
+        # user SKIPPED (or moved, or a rest day) has no sets by definition, and
+        # requiring them would leave "I missed leg day" with no expressible
+        # payload at all — the very gap the status enum above just closed.
+        if (
+            category in ("strength", "calisthenics")
+            and workout_status not in _NO_PRESCRIPTION_STATUSES
+            and not _has_prescription(detail_json)
+        ):
+            from apps.common.llm_contracts import LLMValidationError
+
+            _emit_fuel_event(
+                tenant,
+                tool_name="runtime-fuel-log",
+                outcome="rejected",
+                reason_code="empty_prescription",
+                detail={"category": category},
+            )
+            pres_err = LLMValidationError(
+                message=(
+                    "Strength and calisthenics workouts require an exercise "
+                    "prescription. Add at least one exercise with sets under "
+                    "detail_json.exercises before retrying — record the work that "
+                    "was actually done, don't drop the category to dodge this and "
+                    "don't send an empty exercises list."
+                ),
+                details=[
+                    {
+                        "loc": ["detail_json", "exercises"],
+                        "msg": "strength/calisthenics workouts require a non-empty exercises list",
+                        "type": "missing_prescription",
+                        "example": _EMPTY_PRESCRIPTION_EXAMPLE,
+                    }
+                ],
+            )
+            return Response(pres_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
+
+        if rpe_clamped:
+            _emit_fuel_event(
+                tenant,
+                tool_name="runtime-fuel-log",
+                outcome="normalized",
+                reason_code="rpe_clamped",
+                detail={"rpe_clamped": True},
+            )
 
         from apps.pii.store_authoring import author_store_fields
 
@@ -265,16 +442,19 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         except Exception:
             logger.exception("PR detection failed for workout %s", workout.id)
 
-        return Response(
-            {
-                "id": str(workout.id),
-                "date": str(workout.date),
-                "category": workout.category,
-                "activity": workout.activity,
-                "status": workout.status,
-            },
-            status=status.HTTP_201_CREATED,
-        )
+        # Echo the STORED rpe (and say so when it was clamped): the assistant
+        # otherwise reports back the number it sent, not the number on the row.
+        payload = {
+            "id": str(workout.id),
+            "date": str(workout.date),
+            "category": workout.category,
+            "activity": workout.activity,
+            "status": workout.status,
+            "rpe": workout.rpe,
+        }
+        if rpe_clamped:
+            payload["rpe_clamped"] = True
+        return Response(payload, status=status.HTTP_201_CREATED)
 
 
 class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
@@ -341,9 +521,13 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
 
         if "status" in data:
             val = data["status"]
-            if val in WorkoutStatus.values:
-                workout.status = val
-                updated_fields.append("status")
+            # Same reject as the create path. Silently ignoring the field here
+            # is the mirror-image failure: the assistant reports "marked as
+            # missed" off a 200 while the row never moved off "planned".
+            if val not in WorkoutStatus.values:
+                return _reject_unknown_status(tenant, val, tool_name="runtime-fuel-workout-detail")
+            workout.status = val
+            updated_fields.append("status")
 
         if "date" in data:
             try:
@@ -379,12 +563,22 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             updated_fields.append("notes")
 
         if "detail_json" in data and isinstance(data["detail_json"], dict):
-            from .set_contract import normalize_detail, validate_detail
+            from .set_contract import normalize_detail, validate_detail, validate_flat_detail
 
             nd, ncat = normalize_detail(data["detail_json"], workout.category, activity=workout.activity)[:2]
             nd, verr = validate_detail(nd, ncat)
             if verr is not None:
                 return Response(verr.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
+            nd, flat_err = validate_flat_detail(nd, ncat)
+            if flat_err is not None:
+                _emit_fuel_event(
+                    tenant,
+                    tool_name="runtime-fuel-workout-detail",
+                    outcome="rejected",
+                    reason_code="cardio_detail_invalid",
+                    detail={"category": ncat, "field": str(flat_err.details[0]["loc"][-1])},
+                )
+                return Response(flat_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
             workout.detail_json = nd
             updated_fields.append("detail_json")
             if ncat != workout.category:
@@ -775,6 +969,91 @@ class RuntimeFuelSummaryView(_FuelResponseGuard, APIView):
         )
 
 
+_PREFERRED_DAYS_HINT = (
+    'weekday names ("monday".."sunday", or "mon".."sun"), or the legacy integer '
+    "index 0-6 (0=Mon..6=Sun) as a number or a numeric string"
+)
+
+
+def _normalize_preferred_days(tenant, raw):
+    """Resolve ``preferred_days`` to a sorted list of weekday indices.
+
+    Returns ``(days, error_response)``. Accepts names, abbreviations, ints and
+    int-strings through the SAME :data:`WEEKDAY_INDEX` map the schedule keys
+    use — one map, so the two surfaces can never disagree about what "wed"
+    means.
+
+    The old filter was ``isinstance(d, int)``, which silently DROPPED every
+    value it did not recognise: ``["1", "3"]`` — a perfectly ordinary thing for
+    a model to send — stored ``[]`` and wiped the user's stated training days
+    with a 200 and no complaint. Anything unrecognised is now a 400 naming the
+    accepted forms; a reduced or emptied list is never stored on the quiet.
+    An explicit ``[]`` still clears the preference, because that is the caller
+    saying so rather than the parser giving up.
+
+    ``isinstance(True, int)`` is True in Python, so a bool would have sailed
+    through the old filter as day 1; ``_normalize_weekday_key`` stringifies
+    first, so "true" fails both lookups and is rejected here.
+    """
+    from apps.common.llm_contracts import LLMValidationError
+
+    def _reject(message, details):
+        _emit_fuel_event(
+            tenant,
+            tool_name="runtime-fuel-profile",
+            outcome="rejected",
+            reason_code="preferred_days_invalid",
+        )
+        return None, Response(
+            LLMValidationError(message=message, details=details).as_tool_result(),
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not isinstance(raw, list):
+        return _reject(
+            f"preferred_days must be a list of {_PREFERRED_DAYS_HINT}.",
+            [{"loc": ["preferred_days"], "msg": "must be a list", "type": "list_type"}],
+        )
+
+    days: list[int] = []
+    rejected: list[str] = []
+    for idx, value in enumerate(raw):
+        day_int, key_err = _normalize_weekday_key(value)
+        if key_err is not None or day_int is None:
+            rejected.append(str(value)[:24])
+            continue
+        if day_int not in days:
+            days.append(day_int)
+
+    if rejected:
+        return _reject(
+            f"preferred_days contains values this contract does not accept: "
+            f"{', '.join(repr(v) for v in rejected)}. Use {_PREFERRED_DAYS_HINT}. "
+            "Send the complete list you want stored — it replaces the previous one.",
+            [
+                {
+                    "loc": ["preferred_days", idx],
+                    "msg": f"'{value}' is not a weekday — use {_PREFERRED_DAYS_HINT}",
+                    "type": "invalid_weekday",
+                }
+                for idx, value in enumerate(rejected)
+            ],
+        )
+
+    if days:
+        # Names are the contract; ints are legacy-but-legal. Recording the split
+        # is how we learn when the integer surface has actually gone quiet.
+        style = _weekday_key_style(raw)
+        _emit_fuel_event(
+            tenant,
+            tool_name="runtime-fuel-profile",
+            outcome="accepted" if style == "name" else "normalized",
+            reason_code="" if style == "name" else "preferred_days_coerced",
+            detail={"preferred_days_style": style},
+        )
+    return sorted(days), None
+
+
 class RuntimeFuelProfileView(_FuelResponseGuard, APIView):
     """GET/PATCH: fitness profile for the AI assistant."""
 
@@ -848,8 +1127,10 @@ class RuntimeFuelProfileView(_FuelResponseGuard, APIView):
                 profile.days_per_week = val
                 updated_fields.append("days_per_week")
 
-        if "preferred_days" in data and isinstance(data["preferred_days"], list):
-            cleaned = [int(d) for d in data["preferred_days"] if isinstance(d, int) and 0 <= d <= 6]
+        if "preferred_days" in data:
+            cleaned, pd_err = _normalize_preferred_days(tenant, data["preferred_days"])
+            if pd_err is not None:
+                return pd_err
             profile.preferred_days = cleaned
             updated_fields.append("preferred_days")
 
@@ -1280,13 +1561,21 @@ def _validate_normalize_schedule(schedule_json, *, require_detail=True):
     return normalized, None
 
 
-def _validate_normalize_week_overrides(week_overrides):
+def _validate_normalize_week_overrides(week_overrides, *, weeks=None, tenant=None, tool_name=""):
     """Validate the per-week progression/deload map.
 
-    Keys are 0-indexed week offsets; values are partial schedule overrides merged
-    over the base template for that week. A day mapped to ``null`` means "rest
-    this week" (drop the base day). Returns ``(normalized, error_response)``;
-    on error ``normalized`` is None.
+    Keys are 0-indexed week offsets ABSOLUTE to the plan ("0" is always the
+    plan's first week, never "the first week left"); values are partial
+    schedule overrides merged over the base template for that week. A day
+    mapped to ``null`` means "rest this week" (drop the base day). Returns
+    ``(normalized, error_response)``; on error ``normalized`` is None.
+
+    ``weeks`` bound-checks the keys against the plan's real length. Without it
+    a deload written for "week 9" of a 4-week plan was accepted, stored, and
+    echoed back in the response — so the model saw its deload confirmed while
+    the calendar never contained one, and nothing in the plan ever mentioned
+    the discrepancy. Left None (the default) the bound check is skipped, for
+    callers that do not know the week count.
     """
     if not week_overrides:
         return {}, None
@@ -1308,6 +1597,25 @@ def _validate_normalize_week_overrides(week_overrides):
         if wk < 0:
             return None, Response(
                 {"error": "invalid_week_overrides", "detail": f"week key '{wk_str}' must be >= 0"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if weeks is not None and wk >= weeks:
+            _emit_fuel_event(
+                tenant,
+                tool_name=tool_name or "runtime-fuel-plans",
+                outcome="rejected",
+                reason_code="week_override_out_of_range",
+                detail={"weeks": weeks, "week_key": wk},
+            )
+            return None, Response(
+                {
+                    "error": "invalid_week_overrides",
+                    "detail": (
+                        f"week key '{wk_str}' is outside this plan: valid keys are 0-{weeks - 1} "
+                        f"({weeks} week{'' if weeks == 1 else 's'} total, 0 = the plan's FIRST week). "
+                        "Either renumber the override or extend the plan's weeks."
+                    ),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if not isinstance(override, dict):
@@ -1354,14 +1662,25 @@ def _validate_normalize_week_overrides(week_overrides):
     return normalized, None
 
 
-def _author_plan_expansion_inputs(tenant, schedule_json, weeks, week_overrides=None, *, writer: str):
-    """Author every registered child-Workout value before the DB transaction."""
+def _author_plan_expansion_inputs(
+    tenant, schedule_json, weeks, week_overrides=None, *, writer: str, week_index_base: int = 0
+):
+    """Author every registered child-Workout value before the DB transaction.
+
+    ``week_index_base`` is the ABSOLUTE plan-week index that this expansion's
+    first iteration corresponds to, and must match the base
+    :func:`_expand_plan_workouts` derives from its ``start_date``. It is what
+    keeps ``week_overrides`` (which are keyed by absolute plan week) resolving
+    to the same weeks in both functions, and it keys the returned dict, so a
+    mid-plan regen cannot look up an entry this function never authored.
+    """
     from apps.pii.store_authoring import author_store_fields
 
     week_overrides = week_overrides or {}
     authored_workouts = {}
     for week_offset in range(weeks):
-        override = week_overrides.get(str(week_offset))
+        week_idx = week_index_base + week_offset
+        override = week_overrides.get(str(week_idx))
         if isinstance(override, dict):
             effective = dict(schedule_json)
             for day_key, day_val in override.items():
@@ -1382,7 +1701,7 @@ def _author_plan_expansion_inputs(tenant, schedule_json, weeks, week_overrides=N
             category = workout_def.get("category", "other")
             if category not in WorkoutCategory.values:
                 category = "other"
-            authored_workouts[(week_offset, day_int)] = author_store_fields(
+            authored_workouts[(week_idx, day_int)] = author_store_fields(
                 tenant,
                 {
                     "activity": str(workout_def.get("activity", WorkoutCategory(category).label)).strip(),
@@ -1411,10 +1730,18 @@ def _expand_plan_workouts(
     Each workout gets its ``slot`` FK set so the reconciler (Phase 5) can
     later mutate slots in place without tombstoning workout uuids.
 
-    ``week_overrides`` (0-indexed week offset -> partial schedule) applies
-    per-week progression/deload: each override is merged over the base template
-    for that week, with a day mapped to ``None`` dropped (rest). Inputs are
-    assumed already normalized by ``_validate_normalize_*``.
+    ``week_overrides`` (0-indexed ABSOLUTE plan-week -> partial schedule)
+    applies per-week progression/deload: each override is merged over the base
+    template for that week, with a day mapped to ``None`` dropped (rest).
+    Inputs are assumed already normalized by ``_validate_normalize_*``.
+
+    Overrides are resolved by ``week_idx`` — the absolute plan week — NOT by
+    the loop offset. The two are equal only when ``start_date`` is the plan's
+    own start; on a mid-plan regen (``start_date`` = today, ``weeks`` = the
+    weeks that remain) the offset restarts at 0 while the plan is in, say,
+    week 3, so keying overrides by the offset would silently re-anchor a
+    week-1 deload onto the first REMAINING week. ``_author_plan_expansion_inputs``
+    must be called with a matching ``week_index_base`` so its keys line up.
 
     Switched from ``bulk_create`` to per-row create so each row can carry
     the slot FK we create alongside it. Typical plan size is bounded
@@ -1433,7 +1760,7 @@ def _expand_plan_workouts(
     for week_offset in range(weeks):
         week_idx = elapsed_weeks + week_offset
 
-        override = week_overrides.get(str(week_offset))
+        override = week_overrides.get(str(week_idx))
         if isinstance(override, dict):
             effective = dict(schedule_json)
             for day_key, day_val in override.items():
@@ -1476,7 +1803,7 @@ def _expand_plan_workouts(
                     weekday=day_int,
                 )
 
-            authored, receipts = authored_workouts[(week_offset, day_int)]
+            authored, receipts = authored_workouts[(week_idx, day_int)]
             Workout.objects.create(
                 tenant=tenant,
                 plan=plan,
@@ -1669,6 +1996,13 @@ def _reject_start_today_without_session(tenant, plan_start, normalized_schedule,
 
     from apps.common.llm_contracts import LLMValidationError
 
+    _emit_fuel_event(
+        tenant,
+        tool_name="runtime-fuel-plans",
+        outcome="rejected",
+        reason_code="start_today_reject",
+        detail={"start_today_reject": True},
+    )
     start_err = LLMValidationError(
         message=(
             f"This plan starts TODAY ({plan_start.isoformat()}, a {name.capitalize()}), but "
@@ -1777,8 +2111,14 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         normalized_schedule, sched_err = _validate_normalize_schedule(schedule_json)
         if sched_err is not None:
             return sched_err
+        _emit_weekday_key_style(tenant, schedule_json.keys(), tool_name="runtime-fuel-plans")
 
-        normalized_overrides, ov_err = _validate_normalize_week_overrides(data.get("week_overrides"))
+        normalized_overrides, ov_err = _validate_normalize_week_overrides(
+            data.get("week_overrides"),
+            weeks=weeks,
+            tenant=tenant,
+            tool_name="runtime-fuel-plans",
+        )
         if ov_err is not None:
             return ov_err
 
@@ -1997,6 +2337,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             normalized_schedule, sched_err = _validate_normalize_schedule(raw_schedule, require_detail=False)
             if sched_err is not None:
                 return sched_err
+            _emit_weekday_key_style(tenant, raw_schedule.keys(), tool_name="runtime-fuel-plan-detail")
             # _validate_normalize_schedule injects a ``detail_json`` key on every
             # day (empty when none was supplied). On the PATCH/reconcile path the
             # reconciler treats a present-but-empty ``detail_json`` as an explicit
@@ -2023,7 +2364,15 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             needs_regeneration = True
 
         if "week_overrides" in data:
-            normalized_overrides, ov_err = _validate_normalize_week_overrides(data["week_overrides"])
+            # Bound against the plan's CURRENT week count — including a "weeks"
+            # value this same PATCH just set above, so extending the plan and
+            # adding an override for the new final week works in one call.
+            normalized_overrides, ov_err = _validate_normalize_week_overrides(
+                data["week_overrides"],
+                weeks=plan.weeks,
+                tenant=tenant,
+                tool_name="runtime-fuel-plan-detail",
+            )
             if ov_err is not None:
                 return ov_err
             plan.week_overrides = normalized_overrides
