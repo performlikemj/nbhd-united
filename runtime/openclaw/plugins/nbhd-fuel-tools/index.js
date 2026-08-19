@@ -744,7 +744,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_create_plan",
       description:
-        "Create a structured, multi-week workout plan. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: provide the WEEKLY CADENCE and let the backend assign calendar dates in the user's timezone. ALWAYS pass the user's tenant-local start anchor as start_date. For 'today' / 'I am at the gym now', start_date is today and schedule_json MUST include today's weekday — rotate the split so today is day 1. Never design a cadence that excludes the requested first training day. The response's first_workout_date is the date to use when describing the first session; honor start_date_note and never assume start_date has a session. Design from the user's profile, journal context, sleep trends, lessons, and goals. schedule_json maps weekday 0=Monday..6=Sunday to a workout definition. Set target_rpe per day, objective for the plan's through-line, and week_overrides for progression/deload. Check nbhd_fuel_summary for an existing active plan first.",
+        "Create a structured, multi-week workout plan. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: provide the WEEKLY CADENCE and let the backend assign calendar dates in the user's timezone. ALWAYS pass the user's tenant-local start anchor as start_date. For 'today' / 'I am at the gym now', start_date is today and schedule_json MUST include today's weekday — rotate the split so today is day 1; the server hard-rejects a plan that starts today with no session on today's weekday (400). Never design a cadence that excludes the requested first training day. The response's first_workout_date is the date to use when describing the first session; honor start_date_note and never assume start_date has a session. Design from the user's profile, journal context, sleep trends, lessons, and goals. schedule_json is keyed by weekday NAME — \"monday\", \"tuesday\", \"wednesday\", \"thursday\", \"friday\", \"saturday\", \"sunday\" — mapping each training day to a workout definition. Write the name, never a number: numeric indices are legacy-only and the numbering conventions disagree (Python Mon=0, ISO Mon=1, cron Sun=0), which is how a Wednesday session gets scheduled on Thursday. Set target_rpe per day, objective for the plan's through-line, and week_overrides for progression/deload. Check nbhd_fuel_summary for an existing active plan first.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -772,7 +772,7 @@ export default function register(api) {
           schedule_json: {
             type: "object",
             description:
-              'Weekly template. Keys are weekday indices ("0"=Mon, "1"=Tue, ..., "6"=Sun). Values are workout definitions with activity, category, optional duration_minutes and detail_json. Cross-field rule: for a "today" / "at the gym now" start, schedule_json MUST include today\'s weekday; rotate the split so today is day 1. Never exclude the requested start day from the cadence. Only include training days — rest days are implied by absence. On strength and calisthenics days detail_json.exercises is REQUIRED: the server rejects an empty prescription (400 with the offending weekday) so an empty strength day never reaches the calendar.',
+              'Weekly template. Keys are weekday NAMES: "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday" (case-insensitive; "mon".."sun" also accepted). Example: {"monday": {...}, "wednesday": {...}, "friday": {...}}. Legacy integer keys ("0"=Mon..."6"=Sun) are still accepted for back-compat but MUST NOT be used in new calls — three weekday-numbering conventions exist and picking the wrong one silently schedules the session on the wrong day. Values are workout definitions with activity, category, optional duration_minutes and detail_json. Cross-field rule: for a "today" / "at the gym now" start, schedule_json MUST include today\'s weekday by name; rotate the split so today is day 1. The server hard-rejects a plan whose start_date is today when that weekday is missing (400 naming the day to add). Never exclude the requested start day from the cadence. Only include training days — rest days are implied by absence. Send each weekday at most once; two keys resolving to the same day (e.g. "2" and "wednesday") are rejected. On strength and calisthenics days detail_json.exercises is REQUIRED: the server rejects an empty prescription (400 with the offending weekday) so an empty strength day never reaches the calendar.',
             additionalProperties: {
               type: "object",
               properties: {
@@ -806,7 +806,7 @@ export default function register(api) {
           week_overrides: {
             type: "object",
             description:
-              'Optional per-week progression/deload. Keys are 0-indexed week offsets ("0"=first week). Each value is a partial schedule_json merged over the base template for that week; map a weekday to null to make it a rest day that week. Example: {"3": {"0": {"category":"strength","activity":"Deload","target_rpe":5}, "2": null}} deloads Monday and rests Wednesday in week 4.',
+              'Optional per-week progression/deload. Keys are 0-indexed week offsets ("0"=first week) — these ARE numbers, unlike the weekday keys inside each value. Each value is a partial schedule_json (keyed by weekday NAME) merged over the base template for that week; map a weekday to null to make it a rest day that week. Example: {"3": {"monday": {"category":"strength","activity":"Deload","target_rpe":5}, "wednesday": null}} deloads Monday and rests Wednesday in week 4.',
           },
           notes: {
             type: "string",
@@ -878,7 +878,8 @@ export default function register(api) {
           },
           schedule_json: {
             type: "object",
-            description: "New weekly schedule template. Triggers workout regeneration for remaining weeks.",
+            description:
+              'New weekly schedule template, keyed by weekday NAME ("monday".."sunday"; "mon".."sun" also accepted). Example: {"tuesday": {"category":"strength","activity":"Push","detail_json":{"exercises":[...]}}}. Legacy integer keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls — the numbering conventions disagree and a wrong index silently moves the session to another day. Triggers workout regeneration for remaining weeks.',
           },
         },
         required: ["plan_id"],

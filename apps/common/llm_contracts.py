@@ -38,15 +38,16 @@ from pydantic import BaseModel, ValidationError
 
 from apps.common.tenant_tz import tenant_tz
 
-_WEEKDAY_INDEX = {
-    "monday": 0,
-    "tuesday": 1,
-    "wednesday": 2,
-    "thursday": 3,
-    "friday": 4,
-    "saturday": 5,
-    "sunday": 6,
-    # Common 3-letter abbreviations.
+# Canonical weekday names, indexed the way ``date.weekday()`` does
+# (Monday=0 … Sunday=6). Public because they are the *contract* wherever a
+# weekday crosses the LLM boundary: three numbering conventions coexist in this
+# product (Python Mon=0, ISO Mon=1, cron Sun=0) and a model that slips between
+# them writes a perfectly legal — but wrong — index. A name cannot be off by one.
+WEEKDAY_NAMES = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+WEEKDAY_INDEX = {
+    **{name: idx for idx, name in enumerate(WEEKDAY_NAMES)},
+    # Common abbreviations.
     "mon": 0,
     "tue": 1,
     "tues": 1,
@@ -103,8 +104,8 @@ def resolve_relative_date(tenant: Any, phrase: str) -> date | None:
     except ValueError:
         pass
 
-    if p in _WEEKDAY_INDEX:
-        days_back = (today.weekday() - _WEEKDAY_INDEX[p]) % 7
+    if p in WEEKDAY_INDEX:
+        days_back = (today.weekday() - WEEKDAY_INDEX[p]) % 7
         if days_back == 0:
             days_back = 7  # "Monday" said on Monday means last Monday
         return today - timedelta(days=days_back)
