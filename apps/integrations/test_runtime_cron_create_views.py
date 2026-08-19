@@ -209,3 +209,55 @@ class RuntimeCronCreateViewsTest(TestCase):
             **self._headers(),
         )
         self.assertEqual(resp.status_code, 400, resp.content)
+
+    # ── schedule shapes the gateway would accept and mis-execute ──────────
+    #
+    # These assert the MODEL-FACING body, not just the status: the `detail`
+    # string is the only guidance the agent gets at the moment it has to
+    # correct itself, so its wording is part of the contract.
+
+    def _post_reminder(self, schedule, name="x"):
+        return self.client.post(
+            f"/api/v1/integrations/runtime/{self.tenant.id}/crons/pure_reminder/",
+            data={"name": name, "schedule": schedule, "text": "Take out trash"},
+            content_type="application/json",
+            **self._headers(),
+        )
+
+    def test_every_ms_in_seconds_is_rejected_with_the_unit_spelled_out(self):
+        resp = self._post_reminder({"kind": "every", "everyMs": 3600})
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        body = resp.json()
+        self.assertEqual(body["error"], "everyms_too_small")
+        self.assertIn("MILLISECONDS", body["detail"])
+        self.assertIn("3600000", body["detail"])
+
+    def test_offsetless_at_is_rejected_with_a_worked_example(self):
+        resp = self._post_reminder({"kind": "at", "at": "2099-06-18T09:00:00"})
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        body = resp.json()
+        self.assertEqual(body["error"], "naive_at_rejected")
+        self.assertIn("+09:00", body["detail"])
+
+    def test_etc_timezone_is_rejected_for_inverting_the_sign(self):
+        resp = self._post_reminder({"kind": "cron", "expr": "0 8 * * 2", "tz": "Etc/GMT+9"})
+
+        self.assertEqual(resp.status_code, 400, resp.content)
+        body = resp.json()
+        self.assertEqual(body["error"], "tz_etc_rejected")
+        self.assertIn("INVERTED", body["detail"])
+
+    def test_omitted_cron_tz_is_backfilled_from_the_users_profile(self):
+        self.tenant.user.timezone = "Asia/Tokyo"
+        self.tenant.user.save(update_fields=["timezone"])
+
+        resp = self._post_reminder({"kind": "cron", "expr": "0 7 * * *"}, name="morning")
+
+        self.assertEqual(resp.status_code, 201, resp.content)
+        # The echoed schedule is what the agent will read back to the user, so
+        # it must show the tz that was actually stored.
+        self.assertEqual(resp.json()["cron"]["schedule"]["tz"], "Asia/Tokyo")
+        row = CronJob.objects.get(tenant=self.tenant, name="morning")
+        self.assertEqual(row.data["schedule"]["tz"], "Asia/Tokyo")

@@ -3417,17 +3417,59 @@ class RuntimeProfileUpdateView(APIView):
         data = request.data
         updated_fields = []
 
-        # Validate timezone if provided
+        # Validate timezone if provided.
+        #
+        # ZoneInfo alone is not enough of a gate here. It happily resolves the
+        # POSIX ``Etc/*`` family, whose sign is INVERTED — ``Etc/GMT+9`` is
+        # UTC MINUS 9, so a model reaching for "+9 means Tokyo" stores a zone
+        # 18 hours away from what it meant. It also resolves legacy
+        # abbreviations (``EST``, ``Japan``) that carry no DST rules. This
+        # field is copied into every generated cron's ``tz``, so a wrong value
+        # here is not one wrong answer — it silently re-times the user's whole
+        # schedule.
         if "timezone" in data:
+            from apps.platform_logs.telemetry import emit_tool_event
+
             tz_value = (data["timezone"] or "").strip()
             if tz_value:
-                try:
-                    from zoneinfo import ZoneInfo
+                tz_reject = None
+                if tz_value.startswith("Etc/"):
+                    tz_reject = (
+                        "tz_etc_rejected",
+                        f"{tz_value!r} is a POSIX name whose sign is INVERTED — "
+                        f"'Etc/GMT+9' is UTC MINUS 9, not Tokyo. Use the "
+                        f"Area/Location form, e.g. 'Asia/Tokyo'.",
+                    )
+                elif tz_value != "UTC" and "/" not in tz_value:
+                    tz_reject = (
+                        "profile_tz_rejected",
+                        f"{tz_value!r} is not an Area/Location timezone. Use the "
+                        f"full IANA form, e.g. 'Asia/Tokyo' or 'America/New_York' "
+                        f"(abbreviations like 'JST' and 'EST' carry no DST rules).",
+                    )
+                else:
+                    try:
+                        from zoneinfo import ZoneInfo
 
-                    ZoneInfo(tz_value)  # validate
-                except (KeyError, Exception):
+                        ZoneInfo(tz_value)  # validate
+                    except Exception:
+                        tz_reject = (
+                            "profile_tz_rejected",
+                            f"Unknown timezone: {tz_value!r}. Use the Area/Location "
+                            f"form, e.g. 'Asia/Tokyo' or 'America/New_York'.",
+                        )
+
+                if tz_reject is not None:
+                    reason, detail = tz_reject
+                    emit_tool_event(
+                        tool_name="runtime-profile-update",
+                        outcome="rejected",
+                        namespace="cron",
+                        tenant_id=tenant.id,
+                        reason_code=reason,
+                    )
                     return Response(
-                        {"error": "invalid_timezone", "detail": f"Unknown timezone: {tz_value!r}"},
+                        {"error": "invalid_timezone", "detail": detail},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 user.timezone = tz_value

@@ -144,6 +144,25 @@ class RuntimeCommitmentEndpointTest(TestCase):
         resp = self._post({"about": "topic", "why": "x", "surface_after": "not-a-date"})
         self.assertEqual(resp.status_code, 400)
 
+    def test_offsetless_surface_after_400(self):
+        """A naked timestamp is stored as UTC — nine hours off for a Tokyo user."""
+        from apps.platform_logs.models import ToolContractEvent
+
+        resp = self._post({"about": "topic", "why": "x", "surface_after": "2099-05-21T09:00:00"})
+
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("no timezone offset", resp.json()["detail"])
+        # The generic /runtime/ middleware also records an http_400 for this
+        # request; the enrichment is what says WHY, so assert on that one.
+        self.assertEqual(
+            list(ToolContractEvent.objects.filter(namespace="cron").values_list("reason_code", flat=True)),
+            ["naive_surface_after_rejected"],
+        )
+
+    def test_surface_after_with_an_offset_is_accepted(self):
+        resp = self._post({"about": "topic", "why": "x", "surface_after": "2099-05-21T09:00:00+09:00"})
+        self.assertEqual(resp.status_code, 200)
+
 
 class CommitmentRendererTest(TestCase):
     """Phase D renderer surfaces commitments past surface_after in
