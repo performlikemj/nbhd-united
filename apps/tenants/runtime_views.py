@@ -317,11 +317,44 @@ class RuntimeCommitmentRecordView(APIView):
                 {"error": "missing_surface_after", "detail": "'surface_after' is required (ISO-8601)"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        from apps.platform_logs.telemetry import emit_tool_event
+
         try:
             surface_after = datetime.fromisoformat(str(surface_after_raw).replace("Z", "+00:00"))
         except ValueError:
+            emit_tool_event(
+                tool_name="runtime-commitment-record",
+                outcome="rejected",
+                namespace="cron",
+                tenant_id=tenant_id,
+                reason_code="invalid_surface_after",
+            )
             return Response(
-                {"error": "invalid_surface_after", "detail": "must be ISO-8601 timestamp"},
+                {"error": "invalid_surface_after", "detail": "must be ISO-8601 timestamp with a timezone offset"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        # An offset-less timestamp is not a harmless omission: Django stores it
+        # as UTC, so a Tokyo user's "surface this on the 21st" resurfaces nine
+        # hours late — on the 20th by their clock when the offset runs the
+        # other way.
+        if surface_after.tzinfo is None or surface_after.utcoffset() is None:
+            emit_tool_event(
+                tool_name="runtime-commitment-record",
+                outcome="rejected",
+                namespace="cron",
+                tenant_id=tenant_id,
+                reason_code="naive_surface_after_rejected",
+            )
+            return Response(
+                {
+                    "error": "invalid_surface_after",
+                    "detail": (
+                        f"{surface_after_raw!r} has no timezone offset, and an offset-less "
+                        f"timestamp is stored as UTC — for a user in Asia/Tokyo that is 9 "
+                        f"hours off. Include the user's offset, "
+                        f"e.g. '2026-05-21T09:00:00+09:00'."
+                    ),
+                },
                 status=status.HTTP_400_BAD_REQUEST,
             )
 

@@ -112,3 +112,48 @@ class CronManagementDocShapeTests(SimpleTestCase):
             r"(?i)kind.*at.*auto[- ]?delete",
             'cron-management.md must explain that `kind:"at"` jobs auto-delete but recurring jobs do not.',
         )
+
+    def test_doc_does_not_teach_a_relative_duration_to_raw_cron_add(self):
+        """The gateway's duration parser is CLI-only.
+
+        The doc taught `{"kind": "at", "at": "20m"}` inside a `cron add` example
+        for months; the gateway answers `Invalid schedule.at: expected ISO-8601
+        timestamp (got 20m)` and the reminder is never created. A relative
+        duration may only appear in a typed `nbhd_cron_create_*` example.
+        """
+        for block in re.findall(r"```json\n(.*?)```", self.doc, flags=re.DOTALL):
+            if not re.search(r'"at"\s*:\s*"\d+\s*[mhd]"', block):
+                continue
+            self.assertNotIn(
+                '"sessionTarget"',
+                block,
+                "cron-management.md shows a relative duration in a raw `cron add` "
+                "example — the gateway rejects that shape. Only the typed "
+                "nbhd_cron_create_* tools accept '20m'.",
+            )
+
+    def test_doc_states_the_day_of_week_convention(self):
+        """Stated nowhere before this, while the fuel tools teach 0=Monday.
+
+        croner 10.0.1 (verified against the shipped package): 0 and 7 are both
+        Sunday, 6 is Saturday, 8 raises.
+        """
+        self.assertRegex(
+            self.doc,
+            r"(?i)`?0`?\s*=?\s*Sunday",
+            "cron-management.md must state that cron day-of-week 0 is Sunday — "
+            "the fuel/workout tools use 0=Monday, and the collision is silent.",
+        )
+
+    def test_doc_states_every_ms_is_milliseconds(self):
+        """The runtime clamps everyMs at 1ms, so 3600 spins at 3.6s intervals."""
+        self.assertRegex(
+            self.doc,
+            r"(?i)everyMs.*millisecond",
+            "cron-management.md must state that everyMs is MILLISECONDS — the "
+            "runtime has no floor of its own and 3600 fires every 3.6 seconds.",
+        )
+
+    def test_doc_names_the_typed_tools_as_the_relative_duration_path(self):
+        """The truthful split: durations work on the typed tools, not cron add."""
+        self.assertIn("nbhd_cron_create_", self.doc)

@@ -54,7 +54,9 @@ DETAIL_ALLOWLIST: dict[str, frozenset[str]] = {
     # the middleware knows nothing tool-specific, so it must not invent flags.
     "runtime": frozenset(),
     "fuel": frozenset({"weekday_key_style", "start_today_reject", "date_source"}),
-    "cron": frozenset({"tz_missing", "dow_source", "schedule_kind"}),
+    # "pattern" is the typed cron pattern (pure_reminder, ...) — it separates
+    # "one tool is teaching the model badly" from "the whole cron surface is".
+    "cron": frozenset({"tz_missing", "dow_source", "schedule_kind", "pattern"}),
     "datebook": frozenset({"origin", "image_before_config"}),
     # Wave 1 money-truth fixes. Deliberately shape-only: an account nickname, a
     # balance, or an APR value never appears here — `bound` and `*_count` say

@@ -79,7 +79,9 @@ If the user's request is ambiguous, ask: *"Is this a one-time reminder or someth
 `schedule` is the only thing that changes between recurring and one-off:
 
 - Recurring: `{"kind": "cron", "expr": "<5-field>", "tz": "<userTimezone>"}`
-- One-off: `{"kind": "at", "at": "<ISO 8601 with offset, e.g. 2026-06-18T09:00:00+09:00>"}` or relative duration `"20m"`, `"2h"`, `"1d"`
+- One-off: `{"kind": "at", "at": "<ISO 8601 with offset, e.g. 2026-06-18T09:00:00+09:00>"}`
+
+Relative durations like `"20m"` are **not** accepted by `cron add` — see [Two ways to schedule](#two-ways-to-schedule-and-what-each-one-accepts) below.
 
 Every other field is the same. **Do not deviate from this shape** — the variants that *look* sensible (`main` session for context, `announce` delivery to a channel) are runtime-rejected or fire-time-skipped on this fleet. See the [shape invariants](#shape-invariants) section below for the proofs.
 
@@ -99,6 +101,31 @@ Every other field is the same. **Do not deviate from this shape** — the varian
 3. Only call `cron add` after the user approves.
 4. Submit the canonical shape with `schedule: {"kind": "cron", "expr": "<5-field>", "tz": "<userTimezone>"}`. The `payload.message` must contain everything your future self needs (the user's intent, the verbatim text to send, plus an explicit "call `nbhd_send_to_user`" instruction) — the conversation that created the cron will not be in active context at fire time.
 
+### Writing the cron expression
+
+**Exactly 5 fields**, in this order:
+
+```
+minute  hour  day-of-month  month  day-of-week
+```
+
+A 6-field expression (seconds precision) is rejected — seconds are not supported here.
+
+**day-of-week is `0` = Sunday**, `1` = Monday, … `6` = Saturday. `7` also means Sunday. Names work too, and are harder to get wrong: `SUN`, `MON`, `TUE`, `WED`, `THU`, `FRI`, `SAT`, including ranges like `MON-FRI` and lists like `MON,WED,FRI`.
+
+> ⚠️ This is **not** the convention the fuel/workout tools use. There, `0` is Monday. In a cron expression `0` is Sunday. When in doubt, write the name.
+
+```
+0 8 * * 1-5     ✅ weekdays at 8:00        (Mon-Fri)
+0 8 * * MON-FRI ✅ the same thing, unambiguous
+0 9 * * 0       ✅ Sundays at 9:00
+0 9 * * 6,0     ✅ weekends at 9:00        (Sat + Sun)
+0 9 * * 8       ❌ rejected — there is no day 8
+0 0 9 * * 1     ❌ rejected — 6 fields
+```
+
+`tz` is optional: leave it out and it defaults to the user's own timezone, which is what you want almost every time. If you do pass it, use the Area/Location form (`Asia/Tokyo`). Never an `Etc/*` name — their sign is inverted (`Etc/GMT+9` is UTC *minus* 9) and they are rejected.
+
 ## Creating a one-off reminder
 
 For one-time reminders, skip the buttons and just confirm in text **AND invoke `cron add` in the same turn**. The confirmation alone does NOT create the reminder — emitting the acknowledgement and yielding without calling the tool means nothing is scheduled and the user will not be pinged.
@@ -107,12 +134,22 @@ Step 1 — send the confirmation message:
 
 > "Sure — I'll remind you to take out the laundry in 20 minutes. ✓"
 
-Step 2 — **in the same turn**, invoke the `cron add` tool with the canonical shape:
+Step 2 — **in the same turn**, invoke the tool. The easiest correct call is `nbhd_cron_create_pure_reminder`, which accepts a relative duration:
 
 ```json
 {
   "name": "laundry reminder",
   "schedule": {"kind": "at", "at": "20m"},
+  "text": "Time to take out the laundry."
+}
+```
+
+The equivalent through raw `cron add` needs an absolute timestamp and the full canonical shape:
+
+```json
+{
+  "name": "laundry reminder",
+  "schedule": {"kind": "at", "at": "2026-06-18T09:20:00+09:00"},
   "sessionTarget": "isolated",
   "payload": {
     "kind": "agentTurn",
@@ -123,11 +160,22 @@ Step 2 — **in the same turn**, invoke the `cron add` tool with the canonical s
 }
 ```
 
-**The `cron add` invocation is a TOOL call, not a chat message.** Do NOT typeset the parameters or paraphrase them as prose. The text confirmation goes to the user; the `cron add` call goes to the gateway. Both happen before you yield.
+**The invocation is a TOOL call, not a chat message.** Do NOT typeset the parameters or paraphrase them as prose. The text confirmation goes to the user; the tool call goes to the gateway. Both happen before you yield.
 
-`schedule.at` accepts:
-- A relative duration: `"20m"`, `"2h"`, `"1d"` (preferred for "in N minutes/hours" requests).
-- An ISO 8601 timestamp **with explicit timezone offset**: `"2026-06-18T09:00:00+09:00"`. Never bare `"2026-06-18T09:00:00"` — naked timestamps are treated as UTC, which is almost never what the user meant.
+### Two ways to schedule, and what each one accepts
+
+The two surfaces do **not** accept the same `schedule.at`. Getting this wrong is the single most common way a "remind me in 20 minutes" silently fails.
+
+| | `nbhd_cron_create_*` (typed tools) | raw `cron add` |
+|---|---|---|
+| `"20m"`, `"2h"`, `"1d"` | ✅ accepted — the backend converts it to an absolute time before storing | ❌ rejected: `Invalid schedule.at: expected ISO-8601 timestamp (got 20m)` |
+| `"2026-06-18T09:00:00+09:00"` | ✅ accepted | ✅ accepted |
+| `"2026-06-18T09:00:00"` (no offset) | ❌ rejected with an explanation | ⚠️ **accepted and silently read as UTC** — for a Tokyo user this fires 9 hours off |
+
+So:
+
+- Use `nbhd_cron_create_pure_reminder` (or the other typed tools) for "in N minutes/hours" — you can pass the duration straight through and never do offset arithmetic.
+- If you use raw `cron add`, you must compute the absolute time yourself and **always** include the user's offset (`+09:00`, `-04:00`, …). A bare timestamp is the one input nothing catches for you.
 
 The gateway auto-deletes one-off crons after they fire successfully — no cleanup needed from your side. If you need to cancel one before it fires, use `cron remove <name>`.
 
@@ -147,8 +195,9 @@ The runtime enforces hard rules at `cron add` time. Violating any of them return
 1. **`sessionTarget: "main"`** REQUIRES `payload.kind: "systemEvent"` (and `payload.text`, not `payload.message`). Otherwise: `main cron jobs require payload.kind="systemEvent"`. Even if accepted, `main + systemEvent + wakeMode:"now"` runs through the heartbeat and is silently SKIPPED outside `agents.defaults.heartbeat.activeHours`. Do not use this shape for user-facing reminders.
 2. **`sessionTarget` in `{"isolated", "current", "session:<id>"}`** REQUIRES `payload.kind: "agentTurn"` (and `payload.message`). Otherwise: `isolated/current/session cron jobs require payload.kind="agentTurn"`.
 3. **`delivery.mode` MUST be `"none"` or `"webhook"` on this fleet.** If you omit `delivery` on an `isolated + agentTurn` job, OC defaults to `{mode: "announce"}` without a channel, and the server rejects with `delivery.channel is required when multiple channels are configured`. If you pass `{mode: "announce", channel: "telegram"}` it accepts at submit-time but fails at fire-time: `Telegram bot token missing for account "default"`. Always pass `{"mode": "none"}` and have the agent invoke `nbhd_send_to_user` itself.
-4. **`schedule.at`** without an explicit timezone offset is treated as UTC by the gateway. Always include `+09:00`, `-04:00`, etc.
+4. **`schedule.at`** without an explicit timezone offset is treated as UTC by the gateway — silently, with no error. Always include `+09:00`, `-04:00`, etc. Raw `cron add` also rejects relative durations (`"20m"`); only the typed `nbhd_cron_create_*` tools accept those. See [Two ways to schedule](#two-ways-to-schedule-and-what-each-one-accepts).
 5. **`kind:"at"` jobs auto-delete after a successful run; `kind:"cron"` and `kind:"every"` do not.** Manage recurring lifecycle via `cron remove`.
+6. **`schedule.everyMs` is MILLISECONDS**, and the runtime has no lower bound of its own — it will happily accept `3600` and fire a full agent turn every 3.6 seconds. Hourly is `3600000`, every 15 minutes is `900000`, daily is `86400000`. The typed tools reject anything under `60000`.
 
 ## Editing or disabling
 
@@ -159,10 +208,10 @@ The runtime enforces hard rules at `cron add` time. Violating any of them return
 
 ## Timezone
 
-- Always use `userTimezone` from your config.
+- Always use `userTimezone` from your config. Use the Area/Location form (`Asia/Tokyo`); never an `Etc/*` name, whose sign is inverted (`Etc/GMT+9` is UTC *minus* 9) and which is rejected.
 - Never default to UTC — if unknown, ask the user.
-- For `kind: "at"` ISO timestamps, include an explicit offset matching the user's timezone.
-- For `kind: "cron"`, always pass `tz: "<userTimezone>"`. Without it, OC evaluates the cron expression in the gateway host timezone.
+- For `kind: "at"` ISO timestamps, include an explicit offset matching the user's timezone. A bare timestamp is read as UTC.
+- For `kind: "cron"` through raw `cron add`, always pass `tz: "<userTimezone>"` — without it, OC evaluates the expression in the gateway host timezone, not the user's. The typed `nbhd_cron_create_*` tools fill it in from the user's profile when you omit it.
 
 ## Hard limits
 
