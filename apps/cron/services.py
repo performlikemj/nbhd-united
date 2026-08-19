@@ -33,12 +33,14 @@ from typing import Any
 
 from django.db import IntegrityError, transaction
 
+from apps.common.tenant_tz import tenant_tz_name
 from apps.cron.models import CronCreationPath, CronJob, CronJobSource, CronPattern
 from apps.cron.patterns import get_handler
 from apps.cron.schedule_validation import (
     ScheduleValidationError,
-    validate_schedule,
+    normalize_schedule,
 )
+from apps.platform_logs.telemetry import emit_tool_event
 from apps.tenants.models import Tenant
 
 logger = logging.getLogger(__name__)
@@ -113,10 +115,33 @@ def create_typed_cron(
             f"pattern must be one of {list(CronPattern.values)}; got {pattern!r}",
             code="invalid_pattern",
         )
+    tool_name = f"cron-create-{pattern}"
+    submitted_kind = schedule.get("kind") if isinstance(schedule, dict) else None
     try:
-        validate_schedule(schedule)
+        schedule, normalizations = normalize_schedule(schedule, tz_name=tenant_tz_name(tenant))
     except ScheduleValidationError as exc:
+        # The reason code is the whole point of this event: "cron creation is
+        # rejected" is not actionable, "the model keeps sending everyMs in
+        # seconds" is.
+        emit_tool_event(
+            tool_name=tool_name,
+            outcome="rejected",
+            namespace="cron",
+            tenant_id=tenant.id,
+            reason_code=exc.code,
+            detail={"schedule_kind": submitted_kind, "pattern": pattern},
+        )
         raise TypedCronError(str(exc), code=exc.code) from exc
+
+    for reason in normalizations:
+        emit_tool_event(
+            tool_name=tool_name,
+            outcome="normalized",
+            namespace="cron",
+            tenant_id=tenant.id,
+            reason_code=reason,
+            detail={"schedule_kind": submitted_kind, "pattern": pattern},
+        )
 
     handler = get_handler(pattern)
     # Construct + validate the typed payload up front so we surface a clean
@@ -325,8 +350,6 @@ def seed_task_hygiene_cron(tenant: Tenant) -> dict[str, Any]:
     Returns a small status dict; never raises. A hygiene cron is a nicety and
     must not be able to fail provisioning.
     """
-    from apps.common.tenant_tz import tenant_tz_name
-
     result: dict[str, Any] = {"tenant_id": str(tenant.id), "created": False}
     existing = CronJob.objects.filter(tenant=tenant, name=TASK_HYGIENE_CRON_NAME).first()
 
