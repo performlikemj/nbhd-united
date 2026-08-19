@@ -1453,6 +1453,31 @@ class ComposeAuthoringTests(SimpleTestCase):
         self.assertEqual(out["total_target_seconds"], 600)
         cc.assert_called_once()  # primary answered — no fallback needed
 
+    def test_assembled_prompt_explains_privacy_placeholders(self):
+        """The compose model is TOLD what [PERSON_1] means.
+
+        Its signals are read from placeholder-space storage and are NOT rehydrated
+        on the way into the prompt, and the entity legend only appears when the
+        tenant has annotated entries — so without this note the model is left to
+        guess at redaction tokens it will routinely see.
+        """
+        with patch(
+            "apps.core.compose.chat_completion",
+            return_value=self._ok(json.dumps(_valid_manifest())),
+        ) as cc:
+            compose.author_manifest({"additional_context": "work stress"})
+
+        messages = cc.call_args[0][1]
+        system = next(m["content"] for m in messages if m["role"] == "system")
+        self.assertIn("PRIVACY PLACEHOLDERS", system)
+        self.assertIn("[PERSON_1]", system)
+        self.assertIn("REDACTION PLACEHOLDER", system)
+        # The four behaviors that matter: opaque, stable, never invented, verbatim.
+        self.assertIn("opaque proper noun", system)
+        self.assertIn("same token always means the same thing", system)
+        self.assertIn("Never guess, invent, expand, translate", system)
+        self.assertIn("character-for-character", system)
+
     def test_non_json_raises(self):
         # Every candidate in the chain returns non-JSON → terminal ComposeError.
         with (

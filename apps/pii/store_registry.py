@@ -363,11 +363,16 @@ _STORES = (
         json_paths=(),
         receipts_field="pii_receipts",
     ),
+    # RULE: these paths enumerate USER-AUTHORED TEXT ONLY. Control/settings values
+    # are never PII and must never be added here — no setting in the manifest is
+    # PII-related, so redaction has no business touching one.
+    #
     # The render manifest mixes narration with the TTS control values that voice it
     # (``voice`` -> Gemini ``voice_name``; ``global_tone``/segment ``tone`` -> the style
     # prompt; segment ``type``/``seconds: "flex"`` and the phase ``name`` arc -> the
     # renderer and ``validate_manifest``). ``manifest.**`` rewrote those too, which
-    # rendered a whole sit as silence on 2026-08-18 — so list the prose paths instead.
+    # rendered a whole sit as silence on 2026-08-18. Enumerate prose; never exclude
+    # controls from a wildcard — a new control key must be safe by default.
     PlaceholderStore(
         model_label="core.MeditationSession",
         flat_fields=("title", "theme", "guidance_text", "feedback_note"),
