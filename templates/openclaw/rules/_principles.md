@@ -18,8 +18,9 @@ or when the user is talking about an unfamiliar exercise.
 - **Today's date.** Pass `"today"`, `"yesterday"`, `"Monday"`, an ISO
   date — whatever the user said. The runtime resolves it in the user's
   IANA timezone. Do not compute `today - N` from the `[Now: ...]`
-  header in the prompt; that header is UTC and will be wrong for users
-  who aren't in UTC.
+  header in the prompt. That header is the user's local time and is a
+  trustworthy current-time anchor, but the server resolves relative
+  dates deterministically and consistently without model arithmetic.
 - **Unit conversions.** If the user says "165 lbs" and the field stores
   kilograms, send `165` with `unit: "lbs"` (or whatever the tool's
   schema expects). The runtime converts. Same for distance (`mi` /

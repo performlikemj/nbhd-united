@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from unittest import mock
 
 from django.core.cache import cache
@@ -41,6 +42,7 @@ from apps.orchestrator.config_generator import (
     _build_cron_message,
     _prepare_cron_prompt,
 )
+from apps.orchestrator.cron_drift import strip_date_line
 from apps.orchestrator.workspace_envelope import (
     BEGIN_MARKER,
     END_MARKER,
@@ -1164,15 +1166,35 @@ class PrepareCronPromptTest(TestCase):
         self.assertNotIn("Ship the canary", out)
         self.assertTrue(out.endswith("BODY"))
 
-    def test_date_line_is_labeled_as_stale_snapshot_pointing_to_user_md(self):
-        """The cron payload's date line lives in storage and goes stale —
-        the prompt must tell the agent to prefer USER.md's live line for
-        any 'today / earlier today / has the user done X' reasoning.
-        """
+    def test_time_source_priority_uses_fire_time_clock_then_user_md(self):
+        """The runtime fire-time block outranks USER.md and the snapshot."""
         out = _prepare_cron_prompt("BODY", self.tenant)
-        self.assertIn("SNAPSHOT", out)
-        self.assertIn("USER.md", out)
-        self.assertIn("Current local time", out)
+        live_idx = out.index("AUTHORITATIVE live clock")
+        fallback_idx = out.index("Fallback:")
+        stale_idx = out.index("Never use for now")
+        self.assertLess(live_idx, fallback_idx)
+        self.assertLess(fallback_idx, stale_idx)
+        self.assertIn("appended at the very end of this message", out)
+        self.assertIn("runtime at fire time", out)
+        self.assertIn("refreshed at most hourly", out)
+        self.assertIn("reconcile-time context only", out)
+
+    def test_snapshot_is_one_line_and_strips_to_a_date_stable_body(self):
+        with mock.patch("apps.orchestrator.config_generator.datetime") as clock:
+            clock.now.return_value = datetime(2026, 8, 20, 7, 15)
+            first = _prepare_cron_prompt("BODY", self.tenant)
+            clock.now.return_value = datetime(2026, 8, 21, 23, 45)
+            second = _prepare_cron_prompt("BODY", self.tenant)
+
+        snapshot = first.split("\n\n", 1)[0]
+        self.assertTrue(snapshot.startswith("Current date and time:"))
+        self.assertNotIn("\n", snapshot)
+
+        stripped_first = strip_date_line(first)
+        stripped_second = strip_date_line(second)
+        self.assertEqual(stripped_first, stripped_second)
+        self.assertNotIn("Thursday, August 20, 2026 at 07:15", stripped_first)
+        self.assertNotIn("Friday, August 21, 2026 at 23:45", stripped_second)
 
     def test_message_still_starts_with_date_line_so_default_prefix_match_holds(self):
         out = _prepare_cron_prompt("BODY", self.tenant)
