@@ -61,6 +61,11 @@ _TRANSIENT_MARKERS = (
     "rate limit",
 )
 
+# The look-back block is the one prompt section that grows with use — a daily
+# sitter accumulates history forever. Cap it so the recent list can never crowd
+# out this week's actual signals (whole entries only; oldest dropped first).
+_RECENT_MEDITATIONS_CHAR_BUDGET = 1200
+
 # Rough per-phase time budgets (seconds) for the ~10-min arc — guidance the model
 # paces toward and a fallback when it omits one. The model now OWNS the allocation
 # (holistic pacing); these are no longer force-applied.
@@ -124,6 +129,38 @@ _SYSTEM_PROMPT = (
     "- Across the WHOLE sit keep it to roughly 6-10 spoken moments (never more than 12). Sparse on purpose.\n"
     '- Set real silence lengths yourself; reach for a single "flex" in a phase only when you want the backend '
     "to fill that phase's remaining time for you.\n\n"
+    # Density, variety, the wisdom lesson, and the takeaway (meditation v2 phase 1).
+    # The person sits most days; without these the model re-composed the same title
+    # and the same through-line indefinitely, because the only prior data point it
+    # ever saw was the last theme. The RECENT MEDITATIONS block referenced below is
+    # emitted by _format_signals whenever gather_meditation_signals found prior sits.
+    "DENSITY — vary how much you speak from day to day:\n"
+    "- Some sits are SPACIOUS: very few words, long silences, and only a brief re-anchoring cue when "
+    "attention would have wandered. Others are more GUIDED: shorter silences, more frequent cues.\n"
+    "- Pick today's density deliberately and vary it against the recent sits — a person who sits daily "
+    "should not get the same amount of talking every time.\n"
+    "- Express the choice ONLY through how you compose segments: how many spoken moments, how long the "
+    "silences hold. A spacious sit sits at the low end of the 6-10 spoken moments, a guided one at the "
+    "high end. Never name the density and never add a key for it.\n\n"
+    "VARIETY — every sit must feel like a new doorway:\n"
+    "- Your input may include a RECENT MEDITATIONS list (newest first, with each sit's title and theme). "
+    "That list is what you must NOT repeat.\n"
+    "- The title must not repeat or near-echo any recent title — not the same words, and not the same "
+    "phrase with one word swapped. If the title you want resembles one on that list, choose a different one.\n"
+    "- Vary the imagery you reach for, how you open the sit, and what the practice focuses on, measured "
+    "against those recent sits.\n\n"
+    "WISDOM LESSON — each sit teaches ONE small idea:\n"
+    "- Draw it from the breadth of contemplative thought: Stoic, Zen, broader Buddhist, Taoist, Sufi, "
+    "Christian-contemplative, Jewish, or secular philosophy and the science of mind.\n"
+    "- CHOOSE the idea to serve what today's signals show this person is carrying — not at random. Rotate "
+    "which tradition you draw on against the recent sits.\n"
+    "- Teach it plainly and invitationally, in a sentence or two, usually within core_practice. Attribute it "
+    'simply where that helps ("the Stoics called this…", "there is a Zen word for this…").\n'
+    "- Never preach, never argue for a tradition, and never presume what this person believes or practices. "
+    "You are offering one idea to try on for a few minutes, not a doctrine.\n\n"
+    "TAKEAWAY:\n"
+    "- The LAST speech segment of the closing phase is one carryable sentence that distills the lesson into "
+    "something they can hold for the rest of the day. Plain words; not a summary of the sit.\n\n"
     "HARD RULES (the manifest is rejected otherwise):\n"
     "- The closing phase must END on a speech segment, so the sit lands rather than trailing into silence.\n"
     "- Speech text is short (1-3 sentences), calm, second-person, present-tense. Never read instructions aloud.\n"
@@ -186,13 +223,42 @@ def _constellation_line(star: dict) -> str:
     return "".join(parts)
 
 
+def _recent_meditation_lines(entries: list, *, budget: int = _RECENT_MEDITATIONS_CHAR_BUDGET) -> list[str]:
+    """Newest-first look-back lines, trimmed to a fixed character budget.
+
+    Whole entries only: once the budget is spent the remaining (oldest) entries are
+    dropped rather than cut mid-line, so the guide never reads half a title and
+    treats it as a real one. The cap is what keeps a daily sitter's history from
+    slowly crowding out the rest of the prompt.
+    """
+    lines: list[str] = []
+    used = 0
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        date = str(entry.get("date") or "").strip()
+        title = " ".join(str(entry.get("title") or "").split())
+        theme = " ".join(str(entry.get("theme") or "").split())
+        if not title and not theme:
+            continue
+        line = f"- {date}: " if date else "- "
+        line += f'"{title}"' if title else "(untitled)"
+        if theme:
+            line += f" — {theme}"
+        if used + len(line) + 1 > budget:  # +1 for the newline it will be joined with
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return lines
+
+
 def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_TARGET_SECONDS) -> str:
     """Render the gathered signals as a compact prompt context (no raw PII dumps)."""
     lines: list[str] = ["Here is what you've gathered about this person's recent days:"]
-    themes = signals.get("recent_themes") or []
-    if themes:
-        lines.append("Recent journal themes:")
-        lines.extend(f"- {t}" for t in themes[:8])
+    recent_meditations = _recent_meditation_lines(signals.get("recent_meditations") or [])
+    if recent_meditations:
+        lines.append("RECENT MEDITATIONS (newest first):")
+        lines.extend(recent_meditations)
     notes = signals.get("recent_notes") or []
     if notes:
         lines.append("Recent daily-note snippets:")
