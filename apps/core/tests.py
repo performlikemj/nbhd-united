@@ -1478,6 +1478,63 @@ class ComposeAuthoringTests(SimpleTestCase):
         self.assertIn("Never guess, invent, expand, translate", system)
         self.assertIn("character-for-character", system)
 
+    def test_assembled_prompt_demands_variety_wisdom_takeaway_and_density(self):
+        """The four v2 directives reach the model, in the system message.
+
+        MJ, 2026-08-19: "everything seems the same." The model was never asked to
+        vary anything, to teach anything, or to land on a takeaway — so it didn't.
+        """
+        with patch(
+            "apps.core.compose.chat_completion",
+            return_value=self._ok(json.dumps(_valid_manifest())),
+        ) as cc:
+            compose.author_manifest({"additional_context": "work stress"})
+
+        messages = cc.call_args[0][1]
+        system = next(m["content"] for m in messages if m["role"] == "system")
+
+        # VARIETY — the title and the sit itself must not echo the look-back list.
+        self.assertIn("VARIETY", system)
+        self.assertIn("RECENT MEDITATIONS", system)  # names the block _format_signals emits
+        self.assertIn("must not repeat or near-echo any recent title", system)
+        self.assertIn("Vary the imagery you reach for", system)
+
+        # WISDOM LESSON — one small idea, broad traditions, chosen for today, never preachy.
+        self.assertIn("WISDOM LESSON", system)
+        for tradition in ("Stoic", "Zen", "Buddhist", "Taoist", "Sufi", "Christian-contemplative", "Jewish"):
+            self.assertIn(tradition, system)
+        self.assertIn("science of mind", system)
+        self.assertIn("serve what today's signals show", system)
+        self.assertIn("Never preach", system)
+        self.assertIn("never presume what this person believes", system)
+
+        # TAKEAWAY — the closing lands on one carryable sentence.
+        self.assertIn("TAKEAWAY", system)
+        self.assertIn("one carryable sentence", system)
+
+        # DENSITY — spacious vs. guided, expressed only through segment composition.
+        self.assertIn("DENSITY", system)
+        self.assertIn("SPACIOUS", system)
+        self.assertIn("GUIDED", system)
+        self.assertIn("Never name the density and never add a key for it", system)
+
+    def test_look_back_block_reaches_the_model_as_user_context(self):
+        """End-to-end wiring: a gathered look-back lands in the composed prompt."""
+        signals = {
+            "recent_meditations": [
+                {"date": "2026-08-18", "title": "Setting Down the Day", "theme": "let the workday end"}
+            ]
+        }
+        with patch(
+            "apps.core.compose.chat_completion",
+            return_value=self._ok(json.dumps(_valid_manifest())),
+        ) as cc:
+            compose.author_manifest(signals)
+
+        user = next(m["content"] for m in cc.call_args[0][1] if m["role"] == "user")
+        self.assertIn("RECENT MEDITATIONS (newest first):", user)
+        self.assertIn("Setting Down the Day", user)
+
     def test_non_json_raises(self):
         # Every candidate in the chain returns non-JSON → terminal ComposeError.
         with (
@@ -2106,7 +2163,111 @@ class RicherSignalsTests(TestCase):
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 10. Onboarding advancement (profile save → in_progress; first ready → completed)
+# 10. Look-back — the recent sits the guide must vary away from
+# ═════════════════════════════════════════════════════════════════════
+
+
+class MeditationLookBackTests(TestCase):
+    """``recent_meditations``: gathered from heard sits, rendered under a char cap.
+
+    Before this the guide saw exactly one prior data point (the last theme) and
+    re-composed the same sit indefinitely — the 2026-08-19 "everything seems the
+    same" report.
+    """
+
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Look-back", telegram_chat_id=901050)
+
+    def _sit(self, days_ago: int, **kwargs) -> MeditationSession:
+        defaults = dict(
+            tenant=self.tenant,
+            date=date.today() - timedelta(days=days_ago),
+            status=MeditationStatus.READY,
+            title=f"Sit {days_ago}",
+            theme=f"theme {days_ago}",
+        )
+        defaults.update(kwargs)
+        return MeditationSession.objects.create(**defaults)
+
+    def test_gathers_recent_sits_newest_first(self):
+        self._sit(2, title="Older Sit", theme="older through-line")
+        self._sit(1, title="Newer Sit", theme="newer through-line")
+        recent = services.gather_meditation_signals(self.tenant)["recent_meditations"]
+        self.assertEqual([e["title"] for e in recent], ["Newer Sit", "Older Sit"])
+        self.assertEqual(recent[0]["theme"], "newer through-line")
+        self.assertEqual(recent[0]["date"], (date.today() - timedelta(days=1)).isoformat())
+
+    def test_only_sits_that_reached_the_person_are_counted(self):
+        # DELIVERED counts (they heard it); a failed or still-in-flight sit was
+        # never heard, so it is no reason to avoid a theme.
+        self._sit(1, status=MeditationStatus.DELIVERED, title="Heard It")
+        self._sit(2, status=MeditationStatus.FAILED, title="Never Rendered")
+        self._sit(3, status=MeditationStatus.PENDING, title="Still Pending")
+        self._sit(4, status=MeditationStatus.RENDERING, title="Mid Render")
+        titles = [e["title"] for e in services.gather_meditation_signals(self.tenant)["recent_meditations"]]
+        self.assertEqual(titles, ["Heard It"])
+
+    def test_look_back_window_is_ten_sits(self):
+        for days_ago in range(1, 15):
+            self._sit(days_ago)
+        recent = services.gather_meditation_signals(self.tenant)["recent_meditations"]
+        self.assertEqual(len(recent), 10)
+        self.assertEqual(recent[0]["title"], "Sit 1")  # newest kept
+        self.assertEqual(recent[-1]["title"], "Sit 10")  # the 11th-oldest is dropped
+
+    def test_sit_with_neither_title_nor_theme_is_dropped(self):
+        self._sit(1, title="", theme="")
+        self._sit(2, title="Has A Title", theme="")
+        recent = services.gather_meditation_signals(self.tenant)["recent_meditations"]
+        self.assertEqual([e["title"] for e in recent], ["Has A Title"])
+
+    def test_absent_when_no_prior_sits(self):
+        self.assertNotIn("recent_meditations", services.gather_meditation_signals(self.tenant))
+
+    # ── rendering into the prompt ──
+
+    def test_format_signals_renders_the_look_back_block(self):
+        rendered = compose._format_signals(
+            {
+                "recent_meditations": [
+                    {"date": "2026-08-18", "title": "Setting Down the Day", "theme": "let the workday end"},
+                    {"date": "2026-08-17", "title": "Quiet Hands", "theme": ""},
+                ]
+            }
+        )
+        self.assertIn("RECENT MEDITATIONS (newest first):", rendered)
+        self.assertIn('- 2026-08-18: "Setting Down the Day" — let the workday end', rendered)
+        self.assertIn('- 2026-08-17: "Quiet Hands"', rendered)
+
+    def test_look_back_block_is_capped_and_drops_whole_entries(self):
+        # A daily sitter accumulates history forever; the block must not creep.
+        entries = [
+            {"date": f"2026-08-{day:02d}", "title": f"Title {day} " + "x" * 100, "theme": "y" * 150}
+            for day in range(20, 0, -1)
+        ]
+        lines = compose._recent_meditation_lines(entries)
+        self.assertLess(sum(len(ln) for ln in lines), compose._RECENT_MEDITATIONS_CHAR_BUDGET + 1)
+        self.assertLess(len(lines), len(entries))  # the oldest were dropped
+        # Whole entries only — every surviving line is a complete rendered entry,
+        # never a title cut mid-word.
+        for line in lines:
+            self.assertTrue(line.endswith("y" * 150), line[-20:])
+        # Newest kept, oldest gone.
+        self.assertIn("Title 20", lines[0])
+        self.assertNotIn("Title 1 ", "\n".join(lines))
+
+    def test_dead_recent_themes_key_is_no_longer_read(self):
+        # The pre-v2 branch read signals["recent_themes"], which nothing ever set.
+        # It is gone: that key now contributes nothing and the sit falls back to
+        # the universal prompt.
+        rendered = compose._format_signals({"recent_themes": ["work stress", "sleep"]})
+        self.assertNotIn("Recent journal themes", rendered)
+        self.assertNotIn("work stress", rendered)
+        self.assertIn("little specific signal this week", rendered)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# 11. Onboarding advancement (profile save → in_progress; first ready → completed)
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -2157,7 +2318,7 @@ class OnboardingAdvancementTests(TestCase):
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 11. Feedback PATCH endpoint (thumbs + short note, tenant-scoped)
+# 12. Feedback PATCH endpoint (thumbs + short note, tenant-scoped)
 # ═════════════════════════════════════════════════════════════════════
 
 
@@ -2219,7 +2380,7 @@ class MeditationFeedbackViewTests(TestCase):
 
 
 # ═════════════════════════════════════════════════════════════════════
-# 12. Compose failure is logged to platform_logs (fleet visibility)
+# 13. Compose failure is logged to platform_logs (fleet visibility)
 # ═════════════════════════════════════════════════════════════════════
 
 

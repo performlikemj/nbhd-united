@@ -84,6 +84,9 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
 
     * ``CoreProfile.additional_context`` — free-text the user typed for this.
     * the last meditation's theme — so today's sit varies from it.
+    * ``recent_meditations`` — the last few sits that actually reached the person
+      (date + title + theme), so the guide can vary the title, the imagery, and
+      the wisdom it draws on instead of re-composing yesterday.
     * recent constellation activity — the stars (durable lessons) they've been
       actively working through, with their pinned notes, star reflections, and
       the honest tutoring signals. Shaped by
@@ -115,6 +118,12 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
             signals["last_meditation_theme"] = last.theme.strip()[:200]
     except Exception:
         logger.debug("gather_meditation_signals: last-meditation read failed", exc_info=True)
+    try:
+        recent = _recent_meditation_entries(tenant)
+        if recent:
+            signals["recent_meditations"] = recent
+    except Exception:
+        logger.debug("gather_meditation_signals: recent-meditations read failed", exc_info=True)
     try:
         # Local import — keeps the lessons embedding/search stack out of module load.
         from apps.lessons.agent_context import build_constellation_context
@@ -151,6 +160,33 @@ def gather_meditation_signals(tenant: Tenant) -> dict:
     # can gently orient toward it. Do NOT import the Purpose model yet — it is
     # built in a parallel branch; wire this once that model is on main.
     return signals
+
+
+def _recent_meditation_entries(tenant: Tenant, *, limit: int = 10) -> list[dict]:
+    """The last ``limit`` sits that actually reached the person, newest first.
+
+    READY and DELIVERED only — a failed or still-pending row was never heard, so
+    it is no reason to avoid a theme. Title and theme stay in placeholder space
+    (they are read straight off the row, un-rehydrated, like every other compose
+    signal). One query, three columns; a row with neither a title nor a theme
+    carries no variety signal and is dropped.
+    """
+    rows = (
+        MeditationSession.objects.filter(
+            tenant=tenant,
+            status__in=(MeditationStatus.READY, MeditationStatus.DELIVERED),
+        )
+        .order_by("-date", "-created_at")
+        .values("date", "title", "theme")[:limit]
+    )
+    entries: list[dict] = []
+    for row in rows:
+        title = " ".join((row["title"] or "").split())[:120]
+        theme = " ".join((row["theme"] or "").split())[:200]
+        if not title and not theme:
+            continue
+        entries.append({"date": row["date"].isoformat() if row["date"] else "", "title": title, "theme": theme})
+    return entries
 
 
 def _active_goal_titles(tenant: Tenant, *, limit: int = 5) -> list[str]:
