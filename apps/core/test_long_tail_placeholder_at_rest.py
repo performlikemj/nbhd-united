@@ -215,6 +215,64 @@ class CoreLongTailPlaceholderTests(TestCase):
         self.assertEqual(owner_read.data["title"], "Rest with Alice")
         self.assertEqual(owner_read.data["pii_receipts"]["manifest"]["redactions"][0]["value"], "Alice")
 
+    def test_compose_redacts_prose_but_never_the_tts_control_values(self):
+        """Narration is redacted; the knobs that VOICE it survive byte-identical.
+
+        The entity map binds the Gemini voice id itself, so the old
+        ``manifest.**`` wildcard would rewrite ``voice`` to a placeholder — which
+        Gemini rejects with a 400, turning every speech segment into silence
+        (2026-08-18). Both halves are asserted: dropping redaction entirely would
+        fail this test just as loudly as reinstating the wildcard.
+        """
+        self.tenant.pii_entity_map = {
+            "[PERSON_1]": {"name": "Alice"},
+            "[PERSON_2]": {"name": "Achernar"},
+        }
+        self.tenant.save(update_fields=["pii_entity_map"])
+        self._enable_placeholder_writes()
+        session = MeditationSession.objects.create(
+            tenant=self.tenant,
+            date=date.today(),
+            status=MeditationStatus.PENDING,
+        )
+        with (
+            _checked_detection(),
+            patch.object(services, "gather_meditation_signals", return_value={}),
+            patch.object(compose, "author_manifest", return_value=_manifest()),
+            patch("apps.cron.publish.publish_task"),
+        ):
+            services.compose_meditation(session)
+
+        session.refresh_from_db()
+        manifest = session.manifest
+
+        # --- the prose IS redacted (redaction still does its job) ---
+        self.assertEqual(manifest["title"], "Rest with [PERSON_1]")
+        self.assertEqual(manifest["theme"], "release tension around [PERSON_1]")
+        self.assertEqual(
+            manifest["phases"][0]["segments"][0]["text"],
+            "Welcome [PERSON_1]. Let yourself arrive.",
+        )
+
+        # --- the TTS control values are NOT ---
+        self.assertEqual(manifest["voice"], "Achernar")
+        self.assertEqual(manifest["global_tone"], "soft, slow, warm")
+        self.assertEqual(manifest["phases"][0]["segments"][0]["tone"], "warm")
+        flex = manifest["phases"][0]["segments"][1]
+        self.assertEqual(flex["type"], "silence")
+        self.assertEqual(flex["seconds"], "flex")
+        self.assertEqual(
+            [phase["name"] for phase in manifest["phases"]],
+            ["arrival", "breath_anchor", "body_scan", "core_practice", "integration", "closing"],
+        )
+
+        # The exact fallback chain ``render_meditation`` uses to pick the voice:
+        # the orb/web path leaves ``session.voice`` empty, so this is what reached
+        # Gemini as ``voice_name`` during the incident.
+        resolved_voice = session.voice or manifest.get("voice") or ""
+        self.assertEqual(resolved_voice, "Achernar")
+        self.assertNotIn("[PERSON_", resolved_voice)
+
     def test_background_persist_resume_authors_guidance_and_owner_read_rehydrates(self):
         self._enable_placeholder_writes()
         manifest = _manifest("[PERSON_1]")

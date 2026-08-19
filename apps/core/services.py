@@ -561,6 +561,25 @@ def render_meditation(session: MeditationSession) -> None:
         )
         return
 
+    # Same guard for narration lost to ANY other cause (a rejected voice/style, a
+    # blocked response, an exhausted retry budget). ``quota_failed_count`` is only
+    # the 429 subset, so gating on it alone once shipped a sit that was 100%
+    # silence as ``ready`` (2026-08-18). Terminal on purpose: every per-segment
+    # retry is already spent by the time a segment lands in ``failed_count``.
+    if result.speech_count and result.failed_count > result.speech_count // 2:
+        logger.warning(
+            "render_meditation: session %s lost most narration (%d/%d segments) — failing",
+            sid[:8],
+            result.failed_count,
+            result.speech_count,
+        )
+        _fail(
+            session,
+            f"tts_failed: {result.failed_count}/{result.speech_count} narration segments failed to "
+            "render — the sit would be mostly silence",
+        )
+        return
+
     # ---- persist audio to the per-tenant share, then flip to ready ----
     # A failure here (transient Azure SMB throttle/timeout, or the final save)
     # must follow the same FAILED-then-reraise contract as the render branch.

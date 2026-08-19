@@ -457,8 +457,62 @@ class RenderMeditationOrchestrationTests(TestCase):
         self.assertEqual(session.status, MeditationStatus.FAILED)
         self.assertEqual(session.failure_class, "terminal")
         self.assertIn("tts_quota", session.error)
+        # The quota gate runs FIRST so the actionable cause stays distinguishable.
+        self.assertNotIn("tts_failed", session.error)
         mock_upload.assert_not_called()
         mock_notify.assert_not_called()
+
+    def test_total_non_quota_narration_loss_marks_failed_without_reraise(self):
+        # The 2026-08-18 incident: every segment rejected by Gemini (400, not 429),
+        # so quota_failed_count stayed 0 while the sit was 100% silence. It shipped
+        # as ready. Now it fails, uploads nothing, and notifies no one.
+        session = self._session()
+        silent = render.RenderResult(
+            mp3_bytes=b"x",
+            ogg_bytes=None,
+            duration_ms=526_000,
+            guidance_text="",
+            speech_count=7,
+            failed_count=7,
+            quota_failed_count=0,
+        )
+        with (
+            patch.object(render, "render_manifest_to_audio", return_value=silent),
+            patch.object(services, "upload_workspace_file_binary") as mock_upload,
+            patch.object(services, "notify_meditation_ready") as mock_notify,
+        ):
+            services.render_meditation(session)  # must NOT raise
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.FAILED)
+        self.assertEqual(session.failure_class, "terminal")
+        self.assertIn("tts_failed", session.error)
+        self.assertIn("7/7", session.error)
+        mock_upload.assert_not_called()
+        mock_notify.assert_not_called()
+
+    def test_minority_non_quota_failures_still_ready(self):
+        # 3 is NOT > 7 // 2 == 3 — a few silence placeholders still ship. Pinned at
+        # the boundary so loosening the gate to `>=` fails this test.
+        session = self._session()
+        result = render.RenderResult(
+            mp3_bytes=b"ID3x",
+            ogg_bytes=b"OggSx",
+            duration_ms=600_000,
+            guidance_text="g",
+            speech_count=7,
+            failed_count=3,
+            quota_failed_count=0,
+        )
+        with (
+            patch.object(render, "render_manifest_to_audio", return_value=result),
+            patch.object(services, "upload_workspace_file_binary") as mock_upload,
+            patch.object(services, "notify_meditation_ready") as mock_notify,
+        ):
+            services.render_meditation(session)
+        session.refresh_from_db()
+        self.assertEqual(session.status, MeditationStatus.READY)
+        self.assertEqual(mock_upload.call_count, 2)  # mp3 + ogg
+        mock_notify.assert_called_once()
 
     def test_minority_rate_limited_still_ready(self):
         # A few throttled segments (placeholders) is acceptable — still ships ready.

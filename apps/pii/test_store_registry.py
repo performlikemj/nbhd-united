@@ -162,7 +162,12 @@ class StoreRegistryTests(SimpleTestCase):
             "core.CoreProfile": (("additional_context",), ()),
             "core.MeditationSession": (
                 ("title", "theme", "guidance_text", "feedback_note"),
-                ("manifest.**",),
+                (
+                    "manifest.title",
+                    "manifest.theme",
+                    "manifest.phases[].intent",
+                    "manifest.phases[].segments[].text",
+                ),
             ),
             "integrations.SautaiMealPlanJob": (("user_prompt",), ()),
             "automations.AutomationRun": ((), ("input_payload.**", "result_payload.**")),

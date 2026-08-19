@@ -363,10 +363,20 @@ _STORES = (
         json_paths=(),
         receipts_field="pii_receipts",
     ),
+    # The render manifest mixes narration with the TTS control values that voice it
+    # (``voice`` -> Gemini ``voice_name``; ``global_tone``/segment ``tone`` -> the style
+    # prompt; segment ``type``/``seconds: "flex"`` and the phase ``name`` arc -> the
+    # renderer and ``validate_manifest``). ``manifest.**`` rewrote those too, which
+    # rendered a whole sit as silence on 2026-08-18 — so list the prose paths instead.
     PlaceholderStore(
         model_label="core.MeditationSession",
         flat_fields=("title", "theme", "guidance_text", "feedback_note"),
-        json_paths=("manifest.**",),
+        json_paths=(
+            "manifest.title",
+            "manifest.theme",
+            "manifest.phases[].intent",
+            "manifest.phases[].segments[].text",
+        ),
         receipts_field="pii_receipts",
     ),
     PlaceholderStore(
