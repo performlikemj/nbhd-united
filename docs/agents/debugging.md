@@ -2,6 +2,18 @@
 
 There is no staging — prod is where things are verified. The `/production-logs` skill wraps the common commands; this doc is the diagnostic knowledge.
 
+## The debugging ladder — climb it in order
+
+Debugging runs on signals, not on reading someone's messages. Start at rung 1 and only go up when the rung you are on genuinely cannot answer the question. Every dispatched debugging agent inherits this ladder.
+
+1. **Tool-contract telemetry first.** `ToolContractEvent` (`apps/platform_logs`) — per-tool call counts, accept/reject/error rates, latency, allowlisted flags. Content-free by construction. Most drifts are visible here as a number that moved: a tool that started rejecting, a tool that went 100% error, a reason_code that appeared. See `docs/agents/telemetry.md` for the queries.
+2. **Operational error logs.** Log Analytics / container logs / Sentry — tracebacks, status codes, timing. Operational lines only; these carry no message content, and the ones that would have been redaction-dropped are unreliable evidence of absence (see the silent-pipeline playbook below).
+3. **Raw tenant data — only with explicit, per-incident consent.** Reading a tenant's actual content (messages, journal entries, notes, titles) requires MJ to say yes to *this* incident, and the read is scoped to that tenant and that time window. **This includes MJ's own tenant** — being the operator is not standing consent. This extends the never-touch-other-users rule rather than carving an exception out of it.
+
+For content-in-words bugs (the assistant misread a phrase, a title came out wrong), do not go fishing at rung 3: ask the user to paste the specific message, or to give a one-time scoped yes for that tenant and window. A pasted message is consent-by-construction and usually faster than a query.
+
+The wall between rungs is procedural and structural, not magic — the telemetry emitter genuinely cannot store free text, but the database is still readable by anyone with credentials. Describe it honestly; never claim "Claude can't see your data."
+
 ## Log sources — pick the right one
 
 - **Live tail (last ~10 min only):** `az containerapp logs show --name <app> -g rg-nbhd-prod --tail 300 --follow false`. It caps at 300 lines and **will lie about absence** for anything older.

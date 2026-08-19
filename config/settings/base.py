@@ -95,6 +95,9 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "config.middleware.RequestTimingMiddleware",
+    # Directly inside RequestTiming so the recorded duration covers the whole
+    # inner stack — what the calling oc-* container actually waited for.
+    "apps.platform_logs.middleware.ToolTelemetryMiddleware",
     "config.cache_middleware.ETagMiddleware",
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
