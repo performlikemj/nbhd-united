@@ -25,8 +25,9 @@ from __future__ import annotations
 
 import secrets
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import httpx
 from django.test import TestCase, override_settings
@@ -1214,6 +1215,70 @@ class PendingMessageColdStartCoalesceTest(TestCase):
     request instead of replying N times to near-identical or
     superseded-by-followup messages.
     """
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_singleton_rebuilds_now_at_drain_and_preserves_markers(self, mock_post, _mock_send):
+        """A queued singleton gets a fresh clock without losing framing."""
+        from apps.router.services import build_chat_context_marker, build_datetime_context
+
+        mock_post.return_value = _ok_chat_response("ack")
+        user = _make_user(line_user_id="U_fresh_now")
+        tenant = _make_tenant(user)
+        proactive_block = "[earlier-from-you: proactive check-in]\n"
+
+        with patch("apps.router.services.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2026, 8, 20, 9, 5, tzinfo=ZoneInfo("Asia/Tokyo"))
+            enqueue_content = (
+                proactive_block
+                + build_datetime_context("Asia/Tokyo")
+                + build_chat_context_marker("line")
+                + "hello after wake"
+            )
+
+        PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_fresh_now",
+            payload={
+                "message_text": enqueue_content,
+                "user_param": "U_fresh_now",
+                "user_timezone": "Asia/Tokyo",
+            },
+            user_text="hello after wake",
+        )
+
+        with patch("apps.router.services.datetime") as mock_datetime:
+            mock_datetime.now.return_value = datetime(2026, 8, 20, 10, 37, tzinfo=ZoneInfo("Asia/Tokyo"))
+            drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_fresh_now")
+
+        content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertIn("[Now: 2026-08-20 10:37 JST (Thursday)]", content)
+        self.assertNotIn("[Now: 2026-08-20 09:05 JST (Thursday)]", content)
+        self.assertIn(proactive_block, content)
+        self.assertIn("[chat via LINE:", content)
+        self.assertIn("hello after wake", content)
+
+    @patch("apps.router.line_webhook._send_line_messages", return_value=True)
+    @patch("apps.router.pending_queue.httpx.post")
+    def test_singleton_without_rebuild_fields_passes_through_unchanged(self, mock_post, _mock_send):
+        """Legacy or non-chat payloads without a timezone are not rewritten."""
+        mock_post.return_value = _ok_chat_response("ack")
+        user = _make_user(line_user_id="U_legacy_shape")
+        tenant = _make_tenant(user)
+        original = "[Now: 1999-01-01 00:00 UTC (Friday)]\n[legacy control payload]\ndo not reconstruct me"
+        PendingMessage.objects.create(
+            tenant=tenant,
+            channel=PendingMessage.Channel.LINE,
+            channel_user_id="U_legacy_shape",
+            payload={"message_text": original, "user_param": "U_legacy_shape"},
+            user_text="",
+        )
+
+        drain_pending_messages_for_tenant_task(str(tenant.id), "line", "U_legacy_shape")
+
+        content = mock_post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertEqual(content, original)
 
     @patch("apps.router.line_webhook._send_line_messages", return_value=True)
     @patch("apps.router.pending_queue.httpx.post")

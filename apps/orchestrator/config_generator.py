@@ -281,20 +281,19 @@ def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
 
     The embedded ``Current date and time:`` line is a **snapshot** taken
     when this cron payload was last reconciled into OpenClaw — it can be
-    hours or days old by fire time. The live authoritative value is in
-    ``workspace/USER.md`` (``_Current local time: ..._``), which OpenClaw
-    re-reads on every agent turn. The snapshot here is kept only so the
-    "do future-date math" math instruction has a concrete anchor and so
-    cheap models that never load USER.md still have some time signal.
+    hours or days old by fire time. The authoritative live value is the
+    ``Current time: ...`` line OpenClaw appends at the very end of the
+    message at fire time. ``workspace/USER.md`` provides only the fallback
+    ``_Current local time: ..._`` line, refreshed at most hourly.
 
     The reconciler in ``cron_drift.strip_date_line`` strips this preamble
-    before diffing, so daily drift of the snapshot doesn't churn the
-    cron-prompt store; staleness is bounded instead by the periodic
-    ``refresh_user_md_fleet`` push that re-renders USER.md fleet-wide.
+    line before diffing, so daily drift of the snapshot doesn't churn the
+    cron-prompt store. The static priority instructions remain in the
+    compared body so changes to them reconcile once as expected.
 
-    The string prefix ``Current date and time:`` is load-bearing — do not
-    change it without also updating ``cron_drift.strip_date_line`` (and
-    accepting a one-time fleet-wide cron recreate during the cutover).
+    The string prefix ``Current date and time:`` and the blank line directly
+    after that single line are load-bearing — do not change them without also
+    updating both cron-prompt strippers (and accepting fleet-wide churn).
     """
     user_tz = str(getattr(tenant.user, "timezone", "") or "UTC")
     try:
@@ -303,21 +302,36 @@ def _prepare_cron_prompt(prompt: str, tenant: Tenant) -> str:
         tz = zoneinfo.ZoneInfo("UTC")
 
     now = datetime.now(tz)
+    # WARNING: both cron-prompt strippers remove exactly the first paragraph
+    # when it starts with this load-bearing prefix. Keep the rendered snapshot
+    # on one line and terminate it immediately with a blank line. Static time-
+    # source instructions belong after that boundary so a wording change is
+    # visible to drift detection and reconciles once.
     date_line = (
         f"Current date and time: {now.strftime('%A, %B %d, %Y at %H:%M')} ({user_tz}) "
-        f"— SNAPSHOT taken when this cron payload was last reconciled, may be stale.\n"
-        f"For live time, read `_Current local time: ..._` from USER.md "
-        f"(loaded fresh on every agent turn). Prefer USER.md over the snapshot above "
-        f"whenever you reason about 'today', 'this morning', 'earlier today', or "
-        f"whether the user has already done something today. Before claiming the user "
-        f"has or hasn't done X today, verify against today's daily note and journal "
-        f"entries — don't infer activity from the snapshot date.\n"
-        f"When mentioning future events, compute exact days from USER.md's live date "
-        f"(fall back to {now.strftime('%Y-%m-%d')} only if USER.md isn't loaded): "
-        f"event_date minus today = X days from now. "
-        f"Never say 'tomorrow' unless the math confirms exactly 1 day away.\n\n"
+        f"— SNAPSHOT taken when this cron payload was last reconciled, may be stale.\n\n"
     )
-    return _apply_typed_lifecycle_swaps(date_line + _CRON_CONTEXT_PREAMBLE + prompt, tenant)
+    time_source_instructions = (
+        "**Time-source priority:**\n"
+        "1. **AUTHORITATIVE live clock:** use the `Current time: ...` line appended "
+        "at the very end of this message by the runtime at fire time. Its adjacent "
+        "`Reference UTC: ...` line is the authoritative UTC reference.\n"
+        "2. **Fallback:** only if that fire-time block is unavailable, use USER.md's "
+        "`_Current local time: ..._` line, which is refreshed at most hourly.\n"
+        "3. **Never use for now:** the leading `Current date and time:` snapshot is "
+        "reconcile-time context only and may be hours or days old. Never use it to "
+        "reason about 'today', 'this morning', 'earlier today', or whether the user "
+        "has already done something today.\n"
+        "Before claiming the user has or hasn't done something today, verify against "
+        "today's daily note and journal entries. When mentioning future events, "
+        "compute exact days from the authoritative live clock (or the USER.md "
+        "fallback): event date minus today = X days from now. Never say 'tomorrow' "
+        "unless the math confirms exactly 1 day away.\n\n"
+    )
+    return _apply_typed_lifecycle_swaps(
+        date_line + time_source_instructions + _CRON_CONTEXT_PREAMBLE + prompt,
+        tenant,
+    )
 
 
 _MORNING_BRIEFING_WEATHER_STEP = (
