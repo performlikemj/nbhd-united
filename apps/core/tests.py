@@ -1794,6 +1794,53 @@ class ComposeAuthoringTests(SimpleTestCase):
         # The spoken-moment band matches the validator's floor.
         self.assertIn("3-10 spoken moments", system)
 
+    def test_assembled_prompt_opens_by_welcoming_the_body(self):
+        """The sit is told to orient the person before any practice begins.
+
+        Kiho, 2026-08-20: the meditation dropped straight into the work with no
+        word about how to sit or when to close your eyes.
+        """
+        with patch(
+            "apps.core.compose.chat_completion",
+            return_value=self._ok(json.dumps(_valid_manifest())),
+        ) as cc:
+            compose.author_manifest({"additional_context": "work stress"})
+
+        messages = cc.call_args[0][1]
+        system = next(m["content"] for m in messages if m["role"] == "system")
+
+        self.assertIn("HOSPITALITY", system)
+        self.assertIn("ARRIVAL: open by welcoming the body", system)
+        self.assertIn("permission about posture", system)
+        self.assertIn("sitting up, lying down", system)
+        self.assertIn("invite the eyes to close whenever they are ready", system)
+        self.assertIn("An invitation, never an instruction", system)
+
+    def test_assembled_prompt_closes_with_re_entry_and_acknowledgment(self):
+        """The sit lets the person back into the room, and thanks them for the time.
+
+        The takeaway stays the last spoken line (HARD RULES + TAKEAWAY are unchanged),
+        so the prompt has to say where the acknowledgment goes relative to it.
+        """
+        with patch(
+            "apps.core.compose.chat_completion",
+            return_value=self._ok(json.dumps(_valid_manifest())),
+        ) as cc:
+            compose.author_manifest({"additional_context": "work stress"})
+
+        messages = cc.call_args[0][1]
+        system = next(m["content"] for m in messages if m["role"] == "system")
+
+        self.assertIn("CLOSING: before the takeaway, bring them gently back", system)
+        self.assertIn("the eyes opening when they want them to", system)
+        self.assertIn("warmly acknowledge that they gave this time to", system)
+        # Ordering: the acknowledgment never displaces the takeaway as the final line.
+        self.assertIn("The takeaway is still the LAST thing they hear", system)
+        # Guidance, not a script — a fixed wording here would open and close every
+        # sit identically, which is the sameness VARIETY exists to cure.
+        self.assertIn("Write both bookends in your own words", system)
+        self.assertIn("There is no fixed wording for either one", system)
+
     def test_look_back_block_reaches_the_model_as_user_context(self):
         """End-to-end wiring: a gathered look-back lands in the composed prompt."""
         signals = {
