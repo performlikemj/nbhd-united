@@ -83,10 +83,19 @@ export interface Tenant {
 // Core (mindfulness) pillar — generated guided meditations.
 export type MeditationStatus = "pending" | "rendering" | "ready" | "delivered" | "failed";
 
+/** One phase of a sit, as the API reports it: control values only (no narration). */
+export interface MeditationPhaseArcEntry {
+  name: string; // e.g. "arrival", "open_sit" — the vocabulary can grow server-side
+  seconds: number; // that phase's time budget
+}
+
 export interface MeditationSession {
   id: string;
   date: string; // YYYY-MM-DD
   status: MeditationStatus;
+  /** The sit's real phase arc. Null for sessions with no stored manifest, and
+   *  absent altogether from a backend deployed before phase arcs shipped. */
+  phase_arc?: MeditationPhaseArcEntry[] | null;
   title: string;
   theme: string;
   voice: string;

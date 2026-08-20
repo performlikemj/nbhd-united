@@ -3,25 +3,29 @@
 import type { MeditationPhase } from "@/lib/core";
 
 /**
- * The meditation's 6-phase arc as a thin segmented timeline. Segment widths are
+ * This sit's phase arc as a thin segmented timeline. Segment widths are
  * proportional to each phase's time budget — communicating the structured manifest
- * at a glance. Labels collapse to dots on small screens.
+ * at a glance. Labels collapse to dots on small screens. The arc varies per sit,
+ * so a phase name can repeat and the length can differ from six.
  */
 export function PhaseTimeline({ phases }: { phases: MeditationPhase[] }) {
   const total = phases.reduce((sum, p) => sum + p.weight, 0);
+  // The heart of the sit carries the accent: the longest phase, which for the
+  // classic arc is core_practice (the position this used to hard-code).
+  const heartIndex = phases.reduce((best, p, i) => (p.weight > phases[best].weight ? i : best), 0);
 
   return (
     <div className="w-full">
       <div className="flex items-stretch gap-1.5">
         {phases.map((p, i) => (
           <div
-            key={p.name}
+            key={`${p.name}-${i}`}
             className="group/seg relative h-1.5 rounded-full transition-all duration-300 hover:brightness-125"
             style={{
               flexGrow: p.weight,
               flexBasis: 0,
               background:
-                i === 3
+                i === heartIndex
                   ? "linear-gradient(90deg, var(--signal), var(--accent))"
                   : "rgba(78,205,196,0.30)",
             }}
@@ -36,9 +40,9 @@ export function PhaseTimeline({ phases }: { phases: MeditationPhase[] }) {
 
       {/* labels — full on sm+, abbreviated ticks on mobile */}
       <div className="mt-2.5 hidden items-center justify-between sm:flex">
-        {phases.map((p) => (
+        {phases.map((p, i) => (
           <span
-            key={p.name}
+            key={`${p.name}-${i}`}
             className="text-[10px] uppercase tracking-[0.14em] text-ink-faint"
             style={{ flexGrow: p.weight, flexBasis: 0, textAlign: "center" }}
           >

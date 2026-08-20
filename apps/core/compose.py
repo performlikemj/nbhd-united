@@ -2,8 +2,9 @@
 
 The locked split is "assistant authors the manifest (judgment); backend renders
 (deterministic)". This is the backend-invoked authoring path used by the web orb
-(no OpenClaw plugin required): gather raw signals → ask an LLM to fill the FIXED
-6-phase scaffold (it never invents the structure) → validate before any TTS spend.
+(no OpenClaw plugin required): gather raw signals → ask an LLM to author the sit
+within the phase-arc grammar (fixed bookends, its choice of middle — see
+``render.MIDDLE_PHASES``) → validate before any TTS spend.
 
 LLM access mirrors the project's other Django-side calls (apps/insights/synthesis.py,
 apps/pii/arbiter.py): the shared ``apps.common.openrouter.chat_completion`` client
@@ -68,7 +69,10 @@ _RECENT_MEDITATIONS_CHAR_BUDGET = 1200
 
 # Rough per-phase time budgets (seconds) for the ~10-min arc — guidance the model
 # paces toward and a fallback when it omits one. The model now OWNS the allocation
-# (holistic pacing); these are no longer force-applied.
+# (holistic pacing); these are no longer force-applied. Every name in the phase
+# grammar has an entry: ``_normalize`` already falls back to 60s for an unknown
+# name, but 60s is plain wrong for a long ``open_sit``, and a phase target is what
+# a ``flex`` silence expands to fill — so the deep phases get honest defaults.
 _PHASE_TARGETS = {
     "arrival": 60,
     "breath_anchor": 75,
@@ -76,6 +80,10 @@ _PHASE_TARGETS = {
     "core_practice": 210,
     "integration": 60,
     "closing": 45,
+    "settle": 90,
+    "open_sit": 210,
+    "re_anchor": 45,
+    "teaching": 90,
 }
 
 
@@ -112,21 +120,30 @@ _SYSTEM_PROMPT = (
     '  global_tone: "soft, slow, warm; unhurried with generous space"\n'
     "  total_target_seconds: 600\n"
     "  ambient: null\n"
-    "  phases: an array of EXACTLY these 6 phases, IN THIS ORDER:\n"
-    "    arrival, breath_anchor, body_scan, core_practice, integration, closing\n\n"
+    "  phases: the sit's arc — you choose today's shape, within the grammar below\n\n"
+    "PHASE ARC — the bookends are fixed, the middle is yours:\n"
+    "- The FIRST phase is always arrival and the LAST is always closing.\n"
+    "- Between them put 1 to 5 phases, each named from exactly this list: breath_anchor, body_scan, "
+    "core_practice, integration, settle, open_sit, re_anchor, teaching.\n"
+    "- A name may appear more than once, but never twice in a row (that is one longer phase, not two).\n"
+    "- Choose the arc that serves this person today, and vary it against the recent sits. Three that work:\n"
+    "    classic     — arrival, breath_anchor, body_scan, core_practice, integration, closing\n"
+    "    spacious    — arrival, settle, open_sit, re_anchor, open_sit, closing\n"
+    "    lesson-led  — arrival, breath_anchor, teaching, core_practice, integration, closing\n\n"
     "Each phase is an object: { name, intent (short), target_seconds, segments[] }, where target_seconds is "
-    "your rough time budget for that phase (the six should sum to ~600). Put segments in the order they play. "
-    "A segment is either:\n"
+    "your rough time budget for that phase (the phases together should sum to ~600). Put segments in the order "
+    "they play. A segment is either:\n"
     '  { "type": "speech", "text": "...", "tone": "..." }   — a short spoken guidance, 1-3 sentences\n'
     '  { "type": "silence", "seconds": <integer 3-150> }    — a held pause of exactly that length\n'
     '  { "type": "silence", "seconds": "flex" }             — OPTIONAL: a pause the backend expands to fill the phase budget\n\n'
     "PACING — this is the craft:\n"
     "- Speak briefly, then hold. The natural rhythm is a short guidance followed by a long silence.\n"
-    "- Use GENEROUS silences. 60, 90, even 120 seconds of stillness is normal and welcome — most of all in "
-    "body_scan and core_practice, where the person is doing the inner work. arrival and breath_anchor may be "
-    "a little more spoken; the deep middle should be mostly silent.\n"
+    "- Use GENEROUS silences. 60, 90, even 120 seconds of stillness is normal and welcome — most of all in the "
+    "deep middle of the sit (body_scan, core_practice, an open_sit), where the person is doing the inner work. "
+    "The opening phases may be a little more spoken; the deep middle should be mostly silent.\n"
     "- A phase can be almost all silence with a single spoken cue — or, occasionally, need no new words at all.\n"
-    "- Across the WHOLE sit keep it to roughly 6-10 spoken moments (never more than 12). Sparse on purpose.\n"
+    "- Across the WHOLE sit keep it to roughly 3-10 spoken moments (never fewer than 3, never more than 12). "
+    "Sparse on purpose.\n"
     '- Set real silence lengths yourself; reach for a single "flex" in a phase only when you want the backend '
     "to fill that phase's remaining time for you.\n\n"
     # Density, variety, the wisdom lesson, and the takeaway (meditation v2 phase 1).
@@ -140,8 +157,9 @@ _SYSTEM_PROMPT = (
     "- Pick today's density deliberately and vary it against the recent sits — a person who sits daily "
     "should not get the same amount of talking every time.\n"
     "- Express the choice ONLY through how you compose segments: how many spoken moments, how long the "
-    "silences hold. A spacious sit sits at the low end of the 6-10 spoken moments, a guided one at the "
-    "high end. Never name the density and never add a key for it.\n\n"
+    "silences hold, and which arc you pick. A spacious arc may go as low as 3 spoken moments — settling in, "
+    "one re-anchoring cue, the closing takeaway — while a guided one sits at the high end. Never name the "
+    "density and never add a key for it.\n\n"
     "VARIETY — every sit must feel like a new doorway:\n"
     "- Your input may include a RECENT MEDITATIONS list (newest first, with each sit's title and theme). "
     "That list is what you must NOT repeat.\n"
@@ -154,8 +172,8 @@ _SYSTEM_PROMPT = (
     "Christian-contemplative, Jewish, or secular philosophy and the science of mind.\n"
     "- CHOOSE the idea to serve what today's signals show this person is carrying — not at random. Rotate "
     "which tradition you draw on against the recent sits.\n"
-    "- Teach it plainly and invitationally, in a sentence or two, usually within core_practice. Attribute it "
-    'simply where that helps ("the Stoics called this…", "there is a Zen word for this…").\n'
+    "- Teach it plainly and invitationally, in a sentence or two, within core_practice or a teaching "
+    'phase. Attribute it simply where that helps ("the Stoics called this…", "there is a Zen word for this…").\n'
     "- Never preach, never argue for a tradition, and never presume what this person believes or practices. "
     "You are offering one idea to try on for a few minutes, not a doctrine.\n\n"
     "TAKEAWAY:\n"
@@ -165,8 +183,9 @@ _SYSTEM_PROMPT = (
     "- The closing phase must END on a speech segment, so the sit lands rather than trailing into silence.\n"
     "- Speech text is short (1-3 sentences), calm, second-person, present-tense. Never read instructions aloud.\n"
     '- Always address them as "you". NEVER use a name or any [BRACKETED_TOKEN] — those are voiced literally by TTS.\n'
-    "- core_practice is the personalized heart: gently name what the signals suggest they're carrying, and "
-    "offer permission to set it down. Be specific but kind; never clinical, never list their data back.\n"
+    "- The heart of the sit — core_practice, or whichever middle phase carries it — is the personalized part: "
+    "gently name what the signals suggest they're carrying, and offer permission to set it down. Be specific "
+    "but kind; never clinical, never list their data back.\n"
     "- closing gives one small carry-forward intention.\n\n"
     "OUTPUT FORMAT (strict):\n"
     "- Write ALL text — title, theme, every speech segment — in ENGLISH.\n"
@@ -278,8 +297,6 @@ def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_
         lines.extend(f"- {g}" for g in goals[:5])
     if signals.get("fuel_summary"):
         lines.append(f"Recent movement: {signals['fuel_summary']}")
-    if signals.get("last_meditation_theme"):
-        lines.append(f"Their last meditation's theme (vary from it): {signals['last_meditation_theme']}")
     if signals.get("additional_context"):
         lines.append(f"What they've asked to keep in mind: {signals['additional_context']}")
     if len(lines) == 1:
@@ -289,13 +306,15 @@ def _format_signals(signals: dict, target_seconds: float = render.DEFAULT_TOTAL_
         )
     minutes = max(1, round(target_seconds / 60))
     scale = target_seconds / render.DEFAULT_TOTAL_TARGET_SECONDS
-    scaled = ", ".join(f"{k}~{max(1, round(v * scale))}s" for k, v in _PHASE_TARGETS.items())
+    # The pacing reference is shown for the CLASSIC arc only — it is an example of
+    # how much time a phase wants, not the arc to compose. Whichever arc is chosen,
+    # what's binding is that its phases sum to the target.
+    scaled = ", ".join(f"{name}~{max(1, round(_PHASE_TARGETS[name] * scale))}s" for name in render.CLASSIC_ARC)
     lines.append(
         f"\nCompose today's sit now — holistically. Aim for about {minutes} minutes "
         f"(~{round(target_seconds)}s total); let silence carry most of it; speak only where it guides. "
-        f"Rough per-phase budget to pace toward (yours to adjust, but the six should sum to ~{round(target_seconds)}s): "
-        + scaled
-        + "."
+        f"Whichever arc you choose, its phases should sum to ~{round(target_seconds)}s — for a sense of scale, "
+        f"the classic arc paces roughly: " + scaled + "."
     )
     return "\n".join(lines)
 

@@ -58,6 +58,7 @@ class MeditationSessionSerializer(OwnerStoreSerializerMixin, serializers.ModelSe
     """
 
     retryable = serializers.SerializerMethodField()
+    phase_arc = serializers.SerializerMethodField()
     pii_model_label = "core.MeditationSession"
 
     class Meta:
@@ -67,6 +68,7 @@ class MeditationSessionSerializer(OwnerStoreSerializerMixin, serializers.ModelSe
             "date",
             "status",
             "retryable",
+            "phase_arc",
             "attempt_count",
             "title",
             "theme",
@@ -90,6 +92,7 @@ class MeditationSessionSerializer(OwnerStoreSerializerMixin, serializers.ModelSe
             "date",
             "status",
             "retryable",
+            "phase_arc",
             "attempt_count",
             "title",
             "theme",
@@ -106,6 +109,40 @@ class MeditationSessionSerializer(OwnerStoreSerializerMixin, serializers.ModelSe
             "created_at",
             "updated_at",
         ]
+
+    def get_phase_arc(self, obj: MeditationSession) -> list[dict] | None:
+        """The sit's real phase shape: ``[{"name", "seconds"}, ...]`` — or None.
+
+        The arc used to be the same six phases for every sit, so the web timeline
+        was drawn from a hard-coded constant. It varies per sit now, so the client
+        has to be told what it actually is.
+
+        CONTROL VALUES ONLY. A phase name and its time budget are settings, never
+        the person's words — the ``intent`` prose and every segment's spoken text
+        stay in the manifest and never cross this seam (the PII rule: redaction
+        paths enumerate user-authored text, and this field carries none of it).
+        None when there is no usable manifest — a failed sit, or a row from before
+        manifests were stored — and the client falls back to the classic arc.
+        """
+        manifest = obj.manifest if isinstance(obj.manifest, dict) else {}
+        phases = manifest.get("phases")
+        if not isinstance(phases, list):
+            return None
+        arc: list[dict] = []
+        for phase in phases:
+            if not isinstance(phase, dict):
+                continue
+            name = phase.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            try:
+                seconds = float(phase.get("target_seconds"))
+            except (TypeError, ValueError):
+                continue
+            if seconds <= 0:
+                continue
+            arc.append({"name": name.strip(), "seconds": round(seconds)})
+        return arc or None
 
     def get_retryable(self, obj: MeditationSession) -> bool:
         return (

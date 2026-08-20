@@ -10,7 +10,14 @@ import { CoreToast } from "@/components/core/core-toast";
 import { MeditationFeedback } from "@/components/core/meditation-feedback";
 import { MeditationLibrary } from "@/components/core/meditation-library";
 import { PhaseTimeline } from "@/components/core/phase-timeline";
-import { PHASES, computeCoreStats, dayKeyInTz, friendlyFailure, toMeditation, type Meditation } from "@/lib/core";
+import {
+  computeCoreStats,
+  dayKeyInTz,
+  friendlyFailure,
+  phasesFromArc,
+  toMeditation,
+  type Meditation,
+} from "@/lib/core";
 import { composeMeditation, fetchMeditation, fetchMeditations } from "@/lib/api";
 import { useMeQuery } from "@/lib/queries";
 import type { MeditationSession } from "@/lib/types";
@@ -66,6 +73,10 @@ export default function CorePage() {
     () => (today ? (sessions.find((s) => s.id === today.id) ?? null) : null),
     [sessions, today],
   );
+
+  // The timeline shows THIS sit's arc (phases vary per sit now); it falls back to
+  // the classic arc for a session the API reports no arc for.
+  const todayPhases = useMemo(() => phasesFromArc(todaySession?.phase_arc), [todaySession]);
 
   // Fold a feedback-updated session back into local state so the control stays
   // in sync (and a later render doesn't clobber the just-saved signal).
@@ -300,7 +311,7 @@ export default function CorePage() {
                 <p className="mx-auto mt-4 max-w-[420px] text-sm leading-relaxed text-ink-muted">{today.theme}</p>
               )}
               <div className="mt-9 w-full max-w-[540px]">
-                <PhaseTimeline phases={PHASES} />
+                <PhaseTimeline phases={todayPhases} />
               </div>
               {todaySession && (
                 <MeditationFeedback
