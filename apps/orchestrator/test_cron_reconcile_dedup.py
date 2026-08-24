@@ -21,6 +21,7 @@ add/remove diff runs.
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -159,6 +160,67 @@ class RegenerateDedupTests(TestCase):
         self.assertEqual(result["duplicates_reaped"], 2)
 
     @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_failed_remove_converges_when_duplicate_is_absent_on_verify(self, mock_invoke):
+        newer = _gw_job("Personal Question", gateway_id="id-new", created_at_ms=1_710_000_000_000)
+        older = _gw_job("Personal Question", gateway_id="id-old", created_at_ms=1_700_000_000_000)
+        older["payload"]["message"] = "stale payload"
+        mock_invoke.side_effect = [
+            _list_response([newer, older]),
+            GatewayError("Gateway returned 500: tool_error", status_code=500),
+            _list_response([newer]),
+        ]
+
+        with self.assertLogs("apps.orchestrator.cron_reconcile", level="INFO") as logs:
+            result = regenerate_tenant_crons(self.tenant)
+
+        self.assertEqual(result["duplicates_reaped"], 1)
+        self.assertEqual(result["errors"], 0)
+        self.assertEqual(result["unchanged"], 1)
+        remove_calls = [call for call in mock_invoke.call_args_list if call.args[1] == "cron.remove"]
+        self.assertEqual(len(remove_calls), 1)
+        self.assertEqual(remove_calls[0].args[2], {"jobId": "id-old"})
+        self.assertEqual(remove_calls[0].kwargs, {"error_log_level": logging.WARNING})
+        self.assertFalse(any(call.args[1] == "cron.add" for call in mock_invoke.call_args_list))
+        self.assertIn("removed by concurrent sweep", "\n".join(logs.output))
+        self.assertFalse(any(record.levelno >= logging.ERROR for record in logs.records))
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_failed_remove_counts_error_when_duplicate_remains_live(self, mock_invoke):
+        older = _gw_job("Personal Question", gateway_id="id-old", created_at_ms=1_700_000_000_000)
+        newer = _gw_job("Personal Question", gateway_id="id-new", created_at_ms=1_710_000_000_000)
+        live_jobs = _list_response([older, newer])
+        mock_invoke.side_effect = [
+            live_jobs,
+            GatewayError("Gateway returned 500: tool_error", status_code=500),
+            live_jobs,
+        ]
+
+        with self.assertLogs("apps.orchestrator.cron_reconcile", level="WARNING") as logs:
+            result = regenerate_tenant_crons(self.tenant)
+
+        self.assertEqual(result["duplicates_reaped"], 0)
+        self.assertEqual(result["errors"], 1)
+        self.assertIn("job remains live after verification", "\n".join(logs.output))
+        self.assertEqual(sum(record.levelno >= logging.ERROR for record in logs.records), 1)
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
+    def test_failed_remove_counts_error_when_verify_list_fails(self, mock_invoke):
+        older = _gw_job("Personal Question", gateway_id="id-old", created_at_ms=1_700_000_000_000)
+        newer = _gw_job("Personal Question", gateway_id="id-new", created_at_ms=1_710_000_000_000)
+        mock_invoke.side_effect = [
+            _list_response([older, newer]),
+            GatewayError("Gateway returned 500: tool_error", status_code=500),
+            GatewayError("Gateway returned 503: unavailable", status_code=503),
+        ]
+
+        with self.assertLogs("apps.orchestrator.cron_reconcile", level="WARNING") as logs:
+            result = regenerate_tenant_crons(self.tenant)
+
+        self.assertEqual(result["duplicates_reaped"], 0)
+        self.assertEqual(result["errors"], 1)
+        self.assertIn("cron.remove verification failed", "\n".join(logs.output))
+
+    @patch("apps.cron.gateway_client.invoke_gateway_tool")
     def test_no_dedup_when_no_duplicates(self, mock_invoke):
         """A clean container — no extra cron.remove calls fired."""
         mock_invoke.side_effect = [
@@ -224,16 +286,18 @@ class RegenerateDedupTests(TestCase):
             },
         )
 
+        live_jobs = _list_response(
+            [
+                _gw_job("Personal Question", gateway_id="pq-old", created_at_ms=1_700_000_000_000),
+                _gw_job("Personal Question", gateway_id="pq-new", created_at_ms=1_710_000_000_000),
+                _gw_job("Project Check-in", gateway_id="pc-old", created_at_ms=1_700_000_000_000),
+                _gw_job("Project Check-in", gateway_id="pc-new", created_at_ms=1_710_000_000_000),
+            ]
+        )
         mock_invoke.side_effect = [
-            _list_response(
-                [
-                    _gw_job("Personal Question", gateway_id="pq-old", created_at_ms=1_700_000_000_000),
-                    _gw_job("Personal Question", gateway_id="pq-new", created_at_ms=1_710_000_000_000),
-                    _gw_job("Project Check-in", gateway_id="pc-old", created_at_ms=1_700_000_000_000),
-                    _gw_job("Project Check-in", gateway_id="pc-new", created_at_ms=1_710_000_000_000),
-                ]
-            ),
+            live_jobs,
             GatewayError("503 first remove failed"),  # pq-old: fails
+            live_jobs,  # verification confirms pq-old is still live
             {"ok": True},  # pc-old: succeeds
         ]
 
