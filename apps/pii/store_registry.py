@@ -285,6 +285,12 @@ _STORES = (
         receipts_field="pii_receipts",
     ),
     PlaceholderStore(
+        model_label="datebook.CalendarContext",
+        flat_fields=("container_title", "source_title", "context_note"),
+        json_paths=(),
+        receipts_field="pii_receipts",
+    ),
+    PlaceholderStore(
         model_label="datebook.DeviceCommand",
         flat_fields=("display_text", "destination_name", "result_display"),
         json_paths=(

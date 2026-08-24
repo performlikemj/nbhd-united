@@ -24,8 +24,10 @@ from .services import (
     commit_sync_run,
     datebook_command_generation,
     finish_device_command,
+    get_calendar_contexts,
     open_sync_run,
     register_gateway,
+    replace_calendar_contexts,
     stage_sync_page,
     start_device_command,
 )
@@ -141,6 +143,60 @@ class GatewayRegisterView(DatebookAPIView):
                 "delivery_ready": datebook_delivery_ready(tenant),
             }
         )
+
+
+def _calendar_context_data(row, tenant) -> dict:
+    return owner_store_representation(
+        row,
+        tenant,
+        {
+            "calendar_fingerprint": row.calendar_fingerprint,
+            "entity_scope": row.entity_scope,
+            "included": row.included,
+            "container_title": row.container_title,
+            "source_title": row.source_title,
+            "source_type": row.source_type,
+            "context_note": row.context_note,
+            "updated_at": row.updated_at.isoformat(),
+        },
+        model_label="datebook.CalendarContext",
+    )
+
+
+def _calendar_context_response(rows, tenant) -> dict:
+    calendars = [_calendar_context_data(row, tenant) for row in rows]
+    return {"calendar_count": len(calendars), "calendars": calendars}
+
+
+class CalendarContextsView(DatebookAPIView):
+    """Replace or restore the active installation's non-default calendar prefs."""
+
+    throttle_classes = [DatebookReadThrottle]
+
+    def get(self, request):
+        tenant = self.tenant(request)
+        raw_epoch = request.query_params.get("gateway_epoch")
+        try:
+            gateway_epoch = int(raw_epoch)
+        except (TypeError, ValueError):
+            raise ProtocolError("invalid_gateway_epoch") from None
+        rows = get_calendar_contexts(
+            tenant,
+            installation_id=request.query_params.get("installation_id"),
+            gateway_epoch=gateway_epoch,
+        )
+        return Response(_calendar_context_response(rows, tenant))
+
+    def put(self, request):
+        tenant = self.tenant(request)
+        data = self.body(request)
+        rows = replace_calendar_contexts(
+            tenant,
+            installation_id=data.get("installation_id"),
+            gateway_epoch=data.get("gateway_epoch"),
+            calendars=data.get("calendars"),
+        )
+        return Response(_calendar_context_response(rows, tenant))
 
 
 def _pending_gate_action_data(action: PendingAction, tenant: Tenant) -> dict:
