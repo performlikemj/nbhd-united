@@ -472,7 +472,7 @@ safetensors==0.7.0
     # via transformers
 sentencepiece==0.2.2
     # via -r requirements.in
-sentry-sdk==2.66.1
+sentry-sdk==2.68.0
     # via -r requirements.in
 shellingham==1.5.4
     # via typer
