@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from unittest import mock
 
@@ -231,6 +232,7 @@ class CronRemoveContractTests(TestCase):
             tenant,
             "cron.remove",
             {"jobId": "f05243cb-0000-4000-8000-000000000000"},
+            error_log_level=logging.ERROR,
         )
 
     def test_name_caller_resolves_real_id_before_remove(self):
@@ -265,6 +267,7 @@ class CronRemoveContractTests(TestCase):
                     tenant,
                     "cron.remove",
                     {"jobId": "real-job-id"},
+                    error_log_level=logging.ERROR,
                 ),
             ],
         )

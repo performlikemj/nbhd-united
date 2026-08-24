@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import timedelta
 from unittest.mock import call, patch
 
@@ -562,8 +563,18 @@ class CronOpsTriggerTest(TestCase):
         self.assertEqual(
             mock_gateway.call_args_list,
             [
-                call(self.tenant, "cron.remove", {"jobId": "job-1"}),
-                call(self.tenant, "cron.remove", {"jobId": "job-2"}),
+                call(
+                    self.tenant,
+                    "cron.remove",
+                    {"jobId": "job-1"},
+                    error_log_level=logging.ERROR,
+                ),
+                call(
+                    self.tenant,
+                    "cron.remove",
+                    {"jobId": "job-2"},
+                    error_log_level=logging.ERROR,
+                ),
             ],
         )
         mock_sleep.assert_called_once()
@@ -617,6 +628,7 @@ class CronOpsTriggerTest(TestCase):
             self.tenant,
             "cron.remove",
             {"jobId": "gateway-job-1"},
+            error_log_level=logging.ERROR,
         )
 
     def test_delete_registry_cron_returns_404_when_no_managed_row_matches(self):
