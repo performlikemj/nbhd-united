@@ -18,7 +18,7 @@ from apps.router.document_write_guard import record_runtime_write_activity
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
-from .agenda import agenda_items, agenda_window
+from .agenda import agenda_calendar_context, agenda_items, agenda_window
 from .gate import (
     datebook_action_state,
     datebook_create_db_budget,
@@ -51,7 +51,9 @@ class _DatebookResponseGuard(KnownValueResponseGuardMixin):
             "notes",
             "calendar_title",
             "list_title",
+            "container_title",
             "source_title",
+            "context_note",
             "display_text",
         }
     )
@@ -227,6 +229,7 @@ class RuntimeAgendaView(_DatebookRuntimeView):
             entity=entity,
             limit=AGENDA_ITEM_LIMIT,
         )
+        calendar_context = agenda_calendar_context(tenant, entity=entity)
         start_day, end_day, start_at, end_at = agenda_window(
             tenant,
             days_back=days_back,
@@ -248,6 +251,7 @@ class RuntimeAgendaView(_DatebookRuntimeView):
                 },
                 "entity": entity,
                 "items": items,
+                "calendar_context": calendar_context,
                 "truncated": truncated,
                 "item_limit": AGENDA_ITEM_LIMIT,
                 "gateway_status": gateway.status if gateway else "unavailable",

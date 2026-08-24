@@ -1,6 +1,7 @@
 from django.urls import include, path
 
 from .views import (
+    CalendarContextsView,
     CommandClaimView,
     CommandResultView,
     CommandStartView,
@@ -15,6 +16,7 @@ from .views import (
 urlpatterns = [
     path("runtime/<uuid:tenant_id>/datebook/", include("apps.datebook.runtime_urls")),
     path("register/", GatewayRegisterView.as_view(), name="datebook-register"),
+    path("calendars/", CalendarContextsView.as_view(), name="datebook-calendars"),
     path("sync/open/", SyncOpenView.as_view(), name="datebook-sync-open"),
     path("sync/page/", SyncPageView.as_view(), name="datebook-sync-page"),
     path("sync/commit/", SyncCommitView.as_view(), name="datebook-sync-commit"),

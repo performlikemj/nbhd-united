@@ -33,11 +33,13 @@ from .hashing import (
 )
 from .models import (
     AuthorizationStatus,
+    CalendarContext,
     DatebookDestinationDefault,
     DatebookGateway,
     DeviceCommand,
     MirrorEvent,
     MirrorReminder,
+    SourceType,
     SyncPage,
     SyncRun,
     TimeKind,
@@ -50,6 +52,8 @@ EVENT_WINDOW_PAST_DAYS = 30
 EVENT_WINDOW_FUTURE_DAYS = 180
 MAX_PAGE_ITEMS = 50
 MAX_SCOPE_ITEMS = 10_000
+MAX_CALENDAR_CONTEXT_ROWS = 64
+CALENDAR_CONTEXT_NOTE_MAX = 240
 COMMAND_LEASE_SECONDS = 90
 COMMAND_EXECUTION_TIMEOUT_SECONDS = 10 * 60
 COMMAND_TTL_HOURS = 72
@@ -197,6 +201,10 @@ def _revoke_scope(tenant, gateway: DatebookGateway, *, scope: str, now) -> None:
         active=False,
         inactive_generation=gateway.current_generation,
     )
+    CalendarContext.objects.select_for_update().filter(
+        tenant=tenant,
+        entity_scope=(CalendarContext.EntityScope.EVENT if scope == "events" else CalendarContext.EntityScope.REMINDER),
+    ).delete()
     _cancel_never_started_commands(tenant, now, command_types=[command_type])
     gateway.save(update_fields=[*gateway_fields, "updated_at"])
 
@@ -341,6 +349,169 @@ def register_gateway(
             now=now,
         )
         return gateway, taken_over, locked_tenant
+
+
+def _normalize_calendar_context_row(raw, *, index: int) -> dict:
+    if not isinstance(raw, dict):
+        raise ProtocolError("invalid_calendar", extra={"index": index})
+    entity_scope = raw.get("entity_scope")
+    if entity_scope not in CalendarContext.EntityScope.values:
+        raise ProtocolError("invalid_entity_scope", extra={"index": index})
+    calendar_fingerprint = raw.get("calendar_fingerprint")
+    if not isinstance(calendar_fingerprint, str) or HASH_RE.fullmatch(calendar_fingerprint) is None:
+        raise ProtocolError("invalid_calendar_fingerprint", extra={"index": index})
+    included = raw.get("included", True)
+    if not isinstance(included, bool):
+        raise ProtocolError("invalid_included", extra={"index": index})
+    source_type = raw.get("source_type", SourceType.OTHER)
+    if source_type not in SourceType.values:
+        raise ProtocolError("invalid_source_type", extra={"index": index})
+    try:
+        container_title = normalize_text(raw.get("container_title"), 256)
+        source_title = normalize_text(raw.get("source_title"), 256)
+        context_note = normalize_text(raw.get("context_note"), CALENDAR_CONTEXT_NOTE_MAX + 1).strip()
+    except ItemValidationError as exc:
+        raise ProtocolError(exc.code, extra={"index": index}) from exc
+    if len(context_note) > CALENDAR_CONTEXT_NOTE_MAX:
+        raise ProtocolError("context_note_too_long", extra={"index": index})
+    if not included and (container_title or source_title):
+        raise ProtocolError("excluded_calendar_titles_not_empty", extra={"index": index})
+    return {
+        "entity_scope": entity_scope,
+        "calendar_fingerprint": calendar_fingerprint,
+        "included": included,
+        "container_title": container_title if included else "",
+        "source_title": source_title if included else "",
+        "source_type": source_type,
+        "context_note": context_note,
+    }
+
+
+def _calendar_context_set(calendars) -> list[dict]:
+    if not isinstance(calendars, list):
+        raise ProtocolError("invalid_calendars")
+    if len(calendars) > MAX_CALENDAR_CONTEXT_ROWS:
+        raise ProtocolError(
+            "too_many_calendars",
+            extra={"max_calendars": MAX_CALENDAR_CONTEXT_ROWS},
+        )
+    normalized = []
+    seen = set()
+    for index, raw in enumerate(calendars):
+        row = _normalize_calendar_context_row(raw, index=index)
+        key = (row["entity_scope"], row["calendar_fingerprint"])
+        if key in seen:
+            raise ProtocolError("duplicate_calendar", extra={"index": index})
+        seen.add(key)
+        normalized.append(row)
+    return normalized
+
+
+def _assert_calendar_context_consents(tenant, rows: list[dict]) -> None:
+    for row in rows:
+        consent_field = {
+            CalendarContext.EntityScope.EVENT: "datebook_events_consent_at",
+            CalendarContext.EntityScope.REMINDER: "datebook_reminders_consent_at",
+        }[row["entity_scope"]]
+        if getattr(tenant, consent_field) is None:
+            raise ProtocolError(
+                "scope_not_consented",
+                extra={"entity_scope": row["entity_scope"]},
+            )
+
+
+def replace_calendar_contexts(
+    tenant,
+    *,
+    installation_id,
+    gateway_epoch,
+    calendars,
+) -> list[CalendarContext]:
+    """Atomically replace the tenant's non-default calendar-context set."""
+
+    installation_id = _installation_id(installation_id)
+    gateway_epoch = _positive_epoch(gateway_epoch)
+    normalized = _calendar_context_set(calendars)
+
+    with suppress_refresh(), transaction.atomic():
+        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        gateway = _locked_active_gateway(locked_tenant)
+        _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
+        _assert_calendar_context_consents(locked_tenant, normalized)
+
+        authored_by_key = {}
+        for row in normalized:
+            # Included + un-noted is the implicit default and therefore acts as
+            # a deletion marker when it appears in a replacement payload.
+            if row["included"] and not row["context_note"]:
+                continue
+            authored, receipts = author_store_fields(
+                locked_tenant,
+                row,
+                model_label="datebook.CalendarContext",
+                seam="datebook.owner.calendar_context.ingress",
+                writer="owner",
+            )
+            authored["pii_receipts"] = receipts
+            authored_by_key[(authored["entity_scope"], authored["calendar_fingerprint"])] = authored
+
+        existing_by_key = {
+            (row.entity_scope, row.calendar_fingerprint): row
+            for row in CalendarContext.objects.select_for_update().filter(tenant=locked_tenant)
+        }
+        CalendarContext.objects.filter(tenant=locked_tenant).exclude(
+            Q(
+                *[Q(entity_scope=scope, calendar_fingerprint=fingerprint) for scope, fingerprint in authored_by_key],
+                _connector=Q.OR,
+            )
+            if authored_by_key
+            else Q(pk__in=[])
+        ).delete()
+
+        comparable_fields = (
+            "included",
+            "container_title",
+            "source_title",
+            "source_type",
+            "context_note",
+        )
+        for key, authored in authored_by_key.items():
+            current = existing_by_key.get(key)
+            if current is None:
+                CalendarContext.objects.create(tenant=locked_tenant, **authored)
+                continue
+            if all(getattr(current, field) == authored[field] for field in comparable_fields):
+                continue
+            for field in comparable_fields:
+                setattr(current, field, authored[field])
+            current.pii_receipts = authored["pii_receipts"]
+            current.save(update_fields=[*comparable_fields, "pii_receipts", "updated_at"])
+
+        gateway.last_seen_at = timezone.now()
+        gateway.save(update_fields=["last_seen_at", "updated_at"])
+        return list(
+            CalendarContext.objects.filter(tenant=locked_tenant).order_by(
+                "entity_scope",
+                "calendar_fingerprint",
+            )
+        )
+
+
+def get_calendar_contexts(tenant, *, installation_id, gateway_epoch) -> list[CalendarContext]:
+    """Return the active gateway's authoritative restore set."""
+
+    installation_id = _installation_id(installation_id)
+    gateway_epoch = _positive_epoch(gateway_epoch)
+    with transaction.atomic():
+        locked_tenant = Tenant.objects.select_for_update().get(pk=tenant.pk)
+        gateway = _locked_active_gateway(locked_tenant)
+        _assert_gateway(gateway, installation_id=installation_id, gateway_epoch=gateway_epoch)
+        return list(
+            CalendarContext.objects.filter(tenant=locked_tenant).order_by(
+                "entity_scope",
+                "calendar_fingerprint",
+            )
+        )
 
 
 def disable_datebook(tenant, *, purge: bool) -> None:

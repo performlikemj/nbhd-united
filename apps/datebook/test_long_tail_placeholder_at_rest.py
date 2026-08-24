@@ -9,7 +9,7 @@ from django.test import TestCase
 from rest_framework.test import APIClient
 
 from .hashing import content_hash_v1, manifest_digest_v1
-from .models import DeviceCommand, MirrorEvent, MirrorReminder
+from .models import CalendarContext, DeviceCommand, MirrorEvent, MirrorReminder
 from .services import create_device_command
 from .tests import _ready_tenant, _reminder, _zoned_event
 
@@ -169,3 +169,37 @@ class DatebookLongTailPlaceholderTests(TestCase):
         self.assertEqual(command.payload["items"][0]["title"], "Exact Alice reminder")
         self.assertEqual(command.display_text, "Exact Alice display")
         self.assertEqual(command.pii_receipts["payload"], {"state": "bypass", "writer": "runtime"})
+
+    def test_calendar_context_owner_ingress_is_placeholder_at_rest_and_restore_rehydrates(self):
+        fingerprint = "d" * 64
+        payload = {
+            "installation_id": "install-a",
+            "gateway_epoch": self.epoch,
+            "calendars": [
+                {
+                    "calendar_fingerprint": fingerprint,
+                    "entity_scope": "event",
+                    "included": True,
+                    "container_title": "Alice family calendar",
+                    "source_title": "Alice iCloud",
+                    "source_type": "icloud",
+                    "context_note": "Shared with Alice — her events, not mine",
+                }
+            ],
+        }
+        with _checked_detection():
+            written = self.client.put("/api/v1/datebook/calendars/", payload, format="json")
+        self.assertEqual(written.status_code, 200, written.data)
+        stored = CalendarContext.objects.get(tenant=self.tenant)
+        self.assertEqual(stored.container_title, "[PERSON_1] family calendar")
+        self.assertEqual(stored.source_title, "[PERSON_1] iCloud")
+        self.assertEqual(stored.context_note, "Shared with [PERSON_1] — her events, not mine")
+        self.assertEqual(stored.pii_receipts["context_note"]["writer"], "owner")
+
+        restored = self.client.get(
+            "/api/v1/datebook/calendars/",
+            {"installation_id": "install-a", "gateway_epoch": self.epoch},
+        )
+        self.assertEqual(restored.status_code, 200, restored.data)
+        self.assertEqual(restored.data["calendars"][0]["container_title"], "Alice family calendar")
+        self.assertEqual(restored.data["calendars"][0]["context_note"], payload["calendars"][0]["context_note"])

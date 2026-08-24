@@ -224,6 +224,49 @@ class SourceType(models.TextChoices):
     OTHER = "other", "Other"
 
 
+class CalendarContext(models.Model):
+    """A non-default per-calendar inclusion or owner-authored context row."""
+
+    class EntityScope(models.TextChoices):
+        EVENT = "event", "Event"
+        REMINDER = "reminder", "Reminder"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        Tenant,
+        on_delete=models.CASCADE,
+        related_name="datebook_calendar_contexts",
+    )
+    entity_scope = models.CharField(max_length=16, choices=EntityScope.choices)
+    calendar_fingerprint = models.CharField(max_length=64)
+    included = models.BooleanField(default=True)
+    container_title = models.CharField(max_length=256, blank=True, default="")
+    source_title = models.CharField(max_length=256, blank=True, default="")
+    source_type = models.CharField(max_length=16, choices=SourceType.choices, default=SourceType.OTHER)
+    context_note = models.CharField(max_length=240, blank=True, default="")
+    pii_receipts = models.JSONField(default=dict, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "datebook_calendar_contexts"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["tenant", "entity_scope", "calendar_fingerprint"],
+                name="datebook_calendar_context_unique",
+            ),
+            models.CheckConstraint(
+                condition=Q(included=True) | Q(container_title="", source_title=""),
+                name="datebook_context_excluded_titles_empty",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["tenant", "entity_scope"],
+                name="datebook_context_scope_idx",
+            )
+        ]
+
+
 class TimeKind(models.TextChoices):
     ALL_DAY = "all_day", "All day"
     ZONED = "zoned", "Zoned"
@@ -278,6 +321,7 @@ class MirrorEvent(models.Model):
     external_id = models.CharField(max_length=255, blank=True, default="")
     series_id = models.CharField(max_length=255, blank=True, default="")
     source_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    calendar_fingerprint = models.CharField(max_length=64, blank=True, default="")
     source_type = models.CharField(max_length=16, choices=SourceType.choices, default=SourceType.OTHER)
     source_title = models.CharField(max_length=256, blank=True, default="")
     calendar_title = models.CharField(max_length=256, blank=True, default="")
@@ -405,6 +449,7 @@ class MirrorReminder(models.Model):
     external_id = models.CharField(max_length=255, blank=True, default="")
     series_id = models.CharField(max_length=255, blank=True, default="")
     source_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    calendar_fingerprint = models.CharField(max_length=64, blank=True, default="")
     source_type = models.CharField(max_length=16, choices=SourceType.choices, default=SourceType.OTHER)
     source_title = models.CharField(max_length=256, blank=True, default="")
     list_title = models.CharField(max_length=256, blank=True, default="")

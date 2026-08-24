@@ -8,7 +8,7 @@ from django.db.models import Q
 
 from apps.common.tenant_tz import tenant_today, tenant_tz
 
-from .models import DueKind, MirrorEvent, MirrorReminder, TimeKind
+from .models import CalendarContext, DueKind, MirrorEvent, MirrorReminder, TimeKind
 
 
 def agenda_window(tenant, *, days_back: int, days_ahead: int):
@@ -98,6 +98,7 @@ def _event_projection(event: MirrorEvent, tenant) -> tuple[datetime, dict]:
         "location": event.location,
         "notes": event.notes,
         "calendar_title": event.calendar_title,
+        "calendar_fingerprint": event.calendar_fingerprint,
         "source_title": event.source_title,
         "display_text": display_text,
         "authorization": event.authorization_status,
@@ -136,6 +137,7 @@ def _reminder_projection(reminder: MirrorReminder, tenant) -> tuple[datetime, di
         "location": reminder.location,
         "notes": reminder.notes,
         "list_title": reminder.list_title,
+        "calendar_fingerprint": reminder.calendar_fingerprint,
         "source_title": reminder.source_title,
         "display_text": display_text,
         "priority": reminder.priority,
@@ -209,3 +211,26 @@ def agenda_items(tenant, *, days_back: int, days_ahead: int, entity: str, limit:
     projected.sort(key=lambda item: (item[0], item[1]["entity"], item[1]["id"]))
     truncated = hit_bound or len(projected) > limit
     return [item for _sort, item in projected[:limit]], truncated
+
+
+def agenda_calendar_context(tenant, *, entity: str) -> list[dict]:
+    scopes = []
+    if entity in {"events", "both"}:
+        scopes.append(CalendarContext.EntityScope.EVENT)
+    if entity in {"reminders", "both"}:
+        scopes.append(CalendarContext.EntityScope.REMINDER)
+    rows = CalendarContext.objects.filter(
+        tenant=tenant,
+        included=True,
+        entity_scope__in=scopes,
+    ).exclude(context_note="")
+    return [
+        {
+            "calendar_fingerprint": row.calendar_fingerprint,
+            "entity_scope": row.entity_scope,
+            "container_title": row.container_title,
+            "source_title": row.source_title,
+            "context_note": row.context_note,
+        }
+        for row in rows.order_by("entity_scope", "calendar_fingerprint")
+    ]
