@@ -165,13 +165,20 @@ def _get_gateway_token(tenant: Tenant) -> str:
     return token
 
 
-def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+def invoke_gateway_tool(
+    tenant: Tenant,
+    tool: str,
+    args: dict[str, Any],
+    *,
+    error_log_level: int = logging.ERROR,
+) -> dict[str, Any]:
     """Call a tool on a tenant's OpenClaw Gateway.
 
     Posts to ``https://{fqdn}/tools/invoke`` with the tool name and arguments.
     Returns the ``result`` field from the Gateway response.
 
-    Raises ``GatewayError`` on failure.
+    Raises ``GatewayError`` on failure. Callers that verify and escalate their
+    own failures may lower ``error_log_level`` to avoid duplicate error events.
     """
     if not tenant.container_fqdn:
         raise GatewayError(f"Tenant {tenant.id} has no container FQDN")
@@ -258,7 +265,8 @@ def invoke_gateway_tool(tenant: Tenant, tool: str, args: dict[str, Any]) -> dict
                 status_code=resp.status_code,
                 unavailable=True,
             )
-        logger.error(
+        logger.log(
+            error_log_level,
             "Gateway %s.%s returned %s: %s",
             tool_name,
             action or "",
@@ -357,6 +365,7 @@ def cron_remove(
     cron_name: str | None = None,
     *,
     job_id: str | None = None,
+    error_log_level: int = logging.ERROR,
 ) -> None:
     """Remove a cron job using the OpenClaw job ID contract.
 
@@ -397,7 +406,12 @@ def cron_remove(
             raise GatewayError(f"Live cron {requested_name!r} is missing its job ID")
 
     try:
-        invoke_gateway_tool(tenant, "cron.remove", {"jobId": resolved_job_id})
+        invoke_gateway_tool(
+            tenant,
+            "cron.remove",
+            {"jobId": resolved_job_id},
+            error_log_level=error_log_level,
+        )
     except GatewayError as exc:
         # The gateway returns ok=false with "not found" when the cron is
         # already gone. Anything else is a real failure worth raising.

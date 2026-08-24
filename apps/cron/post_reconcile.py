@@ -143,7 +143,11 @@ def _sweep_ghost_jobs(
     for job_id, job in candidates[:_GHOST_SWEEP_LIMIT]:
         for attempt in (1, 2):
             try:
-                cron_remove(tenant, job_id=job_id)
+                cron_remove(
+                    tenant,
+                    job_id=job_id,
+                    error_log_level=logging.WARNING,
+                )
             except GatewayError as exc:
                 if attempt == 2 and _already_removed(exc):
                     swept += 1
@@ -189,7 +193,7 @@ def _sweep_ghost_jobs(
                     continue
 
                 failed += 1
-                logger.warning(
+                logger.error(
                     "cron_ghost_sweep_remove_failed tenant=%s job=%s name=%s status=%s attempt=%s/2",
                     tenant.id,
                     job_id,

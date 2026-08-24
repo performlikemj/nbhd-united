@@ -402,7 +402,12 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
         reaped_dup_ids: set[str] = set()
         for name, dup_id in dup_ids_to_remove:
             try:
-                invoke_gateway_tool(tenant, "cron.remove", {"jobId": dup_id})
+                invoke_gateway_tool(
+                    tenant,
+                    "cron.remove",
+                    {"jobId": dup_id},
+                    error_log_level=logging.WARNING,
+                )
                 summary["duplicates_reaped"] += 1
                 reaped_dup_ids.add(dup_id)
                 logger.info(
@@ -411,12 +416,56 @@ def regenerate_tenant_crons(tenant: Tenant) -> dict:
                     dup_id[:12],
                     tenant.id,
                 )
-            except GatewayError:
-                logger.warning(
-                    "regenerate_tenant_crons: cron.remove failed for duplicate %s on tenant %s",
+            except GatewayError as remove_exc:
+                try:
+                    verify_result = invoke_gateway_tool(
+                        tenant,
+                        "cron.list",
+                        {"includeDisabled": True},
+                    )
+                except GatewayError:
+                    logger.warning(
+                        "regenerate_tenant_crons: cron.remove verification failed for duplicate %s on tenant %s",
+                        dup_id[:12],
+                        tenant.id,
+                        exc_info=True,
+                    )
+                    summary["errors"] += 1
+                    continue
+
+                verify_jobs = _extract_cron_jobs(verify_result)
+                if verify_jobs is None:
+                    logger.error(
+                        "regenerate_tenant_crons: cron.remove failed for duplicate %s "
+                        "on tenant %s; verification returned an invalid cron.list response: %s",
+                        dup_id[:12],
+                        tenant.id,
+                        remove_exc,
+                    )
+                    summary["errors"] += 1
+                    continue
+
+                live_ids = {
+                    str(job.get("id") or job.get("jobId") or "") for job in verify_jobs if isinstance(job, dict)
+                }
+                if dup_id not in live_ids:
+                    summary["duplicates_reaped"] += 1
+                    reaped_dup_ids.add(dup_id)
+                    logger.info(
+                        "regenerate_tenant_crons: duplicate '%s' (id %s) converged — "
+                        "removed by concurrent sweep for tenant %s",
+                        name,
+                        dup_id[:12],
+                        tenant.id,
+                    )
+                    continue
+
+                logger.error(
+                    "regenerate_tenant_crons: cron.remove failed for duplicate %s "
+                    "on tenant %s; job remains live after verification: %s",
                     dup_id[:12],
                     tenant.id,
-                    exc_info=True,
+                    remove_exc,
                 )
                 summary["errors"] += 1
         # Rebuild current_jobs minus the just-removed dupes so the rest of

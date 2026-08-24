@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from io import StringIO
 from unittest.mock import call, patch
 
@@ -121,8 +122,18 @@ class RetireQuarantinedCommandTests(TestCase):
         self.assertEqual(
             mock_gateway.call_args_list,
             [
-                call(self.tenant, "cron.remove", {"jobId": "id-1"}),
-                call(self.tenant, "cron.remove", {"jobId": "id-2"}),
+                call(
+                    self.tenant,
+                    "cron.remove",
+                    {"jobId": "id-1"},
+                    error_log_level=logging.ERROR,
+                ),
+                call(
+                    self.tenant,
+                    "cron.remove",
+                    {"jobId": "id-2"},
+                    error_log_level=logging.ERROR,
+                ),
             ],
         )
         for gateway_call in mock_gateway.call_args_list:
