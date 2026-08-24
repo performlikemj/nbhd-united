@@ -34,6 +34,7 @@ class StoreRegistryTests(SimpleTestCase):
                 "datebook.MirrorReminder",
                 "datebook.DeviceCommand",
                 "datebook.DatebookDestinationDefault",
+                "datebook.CalendarContext",
                 "finance.FinanceAccount",
                 "finance.FinanceTransaction",
                 "finance.PayoffPlan",
@@ -147,6 +148,10 @@ class StoreRegistryTests(SimpleTestCase):
                 ),
             ),
             "datebook.DatebookDestinationDefault": (("name",), ()),
+            "datebook.CalendarContext": (
+                ("container_title", "source_title", "context_note"),
+                (),
+            ),
             "finance.FinanceAccount": (("nickname",), ()),
             "finance.FinanceTransaction": (("description",), ()),
             "finance.PayoffPlan": ((), ("schedule_json.**",)),

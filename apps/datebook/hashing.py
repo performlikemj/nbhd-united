@@ -129,6 +129,12 @@ def _common(item: dict, *, calendar_field: str) -> tuple[dict, dict]:
     read_only = item.get("is_read_only")
     if not isinstance(read_only, bool):
         _fail("invalid_read_only")
+    calendar_fingerprint = _bounded_identifier(
+        item.get("calendar_fingerprint"),
+        limit=FINGERPRINT_MAX,
+    )
+    if calendar_fingerprint and HASH_RE.fullmatch(calendar_fingerprint) is None:
+        _fail("invalid_calendar_fingerprint")
 
     stage = {
         "source_key": source_key,
@@ -139,6 +145,9 @@ def _common(item: dict, *, calendar_field: str) -> tuple[dict, dict]:
             required=True,
             limit=FINGERPRINT_MAX,
         ),
+        # Stable calendar identity is stored for agenda/context joins, but is
+        # intentionally absent from ``semantic`` below. Older clients may omit it.
+        "calendar_fingerprint": calendar_fingerprint,
         "source_type": source_type,
         "source_title": normalize_text(item.get("source_title"), TITLE_MAX),
         calendar_field: normalize_text(item.get(calendar_field), TITLE_MAX),
