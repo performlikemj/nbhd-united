@@ -8,10 +8,14 @@ on:
   # pushes don't gate anything. Without this scope every force-push to
   # a PR'd branch fires CI twice (once per event), doubling compute
   # and slowing both runs by competing for runners.
+  # merge_group runs the three test jobs on the queue's temporary branch so
+  # the merge queue can gate merges on them. Deploy jobs remain excluded
+  # because they require github.event_name == 'push'.
   push:
     branches: ['main']
   pull_request:
     branches: ['**']
+  merge_group:
   workflow_dispatch:
     # One-shot fleet rollout knobs. Default false on every dispatch — these
     # ops are intended to run once after PR #434 ships and then never again.
