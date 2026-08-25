@@ -269,12 +269,22 @@ class GatePollView(APIView):
         # Check for expiry — datebook gates use their locked typed transition;
         # generic gates retain the existing conditional update contract.
         if action.is_expired:
+            from apps.cron.gate import expire_cron_action, is_cron_action_type
             from apps.datebook.gate import datebook_action_state, is_datebook_action_type
 
             if is_datebook_action_type(action.action_type):
                 datebook_state = datebook_action_state(action)
                 action.refresh_from_db()
                 updated = datebook_state["state"] == "stale_review"
+            elif is_cron_action_type(action.action_type):
+                with transaction.atomic():
+                    locked = PendingAction.objects.select_for_update().select_related("tenant").get(pk=action.pk)
+                    if locked.status == ActionStatus.PENDING and locked.expires_at < timezone.now():
+                        expire_cron_action(locked)
+                        updated = True
+                    else:
+                        updated = False
+                    action = locked
             else:
                 updated = PendingAction.objects.filter(
                     id=action.id,

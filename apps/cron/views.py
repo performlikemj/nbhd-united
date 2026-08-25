@@ -114,6 +114,9 @@ TASK_MAP = {
     # are cleared. GatePollView expires lazily on poll, but abandoned actions
     # (container never polls again) need this backstop. See apps/actions/tasks.py.
     "expire_stale_actions": "apps.actions.tasks.expire_stale_pending_actions",
+    # Every-five-minute replay for cron approval outbox rows whose post-commit
+    # callback was lost to process death or a transaction callback failure.
+    "replay_cron_dispatches": "apps.actions.tasks.replay_stale_cron_dispatches",
     # PR #1.6: hourly OR-spend truing-up (per-tenant + platform).
     "reconcile_openrouter_spend": "apps.billing.tasks.reconcile_openrouter_spend_task",
     # Journal memory sync (on-demand via signal or QStash publish)

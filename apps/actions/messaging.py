@@ -57,7 +57,7 @@ def _result_label(action: PendingAction) -> tuple[str, str]:
     if action.status == ActionStatus.APPROVED and _is_cron_create(action):
         if action.resolution_code == "executed":
             return "✅", "CREATED"
-        if action.resolution_code.startswith("create_failed") or action.resolution_code == "dispatch_failed":
+        if action.resolution_code.startswith(("create_failed", "dispatch_failed")):
             return "⚠️", f"APPROVED — CREATION FAILED ({action.resolution_code})"
         return "⏳", "APPROVED — CREATION QUEUED"
     if action.status == ActionStatus.APPROVED:

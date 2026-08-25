@@ -44,6 +44,13 @@ class ActionAuditOutcome(models.TextChoices):
     AMBIGUOUS = "ambiguous", "Ambiguous"
 
 
+class CronDispatchState(models.TextChoices):
+    QUEUED = "queued", "Queued"
+    DISPATCHING = "dispatching", "Dispatching"
+    EXECUTED = "executed", "Executed"
+    FAILED = "failed", "Failed"
+
+
 def default_expires_at():
     return timezone.now() + timedelta(minutes=5)
 
@@ -209,6 +216,13 @@ class CronDispatch(models.Model):
         related_name="approval_dispatch",
     )
     kind = models.CharField(max_length=8)
+    state = models.CharField(
+        max_length=16,
+        choices=CronDispatchState.choices,
+        default=CronDispatchState.QUEUED,
+    )
+    attempts = models.PositiveSmallIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):

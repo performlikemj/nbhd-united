@@ -14,11 +14,13 @@ from apps.actions.models import (
     ActionStatus,
     ActionType,
     CronDispatch,
+    CronDispatchState,
     GatePreference,
     PendingAction,
 )
 from apps.actions.origin import OriginStamp
 from apps.actions.services import should_auto_approve
+from apps.actions.tasks import expire_stale_pending_actions, replay_stale_cron_dispatches
 from apps.actions.views import GateRespondView
 from apps.cron.models import CronJob
 from apps.cron.services import TypedCronError
@@ -31,6 +33,7 @@ from .gate import (
     CronGateConflict,
     approve_cron_action,
     cron_gate_enabled,
+    dispatch_cron_action,
     request_cron_action,
 )
 
@@ -57,6 +60,16 @@ class CronGateServiceTests(TestCase):
         values.update(overrides)
         with patch("apps.actions.messaging.send_gate_confirmation", return_value=True):
             return request_cron_action(self.tenant, **values)
+
+    def _approve_without_callback(self, action):
+        with self.captureOnCommitCallbacks(execute=False):
+            GateRespondView.resolve_action(
+                action_id=action.id,
+                response_action="approve",
+                tenant=self.tenant,
+            )
+        action.refresh_from_db()
+        return CronDispatch.objects.select_related("action", "cron").get(action=action)
 
     def test_review_always_even_when_global_gate_and_preference_are_off(self):
         self.tenant.gate_all_actions = False
@@ -216,6 +229,220 @@ class CronGateServiceTests(TestCase):
         self.assertEqual(action.resolution_code, "dispatch_failed")
         self.assertFalse(CronJob.objects.filter(tenant=self.tenant, name="At failure", enabled=True).exists())
 
+    def test_crash_window_sweeper_executes_committed_dispatch_exactly_once(self):
+        action = PendingAction.objects.get(pk=self._request(request_id="crash-window")["action_id"])
+        dispatch = self._approve_without_callback(action)
+        CronDispatch.objects.filter(pk=dispatch.pk).update(created_at=timezone.now() - timedelta(minutes=6))
+
+        with (
+            patch("apps.cron.signals._enqueue_regen", return_value=True) as enqueue,
+            patch("apps.actions.messaging.update_gate_message"),
+            patch("apps.datebook.notify.dispatch_datebook_gate_changed"),
+        ):
+            first = replay_stale_cron_dispatches()
+            second = replay_stale_cron_dispatches()
+
+        dispatch.refresh_from_db()
+        self.assertEqual(first, "Cron dispatch replayed 1: executed=1 failed=0 queued=0 busy=0")
+        self.assertEqual(second, "Cron dispatch replayed 0: executed=0 failed=0 queued=0 busy=0")
+        self.assertEqual(dispatch.state, CronDispatchState.EXECUTED)
+        self.assertEqual(dispatch.attempts, 1)
+        enqueue.assert_called_once_with(str(self.tenant.id))
+        self.assertEqual(
+            ActionAuditLog.objects.filter(
+                tenant=self.tenant,
+                result=ActionAuditOutcome.EXECUTED,
+                responded_at=action.responded_at,
+            ).count(),
+            1,
+        )
+
+    def test_recent_dispatching_claim_is_a_double_run_guard(self):
+        action = PendingAction.objects.get(pk=self._request(request_id="double-run")["action_id"])
+        dispatch = self._approve_without_callback(action)
+        CronDispatch.objects.filter(pk=dispatch.pk).update(
+            state=CronDispatchState.DISPATCHING,
+            attempts=1,
+            last_attempt_at=timezone.now(),
+        )
+
+        with patch("apps.cron.signals._enqueue_regen") as enqueue:
+            state = dispatch_cron_action(dispatch.id)
+
+        self.assertEqual(state, "busy")
+        enqueue.assert_not_called()
+
+    def test_stale_at_claim_verifies_cron_list_before_readding(self):
+        action = PendingAction.objects.get(
+            pk=self._request(
+                request_id="stale-at",
+                name="Stale at",
+                schedule={"kind": "at", "at": (timezone.now() + timedelta(hours=1)).isoformat()},
+            )["action_id"]
+        )
+        dispatch = self._approve_without_callback(action)
+        CronDispatch.objects.filter(pk=dispatch.pk).update(
+            state=CronDispatchState.DISPATCHING,
+            attempts=1,
+            last_attempt_at=timezone.now() - timedelta(minutes=11),
+        )
+        with patch(
+            "apps.cron.gateway_client.invoke_gateway_tool",
+            return_value={"details": {"jobs": [{"id": "already-live", "name": "Stale at"}]}},
+        ) as gateway:
+            state = dispatch_cron_action(dispatch.id)
+
+        self.assertEqual(state, CronDispatchState.EXECUTED)
+        gateway.assert_called_once_with(self.tenant, "cron.list", {"includeDisabled": True})
+        dispatch.cron.refresh_from_db()
+        self.assertEqual(dispatch.cron.gateway_job_id, "already-live")
+
+    def test_failed_at_verification_retains_attempt_marker(self):
+        action = PendingAction.objects.get(
+            pk=self._request(
+                request_id="stale-at-list-failure",
+                name="Unverifiable at",
+                schedule={"kind": "at", "at": (timezone.now() + timedelta(hours=1)).isoformat()},
+            )["action_id"]
+        )
+        dispatch = self._approve_without_callback(action)
+        CronDispatch.objects.filter(pk=dispatch.pk).update(
+            state=CronDispatchState.DISPATCHING,
+            attempts=1,
+            last_attempt_at=timezone.now() - timedelta(minutes=11),
+        )
+
+        with patch(
+            "apps.cron.gateway_client.invoke_gateway_tool",
+            side_effect=RuntimeError("cron.list unavailable"),
+        ) as gateway:
+            state = dispatch_cron_action(dispatch.id)
+
+        dispatch.refresh_from_db()
+        self.assertEqual(state, CronDispatchState.QUEUED)
+        self.assertEqual(dispatch.state, CronDispatchState.DISPATCHING)
+        self.assertEqual(dispatch.attempts, 2)
+        gateway.assert_called_once_with(self.tenant, "cron.list", {"includeDisabled": True})
+
+        with patch("apps.cron.gateway_client.invoke_gateway_tool") as gateway:
+            self.assertEqual(dispatch_cron_action(dispatch.id), "busy")
+        gateway.assert_not_called()
+
+    def test_exhausted_dispatch_is_failed_and_disabled_by_sweeper(self):
+        action = PendingAction.objects.get(pk=self._request(request_id="exhausted")["action_id"])
+        dispatch = self._approve_without_callback(action)
+        CronDispatch.objects.filter(pk=dispatch.pk).update(
+            attempts=5,
+            created_at=timezone.now() - timedelta(minutes=6),
+        )
+
+        with (
+            patch("apps.cron.signals._enqueue_regen") as enqueue,
+            patch("apps.actions.messaging.update_gate_message"),
+            patch("apps.datebook.notify.dispatch_datebook_gate_changed"),
+        ):
+            summary = replay_stale_cron_dispatches()
+
+        dispatch.refresh_from_db()
+        dispatch.cron.refresh_from_db()
+        action.refresh_from_db()
+        enqueue.assert_not_called()
+        self.assertEqual(summary, "Cron dispatch replayed 1: executed=0 failed=1 queued=0 busy=0")
+        self.assertEqual(dispatch.state, CronDispatchState.FAILED)
+        self.assertFalse(dispatch.cron.enabled)
+        self.assertEqual(action.resolution_code, "dispatch_failed:exhausted")
+        self.assertTrue(
+            ActionAuditLog.objects.filter(
+                tenant=self.tenant,
+                result=ActionAuditOutcome.FAILED,
+                detail_code="dispatch_failed:exhausted",
+            ).exists()
+        )
+
+    def test_recurring_dispatch_retries_enqueue_once_then_executes(self):
+        action = PendingAction.objects.get(pk=self._request(request_id="regen-retry")["action_id"])
+        with (
+            patch("apps.cron.signals._enqueue_regen", side_effect=[False, True]) as enqueue,
+            patch("apps.datebook.notify.dispatch_datebook_gate_changed"),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            GateRespondView.resolve_action(
+                action_id=action.id,
+                response_action="approve",
+                tenant=self.tenant,
+            )
+
+        dispatch = CronDispatch.objects.get(action=action)
+        self.assertEqual(dispatch.state, CronDispatchState.EXECUTED)
+        self.assertTrue(dispatch.cron.enabled)
+        self.assertEqual(enqueue.call_count, 2)
+
+    def test_recurring_dispatch_disables_after_two_enqueue_failures(self):
+        action = PendingAction.objects.get(pk=self._request(request_id="regen-failed")["action_id"])
+        with (
+            patch("apps.cron.signals._enqueue_regen", return_value=False) as enqueue,
+            patch("apps.datebook.notify.dispatch_datebook_gate_changed"),
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            GateRespondView.resolve_action(
+                action_id=action.id,
+                response_action="approve",
+                tenant=self.tenant,
+            )
+
+        dispatch = CronDispatch.objects.get(action=action)
+        action.refresh_from_db()
+        self.assertEqual(dispatch.state, CronDispatchState.FAILED)
+        self.assertFalse(dispatch.cron.enabled)
+        self.assertEqual(action.resolution_code, "dispatch_failed")
+        self.assertEqual(enqueue.call_count, 2)
+
+    def test_expiry_sweeper_uses_typed_cron_transition(self):
+        action = PendingAction.objects.create(
+            tenant=self.tenant,
+            action_type=ActionType.CRON_CREATE,
+            action_payload={},
+            display_summary="Expired cron",
+            expires_at=timezone.now() - timedelta(seconds=1),
+        )
+        with (
+            patch("apps.actions.messaging.update_gate_message"),
+            patch("apps.datebook.notify.dispatch_datebook_gate_changed") as changed,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            summary = expire_stale_pending_actions()
+
+        action.refresh_from_db()
+        self.assertEqual(summary, "Expired 1 actions")
+        self.assertEqual(action.status, ActionStatus.EXPIRED)
+        self.assertIsNotNone(action.responded_at)
+        self.assertEqual(action.resolution_code, ActionStatus.EXPIRED)
+        self.assertTrue(
+            ActionAuditLog.objects.filter(
+                tenant=self.tenant,
+                result=ActionAuditOutcome.EXPIRED,
+                detail_code=ActionStatus.EXPIRED,
+            ).exists()
+        )
+        changed.assert_called_once_with(self.tenant.id)
+
+    def test_replay_sweeper_is_registered_every_five_minutes(self):
+        from apps.cron.management.commands.register_system_crons import SYSTEM_CRONS
+        from apps.cron.views import TASK_MAP
+
+        self.assertEqual(
+            TASK_MAP["replay_cron_dispatches"],
+            "apps.actions.tasks.replay_stale_cron_dispatches",
+        )
+        self.assertIn(
+            (
+                "replay-cron-dispatches",
+                "*/5 * * * *",
+                "/api/cron/trigger/replay_cron_dispatches/",
+            ),
+            SYSTEM_CRONS,
+        )
+
     def test_no_channel_keeps_pending_for_72_hours(self):
         self.tenant.user.telegram_chat_id = None
         self.tenant.user.line_user_id = None
@@ -320,6 +547,42 @@ class CronGateRuntimeAndConsumerTests(TestCase):
             self.assertFalse(cron_gate_enabled(self.tenant))
         with override_settings(CRON_GATE_TENANT_IDS=str(self.tenant.id)):
             self.assertTrue(cron_gate_enabled(self.tenant))
+
+    def test_poll_expiry_uses_typed_cron_transition(self):
+        action = PendingAction.objects.create(
+            tenant=self.tenant,
+            action_type=ActionType.CRON_CREATE,
+            action_payload={},
+            display_summary="Expired polled cron",
+            expires_at=timezone.now() - timedelta(seconds=1),
+        )
+        poll_url = f"/api/v1/internal/runtime/{self.tenant.id}/gate/{action.id}/poll/"
+
+        with (
+            patch("apps.actions.messaging.update_gate_message"),
+            patch("apps.datebook.notify.dispatch_datebook_gate_changed") as changed,
+            self.captureOnCommitCallbacks(execute=True),
+        ):
+            response = self.client.get(
+                poll_url,
+                HTTP_X_INTERNAL_KEY="cron-gate-key",
+                HTTP_X_TENANT_ID=str(self.tenant.id),
+            )
+
+        action.refresh_from_db()
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data, {"action_id": action.id, "status": ActionStatus.EXPIRED})
+        self.assertIsNotNone(action.responded_at)
+        self.assertEqual(action.resolution_code, ActionStatus.EXPIRED)
+        self.assertTrue(
+            ActionAuditLog.objects.filter(
+                tenant=self.tenant,
+                result=ActionAuditOutcome.EXPIRED,
+                detail_code=ActionStatus.EXPIRED,
+                responded_at=action.responded_at,
+            ).exists()
+        )
+        changed.assert_called_once_with(self.tenant.id)
 
     def test_default_list_is_old_shape_and_include_adds_datebook_first_with_origin(self):
         datebook = PendingAction.objects.create(

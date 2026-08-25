@@ -12,10 +12,12 @@ from django.db import IntegrityError, transaction
 from django.utils import timezone
 
 from apps.actions.models import (
+    ActionAuditLog,
     ActionAuditOutcome,
     ActionStatus,
     ActionType,
     CronDispatch,
+    CronDispatchState,
     PendingAction,
 )
 from apps.actions.origin import OriginStamp
@@ -34,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 CRON_GATE_REVIEW_WINDOW = timedelta(hours=72)
 CRON_DUPLICATE_WINDOW = timedelta(minutes=2)
+CRON_DISPATCH_LEASE = timedelta(minutes=10)
+CRON_DISPATCH_MAX_ATTEMPTS = 5
 CRON_ACTION_TYPES = frozenset({ActionType.CRON_CREATE})
 
 
@@ -41,6 +45,10 @@ class CronGateConflict(Exception):
     def __init__(self, code: str):
         super().__init__(code)
         self.code = code
+
+
+class CronDispatchVerificationError(Exception):
+    """A stale at-dispatch could not prove whether cron.add already landed."""
 
 
 def cron_gate_enabled(tenant: Tenant) -> bool:
@@ -208,7 +216,7 @@ def cron_action_state(action: PendingAction) -> dict:
             "summary": _rehydrated_summary(action),
         }
     if action.status == ActionStatus.APPROVED:
-        failed = action.resolution_code.startswith("create_failed") or action.resolution_code == "dispatch_failed"
+        failed = action.resolution_code.startswith(("create_failed", "dispatch_failed"))
         execution = "failed" if failed else "executed" if action.resolution_code == "executed" else "queued"
         return {"status": action.status, "execution": execution, "code": action.resolution_code if failed else ""}
     return {
@@ -371,65 +379,236 @@ def approve_cron_action(action: PendingAction, *, responded_at=None) -> dict:
         kind=validated.schedule["kind"],
     )
     response = {"status": ActionStatus.APPROVED, "execution": "queued", "code": ""}
-    transaction.on_commit(lambda: dispatch_cron_action(dispatch.id, response=response))
+    transaction.on_commit(lambda: dispatch_cron_action(dispatch.id, response=response), robust=True)
     _schedule_gate_changed(action)
     return response
 
 
-def dispatch_cron_action(dispatch_id: int, *, response: dict | None = None) -> None:
-    """Post-commit external dispatch followed by the independent Txn B audit."""
+def _terminal_dispatch_audit(action: PendingAction):
+    if action.responded_at is None:
+        return None
+    return (
+        ActionAuditLog.objects.filter(
+            tenant_id=action.tenant_id,
+            action_type=ActionType.CRON_CREATE,
+            responded_at=action.responded_at,
+            result__in=(ActionAuditOutcome.EXECUTED, ActionAuditOutcome.FAILED),
+        )
+        .order_by("-id")
+        .first()
+    )
 
-    failure_code = ""
-    try:
-        dispatch = CronDispatch.objects.select_related("action__tenant", "cron").get(pk=dispatch_id)
-        action = dispatch.action
-        cron = dispatch.cron
-        if dispatch.kind == "at":
-            from apps.cron.gateway_client import invoke_gateway_tool
 
-            result = invoke_gateway_tool(action.tenant, "cron.add", {"job": cron.data})
-            details = result.get("details", result) if isinstance(result, dict) else {}
-            gateway_job_id = str(details.get("id") or details.get("jobId") or "") if isinstance(details, dict) else ""
-            if not gateway_job_id:
-                raise RuntimeError("cron.add returned no job id")
-            CronJob.objects.filter(pk=cron.pk).update(gateway_job_id=gateway_job_id)
-        elif getattr(action.tenant, "postgres_cron_canonical", False):
-            from apps.cron.signals import _enqueue_regen
+def _set_dispatch_response(response: dict | None, state: str, code: str = "") -> None:
+    if response is None:
+        return
+    response.update(
+        execution=(
+            "executed"
+            if state == CronDispatchState.EXECUTED
+            else "failed"
+            if state == CronDispatchState.FAILED
+            else "queued"
+        ),
+        code=code,
+    )
 
-            if not _enqueue_regen(str(action.tenant_id)):
-                raise RuntimeError("reconcile enqueue failed")
-    except Exception:
-        failure_code = "dispatch_failed"
-        logger.warning("cron approval dispatch failed dispatch=%s", dispatch_id, exc_info=True)
+
+def _finish_dispatch_claim(dispatch_id: int, attempt: int, *, failure_code: str = "") -> str:
+    """Txn B: CAS the claimed attempt into one immutable terminal outcome."""
 
     with transaction.atomic():
         dispatch = CronDispatch.objects.select_related("action", "cron").select_for_update().get(pk=dispatch_id)
+        if dispatch.state != CronDispatchState.DISPATCHING or dispatch.attempts != attempt:
+            return dispatch.state
+
         action = dispatch.action
         if failure_code:
-            if dispatch.kind == "at":
-                CronJob.objects.filter(pk=dispatch.cron_id).update(enabled=False)
+            CronJob.objects.filter(pk=dispatch.cron_id).update(enabled=False)
+            dispatch.state = CronDispatchState.FAILED
             action.resolution_code = failure_code
-            action.save(update_fields=["resolution_code"])
+            audit_outcome = ActionAuditOutcome.FAILED
+        else:
+            dispatch.state = CronDispatchState.EXECUTED
+            action.resolution_code = ActionAuditOutcome.EXECUTED
+            audit_outcome = ActionAuditOutcome.EXECUTED
+
+        dispatch.save(update_fields=["state"])
+        action.save(update_fields=["resolution_code"])
+        if _terminal_dispatch_audit(action) is None:
             record_action_audit(
                 action,
-                ActionAuditOutcome.FAILED,
+                audit_outcome,
                 responded_at=action.responded_at,
                 detail_code=failure_code,
             )
-        else:
-            action.resolution_code = ActionAuditOutcome.EXECUTED
-            action.save(update_fields=["resolution_code"])
-            record_action_audit(
-                action,
-                ActionAuditOutcome.EXECUTED,
-                responded_at=action.responded_at,
-            )
+        return dispatch.state
 
-    if response is not None:
-        response.update(
-            execution="failed" if failure_code else "executed",
-            code=failure_code,
+
+def _claim_dispatch(dispatch_id: int) -> tuple[int, bool] | tuple[None, str]:
+    """Claim one queued/stale row without holding a lock across I/O."""
+
+    now = timezone.now()
+    with transaction.atomic():
+        dispatch = CronDispatch.objects.select_related("action", "cron").select_for_update().get(pk=dispatch_id)
+        if dispatch.state in (CronDispatchState.EXECUTED, CronDispatchState.FAILED):
+            return None, dispatch.state
+
+        terminal = _terminal_dispatch_audit(dispatch.action)
+        if terminal is not None:
+            dispatch.state = (
+                CronDispatchState.EXECUTED
+                if terminal.result == ActionAuditOutcome.EXECUTED
+                else CronDispatchState.FAILED
+            )
+            dispatch.save(update_fields=["state"])
+            return None, dispatch.state
+
+        stale_claim = dispatch.state == CronDispatchState.DISPATCHING
+        if (
+            stale_claim
+            and dispatch.last_attempt_at is not None
+            and dispatch.last_attempt_at > now - CRON_DISPATCH_LEASE
+        ):
+            return None, "busy"
+        if dispatch.attempts >= CRON_DISPATCH_MAX_ATTEMPTS:
+            state = _finish_dispatch_claim_locked(dispatch, "dispatch_failed:exhausted")
+            return None, state
+
+        dispatch.state = CronDispatchState.DISPATCHING
+        dispatch.attempts += 1
+        dispatch.last_attempt_at = now
+        dispatch.save(update_fields=["state", "attempts", "last_attempt_at"])
+        return dispatch.attempts, stale_claim
+
+
+def _finish_dispatch_claim_locked(dispatch: CronDispatch, failure_code: str) -> str:
+    """Terminalize a row already locked by the caller."""
+
+    CronJob.objects.filter(pk=dispatch.cron_id).update(enabled=False)
+    dispatch.state = CronDispatchState.FAILED
+    dispatch.save(update_fields=["state"])
+    action = dispatch.action
+    action.resolution_code = failure_code
+    action.save(update_fields=["resolution_code"])
+    if _terminal_dispatch_audit(action) is None:
+        record_action_audit(
+            action,
+            ActionAuditOutcome.FAILED,
+            responded_at=action.responded_at,
+            detail_code=failure_code,
         )
+    return dispatch.state
+
+
+def _release_at_verification_claim(dispatch_id: int, attempt: int) -> tuple[str, str]:
+    """Keep an unverifiable at-dispatch leased for another verified retry."""
+
+    with transaction.atomic():
+        dispatch = CronDispatch.objects.select_related("action", "cron").select_for_update().get(pk=dispatch_id)
+        if dispatch.state != CronDispatchState.DISPATCHING or dispatch.attempts != attempt:
+            return dispatch.state, dispatch.action.resolution_code
+        if dispatch.attempts >= CRON_DISPATCH_MAX_ATTEMPTS:
+            code = "dispatch_failed:exhausted"
+            return _finish_dispatch_claim_locked(dispatch, code), code
+        # Do not put an attempted at-job back into QUEUED: a later claim would
+        # treat it as a first attempt and could cron.add without cron.list.
+        # Retaining DISPATCHING makes the lease the double-push guard and every
+        # later attempt re-verifies the gateway before considering cron.add.
+        return CronDispatchState.QUEUED, ""
+
+
+def _listed_at_gateway_job(result, cron: CronJob) -> tuple[bool, str]:
+    details = result.get("details", result) if isinstance(result, dict) else None
+    jobs = details.get("jobs") if isinstance(details, dict) else None
+    if not isinstance(jobs, list):
+        raise RuntimeError("cron.list returned an invalid jobs payload")
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        job_id = str(job.get("id") or job.get("jobId") or "")[:64]
+        if (cron.gateway_job_id and job_id == cron.gateway_job_id) or job.get("name") == cron.name:
+            return True, job_id
+    return False, ""
+
+
+def _dispatch_claimed_cron(dispatch: CronDispatch, *, stale_claim: bool) -> str:
+    action = dispatch.action
+    cron = dispatch.cron
+    if dispatch.kind == "at":
+        from apps.cron.gateway_client import invoke_gateway_tool
+
+        if stale_claim:
+            try:
+                listed, gateway_job_id = _listed_at_gateway_job(
+                    invoke_gateway_tool(action.tenant, "cron.list", {"includeDisabled": True}),
+                    cron,
+                )
+            except Exception as exc:
+                raise CronDispatchVerificationError from exc
+            if listed:
+                if gateway_job_id:
+                    CronJob.objects.filter(pk=cron.pk).update(gateway_job_id=gateway_job_id)
+                return ""
+        result = invoke_gateway_tool(action.tenant, "cron.add", {"job": cron.data})
+        details = result.get("details", result) if isinstance(result, dict) else {}
+        gateway_job_id = str(details.get("id") or details.get("jobId") or "") if isinstance(details, dict) else ""
+        if not gateway_job_id:
+            raise RuntimeError("cron.add returned no job id")
+        CronJob.objects.filter(pk=cron.pk).update(gateway_job_id=gateway_job_id[:64])
+    elif getattr(action.tenant, "postgres_cron_canonical", False):
+        from apps.cron.signals import _enqueue_regen
+
+        if not _enqueue_regen(str(action.tenant_id)) and not _enqueue_regen(str(action.tenant_id)):
+            raise RuntimeError("reconcile enqueue failed twice")
+    return ""
+
+
+def dispatch_cron_action(dispatch_id: int, *, response: dict | None = None) -> str:
+    """Claim, dispatch outside a transaction, then persist Txn B outcome."""
+
+    try:
+        attempt, claim_state = _claim_dispatch(dispatch_id)
+    except Exception:
+        logger.warning("cron approval dispatch claim failed dispatch=%s", dispatch_id, exc_info=True)
+        _set_dispatch_response(response, CronDispatchState.QUEUED)
+        return CronDispatchState.QUEUED
+    if attempt is None:
+        state = claim_state
+        code = ""
+        if state == CronDispatchState.FAILED:
+            code = (
+                CronDispatch.objects.filter(pk=dispatch_id).values_list("action__resolution_code", flat=True).first()
+                or "dispatch_failed"
+            )
+        _set_dispatch_response(response, state, code)
+        return state
+
+    dispatch = CronDispatch.objects.select_related("action__tenant", "cron").get(pk=dispatch_id)
+    try:
+        _dispatch_claimed_cron(dispatch, stale_claim=claim_state)
+    except CronDispatchVerificationError:
+        if dispatch.kind == "at" and claim_state:
+            logger.warning("stale at-cron dispatch could not be verified dispatch=%s", dispatch_id, exc_info=True)
+            state, code = _release_at_verification_claim(dispatch_id, attempt)
+            _set_dispatch_response(response, state, code)
+            return state
+        raise
+    except Exception:
+        logger.warning("cron approval dispatch failed dispatch=%s", dispatch_id, exc_info=True)
+        failure_code = "dispatch_failed"
+    else:
+        failure_code = ""
+
+    try:
+        state = _finish_dispatch_claim(dispatch_id, attempt, failure_code=failure_code)
+    except Exception:
+        logger.warning("cron approval dispatch Txn B failed dispatch=%s", dispatch_id, exc_info=True)
+        _set_dispatch_response(response, CronDispatchState.QUEUED)
+        return CronDispatchState.QUEUED
+
+    _set_dispatch_response(response, state, failure_code)
+    return state
 
 
 def deny_cron_action(action: PendingAction, *, responded_at=None) -> dict:
