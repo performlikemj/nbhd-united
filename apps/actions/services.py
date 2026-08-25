@@ -8,7 +8,7 @@ from apps.tenants.models import Tenant
 
 from .models import ActionAuditLog, GatePreference, PendingAction
 
-DATEBOOK_REVIEW_ALWAYS_ACTION_TYPES = frozenset({"calendar_create", "reminder_create"})
+DATEBOOK_REVIEW_ALWAYS_ACTION_TYPES = frozenset({"calendar_create", "reminder_create", "cron_create"})
 
 
 def should_auto_approve(tenant: Tenant, action_type: str) -> bool:

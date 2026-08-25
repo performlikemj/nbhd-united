@@ -15,6 +15,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_date, parse_datetime
 
 from apps.actions.models import ActionAuditOutcome, ActionStatus, ActionType, PendingAction
+from apps.actions.origin import OriginStamp
 from apps.actions.services import record_action_audit
 from apps.common.eval_sink import suppresses_real_transport
 from apps.pii.store_authoring import author_store_fields, owner_store_representation
@@ -726,6 +727,7 @@ def request_datebook_action(
     display_summary: str,
     direct_user_originated: bool,
     originating_channel: str | None = None,
+    origin_stamp: OriginStamp | None = None,
 ) -> dict:
     """Create an idempotent gate bounded by 24 hours and the batch's earliest target."""
 
@@ -741,6 +743,7 @@ def request_datebook_action(
         raise _create_db_unavailable(tenant, exc) from exc
 
     reserved_command_id = uuid.uuid4()
+    origin_stamp = origin_stamp or OriginStamp()
     app_review_available = originating_channel == "app" and not suppresses_real_transport(tenant)
     try:
         with datebook_create_db_budget():
@@ -794,6 +797,9 @@ def request_datebook_action(
                 originating_channel=originating_channel or "",
                 platform_channel="app" if app_review_available else "",
                 delivery_state="available" if app_review_available else "",
+                origin_kind=origin_stamp.kind,
+                origin_cron_name=origin_stamp.cron_name,
+                origin_run_id=origin_stamp.run_id,
                 expires_at=_datebook_gate_expires_at(now=gate_now, target_at=target_at),
             )
             _schedule_gate_changed(action)

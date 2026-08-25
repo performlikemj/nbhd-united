@@ -29,6 +29,9 @@ OC.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from django.db import IntegrityError, transaction
@@ -92,6 +95,97 @@ def _is_at_schedule(schedule: dict[str, Any]) -> bool:
     return isinstance(schedule, dict) and schedule.get("kind") == "at"
 
 
+@dataclass(frozen=True)
+class ValidatedTypedCronRequest:
+    pattern: str
+    typed_payload: dict[str, Any]
+    name: str
+    schedule: dict[str, Any]
+    normalizations: tuple[str, ...] = ()
+
+
+def validate_typed_cron_request(
+    *,
+    tenant: Tenant,
+    pattern: str,
+    typed_payload: dict[str, Any],
+    name: str,
+    schedule: dict[str, Any],
+    now: datetime | None = None,
+    require_future_at: bool = False,
+) -> ValidatedTypedCronRequest:
+    """Validate and normalize a typed cron request without writing state."""
+
+    if not isinstance(name, str):
+        raise TypedCronError("name is required and must be at most 255 characters", code="invalid_name")
+    cleaned_name = name.strip()
+    if not cleaned_name or len(cleaned_name) > 255:
+        raise TypedCronError("name is required and must be at most 255 characters", code="invalid_name")
+    if pattern not in CronPattern.values:
+        raise TypedCronError(
+            f"pattern must be one of {list(CronPattern.values)}; got {pattern!r}",
+            code="invalid_pattern",
+        )
+    if not isinstance(typed_payload, dict):
+        raise TypedCronError("typed_payload must be an object", code="invalid_payload")
+    try:
+        normalized_schedule, normalizations = normalize_schedule(
+            schedule,
+            tz_name=tenant_tz_name(tenant),
+            now=now,
+        )
+    except ScheduleValidationError as exc:
+        raise TypedCronError(str(exc), code=exc.code) from exc
+
+    handler = get_handler(pattern)
+    handler.validate_payload(typed_payload)
+
+    if require_future_at and normalized_schedule.get("kind") == "at":
+        raw_at = normalized_schedule.get("at", "")
+        parsed = datetime.fromisoformat(raw_at[:-1] + "+00:00" if raw_at.endswith("Z") else raw_at)
+        current = now or datetime.now(UTC)
+        if parsed.astimezone(UTC) <= current.astimezone(UTC):
+            raise TypedCronError("schedule.at must still be in the future", code="at_in_past")
+
+    return ValidatedTypedCronRequest(
+        pattern=pattern,
+        typed_payload=deepcopy(typed_payload),
+        name=cleaned_name,
+        schedule=normalized_schedule,
+        normalizations=tuple(normalizations),
+    )
+
+
+def create_validated_typed_cron(
+    *,
+    tenant: Tenant,
+    request: ValidatedTypedCronRequest,
+    source: str = CronJobSource.USER,
+) -> CronJob:
+    """Insert a pre-validated CronJob without dispatching external work."""
+
+    managed = not _is_at_schedule(request.schedule)
+    try:
+        with transaction.atomic():
+            cron = CronJob(
+                tenant=tenant,
+                name=request.name,
+                source=source,
+                managed=managed,
+                enabled=True,
+                pattern=request.pattern,
+                typed_payload=request.typed_payload,
+                creation_path=CronCreationPath.TYPED,
+                data={"schedule": request.schedule},
+            )
+            cron.save()
+    except IntegrityError as exc:
+        if "cron_unique_tenant_name" in str(exc):
+            raise CronNameConflictError(request.name) from exc
+        raise
+    return cron
+
+
 def create_typed_cron(
     *,
     tenant: Tenant,
@@ -107,19 +201,17 @@ def create_typed_cron(
         TypedCronError: payload validation, unknown pattern, invalid schedule.
         CronNameConflictError: (tenant, name) already exists.
     """
-    name = (name or "").strip()
-    if not name:
-        raise TypedCronError("name is required", code="invalid_name")
-    if pattern not in CronPattern.values:
-        raise TypedCronError(
-            f"pattern must be one of {list(CronPattern.values)}; got {pattern!r}",
-            code="invalid_pattern",
-        )
     tool_name = f"cron-create-{pattern}"
     submitted_kind = schedule.get("kind") if isinstance(schedule, dict) else None
     try:
-        schedule, normalizations = normalize_schedule(schedule, tz_name=tenant_tz_name(tenant))
-    except ScheduleValidationError as exc:
+        validated = validate_typed_cron_request(
+            tenant=tenant,
+            pattern=pattern,
+            typed_payload=typed_payload,
+            name=name,
+            schedule=schedule,
+        )
+    except TypedCronError as exc:
         # The reason code is the whole point of this event: "cron creation is
         # rejected" is not actionable, "the model keeps sending everyMs in
         # seconds" is.
@@ -131,9 +223,9 @@ def create_typed_cron(
             reason_code=exc.code,
             detail={"schedule_kind": submitted_kind, "pattern": pattern},
         )
-        raise TypedCronError(str(exc), code=exc.code) from exc
+        raise
 
-    for reason in normalizations:
+    for reason in validated.normalizations:
         emit_tool_event(
             tool_name=tool_name,
             outcome="normalized",
@@ -143,36 +235,9 @@ def create_typed_cron(
             detail={"schedule_kind": submitted_kind, "pattern": pattern},
         )
 
-    handler = get_handler(pattern)
-    # Construct + validate the typed payload up front so we surface a clean
-    # error to the caller before any DB writes. The pre_save signal will
-    # re-validate via the same handler.
-    handler.validate_payload(typed_payload)
+    cron = create_validated_typed_cron(tenant=tenant, request=validated, source=source)
 
-    managed = not _is_at_schedule(schedule)
-
-    try:
-        with transaction.atomic():
-            cron = CronJob(
-                tenant=tenant,
-                name=name,
-                source=source,
-                managed=managed,
-                enabled=True,
-                pattern=pattern,
-                typed_payload=typed_payload,
-                creation_path=CronCreationPath.TYPED,
-                # Seed data with the schedule so the pre_save signal can build
-                # the full OC dict around it.
-                data={"schedule": schedule},
-            )
-            cron.save()
-    except IntegrityError as exc:
-        if "cron_unique_tenant_name" in str(exc):
-            raise CronNameConflictError(name) from exc
-        raise
-
-    if not managed:
+    if not cron.managed:
         _push_at_cron_immediately(tenant, cron)
 
     return cron

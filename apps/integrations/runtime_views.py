@@ -5483,6 +5483,8 @@ class _RuntimeCronCreateBase(KnownValueResponseGuardMixin, APIView):
         raise NotImplementedError
 
     def post(self, request, tenant_id):
+        from apps.actions.origin import verify_origin_stamp
+        from apps.cron.gate import CronGateConflict, cron_gate_enabled, request_cron_action
         from apps.cron.services import (
             CronNameConflictError,
             TypedCronError,
@@ -5508,6 +5510,42 @@ class _RuntimeCronCreateBase(KnownValueResponseGuardMixin, APIView):
             return Response(
                 {"error": "invalid_payload", "detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if cron_gate_enabled(tenant):
+            try:
+                result = request_cron_action(
+                    tenant,
+                    cron_request_id=request.data.get("cron_request_id"),
+                    pattern=self.pattern,
+                    typed_payload=payload,
+                    name=name,
+                    schedule=schedule,
+                    reason=request.data.get("reason", ""),
+                    origin_stamp=verify_origin_stamp(tenant, request.data.get("origin")),
+                )
+            except CronGateConflict as exc:
+                return Response({"error": exc.code}, status=status.HTTP_409_CONFLICT)
+            except CronNameConflictError:
+                return Response({"error": "name_conflict"}, status=status.HTTP_409_CONFLICT)
+            except TypedCronError as exc:
+                response_status = (
+                    status.HTTP_409_CONFLICT if exc.code == "name_conflict" else status.HTTP_400_BAD_REQUEST
+                )
+                return Response(
+                    {"error": exc.code, "detail": str(exc)},
+                    status=response_status,
+                )
+            except Exception as exc:
+                return Response(
+                    {"error": "validation_failed", "detail": str(exc)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            created = result.pop("_created")
+            return Response(
+                result,
+                status=status.HTTP_202_ACCEPTED if created else status.HTTP_200_OK,
             )
 
         try:

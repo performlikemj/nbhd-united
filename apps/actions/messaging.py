@@ -29,11 +29,42 @@ class GateSendResult:
 
 
 def _review_window_text(action: PendingAction, *, markdown: bool = False) -> str:
+    from apps.cron.gate import is_cron_action_type
     from apps.datebook.gate import is_datebook_action_type
 
     action_type = getattr(action, "action_type", "")
-    text = "Review within 24 hours" if is_datebook_action_type(action_type) else "Expires in 5 minutes"
+    if is_datebook_action_type(action_type):
+        text = "Review within 24 hours"
+    elif is_cron_action_type(action_type):
+        text = "Review within 72 hours"
+    else:
+        text = "Expires in 5 minutes"
     return f"_{text}_" if markdown else text
+
+
+def _is_cron_create(action: PendingAction) -> bool:
+    from apps.cron.gate import is_cron_action_type
+
+    return is_cron_action_type(getattr(action, "action_type", ""))
+
+
+def _confirmation_consequence(action: PendingAction, *, markdown: bool = False) -> str:
+    text = "You can disable this scheduled task later." if _is_cron_create(action) else "This action cannot be undone."
+    return _escape_markdown(text) if markdown else text
+
+
+def _result_label(action: PendingAction) -> tuple[str, str]:
+    if action.status == ActionStatus.APPROVED and _is_cron_create(action):
+        if action.resolution_code == "executed":
+            return "✅", "CREATED"
+        if action.resolution_code.startswith("create_failed") or action.resolution_code == "dispatch_failed":
+            return "⚠️", f"APPROVED — CREATION FAILED ({action.resolution_code})"
+        return "⏳", "APPROVED — CREATION QUEUED"
+    if action.status == ActionStatus.APPROVED:
+        return "✅", "APPROVED"
+    if action.status == ActionStatus.DENIED:
+        return "❌", "DENIED"
+    return "⏰", "EXPIRED"
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +100,7 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> GateSe
         "⚠️ *Action Confirmation Required*\n\n"
         f"Your agent wants to:\n"
         f"*{_escape_markdown(summary)}*\n\n"
-        "This action cannot be undone\\.\n\n"
+        f"{_confirmation_consequence(action, markdown=True)}\n\n"
         f"{_review_window_text(action, markdown=True)}"
     )
 
@@ -106,7 +137,7 @@ def _send_telegram_confirmation(tenant: Tenant, action: PendingAction) -> GateSe
                         "⚠️ Action Confirmation Required\n\n"
                         f"Your agent wants to:\n"
                         f"{summary}\n\n"
-                        "This action cannot be undone.\n\n" + _review_window_text(action)
+                        f"{_confirmation_consequence(action)}\n\n" + _review_window_text(action)
                     ),
                     "reply_markup": keyboard,
                 },
@@ -141,12 +172,7 @@ def _edit_telegram_message(tenant: Tenant, action: PendingAction) -> None:
 
     summary = rehydrate_for_tenant(tenant, action.display_summary)
 
-    if action.status == ActionStatus.APPROVED:
-        icon, label = "✅", "APPROVED"
-    elif action.status == ActionStatus.DENIED:
-        icon, label = "❌", "DENIED"
-    else:
-        icon, label = "⏰", "EXPIRED"
+    icon, label = _result_label(action)
 
     new_text = f"{icon} Action {label}\n\n{summary}"
 
@@ -215,7 +241,7 @@ def _send_line_confirmation(tenant: Tenant, action: PendingAction) -> GateSendRe
                 },
                 {
                     "type": "text",
-                    "text": "This action cannot be undone.",
+                    "text": _confirmation_consequence(action),
                     "color": "#999999",
                     "size": "sm",
                     "margin": "md",
@@ -306,12 +332,8 @@ def _edit_line_message(tenant: Tenant, action: PendingAction) -> None:
 
     summary = rehydrate_for_tenant(tenant, action.display_summary)
 
-    if action.status == ActionStatus.APPROVED:
-        icon, label = "✅", "Approved"
-    elif action.status == ActionStatus.DENIED:
-        icon, label = "❌", "Denied"
-    else:
-        icon, label = "⏰", "Expired"
+    icon, label = _result_label(action)
+    label = label.title()
 
     text = f"{icon} {label}: {summary}"
 
@@ -340,10 +362,19 @@ def _edit_line_message(tenant: Tenant, action: PendingAction) -> None:
 def _send_app_confirmation(tenant: Tenant, action: PendingAction) -> GateSendResult:
     """Claim the durable in-app surface; gate-changed owns the APNs wake."""
 
+    from apps.cron.gate import is_cron_action_type
     from apps.datebook.gate import is_datebook_action_type
 
-    if not is_datebook_action_type(action.action_type):
+    if not (is_datebook_action_type(action.action_type) or is_cron_action_type(action.action_type)):
         return GateSendResult(False)
+    if is_cron_action_type(action.action_type):
+        from apps.datebook.models import DatebookGateway
+
+        if not DatebookGateway.objects.filter(
+            tenant=tenant,
+            status=DatebookGateway.Status.ACTIVE,
+        ).exists():
+            return GateSendResult(False)
     return GateSendResult(True)
 
 
@@ -453,9 +484,10 @@ def send_gate_confirmation(
         originating_channel=originating_channel,
     )
     if channel == "app":
+        from apps.cron.gate import is_cron_action_type
         from apps.datebook.gate import is_datebook_action_type
 
-        if not is_datebook_action_type(action.action_type):
+        if not (is_datebook_action_type(action.action_type) or is_cron_action_type(action.action_type)):
             logger.warning(
                 "Cannot deliver non-datebook gate action %s to app review sheet",
                 action.id,
@@ -495,6 +527,8 @@ def send_gate_confirmation(
     else:
         action.delivery_state = "failed"
     action.save(update_fields=["platform_message_id", "platform_channel", "delivery_state"])
+    if _is_cron_create(action) and channel == "app" and not send_result.accepted:
+        return False
     # Preserve the gate-routing contract: reaching a selected sender keeps the
     # review pending even when its transport cannot confirm delivery. The
     # independently persisted delivery_state is the truthful narration fact.
@@ -507,6 +541,8 @@ def update_gate_message(action: PendingAction) -> None:
     # the flag may have changed after the original confirmation was sent.
     if suppresses_real_transport(action.tenant):
         return
+    if _is_cron_create(action):
+        action.refresh_from_db(fields=["status", "resolution_code"])
     if not action.platform_channel:
         return
 
