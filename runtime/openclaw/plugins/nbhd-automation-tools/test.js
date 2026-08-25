@@ -121,14 +121,19 @@ test("202 pending approval guidance is channel-aware", async () => {
     summary: "Every Friday at 5pm",
   }), { status: 202 });
 
-  const appTool = registeredTools({ messageChannel: "ios" }).get("nbhd_cron_create_pure_reminder");
-  const appResult = await appTool.execute("call-app-pending", cases[0][1]);
-  assert.match(appResult.content[0].text, /card in the app/i);
-  assert.doesNotMatch(appResult.content[0].text, /\/approve\s+\S+/i);
+  const expectedByChannel = new Map([
+    ["ios", "This scheduled task is pending your approval and does not exist yet. Approve it via the card in the app."],
+    ["telegram", "This scheduled task is pending the user's approval and does not exist yet; the approval prompt was sent to their Telegram — they tap Approve there."],
+    ["line", "This scheduled task is pending the user's approval and does not exist yet; the approval prompt was sent to their LINE — they tap Approve there."],
+    [undefined, "This scheduled task is pending the user's approval and does not exist yet; the approval prompt was sent to their linked messaging channel — they tap Approve there."],
+  ]);
 
-  const telegramTool = registeredTools({ messageChannel: "telegram" }).get("nbhd_cron_create_pure_reminder");
-  const telegramResult = await telegramTool.execute("call-telegram-pending", cases[0][1]);
-  assert.match(telegramResult.content[0].text, /\/approve 42/);
+  for (const [messageChannel, expected] of expectedByChannel) {
+    const tool = registeredTools({ messageChannel }).get("nbhd_cron_create_pure_reminder");
+    const result = await tool.execute(`call-${messageChannel ?? "unknown"}-pending`, cases[0][1]);
+    assert.equal(result.content[0].text, expected);
+    assert.doesNotMatch(result.content[0].text, /\/approve/i);
+  }
 });
 
 test("409 request-id and name conflicts return clear, non-creation text", async () => {

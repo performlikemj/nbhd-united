@@ -85,12 +85,13 @@ function renderCronCreatePayload(payload, toolContext) {
   }
   if (payload.state === "pending_approval") {
     const channel = asTrimmedString(toolContext?.messageChannel).toLowerCase();
-    let text = "This scheduled task is pending the user's approval and does not exist yet.";
+    let text = "This scheduled task is pending the user's approval and does not exist yet; the approval prompt was sent to their linked messaging channel — they tap Approve there.";
     if (channel === "ios" || channel === "app") {
       text = "This scheduled task is pending your approval and does not exist yet. Approve it via the card in the app.";
-    } else if (channel === "telegram" || channel === "line") {
-      const actionId = payload.action_id ?? "<id>";
-      text = `This scheduled task is pending the user's approval and does not exist yet. To approve it, use /approve ${actionId}.`;
+    } else if (channel === "telegram") {
+      text = "This scheduled task is pending the user's approval and does not exist yet; the approval prompt was sent to their Telegram — they tap Approve there.";
+    } else if (channel === "line") {
+      text = "This scheduled task is pending the user's approval and does not exist yet; the approval prompt was sent to their LINE — they tap Approve there.";
     }
     return {
       content: [{

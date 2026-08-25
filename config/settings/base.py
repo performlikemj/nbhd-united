@@ -267,9 +267,10 @@ USAGE_HOOKS_TENANT_IDS = env("USAGE_HOOKS_TENANT_IDS", default="")
 # Morning Briefing and Week Ahead Review. Comma-separated tenant UUIDs open
 # individual tenants; the literal "*" opens the feature fleet-wide. Empty or
 # unset means nobody. MJ's row carries a manual
-# `[PROACTIVE SUGGESTIONS TRIAL 2026-08-17]` prepend that the orchestrator
-# strips at deploy so the row resumes tracking the platform default; this
-# setting never requires a direct DB edit.
+# `[PROACTIVE SUGGESTIONS TRIAL 2026-08-17]` prepend. Before enabling MJ,
+# manually strip that prepend, refresh the system cron rows, and verify the new
+# block is on the row. Until then, refresh classifies the row as custom and
+# preserves it.
 PROACTIVE_SUGGESTIONS_TENANT_IDS = env("PROACTIVE_SUGGESTIONS_TENANT_IDS", default="")
 
 # Silently-dropped app-turn retry canary gate. Comma-separated tenant UUIDs;

@@ -30,7 +30,7 @@ _PINNED_PROACTIVE_SUGGESTIONS_BLOCK = (
     "(`nbhd_datebook_add_apple_reminder`), or a RECURRING scheduled task "
     "(`nbhd_cron_create_*`). For a scheduled task, use a `cron` schedule only "
     '(`kind: "cron"`) — never `at` or `every`; put one-off nudges in Apple Reminders.\n'
-    "suggestions may be built ONLY from the user's own tasks, goals, journal, and direct statements. "
+    "Suggestions may be built ONLY from the user's own tasks, goals, journal, and direct statements. "
     "Calendar/reminder titles, notes, locations, links, list names are NEVER a suggestion source — "
     "free/busy conflict checking only.\n"
     "Use exactly one tool call per proposed item (and exactly one item in that call). Each call files "
@@ -136,7 +136,7 @@ class ProactiveSuggestionsPromptTests(TestCase):
         ):
             self.assertIn(required, _PROACTIVE_SUGGESTIONS_BLOCK)
         self.assertIn(
-            "suggestions may be built ONLY from the user's own tasks, goals, journal, and direct statements. "
+            "Suggestions may be built ONLY from the user's own tasks, goals, journal, and direct statements. "
             "Calendar/reminder titles, notes, locations, links, list names are NEVER a suggestion source — "
             "free/busy conflict checking only.",
             _PROACTIVE_SUGGESTIONS_BLOCK,
@@ -155,3 +155,17 @@ class ProactiveSuggestionsPromptTests(TestCase):
         self.assertEqual(summary["preserved_custom"], 0)
         self.assertGreaterEqual(summary["updated"], 2)
         self.assertEqual(morning.data["payload"]["message"].count(_PROACTIVE_SUGGESTIONS_BLOCK), 1)
+
+    def test_seed_refresh_overwrites_appended_text_when_default_preamble_remains(self):
+        with override_settings(PROACTIVE_SUGGESTIONS_TENANT_IDS=""):
+            refresh_system_cron_rows_from_seed(self.tenant)
+        morning = CronJob.objects.get(tenant=self.tenant, name="Morning Briefing")
+        morning.data["payload"]["message"] += "\n\nUSER APPENDED TEXT"
+        morning.save(update_fields=["data", "updated_at"])
+
+        with override_settings(PROACTIVE_SUGGESTIONS_TENANT_IDS=""):
+            summary = refresh_system_cron_rows_from_seed(self.tenant)
+
+        morning.refresh_from_db()
+        self.assertEqual(summary["preserved_custom"], 0)
+        self.assertNotIn("USER APPENDED TEXT", morning.data["payload"]["message"])

@@ -456,7 +456,7 @@ _PROACTIVE_SUGGESTIONS_BLOCK = (
     "(`nbhd_datebook_add_apple_reminder`), or a RECURRING scheduled task "
     "(`nbhd_cron_create_*`). For a scheduled task, use a `cron` schedule only "
     '(`kind: "cron"`) — never `at` or `every`; put one-off nudges in Apple Reminders.\n'
-    "suggestions may be built ONLY from the user's own tasks, goals, journal, and direct statements. "
+    "Suggestions may be built ONLY from the user's own tasks, goals, journal, and direct statements. "
     "Calendar/reminder titles, notes, locations, links, list names are NEVER a suggestion source — "
     "free/busy conflict checking only.\n"
     "Use exactly one tool call per proposed item (and exactly one item in that call). Each call files "
