@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import time
+from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import Client, SimpleTestCase, override_settings
@@ -24,6 +27,21 @@ def _report(*checks: SmokeCheckResult) -> SmokeReport:
         checks=list(checks),
         total_ms=sum(check.ms for check in checks),
     )
+
+
+class SmokeWorkflowConfigTests(SimpleTestCase):
+    def test_real_calls_step_uses_compatible_curl_failure_flags(self):
+        workflow_path = Path(__file__).parents[2] / ".github/workflows/ci-cd.yml"
+        workflow = yaml.safe_load(workflow_path.read_text())
+        steps = (step for job in workflow["jobs"].values() for step in job.get("steps", []))
+        step = next(step for step in steps if step.get("name") == "Smoke external dependencies (real calls)")
+        run = step["run"]
+
+        has_fail = re.search(r"(^|\s)--fail(\s|$)", run) is not None
+        self.assertFalse(has_fail and "--fail-with-body" in run)
+        self.assertIn("--fail-with-body", run)
+        self.assertIn("X-Deploy-Secret", run)
+        self.assertIn("/api/internal/deploy/smoke/", run)
 
 
 class SmokeRunnerTests(SimpleTestCase):

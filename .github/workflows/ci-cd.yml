@@ -713,7 +713,7 @@ jobs:
         if: steps.freshness.outputs.superseded != 'true'
         run: |
           DJANGO_URL="https://nbhd-django-westus2.victoriousocean-5cdd2683.westus2.azurecontainerapps.io"
-          if ! BODY=$(curl --fail --fail-with-body --silent --show-error --max-time 120 -X POST \
+          if ! BODY=$(curl --fail-with-body --silent --show-error --max-time 120 -X POST \
             -H "X-Deploy-Secret: ${{ secrets.DEPLOY_SECRET }}" \
             "$DJANGO_URL/api/internal/deploy/smoke/"); then
             printf '%s\n' "$BODY"
