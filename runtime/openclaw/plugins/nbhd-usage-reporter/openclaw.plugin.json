@@ -24,6 +24,10 @@
         "maximum": 60000,
         "description": "HTTP timeout for usage reporting requests."
       },
+      "helperOnly": {
+        "type": "boolean",
+        "description": "Deprecated compatibility setting for pre-meterScopes tenant configs; true is treated as meterScopes: [helper]."
+      },
       "meterScopes": {
         "type": "array",
         "items": {

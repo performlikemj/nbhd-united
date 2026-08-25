@@ -136,9 +136,14 @@ function isCronRun(ctx) {
 
 function configuredMeterScopes(pluginConfig) {
   const config = asObject(pluginConfig);
-  if (!Object.hasOwn(config, "meterScopes")) return null;
-  if (!Array.isArray(config.meterScopes)) return new Set();
-  return new Set(config.meterScopes);
+  if (Object.hasOwn(config, "meterScopes")) {
+    if (!Array.isArray(config.meterScopes)) return new Set();
+    return new Set(config.meterScopes);
+  }
+  // TODO(remove after fleet config regen): accept the pre-meterScopes config
+  // emitted for subagent-enabled tenants during the image/config upgrade window.
+  if (config.helperOnly === true) return new Set(["helper"]);
+  return null;
 }
 
 function selectedMeterScope(ctx, meterScopes) {

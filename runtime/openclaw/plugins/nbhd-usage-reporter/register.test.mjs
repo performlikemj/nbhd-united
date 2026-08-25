@@ -10,6 +10,7 @@
 // can't recur.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import register, { extractUsage } from "./index.js";
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -111,6 +112,52 @@ test("helper scope meters helper llm_output as subagent_message", async () => {
   assert.equal(calls.length, 1);
   assert.equal(calls[0].payload.event_type, "subagent_message");
   assert.deepEqual(calls[0].payload.metadata, { kind: "subagent", run: "7c284f8559a9" });
+});
+
+test("legacy helperOnly meters helper sessions and skips other sessions", async () => {
+  const calls = await captureReports({ helperOnly: true }, (handlers) => {
+    handlers.llm_output(
+      { model: "google/gemini-flash", usage: { input: 12, output: 4 } },
+      { sessionKey: "agent:main:subagent:child", runId: "helper-run" },
+    );
+    handlers.llm_output(
+      { model: "google/gemini-flash", usage: { input: 20, output: 8 } },
+      { trigger: "user", sessionKey: "agent:main:openai-user:thread:normal", runId: "normal-run" },
+    );
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.event_type, "subagent_message");
+  assert.deepEqual(calls[0].payload.metadata, { kind: "subagent", run: "7c284f8559a9" });
+});
+
+test("manifest config schema accepts current and legacy metering config shapes", () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
+  );
+  const schema = manifest.configSchema;
+
+  function validates(config) {
+    if (schema.type !== "object" || config === null || Array.isArray(config)) return false;
+    if (schema.additionalProperties === false) {
+      if (Object.keys(config).some((key) => !Object.hasOwn(schema.properties, key))) return false;
+    }
+    return Object.entries(config).every(([key, value]) => {
+      const property = schema.properties[key];
+      if (property.type === "boolean") return typeof value === "boolean";
+      if (property.type === "array") {
+        return Array.isArray(value) &&
+          (!property.uniqueItems || new Set(value).size === value.length) &&
+          value.every((item) => property.items.enum.includes(item));
+      }
+      return true;
+    });
+  }
+
+  assert.equal(validates({ meterScopes: ["helper", "cron"] }), true);
+  assert.equal(validates({ helperOnly: true }), true);
+  assert.equal(validates({ helperOnly: "true" }), false);
+  assert.equal(validates({ unknownScopeSetting: true }), false);
 });
 
 test("meterScopes skips user-originated HTTP llm_output", async () => {
