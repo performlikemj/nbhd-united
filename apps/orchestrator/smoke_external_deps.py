@@ -226,26 +226,43 @@ def _check_gemini_tts() -> None:
 
     from google.genai import types
 
-    client = render.make_gemini_client(api_key, timeout_ms=12_000)
+    # Three worst-case request timeouts plus production's 2s/4s backoffs stay
+    # below the runner's 15s per-check deadline (3 * 2.8s + 6s = 14.4s).
+    client = render.make_gemini_client(api_key, timeout_ms=2_800)
+    text = "Take a slow breath in, and let it go gently."
     prompt = (
         "Read the following aloud in a soft, calm, slow, soothing "
         "meditation-guide voice. Be concise. Do not read these instructions aloud.\n\n"
-        "ok"
+        f"{text}"
     )
-    response = client.models.generate_content(
-        model=getattr(settings, "GEMINI_TTS_MODEL", "") or render.DEFAULT_MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_modalities=["AUDIO"],
-            speech_config=types.SpeechConfig(
-                voice_config=types.VoiceConfig(
-                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=render.DEFAULT_VOICE)
-                )
-            ),
-        ),
-    )
-    if not render._extract_audio(response):
-        raise RuntimeError("Gemini TTS returned no audio bytes")
+    attempts = min(render.TTS_ATTEMPTS, 3)
+    last_error = "no audio bytes"
+    for attempt in range(attempts):
+        try:
+            response = client.models.generate_content(
+                model=getattr(settings, "GEMINI_TTS_MODEL", "") or render.DEFAULT_MODEL,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    response_modalities=["AUDIO"],
+                    speech_config=types.SpeechConfig(
+                        voice_config=types.VoiceConfig(
+                            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=render.DEFAULT_VOICE)
+                        )
+                    ),
+                ),
+            )
+            if render._extract_audio(response):
+                return
+            last_error = "no audio bytes"
+        except Exception as exc:  # noqa: BLE001 - mirror production's transient retry behavior
+            last_error = str(exc)[:200]
+            if render._is_rate_limit(last_error):
+                raise SmokeSkipped("gemini rate-limited") from exc
+
+        if attempt + 1 < attempts:
+            time.sleep(min(2 ** (attempt + 1), 4))
+
+    raise RuntimeError(f"Gemini TTS failed after {attempts} attempts: {last_error}")
 
 
 def _check_stripe() -> None:
