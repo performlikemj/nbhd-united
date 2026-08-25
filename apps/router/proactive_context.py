@@ -103,6 +103,7 @@ def record_proactive_outbound(
     journal_link: dict | None = None,
     quick_replies: list[str] | None = None,
     artifact_dedup_key: str | None = None,
+    thread_id=None,
 ) -> ProactiveOutbound | None:
     """Persist a row describing one proactive delivery or eval evidence event.
 
@@ -174,6 +175,7 @@ def record_proactive_outbound(
                 channel_user_id=channel_user_id,
                 message_text=message_text,
                 job_name=(job_name or "")[:64],
+                thread_id=thread_id,
                 parsed_items=parse_markdown_items(message_text),
                 # Parsed "View in Journal" deep-link (``{kind, slug, title}``, title
                 # in placeholder space) — surfaced + rehydrated by the ?since= feed.

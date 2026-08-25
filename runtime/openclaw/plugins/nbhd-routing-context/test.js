@@ -12,7 +12,9 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import register, {
   decideRemovedToolBlock,
+  decideSubagentToolBlock,
   REMOVED_BUILTIN_TOOL_IDS,
+  SUBAGENT_READ_ONLY_NBHD_TOOL_IDS,
 } from "./index.js";
 
 // Mirror of the heuristic from index.js. Kept in sync by hand; the
@@ -213,6 +215,46 @@ describe("decideRemovedToolBlock (canonical guard)", () => {
   });
 });
 
+describe("sub-agent read-only guard", () => {
+  const helperKey = "agent:main:subagent:7c410ca8-33e7-42ed-b65c-95c42142e621";
+
+  it("blocks send/create/image tools with requester-only guidance", () => {
+    for (const id of [
+      "nbhd_send_to_user",
+      "nbhd_task_create",
+      "nbhd_cron_create_pure_reminder",
+      "nbhd_datebook_add_event",
+      "nbhd_generate_image",
+      "publish_portfolio_image",
+    ]) {
+      const out = decideSubagentToolBlock({ toolName: id, params: {} }, helperKey);
+      assert.equal(out?.block, true, id);
+      assert.match(out.blockReason, /report back to the requester/);
+    }
+  });
+
+  it("allows reviewed read-only tools directly and through tool_call", () => {
+    for (const id of ["nbhd_journal_search", "nbhd_task_list", "nbhd_gmail_get_message_detail"]) {
+      assert.ok(SUBAGENT_READ_ONLY_NBHD_TOOL_IDS.has(id), id);
+      assert.equal(decideSubagentToolBlock({ toolName: id, params: {} }, helperKey), undefined);
+      assert.equal(
+        decideSubagentToolBlock({ toolName: "tool_call", params: { id } }, helperKey),
+        undefined,
+      );
+    }
+  });
+
+  it("does not apply the helper policy to an ordinary requester session", () => {
+    assert.equal(
+      decideSubagentToolBlock(
+        { toolName: "nbhd_send_to_user", params: {} },
+        "agent:main:openai-user:thread:7c410ca8-33e7-42ed-b65c-95c42142e621",
+      ),
+      undefined,
+    );
+  });
+});
+
 // Verify the ACTUAL registration path: drive register() with a fake api, capture
 // the before_tool_call handler it registers, and assert it behaves + never throws.
 // This catches a wrong hook name or a registration that doesn't wire up — which a
@@ -260,5 +302,22 @@ describe("register() wires up the before_tool_call guard", () => {
     assert.equal(typeof throwingHook, "function");
     assert.doesNotThrow(() => throwingHook({ toolName: "tool_call", params: { id: "exec" } }));
     assert.equal(throwingHook({ toolName: "tool_call", params: { id: "exec" } }), undefined);
+  });
+
+  it("fails closed when the helper guard itself throws", () => {
+    const api = makeFakeApi();
+    register(api);
+    const hook = api._handlers["before_tool_call"];
+    const poisoned = {};
+    Object.defineProperty(poisoned, "toolName", {
+      get() {
+        throw new Error("poisoned event");
+      },
+    });
+    const result = hook(poisoned, {
+      sessionKey: "agent:main:subagent:7c410ca8-33e7-42ed-b65c-95c42142e621",
+      runId: "helper-run",
+    });
+    assert.equal(result?.block, true);
   });
 });

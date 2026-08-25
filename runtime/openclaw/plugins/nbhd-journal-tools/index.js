@@ -1049,6 +1049,14 @@ export default function register(api) {
             "tag the outbound for thread-continuity context on the user's " +
             "next reply. Safe to omit for ad-hoc proactive sends.",
         },
+        thread_id: {
+          type: "string",
+          format: "uuid",
+          description:
+            "Optional app thread UUID. Use the requester thread for a " +
+            "sub-agent completion so the result returns to the conversation " +
+            "that started it. Django validates tenant ownership.",
+        },
       },
     },
     async execute(_id, params) {
@@ -1056,10 +1064,11 @@ export default function register(api) {
       const message = asTrimmedString(input.message);
       if (!message) throw new Error("message is required");
       const jobName = asTrimmedString(input.job_name);
+      const threadId = asTrimmedString(input.thread_id);
       const payload = await callRuntime(api, {
         path: tenantPath(api, "/send-to-user/"),
         method: "POST",
-        body: { message },
+        body: { message, ...(threadId ? { thread_id: threadId } : {}) },
         extraHeaders: jobName ? { "X-NBHD-Job-Name": jobName.slice(0, 64) } : undefined,
       });
       return renderPayload(payload);

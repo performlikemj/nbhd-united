@@ -10,7 +10,7 @@
 // can't recur.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import register from "./index.js";
+import register, { extractUsage } from "./index.js";
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };
 const EXPECTED = ["model_call_started", "llm_output", "agent_end"];
@@ -38,4 +38,18 @@ test("uses api.on even when api.registerHook ALSO exists (5.28 reality)", () => 
 
 test("registers nothing (no throw) when api.on is absent", () => {
   assert.doesNotThrow(() => register({ registerHook: () => {}, logger: noopLogger }));
+});
+
+test("tags helper usage without changing ordinary usage", () => {
+  const event = { runId: "child-run-123", model: "google/gemini-flash", usage: { input: 12, output: 4 } };
+  const ordinary = extractUsage(event, { sessionKey: "agent:main:openai-user:thread:abc" });
+  assert.equal(ordinary.event_type, "message");
+  assert.equal(ordinary.metadata, undefined);
+
+  const helper = extractUsage(event, {
+    sessionKey: "agent:main:subagent:8cf81ea8-34ac-4fcc-8ada-d35df405cd18",
+    runId: "child-run-123",
+  });
+  assert.equal(helper.event_type, "subagent_message");
+  assert.deepEqual(helper.metadata, { kind: "subagent", run: "c9bbca7c59e7" });
 });

@@ -58,6 +58,44 @@ test("no kind enum contains a value the server would reject", () => {
   }
 });
 
+test("send_to_user accepts and forwards an optional app thread UUID", async () => {
+  const originalFetch = globalThis.fetch;
+  const originalBaseUrl = process.env.NBHD_API_BASE_URL;
+  const originalTenantId = process.env.NBHD_TENANT_ID;
+  const originalInternalKey = process.env.NBHD_INTERNAL_API_KEY;
+  const tools = collectTools();
+  process.env.NBHD_API_BASE_URL = "https://nbhd.test";
+  process.env.NBHD_TENANT_ID = "tenant-123";
+  process.env.NBHD_INTERNAL_API_KEY = "internal-key";
+  let request;
+
+  try {
+    globalThis.fetch = async (_url, options) => {
+      request = options;
+      return { ok: true, status: 200, async text() { return "{}"; } };
+    };
+    const threadId = "7c410ca8-33e7-42ed-b65c-95c42142e621";
+    await tools.nbhd_send_to_user.execute("call-thread", {
+      message: "Research is ready.",
+      thread_id: threadId,
+    });
+
+    assert.equal(tools.nbhd_send_to_user.parameters.properties.thread_id.format, "uuid");
+    assert.deepEqual(JSON.parse(request.body), {
+      message: "Research is ready.",
+      thread_id: threadId,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.NBHD_API_BASE_URL;
+    else process.env.NBHD_API_BASE_URL = originalBaseUrl;
+    if (originalTenantId === undefined) delete process.env.NBHD_TENANT_ID;
+    else process.env.NBHD_TENANT_ID = originalTenantId;
+    if (originalInternalKey === undefined) delete process.env.NBHD_INTERNAL_API_KEY;
+    else process.env.NBHD_INTERNAL_API_KEY = originalInternalKey;
+  }
+});
+
 test("runtime field validation errors are surfaced to the model", async () => {
   const originalFetch = globalThis.fetch;
   const originalTenantId = process.env.NBHD_TENANT_ID;

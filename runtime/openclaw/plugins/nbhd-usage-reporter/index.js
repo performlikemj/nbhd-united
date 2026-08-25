@@ -13,6 +13,8 @@
  * is actually broken.
  */
 
+import { createHash } from "node:crypto";
+
 // Patterns lifted from OpenClaw's `sanitize-user-facing-text` module —
 // the runtime classifies billing/auth errors using these same regexes
 // before deciding to skip a candidate, so matching them here keeps the
@@ -124,7 +126,7 @@ function getRuntimeConfig(api) {
   return { apiBaseUrl, tenantId, internalKey, requestTimeoutMs };
 }
 
-function extractUsage(event = {}, logger = null) {
+export function extractUsage(event = {}, ctx = {}, logger = null) {
   const usage = asObject(event.usage);
   const inputTokens = asNonNegativeInteger(
     usage.input_tokens ?? usage.input,
@@ -148,12 +150,21 @@ function extractUsage(event = {}, logger = null) {
     logger.warn("NBHD usage extract: model is missing, using 'unknown' fallback");
   }
 
-  return {
-    event_type: "message",
+  const isSubagent = asTrimmedString(ctx.sessionKey).includes(":subagent:");
+  const runId = asTrimmedString(ctx.runId || event.runId);
+  const payload = {
+    event_type: isSubagent ? "subagent_message" : "message",
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     model_used: modelUsed || "unknown",
   };
+  if (isSubagent) {
+    payload.metadata = {
+      kind: "subagent",
+      run: createHash("sha256").update(runId).digest("hex").slice(0, 12),
+    };
+  }
+  return payload;
 }
 
 async function postRuntime(path, payload, api, label) {
@@ -246,8 +257,8 @@ export default function register(api) {
     }
   });
 
-  subscribe("llm_output", (event) => {
-    const payload = extractUsage(event, api.logger);
+  subscribe("llm_output", (event, ctx) => {
+    const payload = extractUsage(event, ctx, api.logger);
     if (!payload) {
       return;
     }

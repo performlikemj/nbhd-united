@@ -473,17 +473,18 @@ def notify_proactive_ready(tenant, proactive_id, body_source: str | None) -> Non
         if user is None:
             return
 
-        # The cron row maps to the tenant's shared main thread in the ?since= feed
-        # (chat_history._proactive_rows); mirror that thread-id here so a future
-        # thread-aware client routes the alert to the same place. iOS ignores
-        # thread-id today, so a tenant without a main thread (None) is fine.
-        main_thread_id = ChatThread.objects.filter(tenant=tenant, is_main=True).values_list("id", flat=True).first()
+        row_thread_id = (
+            ProactiveOutbound.objects.filter(id=proactive_id, tenant=tenant).values_list("thread_id", flat=True).first()
+        )
+        thread_id = row_thread_id or (
+            ChatThread.objects.filter(tenant=tenant, is_main=True).values_list("id", flat=True).first()
+        )
 
         collapse = f"cron:{proactive_id}"
         _push_to_user_devices(
             user,
             body=_notification_body(body_source),
-            thread_id=str(main_thread_id) if main_thread_id else None,
+            thread_id=str(thread_id) if thread_id else None,
             collapse_id=collapse,
             content_available=True,
             extra={"id": collapse, "source": "cron"},

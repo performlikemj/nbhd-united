@@ -1,0 +1,31 @@
+{
+  "id": "nbhd-subagent-bridge",
+  "name": "NBHD Sub-agent Bridge",
+  "description": "Canary-only sessions_spawn guard and deterministic iOS completion re-entry backstop.",
+  "contracts": {
+    "tools": []
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string",
+        "description": "Override NBHD API base URL. Defaults to NBHD_API_BASE_URL."
+      },
+      "tenantId": {
+        "type": "string",
+        "description": "Override tenant ID. Defaults to NBHD_TENANT_ID."
+      },
+      "internalApiKey": {
+        "type": "string",
+        "description": "Override internal API key. Defaults to NBHD_INTERNAL_API_KEY."
+      },
+      "requestTimeoutMs": {
+        "type": "number",
+        "minimum": 1000,
+        "maximum": 8000
+      }
+    }
+  }
+}

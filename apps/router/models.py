@@ -317,6 +317,14 @@ class ProactiveOutbound(models.Model):
             "or ad-hoc proactive sends."
         ),
     )
+    thread_id = models.UUIDField(
+        null=True,
+        blank=True,
+        help_text=(
+            "Tenant-owned app thread that should receive this proactive row. "
+            "Null preserves legacy delivery to the tenant's main thread."
+        ),
+    )
     parsed_items = models.JSONField(
         default=list,
         blank=True,

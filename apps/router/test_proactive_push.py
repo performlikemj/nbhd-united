@@ -24,7 +24,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.router.cron_delivery import _rate_counts
-from apps.router.models import ChatThread, DeviceToken, ProactiveOutbound
+from apps.router.models import ChatThread, DeliveryAttempt, DeviceToken, ProactiveOutbound
 from apps.tenants.models import Tenant, User
 from apps.tenants.test_utils import seed_internal_key
 
@@ -99,10 +99,30 @@ class NotifyProactiveReadyTest(TestCase):
         self.assertEqual(captured["collapse_id"], f"cron:{row.id}")
         self.assertEqual(captured["extra"], {"id": f"cron:{row.id}", "source": "cron"})
         self.assertTrue(captured["content_available"])
-        # thread_id mirrors the ?since= feed's main-thread mapping.
+        # Legacy rows without a stored destination still map to the main thread.
         self.assertEqual(captured["thread_id"], str(self.thread.id))
         row.refresh_from_db()
         self.assertIsNotNone(row.notified_at)
+
+    @override_settings(**_APNS_SETTINGS)
+    def test_push_uses_proactive_row_thread(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        from apps.router.push_views import notify_proactive_ready
+
+        thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, title="Research")
+        row = self._row()
+        row.thread_id = thread.id
+        row.save(update_fields=["thread_id"])
+        captured = {}
+
+        def _capture(tokens, **kw):
+            captured.update(kw)
+            return _ok(tokens, **kw)
+
+        with patch("apps.common.apns.send_push", side_effect=_capture):
+            notify_proactive_ready(self.tenant, str(row.id), row.message_text)
+
+        self.assertEqual(captured["thread_id"], str(thread.id))
 
     @override_settings(**_APNS_SETTINGS)
     def test_idempotent_no_double_push(self):
@@ -447,6 +467,72 @@ class CronDeliveryAppOnlyTest(TestCase):
         self.assertEqual(row.channel_user_id, str(self.user.id))
         self.assertIsNotNone(row.notified_at)
 
+    def test_subagent_result_routes_to_owned_thread_and_deduplicates_occurrence(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        thread = ChatThread.objects.create(tenant=self.tenant, user=self.user, title="Research")
+        headers = {
+            **self._headers(),
+            "HTTP_X_NBHD_OCCURRENCE_KEY": "subagent:announce-run-1",
+            "HTTP_X_NBHD_JOB_NAME": "_subagent_result",
+        }
+
+        with patch("apps.common.apns.send_push", side_effect=_ok) as mock_send:
+            first = self.client.post(
+                self.url,
+                {"message": "Research is ready.", "thread_id": str(thread.id)},
+                format="json",
+                **headers,
+            )
+            second = self.client.post(
+                self.url,
+                {"message": "Research is ready.", "thread_id": str(thread.id)},
+                format="json",
+                **headers,
+            )
+
+        self.assertEqual(first.status_code, 200, first.content)
+        self.assertEqual(second.json()["status"], "duplicate_suppressed")
+        row = ProactiveOutbound.objects.get(tenant=self.tenant)
+        self.assertEqual(row.thread_id, thread.id)
+        self.assertEqual(
+            DeliveryAttempt.objects.get(tenant=self.tenant).occurrence_key,
+            "subagent:announce-run-1",
+        )
+        mock_send.assert_called_once()
+
+    def test_foreign_thread_falls_back_to_main(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        main = ChatThread.objects.get(tenant=self.tenant, is_main=True)
+        other_user = _make_user()
+        other_tenant = _make_tenant(other_user)
+        foreign = ChatThread.objects.create(tenant=other_tenant, user=other_user, is_main=True, title="Other")
+
+        with patch("apps.common.apns.send_push", side_effect=_ok):
+            response = self.client.post(
+                self.url,
+                {"message": "Research is ready.", "thread_id": str(foreign.id)},
+                format="json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(ProactiveOutbound.objects.get(tenant=self.tenant).thread_id, main.id)
+
+    def test_malformed_thread_falls_back_to_main(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        main = ChatThread.objects.get(tenant=self.tenant, is_main=True)
+
+        with patch("apps.common.apns.send_push", side_effect=_ok):
+            response = self.client.post(
+                self.url,
+                {"message": "Research is ready.", "thread_id": "not-a-uuid"},
+                format="json",
+                **self._headers(),
+            )
+
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(ProactiveOutbound.objects.get(tenant=self.tenant).thread_id, main.id)
+
     def test_no_surface_at_all_still_422(self):
         # No Telegram, no LINE, AND no device token → nothing to deliver to.
         with patch("apps.common.apns.send_push") as mock_send:
@@ -483,3 +569,23 @@ class AppChannelReachesSinceFeedTest(TestCase):
         self.assertEqual(cron_rows[0]["role"], "assistant")
         self.assertEqual(cron_rows[0]["text"], "Heads up — check-in time.")
         self.assertEqual(cron_rows[0]["thread_id"], str(main_thread.id))
+
+    def test_app_channel_row_preserves_non_main_thread_in_since_feed(self):
+        from apps.router.chat_history import build_since_page
+
+        user = _make_user()
+        tenant = _make_tenant(user)
+        main_thread = ChatThread.objects.create(tenant=tenant, user=user, is_main=True, title="Main")
+        research_thread = ChatThread.objects.create(tenant=tenant, user=user, title="Research")
+        ProactiveOutbound.objects.create(
+            tenant=tenant,
+            channel="app",
+            channel_user_id=str(user.id),
+            message_text="Research is ready.",
+            thread_id=research_thread.id,
+        )
+
+        messages, _cursor = build_since_page(tenant, str(main_thread.id), cursor=None, limit=100)
+
+        cron_row = next(message for message in messages if message["source"] == "cron")
+        self.assertEqual(cron_row["thread_id"], str(research_thread.id))
