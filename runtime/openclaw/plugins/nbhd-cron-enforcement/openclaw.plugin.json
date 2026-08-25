@@ -1,7 +1,7 @@
 {
   "id": "nbhd-cron-enforcement",
   "name": "NBHD Cron Enforcement",
-  "description": "Fire-time OUTBOUND enforcement for typed cron patterns. Observes cron_changed to cache a firing cron's baked nbhd.v1 contract (parsed from CronJob.data.description) per session/run, then evaluates every dispatched nbhd_send_to_user call at before_tool_call — pass, rewrite to safe content, or block-and-revise (bounded) — before the message ever leaves the container. Zero Django calls at fire time: the contract travels with the job, baked at create/save time by apps/cron/signals.py. Registers no tools. See CONTINUITY_cron-typed-patterns.md.",
+  "description": "Fire-time OUTBOUND enforcement for typed cron patterns. Observes cron_changed to cache a firing cron's baked nbhd.v1 contract by jobId, joins runId to jobId at before_prompt_build, then evaluates every dispatched nbhd_send_to_user call at before_tool_call — pass, rewrite to safe content, or block-and-revise (bounded) — before the message ever leaves the container. The same run seam signs provenance for cron/datebook create tools. Zero Django calls at fire time. Registers no tools.",
   "contracts": {
     "tools": []
   },
@@ -14,6 +14,14 @@
         "minimum": 60,
         "maximum": 1800,
         "description": "How long a cached firing-session contract lives before forced expiry. Default 600s."
+      },
+      "tenantId": {
+        "type": "string",
+        "description": "Override tenant ID. Defaults to NBHD_TENANT_ID env var."
+      },
+      "internalApiKey": {
+        "type": "string",
+        "description": "Override internal API key. Defaults to NBHD_INTERNAL_API_KEY env var."
       }
     }
   }

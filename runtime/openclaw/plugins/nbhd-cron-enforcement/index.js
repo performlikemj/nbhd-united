@@ -1,19 +1,24 @@
+import { createHmac } from "node:crypto";
+
 /**
  * NBHD Cron Enforcement Plugin
  *
  * Fire-time OUTBOUND enforcement for typed cron patterns. Zero Django calls —
  * the contract travels with the job, baked at create/save time by
  * apps/cron/signals.py into ``CronJob.data["description"]`` as
- * ``"nbhd.v1 " + JSON``. Two hooks:
+ * ``"nbhd.v1 " + JSON``. Three hooks:
  *
  *   1. cron_changed(action="started")
  *        Parse this cron's baked contract off ``event.job.description``.
- *        Cache {contract, cronName, revisions:0} under BOTH sessionKey and
- *        runId (whichever the firing hook happens to carry). No contract
+ *        Cache {contract, cronName, revisions:0} under jobId. No contract
  *        (freeform/legacy/no-pattern cron, or malformed description) → no
  *        cache entry, fail-open.
  *
- *   2. before_tool_call
+ *   2. before_prompt_build
+ *        Join a real cron run's runId to its jobId. OpenClaw's started event
+ *        does not carry runId/sessionKey; this run-scoped hook does.
+ *
+ *   3. before_tool_call
  *        THE chokepoint. Typed crons build with ``delivery:{"mode":"none"}``
  *        and deliver by the agent calling the ``nbhd_send_to_user`` TOOL —
  *        message_sending never sees a mode:"none" cron's content (that hook
@@ -24,16 +29,14 @@
  *        try again, bounded by max_revisions), or allow (ship as-is once the
  *        revision budget is exhausted and there's no safe rewrite).
  *
- *   3. cron_changed(action="finished" | "removed")
- *        Drop the cache entry (both keys).
+ *   4. cron_changed(action="finished" | "removed")
+ *        Drop the jobId-keyed contract cache entry.
  *
  * FAIL-OPEN DISCIPLINE: ``before_tool_call`` is FAIL-CLOSED at the runtime
  * level (a throw blocks the tool call) — for EVERY tenant, once this plugin
- * is enabled, not just typed-cron sessions. So the entire hook body is
- * try/caught, returning undefined on any error, and the very first checks
- * are an O(1) cache lookup + miss-return, before any dispatch-shape parsing
- * or contract evaluation. Same discipline as nbhd-routing-context's
- * before_tool_call guard.
+ * is enabled, not just typed-cron sessions. Origin stripping runs first in
+ * its own guard; enforcement then remains fully try/caught and fail-open.
+ * Same discipline as nbhd-routing-context's before_tool_call guard.
  *
  * Handles both dispatch shapes: a direct call (toolName === "nbhd_send_to_user",
  * params.message) and the toolSearch meta-dispatch (toolName === "tool_call",
@@ -52,6 +55,7 @@
  */
 
 const DEFAULT_CACHE_TTL_SECONDS = 600;
+const RUN_CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 const CONTRACT_PREFIX = "nbhd.v1 ";
 const SEND_TOOL_ID = "nbhd_send_to_user";
 const TOOL_DISPATCH_META = "tool_call";
@@ -124,7 +128,11 @@ function getPluginConfig(api) {
       min: 60,
       max: 1800,
     }) * 1000;
-  return { cacheTtlMs };
+  return {
+    cacheTtlMs,
+    tenantId: asTrimmedString(pluginConfig.tenantId || process.env.NBHD_TENANT_ID),
+    internalKey: asTrimmedString(pluginConfig.internalApiKey || process.env.NBHD_INTERNAL_API_KEY),
+  };
 }
 
 // ── contract parsing ────────────────────────────────────────────────────────
@@ -242,7 +250,7 @@ export function decideGuardAction(contract, content, revisionsUsed) {
 // every pattern that predates this stays untouched.
 //
 // Pure decision function: never mutates. The caller owns the counters on the
-// cache entry, the same ownership split decideGuardAction/entry.revisions uses.
+// per-run state, the same ownership split decideGuardAction/run.revisions uses.
 // Exported for unit tests.
 export function decideLimitAction(contract, toolId, counters) {
   const limits = contract && contract.limits;
@@ -350,77 +358,183 @@ function buildRewriteParams(event, dispatch, newMessage) {
   return { ...originalParams, [key]: { ...inner, message: newMessage } };
 }
 
-// ── per-session cache ────────────────────────────────────────────────────────
-// Cached under BOTH sessionKey and runId (whichever a given hook invocation
-// carries) so a before_tool_call event that only has one of the two still
-// finds the entry cron_changed seeded under the other. Both keys point at the
-// SAME entry object, so mutating entry.revisions is visible under either key.
-const runContextCache = new Map();
-
-function setCacheEntry(entry, sessionKey, runId) {
-  const sKey = asTrimmedString(sessionKey);
-  const rKey = asTrimmedString(runId);
-  if (sKey) runContextCache.set(sKey, entry);
-  if (rKey && rKey !== sKey) runContextCache.set(rKey, entry);
-}
-
-function deleteCacheEntry(sessionKey, runId) {
-  const sKey = asTrimmedString(sessionKey);
-  const rKey = asTrimmedString(runId);
-  if (sKey) runContextCache.delete(sKey);
-  if (rKey) runContextCache.delete(rKey);
-}
-
-function lookupCacheEntry(sessionKey, runId) {
-  const sKey = asTrimmedString(sessionKey);
-  if (sKey && runContextCache.has(sKey)) return runContextCache.get(sKey);
-  const rKey = asTrimmedString(runId);
-  if (rKey && runContextCache.has(rKey)) return runContextCache.get(rKey);
-  return undefined;
-}
+// ── job-contract + per-run enforcement caches ───────────────────────────────
+// cron_changed owns job-scoped jobId -> contract metadata;
+// before_prompt_build owns runId -> jobId plus that run's mutable counters.
+const contractByJobId = new Map();
+const runById = new Map();
 
 function pruneExpired() {
   const now = Date.now();
-  for (const [key, entry] of runContextCache.entries()) {
-    if (now - entry.fetchedAtMs > entry.ttlMs) runContextCache.delete(key);
+  for (const [jobId, entry] of contractByJobId.entries()) {
+    if (now - entry.fetchedAtMs > entry.ttlMs) contractByJobId.delete(jobId);
+  }
+  for (const [runId, entry] of runById.entries()) {
+    if (now - entry.ts > RUN_CACHE_TTL_MS) runById.delete(runId);
+  }
+}
+
+function lookupRun(runId) {
+  const entry = runById.get(runId);
+  if (entry && Date.now() - entry.ts > RUN_CACHE_TTL_MS) {
+    runById.delete(runId);
+    return undefined;
+  }
+  return entry;
+}
+
+function lookupContract(jobId) {
+  const entry = contractByJobId.get(jobId);
+  if (entry && Date.now() - entry.fetchedAtMs > entry.ttlMs) {
+    contractByJobId.delete(jobId);
+    return undefined;
+  }
+  return entry;
+}
+
+function isOriginStampedTool(toolId) {
+  return toolId.startsWith("nbhd_cron_create_") || toolId.startsWith("nbhd_datebook_add_");
+}
+
+function originArgumentLocation(event) {
+  const params = asObject(event && event.params);
+  if (asTrimmedString(event && event.toolName) !== TOOL_DISPATCH_META) {
+    return { params, args: params, nestedKey: null };
+  }
+  if (params.params && typeof params.params === "object" && !Array.isArray(params.params)) {
+    return { params, args: params.params, nestedKey: "params" };
+  }
+  if (params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments)) {
+    return { params, args: params.arguments, nestedKey: "arguments" };
+  }
+  return null;
+}
+
+function buildOriginParams(location, args) {
+  if (location.nestedKey === null) return args;
+  return { ...location.params, [location.nestedKey]: args };
+}
+
+function stampForRun(runtime, runId, jobId) {
+  if (!runtime.tenantId || !runtime.internalKey) return null;
+  const ts = Math.floor(Date.now() / 1000);
+  const kind = "cron";
+  const message = `nbhd-origin.v1|${runtime.tenantId}|${kind}|${runId}|${jobId}|${ts}`;
+  const sig = createHmac("sha256", runtime.internalKey).update(message).digest("hex");
+  return {
+    v: 1,
+    kind,
+    tenant_id: runtime.tenantId,
+    run_id: runId,
+    job_id: jobId,
+    ts,
+    sig,
+  };
+}
+
+// Deliberately separate from (and before) enforcement. OpenClaw takes the LAST
+// defined `params` across before_tool_call subscribers
+// (hook-runner-global-BdHeqZIb.js:722), so any future plugin returning
+// `{ params }` must preserve this hook's flat or nested `_nbhd_origin` value.
+// Pinned OpenClaw
+// 2026.5.28 shallow-merges hook params over the original params
+// (agent-tools.before-tool-call-CcOZYWx4.js:515-523, called at :1035-1038),
+// so absence cannot remove a flat key. Every origin-capable call explicitly
+// overrides caller-controlled provenance with null or a signed stamp.
+function prepareOriginRewrite(api, event, runtime) {
+  let location;
+  let cleanArgs;
+  try {
+    const toolId = resolveDispatchedToolId(event);
+    if (!isOriginStampedTool(toolId)) return { event, result: undefined };
+    location = originArgumentLocation(event);
+    if (!location) return { event, result: undefined };
+    cleanArgs = { ...location.args, _nbhd_origin: null };
+
+    let stamp = null;
+    try {
+      const runId = asTrimmedString(event && event.runId);
+      const run = runId ? lookupRun(runId) : undefined;
+      const jobId = asTrimmedString(run && run.jobId);
+      if (runId && jobId) stamp = stampForRun(runtime, runId, jobId);
+    } catch (error) {
+      safeLogError(api, "warn", "nbhd-cron-enforcement: origin stamp error", error);
+    }
+    if (stamp) cleanArgs._nbhd_origin = stamp;
+
+    const params = buildOriginParams(location, cleanArgs);
+    return { event: { ...event, params }, result: { params } };
+  } catch (error) {
+    safeLogError(api, "warn", "nbhd-cron-enforcement: origin strip error", error);
+    if (location && cleanArgs) {
+      cleanArgs._nbhd_origin = null;
+      const params = buildOriginParams(location, cleanArgs);
+      return { event: { params }, result: { params } };
+    }
+    return { event, result: undefined };
   }
 }
 
 export default function register(api) {
   if (!api || typeof api.on !== "function") return;
 
-  const { cacheTtlMs } = getPluginConfig(api);
+  const runtime = getPluginConfig(api);
+  const { cacheTtlMs } = runtime;
 
-  safeLog(api, "info", "nbhd-cron-enforcement: registered (cron_changed + before_tool_call)");
+  safeLog(api, "info", "nbhd-cron-enforcement: registered (cron_changed + before_prompt_build + before_tool_call)");
 
   // ── cron_changed ───────────────────────────────────────────────────────
   api.on("cron_changed", (event) => {
     try {
       pruneExpired();
       const action = asTrimmedString(event && event.action);
-      const sessionKey = event && event.sessionKey;
-      const runId = event && event.runId;
+      const jobId = asTrimmedString(event && event.jobId);
 
       if (action === "finished" || action === "removed") {
-        deleteCacheEntry(sessionKey, runId);
+        if (jobId) contractByJobId.delete(jobId);
         return undefined;
       }
       if (action !== "started") return undefined;
-      if (!asTrimmedString(sessionKey) && !asTrimmedString(runId)) return undefined;
+      if (!jobId) return undefined;
 
       const job = asObject(event && event.job);
-      const cronName = asTrimmedString(job.name || (event && event.jobId));
+      const cronName = asTrimmedString(job.name || jobId);
       const contract = parseContract(job.description);
       if (!contract) return undefined; // freeform/legacy/no-contract cron — nothing to enforce
 
-      setCacheEntry(
-        { fetchedAtMs: Date.now(), ttlMs: cacheTtlMs, cronName, contract, revisions: 0, sends: 0, mutations: 0 },
-        sessionKey,
-        runId,
-      );
+      contractByJobId.set(jobId, {
+        fetchedAtMs: Date.now(),
+        ttlMs: cacheTtlMs,
+        cronName,
+        contract,
+      });
       return undefined;
     } catch (error) {
       safeLogError(api, "warn", "nbhd-cron-enforcement: cron_changed error", error);
+      return undefined;
+    }
+  });
+
+  // ── before_prompt_build ─────────────────────────────────────────────
+  api.on("before_prompt_build", (_event, ctx) => {
+    try {
+      pruneExpired();
+      if (ctx && ctx.trigger === "cron") {
+        const runId = asTrimmedString(ctx.runId);
+        const jobId = asTrimmedString(ctx.jobId);
+        if (runId && jobId && !lookupRun(runId)) {
+          runById.set(runId, {
+            jobId,
+            ts: Date.now(),
+            revisions: 0,
+            sends: 0,
+            mutations: 0,
+          });
+        }
+      }
+      return undefined;
+    } catch (error) {
+      safeLogError(api, "warn", "nbhd-cron-enforcement: before_prompt_build error", error);
       return undefined;
     }
   });
@@ -431,84 +545,93 @@ export default function register(api) {
   // cache-miss return (runs on EVERY tool call, for EVERY tenant, once
   // enabled — must be cheap and must never throw).
   api.on("before_tool_call", (event) => {
+    let origin = { event, result: undefined };
     try {
-      const entry = lookupCacheEntry(event && event.sessionKey, event && event.runId);
-      if (!entry || !entry.contract) return undefined;
+      origin = prepareOriginRewrite(api, event, runtime);
+    } catch (error) {
+      safeLogError(api, "warn", "nbhd-cron-enforcement: origin preparation error", error);
+    }
+    const guardedEvent = origin.event;
+    try {
+      const runId = asTrimmedString(event && event.runId);
+      const run = runId ? lookupRun(runId) : undefined;
+      const job = run ? lookupContract(run.jobId) : undefined;
+      if (!run || !job || !job.contract) return origin.result;
 
-      const toolId = resolveDispatchedToolId(event);
+      const toolId = resolveDispatchedToolId(guardedEvent);
 
       // Mutation budget. Nothing to validate about the content of a
       // complete/skip/defer — the only question is whether this turn has spent
       // its allowance. Handled before the send path so a non-send tool exits
       // here and never touches message extraction.
       if (toolId !== SEND_TOOL_ID) {
-        const mutationLimit = decideLimitAction(entry.contract, toolId, entry);
+        const mutationLimit = decideLimitAction(job.contract, toolId, run);
         if (mutationLimit.type === "block") {
           safeLog(
             api,
             "warn",
-            `nbhd-cron-enforcement: mutation cap reached cron=${entry.cronName} ` +
-              `pattern=${(entry.contract && entry.contract.pattern) || "?"} tool=${toolId}`,
+            `nbhd-cron-enforcement: mutation cap reached cron=${job.cronName} ` +
+              `pattern=${(job.contract && job.contract.pattern) || "?"} tool=${toolId}`,
           );
           return { block: true, blockReason: mutationLimit.reason };
         }
-        if (mutationLimit.type === "count") entry.mutations = (entry.mutations || 0) + 1;
-        return undefined;
+        if (mutationLimit.type === "count") run.mutations = (run.mutations || 0) + 1;
+        return origin.result;
       }
 
-      const dispatch = extractSendMessage(event);
-      if (!dispatch.matched) return undefined;
+      const dispatch = extractSendMessage(guardedEvent);
+      if (!dispatch.matched) return origin.result;
 
       // Send budget, evaluated BEFORE the content contract: dispatch number two
       // is refused outright rather than being revised into shape. This is what
       // makes "exactly one summary" structural instead of prose — and it also
       // closes the unmarked-second-message path, since a message that never
       // dispatches cannot arrive without its marker.
-      const sendLimit = decideLimitAction(entry.contract, SEND_TOOL_ID, entry);
+      const sendLimit = decideLimitAction(job.contract, SEND_TOOL_ID, run);
       if (sendLimit.type === "block") {
         safeLog(
           api,
           "warn",
-          `nbhd-cron-enforcement: send cap reached cron=${entry.cronName} ` +
-            `pattern=${(entry.contract && entry.contract.pattern) || "?"}`,
+          `nbhd-cron-enforcement: send cap reached cron=${job.cronName} ` +
+            `pattern=${(job.contract && job.contract.pattern) || "?"}`,
         );
         return { block: true, blockReason: sendLimit.reason };
       }
 
-      const decision = decideGuardAction(entry.contract, dispatch.message, entry.revisions);
+      const decision = decideGuardAction(job.contract, dispatch.message, run.revisions);
       if (decision.type === "revise") {
         // A blocked revise never reaches the user, so it must not burn the send
         // budget — otherwise asking the model to fix its marker would cost it
         // the only message it was allowed to send.
-        entry.revisions += 1;
+        run.revisions += 1;
         return { block: true, blockReason: decision.reason };
       }
 
       // Everything below here ships a message to the user (pass, rewrite, or
       // allow-after-budget), so the send is spent at this point.
-      if (sendLimit.type === "count") entry.sends = (entry.sends || 0) + 1;
+      if (sendLimit.type === "count") run.sends = (run.sends || 0) + 1;
       if (decision.type === "rewrite") {
         safeLog(
           api,
           "warn",
-          `nbhd-cron-enforcement: rewriting outbound message cron=${entry.cronName} ` +
-            `pattern=${(entry.contract && entry.contract.pattern) || "?"}`,
+          `nbhd-cron-enforcement: rewriting outbound message cron=${job.cronName} ` +
+            `pattern=${(job.contract && job.contract.pattern) || "?"}`,
         );
-        return { params: buildRewriteParams(event, dispatch, decision.content) };
+        return { params: buildRewriteParams(guardedEvent, dispatch, decision.content) };
       }
       if (decision.type === "allow") {
         safeLog(
           api,
           "warn",
           `nbhd-cron-enforcement: allowing outbound after revision budget exhausted ` +
-            `cron=${entry.cronName} pattern=${(entry.contract && entry.contract.pattern) || "?"}`,
+            `cron=${job.cronName} pattern=${(job.contract && job.contract.pattern) || "?"}`,
         );
-        return undefined;
+        return origin.result;
       }
-      return undefined; // pass
+      return origin.result; // pass
     } catch (error) {
       safeLogError(api, "warn", "nbhd-cron-enforcement: before_tool_call guard error", error);
-      return undefined;
+      return origin.result;
     }
   });
 }

@@ -9,6 +9,8 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
 
 import register, {
   parseContract,
@@ -42,24 +44,72 @@ function hygieneContract(limits = { sends: 1, mutations: 10 }) {
   );
 }
 
-function startHygieneCron(sessionKey, limits) {
+function startCron(api, runId, job, jobId = `job-${runId}`) {
+  api._handlers["cron_changed"]({
+    jobId,
+    action: "started",
+    job,
+    runAtMs: Date.now(),
+  });
+  const promptResult = api._handlers["before_prompt_build"]({}, {
+    trigger: "cron",
+    jobId,
+    runId,
+  });
+  assert.equal(promptResult, undefined);
+}
+
+function startHygieneCron(runId, limits) {
   const api = makeFakeApi();
   register(api);
-  api._handlers["cron_changed"]({
-    action: "started",
-    sessionKey,
-    job: { name: "Task Hygiene", description: hygieneContract(limits) },
-  });
+  startCron(api, runId, { name: "Task Hygiene", description: hygieneContract(limits) });
   return api._handlers["before_tool_call"];
 }
 
-function sendCall(sessionKey, message) {
-  return { sessionKey, toolName: "nbhd_send_to_user", params: { message } };
+function sendCall(runId, message) {
+  return { runId, toolName: "nbhd_send_to_user", params: { message } };
 }
 
-function mutationCall(sessionKey, toolName = "nbhd_task_complete") {
-  return { sessionKey, toolName, params: { task_id: "t-1" } };
+function mutationCall(runId, toolName = "nbhd_task_complete") {
+  return { runId, toolName, params: { task_id: "t-1" } };
 }
+
+// openclaw@2026.5.28 does not replace flat params: it shallow-merges hook
+// params over the originals in mergeParamsWithApprovalOverrides
+// (agent-tools.before-tool-call-CcOZYWx4.js:515-523, invoked at :1035-1038).
+// Keep these assertions on the values the tool actually executes, not merely
+// on the hook's return object.
+function mergeLikePinnedSdk(originalParams, hookResult) {
+  return hookResult?.params && typeof hookResult.params === "object"
+    ? { ...originalParams, ...hookResult.params }
+    : originalParams;
+}
+
+describe("before_tool_call params ownership policy", () => {
+  it("no other plugin hook returns a params key after the origin-stamping hook", () => {
+    const pluginsDir = new URL("../", import.meta.url);
+    const offenders = [];
+    for (const entry of readdirSync(pluginsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === "nbhd-cron-enforcement") continue;
+      const indexUrl = new URL(`${entry.name}/index.js`, pluginsDir);
+      let source;
+      try {
+        source = readFileSync(indexUrl, "utf8");
+      } catch (error) {
+        if (error && error.code === "ENOENT") continue;
+        throw error;
+      }
+      if (!/api\.on\(["']before_tool_call["']/.test(source)) continue;
+      if (/return\s*\{\s*params(?:\s*[:,}])/.test(source)) offenders.push(entry.name);
+    }
+
+    // Source-text guard only: it deliberately does not parse JavaScript or
+    // detect aliases/computed keys. It catches the direct `{ params }` return
+    // shape whose last-defined-wins behavior is pinned at
+    // hook-runner-global-BdHeqZIb.js:722.
+    assert.deepEqual(offenders, []);
+  });
+});
 
 // ── parseContract ────────────────────────────────────────────────────────────
 
@@ -353,11 +403,12 @@ function makeFakeApi(pluginConfig) {
   };
 }
 
-describe("register() wires up cron_changed + before_tool_call", () => {
-  it("registers both hooks", () => {
+describe("register() wires up the jobId/runId seam", () => {
+  it("registers all three hooks", () => {
     const api = makeFakeApi();
     register(api);
     assert.equal(typeof api._handlers["cron_changed"], "function");
+    assert.equal(typeof api._handlers["before_prompt_build"], "function");
     assert.equal(typeof api._handlers["before_tool_call"], "function");
   });
 
@@ -371,7 +422,7 @@ describe("register() wires up cron_changed + before_tool_call", () => {
     register(api);
     const beforeToolCall = api._handlers["before_tool_call"];
     const result = beforeToolCall({
-      sessionKey: "some-chat-session",
+      runId: "some-chat-run",
       toolName: "nbhd_send_to_user",
       params: { message: "anything" },
     });
@@ -381,12 +432,11 @@ describe("register() wires up cron_changed + before_tool_call", () => {
   it("a cron with no contract (freeform/legacy) caches nothing — before_tool_call no-ops", () => {
     const api = makeFakeApi();
     register(api);
-    const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({ action: "started", sessionKey: "sess-freeform", job: { name: "freeform-job" } }); // no description
+    startCron(api, "run-freeform", { name: "freeform-job" }); // no description
     const result = beforeToolCall({
-      sessionKey: "sess-freeform",
+      runId: "run-freeform",
       toolName: "nbhd_send_to_user",
       params: { message: "anything goes" },
     });
@@ -396,20 +446,15 @@ describe("register() wires up cron_changed + before_tool_call", () => {
   it("end-to-end: rewrite action swaps the message, direct dispatch shape", () => {
     const api = makeFakeApi();
     register(api);
-    const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "sess-1",
-      job: {
+    startCron(api, "run-1", {
         name: "hydrate",
         description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }),
-      },
     });
 
     const result = beforeToolCall({
-      sessionKey: "sess-1",
+      runId: "run-1",
       toolName: "nbhd_send_to_user",
       params: { message: "You should stay hydrated", job_name: "hydrate" },
     });
@@ -419,20 +464,15 @@ describe("register() wires up cron_changed + before_tool_call", () => {
   it("end-to-end: rewrite action swaps the message, toolSearch meta dispatch shape (params.params)", () => {
     const api = makeFakeApi();
     register(api);
-    const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "sess-2",
-      job: {
+    startCron(api, "run-2", {
         name: "hydrate",
         description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }),
-      },
     });
 
     const result = beforeToolCall({
-      sessionKey: "sess-2",
+      runId: "run-2",
       toolName: "tool_call",
       params: { id: "nbhd_send_to_user", params: { message: "wrong text", job_name: "hydrate" } },
     });
@@ -442,17 +482,12 @@ describe("register() wires up cron_changed + before_tool_call", () => {
   it("end-to-end: rewrite action swaps the message, toolSearch meta dispatch shape (params.arguments)", () => {
     const api = makeFakeApi();
     register(api);
-    const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "sess-3",
-      job: { name: "hydrate", description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }) },
-    });
+    startCron(api, "run-3", { name: "hydrate", description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }) });
 
     const result = beforeToolCall({
-      sessionKey: "sess-3",
+      runId: "run-3",
       toolName: "tool_call",
       params: { id: "nbhd_send_to_user", arguments: { message: "wrong text" } },
     });
@@ -462,23 +497,18 @@ describe("register() wires up cron_changed + before_tool_call", () => {
   it("end-to-end: revise_then_rewrite blocks under budget, then rewrites once exhausted", () => {
     const api = makeFakeApi();
     register(api);
-    const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "sess-4",
-      job: {
+    startCron(api, "run-4", {
         name: "appt",
         description: contract(
           { kind: "contains", text: "appointment Tuesday 3pm" },
           { action: "revise_then_rewrite", content: "appointment Tuesday 3pm", max_revisions: 1 },
           "quote_user_intent",
         ),
-      },
     });
 
-    const badCall = { sessionKey: "sess-4", toolName: "nbhd_send_to_user", params: { message: "no verbatim text" } };
+    const badCall = { runId: "run-4", toolName: "nbhd_send_to_user", params: { message: "no verbatim text" } };
     const first = beforeToolCall(badCall);
     assert.equal(first.block, true);
     assert.match(first.blockReason, /verbatim text/);
@@ -491,23 +521,18 @@ describe("register() wires up cron_changed + before_tool_call", () => {
   it("end-to-end: revise_then_allow blocks under budget, then allows through once exhausted", () => {
     const api = makeFakeApi();
     register(api);
-    const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "sess-5",
-      job: {
+    startCron(api, "run-5", {
         name: "weekly-tasks",
         description: contract(
           { kind: "marker", marker: "[block: task_summary]" },
           { action: "revise_then_allow", max_revisions: 1 },
           "domain_summary",
         ),
-      },
     });
 
-    const badCall = { sessionKey: "sess-5", toolName: "nbhd_send_to_user", params: { message: "no marker here" } };
+    const badCall = { runId: "run-5", toolName: "nbhd_send_to_user", params: { message: "no marker here" } };
     assert.equal(beforeToolCall(badCall).block, true);
     // Budget exhausted — ships as-is (undefined = no interference with the call).
     assert.equal(beforeToolCall(badCall), undefined);
@@ -516,61 +541,40 @@ describe("register() wires up cron_changed + before_tool_call", () => {
   it("a passing message is never touched", () => {
     const api = makeFakeApi();
     register(api);
-    const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "sess-6",
-      job: { name: "hydrate", description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }) },
-    });
+    startCron(api, "run-6", { name: "hydrate", description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }) });
 
     const result = beforeToolCall({
-      sessionKey: "sess-6",
+      runId: "run-6",
       toolName: "nbhd_send_to_user",
       params: { message: "Drink water" },
     });
     assert.equal(result, undefined);
   });
 
-  it("finished/removed clears the cache for both sessionKey and runId", () => {
+  it("finished/removed clears the jobId-keyed contract cache", () => {
     const api = makeFakeApi();
     register(api);
     const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "sess-7",
-      runId: "run-7",
-      job: { name: "hydrate", description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }) },
-    });
-    cronChanged({ action: "finished", sessionKey: "sess-7", runId: "run-7" });
+    startCron(api, "run-7", { name: "hydrate", description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }) }, "job-7");
+    cronChanged({ action: "finished", jobId: "job-7" });
 
-    assert.equal(
-      beforeToolCall({ sessionKey: "sess-7", toolName: "nbhd_send_to_user", params: { message: "bad" } }),
-      undefined,
-    );
     assert.equal(
       beforeToolCall({ runId: "run-7", toolName: "nbhd_send_to_user", params: { message: "bad" } }),
       undefined,
     );
   });
 
-  it("caches under both sessionKey AND runId — before_tool_call finds it via either", () => {
+  it("joins started jobId to before_prompt_build runId", () => {
     const api = makeFakeApi();
     register(api);
-    const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "sess-8",
-      runId: "run-8",
-      job: { name: "hydrate", description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }) },
-    });
+    startCron(api, "run-8", { name: "hydrate", description: contract({ kind: "contains", text: "Drink water" }, { action: "rewrite", content: "Drink water" }) });
 
-    // Only runId present on this before_tool_call event — must still hit.
     const result = beforeToolCall({ runId: "run-8", toolName: "nbhd_send_to_user", params: { message: "wrong" } });
     assert.deepEqual(result, { params: { message: "Drink water" } });
   });
@@ -586,28 +590,20 @@ describe("register() wires up cron_changed + before_tool_call", () => {
       let now = 1_000_000_000;
       Date.now = () => now;
 
-      cronChanged({
-        action: "started",
-        sessionKey: "sess-old",
-        job: { name: "old", description: contract({ kind: "contains", text: "hi" }, { action: "rewrite", content: "hi" }) },
-      });
+      startCron(api, "run-old", { name: "old", description: contract({ kind: "contains", text: "hi" }, { action: "rewrite", content: "hi" }) });
       assert.equal(
-        beforeToolCall({ sessionKey: "sess-old", toolName: "nbhd_send_to_user", params: { message: "bad" } })?.params
+        beforeToolCall({ runId: "run-old", toolName: "nbhd_send_to_user", params: { message: "bad" } })?.params
           ?.message,
         "hi",
       );
 
       now += 61_000; // past the 60s ttl
-      cronChanged({
-        action: "started",
-        sessionKey: "sess-new",
-        job: { name: "new", description: contract({ kind: "contains", text: "yo" }, { action: "rewrite", content: "yo" }) },
-      });
+      startCron(api, "run-new", { name: "new", description: contract({ kind: "contains", text: "yo" }, { action: "rewrite", content: "yo" }) });
 
-      // sess-old's entry should have been pruned by the pruneExpired() call at
+      // job-run-old's entry should have been pruned by the next cron_changed;
       // the top of this second cron_changed — before_tool_call now sees a miss.
       assert.equal(
-        beforeToolCall({ sessionKey: "sess-old", toolName: "nbhd_send_to_user", params: { message: "bad" } }),
+        beforeToolCall({ runId: "run-old", toolName: "nbhd_send_to_user", params: { message: "bad" } }),
         undefined,
       );
     } finally {
@@ -623,6 +619,113 @@ describe("register() wires up cron_changed + before_tool_call", () => {
 // garbage event shapes, and assert the hook NEVER throws — only ever
 // undefined or a well-formed decision.
 
+describe("signed cron origin", () => {
+  const tenantId = "00000000-0000-4000-8000-000000000123";
+  const internalKey = "origin-test-key";
+  const makeOriginApi = () => makeFakeApi({ tenantId, internalApiKey: internalKey });
+
+  it("adds the exact HMAC-SHA256 stamp and overwrites a flat caller stamp", () => {
+    const api = makeOriginApi();
+    register(api);
+    const realNow = Date.now;
+    try {
+      Date.now = () => 1_800_000_123_456;
+      startCron(api, "run-origin-flat", { name: "Morning Briefing" }, "job-origin-flat");
+      const originalParams = { name: "Friday plan", _nbhd_origin: { sig: "forged" } };
+      const result = api._handlers["before_tool_call"]({
+        runId: "run-origin-flat",
+        toolName: "nbhd_cron_create_pure_reminder",
+        params: originalParams,
+      });
+      const ts = 1_800_000_123;
+      const message = `nbhd-origin.v1|${tenantId}|cron|run-origin-flat|job-origin-flat|${ts}`;
+      const sig = createHmac("sha256", internalKey).update(message).digest("hex");
+      assert.deepEqual(mergeLikePinnedSdk(originalParams, result), {
+          name: "Friday plan",
+          _nbhd_origin: {
+            v: 1,
+            kind: "cron",
+            tenant_id: tenantId,
+            run_id: "run-origin-flat",
+            job_id: "job-origin-flat",
+            ts,
+            sig,
+          },
+      });
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it("strips caller origin for unknown runs in flat and both meta envelopes", () => {
+    const api = makeOriginApi();
+    register(api);
+    const beforeToolCall = api._handlers["before_tool_call"];
+    const flat = { items: [], _nbhd_origin: { sig: "forged" } };
+    const flatResult = beforeToolCall({ runId: "unknown-flat", toolName: "nbhd_datebook_add_event", params: flat });
+    assert.equal(mergeLikePinnedSdk(flat, flatResult)._nbhd_origin, null);
+
+    const metaParams = { id: "nbhd_cron_create_domain_summary", params: { name: "x", _nbhd_origin: { sig: "forged" } } };
+    const metaParamsResult = beforeToolCall({ runId: "unknown-meta-params", toolName: "tool_call", params: metaParams });
+    assert.equal(mergeLikePinnedSdk(metaParams, metaParamsResult).params._nbhd_origin, null);
+
+    const metaArguments = { id: "nbhd_datebook_add_apple_reminder", arguments: { items: [], _nbhd_origin: { sig: "forged" } } };
+    const metaArgumentsResult = beforeToolCall({ runId: "unknown-meta-arguments", toolName: "tool_call", params: metaArguments });
+    assert.equal(mergeLikePinnedSdk(metaArguments, metaArgumentsResult).arguments._nbhd_origin, null);
+  });
+
+  it("overwrites caller origin inside a meta envelope and preserves it", () => {
+    const api = makeOriginApi();
+    register(api);
+    startCron(api, "run-origin-meta", { name: "Week Ahead" }, "job-origin-meta");
+    const originalParams = { id: "nbhd_datebook_add_event", trace: "preserved", arguments: { items: [{ title: "Plan" }], _nbhd_origin: { sig: "forged" } } };
+    const result = api._handlers["before_tool_call"]({
+      runId: "run-origin-meta",
+      toolName: "tool_call",
+      params: originalParams,
+    });
+    const merged = mergeLikePinnedSdk(originalParams, result);
+    assert.equal(merged.id, "nbhd_datebook_add_event");
+    assert.equal(merged.trace, "preserved");
+    assert.deepEqual(merged.arguments.items, [{ title: "Plan" }]);
+    assert.equal(merged.arguments._nbhd_origin.kind, "cron");
+    assert.equal(merged.arguments._nbhd_origin.run_id, "run-origin-meta");
+    assert.equal(merged.arguments._nbhd_origin.job_id, "job-origin-meta");
+    assert.notEqual(merged.arguments._nbhd_origin.sig, "forged");
+  });
+
+  it("returns stripped params even when enforcement throws afterward", () => {
+    const api = makeOriginApi();
+    register(api);
+    startCron(api, "run-origin-error", { name: "guarded", description: contract({ kind: "contains", text: "x" }, { action: "rewrite", content: "x" }) });
+    const originalParams = { name: "x", _nbhd_origin: { sig: "forged" } };
+    const event = { toolName: "nbhd_cron_create_pure_reminder", params: originalParams };
+    Object.defineProperty(event, "runId", {
+      enumerable: true,
+      get() {
+        throw new Error("enforcement lookup failed");
+      },
+    });
+    let result;
+    assert.doesNotThrow(() => {
+      result = api._handlers["before_tool_call"](event);
+    });
+    const merged = mergeLikePinnedSdk(originalParams, result);
+    assert.equal(merged.name, "x");
+    assert.equal(merged._nbhd_origin, null);
+  });
+
+  it("before_prompt_build ignores non-cron and incomplete contexts", () => {
+    const api = makeOriginApi();
+    register(api);
+    const beforePromptBuild = api._handlers["before_prompt_build"];
+    assert.equal(beforePromptBuild({}, { trigger: "user", runId: "run-user", jobId: "job-user" }), undefined);
+    assert.equal(beforePromptBuild({}, { trigger: "cron", runId: "run-no-job" }), undefined);
+    const result = api._handlers["before_tool_call"]({ runId: "run-user", toolName: "nbhd_cron_create_pure_reminder", params: { name: "x" } });
+    assert.equal(result.params._nbhd_origin, null);
+  });
+});
+
 describe("before_tool_call throw-safety", () => {
   it("a structurally poisoned contract (check=null, wrong-typed leaves) never throws", () => {
     const api = makeFakeApi();
@@ -632,24 +735,23 @@ describe("before_tool_call throw-safety", () => {
 
     const poisoned =
       PREFIX + JSON.stringify({ v: 1, pattern: "x", check: null, on_fail: { action: "rewrite", content: 12345 } });
-    cronChanged({ action: "started", sessionKey: "poison-1", job: { name: "p", description: poisoned } });
+    startCron(api, "poison-1", { name: "p", description: poisoned });
 
     assert.doesNotThrow(() =>
-      beforeToolCall({ sessionKey: "poison-1", toolName: "nbhd_send_to_user", params: { message: "hi" } }),
+      beforeToolCall({ runId: "poison-1", toolName: "nbhd_send_to_user", params: { message: "hi" } }),
     );
   });
 
   it("a contract with a garbage on_fail.action never throws", () => {
     const api = makeFakeApi();
     register(api);
-    const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
     const poisoned = PREFIX + JSON.stringify({ v: 1, pattern: "x", check: { kind: "bogus" }, on_fail: 42 });
-    cronChanged({ action: "started", sessionKey: "poison-2", job: { name: "p2", description: poisoned } });
+    startCron(api, "poison-2", { name: "p2", description: poisoned });
 
     assert.doesNotThrow(() =>
-      beforeToolCall({ sessionKey: "poison-2", toolName: "nbhd_send_to_user", params: { message: "hi" } }),
+      beforeToolCall({ runId: "poison-2", toolName: "nbhd_send_to_user", params: { message: "hi" } }),
     );
   });
 
@@ -665,7 +767,7 @@ describe("before_tool_call throw-safety", () => {
     const beforeToolCall = api._handlers["before_tool_call"];
 
     const poisonedEvent = { toolName: "nbhd_send_to_user", params: { message: "hi" } };
-    Object.defineProperty(poisonedEvent, "sessionKey", {
+    Object.defineProperty(poisonedEvent, "runId", {
       get() {
         throw Symbol("boom");
       },
@@ -684,7 +786,7 @@ describe("before_tool_call throw-safety", () => {
     const cronChanged = api._handlers["cron_changed"];
 
     const poisonedEvent = { action: "started", job: { name: "p", description: "nbhd.v1 {}" } };
-    Object.defineProperty(poisonedEvent, "sessionKey", {
+    Object.defineProperty(poisonedEvent, "jobId", {
       get() {
         const poisonedError = {};
         Object.defineProperty(poisonedError, "message", {
@@ -706,11 +808,7 @@ describe("before_tool_call throw-safety", () => {
     const cronChanged = api._handlers["cron_changed"];
     const beforeToolCall = api._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "poison-3",
-      job: { name: "p3", description: contract({ kind: "contains", text: "hi" }, { action: "rewrite", content: "hi" }) },
-    });
+    startCron(api, "poison-3", { name: "p3", description: contract({ kind: "contains", text: "hi" }, { action: "rewrite", content: "hi" }) });
 
     for (const garbage of [
       null,
@@ -718,8 +816,8 @@ describe("before_tool_call throw-safety", () => {
       {},
       { toolName: 42 },
       { toolName: "tool_call", params: null },
-      { sessionKey: "poison-3", toolName: "nbhd_send_to_user", params: null },
-      { sessionKey: "poison-3", toolName: "tool_call", params: { id: "nbhd_send_to_user", params: "not an object" } },
+      { runId: "poison-3", toolName: "nbhd_send_to_user", params: null },
+      { runId: "poison-3", toolName: "tool_call", params: { id: "nbhd_send_to_user", params: "not an object" } },
     ]) {
       assert.doesNotThrow(() => beforeToolCall(garbage));
     }
@@ -735,16 +833,12 @@ describe("before_tool_call throw-safety", () => {
     const beforeToolCall = throwingApi._handlers["before_tool_call"];
 
     assert.doesNotThrow(() =>
-      cronChanged({ action: "started", sessionKey: "s-log-1", job: { name: "j", description: "nbhd.v1 {not json" } }),
+      cronChanged({ action: "started", jobId: "job-s-log-1", job: { name: "j", description: "nbhd.v1 {not json" } }),
     );
 
-    cronChanged({
-      action: "started",
-      sessionKey: "s-log-2",
-      job: { name: "j2", description: contract({ kind: "contains", text: "hi" }, { action: "rewrite", content: "hi" }) },
-    });
+    startCron(throwingApi, "s-log-2", { name: "j2", description: contract({ kind: "contains", text: "hi" }, { action: "rewrite", content: "hi" }) });
     assert.doesNotThrow(() =>
-      beforeToolCall({ sessionKey: "s-log-2", toolName: "nbhd_send_to_user", params: { message: "hi" } }),
+      beforeToolCall({ runId: "s-log-2", toolName: "nbhd_send_to_user", params: { message: "hi" } }),
     );
   });
 
@@ -757,15 +851,11 @@ describe("before_tool_call throw-safety", () => {
     const cronChanged = throwingApi._handlers["cron_changed"];
     const beforeToolCall = throwingApi._handlers["before_tool_call"];
 
-    cronChanged({
-      action: "started",
-      sessionKey: "s-log-3",
-      job: { name: "j3", description: contract({ kind: "contains", text: "hi" }, { action: "rewrite", content: "hi" }) },
-    });
+    startCron(throwingApi, "s-log-3", { name: "j3", description: contract({ kind: "contains", text: "hi" }, { action: "rewrite", content: "hi" }) });
 
     let result;
     assert.doesNotThrow(() => {
-      result = beforeToolCall({ sessionKey: "s-log-3", toolName: "nbhd_send_to_user", params: { message: "wrong text" } });
+      result = beforeToolCall({ runId: "s-log-3", toolName: "nbhd_send_to_user", params: { message: "wrong text" } });
     });
     assert.deepEqual(result, { params: { message: "hi" } });
   });
@@ -781,7 +871,7 @@ describe("before_tool_call throw-safety", () => {
     // even though parseContract itself doesn't log, this proves cron_changed's
     // own catch-block logging can't escape either.
     assert.doesNotThrow(() =>
-      cronChanged({ action: "started", sessionKey: "s-log-4", job: { name: "j4", description: undefined } }),
+      cronChanged({ action: "started", jobId: "job-s-log-4", job: { name: "j4", description: undefined } }),
     );
   });
 });
@@ -863,6 +953,69 @@ describe("end-to-end caps via register() — the real before_tool_call path", ()
     assert.match(second.blockReason, /already sent/);
   });
 
+  it("two interleaved runs of the same job have independent send budgets", () => {
+    const api = makeFakeApi();
+    register(api);
+    const jobId = "job-overlap";
+    const job = { name: "Task Hygiene", description: hygieneContract() };
+    startCron(api, "run-overlap-a", job, jobId);
+    assert.equal(api._handlers["before_prompt_build"]({}, {
+      trigger: "cron",
+      jobId,
+      runId: "run-overlap-b",
+    }), undefined);
+
+    const beforeToolCall = api._handlers["before_tool_call"];
+    assert.equal(beforeToolCall(sendCall("run-overlap-a", `${HYGIENE_MARKER}\nrun A first`)), undefined);
+    assert.equal(beforeToolCall(sendCall("run-overlap-b", `${HYGIENE_MARKER}\nrun B first`)), undefined);
+    assert.equal(beforeToolCall(sendCall("run-overlap-a", `${HYGIENE_MARKER}\nrun A second`)).block, true);
+    assert.equal(beforeToolCall(sendCall("run-overlap-b", `${HYGIENE_MARKER}\nrun B second`)).block, true);
+  });
+
+  it("a repeated started event refreshes the job contract without resetting a live run", () => {
+    const api = makeFakeApi();
+    register(api);
+    const jobId = "job-reemitted-start";
+    const job = { name: "Task Hygiene", description: hygieneContract() };
+    startCron(api, "run-reemitted-start", job, jobId);
+    const beforeToolCall = api._handlers["before_tool_call"];
+    assert.equal(
+      beforeToolCall(sendCall("run-reemitted-start", `${HYGIENE_MARKER}\nfirst`)),
+      undefined,
+    );
+
+    api._handlers["cron_changed"]({
+      jobId,
+      action: "started",
+      job,
+      runAtMs: Date.now(),
+    });
+    const second = beforeToolCall(sendCall("run-reemitted-start", `${HYGIENE_MARKER}\nsecond`));
+    assert.equal(second.block, true);
+    assert.match(second.blockReason, /already sent/);
+  });
+
+  it("a repeated before_prompt_build for one run preserves its counters", () => {
+    const api = makeFakeApi();
+    register(api);
+    const jobId = "job-double-prompt";
+    startCron(api, "run-double-prompt", {
+      name: "Task Hygiene",
+      description: hygieneContract(),
+    }, jobId);
+    const beforeToolCall = api._handlers["before_tool_call"];
+    assert.equal(beforeToolCall(sendCall("run-double-prompt", `${HYGIENE_MARKER}\nfirst`)), undefined);
+
+    assert.equal(api._handlers["before_prompt_build"]({}, {
+      trigger: "cron",
+      jobId,
+      runId: "run-double-prompt",
+    }), undefined);
+    const second = beforeToolCall(sendCall("run-double-prompt", `${HYGIENE_MARKER}\nsecond`));
+    assert.equal(second.block, true);
+    assert.match(second.blockReason, /already sent/);
+  });
+
   it("a second send is refused even when its content is perfectly valid", () => {
     // The cap is structural, not a content judgement — this is the ONE-sender
     // guarantee, and it holds regardless of how good message two looks.
@@ -911,11 +1064,11 @@ describe("end-to-end caps via register() — the real before_tool_call path", ()
   it("mutations are capped through the toolSearch meta dispatch too", () => {
     const beforeToolCall = startHygieneCron("cap-meta", { sends: 1, mutations: 1 });
     assert.equal(
-      beforeToolCall({ sessionKey: "cap-meta", toolName: "tool_call", params: { id: "nbhd_task_skip" } }),
+      beforeToolCall({ runId: "cap-meta", toolName: "tool_call", params: { id: "nbhd_task_skip" } }),
       undefined,
     );
     const blocked = beforeToolCall({
-      sessionKey: "cap-meta",
+      runId: "cap-meta",
       toolName: "tool_call",
       params: { id: "nbhd_task_skip" },
     });
@@ -925,7 +1078,7 @@ describe("end-to-end caps via register() — the real before_tool_call path", ()
   it("read-only query tools are never capped", () => {
     const beforeToolCall = startHygieneCron("cap-reads", { sends: 1, mutations: 1 });
     for (let i = 0; i < 20; i += 1) {
-      assert.equal(beforeToolCall({ sessionKey: "cap-reads", toolName: "nbhd_task_list", params: {} }), undefined);
+      assert.equal(beforeToolCall({ runId: "cap-reads", toolName: "nbhd_task_list", params: {} }), undefined);
     }
     // The mutation budget is untouched by all that reading.
     assert.equal(beforeToolCall(mutationCall("cap-reads")), undefined);
@@ -936,23 +1089,19 @@ describe("end-to-end caps via register() — the real before_tool_call path", ()
     // acquire a cap by accident.
     const api = makeFakeApi();
     register(api);
-    api._handlers["cron_changed"]({
-      action: "started",
-      sessionKey: "briefing",
-      job: {
+    startCron(api, "briefing", {
         name: "Morning Briefing",
         description: contract(
           { kind: "marker", marker: "[block: daily_briefing]" },
           { action: "revise_then_allow", max_revisions: 1 },
           "daily_briefing",
         ),
-      },
     });
     const beforeToolCall = api._handlers["before_tool_call"];
 
     for (let i = 0; i < 5; i += 1) {
       const result = beforeToolCall({
-        sessionKey: "briefing",
+        runId: "briefing",
         toolName: "nbhd_send_to_user",
         params: { message: "[block: daily_briefing]\nGood morning!" },
       });
