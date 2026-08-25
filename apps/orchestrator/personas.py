@@ -537,25 +537,50 @@ def _rules_template_dir() -> str:
     )
 
 
-def render_workspace_rules() -> dict[str, str]:
+_SUBAGENT_RULE_FILENAME = "subagents.md"
+_SUBAGENT_MESSAGING_ADDENDUM = (
+    "\n\nIf `rules/subagents.md` is present in your workspace, follow it for "
+    "sub-agent completion events; its internal-completion delivery exception "
+    "overrides the normal-conversation rule above."
+)
+_SUBAGENT_RULE_INDEX_ANCHOR = "| `rules/messaging.md` | Cron delivery, check-in windows, automated routines |"
+_SUBAGENT_RULE_INDEX_ROW = "| `rules/subagents.md` | Slow-task delegation and app completion delivery |"
+
+
+def _subagent_workspace_surfaces_enabled(tenant) -> bool:
+    # Local import keeps the persona renderer independent at import time while
+    # sharing the exact same tenant gate as generated OpenClaw config.
+    from apps.orchestrator.config_generator import subagents_enabled
+
+    return subagents_enabled(tenant)
+
+
+def render_workspace_rules(tenant=None) -> dict[str, str]:
     """Discover and load all rule templates from templates/openclaw/rules/.
 
     Returns a dict mapping filename → content for each .md file found.
     Used by update_tenant_config to upload rules to workspace/rules/ on the
-    container's file share.
+    container's file share. The sub-agent rule and its messaging exception are
+    rendered only for tenants behind the sub-agent canary gate. Config refresh
+    removes a previously uploaded ``rules/subagents.md`` when that gate is off.
     """
     rules_dir = _rules_template_dir()
     if not os.path.isdir(rules_dir):
         return {}
 
+    subagents_on = _subagent_workspace_surfaces_enabled(tenant)
     rules: dict[str, str] = {}
     for filename in sorted(os.listdir(rules_dir)):
         if not filename.endswith(".md"):
+            continue
+        if filename == _SUBAGENT_RULE_FILENAME and not subagents_on:
             continue
         rule_path = os.path.join(rules_dir, filename)
         try:
             with open(rule_path) as f:
                 content = f.read().strip()
+            if filename == "messaging.md" and subagents_on:
+                content += _SUBAGENT_MESSAGING_ADDENDUM
             if content:
                 rules[filename] = content
         except OSError:
@@ -665,6 +690,22 @@ def render_workspace_files(persona_key: str, tenant=None) -> dict[str, str]:
         "NBHD_SOUL_MD": render_soul_managed(persona_key, tenant),
         "NBHD_IDENTITY_MD": render_identity_managed(persona_key, tenant),
     }
+    if _subagent_workspace_surfaces_enabled(tenant):
+        agents_md = result["NBHD_AGENTS_MD"]
+        if _SUBAGENT_RULE_INDEX_ANCHOR in agents_md:
+            result["NBHD_AGENTS_MD"] = agents_md.replace(
+                _SUBAGENT_RULE_INDEX_ANCHOR,
+                f"{_SUBAGENT_RULE_INDEX_ANCHOR}\n{_SUBAGENT_RULE_INDEX_ROW}",
+                1,
+            )
+        else:
+            # Fallback templates may not carry the standard rule table. Keep
+            # the tenant-only reference discoverable without changing the base
+            # template for everyone else.
+            result["NBHD_AGENTS_MD"] = (
+                f"{agents_md}\n\n## Additional rules\n\n- `rules/subagents.md` — "
+                "slow-task delegation and app completion delivery"
+            )
     # Site publishing gate — behavioral, per-tenant. Only tenants with their own
     # website connected (site_publishing_enabled) load the publish_portfolio_image
     # tool, so the imperative cue that makes the agent actually CALL it — rather

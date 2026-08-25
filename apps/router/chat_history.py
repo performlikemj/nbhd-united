@@ -61,10 +61,10 @@ Design notes
   legacy rows already stored with real names). ``AppChatMessage.user_text`` is
   the user's own words (verbatim); Telegram/LINE ``user_text`` is already
   placeholder-space and left as-is.
-* **thread_id.** ``ConversationTurn`` / ``ProactiveOutbound`` have no thread FK
-  (OpenClaw keeps one flat rolling session per channel-user), so they are mapped
-  to the tenant's single ``is_main`` thread — the shared thread every channel
-  resumes. ``AppChatMessage`` rows carry their real thread id.
+* **thread_id.** ``ConversationTurn`` and legacy ``ProactiveOutbound`` rows map
+  to the tenant's single ``is_main`` thread. Thread-aware proactive rows carry
+  the tenant-validated requester UUID in their nullable ``thread_id`` column.
+  ``AppChatMessage`` rows carry their real thread id.
 * **Backdating.** ``ChatLocalTurnView`` backdates an outbox-delayed on-device
   turn's ``created_at``; such a row written behind an already-served watermark
   is skipped by this strictly-monotonic feed. This is benign: backdated rows are
@@ -354,7 +354,7 @@ def _proactive_rows(p, main_thread_id, entity_map=None):
             role="assistant",
             text=_rehydrate(p.message_text, entity_map, tenant_id=p.tenant_id),
             source="cron",
-            thread_id=main_thread_id,
+            thread_id=str(p.thread_id) if p.thread_id else main_thread_id,
             quick_replies=rehydrate_quick_replies(
                 p.quick_replies, entity_map, tenant_id=p.tenant_id, channel="cron_feed"
             ),

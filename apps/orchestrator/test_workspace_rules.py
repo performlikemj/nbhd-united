@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
-from apps.orchestrator.personas import render_workspace_rules
+from apps.orchestrator.personas import render_workspace_files, render_workspace_rules
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
@@ -65,6 +65,46 @@ class RenderWorkspaceRulesTest(TestCase):
         self.assertIn("worst\nfailure mode", memory)
 
 
+class SubagentWorkspaceRulesTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Subagent Rules", telegram_chat_id=606061)
+
+    @override_settings(SUBAGENT_TENANT_IDS="")
+    def test_disabled_tenant_gets_exact_pre_feature_rule_set_and_agents_index(self):
+        rules = render_workspace_rules(tenant=self.tenant)
+        self.assertEqual(
+            set(rules),
+            {
+                "_principles.md",
+                "document-ingestion.md",
+                "fuel.md",
+                "journal-capture.md",
+                "lessons-constellation.md",
+                "memory.md",
+                "messaging.md",
+                "onboarding.md",
+                "reply-markers.md",
+                "voice-journal.md",
+                "week-ahead.md",
+            },
+        )
+        self.assertNotIn("rules/subagents.md", rules["messaging.md"])
+        agents_md = render_workspace_files("neighbor", tenant=self.tenant)["NBHD_AGENTS_MD"]
+        self.assertNotIn("| `rules/subagents.md` |", agents_md)
+
+    def test_enabled_tenant_gets_subagent_rule_messaging_exception_and_agents_index(self):
+        with override_settings(SUBAGENT_TENANT_IDS=str(self.tenant.id)):
+            rules = render_workspace_rules(tenant=self.tenant)
+            agents_md = render_workspace_files("neighbor", tenant=self.tenant)["NBHD_AGENTS_MD"]
+
+        self.assertIn("subagents.md", rules)
+        self.assertIn(
+            "If `rules/subagents.md` is present in your workspace, follow it",
+            rules["messaging.md"],
+        )
+        self.assertIn("| `rules/subagents.md` |", agents_md)
+
+
 class UpdateTenantConfigUploadsRulesTest(TestCase):
     """update_tenant_config() uploads rules to workspace/rules/."""
 
@@ -83,10 +123,12 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
         return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
     )
+    @patch("apps.orchestrator.azure_client.delete_workspace_file")
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
     def test_update_tenant_config_uploads_rules(
         self,
         mock_upload_workspace_file,
+        mock_delete_workspace_file,
         _mock_update_crons,
         _mock_audit,
         _mock_generate_config,
@@ -114,6 +156,11 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             any("memory.md" in p for p in rules_paths),
             f"memory.md not found in uploaded rules: {rules_paths}",
         )
+        self.assertNotIn("workspace/rules/subagents.md", rules_paths)
+        mock_delete_workspace_file.assert_called_once_with(
+            str(self.tenant.id),
+            "workspace/rules/subagents.md",
+        )
         memory_upload = next(
             call for call in mock_upload_workspace_file.call_args_list if call.args[1] == "workspace/rules/memory.md"
         )
@@ -130,12 +177,43 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
         return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
     )
+    @patch("apps.orchestrator.azure_client.delete_workspace_file")
+    @patch("apps.orchestrator.azure_client.upload_workspace_file")
+    def test_enabled_tenant_does_not_delete_subagent_rule(
+        self,
+        mock_upload_workspace_file,
+        mock_delete_workspace_file,
+        _mock_update_crons,
+        _mock_audit,
+        _mock_generate_config,
+        _mock_config_to_json,
+        _mock_upload_config,
+    ):
+        from apps.orchestrator.services import update_tenant_config
+
+        with override_settings(SUBAGENT_TENANT_IDS=str(self.tenant.id)):
+            update_tenant_config(str(self.tenant.id))
+
+        mock_delete_workspace_file.assert_not_called()
+        uploaded_paths = [call.args[1] for call in mock_upload_workspace_file.call_args_list]
+        self.assertIn("workspace/rules/subagents.md", uploaded_paths)
+
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
+    @patch("apps.orchestrator.services.config_to_json", return_value="{}")
+    @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
+    @patch("apps.orchestrator.services._audit_and_log")
+    @patch(
+        "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
+        return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
+    )
+    @patch("apps.orchestrator.azure_client.delete_workspace_file")
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
     @patch("apps.orchestrator.azure_client.download_workspace_file", return_value=None)
     def test_soul_and_identity_use_merge_push(
         self,
         _mock_download_workspace_file,
         mock_upload_workspace_file,
+        _mock_delete_workspace_file,
         _mock_update_crons,
         _mock_audit,
         _mock_generate_config,
@@ -193,12 +271,14 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
         return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
     )
+    @patch("apps.orchestrator.azure_client.delete_workspace_file")
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
     @patch("apps.orchestrator.azure_client.download_workspace_file")
     def test_identity_read_error_fails_closed(
         self,
         mock_download_workspace_file,
         mock_upload_workspace_file,
+        _mock_delete_workspace_file,
         _mock_update_crons,
         _mock_audit,
         _mock_generate_config,

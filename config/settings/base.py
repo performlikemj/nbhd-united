@@ -248,6 +248,11 @@ STEWARD_OPENROUTER_CANARY_TENANT_ID = env(
 # Fleet-go is a deliberate follow-up, not a side effect of deploying this code.
 TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
 
+# OpenClaw native sub-agent offload — canary rollout gate. Comma-separated
+# tenant UUIDs; EMPTY MEANS NOBODY. The generated config keeps sessions_spawn
+# and subagents denied unless a tenant is explicitly listed here.
+SUBAGENT_TENANT_IDS = env("SUBAGENT_TENANT_IDS", default="")
+
 # Human-review gate for agent-authored scheduled tasks. Comma-separated tenant
 # UUIDs open individual tenants; the literal "*" opens the gate fleet-wide.
 # Empty/unset means nobody so every non-explicit configuration fails closed.
@@ -495,6 +500,18 @@ OPENCLAW_DOC_TAINT_GUARD_PLUGIN_ID = env(
 OPENCLAW_DOC_TAINT_GUARD_PLUGIN_PATH = env(
     "OPENCLAW_DOC_TAINT_GUARD_PLUGIN_PATH",
     default="/opt/nbhd/plugins/nbhd-doc-taint-guard",
+)
+# Sub-agent completion bridge. Config generation only loads it for tenants in
+# SUBAGENT_TENANT_IDS, so the plugin remains dark until the canary gate opens.
+# It lives beneath the already-packaged journal-tools directory so the image's
+# explicit plugin COPY list includes it without widening the image surface.
+OPENCLAW_SUBAGENT_BRIDGE_PLUGIN_ID = env(
+    "OPENCLAW_SUBAGENT_BRIDGE_PLUGIN_ID",
+    default="nbhd-subagent-bridge",
+)
+OPENCLAW_SUBAGENT_BRIDGE_PLUGIN_PATH = env(
+    "OPENCLAW_SUBAGENT_BRIDGE_PLUGIN_PATH",
+    default="/opt/nbhd/plugins/nbhd-journal-tools/subagent-bridge",
 )
 # Automation-tools plugin — the agent's typed cron-create tools
 # (nbhd_cron_create_pure_reminder / _quote_user_intent / _domain_summary), loaded

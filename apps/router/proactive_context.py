@@ -103,6 +103,7 @@ def record_proactive_outbound(
     journal_link: dict | None = None,
     quick_replies: list[str] | None = None,
     artifact_dedup_key: str | None = None,
+    thread_id=None,
 ) -> ProactiveOutbound | None:
     """Persist a row describing one proactive delivery or eval evidence event.
 
@@ -174,6 +175,7 @@ def record_proactive_outbound(
                 channel_user_id=channel_user_id,
                 message_text=message_text,
                 job_name=(job_name or "")[:64],
+                thread_id=thread_id,
                 parsed_items=parse_markdown_items(message_text),
                 # Parsed "View in Journal" deep-link (``{kind, slug, title}``, title
                 # in placeholder space) — surfaced + rehydrated by the ?since= feed.
@@ -449,8 +451,13 @@ def surface_proactive_context(
     # Tenant-scoped — the (tenant, created_at) index (proactive_tenant_created_idx)
     # backs both walks below. User-delivery channels are not distinguished: one
     # tenant = one human, and switching transports must not break continuity.
-    # The internal eval evidence channel is the sole exclusion.
-    base = ProactiveOutbound.objects.filter(tenant=tenant).exclude(channel=ProactiveOutbound.Channel.EVAL)
+    # Internal eval evidence and thread-targeted sub-agent results are excluded;
+    # the latter already landed in their authoritative app thread.
+    base = (
+        ProactiveOutbound.objects.filter(tenant=tenant)
+        .exclude(channel=ProactiveOutbound.Channel.EVAL)
+        .exclude(job_name="_subagent_result")
+    )
 
     # UNCONSUMED (never threaded) rows claim the limit first, newest-first,
     # within the long window.

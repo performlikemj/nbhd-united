@@ -69,6 +69,74 @@ export const REMOVED_BUILTIN_TOOL_IDS = new Set([
 // tool_call, so a call to "exec" arrives as tool_call({id:"exec"}).
 const TOOL_DISPATCH_META = "tool_call";
 
+// Exact JavaScript mirror of config_generator.SUBAGENT_READ_ONLY_TOOLS. A
+// Python parity test prevents the generated allow-only policy and this runtime
+// defense from drifting. New outward nbhd_* tools still default to blocked.
+export const SUBAGENT_READ_ONLY_TOOL_IDS = new Set([
+  "web_search",
+  "pdf",
+  "nbhd_calendar_list_events",
+  "nbhd_calendar_get_freebusy",
+  "nbhd_gmail_list_messages",
+  "nbhd_gmail_get_message_detail",
+  "nbhd_datebook_read",
+  "nbhd_document_list_ingestions",
+  "nbhd_finance_calculate_payoff",
+  "nbhd_finance_list_accounts",
+  "nbhd_finance_summary",
+  "nbhd_gravity_query",
+  "nbhd_mission_context",
+  "nbhd_neighborhood_context",
+  "nbhd_fuel_audit",
+  "nbhd_fuel_get_workout",
+  "nbhd_fuel_summary",
+  "nbhd_insights_baseline",
+  "nbhd_insights_compare",
+  "nbhd_insights_history",
+  "nbhd_insights_list",
+  "nbhd_insights_signals",
+  "nbhd_insights_snapshot",
+  "nbhd_insights_voice_pref_list",
+  "nbhd_yesterdays_signals",
+  "nbhd_journal_template_get",
+  "nbhd_constellation_notes",
+  "nbhd_current_status",
+  "nbhd_daily_note_get",
+  "nbhd_document_get",
+  "nbhd_goal_get",
+  "nbhd_goal_list",
+  "nbhd_journal_context",
+  "nbhd_journal_query",
+  "nbhd_journal_search",
+  "nbhd_lesson_search",
+  "nbhd_lessons_pending",
+  "nbhd_memory_get",
+  "nbhd_purpose_list",
+  "nbhd_reconcile_scan",
+  "nbhd_sessions_pending",
+  "nbhd_task_get",
+  "nbhd_task_list",
+  "nbhd_workspace_list",
+  "nbhd_reddit_digest",
+  "nbhd_reddit_my_activity",
+  "nbhd_reddit_status",
+  "nbhd_get_meal_plan",
+  "nbhd_get_preferred_model_state",
+  "nbhd_places_search",
+  "nbhd_tour_guide",
+]);
+export const SUBAGENT_READ_ONLY_NBHD_TOOL_IDS = new Set(
+  [...SUBAGENT_READ_ONLY_TOOL_IDS].filter((toolId) => toolId.startsWith("nbhd_")),
+);
+
+const SUBAGENT_ALWAYS_BLOCKED_NON_NBHD_TOOL_IDS = new Set([
+  "publish_portfolio_image",
+]);
+
+const SUBAGENT_OUTWARD_BLOCK_REASON =
+  "Sub-agents report back to the requester; they do not act outward. " +
+  "Use a read-only search/list/get tool and include any recommended action in your report.";
+
 function extractDispatchedToolId(params) {
   if (!params || typeof params !== "object") return "";
   const raw = params.id ?? params.toolId ?? params.tool ?? params.name ?? "";
@@ -92,8 +160,33 @@ export function decideRemovedToolBlock(event) {
   };
 }
 
+/** Pure helper-session mutation gate for direct and toolSearch-dispatched calls. */
+export function decideSubagentToolBlock(event, sessionKey) {
+  if (typeof sessionKey !== "string" || !sessionKey.includes("subagent:")) return undefined;
+  const direct = typeof event?.toolName === "string" ? event.toolName.trim().toLowerCase() : "";
+  const realId = direct === TOOL_DISPATCH_META ? extractDispatchedToolId(event?.params) : direct;
+  if (!realId) {
+    return { block: true, blockReason: SUBAGENT_OUTWARD_BLOCK_REASON };
+  }
+  if (realId.startsWith("nbhd_") && !SUBAGENT_READ_ONLY_NBHD_TOOL_IDS.has(realId)) {
+    return { block: true, blockReason: SUBAGENT_OUTWARD_BLOCK_REASON };
+  }
+  if (SUBAGENT_ALWAYS_BLOCKED_NON_NBHD_TOOL_IDS.has(realId)) {
+    return { block: true, blockReason: SUBAGENT_OUTWARD_BLOCK_REASON };
+  }
+  return undefined;
+}
+
 function asTrimmedString(value) {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function safeErrorText(error) {
+  try {
+    return String(error);
+  } catch (_ignored) {
+    return "unknown guard error";
+  }
 }
 
 function isDegenerateOutput(text) {
@@ -162,8 +255,26 @@ export default function register(api) {
   // blocks the call), so the whole body is wrapped — any unexpected error
   // degrades to a no-op (the runtime's own "Unknown tool id" path), never an
   // accidental block of a legitimate tool.
-  api.on("before_tool_call", (event) => {
+  api.on("before_tool_call", (event, ctx) => {
+    let sessionKey;
+    let helperSession = false;
     try {
+      sessionKey = ctx?.sessionKey;
+      helperSession = typeof sessionKey === "string" && sessionKey.includes("subagent:");
+    } catch (_error) {
+      // A poisoned/legacy ctx must not block ordinary fleet tool calls. We can
+      // fail closed only after positively identifying a helper session.
+      return undefined;
+    }
+    try {
+      const helperDecision = decideSubagentToolBlock(event, sessionKey);
+      if (helperDecision) {
+        api.logger.warn(
+          `nbhd-routing-context: blocked outward helper tool ` +
+          `runId=${asTrimmedString(ctx?.runId || event?.runId) || "?"}`,
+        );
+        return helperDecision;
+      }
       const decision = decideRemovedToolBlock(event);
       if (!decision) return undefined;
       const id = extractDispatchedToolId(event && event.params);
@@ -174,11 +285,16 @@ export default function register(api) {
       return decision;
     } catch (err) {
       try {
-        api.logger.warn(`nbhd-routing-context: before_tool_call guard error: ${err}`);
+        api.logger.warn(`nbhd-routing-context: before_tool_call guard error: ${safeErrorText(err)}`);
       } catch (_ignored) {
         // logging must never turn a guard hiccup into a blocked call
       }
-      return undefined;
+      // before_tool_call exceptions are runtime-fail-closed. Preserve the
+      // historical fail-open behavior for ordinary sessions, but a helper must
+      // never gain outward action because its guard itself failed.
+      return helperSession
+        ? { block: true, blockReason: SUBAGENT_OUTWARD_BLOCK_REASON }
+        : undefined;
     }
   });
 }

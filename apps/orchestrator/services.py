@@ -708,7 +708,8 @@ def update_tenant_config(tenant_id: str) -> None:
     # Write workspace files (AGENTS.md, SOUL.md, etc.) to file share
     # so updates propagate without needing container env var changes.
     try:
-        from .azure_client import upload_workspace_file
+        from .azure_client import delete_workspace_file, upload_workspace_file
+        from .config_generator import subagents_enabled
         from .personas import get_persona, render_workspace_files, render_workspace_rules
 
         persona_key = (tenant.user.preferences or {}).get("agent_persona", "neighbor")
@@ -809,7 +810,9 @@ def update_tenant_config(tenant_id: str) -> None:
 
         # Upload all rule templates to workspace/rules/ — referenced by AGENTS.md
         # for on-demand loading. Auto-discovers all .md files in templates/openclaw/rules/.
-        rules = render_workspace_rules()
+        rules = render_workspace_rules(tenant=tenant)
+        if not subagents_enabled(tenant):
+            delete_workspace_file(str(tenant.id), "workspace/rules/subagents.md")
         for filename, content in rules.items():
             upload_workspace_file(
                 str(tenant.id),

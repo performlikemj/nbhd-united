@@ -247,6 +247,15 @@ function setWithCap(map, key, value, cap) {
 const MAX_TAINTED_RUNS = 2000;
 const MAX_TRACKED_TOOL_CALLS = 500;
 
+// Shared run-scoped state. The sub-agent bridge asks this exported seam before
+// allowing sessions_spawn, closing the former "child gets a new runId" gap.
+// agent_end remains the owner of cleanup.
+const taintedRuns = new Map();
+
+export function isDocumentTaintedRun(runId) {
+  return typeof runId === "string" && runId.length > 0 && taintedRuns.get(runId) === true;
+}
+
 export default function register(api) {
   if (!api || typeof api.on !== "function") {
     return;
@@ -255,17 +264,9 @@ export default function register(api) {
   const cfg = api.pluginConfig && typeof api.pluginConfig === "object" ? api.pluginConfig : {};
   const mode = cfg.mode === "enforce" ? "enforce" : "log_only";
 
-  // runId -> true, for turns whose prompt carried an upload marker.
-  //
-  // KNOWN RESIDUAL: a subagent spawned from a tainted turn gets its OWN
-  // runId (subagent_spawning/subagent_spawned events), so "read this
-  // document, then spawn a subagent to publish X" would not carry taint
-  // into the subagent's before_tool_call checks. Subagents are denied
-  // fleet-wide today (tool_policy.py _DENIED_TOOLS includes "subagents"),
-  // so this isn't a live gap — but revisit before any future change lifts
-  // that denial, and definitely before flipping DOC_TAINT_GATE_MODE to
-  // "enforce" fleet-wide.
-  const taintedRuns = new Map();
+  // runId -> true, for turns whose prompt carried an upload marker. The bridge
+  // blocks sessions_spawn while this parent run is tainted, so the child-runId
+  // boundary can no longer shed the taint before outward work.
   // toolCallId -> resolved real tool id ("pdf"/"image"), bridging
   // before_tool_call (which sees params.id) to tool_result_persist (which
   // doesn't).

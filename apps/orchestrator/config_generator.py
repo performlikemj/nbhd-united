@@ -6,6 +6,7 @@ Based on actual OpenClaw config schema — see openclaw.json reference.
 from __future__ import annotations
 
 import json
+import logging
 import zoneinfo
 from datetime import datetime
 from typing import Any
@@ -42,6 +43,87 @@ from apps.tenants.models import Tenant
 # re-hardcoding the number, so a future bump can't silently strand them on a
 # stale bound.
 BOOTSTRAP_MAX_CHARS = 24000
+
+logger = logging.getLogger(__name__)
+
+# Final allow-only surface for helper sessions. Every entry is already reachable
+# through the starter tier's current policy; this list only narrows it. Keep it
+# synchronized with tool registrations under runtime/openclaw/plugins/*/index.js.
+SUBAGENT_READ_ONLY_TOOLS: tuple[str, ...] = (
+    "web_search",  # Built-in: search the public web; no arbitrary URL fetch.
+    "pdf",  # Built-in: read an uploaded PDF.
+    "nbhd_calendar_list_events",  # Google calendar read.
+    "nbhd_calendar_get_freebusy",  # Google calendar availability read.
+    "nbhd_gmail_list_messages",  # Gmail message-list read.
+    "nbhd_gmail_get_message_detail",  # Gmail message-detail read.
+    "nbhd_datebook_read",  # Server-owned Datebook read.
+    "nbhd_document_list_ingestions",  # Retained-upload inventory read.
+    "nbhd_finance_calculate_payoff",  # Pure payoff calculation.
+    "nbhd_finance_list_accounts",  # Finance account read.
+    "nbhd_finance_summary",  # Finance summary read.
+    "nbhd_gravity_query",  # Grounded finance query.
+    "nbhd_mission_context",  # Neighborhood mission context read.
+    "nbhd_neighborhood_context",  # Neighborhood context read.
+    "nbhd_fuel_audit",  # Fuel history audit read.
+    "nbhd_fuel_get_workout",  # Workout read.
+    "nbhd_fuel_summary",  # Fuel summary read.
+    "nbhd_insights_baseline",  # Insight baseline read.
+    "nbhd_insights_compare",  # Insight comparison read.
+    "nbhd_insights_history",  # Insight history read.
+    "nbhd_insights_list",  # Insight list read.
+    "nbhd_insights_signals",  # Current signals read.
+    "nbhd_insights_snapshot",  # Insight snapshot read.
+    "nbhd_insights_voice_pref_list",  # Voice preference read.
+    "nbhd_yesterdays_signals",  # Prior-day signals read.
+    "nbhd_journal_template_get",  # Journal template read.
+    "nbhd_constellation_notes",  # Constellation notes read.
+    "nbhd_current_status",  # Typed current-state read.
+    "nbhd_daily_note_get",  # Daily note read.
+    "nbhd_document_get",  # Journal document read.
+    "nbhd_goal_get",  # Goal detail read.
+    "nbhd_goal_list",  # Goal list read.
+    "nbhd_journal_context",  # Journal context read.
+    "nbhd_journal_query",  # Journal query read.
+    "nbhd_journal_search",  # Journal search read.
+    "nbhd_lesson_search",  # Lesson search read.
+    "nbhd_lessons_pending",  # Pending lessons read.
+    "nbhd_memory_get",  # Long-term memory read.
+    "nbhd_purpose_list",  # Purpose list read.
+    "nbhd_reconcile_scan",  # Reconciliation scan; no mutation.
+    "nbhd_sessions_pending",  # Pending session inventory read.
+    "nbhd_task_get",  # Task detail read.
+    "nbhd_task_list",  # Task list read.
+    "nbhd_workspace_list",  # Workspace list read.
+    "nbhd_reddit_digest",  # Reddit digest read.
+    "nbhd_reddit_my_activity",  # Reddit account activity read.
+    "nbhd_reddit_status",  # Reddit connection status read.
+    "nbhd_get_meal_plan",  # Meal-plan read.
+    "nbhd_get_preferred_model_state",  # Model preference read.
+    "nbhd_places_search",  # Places search; no booking or write.
+    "nbhd_tour_guide",  # Grounded tour-guide read.
+)
+
+
+def subagents_enabled(tenant: Tenant | None) -> bool:
+    """Return whether native OpenClaw helper offload is open for ``tenant``.
+
+    ``SUBAGENT_TENANT_IDS`` is a comma-separated canary allowlist. Empty means
+    nobody. A populated miss is logged at INFO because a typo otherwise looks
+    exactly like a correctly dark tenant.
+    """
+    raw = str(getattr(settings, "SUBAGENT_TENANT_IDS", "") or "")
+    allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if not allowed or tenant is None:
+        return False
+    if str(tenant.id).lower() in allowed:
+        return True
+    logger.info(
+        "subagents: tenant %s is not in SUBAGENT_TENANT_IDS (%d id(s) configured) — offload disabled",
+        str(tenant.id)[:8],
+        len(allowed),
+    )
+    return False
+
 
 _CRON_CONTEXT_PREAMBLE = (
     "**MANDATORY — do this BEFORE following the instructions below:**\n"
@@ -2028,9 +2110,22 @@ def _build_tools_section(
     version: str = OPENCLAW_CURRENT_VERSION,
     *,
     tenant: Tenant | None = None,
+    subagents_on: bool | None = None,
 ) -> dict[str, Any]:
     """Build documented OpenClaw tools policy for subscriber tier."""
     tools = generate_tool_config(tier, version=version)
+    if subagents_on is None:
+        subagents_on = subagents_enabled(tenant)
+    if subagents_on:
+        # Unlock exactly the parent-side spawn/control tools. sessions_yield
+        # stays denied: yielding an OpenAI-compatible HTTP turn returns an empty
+        # response body instead of the required immediate acknowledgement.
+        tools["deny"] = [name for name in tools.get("deny", []) if name not in {"sessions_spawn", "subagents"}]
+        tools["subagents"] = {
+            "tools": {
+                "allow": list(SUBAGENT_READ_ONLY_TOOLS),
+            },
+        }
     # Server-owned calendar arbitration: once Datebook is deliverable, both
     # Google read tools are unreachable even through group:plugins/toolSearch.
     # Keep the Google plugin loaded because its Gmail tools remain canonical.
@@ -2184,6 +2279,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     # fallback chain — a BYO-subscription primary routes to the tenant's own
     # provider, and the PDF pin has to follow it there.
     primary_is_byo = bool(byo_extras) and models_config["primary"] in byo_extras
+    subagents_on = subagents_enabled(tenant)
 
     # Collect all configured plugins
     _plugin_defs = [
@@ -2409,6 +2505,24 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         )
     )
 
+    # Native helper completion re-entry. The plugin is loaded only behind the
+    # same per-tenant canary switch that unlocks sessions_spawn, so disabled
+    # tenants retain byte-for-byte-identical plugin config.
+    if subagents_on:
+        _plugin_defs.append(
+            (
+                str(getattr(settings, "OPENCLAW_SUBAGENT_BRIDGE_PLUGIN_ID", "nbhd-subagent-bridge") or "").strip(),
+                str(
+                    getattr(
+                        settings,
+                        "OPENCLAW_SUBAGENT_BRIDGE_PLUGIN_PATH",
+                        "/opt/nbhd/plugins/nbhd-journal-tools/subagent-bridge",
+                    )
+                    or ""
+                ).strip(),
+            )
+        )
+
     # nbhd-doc-taint-guard — instruction isolation + egress taint gate for
     # uploaded documents/photos (docs/upload-security-threat-model.md
     # P0-1/P0-2/P1-2). Loads UNCONDITIONALLY, like nbhd-cron-enforcement —
@@ -2505,10 +2619,23 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 "memorySearch": _build_memory_search_config(tenant),
                 "heartbeat": _build_heartbeat_defaults(tenant),
                 "maxConcurrent": 2,
-                "subagents": {
-                    "maxConcurrent": 2,
-                    "model": models_config["primary"],
-                },
+                "subagents": (
+                    {
+                        "maxConcurrent": 2,
+                        "maxChildrenPerAgent": 2,
+                        "maxSpawnDepth": 1,
+                        "runTimeoutSeconds": 600,
+                        "announceTimeoutMs": 120000,
+                        "archiveAfterMinutes": 60,
+                        "model": TIER_TASK_DEFAULTS["starter"]["background_tasks"],
+                        "delegationMode": "suggest",
+                    }
+                    if subagents_on
+                    else {
+                        "maxConcurrent": 2,
+                        "model": models_config["primary"],
+                    }
+                ),
             },
         },
         # Messaging channels — only enable the channel(s) the tenant has
@@ -2546,7 +2673,12 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
             },
         },
         # Tools
-        "tools": _build_tools_section(tier, version=oc_version, tenant=tenant),
+        "tools": _build_tools_section(
+            tier,
+            version=oc_version,
+            tenant=tenant,
+            subagents_on=subagents_on,
+        ),
         # Messages
         "messages": {
             "ackReactionScope": "group-mentions",
@@ -2587,6 +2719,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
 
     if _active_plugins:
         image_gen_id = str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip()
+        usage_reporter_id = str(
+            getattr(settings, "OPENCLAW_USAGE_PLUGIN_ID", "")
+            or getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_ID", "")
+        ).strip()
+        subagent_bridge_id = str(
+            getattr(settings, "OPENCLAW_SUBAGENT_BRIDGE_PLUGIN_ID", "nbhd-subagent-bridge") or ""
+        ).strip()
         plugin_config: dict[str, Any] = {
             "allow": [pid for pid, _ in _active_plugins],
             "entries": {
@@ -2594,6 +2733,29 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 for pid, _ in _active_plugins
             },
         }
+
+        if subagents_on:
+            # Both plugins come from plugins.load.paths, which OpenClaw marks
+            # origin="config". Conversation hooks on non-bundled plugins are
+            # rejected unless this policy is explicit. The bridge's agent_end
+            # retry loop needs the full 30-second hook budget.
+            if subagent_bridge_id and subagent_bridge_id in plugin_config["entries"]:
+                plugin_config["entries"][subagent_bridge_id]["hooks"] = {
+                    "allowConversationAccess": True,
+                    "timeoutMs": 30000,
+                }
+
+            # Django already meters ordinary HTTP turns. For canary tenants,
+            # unlock the reporter's conversation hooks only in helper-only mode
+            # so helper spend becomes visible without double-counting main turns.
+            # Disabled tenants retain the historical entry byte-for-byte.
+            if usage_reporter_id and usage_reporter_id in plugin_config["entries"]:
+                plugin_config["entries"][usage_reporter_id]["hooks"] = {
+                    "allowConversationAccess": True,
+                }
+                plugin_config["entries"][usage_reporter_id]["config"] = {
+                    "helperOnly": True,
+                }
 
         # OpenClaw's bundled document-extract extension is not part of
         # _active_plugins, but provides the built-in pdf tool's PDFium text-layer

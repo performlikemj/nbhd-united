@@ -3098,12 +3098,33 @@ class RuntimeUsageReportView(APIView):
             )
 
         try:
-            record_usage(
+            metadata = payload.get("metadata", {})
+            if not isinstance(metadata, dict):
+                raise ValueError("metadata must be an object")
+            if set(metadata) - {"kind", "run"}:
+                raise ValueError("metadata contains unsupported keys")
+            metadata = (
+                {
+                    "kind": str(metadata.get("kind", ""))[:32],
+                    "run": str(metadata.get("run", ""))[:64],
+                }
+                if metadata
+                else {}
+            )
+            record = record_usage(
                 tenant=tenant,
                 event_type=event_type,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
                 model_used=model_used,
+            )
+            if metadata:
+                record.metadata = metadata
+                record.save(update_fields=["metadata"])
+        except ValueError as exc:
+            return Response(
+                {"error": "invalid_request", "detail": str(exc)},
+                status=status.HTTP_400_BAD_REQUEST,
             )
         except Exception as exc:  # pragma: no cover - defensive only
             return Response(

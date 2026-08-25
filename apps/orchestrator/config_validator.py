@@ -88,6 +88,97 @@ _AGENTS_DEFAULTS_ALLOWED_KEYS = frozenset(
 # Sub-blocks under agents.defaults that the generator ALWAYS emits as objects.
 _AGENTS_DEFAULTS_OBJECT_KEYS = ("compaction", "memorySearch", "heartbeat", "subagents")
 
+_SUBAGENT_ALLOWED_KEYS = frozenset(
+    {
+        "maxConcurrent",
+        "maxChildrenPerAgent",
+        "maxSpawnDepth",
+        "runTimeoutSeconds",
+        "announceTimeoutMs",
+        "archiveAfterMinutes",
+        "model",
+        "thinking",
+        "delegationMode",
+    }
+)
+
+
+def _validate_subagent_blocks(config: dict[str, Any], defaults: dict[str, Any], issues: list[ConfigIssue]) -> None:
+    """Validate the bounded helper-runtime and helper-tool policy shapes."""
+    subagents = defaults.get("subagents")
+    if isinstance(subagents, dict):
+        unknown = sorted(set(subagents) - _SUBAGENT_ALLOWED_KEYS)
+        if unknown:
+            issues.append(
+                ConfigIssue(
+                    "error",
+                    "agents.defaults.subagents",
+                    f"unrecognized key(s) {unknown}",
+                )
+            )
+        integer_bounds = {
+            "maxConcurrent": (1, None),
+            "maxChildrenPerAgent": (1, 20),
+            "maxSpawnDepth": (1, 5),
+            "runTimeoutSeconds": (0, None),
+            "announceTimeoutMs": (1, None),
+            "archiveAfterMinutes": (0, None),
+        }
+        for key, (minimum, maximum) in integer_bounds.items():
+            value = subagents.get(key)
+            invalid = value is not None and (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < minimum
+                or (maximum is not None and value > maximum)
+            )
+            if invalid:
+                upper = f" and at most {maximum}" if maximum is not None else ""
+                issues.append(
+                    ConfigIssue(
+                        "error",
+                        f"agents.defaults.subagents.{key}",
+                        f"must be an integer of at least {minimum}{upper}",
+                    )
+                )
+        for key in ("model", "thinking"):
+            value = subagents.get(key)
+            if value is not None and (not isinstance(value, str) or not value):
+                issues.append(ConfigIssue("error", f"agents.defaults.subagents.{key}", "must be a non-empty string"))
+        delegation_mode = subagents.get("delegationMode")
+        if delegation_mode is not None and delegation_mode not in {"suggest", "prefer"}:
+            issues.append(
+                ConfigIssue(
+                    "error",
+                    "agents.defaults.subagents.delegationMode",
+                    "must be 'suggest' or 'prefer'",
+                )
+            )
+
+    tools = config.get("tools")
+    if not isinstance(tools, dict) or "subagents" not in tools:
+        return
+    helper_policy = tools.get("subagents")
+    if not isinstance(helper_policy, dict):
+        issues.append(ConfigIssue("error", "tools.subagents", "must be an object"))
+        return
+    unknown = sorted(set(helper_policy) - {"tools"})
+    if unknown:
+        issues.append(ConfigIssue("error", "tools.subagents", f"unrecognized key(s) {unknown}"))
+    nested_tools = helper_policy.get("tools")
+    if not isinstance(nested_tools, dict):
+        issues.append(ConfigIssue("error", "tools.subagents.tools", "must be an object"))
+        return
+    nested_unknown = sorted(set(nested_tools) - {"allow", "deny", "alsoAllow"})
+    if nested_unknown:
+        issues.append(ConfigIssue("error", "tools.subagents.tools", f"unrecognized key(s) {nested_unknown}"))
+    for key in ("allow", "deny", "alsoAllow"):
+        value = nested_tools.get(key)
+        if value is not None and (
+            not isinstance(value, list) or not all(isinstance(item, str) and item for item in value)
+        ):
+            issues.append(ConfigIssue("error", f"tools.subagents.tools.{key}", "must be a list of non-empty strings"))
+
 
 def _validate_agents_defaults_strict(config: dict[str, Any], issues: list[ConfigIssue]) -> None:
     """Strict shape check of the Django-owned ``agents.defaults`` block.
@@ -143,6 +234,8 @@ def _validate_agents_defaults_strict(config: dict[str, Any], issues: list[Config
         value = defaults.get(key)
         if value is not None and not isinstance(value, dict):
             issues.append(ConfigIssue("error", f"agents.defaults.{key}", "must be an object"))
+
+    _validate_subagent_blocks(config, defaults, issues)
 
 
 def assert_config_writable(config: dict[str, Any], tier: str = "starter") -> None:

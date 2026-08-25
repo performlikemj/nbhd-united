@@ -383,6 +383,12 @@ function lookupRun(runId) {
   return entry;
 }
 
+/** Shared read-only seam for the sub-agent spawn guard. */
+export function isTrackedCronRun(runId) {
+  const normalized = asTrimmedString(runId);
+  return Boolean(normalized && lookupRun(normalized));
+}
+
 function lookupContract(jobId) {
   const entry = contractByJobId.get(jobId);
   if (entry && Date.now() - entry.fetchedAtMs > entry.ttlMs) {

@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 
 import httpx
 from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 from django.utils import timezone
 from rest_framework import serializers
@@ -339,6 +340,7 @@ def resolve_user_channel(user) -> str | None:
 
 class SendToUserSerializer(serializers.Serializer):
     message = serializers.CharField(max_length=8192)
+    thread_id = serializers.CharField(required=False, allow_blank=True, allow_null=True, max_length=64)
     parse_mode = serializers.ChoiceField(
         choices=["Markdown", "HTML", "plain"],
         default="Markdown",
@@ -429,6 +431,24 @@ class CronDeliveryView(APIView):
         placeholder_message_text = serializer.validated_data["message"]
         parse_mode = serializer.validated_data.get("parse_mode", "Markdown")
 
+        from apps.router.models import ChatThread
+
+        requested_thread_id = serializer.validated_data.get("thread_id")
+        thread_id = None
+        if requested_thread_id:
+            try:
+                thread_id = (
+                    ChatThread.objects.filter(id=requested_thread_id, tenant=tenant)
+                    .values_list("id", flat=True)
+                    .first()
+                )
+            except (TypeError, ValueError, ValidationError):
+                thread_id = None
+        # Preserve the legacy storage contract: no requested destination (or
+        # an invalid/foreign one) stays NULL. Feed and APNs readers resolve the
+        # tenant's current main thread at delivery/read time. Only an explicit,
+        # tenant-owned live thread is pinned on the row.
+
         # Strip the generic marker before every transport, but retain its labels
         # in placeholder space on ProactiveOutbound. The row is cross-channel:
         # even a Telegram/LINE delivery can later render pills in the iOS feed.
@@ -498,8 +518,18 @@ class CronDeliveryView(APIView):
 
         job_name = request.headers.get("X-NBHD-Job-Name", "")
         delivery_attempt = None
-        if _delivery_dedup_enabled(tenant):
-            occurrence_key = degraded_occurrence_key(
+        occurrence_key_header = request.headers.get("X-NBHD-Occurrence-Key", "").strip()[:64]
+        explicit_occurrence_key = occurrence_key_header if job_name == "_subagent_result" else ""
+        if occurrence_key_header and not explicit_occurrence_key:
+            logger.debug(
+                "delivery_occurrence_key_ignored tenant=%s job_name=%s",
+                str(tenant.id)[:8],
+                job_name,
+            )
+        # An explicit runtime provenance key deliberately opts into dedup even
+        # when the tenant-wide degraded cron dedup feature flag is disabled.
+        if explicit_occurrence_key or _delivery_dedup_enabled(tenant):
+            occurrence_key = explicit_occurrence_key or degraded_occurrence_key(
                 tenant_id=tenant.id,
                 job_name=job_name,
                 fired_at=received_at,
@@ -567,6 +597,7 @@ class CronDeliveryView(APIView):
                     journal_link=journal_link,
                     quick_replies=quick_replies,
                     artifact_dedup_key=artifact_dedup_key,
+                    thread_id=thread_id,
                 )
             except Exception as exc:
                 _resolve_delivery_attempt(
@@ -622,6 +653,7 @@ class CronDeliveryView(APIView):
                     journal_link=journal_link,
                     quick_replies=quick_replies,
                     artifact_dedup_key=artifact_dedup_key,
+                    thread_id=thread_id,
                 )
             except Exception as exc:
                 _resolve_delivery_attempt(
@@ -711,6 +743,7 @@ class CronDeliveryView(APIView):
                 journal_link=journal_link,
                 quick_replies=quick_replies,
                 artifact_dedup_key=artifact_dedup_key,
+                thread_id=thread_id,
             )
 
         return resp
