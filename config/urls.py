@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.urls import include, path
 
+from apps.cron import views as cron_views
 from apps.integrations.runtime_views import RuntimeBYOErrorReportView, RuntimeUsageReportView
 from apps.router.chat_views import ChatProgressEventView
 from apps.router.views import serve_chart_image, serve_meditation_audio
@@ -78,6 +79,11 @@ urlpatterns = [
     path("api/v1/workspaces/", include("apps.journal.workspace_urls")),
     path("api/v1/sessions/", include("apps.journal.session_urls")),
     path("api/steward/", include("apps.steward.urls")),
+    path(
+        "api/internal/deploy/smoke/",
+        cron_views.smoke_external_deps,
+        name="deploy-smoke-external-deps",
+    ),
     path("api/cron/", include("apps.cron.urls")),
     path("api/v1/cron/", include("apps.cron.urls")),
     path("stripe/", include("djstripe.urls", namespace="djstripe")),
