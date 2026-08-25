@@ -389,6 +389,16 @@ def task_hygiene_enabled(tenant: Tenant) -> bool:
     return False
 
 
+def proactive_suggestions_enabled(tenant: Tenant) -> bool:
+    """Single fail-closed allowlist gate for briefing suggestions."""
+
+    from django.conf import settings
+
+    raw = str(getattr(settings, "PROACTIVE_SUGGESTIONS_TENANT_IDS", "") or "")
+    allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    return "*" in allowed or str(tenant.id).lower() in allowed
+
+
 def seed_task_hygiene_cron(tenant: Tenant) -> dict[str, Any]:
     """Converge the weekly task-hygiene cron to match the gate, both directions.
 

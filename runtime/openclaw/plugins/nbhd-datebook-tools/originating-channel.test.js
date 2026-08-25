@@ -168,7 +168,7 @@ test("reminder create forwards due and alarm without changing nested JSON", asyn
   assert.equal(JSON.stringify(requestBody.payload.items[0]), JSON.stringify(expectedItem));
 });
 
-test("app-surface creates return server guidance without polling command status", async () => {
+test("app-surface creates return card guidance without polling command status", async () => {
   const guidance = "Waiting for your approval; the approval is in this conversation. Review it within 24 hours.";
   const requestPaths = [];
   globalThis.fetch = async (url) => {
@@ -196,7 +196,8 @@ test("app-surface creates return server guidance without polling command status"
     direct_user_originated: true,
   });
 
-  assert.equal(result.content[0].text, guidance);
+  assert.match(result.content[0].text, /card in the app/i);
+  assert.doesNotMatch(result.content[0].text, /\/approve\s+\S+/i);
   assert.equal(result.details.approval_surface, "app");
   assert.equal(result.details.delivery_state, "available");
   assert.deepEqual(requestPaths, [
@@ -239,4 +240,36 @@ test("telegram-surface creates keep polling command status", async () => {
     "/api/v1/datebook/runtime/tenant-test/datebook/request-create",
     "/api/v1/datebook/runtime/tenant-test/datebook/command-status/command-telegram",
   ]);
+});
+
+test("pending approval guidance uses app cards and preserves chat commands", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    state: "approval_pending",
+    command_id: "command-channel-guidance",
+    approval_surface: "app",
+    delivery_state: "available",
+    guidance: "Approve with /approve 77.",
+  }), { status: 202 });
+
+  const appTool = toolsForContext({ messageChannel: "app" }).get("nbhd_datebook_add_apple_reminder");
+  const appResult = await appTool.execute("call-app-guidance", {
+    items: [{ title: "Buy milk" }],
+    direct_user_originated: false,
+  });
+  assert.match(appResult.content[0].text, /card in the app/i);
+  assert.doesNotMatch(appResult.content[0].text, /\/approve\s+\S+/i);
+
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    state: "approval_pending",
+    command_id: "command-channel-guidance",
+    approval_surface: "telegram",
+    delivery_state: "available",
+    guidance: "Approve with /approve 77.",
+  }), { status: 202 });
+  const telegramTool = toolsForContext({ messageChannel: "telegram" }).get("nbhd_datebook_add_apple_reminder");
+  const telegramResult = await telegramTool.execute("call-telegram-guidance", {
+    items: [{ title: "Buy milk" }],
+    direct_user_originated: false,
+  });
+  assert.match(telegramResult.content[0].text, /\/approve 77/);
 });

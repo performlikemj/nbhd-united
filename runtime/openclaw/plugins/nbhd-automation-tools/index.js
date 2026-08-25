@@ -64,7 +64,7 @@ function renderPayload(payload) {
   };
 }
 
-function renderCronCreatePayload(payload) {
+function renderCronCreatePayload(payload, toolContext) {
   if (payload.status === 409 && payload.conflict === "request_id_conflict") {
     return {
       content: [{
@@ -84,10 +84,18 @@ function renderCronCreatePayload(payload) {
     };
   }
   if (payload.state === "pending_approval") {
+    const channel = asTrimmedString(toolContext?.messageChannel).toLowerCase();
+    let text = "This scheduled task is pending the user's approval and does not exist yet.";
+    if (channel === "ios" || channel === "app") {
+      text = "This scheduled task is pending your approval and does not exist yet. Approve it via the card in the app.";
+    } else if (channel === "telegram" || channel === "line") {
+      const actionId = payload.action_id ?? "<id>";
+      text = `This scheduled task is pending the user's approval and does not exist yet. To approve it, use /approve ${actionId}.`;
+    }
     return {
       content: [{
         type: "text",
-        text: "This scheduled task is pending the user's approval and does not exist yet.",
+        text,
       }],
       details: { json: payload },
     };
@@ -250,7 +258,7 @@ const NAME_DESCRIPTION =
 export default function register(api) {
   // ── pure_reminder ─────────────────────────────────────────────────────
   api.registerTool(
-    wrap({
+    (toolContext) => wrap({
       name: "nbhd_cron_create_pure_reminder",
       description:
         "May require approval; never claim the scheduled task exists while approval is pending. " +
@@ -282,7 +290,7 @@ export default function register(api) {
             ...hiddenOrigin(input),
           },
         });
-        return renderCronCreatePayload(payload);
+        return renderCronCreatePayload(payload, toolContext);
       },
     }),
     { optional: true },
@@ -290,7 +298,7 @@ export default function register(api) {
 
   // ── quote_user_intent ─────────────────────────────────────────────────
   api.registerTool(
-    wrap({
+    (toolContext) => wrap({
       name: "nbhd_cron_create_quote_user_intent",
       description:
         "May require approval; never claim the scheduled task exists while approval is pending. " +
@@ -339,7 +347,7 @@ export default function register(api) {
           method: "POST",
           body,
         });
-        return renderCronCreatePayload(payload);
+        return renderCronCreatePayload(payload, toolContext);
       },
     }),
     { optional: true },
@@ -347,7 +355,7 @@ export default function register(api) {
 
   // ── domain_summary ────────────────────────────────────────────────────
   api.registerTool(
-    wrap({
+    (toolContext) => wrap({
       name: "nbhd_cron_create_domain_summary",
       description:
         "May require approval; never claim the scheduled task exists while approval is pending. " +
@@ -407,7 +415,7 @@ export default function register(api) {
             ...hiddenOrigin(input),
           },
         });
-        return renderCronCreatePayload(payload);
+        return renderCronCreatePayload(payload, toolContext);
       },
     }),
     { optional: true },

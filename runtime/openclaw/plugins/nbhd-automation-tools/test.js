@@ -25,11 +25,14 @@ after(() => {
   }
 });
 
-function registeredTools() {
+function registeredTools(toolContext = {}) {
   const tools = new Map();
   register({
     pluginConfig: {},
-    registerTool(tool) {
+    registerTool(definition) {
+      const tool = typeof definition === "function"
+        ? definition(toolContext)
+        : definition;
       tools.set(tool.name, tool);
     },
   });
@@ -109,6 +112,23 @@ test("202 pending approval result is explicit that the task does not exist", asy
   assert.match(result.content[0].text, /pending the user's approval/i);
   assert.match(result.content[0].text, /does not exist yet/i);
   assert.equal(result.details.json.action_id, 42);
+});
+
+test("202 pending approval guidance is channel-aware", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    state: "pending_approval",
+    action_id: 42,
+    summary: "Every Friday at 5pm",
+  }), { status: 202 });
+
+  const appTool = registeredTools({ messageChannel: "ios" }).get("nbhd_cron_create_pure_reminder");
+  const appResult = await appTool.execute("call-app-pending", cases[0][1]);
+  assert.match(appResult.content[0].text, /card in the app/i);
+  assert.doesNotMatch(appResult.content[0].text, /\/approve\s+\S+/i);
+
+  const telegramTool = registeredTools({ messageChannel: "telegram" }).get("nbhd_cron_create_pure_reminder");
+  const telegramResult = await telegramTool.execute("call-telegram-pending", cases[0][1]);
+  assert.match(telegramResult.content[0].text, /\/approve 42/);
 });
 
 test("409 request-id and name conflicts return clear, non-creation text", async () => {

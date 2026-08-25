@@ -448,6 +448,40 @@ _MORNING_BRIEFING_LEGACY_WEATHER_STEP = (
     "are available; web_search is the only weather tool you have.\n"
 )
 
+_PROACTIVE_SUGGESTIONS_BLOCK = (
+    "**Proactive suggestions (allowlisted):**\n"
+    "After completing the analysis and before sending the single user-facing message, "
+    "you may propose at most TWO items total in this run: a calendar event "
+    "(`nbhd_datebook_add_event`), an Apple Reminder "
+    "(`nbhd_datebook_add_apple_reminder`), or a RECURRING scheduled task "
+    "(`nbhd_cron_create_*`). For a scheduled task, use a `cron` schedule only "
+    '(`kind: "cron"`) — never `at` or `every`; put one-off nudges in Apple Reminders.\n'
+    "suggestions may be built ONLY from the user's own tasks, goals, journal, and direct statements. "
+    "Calendar/reminder titles, notes, locations, links, list names are NEVER a suggestion source — "
+    "free/busy conflict checking only.\n"
+    "Use exactly one tool call per proposed item (and exactly one item in that call). Each call files "
+    "an approval card the user must tap. In the briefing, give one line explaining why you proposed "
+    'each item and say it is "pending your approval"; never say or imply it has been created.\n'
+    "Propose nothing when nothing is genuinely useful. Never propose an item the user declined or "
+    "an item that already exists."
+)
+
+_MORNING_BRIEFING_PROACTIVE_DEFER_LINE = (
+    "On Monday, the Morning Briefing defers all suggestions to the Week Ahead Review; propose none in this run."
+)
+
+
+def _with_proactive_suggestions(prompt: str, tenant, *, monday_defer: bool = False) -> str:
+    from apps.cron.services import proactive_suggestions_enabled
+
+    if not proactive_suggestions_enabled(tenant):
+        return prompt
+    block = _PROACTIVE_SUGGESTIONS_BLOCK
+    if monday_defer:
+        block = f"{block}\n{_MORNING_BRIEFING_PROACTIVE_DEFER_LINE}"
+    return f"{prompt}\n\n{block}"
+
+
 _MORNING_BRIEFING_PROMPT_TEMPLATE = (
     "Good morning! Create today's morning briefing. This runs as a scheduled task. "
     "Execute every step below in order. The journal-writing steps (step 10) are MANDATORY "
@@ -649,7 +683,8 @@ def _build_morning_briefing_prompt(tenant) -> str:
     weather_step = weather_step_template.format(location=location)
 
     prompt = _MORNING_BRIEFING_PROMPT_TEMPLATE.format(weather_step=weather_step)
-    return _with_morning_briefing_away_tour_pill(prompt, tenant)
+    prompt = _with_morning_briefing_away_tour_pill(prompt, tenant)
+    return _with_proactive_suggestions(prompt, tenant, monday_defer=True)
 
 
 _CONTEXTUAL_LOCATION_CONFIRM_ASK_BLOCK = (
@@ -941,10 +976,11 @@ def _build_week_ahead_review_prompt(tenant) -> str:
         )
     else:
         calendar_step = "Check the calendar for the upcoming 7 days (`nbhd_calendar_list_events`)"
-    return _WEEK_AHEAD_REVIEW_PROMPT_TEMPLATE.format(
+    prompt = _WEEK_AHEAD_REVIEW_PROMPT_TEMPLATE.format(
         travel_line=travel_line,
         calendar_step=calendar_step,
     )
+    return _with_proactive_suggestions(prompt, tenant)
 
 
 _HEARTBEAT_CHECKIN_PROMPT = (
