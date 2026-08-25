@@ -105,6 +105,10 @@ class GateRequestView(APIView):
         payload = request.data.get("payload", {})
         display_summary = request.data.get("display_summary", "")
 
+        from .origin import verify_origin_stamp
+
+        origin_stamp = verify_origin_stamp(tenant, request.data.get("origin"))
+
         # Validate action_type
         valid_types = [choice[0] for choice in ActionType.choices]
         if action_type not in valid_types:
@@ -135,6 +139,11 @@ class GateRequestView(APIView):
         if is_datebook_action_type(action_type):
             return Response(
                 {"error": "datebook_actions_use_request_create"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if action_type == ActionType.CRON_CREATE:
+            return Response(
+                {"error": "cron_actions_use_typed_request"},
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -181,6 +190,9 @@ class GateRequestView(APIView):
             action_payload=stored_payload,
             display_summary=stored_summary,
             pii_receipts=receipts,
+            origin_kind=origin_stamp.kind,
+            origin_cron_name=origin_stamp.cron_name,
+            origin_run_id=origin_stamp.run_id,
         )
 
         # Send confirmation message via user's platform.
@@ -257,12 +269,22 @@ class GatePollView(APIView):
         # Check for expiry — datebook gates use their locked typed transition;
         # generic gates retain the existing conditional update contract.
         if action.is_expired:
+            from apps.cron.gate import expire_cron_action, is_cron_action_type
             from apps.datebook.gate import datebook_action_state, is_datebook_action_type
 
             if is_datebook_action_type(action.action_type):
                 datebook_state = datebook_action_state(action)
                 action.refresh_from_db()
                 updated = datebook_state["state"] == "stale_review"
+            elif is_cron_action_type(action.action_type):
+                with transaction.atomic():
+                    locked = PendingAction.objects.select_for_update().select_related("tenant").get(pk=action.pk)
+                    if locked.status == ActionStatus.PENDING and locked.expires_at < timezone.now():
+                        expire_cron_action(locked)
+                        updated = True
+                    else:
+                        updated = False
+                    action = locked
             else:
                 updated = PendingAction.objects.filter(
                     id=action.id,
@@ -336,6 +358,12 @@ class GateRespondView(APIView):
                     status.HTTP_409_CONFLICT,
                 )
 
+            from apps.cron.gate import (
+                approve_cron_action,
+                deny_cron_action,
+                expire_cron_action,
+                is_cron_action_type,
+            )
             from apps.datebook.gate import (
                 approve_datebook_action,
                 deny_datebook_action,
@@ -346,6 +374,8 @@ class GateRespondView(APIView):
             if action.is_expired:
                 if is_datebook_action_type(action.action_type):
                     data = expire_datebook_action(action)
+                elif is_cron_action_type(action.action_type):
+                    data = expire_cron_action(action)
                 else:
                     action.status = ActionStatus.EXPIRED
                     action.save(update_fields=["status"])
@@ -376,13 +406,22 @@ class GateRespondView(APIView):
                 data["status"] = action.status
                 return action, data, status.HTTP_200_OK
 
+            if is_cron_action_type(action.action_type):
+                if destination_override is not None or set_default not in (False, None):
+                    return action, {"error": "destination_options_not_supported"}, status.HTTP_400_BAD_REQUEST
+                if response_action == "approve":
+                    data = approve_cron_action(action, responded_at=now)
+                else:
+                    data = deny_cron_action(action, responded_at=now)
+                return action, data, status.HTTP_200_OK
+
             action.status = ActionStatus.APPROVED if response_action == "approve" else ActionStatus.DENIED
             action.responded_at = now
             action.save(update_fields=["status", "responded_at"])
             record_action_audit(action, action.status, responded_at=now)
             return action, {"status": action.status}, status.HTTP_200_OK
 
-    def post(self, request, action_id: int):
+    def _respond_http(self, request, action_id: int, response_action: str):
         from django.conf import settings as django_settings
 
         # Auth: deploy-secret (this is called by Django's own poller)
@@ -401,7 +440,7 @@ class GateRespondView(APIView):
 
         action, data, response_status = self.resolve_action(
             action_id=action_id,
-            response_action=request.data.get("action", ""),
+            response_action=response_action,
         )
         if action is None:
             return Response(data, status=response_status)
@@ -422,3 +461,9 @@ class GateRespondView(APIView):
             update_gate_message(action)
 
         return Response(data, status=response_status)
+
+    def post(self, request, action_id: int):
+        return self._respond_http(request, action_id, request.data.get("action", ""))
+
+    def get(self, request, action_id: int):
+        return self._respond_http(request, action_id, request.query_params.get("action", ""))

@@ -292,6 +292,7 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
             "originating_channel",
             "destination_name",
             "destination_fingerprint",
+            "origin",
         }
         if not set(body).issubset(allowed_fields):
             return Response({"state": "unsupported_request_field"}, status=status.HTTP_400_BAD_REQUEST)
@@ -346,6 +347,9 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
             "target_at": target_at.isoformat() if target_at else None,
         }
         try:
+            from apps.actions.origin import verify_origin_stamp
+
+            origin_stamp = verify_origin_stamp(tenant, body.get("origin"))
             result = request_datebook_action(
                 tenant,
                 action_type=action_type,
@@ -354,6 +358,7 @@ class RuntimeRequestCreateView(_DatebookRuntimeView):
                 display_summary=display_text,
                 direct_user_originated=direct_user_originated,
                 originating_channel=originating_channel,
+                origin_stamp=origin_stamp,
             )
         except ProtocolError as exc:
             return Response({"state": exc.code, **exc.extra}, status=exc.status_code)

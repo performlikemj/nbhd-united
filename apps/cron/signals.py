@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+from contextlib import contextmanager
 
 from django.db.models.signals import post_delete, post_save, pre_save
 from django.dispatch import receiver
@@ -31,6 +33,19 @@ from .models import CronCreationPath, CronJob
 CRON_CONTRACT_PREFIX = "nbhd.v1 "
 
 logger = logging.getLogger(__name__)
+_SUPPRESS_REGEN = threading.local()
+
+
+@contextmanager
+def suppress_cronjob_reconcile():
+    """Silence save-time QStash publication for an explicit outbox writer."""
+
+    previous = getattr(_SUPPRESS_REGEN, "active", False)
+    _SUPPRESS_REGEN.active = True
+    try:
+        yield
+    finally:
+        _SUPPRESS_REGEN.active = previous
 
 
 def _tenant_uses_postgres_canonical(cronjob: CronJob) -> bool:
@@ -39,7 +54,7 @@ def _tenant_uses_postgres_canonical(cronjob: CronJob) -> bool:
     return bool(tenant and getattr(tenant, "postgres_cron_canonical", False))
 
 
-def _enqueue_regen(tenant_id: str) -> None:
+def _enqueue_regen(tenant_id: str) -> bool:
     """Enqueue a debounced reconcile task; swallow errors so a save still succeeds."""
     from apps.cron.publish import publish_task
 
@@ -50,12 +65,14 @@ def _enqueue_regen(tenant_id: str) -> None:
             idempotency_key=f"regen-cron-{tenant_id}",
             delay_seconds=30,
         )
+        return True
     except Exception:
         logger.warning(
             "Failed to enqueue tenant cron regen for tenant %s",
             str(tenant_id)[:8],
             exc_info=True,
         )
+        return False
 
 
 @receiver(pre_save, sender=CronJob)
@@ -149,6 +166,8 @@ def cronjob_derive_data_from_typed_payload(sender, instance, **kwargs):
 
 @receiver(post_save, sender=CronJob)
 def cronjob_saved_regen_tenant_crons(sender, instance, **kwargs):
+    if getattr(_SUPPRESS_REGEN, "active", False):
+        return
     if not _tenant_uses_postgres_canonical(instance):
         return
     _enqueue_regen(str(instance.tenant_id))

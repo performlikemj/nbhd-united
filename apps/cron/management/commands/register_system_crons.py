@@ -200,6 +200,10 @@ SYSTEM_CRONS = [
     # GatePollView expiry for actions the container abandons (never polls again).
     # See apps/actions/tasks.py:expire_stale_pending_actions.
     ("expire-stale-actions", "*/5 * * * *", "/api/cron/trigger/expire_stale_actions/"),
+    # Every 5 min — replay committed cron approval outbox rows left QUEUED by
+    # a lost on_commit callback, or whose DISPATCHING lease went stale. The
+    # worker claims rows before I/O and verifies stale at-jobs via cron.list.
+    ("replay-cron-dispatches", "*/5 * * * *", "/api/cron/trigger/replay_cron_dispatches/"),
     # Daily at 08:20 UTC — reap orphaned tenant containers (oc-* apps with no
     # Tenant row, e.g. a User account deletion whose Azure teardown was blocked
     # by the prod resource-group lock). Hibernates awake orphans (lock-safe;

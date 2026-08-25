@@ -11,7 +11,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from apps.actions.models import ActionStatus, PendingAction
+from apps.actions.models import ActionStatus, ActionType, PendingAction
 from apps.actions.views import GateRespondView
 from apps.pii.store_authoring import owner_store_representation
 from apps.tenants.authentication import JWTAuthenticationWithRLS
@@ -35,6 +35,7 @@ from .throttles import DatebookCommandThrottle, DatebookReadThrottle, DatebookSy
 
 MAX_DATEBOOK_REQUEST_BYTES = 1_048_576
 MAX_PENDING_GATE_ACTIONS = 20
+MAX_PENDING_CRON_ACTIONS = 10
 
 
 class DatebookAPIView(APIView):
@@ -199,7 +200,7 @@ class CalendarContextsView(DatebookAPIView):
         return Response(_calendar_context_response(rows, tenant))
 
 
-def _pending_gate_action_data(action: PendingAction, tenant: Tenant) -> dict:
+def _pending_gate_action_data(action: PendingAction, tenant: Tenant, *, include_origin: bool = False) -> dict:
     represented = owner_store_representation(
         action,
         tenant,
@@ -209,7 +210,7 @@ def _pending_gate_action_data(action: PendingAction, tenant: Tenant) -> dict:
         },
         model_label="actions.PendingAction",
     )
-    return {
+    data = {
         "action_id": action.id,
         "action_type": action.action_type,
         "payload": represented["action_payload"],
@@ -218,6 +219,12 @@ def _pending_gate_action_data(action: PendingAction, tenant: Tenant) -> dict:
         "created_at": action.created_at.isoformat(),
         "expires_at": action.expires_at.isoformat(),
     }
+    if include_origin:
+        data["origin"] = {
+            "kind": action.origin_kind,
+            "cron_name": action.origin_cron_name,
+        }
+    return data
 
 
 class PendingGateActionsView(DatebookAPIView):
@@ -229,15 +236,31 @@ class PendingGateActionsView(DatebookAPIView):
         tenant = self.tenant(request)
         from .gate import DATEBOOK_ACTION_TYPES, DATEBOOK_GATE_REVIEW_WINDOW_SECONDS
 
-        actions = PendingAction.objects.filter(
-            tenant=tenant,
-            status=ActionStatus.PENDING,
-            expires_at__gt=timezone.now(),
-            action_type__in=DATEBOOK_ACTION_TYPES,
-        ).order_by("created_at", "id")[:MAX_PENDING_GATE_ACTIONS]
+        datebook_actions = list(
+            PendingAction.objects.filter(
+                tenant=tenant,
+                status=ActionStatus.PENDING,
+                expires_at__gt=timezone.now(),
+                action_type__in=DATEBOOK_ACTION_TYPES,
+            ).order_by("created_at", "id")[:MAX_PENDING_GATE_ACTIONS]
+        )
+        include_cron = request.query_params.get("include") == ActionType.CRON_CREATE
+        actions = datebook_actions
+        if include_cron:
+            cron_actions = list(
+                PendingAction.objects.filter(
+                    tenant=tenant,
+                    status=ActionStatus.PENDING,
+                    expires_at__gt=timezone.now(),
+                    action_type=ActionType.CRON_CREATE,
+                ).order_by("created_at", "id")[:MAX_PENDING_CRON_ACTIONS]
+            )
+            actions = [*datebook_actions, *cron_actions]
         return Response(
             {
-                "actions": [_pending_gate_action_data(action, tenant) for action in actions],
+                "actions": [
+                    _pending_gate_action_data(action, tenant, include_origin=include_cron) for action in actions
+                ],
                 "review_window_seconds": DATEBOOK_GATE_REVIEW_WINDOW_SECONDS,
             }
         )
@@ -248,17 +271,29 @@ class RespondGateActionView(DatebookAPIView):
 
     throttle_classes = [DatebookCommandThrottle]
 
-    def post(self, request, action_id: int):
+    def _respond(self, request, action_id: int, data):
         tenant = self.tenant(request)
-        data = self.body(request)
         from .gate import DATEBOOK_ACTION_TYPES
 
+        allowed_types = {*DATEBOOK_ACTION_TYPES, ActionType.CRON_CREATE}
         if not PendingAction.objects.filter(
             id=action_id,
             tenant=tenant,
-            action_type__in=DATEBOOK_ACTION_TYPES,
+            action_type__in=allowed_types,
         ).exists():
             return Response({"error": "Action not found"}, status=status.HTTP_404_NOT_FOUND)
+        is_cron = PendingAction.objects.filter(
+            id=action_id,
+            tenant=tenant,
+            action_type=ActionType.CRON_CREATE,
+        ).exists()
+        if is_cron and (
+            data.get("destination_override") is not None or data.get("set_default", False) not in (False, None)
+        ):
+            return Response(
+                {"error": "destination_options_not_supported"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         action, response_data, response_status = GateRespondView.resolve_action(
             action_id=action_id,
             response_action=data.get("response", ""),
@@ -271,6 +306,12 @@ class RespondGateActionView(DatebookAPIView):
 
             update_gate_message(action)
         return Response(response_data, status=response_status)
+
+    def post(self, request, action_id: int):
+        return self._respond(request, action_id, self.body(request))
+
+    def get(self, request, action_id: int):
+        return self._respond(request, action_id, request.query_params)
 
 
 def _run_data(run, *, idempotent: bool) -> dict:

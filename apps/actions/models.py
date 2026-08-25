@@ -15,6 +15,12 @@ class ActionType(models.TextChoices):
     TASK_DELETE = "task_delete", "Tasks: Delete Task"
     CALENDAR_CREATE = "calendar_create", "Calendar: Create Event"
     REMINDER_CREATE = "reminder_create", "Reminders: Create Apple Reminder"
+    CRON_CREATE = "cron_create", "Scheduled Tasks: Create Task"
+
+
+class ActionOriginKind(models.TextChoices):
+    CRON = "cron", "Cron"
+    UNKNOWN = "unknown", "Unknown"
 
 
 class ActionStatus(models.TextChoices):
@@ -36,6 +42,13 @@ class ActionAuditOutcome(models.TextChoices):
     COMMAND_EXPIRED = "command_expired", "Command expired"
     CANCELLED = "cancelled", "Cancelled"
     AMBIGUOUS = "ambiguous", "Ambiguous"
+
+
+class CronDispatchState(models.TextChoices):
+    QUEUED = "queued", "Queued"
+    DISPATCHING = "dispatching", "Dispatching"
+    EXECUTED = "executed", "Executed"
+    FAILED = "failed", "Failed"
 
 
 def default_expires_at():
@@ -65,7 +78,16 @@ class PendingAction(models.Model):
         default=ActionStatus.PENDING,
     )
     datebook_request_id = models.CharField(max_length=128, blank=True, default="")
+    cron_request_id = models.CharField(max_length=128, blank=True, default="")
     datebook_command_id = models.UUIDField(null=True, blank=True, unique=True)
+    origin_kind = models.CharField(
+        max_length=8,
+        choices=ActionOriginKind.choices,
+        default=ActionOriginKind.UNKNOWN,
+    )
+    origin_cron_name = models.CharField(max_length=255, blank=True, default="")
+    origin_run_id = models.CharField(max_length=64, blank=True, default="")
+    suggestion_fingerprint = models.CharField(max_length=64, blank=True, default="", db_index=True)
     resolution_code = models.CharField(max_length=32, blank=True, default="")
     originating_channel = models.CharField(
         max_length=16,
@@ -109,7 +131,12 @@ class PendingAction(models.Model):
                 fields=["tenant", "datebook_request_id"],
                 condition=~models.Q(datebook_request_id=""),
                 name="actions_datebook_request_unique",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=["tenant", "cron_request_id"],
+                condition=~models.Q(cron_request_id=""),
+                name="actions_cron_request_unique",
+            ),
         ]
 
     def __str__(self):
@@ -173,3 +200,30 @@ class ActionAuditLog(models.Model):
 
     def __str__(self):
         return f"{self.tenant} | {self.get_action_type_display()} | {self.result}"
+
+
+class CronDispatch(models.Model):
+    """Durable handoff from a committed cron approval to external dispatch."""
+
+    action = models.OneToOneField(
+        PendingAction,
+        on_delete=models.CASCADE,
+        related_name="cron_dispatch",
+    )
+    cron = models.OneToOneField(
+        "cron.CronJob",
+        on_delete=models.CASCADE,
+        related_name="approval_dispatch",
+    )
+    kind = models.CharField(max_length=8)
+    state = models.CharField(
+        max_length=16,
+        choices=CronDispatchState.choices,
+        default=CronDispatchState.QUEUED,
+    )
+    attempts = models.PositiveSmallIntegerField(default=0)
+    last_attempt_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.action_id}:{self.cron_id}:{self.kind}"

@@ -72,7 +72,7 @@ class RuntimeWriterDeferralInventoryTests(SimpleTestCase):
         sites = list(_runtime_capable_authoring_calls())
         direct_sites = [site for site in sites if site[0] == "direct"]
         helper_sites = [site for site in sites if site[0] == "helper"]
-        self.assertEqual(len(direct_sites), 34, "runtime authoring direct-call inventory changed")
+        self.assertEqual(len(direct_sites), 35, "runtime authoring direct-call inventory changed")
         self.assertEqual(len(helper_sites), 5, "runtime Document helper inventory changed")
 
         for _kind, path, call, writer in sites:
