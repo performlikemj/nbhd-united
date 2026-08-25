@@ -1230,6 +1230,28 @@ def register_system_crons(request):
 
 
 @csrf_exempt
+def smoke_external_deps(request):
+    """Run real post-deploy dependency checks behind the deploy secret."""
+    if request.method != "POST":
+        return JsonResponse({"error": "POST required"}, status=405)
+
+    deploy_secret = getattr(settings, "DEPLOY_SECRET", None)
+    if not deploy_secret:
+        logger.error("DEPLOY_SECRET not configured")
+        return JsonResponse({"error": "Not configured"}, status=503)
+
+    provided = request.headers.get("X-Deploy-Secret", "")
+    if not provided or provided != deploy_secret:
+        logger.warning("Unauthorized smoke_external_deps attempt")
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+
+    from apps.orchestrator.smoke_external_deps import run_smoke
+
+    report = run_smoke()
+    return JsonResponse(report.as_dict(), status=200 if report.ok else 503)
+
+
+@csrf_exempt
 def run_update_cron_prompts(request):
     """Refresh system cron rows from seed for all active tenants.
 

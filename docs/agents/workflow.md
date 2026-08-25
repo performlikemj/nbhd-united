@@ -33,6 +33,12 @@ frontend lint+build → backend checks+tests (incl. `ruff format --check`, `make
 
 After deploy: verify per `docs/agents/debugging.md` §post-deploy. OpenClaw fleet rollouts are separate (`workflow_dispatch`); merging to main does NOT roll tenant images.
 
+The backend deploy runs a real-call external dependency smoke after deploy housekeeping and before successful Steward evidence.
+It checks Azure Storage keys and dedicated-share I/O, Key Vault metadata, Gemini TTS, Stripe, QStash, Postgres, and cache.
+Run it by hand with `python manage.py smoke_external_deps` (add `--json` or `--only name,name`).
+A red step means the serving build cannot complete at least one production dependency call; inspect its sanitized JSON and Sentry error.
+The smoke may write only to the dedicated `ws-smoke-deploy` share, using a fresh UUID file that it deletes after read-back.
+
 ## Parallel work & deploy serialization
 
 Multiple things in flight at once (two sessions, a person + dependabot, three PRs going green in the same minute) used to race the production deploy. Single-revision mode makes `az containerapp update` last-writer-wins, so on 2026-07-09 the *oldest* of three near-simultaneous merges deployed last and prod served stale code — with every run green. Full write-up: `docs/deploy-concurrency-directive.md`. What's now in place (`ci-cd.yml`):
