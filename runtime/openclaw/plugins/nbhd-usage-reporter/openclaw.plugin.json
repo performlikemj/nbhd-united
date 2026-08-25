@@ -24,9 +24,14 @@
         "maximum": 60000,
         "description": "HTTP timeout for usage reporting requests."
       },
-      "helperOnly": {
-        "type": "boolean",
-        "description": "When true, report only OpenClaw helper-session usage."
+      "meterScopes": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["helper", "cron"]
+        },
+        "uniqueItems": true,
+        "description": "Explicit OpenClaw run scopes to meter; other conversation turns are skipped."
       }
     }
   }

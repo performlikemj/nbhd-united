@@ -237,6 +237,9 @@ def record_usage(
 
     if not is_system:
         total_tokens = input_tokens + output_tokens
+        # Only user-originated main turns consume message quota. Scoped runtime
+        # work such as cron_message and subagent_message still debits tokens,
+        # cost, and prepaid credit without incrementing the message counters.
         msg_increment = message_count if event_type == "message" else 0
         # `cost` is already 0 for BYO; the F-expression is a no-op
         # increment in that case (intentional — keeps the code path

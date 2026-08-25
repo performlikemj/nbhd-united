@@ -117,7 +117,7 @@ class SubagentCanaryConfigTests(TestCase):
             {
                 "enabled": True,
                 "hooks": {"allowConversationAccess": True},
-                "config": {"helperOnly": True},
+                "config": {"meterScopes": ["helper"]},
             },
         )
 

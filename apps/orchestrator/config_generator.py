@@ -125,6 +125,21 @@ def subagents_enabled(tenant: Tenant | None) -> bool:
     return False
 
 
+def usage_hooks_enabled(tenant: Tenant) -> bool:
+    """Return whether scoped usage-reporter conversation hooks are enabled."""
+    raw = str(getattr(settings, "USAGE_HOOKS_TENANT_IDS", "") or "")
+    allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
+    if "*" in allowed or str(tenant.id).lower() in allowed:
+        return True
+    if allowed:
+        logger.info(
+            "usage_hooks: tenant %s is not in USAGE_HOOKS_TENANT_IDS (%d id(s) configured) — hooks disabled",
+            str(tenant.id)[:8],
+            len(allowed),
+        )
+    return False
+
+
 _CRON_CONTEXT_PREAMBLE = (
     "**MANDATORY — do this BEFORE following the instructions below:**\n"
     "1. Load today's daily note (`nbhd_daily_note_get`). Read EVERY section — "
@@ -2280,6 +2295,7 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
     # provider, and the PDF pin has to follow it there.
     primary_is_byo = bool(byo_extras) and models_config["primary"] in byo_extras
     subagents_on = subagents_enabled(tenant)
+    usage_hooks_on = usage_hooks_enabled(tenant)
 
     # Collect all configured plugins
     _plugin_defs = [
@@ -2745,17 +2761,22 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                     "timeoutMs": 30000,
                 }
 
-            # Django already meters ordinary HTTP turns. For canary tenants,
-            # unlock the reporter's conversation hooks only in helper-only mode
-            # so helper spend becomes visible without double-counting main turns.
-            # Disabled tenants retain the historical entry byte-for-byte.
-            if usage_reporter_id and usage_reporter_id in plugin_config["entries"]:
-                plugin_config["entries"][usage_reporter_id]["hooks"] = {
-                    "allowConversationAccess": True,
-                }
-                plugin_config["entries"][usage_reporter_id]["config"] = {
-                    "helperOnly": True,
-                }
+        meter_scopes = []
+        if subagents_on:
+            meter_scopes.append("helper")
+        if usage_hooks_on:
+            meter_scopes.append("cron")
+        if meter_scopes and usage_reporter_id and usage_reporter_id in plugin_config["entries"]:
+            # Django already meters ordinary HTTP/Telegram/LINE turns. Unlock
+            # conversation hooks only with explicit reporter scopes so helper
+            # and cron spend becomes visible without double-counting main turns.
+            # Tenants with neither gate retain the historical entry byte-for-byte.
+            plugin_config["entries"][usage_reporter_id]["hooks"] = {
+                "allowConversationAccess": True,
+            }
+            plugin_config["entries"][usage_reporter_id]["config"] = {
+                "meterScopes": meter_scopes,
+            }
 
         # OpenClaw's bundled document-extract extension is not part of
         # _active_plugins, but provides the built-in pdf tool's PDFium text-layer

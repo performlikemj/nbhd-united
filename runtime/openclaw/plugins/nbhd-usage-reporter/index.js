@@ -130,7 +130,25 @@ function isHelperSession(ctx) {
   return asTrimmedString(ctx?.sessionKey).includes(":subagent:");
 }
 
-export function extractUsage(event = {}, ctx = {}, logger = null) {
+function isCronRun(ctx) {
+  return ctx?.trigger === "cron";
+}
+
+function configuredMeterScopes(pluginConfig) {
+  const config = asObject(pluginConfig);
+  if (!Object.hasOwn(config, "meterScopes")) return null;
+  if (!Array.isArray(config.meterScopes)) return new Set();
+  return new Set(config.meterScopes);
+}
+
+function selectedMeterScope(ctx, meterScopes) {
+  if (meterScopes === null) return undefined;
+  if (meterScopes.has("helper") && isHelperSession(ctx)) return "helper";
+  if (meterScopes.has("cron") && isCronRun(ctx)) return "cron";
+  return null;
+}
+
+export function extractUsage(event = {}, ctx = {}, logger = null, meterScope) {
   const usage = asObject(event.usage);
   const inputTokens = asNonNegativeInteger(
     usage.input_tokens ?? usage.input,
@@ -154,17 +172,19 @@ export function extractUsage(event = {}, ctx = {}, logger = null) {
     logger.warn("NBHD usage extract: model is missing, using 'unknown' fallback");
   }
 
-  const isSubagent = asTrimmedString(ctx.sessionKey).includes(":subagent:");
+  const isSubagent = meterScope === "helper" ||
+    (meterScope === undefined && isHelperSession(ctx));
+  const isCron = meterScope === "cron";
   const runId = asTrimmedString(ctx.runId || event.runId);
   const payload = {
-    event_type: isSubagent ? "subagent_message" : "message",
+    event_type: isSubagent ? "subagent_message" : isCron ? "cron_message" : "message",
     input_tokens: inputTokens,
     output_tokens: outputTokens,
     model_used: modelUsed || "unknown",
   };
-  if (isSubagent) {
+  if (isSubagent || isCron) {
     payload.metadata = {
-      kind: "subagent",
+      kind: isSubagent ? "subagent" : "cron",
       run: createHash("sha256").update(runId).digest("hex").slice(0, 12),
     };
   }
@@ -242,8 +262,7 @@ export default function register(api) {
     return;
   }
   const subscribe = (event, handler) => api.on(event, handler);
-  const helperOnly = asObject(api.pluginConfig).helperOnly === true;
-  const shouldMeterUsage = (ctx) => !helperOnly || isHelperSession(ctx);
+  const meterScopes = configuredMeterScopes(api.pluginConfig);
 
   api.logger.info("NBHD usage reporter plugin registered");
 
@@ -264,8 +283,12 @@ export default function register(api) {
   });
 
   subscribe("llm_output", (event, ctx) => {
-    if (!shouldMeterUsage(ctx)) return;
-    const payload = extractUsage(event, ctx, api.logger);
+    const meterScope = selectedMeterScope(ctx, meterScopes);
+    // Presence of meterScopes is an explicit allowlist: Django meters ordinary
+    // HTTP/Telegram/LINE turns, so every unselected session is skipped to avoid
+    // double billing. Absence preserves the reporter's legacy all-turn behavior.
+    if (meterScope === null) return;
+    const payload = extractUsage(event, ctx, api.logger, meterScope);
     if (!payload) {
       return;
     }
