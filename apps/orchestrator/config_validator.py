@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from django.conf import settings
+
 # Secret patterns — same as pre-commit-secrets hook
 _SECRET_RE = re.compile(r"(sk-ant-|sk-or-v1-|sk-proj-|AAAAAAAAAAAAA|tvly-dev-)")
 
@@ -238,6 +240,39 @@ def _validate_agents_defaults_strict(config: dict[str, Any], issues: list[Config
     _validate_subagent_blocks(config, defaults, issues)
 
 
+def _validate_usage_reporter_config(plugins: dict[str, Any], issues: list[ConfigIssue]) -> None:
+    """Validate the scoped usage-reporter config before image boot does."""
+    entries = plugins.get("entries")
+    if not isinstance(entries, dict):
+        return
+    plugin_id = str(
+        getattr(settings, "OPENCLAW_USAGE_PLUGIN_ID", "") or getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_ID", "")
+    ).strip()
+    entry = entries.get(plugin_id)
+    if not isinstance(entry, dict) or "config" not in entry:
+        return
+    plugin_config = entry.get("config")
+    if not isinstance(plugin_config, dict):
+        issues.append(ConfigIssue("error", f"plugins.entries.{plugin_id}.config", "must be an object"))
+        return
+    if "meterScopes" not in plugin_config:
+        return
+    meter_scopes = plugin_config["meterScopes"]
+    valid = (
+        isinstance(meter_scopes, list)
+        and all(isinstance(scope, str) and scope in {"helper", "cron"} for scope in meter_scopes)
+        and len(meter_scopes) == len(set(meter_scopes))
+    )
+    if not valid:
+        issues.append(
+            ConfigIssue(
+                "error",
+                f"plugins.entries.{plugin_id}.config.meterScopes",
+                "must be a unique list containing only 'helper' and/or 'cron'",
+            )
+        )
+
+
 def assert_config_writable(config: dict[str, Any], tier: str = "starter") -> None:
     """Write-time gate: raise ``InvalidTenantConfigError`` on any error-severity issue.
 
@@ -342,6 +377,7 @@ def validate_openclaw_config(
                     f"Plugin(s) in entries but not in allow list: {sorted(orphan_entries)}",
                 )
             )
+        _validate_usage_reporter_config(plugins, issues)
 
     # ── Channel config — PR #283 guard ──
     # Some channels (LINE) reject 'capabilities'; Telegram allows it.

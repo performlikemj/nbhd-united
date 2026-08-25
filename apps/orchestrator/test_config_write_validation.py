@@ -229,4 +229,7 @@ class GenerateSmokeConfigCommandTests(TestCase):
             {"allowConversationAccess": True, "timeoutMs": 30000},
         )
         self.assertEqual(entries["nbhd-usage-reporter"]["hooks"], {"allowConversationAccess": True})
-        self.assertEqual(entries["nbhd-usage-reporter"]["config"], {"helperOnly": True})
+        self.assertEqual(
+            entries["nbhd-usage-reporter"]["config"],
+            {"meterScopes": ["helper", "cron"]},
+        )

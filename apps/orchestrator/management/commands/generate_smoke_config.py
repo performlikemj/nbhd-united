@@ -76,8 +76,11 @@ class Command(BaseCommand):
 
             if options["maximal"]:
                 # Exercise the canary-only bridge path, conversation-hook
-                # policies, and helperOnly reporter schema in image doctor.
-                with override_settings(SUBAGENT_TENANT_IDS=str(tenant.id)):
+                # policies, and both reporter metering scopes in image doctor.
+                with override_settings(
+                    SUBAGENT_TENANT_IDS=str(tenant.id),
+                    USAGE_HOOKS_TENANT_IDS=str(tenant.id),
+                ):
                     config_json = config_to_json(generate_openclaw_config(tenant))
             else:
                 config_json = config_to_json(generate_openclaw_config(tenant))

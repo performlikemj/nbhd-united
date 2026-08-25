@@ -10,6 +10,7 @@
 // can't recur.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import register, { extractUsage } from "./index.js";
 
 const noopLogger = { info() {}, warn() {}, error() {}, debug() {} };
@@ -40,7 +41,7 @@ test("registers nothing (no throw) when api.on is absent", () => {
   assert.doesNotThrow(() => register({ registerHook: () => {}, logger: noopLogger }));
 });
 
-test("tags helper usage without changing ordinary usage", () => {
+test("extractUsage tags scoped usage without changing ordinary legacy usage", () => {
   const event = { runId: "child-run-123", model: "google/gemini-flash", usage: { input: 12, output: 4 } };
   const ordinary = extractUsage(event, { sessionKey: "agent:main:openai-user:thread:abc" });
   assert.equal(ordinary.event_type, "message");
@@ -52,16 +53,20 @@ test("tags helper usage without changing ordinary usage", () => {
   });
   assert.equal(helper.event_type, "subagent_message");
   assert.deepEqual(helper.metadata, { kind: "subagent", run: "c9bbca7c59e7" });
+
+  const cron = extractUsage(event, { trigger: "cron", runId: "cron-run-123" }, null, "cron");
+  assert.equal(cron.event_type, "cron_message");
+  assert.deepEqual(cron.metadata, { kind: "cron", run: "8dae770edd52" });
 });
 
-test("helperOnly skips normal llm_output and reports helper llm_output", async () => {
+async function captureReports(pluginConfig, invoke) {
   const handlers = {};
   const api = {
     pluginConfig: {
       apiBaseUrl: "https://nbhd.test",
-      tenantId: "tenant-helper-only",
+      tenantId: "tenant-test",
       internalApiKey: "test-key",
-      helperOnly: true,
+      ...pluginConfig,
     },
     on: (event, handler) => { handlers[event] = handler; },
     logger: noopLogger,
@@ -75,49 +80,116 @@ test("helperOnly skips normal llm_output and reports helper llm_output", async (
     return { ok: true, status: 200, async text() { return ""; } };
   };
   try {
-    const event = { runId: "helper-run", model: "google/gemini-flash", usage: { input: 12, output: 4 } };
-    handlers.llm_output(event, { sessionKey: "agent:main:openai-user:thread:normal", runId: "normal-run" });
-    assert.equal(calls.length, 0);
-
-    handlers.llm_output(event, { sessionKey: "agent:main:subagent:child", runId: "helper-run" });
+    invoke(handlers);
     await new Promise((resolve) => setImmediate(resolve));
   } finally {
     globalThis.fetch = originalFetch;
   }
+  return calls;
+}
+
+test("cron scope meters cron llm_output as cron_message", async () => {
+  const calls = await captureReports({ meterScopes: ["cron"] }, (handlers) => {
+    handlers.llm_output(
+      { model: "google/gemini-flash", usage: { input: 12, output: 4 } },
+      { trigger: "cron", sessionKey: "agent:main:cron:job", runId: "cron-run" },
+    );
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.event_type, "cron_message");
+  assert.deepEqual(calls[0].payload.metadata, { kind: "cron", run: "532fe297fa1f" });
+});
+
+test("helper scope meters helper llm_output as subagent_message", async () => {
+  const calls = await captureReports({ meterScopes: ["helper"] }, (handlers) => {
+    handlers.llm_output(
+      { model: "google/gemini-flash", usage: { input: 12, output: 4 } },
+      { sessionKey: "agent:main:subagent:child", runId: "helper-run" },
+    );
+  });
 
   assert.equal(calls.length, 1);
   assert.equal(calls[0].payload.event_type, "subagent_message");
   assert.deepEqual(calls[0].payload.metadata, { kind: "subagent", run: "7c284f8559a9" });
 });
 
-test("helperOnly still reports ordinary-session BYO failures", async () => {
-  const handlers = {};
-  const api = {
-    pluginConfig: {
-      apiBaseUrl: "https://nbhd.test",
-      tenantId: "tenant-helper-only",
-      internalApiKey: "test-key",
-      helperOnly: true,
-    },
-    on: (event, handler) => { handlers[event] = handler; },
-    logger: noopLogger,
-  };
-  register(api);
+test("legacy helperOnly meters helper sessions and skips other sessions", async () => {
+  const calls = await captureReports({ helperOnly: true }, (handlers) => {
+    handlers.llm_output(
+      { model: "google/gemini-flash", usage: { input: 12, output: 4 } },
+      { sessionKey: "agent:main:subagent:child", runId: "helper-run" },
+    );
+    handlers.llm_output(
+      { model: "google/gemini-flash", usage: { input: 20, output: 8 } },
+      { trigger: "user", sessionKey: "agent:main:openai-user:thread:normal", runId: "normal-run" },
+    );
+  });
 
-  const calls = [];
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (url, options) => {
-    calls.push({ url: String(url), payload: JSON.parse(options.body) });
-    return { ok: true, status: 200, async text() { return ""; } };
-  };
-  try {
-    const ctx = { sessionKey: "agent:main:openai-user:thread:normal", runId: "normal-run" };
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.event_type, "subagent_message");
+  assert.deepEqual(calls[0].payload.metadata, { kind: "subagent", run: "7c284f8559a9" });
+});
+
+test("manifest config schema accepts current and legacy metering config shapes", () => {
+  const manifest = JSON.parse(
+    readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
+  );
+  const schema = manifest.configSchema;
+
+  function validates(config) {
+    if (schema.type !== "object" || config === null || Array.isArray(config)) return false;
+    if (schema.additionalProperties === false) {
+      if (Object.keys(config).some((key) => !Object.hasOwn(schema.properties, key))) return false;
+    }
+    return Object.entries(config).every(([key, value]) => {
+      const property = schema.properties[key];
+      if (property.type === "boolean") return typeof value === "boolean";
+      if (property.type === "array") {
+        return Array.isArray(value) &&
+          (!property.uniqueItems || new Set(value).size === value.length) &&
+          value.every((item) => property.items.enum.includes(item));
+      }
+      return true;
+    });
+  }
+
+  assert.equal(validates({ meterScopes: ["helper", "cron"] }), true);
+  assert.equal(validates({ helperOnly: true }), true);
+  assert.equal(validates({ helperOnly: "true" }), false);
+  assert.equal(validates({ unknownScopeSetting: true }), false);
+});
+
+test("meterScopes skips user-originated HTTP llm_output", async () => {
+  const calls = await captureReports({ meterScopes: ["helper", "cron"] }, (handlers) => {
+    handlers.llm_output(
+      { model: "google/gemini-flash", usage: { input: 12, output: 4 } },
+      { trigger: "user", sessionKey: "agent:main:openai-user:thread:normal", runId: "normal-run" },
+    );
+  });
+
+  assert.equal(calls.length, 0);
+});
+
+test("absent meterScopes preserves legacy all-turn reporting", async () => {
+  const calls = await captureReports({}, (handlers) => {
+    handlers.llm_output(
+      { model: "google/gemini-flash", usage: { input: 12, output: 4 } },
+      { trigger: "user", sessionKey: "agent:main:openai-user:thread:normal", runId: "normal-run" },
+    );
+  });
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.event_type, "message");
+  assert.equal(calls[0].payload.metadata, undefined);
+});
+
+test("meterScopes still reports ordinary-session BYO failures", async () => {
+  const calls = await captureReports({ meterScopes: ["helper", "cron"] }, (handlers) => {
+    const ctx = { trigger: "user", sessionKey: "agent:main:openai-user:thread:normal", runId: "normal-run" };
     handlers.model_call_started({ provider: "anthropic", model: "anthropic/claude-sonnet" }, ctx);
     handlers.agent_end({ success: false, error: "401 Unauthorized: invalid API key" }, ctx);
-    await new Promise((resolve) => setImmediate(resolve));
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  });
 
   assert.equal(calls.length, 1);
   assert.ok(calls[0].url.endsWith("/byo/error/"));

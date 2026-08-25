@@ -26,7 +26,16 @@
       },
       "helperOnly": {
         "type": "boolean",
-        "description": "When true, report only OpenClaw helper-session usage."
+        "description": "Deprecated compatibility setting for pre-meterScopes tenant configs; true is treated as meterScopes: [helper]."
+      },
+      "meterScopes": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["helper", "cron"]
+        },
+        "uniqueItems": true,
+        "description": "Explicit OpenClaw run scopes to meter; other conversation turns are skipped."
       }
     }
   }

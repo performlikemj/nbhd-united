@@ -258,6 +258,11 @@ SUBAGENT_TENANT_IDS = env("SUBAGENT_TENANT_IDS", default="")
 # Empty/unset means nobody so every non-explicit configuration fails closed.
 CRON_GATE_TENANT_IDS = env("CRON_GATE_TENANT_IDS", default="")
 
+# OpenClaw usage-reporter conversation hooks — canary rollout gate. Comma-
+# separated tenant UUIDs open individual tenants; the literal "*" opens the
+# gate fleet-wide. Empty/unset means nobody so the reporter ships dark.
+USAGE_HOOKS_TENANT_IDS = env("USAGE_HOOKS_TENANT_IDS", default="")
+
 # Silently-dropped app-turn retry canary gate. Comma-separated tenant UUIDs;
 # empty means nobody so the retry ships dark and opens one tenant at a time.
 RETRY_DROPPED_TENANT_IDS = env("RETRY_DROPPED_TENANT_IDS", default="")
