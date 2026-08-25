@@ -5,7 +5,8 @@ import json
 import re
 import time
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import call, patch
 
 import yaml
 from django.core.management import call_command
@@ -16,6 +17,7 @@ from apps.orchestrator.smoke_external_deps import (
     SmokeCheckResult,
     SmokeReport,
     SmokeSkipped,
+    _check_gemini_tts,
     run_smoke,
 )
 
@@ -27,6 +29,86 @@ def _report(*checks: SmokeCheckResult) -> SmokeReport:
         checks=list(checks),
         total_ms=sum(check.ms for check in checks),
     )
+
+
+def _gemini_response(audio: bytes | None):
+    part = SimpleNamespace(
+        inline_data=SimpleNamespace(data=audio) if audio is not None else None,
+        text=None if audio is not None else "ok",
+    )
+    return SimpleNamespace(
+        candidates=[SimpleNamespace(content=SimpleNamespace(parts=[part]))],
+    )
+
+
+class _FakeGeminiModels:
+    def __init__(self, outcomes):
+        self.outcomes = iter(outcomes)
+        self.calls = []
+
+    def generate_content(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = next(self.outcomes)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+
+class _FakeGeminiClient:
+    def __init__(self, outcomes):
+        self.models = _FakeGeminiModels(outcomes)
+
+
+@override_settings(GEMINI_API_KEY="test-gemini-key", GEMINI_TTS_MODEL="test-gemini-model")
+class GeminiTtsSmokeTests(SimpleTestCase):
+    def _patch_dependencies(self, client):
+        return (
+            patch("apps.orchestrator.azure_client._is_mock", return_value=False),
+            patch("apps.core.render.make_gemini_client", return_value=client),
+            patch("apps.orchestrator.smoke_external_deps.time.sleep"),
+        )
+
+    def test_retries_no_audio_then_passes_when_audio_arrives(self):
+        client = _FakeGeminiClient([_gemini_response(None), _gemini_response(b"pcm")])
+        mock_is_mock, mock_make_client, mock_sleep = self._patch_dependencies(client)
+
+        with mock_is_mock, mock_make_client as make_client, mock_sleep as sleep:
+            _check_gemini_tts()
+
+        self.assertEqual(len(client.models.calls), 2)
+        make_client.assert_called_once_with("test-gemini-key", timeout_ms=2_800)
+        sleep.assert_called_once_with(2)
+        self.assertTrue(client.models.calls[0]["contents"].endswith("Take a slow breath in, and let it go gently."))
+
+    def test_always_no_audio_fails_with_attempt_count(self):
+        client = _FakeGeminiClient([_gemini_response(None)] * 3)
+        mock_is_mock, mock_make_client, mock_sleep = self._patch_dependencies(client)
+
+        with (
+            mock_is_mock,
+            mock_make_client,
+            mock_sleep as sleep,
+            self.assertRaisesRegex(RuntimeError, "failed after 3 attempts: no audio bytes"),
+        ):
+            _check_gemini_tts()
+
+        self.assertEqual(len(client.models.calls), 3)
+        self.assertEqual(sleep.call_args_list, [call(2), call(4)])
+
+    def test_rate_limit_is_skipped(self):
+        client = _FakeGeminiClient([RuntimeError("429 RESOURCE_EXHAUSTED")])
+        mock_is_mock, mock_make_client, mock_sleep = self._patch_dependencies(client)
+
+        with (
+            mock_is_mock,
+            mock_make_client,
+            mock_sleep as sleep,
+            self.assertRaisesRegex(SmokeSkipped, "^gemini rate-limited$"),
+        ):
+            _check_gemini_tts()
+
+        self.assertEqual(len(client.models.calls), 1)
+        sleep.assert_not_called()
 
 
 class SmokeWorkflowConfigTests(SimpleTestCase):
