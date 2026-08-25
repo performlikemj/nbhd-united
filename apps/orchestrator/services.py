@@ -809,7 +809,7 @@ def update_tenant_config(tenant_id: str) -> None:
 
         # Upload all rule templates to workspace/rules/ — referenced by AGENTS.md
         # for on-demand loading. Auto-discovers all .md files in templates/openclaw/rules/.
-        rules = render_workspace_rules()
+        rules = render_workspace_rules(tenant=tenant)
         for filename, content in rules.items():
             upload_workspace_file(
                 str(tenant.id),

@@ -5,6 +5,7 @@ import registerCron from "../../nbhd-cron-enforcement/index.js";
 import registerTaint from "../../nbhd-doc-taint-guard/index.js";
 import registerBridge, {
   decideSpawnGuard,
+  injectOccurrenceKey,
   lastAssistantText,
   parseAnnounceTurn,
 } from "./index.js";
@@ -29,6 +30,19 @@ function markerPrompt(status = "completed; ready for parent review", result = "T
     "",
     "Action:",
     "Review and reply.",
+  ].join("\n");
+}
+
+// Exact production shape from formatAgentInternalEventsForPrompt in pinned
+// openclaw@2026.5.28 (subagent-announce-delivery-B4FRyugH.js:136-152).
+function runtimeWrappedPrompt(status = "completed; ready for parent review", result = "Three grounded findings.") {
+  return [
+    "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>",
+    "OpenClaw runtime context (internal):",
+    "This context is runtime-generated, not user-authored. Keep internal details private.",
+    "",
+    markerPrompt(status, result),
+    "<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
   ].join("\n");
 }
 
@@ -71,6 +85,13 @@ describe("announce marker parsing", () => {
   it("normalizes timeout and failure status", () => {
     assert.equal(parseAnnounceTurn(markerPrompt("timed out"), SESSION_KEY)?.status, "timed_out");
     assert.equal(parseAnnounceTurn(markerPrompt("failed: provider unavailable"), SESSION_KEY)?.status, "failed");
+  });
+
+  it("detects the exact BEGIN-wrapped production announce prompt", () => {
+    const parsed = parseAnnounceTurn(runtimeWrappedPrompt(), SESSION_KEY);
+    assert.equal(parsed?.threadId, THREAD_ID);
+    assert.equal(parsed?.status, "completed");
+    assert.equal(parsed?.childResult, "Three grounded findings.");
   });
 
   it("extracts the last assistant text from string or text-block content", () => {
@@ -128,6 +149,10 @@ describe("sessions_spawn fail-closed guard", () => {
     assert.equal(decideSpawnGuard(spawn("budget-run"), sessionCtx, runtime, now + 1), undefined);
     assert.equal(decideSpawnGuard(spawn("budget-run"), sessionCtx, runtime, now + 2), undefined);
     assert.match(decideSpawnGuard(spawn("budget-run"), sessionCtx, runtime, now + 3).blockReason, /3 per rolling hour/);
+    assert.equal(
+      decideSpawnGuard(spawn("budget-run"), sessionCtx, runtime, now + 60 * 60 * 1000),
+      undefined,
+    );
   });
 
   it("allows ten spawns per tenant UTC day, then blocks the eleventh", () => {
@@ -145,6 +170,15 @@ describe("sessions_spawn fail-closed guard", () => {
         .blockReason,
       /10 per UTC day/,
     );
+    assert.equal(
+      decideSpawnGuard(
+        spawn("daily-next-day"),
+        ctx("daily-next-day", `${SESSION_KEY}:daily:next-day`),
+        dailyRuntime,
+        Date.UTC(2026, 7, 26, 0, 0, 0),
+      ),
+      undefined,
+    );
   });
 
   it("the registered guard blocks when event inspection throws", () => {
@@ -160,6 +194,37 @@ describe("sessions_spawn fail-closed guard", () => {
 });
 
 describe("completion re-entry backstop", () => {
+  it("injects a run-specific occurrence key into a marked model send", () => {
+    const api = fakeApi({ tenantId: "model-provenance-tenant" });
+    registerBridge(api);
+    api._handlers.before_agent_start(
+      { runId: "announce-model-key", prompt: runtimeWrappedPrompt() },
+      { runId: "announce-model-key", sessionKey: SESSION_KEY },
+    );
+
+    const event = {
+      runId: "announce-model-key",
+      toolName: "nbhd_send_to_user",
+      params: { message: "Research is ready.", thread_id: THREAD_ID },
+    };
+    const result = api._handlers.before_tool_call(event, {
+      runId: "announce-model-key",
+      sessionKey: SESSION_KEY,
+    });
+    assert.deepEqual(result.params, {
+      message: "Research is ready.",
+      thread_id: THREAD_ID,
+      occurrence_key: "subagent:announce-model-key",
+    });
+    assert.deepEqual(
+      injectOccurrenceKey(
+        { toolName: "tool_call", params: { id: "nbhd_send_to_user", params: { message: "Ready" } } },
+        "subagent:wrapped",
+      ),
+      { id: "nbhd_send_to_user", params: { message: "Ready", occurrence_key: "subagent:wrapped" } },
+    );
+  });
+
   it("posts the child result once when the model returns a silent token", async () => {
     const api = fakeApi({ tenantId: "backstop-child-tenant" });
     registerBridge(api);
@@ -241,6 +306,86 @@ describe("completion re-entry backstop", () => {
     }
     assert.equal(posted.message, "I couldn't finish that — Provider unavailable. Want me to try again?");
     assert.ok(api._logs.some((entry) => entry.message.includes("delivered_by=backstop_child_result status=failed")));
+  });
+
+  for (const silentToken of ["no_reply", "ANNOUNCE_SKIP"]) {
+    it(`uses the child result for silent token ${silentToken}`, async () => {
+      const api = fakeApi({ tenantId: `silent-${silentToken.toLowerCase()}-tenant` });
+      registerBridge(api);
+      let posted;
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async (_url, options) => {
+        posted = JSON.parse(options.body);
+        return { ok: true, status: 200 };
+      };
+      try {
+        api._handlers.before_agent_start(
+          { runId: `announce-${silentToken}`, prompt: runtimeWrappedPrompt() },
+          { runId: `announce-${silentToken}`, sessionKey: SESSION_KEY },
+        );
+        await api._handlers.agent_end(
+          { runId: `announce-${silentToken}`, success: true, messages: [{ role: "assistant", content: silentToken }] },
+          { runId: `announce-${silentToken}`, sessionKey: SESSION_KEY },
+        );
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+      assert.equal(posted.message, "Here's what I found:\n\nThree grounded findings.");
+    });
+  }
+
+  it("posts a non-silent assistant completion through the backstop", async () => {
+    const api = fakeApi({ tenantId: "non-silent-tenant" });
+    registerBridge(api);
+    let posted;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, options) => {
+      posted = JSON.parse(options.body);
+      return { ok: true, status: 200 };
+    };
+    try {
+      api._handlers.before_agent_start(
+        { runId: "announce-non-silent", prompt: runtimeWrappedPrompt() },
+        { runId: "announce-non-silent", sessionKey: SESSION_KEY },
+      );
+      await api._handlers.agent_end(
+        { runId: "announce-non-silent", success: true, messages: [{ role: "assistant", content: "Here are the findings." }] },
+        { runId: "announce-non-silent", sessionKey: SESSION_KEY },
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(posted.message, "Here are the findings.");
+    assert.ok(api._logs.some((entry) => entry.message.includes("delivered_by=backstop status=completed")));
+  });
+
+  it("runs the backstop after a failed model send", async () => {
+    const api = fakeApi({ tenantId: "failed-model-send-tenant" });
+    registerBridge(api);
+    let posted;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, options) => {
+      posted = JSON.parse(options.body);
+      return { ok: true, status: 200 };
+    };
+    try {
+      api._handlers.before_agent_start(
+        { runId: "announce-failed-send", prompt: runtimeWrappedPrompt() },
+        { runId: "announce-failed-send", sessionKey: SESSION_KEY },
+      );
+      api._handlers.after_tool_call(
+        { runId: "announce-failed-send", toolName: "nbhd_send_to_user", error: "HTTP 503" },
+        { runId: "announce-failed-send", sessionKey: SESSION_KEY },
+      );
+      await api._handlers.agent_end(
+        { runId: "announce-failed-send", success: true, messages: [{ role: "assistant", content: "Research is ready." }] },
+        { runId: "announce-failed-send", sessionKey: SESSION_KEY },
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    assert.equal(posted.message, "Research is ready.");
+    assert.ok(api._logs.some((entry) => entry.message.includes("delivered_by=backstop status=completed")));
   });
 
   it("is fail-open after three POST failures and logs delivered_by=none", async () => {

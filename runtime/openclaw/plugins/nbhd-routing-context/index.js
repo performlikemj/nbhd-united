@@ -69,11 +69,12 @@ export const REMOVED_BUILTIN_TOOL_IDS = new Set([
 // tool_call, so a call to "exec" arrives as tool_call({id:"exec"}).
 const TOOL_DISPATCH_META = "tool_call";
 
-// Defense in depth behind tools.subagents.tools.allow. This is the explicit
-// read-only subset of every registered nbhd_* tool a helper may call. Anything
-// new defaults to blocked until reviewed and added here + config_generator's
-// SUBAGENT_READ_ONLY_TOOLS.
-export const SUBAGENT_READ_ONLY_NBHD_TOOL_IDS = new Set([
+// Exact JavaScript mirror of config_generator.SUBAGENT_READ_ONLY_TOOLS. A
+// Python parity test prevents the generated allow-only policy and this runtime
+// defense from drifting. New outward nbhd_* tools still default to blocked.
+export const SUBAGENT_READ_ONLY_TOOL_IDS = new Set([
+  "web_search",
+  "pdf",
   "nbhd_calendar_list_events",
   "nbhd_calendar_get_freebusy",
   "nbhd_gmail_list_messages",
@@ -124,6 +125,9 @@ export const SUBAGENT_READ_ONLY_NBHD_TOOL_IDS = new Set([
   "nbhd_places_search",
   "nbhd_tour_guide",
 ]);
+export const SUBAGENT_READ_ONLY_NBHD_TOOL_IDS = new Set(
+  [...SUBAGENT_READ_ONLY_TOOL_IDS].filter((toolId) => toolId.startsWith("nbhd_")),
+);
 
 const SUBAGENT_ALWAYS_BLOCKED_NON_NBHD_TOOL_IDS = new Set([
   "publish_portfolio_image",
@@ -252,14 +256,18 @@ export default function register(api) {
   // degrades to a no-op (the runtime's own "Unknown tool id" path), never an
   // accidental block of a legitimate tool.
   api.on("before_tool_call", (event, ctx) => {
-    let helperSession;
+    let sessionKey;
+    let helperSession = false;
     try {
-      helperSession = typeof ctx?.sessionKey === "string" && ctx.sessionKey.includes("subagent:");
+      sessionKey = ctx?.sessionKey;
+      helperSession = typeof sessionKey === "string" && sessionKey.includes("subagent:");
     } catch (_error) {
-      return { block: true, blockReason: SUBAGENT_OUTWARD_BLOCK_REASON };
+      // A poisoned/legacy ctx must not block ordinary fleet tool calls. We can
+      // fail closed only after positively identifying a helper session.
+      return undefined;
     }
     try {
-      const helperDecision = decideSubagentToolBlock(event, ctx?.sessionKey);
+      const helperDecision = decideSubagentToolBlock(event, sessionKey);
       if (helperDecision) {
         api.logger.warn(
           `nbhd-routing-context: blocked outward helper tool ` +

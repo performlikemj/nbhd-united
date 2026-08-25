@@ -53,3 +53,39 @@ test("tags helper usage without changing ordinary usage", () => {
   assert.equal(helper.event_type, "subagent_message");
   assert.deepEqual(helper.metadata, { kind: "subagent", run: "c9bbca7c59e7" });
 });
+
+test("helperOnly skips normal llm_output and reports helper llm_output", async () => {
+  const handlers = {};
+  const api = {
+    pluginConfig: {
+      apiBaseUrl: "https://nbhd.test",
+      tenantId: "tenant-helper-only",
+      internalApiKey: "test-key",
+      helperOnly: true,
+    },
+    on: (event, handler) => { handlers[event] = handler; },
+    logger: noopLogger,
+  };
+  register(api);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), payload: JSON.parse(options.body) });
+    return { ok: true, status: 200, async text() { return ""; } };
+  };
+  try {
+    const event = { runId: "helper-run", model: "google/gemini-flash", usage: { input: 12, output: 4 } };
+    handlers.llm_output(event, { sessionKey: "agent:main:openai-user:thread:normal", runId: "normal-run" });
+    assert.equal(calls.length, 0);
+
+    handlers.llm_output(event, { sessionKey: "agent:main:subagent:child", runId: "helper-run" });
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].payload.event_type, "subagent_message");
+  assert.deepEqual(calls[0].payload.metadata, { kind: "subagent", run: "7c284f8559a9" });
+});

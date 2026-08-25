@@ -7,9 +7,6 @@ There is no Telegram bot token in this container. The native `message` tool will
 This applies to ALL cron jobs, whether system-seeded or user-created.
 
 **In normal conversation:** just reply directly — do NOT call `nbhd_send_to_user`.
-The one exception is an `[Internal task completion event]` from a sub-agent in
-an app thread: that direct reply is not delivered, so send the final update with
-`nbhd_send_to_user` and its requester `thread_id`. See `rules/subagents.md`.
 
 ## Check-Ins
 

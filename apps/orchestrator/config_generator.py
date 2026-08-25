@@ -2719,6 +2719,13 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
 
     if _active_plugins:
         image_gen_id = str(getattr(settings, "OPENCLAW_IMAGE_GEN_PLUGIN_ID", "") or "").strip()
+        usage_reporter_id = str(
+            getattr(settings, "OPENCLAW_USAGE_PLUGIN_ID", "")
+            or getattr(settings, "OPENCLAW_USAGE_REPORTER_PLUGIN_ID", "")
+        ).strip()
+        subagent_bridge_id = str(
+            getattr(settings, "OPENCLAW_SUBAGENT_BRIDGE_PLUGIN_ID", "nbhd-subagent-bridge") or ""
+        ).strip()
         plugin_config: dict[str, Any] = {
             "allow": [pid for pid, _ in _active_plugins],
             "entries": {
@@ -2726,6 +2733,29 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
                 for pid, _ in _active_plugins
             },
         }
+
+        if subagents_on:
+            # Both plugins come from plugins.load.paths, which OpenClaw marks
+            # origin="config". Conversation hooks on non-bundled plugins are
+            # rejected unless this policy is explicit. The bridge's agent_end
+            # retry loop needs the full 30-second hook budget.
+            if subagent_bridge_id and subagent_bridge_id in plugin_config["entries"]:
+                plugin_config["entries"][subagent_bridge_id]["hooks"] = {
+                    "allowConversationAccess": True,
+                    "timeoutMs": 30000,
+                }
+
+            # Django already meters ordinary HTTP turns. For canary tenants,
+            # unlock the reporter's conversation hooks only in helper-only mode
+            # so helper spend becomes visible without double-counting main turns.
+            # Disabled tenants retain the historical entry byte-for-byte.
+            if usage_reporter_id and usage_reporter_id in plugin_config["entries"]:
+                plugin_config["entries"][usage_reporter_id]["hooks"] = {
+                    "allowConversationAccess": True,
+                }
+                plugin_config["entries"][usage_reporter_id]["config"] = {
+                    "helperOnly": True,
+                }
 
         # OpenClaw's bundled document-extract extension is not part of
         # _active_plugins, but provides the built-in pdf tool's PDFium text-layer

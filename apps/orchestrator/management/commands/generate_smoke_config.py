@@ -20,6 +20,7 @@ from pathlib import Path
 
 from django.core.management.base import BaseCommand
 from django.db import transaction
+from django.test.utils import override_settings
 from django.utils import timezone
 
 
@@ -73,7 +74,13 @@ class Command(BaseCommand):
                 tenant.datebook_events_consent_at = timezone.now()
                 tenant.save()
 
-            config_json = config_to_json(generate_openclaw_config(tenant))
+            if options["maximal"]:
+                # Exercise the canary-only bridge path, conversation-hook
+                # policies, and helperOnly reporter schema in image doctor.
+                with override_settings(SUBAGENT_TENANT_IDS=str(tenant.id)):
+                    config_json = config_to_json(generate_openclaw_config(tenant))
+            else:
+                config_json = config_to_json(generate_openclaw_config(tenant))
 
             # Never leave the smoke tenant behind, even against a real DB.
             transaction.set_rollback(True)

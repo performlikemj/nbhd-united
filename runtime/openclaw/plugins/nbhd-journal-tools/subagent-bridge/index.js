@@ -66,6 +66,25 @@ function resolveRealToolId(event) {
   return asTrimmedString(params.id ?? params.toolId ?? params.tool ?? params.name).toLowerCase();
 }
 
+/** Return a before_tool_call params override carrying model-send provenance. */
+export function injectOccurrenceKey(event, occurrenceKey) {
+  const params = asObject(event?.params);
+  if (resolveRealToolId(event) !== SEND_TOOL_ID) return undefined;
+  if (asTrimmedString(event?.toolName).toLowerCase() !== TOOL_DISPATCH_META) {
+    return { ...params, occurrence_key: occurrenceKey };
+  }
+  for (const nestedKey of ["params", "arguments"]) {
+    const nested = asObject(params[nestedKey]);
+    if (Object.keys(nested).length > 0) {
+      return {
+        ...params,
+        [nestedKey]: { ...nested, occurrence_key: occurrenceKey },
+      };
+    }
+  }
+  return { ...params, occurrence_key: occurrenceKey };
+}
+
 function utcDay(nowMs) {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
@@ -267,25 +286,44 @@ export default function register(api) {
   safeLog(api, "info", "nbhd-subagent-bridge: registered");
 
   api.on("before_tool_call", (event, ctx) => {
-    let isSpawn = false;
+    let realToolId = "";
     try {
-      isSpawn = resolveRealToolId(event) === SPAWN_TOOL_ID;
-      if (!isSpawn) return undefined;
-      const decision = decideSpawnGuard(event, ctx, runtime);
-      if (decision) {
-        safeLog(
-          api,
-          "warn",
-          `nbhd-subagent-bridge: sessions_spawn blocked runId=${asTrimmedString(ctx?.runId || event?.runId) || "?"}`,
-        );
-      }
-      return decision;
+      realToolId = resolveRealToolId(event);
     } catch (error) {
-      safeLog(api, "error", `nbhd-subagent-bridge: sessions_spawn guard error: ${safeErrorText(error)}`);
-      // The hook is runtime-fail-closed. If resolution itself failed, blocking
-      // is the only safe answer; uncertainty must never unlock a spawn.
+      safeLog(api, "error", `nbhd-subagent-bridge: tool guard inspection error: ${safeErrorText(error)}`);
+      // This plugin owns the sessions_spawn gate, so an uninspectable tool
+      // identity must fail closed rather than risk bypassing that gate.
       return block(SESSION_SPAWN_BLOCK_REASON);
     }
+
+    if (realToolId === SPAWN_TOOL_ID) {
+      try {
+        const decision = decideSpawnGuard(event, ctx, runtime);
+        if (decision) {
+          safeLog(
+            api,
+            "warn",
+            `nbhd-subagent-bridge: sessions_spawn blocked runId=${asTrimmedString(ctx?.runId || event?.runId) || "?"}`,
+          );
+        }
+        return decision;
+      } catch (error) {
+        safeLog(api, "error", `nbhd-subagent-bridge: sessions_spawn guard error: ${safeErrorText(error)}`);
+        return block(SESSION_SPAWN_BLOCK_REASON);
+      }
+    }
+
+    if (realToolId === SEND_TOOL_ID) {
+      try {
+        const runId = asTrimmedString(ctx?.runId || event?.runId);
+        if (!runId || !markedRuns.has(runId)) return undefined;
+        const params = injectOccurrenceKey(event, `subagent:${runId}`.slice(0, 64));
+        return params ? { params } : undefined;
+      } catch (error) {
+        safeLog(api, "warn", `nbhd-subagent-bridge: occurrence injection failed: ${safeErrorText(error)}`);
+      }
+    }
+    return undefined;
   });
 
   api.on("before_agent_start", (event, ctx) => {

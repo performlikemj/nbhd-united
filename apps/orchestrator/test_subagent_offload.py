@@ -1,6 +1,8 @@
 """Canary-gated OpenClaw sub-agent config and validation coverage."""
 
+import re
 from copy import deepcopy
+from pathlib import Path
 
 from django.test import TestCase, override_settings
 
@@ -34,6 +36,9 @@ class SubagentCanaryConfigTests(TestCase):
             },
         )
         self.assertNotIn("nbhd-subagent-bridge", config.get("plugins", {}).get("allow", []))
+        usage_entry = config["plugins"]["entries"].get("nbhd-usage-reporter")
+        if usage_entry is not None:
+            self.assertEqual(usage_entry, {"enabled": True})
 
     def test_non_allowlisted_tenant_snapshot_is_identical_to_empty_gate(self):
         with override_settings(SUBAGENT_TENANT_IDS=""):
@@ -97,12 +102,41 @@ class SubagentCanaryConfigTests(TestCase):
             next(path for path in plugins["load"]["paths"] if path.endswith("subagent-bridge")),
             "/opt/nbhd/plugins/nbhd-journal-tools/subagent-bridge",
         )
+        self.assertEqual(
+            plugins["entries"]["nbhd-subagent-bridge"],
+            {
+                "enabled": True,
+                "hooks": {
+                    "allowConversationAccess": True,
+                    "timeoutMs": 30000,
+                },
+            },
+        )
+        self.assertEqual(
+            plugins["entries"]["nbhd-usage-reporter"],
+            {
+                "enabled": True,
+                "hooks": {"allowConversationAccess": True},
+                "config": {"helperOnly": True},
+            },
+        )
 
     def test_gate_helper_is_fail_closed_and_case_insensitive(self):
         with override_settings(SUBAGENT_TENANT_IDS=""):
             self.assertFalse(subagents_enabled(self.tenant))
         with override_settings(SUBAGENT_TENANT_IDS=str(self.tenant.id).upper()):
             self.assertTrue(subagents_enabled(self.tenant))
+
+    def test_python_and_javascript_helper_allowlists_are_equal(self):
+        source = Path("runtime/openclaw/plugins/nbhd-routing-context/index.js").read_text()
+        match = re.search(
+            r"SUBAGENT_READ_ONLY_TOOL_IDS\s*=\s*new Set\(\[(.*?)\]\);",
+            source,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(match)
+        javascript_allowlist = tuple(re.findall(r'"([a-z0-9_-]+)"', match.group(1)))
+        self.assertEqual(javascript_allowlist, SUBAGENT_READ_ONLY_TOOLS)
 
 
 class SubagentConfigValidatorTests(TestCase):

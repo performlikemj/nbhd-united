@@ -1053,9 +1053,8 @@ export default function register(api) {
           type: "string",
           format: "uuid",
           description:
-            "Optional app thread UUID. Use the requester thread for a " +
-            "sub-agent completion so the result returns to the conversation " +
-            "that started it. Django validates tenant ownership.",
+            "Optional app thread UUID to use as the delivery destination. " +
+            "Django validates tenant ownership and otherwise uses the main thread.",
         },
       },
     },
@@ -1065,11 +1064,15 @@ export default function register(api) {
       if (!message) throw new Error("message is required");
       const jobName = asTrimmedString(input.job_name);
       const threadId = asTrimmedString(input.thread_id);
+      const occurrenceKey = asTrimmedString(input.occurrence_key);
+      const extraHeaders = {};
+      if (jobName) extraHeaders["X-NBHD-Job-Name"] = jobName.slice(0, 64);
+      if (occurrenceKey) extraHeaders["X-NBHD-Occurrence-Key"] = occurrenceKey.slice(0, 64);
       const payload = await callRuntime(api, {
         path: tenantPath(api, "/send-to-user/"),
         method: "POST",
         body: { message, ...(threadId ? { thread_id: threadId } : {}) },
-        extraHeaders: jobName ? { "X-NBHD-Job-Name": jobName.slice(0, 64) } : undefined,
+        extraHeaders,
       });
       return renderPayload(payload);
     },

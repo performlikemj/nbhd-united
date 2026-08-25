@@ -320,4 +320,20 @@ describe("register() wires up the before_tool_call guard", () => {
     });
     assert.equal(result?.block, true);
   });
+
+  it("a poisoned ctx does not block an ordinary session", () => {
+    const api = makeFakeApi();
+    register(api);
+    const hook = api._handlers["before_tool_call"];
+    const poisonedCtx = {};
+    Object.defineProperty(poisonedCtx, "sessionKey", {
+      get() {
+        throw new Error("poisoned ctx");
+      },
+    });
+    assert.equal(
+      hook({ toolName: "nbhd_task_create", params: { title: "ordinary" } }, poisonedCtx),
+      undefined,
+    );
+  });
 });

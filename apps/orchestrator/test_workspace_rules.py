@@ -11,9 +11,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 
-from apps.orchestrator.personas import render_workspace_rules
+from apps.orchestrator.personas import render_workspace_files, render_workspace_rules
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant
 
@@ -65,6 +65,46 @@ class RenderWorkspaceRulesTest(TestCase):
         self.assertIn("worst\nfailure mode", memory)
 
 
+class SubagentWorkspaceRulesTest(TestCase):
+    def setUp(self):
+        self.tenant = create_tenant(display_name="Subagent Rules", telegram_chat_id=606061)
+
+    @override_settings(SUBAGENT_TENANT_IDS="")
+    def test_disabled_tenant_gets_exact_pre_feature_rule_set_and_agents_index(self):
+        rules = render_workspace_rules(tenant=self.tenant)
+        self.assertEqual(
+            set(rules),
+            {
+                "_principles.md",
+                "document-ingestion.md",
+                "fuel.md",
+                "journal-capture.md",
+                "lessons-constellation.md",
+                "memory.md",
+                "messaging.md",
+                "onboarding.md",
+                "reply-markers.md",
+                "voice-journal.md",
+                "week-ahead.md",
+            },
+        )
+        self.assertNotIn("rules/subagents.md", rules["messaging.md"])
+        agents_md = render_workspace_files("neighbor", tenant=self.tenant)["NBHD_AGENTS_MD"]
+        self.assertNotIn("| `rules/subagents.md` |", agents_md)
+
+    def test_enabled_tenant_gets_subagent_rule_messaging_exception_and_agents_index(self):
+        with override_settings(SUBAGENT_TENANT_IDS=str(self.tenant.id)):
+            rules = render_workspace_rules(tenant=self.tenant)
+            agents_md = render_workspace_files("neighbor", tenant=self.tenant)["NBHD_AGENTS_MD"]
+
+        self.assertIn("subagents.md", rules)
+        self.assertIn(
+            "If `rules/subagents.md` is present in your workspace, follow it",
+            rules["messaging.md"],
+        )
+        self.assertIn("| `rules/subagents.md` |", agents_md)
+
+
 class UpdateTenantConfigUploadsRulesTest(TestCase):
     """update_tenant_config() uploads rules to workspace/rules/."""
 
@@ -114,6 +154,7 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             any("memory.md" in p for p in rules_paths),
             f"memory.md not found in uploaded rules: {rules_paths}",
         )
+        self.assertNotIn("workspace/rules/subagents.md", rules_paths)
         memory_upload = next(
             call for call in mock_upload_workspace_file.call_args_list if call.args[1] == "workspace/rules/memory.md"
         )

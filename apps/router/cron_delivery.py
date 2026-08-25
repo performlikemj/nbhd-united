@@ -444,8 +444,10 @@ class CronDeliveryView(APIView):
                 )
             except (TypeError, ValueError, ValidationError):
                 thread_id = None
-        if thread_id is None:
-            thread_id = ChatThread.objects.filter(tenant=tenant, is_main=True).values_list("id", flat=True).first()
+        # Preserve the legacy storage contract: no requested destination (or
+        # an invalid/foreign one) stays NULL. Feed and APNs readers resolve the
+        # tenant's current main thread at delivery/read time. Only an explicit,
+        # tenant-owned live thread is pinned on the row.
 
         # Strip the generic marker before every transport, but retain its labels
         # in placeholder space on ProactiveOutbound. The row is cross-channel:
@@ -517,6 +519,8 @@ class CronDeliveryView(APIView):
         job_name = request.headers.get("X-NBHD-Job-Name", "")
         delivery_attempt = None
         explicit_occurrence_key = request.headers.get("X-NBHD-Occurrence-Key", "").strip()[:64]
+        # An explicit runtime provenance key deliberately opts into dedup even
+        # when the tenant-wide degraded cron dedup feature flag is disabled.
         if explicit_occurrence_key or _delivery_dedup_enabled(tenant):
             occurrence_key = explicit_occurrence_key or degraded_occurrence_key(
                 tenant_id=tenant.id,

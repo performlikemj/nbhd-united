@@ -224,3 +224,9 @@ class GenerateSmokeConfigCommandTests(TestCase):
         self.assertTrue(entries["nbhd-journal-shaping"]["config"]["journalShapingEnabled"])
         self.assertIn("nbhd-document-keep", entries)
         self.assertTrue(entries["nbhd-document-keep"]["config"]["documentIngestionEnabled"])
+        self.assertEqual(
+            entries["nbhd-subagent-bridge"]["hooks"],
+            {"allowConversationAccess": True, "timeoutMs": 30000},
+        )
+        self.assertEqual(entries["nbhd-usage-reporter"]["hooks"], {"allowConversationAccess": True})
+        self.assertEqual(entries["nbhd-usage-reporter"]["config"], {"helperOnly": True})

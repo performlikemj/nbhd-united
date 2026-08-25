@@ -78,13 +78,19 @@ test("send_to_user accepts and forwards an optional app thread UUID", async () =
     await tools.nbhd_send_to_user.execute("call-thread", {
       message: "Research is ready.",
       thread_id: threadId,
+      occurrence_key: "subagent:announce-model-key",
     });
 
     assert.equal(tools.nbhd_send_to_user.parameters.properties.thread_id.format, "uuid");
+    assert.doesNotMatch(
+      tools.nbhd_send_to_user.parameters.properties.thread_id.description,
+      /sub-agent/i,
+    );
     assert.deepEqual(JSON.parse(request.body), {
       message: "Research is ready.",
       thread_id: threadId,
     });
+    assert.equal(request.headers["X-NBHD-Occurrence-Key"], "subagent:announce-model-key");
   } finally {
     globalThis.fetch = originalFetch;
     if (originalBaseUrl === undefined) delete process.env.NBHD_API_BASE_URL;

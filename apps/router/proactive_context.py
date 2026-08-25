@@ -451,8 +451,13 @@ def surface_proactive_context(
     # Tenant-scoped — the (tenant, created_at) index (proactive_tenant_created_idx)
     # backs both walks below. User-delivery channels are not distinguished: one
     # tenant = one human, and switching transports must not break continuity.
-    # The internal eval evidence channel is the sole exclusion.
-    base = ProactiveOutbound.objects.filter(tenant=tenant).exclude(channel=ProactiveOutbound.Channel.EVAL)
+    # Internal eval evidence and thread-targeted sub-agent results are excluded;
+    # the latter already landed in their authoritative app thread.
+    base = (
+        ProactiveOutbound.objects.filter(tenant=tenant)
+        .exclude(channel=ProactiveOutbound.Channel.EVAL)
+        .exclude(job_name="_subagent_result")
+    )
 
     # UNCONSUMED (never threaded) rows claim the limit first, newest-first,
     # within the long window.

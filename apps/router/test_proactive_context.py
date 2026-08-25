@@ -371,6 +371,20 @@ class SurfaceProactiveContextTest(_TenantFixture):
         self.assertIn("from line cron", block)
         self.assertIn("from app cron", block)
 
+    def test_subagent_results_are_not_resurfaced_into_generic_inbound_context(self):
+        row = record_proactive_outbound(
+            tenant=self.tenant,
+            channel="app",
+            channel_user_id="u-app",
+            message_text="thread-specific research result",
+            job_name="_subagent_result",
+        )
+        assert row is not None
+
+        self.assertEqual(surface_proactive_context(tenant=self.tenant), "")
+        row.refresh_from_db()
+        self.assertIsNone(row.consumed_at)
+
     def test_other_tenant_rows_not_surfaced(self):
         # Tenant-wide scoping stops at the tenant boundary — a different
         # tenant's proactive rows must never leak into this tenant's turn.
