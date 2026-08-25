@@ -65,6 +65,24 @@ function renderPayload(payload) {
 }
 
 function renderCronCreatePayload(payload) {
+  if (payload.status === 409 && payload.conflict === "request_id_conflict") {
+    return {
+      content: [{
+        type: "text",
+        text: "This scheduled-task request conflicts with an earlier request using the same request ID. Nothing new was created.",
+      }],
+      details: { error: payload.conflict },
+    };
+  }
+  if (payload.status === 409 && payload.conflict === "name_conflict") {
+    return {
+      content: [{
+        type: "text",
+        text: "A scheduled task with this name already exists. Nothing new was created.",
+      }],
+      details: { error: payload.conflict },
+    };
+  }
   if (payload.state === "pending_approval") {
     return {
       content: [{
@@ -75,28 +93,6 @@ function renderCronCreatePayload(payload) {
     };
   }
   return renderPayload(payload);
-}
-
-function renderCronCreateConflict(error) {
-  if (error && error.status === 409 && error.code === "request_id_conflict") {
-    return {
-      content: [{
-        type: "text",
-        text: "This scheduled-task request conflicts with an earlier request using the same request ID. Nothing new was created.",
-      }],
-      details: { error: error.code },
-    };
-  }
-  if (error && error.status === 409 && error.code === "name_conflict") {
-    return {
-      content: [{
-        type: "text",
-        text: "A scheduled task with this name already exists. Nothing new was created.",
-      }],
-      details: { error: error.code },
-    };
-  }
-  throw error;
 }
 
 function hiddenOrigin(input) {
@@ -166,15 +162,15 @@ async function callRuntime(api, { path, method = "POST", body }) {
     if (!response.ok) {
       const normalized = asObject(payload);
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
+      if (response.status === 409 && (code === "request_id_conflict" || code === "name_conflict")) {
+        return { conflict: code, status: response.status };
+      }
       // DRF commonly returns field errors at the top level, e.g.
       // {week_rating: ["..."]}, rather than under `detail`. Preserve that
       // compact validation payload so the model can correct and retry.
       const detail = compactErrorDetail(normalized);
       const detailSuffix = detail ? ` (${detail})` : "";
-      const error = new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}`);
-      error.status = response.status;
-      error.code = code;
-      throw error;
+      throw new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}`);
     }
     return asObject(payload);
   } catch (error) {
@@ -275,22 +271,18 @@ export default function register(api) {
       },
       async execute(toolCallId, params) {
         const input = asObject(params);
-        try {
-          const payload = await callRuntime(api, {
-            path: tenantPath(api, "/crons/pure_reminder/"),
-            method: "POST",
-            body: {
-              name: asTrimmedString(input.name),
-              schedule: asObject(input.schedule),
-              text: typeof input.text === "string" ? input.text : "",
-              cron_request_id: asTrimmedString(toolCallId),
-              ...hiddenOrigin(input),
-            },
-          });
-          return renderCronCreatePayload(payload);
-        } catch (error) {
-          return renderCronCreateConflict(error);
-        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/crons/pure_reminder/"),
+          method: "POST",
+          body: {
+            name: asTrimmedString(input.name),
+            schedule: asObject(input.schedule),
+            text: typeof input.text === "string" ? input.text : "",
+            cron_request_id: asTrimmedString(toolCallId),
+            ...hiddenOrigin(input),
+          },
+        });
+        return renderCronCreatePayload(payload);
       },
     }),
     { optional: true },
@@ -342,16 +334,12 @@ export default function register(api) {
         };
         const refresh = asTrimmedString(input.refresh_facts_via);
         if (refresh) body.refresh_facts_via = refresh;
-        try {
-          const payload = await callRuntime(api, {
-            path: tenantPath(api, "/crons/quote_user_intent/"),
-            method: "POST",
-            body,
-          });
-          return renderCronCreatePayload(payload);
-        } catch (error) {
-          return renderCronCreateConflict(error);
-        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/crons/quote_user_intent/"),
+          method: "POST",
+          body,
+        });
+        return renderCronCreatePayload(payload);
       },
     }),
     { optional: true },
@@ -406,24 +394,20 @@ export default function register(api) {
       },
       async execute(toolCallId, params) {
         const input = asObject(params);
-        try {
-          const payload = await callRuntime(api, {
-            path: tenantPath(api, "/crons/domain_summary/"),
-            method: "POST",
-            body: {
-              name: asTrimmedString(input.name),
-              schedule: asObject(input.schedule),
-              query_tool: asTrimmedString(input.query_tool),
-              query_args: asObject(input.query_args),
-              render_block: asTrimmedString(input.render_block),
-              cron_request_id: asTrimmedString(toolCallId),
-              ...hiddenOrigin(input),
-            },
-          });
-          return renderCronCreatePayload(payload);
-        } catch (error) {
-          return renderCronCreateConflict(error);
-        }
+        const payload = await callRuntime(api, {
+          path: tenantPath(api, "/crons/domain_summary/"),
+          method: "POST",
+          body: {
+            name: asTrimmedString(input.name),
+            schedule: asObject(input.schedule),
+            query_tool: asTrimmedString(input.query_tool),
+            query_args: asObject(input.query_args),
+            render_block: asTrimmedString(input.render_block),
+            cron_request_id: asTrimmedString(toolCallId),
+            ...hiddenOrigin(input),
+          },
+        });
+        return renderCronCreatePayload(payload);
       },
     }),
     { optional: true },
