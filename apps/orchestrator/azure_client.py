@@ -961,6 +961,42 @@ def upload_workspace_file(
     _put_share_file(tenant_id, file_path, text=content, ensure_dirs=True, skip_if_exists=skip_if_exists)
 
 
+def delete_workspace_file(tenant_id: str, file_path: str) -> None:
+    """Delete one workspace file if it exists on the tenant's file share."""
+    share_name = f"ws-{str(tenant_id)[:20]}"
+
+    if _is_mock():
+        logger.info("[MOCK] Deleted %s from file share %s", file_path, share_name)
+        return
+
+    account_name = str(getattr(settings, "AZURE_STORAGE_ACCOUNT_NAME", "") or "").strip()
+    if not account_name:
+        raise ValueError("AZURE_STORAGE_ACCOUNT_NAME is not configured")
+
+    from azure.core.exceptions import ResourceNotFoundError
+    from azure.storage.fileshare import ShareFileClient
+
+    storage_client = get_storage_client()
+    keys = storage_client.storage_accounts.list_keys(settings.AZURE_RESOURCE_GROUP, account_name)
+    account_key = keys.keys[0].value
+    account_url = f"https://{account_name}.file.core.windows.net"
+
+    file_client = ShareFileClient(
+        account_url=account_url,
+        share_name=share_name,
+        file_path=file_path,
+        credential=account_key,
+    )
+    try:
+        file_client.get_file_properties()
+        file_client.delete_file()
+    except ResourceNotFoundError:
+        logger.debug("Workspace file %s is already absent from file share %s", file_path, share_name)
+        return
+
+    logger.info("Deleted %s from file share %s", file_path, share_name)
+
+
 def upload_workspace_file_binary(tenant_id: str, file_path: str, data: bytes) -> None:
     """Upload a binary file to the tenant's Azure File Share.
 

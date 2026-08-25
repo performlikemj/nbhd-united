@@ -89,3 +89,38 @@ test("helperOnly skips normal llm_output and reports helper llm_output", async (
   assert.equal(calls[0].payload.event_type, "subagent_message");
   assert.deepEqual(calls[0].payload.metadata, { kind: "subagent", run: "7c284f8559a9" });
 });
+
+test("helperOnly still reports ordinary-session BYO failures", async () => {
+  const handlers = {};
+  const api = {
+    pluginConfig: {
+      apiBaseUrl: "https://nbhd.test",
+      tenantId: "tenant-helper-only",
+      internalApiKey: "test-key",
+      helperOnly: true,
+    },
+    on: (event, handler) => { handlers[event] = handler; },
+    logger: noopLogger,
+  };
+  register(api);
+
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), payload: JSON.parse(options.body) });
+    return { ok: true, status: 200, async text() { return ""; } };
+  };
+  try {
+    const ctx = { sessionKey: "agent:main:openai-user:thread:normal", runId: "normal-run" };
+    handlers.model_call_started({ provider: "anthropic", model: "anthropic/claude-sonnet" }, ctx);
+    handlers.agent_end({ success: false, error: "401 Unauthorized: invalid API key" }, ctx);
+    await new Promise((resolve) => setImmediate(resolve));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith("/byo/error/"));
+  assert.equal(calls[0].payload.provider, "anthropic");
+  assert.equal(calls[0].payload.reason, "auth_permanent");
+});

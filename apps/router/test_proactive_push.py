@@ -503,6 +503,29 @@ class CronDeliveryAppOnlyTest(TestCase):
         )
         mock_send.assert_called_once()
 
+    @override_settings(NBHD_DELIVERY_DEDUP_TENANTS="")
+    def test_occurrence_key_is_ignored_for_other_job_names(self):
+        DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
+        headers = {
+            **self._headers(),
+            "HTTP_X_NBHD_OCCURRENCE_KEY": "caller-controlled-key",
+            "HTTP_X_NBHD_JOB_NAME": "ordinary-job",
+        }
+
+        with (
+            patch("apps.common.apns.send_push", side_effect=_ok) as mock_send,
+            self.assertLogs("apps.router.cron_delivery", level="DEBUG") as logs,
+        ):
+            first = self.client.post(self.url, {"message": "First."}, format="json", **headers)
+            second = self.client.post(self.url, {"message": "Second."}, format="json", **headers)
+
+        self.assertEqual(first.json()["status"], "sent")
+        self.assertEqual(second.json()["status"], "sent")
+        self.assertEqual(DeliveryAttempt.objects.filter(tenant=self.tenant).count(), 0)
+        self.assertEqual(ProactiveOutbound.objects.filter(tenant=self.tenant).count(), 2)
+        self.assertEqual(mock_send.call_count, 2)
+        self.assertIn("delivery_occurrence_key_ignored", "\n".join(logs.output))
+
     def test_foreign_thread_falls_back_to_main(self):
         DeviceToken.objects.create(user=self.user, tenant=self.tenant, token=_VALID_TOKEN, environment="sandbox")
         other_user = _make_user()

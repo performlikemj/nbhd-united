@@ -12,6 +12,7 @@ from apps.orchestrator.azure_client import (
     assign_key_vault_role,
     create_container_app,
     create_tenant_file_share,
+    delete_workspace_file,
     ensure_plugin_runtime_deps_mount,
     register_environment_storage,
     store_tenant_internal_key_in_key_vault,
@@ -633,6 +634,43 @@ _VALID_UPLOAD_CONFIG_JSON = json.dumps(
         "agents": {"defaults": {"model": {"primary": "deepseek/deepseek-v4", "fallbacks": []}}},
     }
 )
+
+
+@override_settings(
+    AZURE_RESOURCE_GROUP="rg-nbhd-prod",
+    AZURE_STORAGE_ACCOUNT_NAME="stnbhdprod",
+)
+class DeleteWorkspaceFileTest(SimpleTestCase):
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_storage_client")
+    @patch("azure.storage.fileshare.ShareFileClient")
+    def test_existing_workspace_file_is_deleted(self, mock_share_cls, mock_get_storage, _mock_is_mock):
+        fake_storage = MagicMock()
+        fake_storage.storage_accounts.list_keys.return_value.keys = [MagicMock(value="k")]
+        mock_get_storage.return_value = fake_storage
+
+        delete_workspace_file("148ccf1c-ef13-47f8-ada1-a98fa90e14a0", "workspace/rules/subagents.md")
+
+        self.assertEqual(mock_share_cls.call_args.kwargs["file_path"], "workspace/rules/subagents.md")
+        file_client = mock_share_cls.return_value
+        file_client.get_file_properties.assert_called_once_with()
+        file_client.delete_file.assert_called_once_with()
+
+    @patch("apps.orchestrator.azure_client._is_mock", return_value=False)
+    @patch("apps.orchestrator.azure_client.get_storage_client")
+    @patch("azure.storage.fileshare.ShareFileClient")
+    def test_absent_workspace_file_is_not_deleted(self, mock_share_cls, mock_get_storage, _mock_is_mock):
+        from azure.core.exceptions import ResourceNotFoundError
+
+        fake_storage = MagicMock()
+        fake_storage.storage_accounts.list_keys.return_value.keys = [MagicMock(value="k")]
+        mock_get_storage.return_value = fake_storage
+        file_client = mock_share_cls.return_value
+        file_client.get_file_properties.side_effect = ResourceNotFoundError("missing")
+
+        delete_workspace_file("148ccf1c-ef13-47f8-ada1-a98fa90e14a0", "workspace/rules/subagents.md")
+
+        file_client.delete_file.assert_not_called()
 
 
 @override_settings(

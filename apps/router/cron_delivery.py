@@ -518,7 +518,14 @@ class CronDeliveryView(APIView):
 
         job_name = request.headers.get("X-NBHD-Job-Name", "")
         delivery_attempt = None
-        explicit_occurrence_key = request.headers.get("X-NBHD-Occurrence-Key", "").strip()[:64]
+        occurrence_key_header = request.headers.get("X-NBHD-Occurrence-Key", "").strip()[:64]
+        explicit_occurrence_key = occurrence_key_header if job_name == "_subagent_result" else ""
+        if occurrence_key_header and not explicit_occurrence_key:
+            logger.debug(
+                "delivery_occurrence_key_ignored tenant=%s job_name=%s",
+                str(tenant.id)[:8],
+                job_name,
+            )
         # An explicit runtime provenance key deliberately opts into dedup even
         # when the tenant-wide degraded cron dedup feature flag is disabled.
         if explicit_occurrence_key or _delivery_dedup_enabled(tenant):

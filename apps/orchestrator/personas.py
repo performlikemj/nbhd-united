@@ -561,9 +561,8 @@ def render_workspace_rules(tenant=None) -> dict[str, str]:
     Returns a dict mapping filename → content for each .md file found.
     Used by update_tenant_config to upload rules to workspace/rules/ on the
     container's file share. The sub-agent rule and its messaging exception are
-    rendered only for tenants behind the sub-agent canary gate. There is no
-    single-file delete primitive in the workspace client, so a stale
-    ``rules/subagents.md`` can only be guaranteed absent on a fresh upload.
+    rendered only for tenants behind the sub-agent canary gate. Config refresh
+    removes a previously uploaded ``rules/subagents.md`` when that gate is off.
     """
     rules_dir = _rules_template_dir()
     if not os.path.isdir(rules_dir):

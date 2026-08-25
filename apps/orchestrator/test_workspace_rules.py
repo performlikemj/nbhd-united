@@ -123,10 +123,12 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
         return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
     )
+    @patch("apps.orchestrator.azure_client.delete_workspace_file")
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
     def test_update_tenant_config_uploads_rules(
         self,
         mock_upload_workspace_file,
+        mock_delete_workspace_file,
         _mock_update_crons,
         _mock_audit,
         _mock_generate_config,
@@ -155,6 +157,10 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
             f"memory.md not found in uploaded rules: {rules_paths}",
         )
         self.assertNotIn("workspace/rules/subagents.md", rules_paths)
+        mock_delete_workspace_file.assert_called_once_with(
+            str(self.tenant.id),
+            "workspace/rules/subagents.md",
+        )
         memory_upload = next(
             call for call in mock_upload_workspace_file.call_args_list if call.args[1] == "workspace/rules/memory.md"
         )
@@ -171,12 +177,43 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
         return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
     )
+    @patch("apps.orchestrator.azure_client.delete_workspace_file")
+    @patch("apps.orchestrator.azure_client.upload_workspace_file")
+    def test_enabled_tenant_does_not_delete_subagent_rule(
+        self,
+        mock_upload_workspace_file,
+        mock_delete_workspace_file,
+        _mock_update_crons,
+        _mock_audit,
+        _mock_generate_config,
+        _mock_config_to_json,
+        _mock_upload_config,
+    ):
+        from apps.orchestrator.services import update_tenant_config
+
+        with override_settings(SUBAGENT_TENANT_IDS=str(self.tenant.id)):
+            update_tenant_config(str(self.tenant.id))
+
+        mock_delete_workspace_file.assert_not_called()
+        uploaded_paths = [call.args[1] for call in mock_upload_workspace_file.call_args_list]
+        self.assertIn("workspace/rules/subagents.md", uploaded_paths)
+
+    @patch("apps.orchestrator.services.upload_config_to_file_share")
+    @patch("apps.orchestrator.services.config_to_json", return_value="{}")
+    @patch("apps.orchestrator.services.generate_openclaw_config", return_value={"gateway": {}})
+    @patch("apps.orchestrator.services._audit_and_log")
+    @patch(
+        "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
+        return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
+    )
+    @patch("apps.orchestrator.azure_client.delete_workspace_file")
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
     @patch("apps.orchestrator.azure_client.download_workspace_file", return_value=None)
     def test_soul_and_identity_use_merge_push(
         self,
         _mock_download_workspace_file,
         mock_upload_workspace_file,
+        _mock_delete_workspace_file,
         _mock_update_crons,
         _mock_audit,
         _mock_generate_config,
@@ -234,12 +271,14 @@ class UpdateTenantConfigUploadsRulesTest(TestCase):
         "apps.orchestrator.services.refresh_system_cron_rows_from_seed",
         return_value={"created": 0, "updated": 0, "preserved_custom": 0, "unchanged": 0},
     )
+    @patch("apps.orchestrator.azure_client.delete_workspace_file")
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
     @patch("apps.orchestrator.azure_client.download_workspace_file")
     def test_identity_read_error_fails_closed(
         self,
         mock_download_workspace_file,
         mock_upload_workspace_file,
+        _mock_delete_workspace_file,
         _mock_update_crons,
         _mock_audit,
         _mock_generate_config,

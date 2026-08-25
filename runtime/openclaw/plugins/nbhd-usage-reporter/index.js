@@ -243,7 +243,7 @@ export default function register(api) {
   }
   const subscribe = (event, handler) => api.on(event, handler);
   const helperOnly = asObject(api.pluginConfig).helperOnly === true;
-  const shouldHandle = (ctx) => !helperOnly || isHelperSession(ctx);
+  const shouldMeterUsage = (ctx) => !helperOnly || isHelperSession(ctx);
 
   api.logger.info("NBHD usage reporter plugin registered");
 
@@ -255,7 +255,6 @@ export default function register(api) {
   let lastAttempted = { provider: "", model: "" };
 
   subscribe("model_call_started", (event, ctx) => {
-    if (!shouldHandle(ctx)) return;
     if (event && typeof event === "object") {
       lastAttempted = {
         provider: asTrimmedString(event.provider),
@@ -265,7 +264,7 @@ export default function register(api) {
   });
 
   subscribe("llm_output", (event, ctx) => {
-    if (!shouldHandle(ctx)) return;
+    if (!shouldMeterUsage(ctx)) return;
     const payload = extractUsage(event, ctx, api.logger);
     if (!payload) {
       return;
@@ -275,7 +274,6 @@ export default function register(api) {
   });
 
   subscribe("agent_end", (event, ctx) => {
-    if (!shouldHandle(ctx)) return;
     if (!event || event.success !== false) return;
     const errorMessage = asTrimmedString(event.error);
     if (!errorMessage) return;
