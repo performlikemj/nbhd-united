@@ -21,7 +21,7 @@ from .cache import (
     upsert_jobs_to_cache,
 )
 from .gateway_client import GatewayError, cron_remove, invoke_gateway_tool
-from .models import CronJob
+from .models import CronJob, CronJobSource
 from .schedule_validation import ScheduleValidationError, validate_schedule
 
 logger = logging.getLogger(__name__)
@@ -137,20 +137,26 @@ HIDDEN_SYSTEM_CRONS = frozenset(
     }
 )
 
-# Job-name prefixes that should be hidden from the user-facing UI. Used by
-# the two-phase cron pattern: foreground tasks create short-lived
-# `_sync:<job name>` crons that fire a summary into the main session and
-# then self-remove. We never want users to see them in the UI.
-HIDDEN_SYSTEM_CRON_PREFIXES: tuple[str, ...] = ("_sync:", "_fuel:")
 
+def _is_hidden_cron(name: str, source: str | None = None) -> bool:
+    """Whether a cron job should be hidden from the tenant-facing UI.
 
-def _is_hidden_cron(name: str) -> bool:
-    """Whether a cron job name should be hidden from the user's UI."""
+    Underscore names are the internal namespace, but source remains the
+    authority: a user-owned ``_x`` row stays visible. Gateway-only jobs do not
+    carry source metadata, so callers may omit ``source`` and use the canonical
+    legacy name classifier as a best-effort fallback.
+    """
     if not name:
         return False
     if name in HIDDEN_SYSTEM_CRONS:
         return True
-    return name.startswith(HIDDEN_SYSTEM_CRON_PREFIXES)
+    if not name.startswith("_"):
+        return False
+    if source is None:
+        from .postgres_canonical import _classify_source
+
+        source = _classify_source(name)
+    return source != CronJobSource.USER
 
 
 def _filter_visible_jobs(raw_jobs: list[dict]) -> list[dict]:
@@ -159,7 +165,7 @@ def _filter_visible_jobs(raw_jobs: list[dict]) -> list[dict]:
     for j in raw_jobs:
         if not isinstance(j, dict):
             continue
-        if _is_hidden_cron(j.get("name", "")):
+        if _is_hidden_cron(j.get("name", ""), j.get("source")):
             continue
         payload = j.get("payload") or {}
         message = ""

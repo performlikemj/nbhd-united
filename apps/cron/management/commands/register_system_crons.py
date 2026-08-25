@@ -120,6 +120,9 @@ SYSTEM_CRONS = [
     # Every hour — retire spent kind:"at" rows after their late-fire grace so
     # their names can be reused. Uses QStash's default maintenance retries.
     ("expire-finished-at-crons", "0 * * * *", "/api/cron/trigger/expire_finished_at_crons/"),
+    # Every 5 min — delete disabled internal at-cron rows once their 24-hour
+    # forensic buffer has elapsed. User one-shots remain retained for audit.
+    ("cleanup-internal-crons", "*/5 * * * *", "/api/cron/trigger/cleanup_internal_crons/"),
     # Daily at 01:30 UTC — watchdog for orphaned Fuel/Gravity welcome crons.
     # Re-invokes the self-healing schedulers so a tenant whose welcome was
     # missed (gateway hiccup, agent crash mid-turn) gets retried within 24h.

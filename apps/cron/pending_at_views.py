@@ -22,7 +22,7 @@ from rest_framework.views import APIView
 
 from .cache import is_container_unavailable_error, read_jobs_from_cache
 from .gateway_client import GatewayError, invoke_gateway_tool
-from .tenant_views import _get_tenant_for_user, _require_active_tenant
+from .tenant_views import _get_tenant_for_user, _is_hidden_cron, _require_active_tenant
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,8 @@ def _extract_at_jobs(raw_jobs: list[dict]) -> list[dict]:
             continue
         schedule = job.get("schedule")
         if not isinstance(schedule, dict) or schedule.get("kind") != "at":
+            continue
+        if _is_hidden_cron(job.get("name") or "", job.get("source")):
             continue
         if job.get("enabled") is False:
             # The gateway's auto-delete-on-success only fires for enabled jobs.

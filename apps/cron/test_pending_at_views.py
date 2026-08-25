@@ -83,6 +83,33 @@ class PendingAtCronViewTest(TestCase):
         self.assertEqual(names, ["on"])
 
     @patch("apps.cron.pending_at_views.invoke_gateway_tool")
+    def test_excludes_internal_at_jobs_but_keeps_user_underscore_job(self, mock_invoke):
+        from apps.cron.models import CronJobSource
+
+        future = int(time.time() * 1000) + 60_000
+        internal = self._make_at_job(name="_congrats-162769ab", job_id="internal", fires_ms=future)
+        user_owned = self._make_at_job(name="_x", job_id="user", fires_ms=future)
+        user_owned["source"] = CronJobSource.USER
+        mock_invoke.return_value = {"details": {"jobs": [internal, user_owned]}}
+
+        resp = self.client.get("/api/v1/cron-jobs/pending-at/")
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(
+            resp.json()["jobs"],
+            [
+                {
+                    "jobId": "user",
+                    "name": "_x",
+                    "firesAtMs": future,
+                    "schedule": {"kind": "at", "at": "2099-01-01T00:00:00Z"},
+                    "payload": {"kind": "agentTurn", "message": "reminder for _x"},
+                    "delivery": {"mode": "none"},
+                }
+            ],
+        )
+
+    @patch("apps.cron.pending_at_views.invoke_gateway_tool")
     def test_hibernated_tenant_serves_from_cache(self, mock_invoke):
         from django.utils import timezone
 

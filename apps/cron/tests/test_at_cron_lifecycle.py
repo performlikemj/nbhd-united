@@ -26,9 +26,14 @@ from django.db.utils import IntegrityError
 from django.test import TestCase
 from django.utils import timezone
 
-from apps.cron.models import CronCreationPath, CronJob, CronPattern
+from apps.cron.models import CronCreationPath, CronJob, CronJobSource, CronPattern
 from apps.cron.services import create_typed_cron
-from apps.cron.tasks import AT_CRON_GRACE, expire_finished_at_crons_task
+from apps.cron.tasks import (
+    AT_CRON_GRACE,
+    INTERNAL_AT_CRON_RETENTION,
+    cleanup_internal_crons_task,
+    expire_finished_at_crons_task,
+)
 from apps.tenants.models import Tenant, User
 
 
@@ -251,3 +256,83 @@ class TaskMapWiringTests(TestCase):
 
         func = import_module(module_path)
         self.assertTrue(callable(getattr(func, func_name)))
+
+    def test_cleanup_internal_crons_resolves(self):
+        from importlib import import_module
+
+        from apps.cron.views import TASK_MAP
+
+        self.assertIn("cleanup_internal_crons", TASK_MAP)
+        module_path, func_name = TASK_MAP["cleanup_internal_crons"].rsplit(".", 1)
+        func = import_module(module_path)
+        self.assertTrue(callable(getattr(func, func_name)))
+
+
+class CleanupInternalCronsSweepTests(TestCase):
+    def setUp(self):
+        self.tenant = _make_tenant("internal-cron-cleanup")
+
+    def _row(
+        self,
+        name: str,
+        *,
+        source: str,
+        enabled: bool = False,
+        schedule_kind: str = "at",
+        age: timedelta = INTERNAL_AT_CRON_RETENTION + timedelta(hours=1),
+        pattern: str | None = None,
+    ) -> CronJob:
+        row = CronJob.objects.create(
+            tenant=self.tenant,
+            name=name,
+            source=source,
+            enabled=enabled,
+            managed=False,
+            pattern=pattern,
+            data={
+                "schedule": (
+                    {"kind": "at", "at": "2026-08-01T00:00:00Z"}
+                    if schedule_kind == "at"
+                    else {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"}
+                )
+            },
+        )
+        CronJob.objects.filter(pk=row.pk).update(updated_at=timezone.now() - age)
+        row.refresh_from_db()
+        return row
+
+    def test_deletes_stale_disabled_workout_congrats_row(self):
+        row = self._row(
+            "_congrats-162769ab",
+            source=CronJobSource.SYSTEM,
+            pattern=CronPattern.WORKOUT_CONGRATS,
+        )
+
+        result = cleanup_internal_crons_task()
+
+        self.assertEqual(result, {"deleted": 1, "ids": [row.id]})
+        self.assertFalse(CronJob.objects.filter(pk=row.pk).exists())
+
+    def test_deletes_other_stale_disabled_internal_at_row(self):
+        row = self._row("_sync:finished", source=CronJobSource.AGENT)
+
+        cleanup_internal_crons_task()
+
+        self.assertFalse(CronJob.objects.filter(pk=row.pk).exists())
+
+    def test_preserves_enabled_user_seeded_recent_and_recurring_rows(self):
+        enabled = self._row("_congrats-enabled", source=CronJobSource.SYSTEM, enabled=True)
+        user = self._row("_x", source=CronJobSource.USER)
+        seeded = self._row("Morning Briefing", source=CronJobSource.SYSTEM)
+        recent = self._row(
+            "_congrats-recent",
+            source=CronJobSource.SYSTEM,
+            age=INTERNAL_AT_CRON_RETENTION - timedelta(minutes=1),
+        )
+        recurring = self._row("_fuel:recurring", source=CronJobSource.FUEL_SESSION, schedule_kind="cron")
+
+        result = cleanup_internal_crons_task()
+
+        self.assertEqual(result, {"deleted": 0, "ids": []})
+        for row in (enabled, user, seeded, recent, recurring):
+            self.assertTrue(CronJob.objects.filter(pk=row.pk).exists(), row.name)

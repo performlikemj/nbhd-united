@@ -298,6 +298,9 @@ TASK_MAP = {
     # this the row stays enabled=True and squats its (tenant, name) forever —
     # a user asking for the same reminder twice used to get a 409. Hourly.
     "expire_finished_at_crons": "apps.cron.tasks.expire_finished_at_crons_task",
+    # Delete disabled internal one-shot rows after 24 hours. The gateway has
+    # already auto-deleted these jobs; this bounds control-plane residue.
+    "cleanup_internal_crons": "apps.cron.tasks.cleanup_internal_crons_task",
     # Daily infra cost refresh from Azure billing
     "refresh_infra_costs": "apps.billing.tasks.refresh_infra_costs_task",
     # Monthly donation ledger — records each paying subscriber's revenue-%

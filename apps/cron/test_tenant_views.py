@@ -7,6 +7,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase, TestCase
 from rest_framework.test import APIClient
 
+from apps.cron.models import CronJobSource
 from apps.cron.tenant_views import (
     _is_hidden_cron,
     _message_has_phase2_marker,
@@ -263,6 +264,10 @@ class HiddenSystemCronsTest(TestCase):
                 {"name": "Background Tasks", "enabled": True},
                 {"name": "Heartbeat Check-in", "enabled": True},
                 {"name": "Week Ahead Review", "enabled": True},
+                {"name": "_congrats-162769ab", "enabled": False},
+                {"name": "_fuel:abcd1234", "enabled": True},
+                {"name": "_sync:Morning Briefing", "enabled": True},
+                {"name": "_x", "enabled": True},
             ],
         }
         resp = self.client.get("/api/v1/cron-jobs/")
@@ -281,7 +286,11 @@ class HiddenSystemCronsTest(TestCase):
         self.assertIn("Morning Briefing", names)
         self.assertIn("Evening Check-in", names)
         self.assertIn("Week Ahead Review", names)
-        self.assertEqual(len(names), 3)
+        self.assertIn("_x", names)
+        self.assertNotIn("_congrats-162769ab", names)
+        self.assertNotIn("_fuel:abcd1234", names)
+        self.assertNotIn("_sync:Morning Briefing", names)
+        self.assertEqual(len(names), 4)
 
     def test_delete_blocked_for_system_crons(self):
         resp = self.client.delete("/api/v1/cron-jobs/Background Tasks/")
@@ -611,6 +620,14 @@ class HiddenCronHelperTest(SimpleTestCase):
         self.assertTrue(_is_hidden_cron("_sync:Anything Goes"))
         self.assertTrue(_is_hidden_cron("_sync:"))
 
+    def test_all_internal_sources_are_hidden_under_underscore_namespace(self):
+        self.assertTrue(_is_hidden_cron("_congrats-162769ab", CronJobSource.SYSTEM))
+        self.assertTrue(_is_hidden_cron("_fuel:abcd1234", CronJobSource.FUEL_SESSION))
+        self.assertTrue(_is_hidden_cron("_sync:Morning Briefing", CronJobSource.AGENT))
+
+    def test_user_owned_underscore_name_is_visible(self):
+        self.assertFalse(_is_hidden_cron("_x", CronJobSource.USER))
+
     def test_normal_jobs_are_visible(self):
         self.assertFalse(_is_hidden_cron("Morning Briefing"))
         self.assertFalse(_is_hidden_cron("My Custom Task"))
@@ -860,6 +877,86 @@ class PostgresCanonicalReadTest(TestCase):
         self.assertEqual(resp.status_code, 200)
         names = [j["name"] for j in resp.json()["jobs"]]
         self.assertEqual(names, ["My Task"])  # hidden cron excluded
+        mock_invoke.assert_not_called()
+
+    @patch("apps.cron.tenant_views.invoke_gateway_tool")
+    def test_list_hides_internal_rows_but_preserves_visible_response_shape(self, mock_invoke):
+        from apps.cron.models import CronJob, CronPattern
+
+        internal_rows = (
+            ("_congrats-162769ab", CronJobSource.SYSTEM, CronPattern.WORKOUT_CONGRATS, False),
+            ("_fuel:abcd1234", CronJobSource.FUEL_SESSION, None, False),
+            ("_sync:Morning Briefing", CronJobSource.AGENT, None, False),
+        )
+        for name, source, pattern, enabled in internal_rows:
+            CronJob.objects.create(
+                tenant=self.tenant,
+                name=name,
+                data={
+                    "name": name,
+                    "schedule": {"kind": "at", "at": "2026-08-01T00:00:00Z"},
+                    "payload": {"kind": "agentTurn", "message": "internal"},
+                },
+                source=source,
+                pattern=pattern,
+                enabled=enabled,
+                managed=False,
+            )
+
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="_x",
+            data={
+                "name": "_x",
+                "schedule": {"kind": "cron", "expr": "0 10 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "user underscore"},
+                "delivery": {"mode": "none"},
+            },
+            source=CronJobSource.USER,
+            managed=True,
+            enabled=True,
+        )
+        CronJob.objects.create(
+            tenant=self.tenant,
+            name="Morning Briefing",
+            data={
+                "name": "Morning Briefing",
+                "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "seeded"},
+                "delivery": {"mode": "none"},
+            },
+            source=CronJobSource.SYSTEM,
+            managed=True,
+            enabled=True,
+        )
+
+        resp = self.client.get("/api/v1/cron-jobs/")
+
+        self.assertEqual(resp.status_code, 200)
+        jobs = resp.json()["jobs"]
+        self.assertEqual([job["name"] for job in jobs], ["Morning Briefing", "My Task", "_x"])
+        self.assertEqual(
+            jobs[2],
+            {
+                "name": "_x",
+                "schedule": {"kind": "cron", "expr": "0 10 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "user underscore"},
+                "delivery": {"mode": "none"},
+                "enabled": True,
+                "foreground": False,
+            },
+        )
+        self.assertEqual(
+            jobs[0],
+            {
+                "name": "Morning Briefing",
+                "schedule": {"kind": "cron", "expr": "0 7 * * *", "tz": "UTC"},
+                "payload": {"kind": "agentTurn", "message": "seeded"},
+                "delivery": {"mode": "none"},
+                "enabled": True,
+                "foreground": False,
+            },
+        )
         mock_invoke.assert_not_called()
 
 
