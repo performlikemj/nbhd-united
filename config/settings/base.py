@@ -248,8 +248,9 @@ STEWARD_OPENROUTER_CANARY_TENANT_ID = env(
 # Fleet-go is a deliberate follow-up, not a side effect of deploying this code.
 TASK_HYGIENE_TENANT_IDS = env("TASK_HYGIENE_TENANT_IDS", default="")
 
-# Human-review gate for agent-authored scheduled tasks. Empty means nobody;
-# PR1A ships dormant until the app surface is available for a canary tenant.
+# Human-review gate for agent-authored scheduled tasks. Comma-separated tenant
+# UUIDs open individual tenants; the literal "*" opens the gate fleet-wide.
+# Empty/unset means nobody so every non-explicit configuration fails closed.
 CRON_GATE_TENANT_IDS = env("CRON_GATE_TENANT_IDS", default="")
 
 # Silently-dropped app-turn retry canary gate. Comma-separated tenant UUIDs;

@@ -58,7 +58,7 @@ def cron_gate_enabled(tenant: Tenant) -> bool:
 
     raw = str(getattr(settings, "CRON_GATE_TENANT_IDS", "") or "")
     allowed = {part.strip().lower() for part in raw.split(",") if part.strip()}
-    return bool(allowed) and str(tenant.id).lower() in allowed
+    return "*" in allowed or str(tenant.id).lower() in allowed
 
 
 def is_cron_action_type(action_type: str) -> bool:
