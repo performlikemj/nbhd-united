@@ -250,7 +250,7 @@ export function decideGuardAction(contract, content, revisionsUsed) {
 // every pattern that predates this stays untouched.
 //
 // Pure decision function: never mutates. The caller owns the counters on the
-// cache entry, the same ownership split decideGuardAction/entry.revisions uses.
+// per-run state, the same ownership split decideGuardAction/run.revisions uses.
 // Exported for unit tests.
 export function decideLimitAction(contract, toolId, counters) {
   const limits = contract && contract.limits;
@@ -358,8 +358,9 @@ function buildRewriteParams(event, dispatch, newMessage) {
   return { ...originalParams, [key]: { ...inner, message: newMessage } };
 }
 
-// ── per-session cache ────────────────────────────────────────────────────────
-// cron_changed owns jobId -> contract; before_prompt_build owns runId -> jobId.
+// ── job-contract + per-run enforcement caches ───────────────────────────────
+// cron_changed owns job-scoped jobId -> contract metadata;
+// before_prompt_build owns runId -> jobId plus that run's mutable counters.
 const contractByJobId = new Map();
 const runById = new Map();
 
@@ -431,7 +432,11 @@ function stampForRun(runtime, runId, jobId) {
   };
 }
 
-// Deliberately separate from (and before) enforcement. Pinned OpenClaw
+// Deliberately separate from (and before) enforcement. OpenClaw takes the LAST
+// defined `params` across before_tool_call subscribers
+// (hook-runner-global-BdHeqZIb.js:722), so any future plugin returning
+// `{ params }` must preserve this hook's flat or nested `_nbhd_origin` value.
+// Pinned OpenClaw
 // 2026.5.28 shallow-merges hook params over the original params
 // (agent-tools.before-tool-call-CcOZYWx4.js:515-523, called at :1035-1038),
 // so absence cannot remove a flat key. Every origin-capable call explicitly
@@ -502,9 +507,6 @@ export default function register(api) {
         ttlMs: cacheTtlMs,
         cronName,
         contract,
-        revisions: 0,
-        sends: 0,
-        mutations: 0,
       });
       return undefined;
     } catch (error) {
@@ -520,7 +522,15 @@ export default function register(api) {
       if (ctx && ctx.trigger === "cron") {
         const runId = asTrimmedString(ctx.runId);
         const jobId = asTrimmedString(ctx.jobId);
-        if (runId && jobId) runById.set(runId, { jobId, ts: Date.now() });
+        if (runId && jobId && !lookupRun(runId)) {
+          runById.set(runId, {
+            jobId,
+            ts: Date.now(),
+            revisions: 0,
+            sends: 0,
+            mutations: 0,
+          });
+        }
       }
       return undefined;
     } catch (error) {
@@ -545,8 +555,8 @@ export default function register(api) {
     try {
       const runId = asTrimmedString(event && event.runId);
       const run = runId ? lookupRun(runId) : undefined;
-      const entry = run ? lookupContract(run.jobId) : undefined;
-      if (!entry || !entry.contract) return origin.result;
+      const job = run ? lookupContract(run.jobId) : undefined;
+      if (!run || !job || !job.contract) return origin.result;
 
       const toolId = resolveDispatchedToolId(guardedEvent);
 
@@ -555,17 +565,17 @@ export default function register(api) {
       // its allowance. Handled before the send path so a non-send tool exits
       // here and never touches message extraction.
       if (toolId !== SEND_TOOL_ID) {
-        const mutationLimit = decideLimitAction(entry.contract, toolId, entry);
+        const mutationLimit = decideLimitAction(job.contract, toolId, run);
         if (mutationLimit.type === "block") {
           safeLog(
             api,
             "warn",
-            `nbhd-cron-enforcement: mutation cap reached cron=${entry.cronName} ` +
-              `pattern=${(entry.contract && entry.contract.pattern) || "?"} tool=${toolId}`,
+            `nbhd-cron-enforcement: mutation cap reached cron=${job.cronName} ` +
+              `pattern=${(job.contract && job.contract.pattern) || "?"} tool=${toolId}`,
           );
           return { block: true, blockReason: mutationLimit.reason };
         }
-        if (mutationLimit.type === "count") entry.mutations = (entry.mutations || 0) + 1;
+        if (mutationLimit.type === "count") run.mutations = (run.mutations || 0) + 1;
         return origin.result;
       }
 
@@ -577,35 +587,35 @@ export default function register(api) {
       // makes "exactly one summary" structural instead of prose — and it also
       // closes the unmarked-second-message path, since a message that never
       // dispatches cannot arrive without its marker.
-      const sendLimit = decideLimitAction(entry.contract, SEND_TOOL_ID, entry);
+      const sendLimit = decideLimitAction(job.contract, SEND_TOOL_ID, run);
       if (sendLimit.type === "block") {
         safeLog(
           api,
           "warn",
-          `nbhd-cron-enforcement: send cap reached cron=${entry.cronName} ` +
-            `pattern=${(entry.contract && entry.contract.pattern) || "?"}`,
+          `nbhd-cron-enforcement: send cap reached cron=${job.cronName} ` +
+            `pattern=${(job.contract && job.contract.pattern) || "?"}`,
         );
         return { block: true, blockReason: sendLimit.reason };
       }
 
-      const decision = decideGuardAction(entry.contract, dispatch.message, entry.revisions);
+      const decision = decideGuardAction(job.contract, dispatch.message, run.revisions);
       if (decision.type === "revise") {
         // A blocked revise never reaches the user, so it must not burn the send
         // budget — otherwise asking the model to fix its marker would cost it
         // the only message it was allowed to send.
-        entry.revisions += 1;
+        run.revisions += 1;
         return { block: true, blockReason: decision.reason };
       }
 
       // Everything below here ships a message to the user (pass, rewrite, or
       // allow-after-budget), so the send is spent at this point.
-      if (sendLimit.type === "count") entry.sends = (entry.sends || 0) + 1;
+      if (sendLimit.type === "count") run.sends = (run.sends || 0) + 1;
       if (decision.type === "rewrite") {
         safeLog(
           api,
           "warn",
-          `nbhd-cron-enforcement: rewriting outbound message cron=${entry.cronName} ` +
-            `pattern=${(entry.contract && entry.contract.pattern) || "?"}`,
+          `nbhd-cron-enforcement: rewriting outbound message cron=${job.cronName} ` +
+            `pattern=${(job.contract && job.contract.pattern) || "?"}`,
         );
         return { params: buildRewriteParams(guardedEvent, dispatch, decision.content) };
       }
@@ -614,7 +624,7 @@ export default function register(api) {
           api,
           "warn",
           `nbhd-cron-enforcement: allowing outbound after revision budget exhausted ` +
-            `cron=${entry.cronName} pattern=${(entry.contract && entry.contract.pattern) || "?"}`,
+            `cron=${job.cronName} pattern=${(job.contract && job.contract.pattern) || "?"}`,
         );
         return origin.result;
       }

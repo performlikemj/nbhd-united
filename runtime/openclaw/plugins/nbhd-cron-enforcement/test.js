@@ -10,6 +10,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
 
 import register, {
   parseContract,
@@ -83,6 +84,32 @@ function mergeLikePinnedSdk(originalParams, hookResult) {
     ? { ...originalParams, ...hookResult.params }
     : originalParams;
 }
+
+describe("before_tool_call params ownership policy", () => {
+  it("no other plugin hook returns a params key after the origin-stamping hook", () => {
+    const pluginsDir = new URL("../", import.meta.url);
+    const offenders = [];
+    for (const entry of readdirSync(pluginsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === "nbhd-cron-enforcement") continue;
+      const indexUrl = new URL(`${entry.name}/index.js`, pluginsDir);
+      let source;
+      try {
+        source = readFileSync(indexUrl, "utf8");
+      } catch (error) {
+        if (error && error.code === "ENOENT") continue;
+        throw error;
+      }
+      if (!/api\.on\(["']before_tool_call["']/.test(source)) continue;
+      if (/return\s*\{\s*params(?:\s*[:,}])/.test(source)) offenders.push(entry.name);
+    }
+
+    // Source-text guard only: it deliberately does not parse JavaScript or
+    // detect aliases/computed keys. It catches the direct `{ params }` return
+    // shape whose last-defined-wins behavior is pinned at
+    // hook-runner-global-BdHeqZIb.js:722.
+    assert.deepEqual(offenders, []);
+  });
+});
 
 // ── parseContract ────────────────────────────────────────────────────────────
 
@@ -922,6 +949,69 @@ describe("end-to-end caps via register() — the real before_tool_call path", ()
     assert.equal(first, undefined, "first send must pass through untouched");
 
     const second = beforeToolCall(sendCall("cap-sends", `${HYGIENE_MARKER}\nAlso, one more thing.`));
+    assert.equal(second.block, true);
+    assert.match(second.blockReason, /already sent/);
+  });
+
+  it("two interleaved runs of the same job have independent send budgets", () => {
+    const api = makeFakeApi();
+    register(api);
+    const jobId = "job-overlap";
+    const job = { name: "Task Hygiene", description: hygieneContract() };
+    startCron(api, "run-overlap-a", job, jobId);
+    assert.equal(api._handlers["before_prompt_build"]({}, {
+      trigger: "cron",
+      jobId,
+      runId: "run-overlap-b",
+    }), undefined);
+
+    const beforeToolCall = api._handlers["before_tool_call"];
+    assert.equal(beforeToolCall(sendCall("run-overlap-a", `${HYGIENE_MARKER}\nrun A first`)), undefined);
+    assert.equal(beforeToolCall(sendCall("run-overlap-b", `${HYGIENE_MARKER}\nrun B first`)), undefined);
+    assert.equal(beforeToolCall(sendCall("run-overlap-a", `${HYGIENE_MARKER}\nrun A second`)).block, true);
+    assert.equal(beforeToolCall(sendCall("run-overlap-b", `${HYGIENE_MARKER}\nrun B second`)).block, true);
+  });
+
+  it("a repeated started event refreshes the job contract without resetting a live run", () => {
+    const api = makeFakeApi();
+    register(api);
+    const jobId = "job-reemitted-start";
+    const job = { name: "Task Hygiene", description: hygieneContract() };
+    startCron(api, "run-reemitted-start", job, jobId);
+    const beforeToolCall = api._handlers["before_tool_call"];
+    assert.equal(
+      beforeToolCall(sendCall("run-reemitted-start", `${HYGIENE_MARKER}\nfirst`)),
+      undefined,
+    );
+
+    api._handlers["cron_changed"]({
+      jobId,
+      action: "started",
+      job,
+      runAtMs: Date.now(),
+    });
+    const second = beforeToolCall(sendCall("run-reemitted-start", `${HYGIENE_MARKER}\nsecond`));
+    assert.equal(second.block, true);
+    assert.match(second.blockReason, /already sent/);
+  });
+
+  it("a repeated before_prompt_build for one run preserves its counters", () => {
+    const api = makeFakeApi();
+    register(api);
+    const jobId = "job-double-prompt";
+    startCron(api, "run-double-prompt", {
+      name: "Task Hygiene",
+      description: hygieneContract(),
+    }, jobId);
+    const beforeToolCall = api._handlers["before_tool_call"];
+    assert.equal(beforeToolCall(sendCall("run-double-prompt", `${HYGIENE_MARKER}\nfirst`)), undefined);
+
+    assert.equal(api._handlers["before_prompt_build"]({}, {
+      trigger: "cron",
+      jobId,
+      runId: "run-double-prompt",
+    }), undefined);
+    const second = beforeToolCall(sendCall("run-double-prompt", `${HYGIENE_MARKER}\nsecond`));
     assert.equal(second.block, true);
     assert.match(second.blockReason, /already sent/);
   });
