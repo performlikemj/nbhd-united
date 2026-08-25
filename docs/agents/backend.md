@@ -33,6 +33,15 @@ Read before writing Django code. `docs/agents/invariants.md` holds the platform-
 - Tests that patch gateway/network functions rely on the local re-import pattern above.
 - Query-count regressions: pin with `assertNumQueries` (see `apps/fuel/tests.py`, `apps/orchestrator/test_azure_client.py` for idempotency-shape examples).
 
+### External SDK contract tests
+
+- Every production third-party SDK call has an offline, mock-free real-SDK contract test.
+- Name modules `test_sdk_contract_<lib>.py` in the app owning most call sites.
+- When adding a new SDK call, extend its contract module with the exact signature/model path used.
+- Construct real models/clients with dummy credentials; tests must never make network calls.
+- Dependabot major bumps for contracted SDKs stay ignored until a coordinated review updates contracts.
+- Reason: `azure-mgmt-storage` 25.x changed `.keys` into a method on 2026-08-24, breaking ~15 live paths while mocked CI stayed green.
+
 ## LLM-adjacent judgment calls
 
 Backend computes evidence; the LLM judges. Don't encode fuzzy human judgments as arithmetic formulas in Python — pass structured evidence to the model and let it decide (established pattern across insights/fuel).

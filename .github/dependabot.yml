@@ -64,12 +64,52 @@ updates:
       # keep those off the table too.
       - dependency-name: "transformers"
         update-types: ["version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch"]
-      # azure-storage-file-share / azure-core: the file-share 12.24
+      # Azure SDK majors are coordinated upgrades: azure-mgmt-storage 25.x
+      # changed list_keys results into Mapping subclasses and broke every
+      # ``result.keys[0].value`` read on 2026-08-24. The file-share 12.24
       # + azure-core 1.39 + requests 2.32 triplet currently leaks the
       # ``overwrite=True`` kwarg into ``requests.Session.request`` on
       # the upload_file path. Pin majors until we know which triplet
       # actually works end-to-end.
+      - dependency-name: "azure-identity"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-mgmt-containerinstance"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-mgmt-appcontainers"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-mgmt-costmanagement"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-mgmt-msi"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-mgmt-authorization"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-mgmt-storage"
+        update-types: ["version-update:semver-major"]
       - dependency-name: "azure-storage-file-share"
         update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-keyvault-secrets"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "azure-keyvault-keys"
+        update-types: ["version-update:semver-major"]
       - dependency-name: "azure-core"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "openai"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "google-genai"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "stripe"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "cryptography"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "qstash"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "sentry-sdk"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "pyjwt"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "httpx"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tiktoken"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "composio"
         update-types: ["version-update:semver-major"]
