@@ -24,6 +24,12 @@ class SmokeSkipped(Exception):
 
 
 @dataclass(frozen=True)
+class SmokeCheck:
+    check: Callable[[], None]
+    timeout_s: float = PER_CHECK_TIMEOUT_S
+
+
+@dataclass(frozen=True)
 class SmokeCheckResult:
     name: str
     ok: bool
@@ -226,16 +232,16 @@ def _check_gemini_tts() -> None:
 
     from google.genai import types
 
-    # Three worst-case request timeouts plus production's 2s/4s backoffs stay
-    # below the runner's 15s per-check deadline (3 * 2.8s + 6s = 14.4s).
-    client = render.make_gemini_client(api_key, timeout_ms=2_800)
+    # Gemini rejects manually set deadlines below 10s. Two worst-case requests
+    # plus the 2s retry backoff fit within this check's 25s runner deadline.
+    client = render.make_gemini_client(api_key, timeout_ms=10_000)
     text = "Take a slow breath in, and let it go gently."
     prompt = (
         "Read the following aloud in a soft, calm, slow, soothing "
         "meditation-guide voice. Be concise. Do not read these instructions aloud.\n\n"
         f"{text}"
     )
-    attempts = min(render.TTS_ATTEMPTS, 3)
+    attempts = 2
     last_error = "no audio bytes"
     for attempt in range(attempts):
         try:
@@ -258,6 +264,9 @@ def _check_gemini_tts() -> None:
             last_error = str(exc)[:200]
             if render._is_rate_limit(last_error):
                 raise SmokeSkipped("gemini rate-limited") from exc
+            normalized_error = last_error.lower()
+            if "400" in normalized_error and "invalid_argument" in normalized_error and "deadline" in normalized_error:
+                raise
 
         if attempt + 1 < attempts:
             time.sleep(min(2 ** (attempt + 1), 4))
@@ -302,15 +311,15 @@ def _check_cache() -> None:
         cache.delete(key)
 
 
-_CHECKS: dict[str, Callable[[], None]] = {
-    "azure_storage_keys": _check_azure_storage_keys,
-    "azure_file_share_rw": _check_azure_file_share_rw,
-    "azure_keyvault": _check_azure_keyvault,
-    "gemini_tts": _check_gemini_tts,
-    "stripe": _check_stripe,
-    "qstash": _check_qstash,
-    "db": _check_db,
-    "cache": _check_cache,
+_CHECKS: dict[str, SmokeCheck] = {
+    "azure_storage_keys": SmokeCheck(_check_azure_storage_keys),
+    "azure_file_share_rw": SmokeCheck(_check_azure_file_share_rw),
+    "azure_keyvault": SmokeCheck(_check_azure_keyvault),
+    "gemini_tts": SmokeCheck(_check_gemini_tts, timeout_s=25.0),
+    "stripe": SmokeCheck(_check_stripe),
+    "qstash": SmokeCheck(_check_qstash),
+    "db": SmokeCheck(_check_db),
+    "cache": SmokeCheck(_check_cache),
 }
 
 
@@ -355,9 +364,14 @@ def run_smoke(checks: list[str] | None = None, *, budget_s: float = DEFAULT_BUDG
         )
 
     executor = ThreadPoolExecutor(max_workers=len(selected), thread_name_prefix="external-deps-smoke")
-    submitted: dict[Future, tuple[str, float]] = {}
+    submitted: dict[Future, tuple[str, float, float]] = {}
     for name in selected:
-        submitted[executor.submit(_execute_check, name, _CHECKS[name])] = (name, time.monotonic())
+        smoke_check = _CHECKS[name]
+        submitted[executor.submit(_execute_check, name, smoke_check.check)] = (
+            name,
+            time.monotonic(),
+            smoke_check.timeout_s,
+        )
 
     pending = set(submitted)
     by_name: dict[str, SmokeCheckResult] = {}
@@ -367,33 +381,36 @@ def run_smoke(checks: list[str] | None = None, *, budget_s: float = DEFAULT_BUDG
             now = time.monotonic()
             next_deadline = min(
                 overall_deadline,
-                *(submitted[future][1] + PER_CHECK_TIMEOUT_S for future in pending),
+                *(submitted[future][1] + submitted[future][2] for future in pending),
             )
             done, _ = wait(pending, timeout=max(0.0, next_deadline - now), return_when=FIRST_COMPLETED)
             for future in done:
                 pending.remove(future)
                 result = future.result()
-                if result.ms <= round(PER_CHECK_TIMEOUT_S * 1000):
+                timeout_s = submitted[future][2]
+                if result.ms <= round(timeout_s * 1000):
                     by_name[result.name] = result
                 else:
                     by_name[result.name] = SmokeCheckResult(
                         name=result.name,
                         ok=False,
-                        ms=round(PER_CHECK_TIMEOUT_S * 1000),
+                        ms=round(timeout_s * 1000),
                         error_type="TimeoutError",
-                        error_msg=f"check exceeded {PER_CHECK_TIMEOUT_S:g}s timeout",
+                        error_msg=f"check exceeded {timeout_s:g}s timeout",
                     )
 
             now = time.monotonic()
             expired = [
-                future for future in pending if now >= min(overall_deadline, submitted[future][1] + PER_CHECK_TIMEOUT_S)
+                future
+                for future in pending
+                if now >= min(overall_deadline, submitted[future][1] + submitted[future][2])
             ]
             for future in expired:
                 pending.remove(future)
-                name, submitted_at = submitted[future]
+                name, submitted_at, check_timeout_s = submitted[future]
                 future.cancel()
                 elapsed_ms = round((min(now, overall_deadline) - submitted_at) * 1000)
-                timeout_s = min(PER_CHECK_TIMEOUT_S, budget_s)
+                timeout_s = min(check_timeout_s, budget_s)
                 by_name[name] = SmokeCheckResult(
                     name=name,
                     ok=False,

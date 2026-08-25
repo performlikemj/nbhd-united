@@ -14,6 +14,7 @@ from django.core.management.base import CommandError
 from django.test import Client, SimpleTestCase, override_settings
 
 from apps.orchestrator.smoke_external_deps import (
+    SmokeCheck,
     SmokeCheckResult,
     SmokeReport,
     SmokeSkipped,
@@ -76,24 +77,24 @@ class GeminiTtsSmokeTests(SimpleTestCase):
             _check_gemini_tts()
 
         self.assertEqual(len(client.models.calls), 2)
-        make_client.assert_called_once_with("test-gemini-key", timeout_ms=2_800)
+        make_client.assert_called_once_with("test-gemini-key", timeout_ms=10_000)
         sleep.assert_called_once_with(2)
         self.assertTrue(client.models.calls[0]["contents"].endswith("Take a slow breath in, and let it go gently."))
 
     def test_always_no_audio_fails_with_attempt_count(self):
-        client = _FakeGeminiClient([_gemini_response(None)] * 3)
+        client = _FakeGeminiClient([_gemini_response(None)] * 2)
         mock_is_mock, mock_make_client, mock_sleep = self._patch_dependencies(client)
 
         with (
             mock_is_mock,
             mock_make_client,
             mock_sleep as sleep,
-            self.assertRaisesRegex(RuntimeError, "failed after 3 attempts: no audio bytes"),
+            self.assertRaisesRegex(RuntimeError, "failed after 2 attempts: no audio bytes"),
         ):
             _check_gemini_tts()
 
-        self.assertEqual(len(client.models.calls), 3)
-        self.assertEqual(sleep.call_args_list, [call(2), call(4)])
+        self.assertEqual(len(client.models.calls), 2)
+        self.assertEqual(sleep.call_args_list, [call(2)])
 
     def test_rate_limit_is_skipped(self):
         client = _FakeGeminiClient([RuntimeError("429 RESOURCE_EXHAUSTED")])
@@ -104,6 +105,21 @@ class GeminiTtsSmokeTests(SimpleTestCase):
             mock_make_client,
             mock_sleep as sleep,
             self.assertRaisesRegex(SmokeSkipped, "^gemini rate-limited$"),
+        ):
+            _check_gemini_tts()
+
+        self.assertEqual(len(client.models.calls), 1)
+        sleep.assert_not_called()
+
+    def test_deadline_invalid_argument_fails_without_retry(self):
+        client = _FakeGeminiClient([RuntimeError("400 INVALID_ARGUMENT: Manually set deadline 3s is too short")])
+        mock_is_mock, mock_make_client, mock_sleep = self._patch_dependencies(client)
+
+        with (
+            mock_is_mock,
+            mock_make_client,
+            mock_sleep as sleep,
+            self.assertRaisesRegex(RuntimeError, "INVALID_ARGUMENT.*deadline"),
         ):
             _check_gemini_tts()
 
@@ -140,7 +156,7 @@ class SmokeRunnerTests(SimpleTestCase):
 
         with patch(
             "apps.orchestrator.smoke_external_deps._CHECKS",
-            {"pass": passes, "fail": fails, "skip": skips},
+            {"pass": SmokeCheck(passes), "fail": SmokeCheck(fails), "skip": SmokeCheck(skips)},
         ):
             report = run_smoke()
 
@@ -153,27 +169,32 @@ class SmokeRunnerTests(SimpleTestCase):
         self.assertTrue(by_name["skip"].ok)
         self.assertEqual(by_name["skip"].skipped_reason, "not configured")
 
-    def test_per_check_timeout_is_a_failure_without_waiting_for_hanging_check(self):
-        def hangs():
-            time.sleep(0.5)
+    def test_per_check_timeout_override_is_honored_while_default_check_passes(self):
+        def slow():
+            time.sleep(2)
+
+        def passes():
+            return None
 
         started = time.monotonic()
-        with (
-            patch("apps.orchestrator.smoke_external_deps._CHECKS", {"hang": hangs}),
-            patch("apps.orchestrator.smoke_external_deps.PER_CHECK_TIMEOUT_S", 0.03),
+        with patch(
+            "apps.orchestrator.smoke_external_deps._CHECKS",
+            {"slow": SmokeCheck(slow, timeout_s=1), "pass": SmokeCheck(passes)},
         ):
-            report = run_smoke(budget_s=0.2)
+            report = run_smoke()
 
-        self.assertLess(time.monotonic() - started, 0.2)
+        self.assertLess(time.monotonic() - started, 2)
         self.assertFalse(report.ok)
-        self.assertEqual(report.checks[0].error_type, "TimeoutError")
+        by_name = {check.name: check for check in report.checks}
+        self.assertEqual(by_name["slow"].error_type, "TimeoutError")
+        self.assertTrue(by_name["pass"].ok)
 
     def test_failure_logs_at_error(self):
         def fails():
             raise RuntimeError("nope")
 
         with (
-            patch("apps.orchestrator.smoke_external_deps._CHECKS", {"stripe": fails}),
+            patch("apps.orchestrator.smoke_external_deps._CHECKS", {"stripe": SmokeCheck(fails)}),
             self.assertLogs("apps.orchestrator.smoke_external_deps", level="ERROR") as logs,
         ):
             run_smoke()
