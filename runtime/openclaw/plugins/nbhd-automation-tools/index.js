@@ -64,6 +64,46 @@ function renderPayload(payload) {
   };
 }
 
+function renderCronCreatePayload(payload) {
+  if (payload.state === "pending_approval") {
+    return {
+      content: [{
+        type: "text",
+        text: "This scheduled task is pending the user's approval and does not exist yet.",
+      }],
+      details: { json: payload },
+    };
+  }
+  return renderPayload(payload);
+}
+
+function renderCronCreateConflict(error) {
+  if (error && error.status === 409 && error.code === "request_id_conflict") {
+    return {
+      content: [{
+        type: "text",
+        text: "This scheduled-task request conflicts with an earlier request using the same request ID. Nothing new was created.",
+      }],
+      details: { error: error.code },
+    };
+  }
+  if (error && error.status === 409 && error.code === "name_conflict") {
+    return {
+      content: [{
+        type: "text",
+        text: "A scheduled task with this name already exists. Nothing new was created.",
+      }],
+      details: { error: error.code },
+    };
+  }
+  throw error;
+}
+
+function hiddenOrigin(input) {
+  const origin = input && input._nbhd_origin;
+  return origin !== null && typeof origin === "object" && !Array.isArray(origin) ? { origin } : {};
+}
+
 const TOOL_ERROR_DETAIL_MAX_CHARS = 2000;
 
 function clampErrorDetail(text) {
@@ -131,7 +171,10 @@ async function callRuntime(api, { path, method = "POST", body }) {
       // compact validation payload so the model can correct and retry.
       const detail = compactErrorDetail(normalized);
       const detailSuffix = detail ? ` (${detail})` : "";
-      throw new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}`);
+      const error = new Error(`NBHD runtime error ${response.status}: ${code}${detailSuffix}`);
+      error.status = response.status;
+      error.code = code;
+      throw error;
     }
     return asObject(payload);
   } catch (error) {
@@ -214,6 +257,7 @@ export default function register(api) {
     wrap({
       name: "nbhd_cron_create_pure_reminder",
       description:
+        "May require approval; never claim the scheduled task exists while approval is pending. " +
         "Create a scheduled REMINDER that sends a fixed text to the user at the scheduled time. Use this when the user asks to be reminded of something simple with no live state lookup needed (e.g. 'remind me to take out the trash every Tuesday at 8am', 'remind me at 3pm tomorrow to call Mom'). The text you provide will be sent verbatim — write it in second person as if the user is reading it. If the user wants a summary of something that changes (their fuel progress, their open tasks, etc.) use nbhd_cron_create_domain_summary instead. If the user wants you to quote their own words back to them, use nbhd_cron_create_quote_user_intent. This tool sends chat pings; it is NOT the Apple Reminders app. For datebook-ready tenants, prefer nbhd_datebook_add_apple_reminder for 'remind me' asks. Use this tool only when the user explicitly requests an in-chat ping, nudge, or message, or when recurring scheduled check-in content is inherently conversational.",
       parameters: {
         type: "object",
@@ -229,18 +273,24 @@ export default function register(api) {
         },
         required: ["name", "schedule", "text"],
       },
-      async execute(_id, params) {
+      async execute(toolCallId, params) {
         const input = asObject(params);
-        const payload = await callRuntime(api, {
-          path: tenantPath(api, "/crons/pure_reminder/"),
-          method: "POST",
-          body: {
-            name: asTrimmedString(input.name),
-            schedule: asObject(input.schedule),
-            text: typeof input.text === "string" ? input.text : "",
-          },
-        });
-        return renderPayload(payload);
+        try {
+          const payload = await callRuntime(api, {
+            path: tenantPath(api, "/crons/pure_reminder/"),
+            method: "POST",
+            body: {
+              name: asTrimmedString(input.name),
+              schedule: asObject(input.schedule),
+              text: typeof input.text === "string" ? input.text : "",
+              cron_request_id: asTrimmedString(toolCallId),
+              ...hiddenOrigin(input),
+            },
+          });
+          return renderCronCreatePayload(payload);
+        } catch (error) {
+          return renderCronCreateConflict(error);
+        }
       },
     }),
     { optional: true },
@@ -251,6 +301,7 @@ export default function register(api) {
     wrap({
       name: "nbhd_cron_create_quote_user_intent",
       description:
+        "May require approval; never claim the scheduled task exists while approval is pending. " +
         "Create a scheduled message that quotes the user's stored words back to them at the scheduled time. Use this when the user said something they want to be reminded of in their own words later (e.g. 'every Friday remind me about my cardiologist appointment Tuesday at 3pm'). Optionally specify refresh_facts_via to pull current calendar/tasks/etc. context at fire time so the assistant can frame the quote against today's state — but the user's verbatim words still appear in the outbound message.",
       parameters: {
         type: "object",
@@ -280,21 +331,27 @@ export default function register(api) {
         },
         required: ["name", "schedule", "text"],
       },
-      async execute(_id, params) {
+      async execute(toolCallId, params) {
         const input = asObject(params);
         const body = {
           name: asTrimmedString(input.name),
           schedule: asObject(input.schedule),
           text: typeof input.text === "string" ? input.text : "",
+          cron_request_id: asTrimmedString(toolCallId),
+          ...hiddenOrigin(input),
         };
         const refresh = asTrimmedString(input.refresh_facts_via);
         if (refresh) body.refresh_facts_via = refresh;
-        const payload = await callRuntime(api, {
-          path: tenantPath(api, "/crons/quote_user_intent/"),
-          method: "POST",
-          body,
-        });
-        return renderPayload(payload);
+        try {
+          const payload = await callRuntime(api, {
+            path: tenantPath(api, "/crons/quote_user_intent/"),
+            method: "POST",
+            body,
+          });
+          return renderCronCreatePayload(payload);
+        } catch (error) {
+          return renderCronCreateConflict(error);
+        }
       },
     }),
     { optional: true },
@@ -305,6 +362,7 @@ export default function register(api) {
     wrap({
       name: "nbhd_cron_create_domain_summary",
       description:
+        "May require approval; never claim the scheduled task exists while approval is pending. " +
         "Create a scheduled summary of a specific domain's current state at fire time (tasks, goals, lessons, journal, calendar). Use this when the user wants a recurring rollup of state that changes over time (e.g. 'every Sunday show me my open tasks', 'every morning summarise my calendar for the day'). At fire time the assistant will call the query_tool first, then render the result. The query_tool must be from the supported set; render_block is the matching block type for that tool.",
       parameters: {
         type: "object",
@@ -346,20 +404,26 @@ export default function register(api) {
         },
         required: ["name", "schedule", "query_tool", "render_block"],
       },
-      async execute(_id, params) {
+      async execute(toolCallId, params) {
         const input = asObject(params);
-        const payload = await callRuntime(api, {
-          path: tenantPath(api, "/crons/domain_summary/"),
-          method: "POST",
-          body: {
-            name: asTrimmedString(input.name),
-            schedule: asObject(input.schedule),
-            query_tool: asTrimmedString(input.query_tool),
-            query_args: asObject(input.query_args),
-            render_block: asTrimmedString(input.render_block),
-          },
-        });
-        return renderPayload(payload);
+        try {
+          const payload = await callRuntime(api, {
+            path: tenantPath(api, "/crons/domain_summary/"),
+            method: "POST",
+            body: {
+              name: asTrimmedString(input.name),
+              schedule: asObject(input.schedule),
+              query_tool: asTrimmedString(input.query_tool),
+              query_args: asObject(input.query_args),
+              render_block: asTrimmedString(input.render_block),
+              cron_request_id: asTrimmedString(toolCallId),
+              ...hiddenOrigin(input),
+            },
+          });
+          return renderCronCreatePayload(payload);
+        } catch (error) {
+          return renderCronCreateConflict(error);
+        }
       },
     }),
     { optional: true },

@@ -175,9 +175,7 @@ function fakeRuntime() {
   return { observations, server };
 }
 
-test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugin", {
-  timeout: 60_000,
-}, async (t) => {
+async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "ios" } = {}) {
   const configuredBinary = process.env.OPENCLAW_REPRO_BIN;
   assert.ok(configuredBinary, "OPENCLAW_REPRO_BIN must point to the pinned openclaw.mjs");
   const openclawBinary = await realpath(configuredBinary);
@@ -195,7 +193,8 @@ test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugi
   const { observations, server } = fakeRuntime();
   const runtimePort = await listen(server);
   const gatewayPort = await unusedPort();
-  const pluginPath = fileURLToPath(new URL("./plugins/nbhd-datebook-tools", import.meta.url));
+  const datebookPluginPath = fileURLToPath(new URL("./plugins/nbhd-datebook-tools", import.meta.url));
+  const enforcementPluginPath = fileURLToPath(new URL("./plugins/nbhd-cron-enforcement", import.meta.url));
   const config = {
     agents: {
       defaults: {
@@ -234,9 +233,16 @@ test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugi
     },
     tools: { allow: ["group:plugins"] },
     plugins: {
-      allow: ["nbhd-datebook-tools"],
-      entries: { "nbhd-datebook-tools": { enabled: true } },
-      load: { paths: [pluginPath] },
+      allow: includeEnforcement
+        ? ["nbhd-datebook-tools", "nbhd-cron-enforcement"]
+        : ["nbhd-datebook-tools"],
+      entries: includeEnforcement
+        ? {
+            "nbhd-datebook-tools": { enabled: true },
+            "nbhd-cron-enforcement": { enabled: true },
+          }
+        : { "nbhd-datebook-tools": { enabled: true } },
+      load: { paths: includeEnforcement ? [datebookPluginPath, enforcementPluginPath] : [datebookPluginPath] },
       bundledDiscovery: "compat",
     },
   };
@@ -284,7 +290,7 @@ test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugi
     headers: {
       Authorization: `Bearer ${GATEWAY_TOKEN}`,
       "Content-Type": "application/json",
-      "X-OpenClaw-Message-Channel": "ios",
+      "X-OpenClaw-Message-Channel": messageChannel,
     },
     body: JSON.stringify({
       model: "openclaw",
@@ -294,6 +300,13 @@ test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugi
   });
   const responseBody = await response.text();
   assert.equal(response.status, 200, `${responseBody}\n${gatewayLogs}`);
+  return { observations, responseBody, gatewayLogs };
+}
+
+test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugin", {
+  timeout: 60_000,
+}, async (t) => {
+  const { observations } = await runPinnedFlow(t);
   assert.deepEqual(
     new Set(observations.requiredParameters),
     new Set(["items", "direct_user_originated"]),
@@ -306,4 +319,17 @@ test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugi
   assert.match(observations.toolResultText, /within 24 hours/);
   assert.equal(observations.datebookResponse?.approval_surface, "app");
   assert.equal(observations.datebookResponse?.delivery_state, "available");
+});
+
+test("pinned OpenClaw executes the enforcement null override without forwarding origin", {
+  timeout: 60_000,
+}, async (t) => {
+  const { observations } = await runPinnedFlow(t, {
+    includeEnforcement: true,
+    // Use a native channel in this second regression so it exercises only the
+    // before_tool_call merge seam; the first test retains the iOS fallback pin.
+    messageChannel: "telegram",
+  });
+  assert.equal(observations.datebookBody?.command_type, "reminder_create");
+  assert.equal(Object.hasOwn(observations.datebookBody, "origin"), false, "null override must not be forwarded");
 });

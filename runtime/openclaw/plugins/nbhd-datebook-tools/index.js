@@ -293,6 +293,9 @@ async function requestCreate(api, toolContext, toolCallId, params, commandType) 
         payload: { items: input.items },
         destination_name: asTrimmedString(input.destination_name),
         direct_user_originated: input.direct_user_originated === true,
+        ...(input._nbhd_origin !== null && typeof input._nbhd_origin === "object" && !Array.isArray(input._nbhd_origin)
+          ? { origin: input._nbhd_origin }
+          : {}),
         ...(requestChannel ? { originating_channel: requestChannel } : {}),
       },
     });

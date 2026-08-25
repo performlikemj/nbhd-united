@@ -76,6 +76,62 @@ test("create tools forward the runtime-provided originating channel", async () =
   }
 });
 
+test("datebook create tools forward hidden origin unchanged without exposing it in schemas", async () => {
+  const origin = {
+    v: 1,
+    kind: "cron",
+    tenant_id: "tenant-test",
+    run_id: "run-datebook",
+    job_id: "job-datebook",
+    ts: 1_800_000_000,
+    sig: "signed",
+  };
+  const tools = toolsForContext({ messageChannel: "ios" });
+  for (const [name, items] of [
+    ["nbhd_datebook_add_event", [{ title: "Plan", time: { kind: "all_day", start_date: "2099-01-01", end_date_exclusive: "2099-01-02" } }]],
+    ["nbhd_datebook_add_apple_reminder", [{ title: "Plan" }]],
+  ]) {
+    let requestBody;
+    globalThis.fetch = async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return new Response(JSON.stringify({
+        state: "approval_pending",
+        command_id: "command-origin",
+        approval_surface: "app",
+        guidance: "Pending approval.",
+      }), { status: 202 });
+    };
+    const tool = tools.get(name);
+    await tool.execute(`call-${name}`, {
+      items,
+      direct_user_originated: false,
+      _nbhd_origin: origin,
+    });
+    assert.deepEqual(requestBody.origin, origin, name);
+    assert.equal(Object.hasOwn(tool.parameters.properties, "_nbhd_origin"), false, name);
+  }
+});
+
+test("datebook create tools do not forward a null hidden origin", async () => {
+  let requestBody;
+  globalThis.fetch = async (_url, options) => {
+    requestBody = JSON.parse(options.body);
+    return new Response(JSON.stringify({
+      state: "approval_pending",
+      command_id: "command-null-origin",
+      approval_surface: "app",
+      guidance: "Pending approval.",
+    }), { status: 202 });
+  };
+  const tool = toolsForContext({ messageChannel: "ios" }).get("nbhd_datebook_add_apple_reminder");
+  await tool.execute("call-null-origin", {
+    items: [{ title: "Buy milk" }],
+    direct_user_originated: false,
+    _nbhd_origin: null,
+  });
+  assert.equal(Object.hasOwn(requestBody, "origin"), false);
+});
+
 test("reminder create forwards due and alarm without changing nested JSON", async () => {
   let requestBody;
   globalThis.fetch = async (_url, options) => {
