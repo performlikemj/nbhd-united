@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 from datetime import timedelta
 from unittest.mock import patch
 
@@ -486,9 +487,9 @@ class CronGateRuntimeAndConsumerTests(TestCase):
         body.update(changes)
         return body
 
-    def test_allowlist_off_preserves_exact_201_shape(self):
+    def test_nonlisted_tenant_preserves_byte_identical_201(self):
         with (
-            override_settings(CRON_GATE_TENANT_IDS=""),
+            override_settings(CRON_GATE_TENANT_IDS="00000000-0000-0000-0000-000000000000"),
             patch("apps.cron.gateway_client.invoke_gateway_tool") as gateway,
         ):
             response = self.client.post(
@@ -498,14 +499,19 @@ class CronGateRuntimeAndConsumerTests(TestCase):
                 **self.headers,
             )
         self.assertEqual(response.status_code, 201, response.content)
-        self.assertEqual(
-            set(response.json()),
-            {"tenant_id", "cron"},
-        )
-        self.assertEqual(
-            set(response.json()["cron"]),
-            {"id", "name", "pattern", "schedule", "managed", "gateway_job_id"},
-        )
+        cron = CronJob.objects.get(tenant=self.tenant, name="Runtime reminder")
+        expected = {
+            "tenant_id": str(self.tenant.id),
+            "cron": {
+                "id": str(cron.id),
+                "name": "Runtime reminder",
+                "pattern": "pure_reminder",
+                "schedule": RECURRING,
+                "managed": True,
+                "gateway_job_id": None,
+            },
+        }
+        self.assertEqual(response.content, json.dumps(expected, separators=(",", ":")).encode())
         gateway.assert_not_called()
 
     def test_allowlist_on_http_contract_duplicate_and_conflict(self):
@@ -542,10 +548,33 @@ class CronGateRuntimeAndConsumerTests(TestCase):
         self.assertEqual(conflict.json(), {"error": "request_id_conflict"})
         self.assertFalse(CronJob.objects.filter(name="Runtime reminder").exists())
 
-    def test_cron_gate_helper_fails_closed(self):
+    def test_cron_gate_helper_unset_and_empty_fail_closed(self):
+        with override_settings(CRON_GATE_TENANT_IDS=None):
+            self.assertFalse(cron_gate_enabled(self.tenant))
         with override_settings(CRON_GATE_TENANT_IDS=""):
             self.assertFalse(cron_gate_enabled(self.tenant))
+
+    def test_cron_gate_helper_single_id_only_opens_that_tenant(self):
+        other = create_tenant(display_name="Other Cron Gate", telegram_chat_id=88202)
         with override_settings(CRON_GATE_TENANT_IDS=str(self.tenant.id)):
+            self.assertTrue(cron_gate_enabled(self.tenant))
+            self.assertFalse(cron_gate_enabled(other))
+
+    def test_cron_gate_helper_wildcard_opens_every_tenant(self):
+        other = create_tenant(display_name="Other Cron Gate", telegram_chat_id=88203)
+        with override_settings(CRON_GATE_TENANT_IDS="*"):
+            self.assertTrue(cron_gate_enabled(self.tenant))
+            self.assertTrue(cron_gate_enabled(other))
+
+    def test_cron_gate_helper_wildcard_with_id_opens_every_tenant(self):
+        other = create_tenant(display_name="Other Cron Gate", telegram_chat_id=88204)
+        with override_settings(CRON_GATE_TENANT_IDS=f"*,{self.tenant.id}"):
+            self.assertTrue(cron_gate_enabled(self.tenant))
+            self.assertTrue(cron_gate_enabled(other))
+
+    def test_cron_gate_helper_tolerates_whitespace_empty_entries_and_uuid_case(self):
+        upper_tenant_id = str(self.tenant.id).upper()
+        with override_settings(CRON_GATE_TENANT_IDS=f" , {upper_tenant_id} , , "):
             self.assertTrue(cron_gate_enabled(self.tenant))
 
     def test_poll_expiry_uses_typed_cron_transition(self):
