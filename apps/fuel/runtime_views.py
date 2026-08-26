@@ -205,6 +205,14 @@ def _compiled_rotation_count(data) -> int:
         return 0
 
 
+def _strip_search_marker(data):
+    """Remove the plugin-only funnel marker before validation/persistence."""
+    searched_before_write = data.get("_searched_before_write") is True if "_searched_before_write" in data else None
+    cleaned = data.copy()
+    cleaned.pop("_searched_before_write", None)
+    return cleaned, searched_before_write
+
+
 def _emit_catalog_write_event(
     tenant,
     *,
@@ -212,27 +220,31 @@ def _emit_catalog_write_event(
     matches: list[dict],
     total: int,
     compiled_rotations: int = 0,
+    searched_before_write: bool | None = None,
 ) -> None:
-    if total <= 0 and compiled_rotations <= 0:
+    if total <= 0 and compiled_rotations <= 0 and searched_before_write is None:
         return
     counts = {matched_by: 0 for matched_by in ("canonical", "slug", "alias", "plural", "equipment_prefix")}
     for match in matches:
         matched_by = str(match.get("matched_by") or "")
         if matched_by in counts:
             counts[matched_by] += 1
+    detail = {
+        "catalog_total": total,
+        "catalog_matched": len(matches),
+        "catalog_unmatched": max(0, total - len(matches)),
+        "catalog_coverage": round(len(matches) / total, 4) if total else 1.0,
+        **{f"matched_{matched_by}": count for matched_by, count in counts.items()},
+        "rotation_compiler_expansions": compiled_rotations,
+    }
+    if searched_before_write is not None:
+        detail["searched_before_write"] = searched_before_write
     _emit_fuel_event(
         tenant,
         tool_name=tool_name,
         outcome="accepted",
         reason_code="catalog_annotation",
-        detail={
-            "catalog_total": total,
-            "catalog_matched": len(matches),
-            "catalog_unmatched": max(0, total - len(matches)),
-            "catalog_coverage": round(len(matches) / total, 4) if total else 1.0,
-            **{f"matched_{matched_by}": count for matched_by, count in counts.items()},
-            "rotation_compiler_expansions": compiled_rotations,
-        },
+        detail=detail,
     )
 
 
@@ -417,7 +429,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         if blocked is not None:
             return blocked
 
-        data = request.data
+        data, searched_before_write = _strip_search_marker(request.data)
         category = data.get("category", "other")
         if category not in WorkoutCategory.values:
             category = "other"
@@ -600,6 +612,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             tool_name="runtime-fuel-log",
             matches=catalog_matches,
             total=len(incoming_catalog_paths),
+            searched_before_write=searched_before_write,
         )
         _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
         return Response(payload, status=status.HTTP_201_CREATED)
@@ -653,7 +666,7 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             logger.info("runtime.patch.edit_locked workout=%s", workout_id)
             return lock_resp
 
-        data = request.data
+        data, searched_before_write = _strip_search_marker(request.data)
         original_date = workout.date
         updated_fields = []
         catalog_matches: list[dict] = []
@@ -822,13 +835,14 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             "duration_minutes": workout.duration_minutes,
             "rpe": workout.rpe,
         }
+        _emit_catalog_write_event(
+            tenant,
+            tool_name="runtime-fuel-workout-detail",
+            matches=catalog_matches,
+            total=len(incoming_catalog_paths),
+            searched_before_write=searched_before_write,
+        )
         if "detail_json" in data:
-            _emit_catalog_write_event(
-                tenant,
-                tool_name="runtime-fuel-workout-detail",
-                matches=catalog_matches,
-                total=len(incoming_catalog_paths),
-            )
             _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
         return Response(payload)
 
@@ -2592,7 +2606,7 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         if blocked is not None:
             return blocked
 
-        data = request.data
+        data, searched_before_write = _strip_search_marker(request.data)
         name = str(data.get("name", "")).strip()
         if not name:
             return Response({"error": "name is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -2691,6 +2705,13 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             result["deduped"] = True
             if superseded:
                 result["superseded_plans"] = superseded
+            _emit_catalog_write_event(
+                tenant,
+                tool_name="runtime-fuel-plans",
+                matches=[],
+                total=0,
+                searched_before_write=searched_before_write,
+            )
             return Response(result, status=status.HTTP_200_OK)
 
         plan_policy, policy_err = _resolve_plan_policy(data)
@@ -2819,6 +2840,7 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             matches=catalog_matches,
             total=len(incoming_catalog_paths),
             compiled_rotations=compiled_rotations,
+            searched_before_write=searched_before_write,
         )
         if plan_policy.get("repeat_policy") == "intentional":
             _emit_fuel_event(
@@ -2872,7 +2894,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         if not plan:
             return Response({"error": "plan_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        data = request.data
+        data, searched_before_write = _strip_search_marker(request.data)
         stored_plan_policy = _stored_plan_policy(plan.schedule_json)
         updated_fields = []
         needs_regeneration = False
@@ -3234,6 +3256,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             matches=catalog_matches,
             total=len(catalog_paths),
             compiled_rotations=_compiled_rotation_count(data),
+            searched_before_write=searched_before_write,
         )
         if plan_policy.get("repeat_policy") == "intentional" and any(
             key in data for key in ("schedule_json", "weeks", "week_overrides", "repeat_policy", "repeat_reason")

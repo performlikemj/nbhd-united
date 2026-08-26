@@ -195,7 +195,7 @@ test("plan rotation and catalog errors stay structured instead of flattening", a
   const payload = {
     error: "plan_rotation_required",
     message: "Rotate recipes",
-    tracks: [{ weekday: "monday", activity: "Push", weeks: [1, 2, 3], max_consecutive_same: 3 }],
+    tracks: [{ weekday: "monday", category: "strength", weeks: [1, 2, 3], max_consecutive_same: 3 }],
     week_overrides_semantics: "whole_map_replacement",
     catalog_candidates: [],
   };
@@ -406,6 +406,34 @@ test("all four write tools render the unmatched exercise warning line", async (t
   }
 });
 
+test("successful search marks only the next plan or workout write", async (t) => {
+  setRuntimeEnv(t);
+  const writes = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/exercises/")) {
+      return response(200, JSON.stringify({ results: [], total: 0 }));
+    }
+    writes.push(JSON.parse(options.body));
+    return response(200, JSON.stringify({ id: "row-1" }));
+  });
+  const tools = collectTools({ apiBaseUrl: "https://nbhd.example" });
+
+  await tools.nbhd_fuel_search_exercises.execute("search-1", { query: "curl" });
+  await tools.nbhd_fuel_log_workout.execute("write-1", { activity: "Arms" });
+  await tools.nbhd_fuel_update_workout.execute("write-2", { workout_id: "workout-1", notes: "done" });
+  await tools.nbhd_fuel_search_exercises.execute("search-2", { muscle: "Hips" });
+  await tools.nbhd_fuel_create_plan.execute("write-3", {
+    name: "Plan",
+    weeks: 1,
+    days_per_week: 1,
+    schedule_json: { monday: {} },
+  });
+  await tools.nbhd_fuel_update_plan.execute("write-4", { plan_id: "plan-1", notes: "updated" });
+
+  assert.deepEqual(writes.map((body) => body._searched_before_write), [true, false, true, false]);
+});
+
 test("write tools render catalog matches from their own local request", async (t) => {
   setRuntimeEnv(t);
   t.mock.method(globalThis, "fetch", async () =>
@@ -483,6 +511,7 @@ test("nbhd_fuel_update_plan forwards remove_days and replace_schedule", async (t
     },
     remove_days: ["friday", 3],
     replace_schedule: true,
+    _searched_before_write: false,
   });
   assert.deepEqual(result.details.json, { updated: true });
 });

@@ -221,6 +221,7 @@ class PlanVarietyRuntimeTests(TestCase):
                 **self.body({"monday": self.day("Push")}),
                 "weeks": 2,
                 "_compiled_rotations": 7,
+                "_searched_before_write": True,
             },
             format="json",
             **self.headers,
@@ -228,10 +229,12 @@ class PlanVarietyRuntimeTests(TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         event = ToolContractEvent.objects.get(reason_code="catalog_annotation")
         self.assertEqual(event.detail["rotation_compiler_expansions"], 7)
+        self.assertIs(event.detail["searched_before_write"], True)
         plan = WorkoutPlan.objects.get(id=response.data["id"])
         self.assertNotIn("_compiled_rotations", repr(plan.schedule_json))
         self.assertNotIn("_compiled_rotations", repr(plan.week_overrides))
         self.assertNotIn("_compiled_rotations", response.data)
+        self.assertNotIn("_searched_before_write", response.data)
 
     @patch("apps.fuel.runtime_views._manage_fuel_cron")
     def test_metadata_only_patch_never_retroactively_rejects_legacy_plan(self, _cron):

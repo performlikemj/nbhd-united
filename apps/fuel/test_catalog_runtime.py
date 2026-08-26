@@ -497,6 +497,7 @@ class CatalogAnnotationRuntimeTests(CatalogRuntimeCase):
             {
                 "activity": "Telemetry",
                 "category": "strength",
+                "_searched_before_write": False,
                 "detail_json": {
                     "exercises": [
                         self.exercise("Bench Press"),
@@ -517,8 +518,12 @@ class CatalogAnnotationRuntimeTests(CatalogRuntimeCase):
         self.assertEqual(event.detail["catalog_coverage"], 0.5)
         self.assertEqual(event.detail["matched_canonical"], 1)
         self.assertEqual(event.detail["matched_equipment_prefix"], 1)
+        self.assertIs(event.detail["searched_before_write"], False)
         self.assertNotIn("Bench", repr(event.detail))
         self.assertNotIn("Unknown", repr(event.detail))
+        self.assertNotIn("_searched_before_write", response.data)
+        workout = Workout.objects.get(id=response.data["id"])
+        self.assertNotIn("_searched_before_write", repr(workout.detail_json))
 
     @patch("apps.fuel.runtime_views._manage_fuel_cron")
     def test_notes_and_status_only_patches_leave_json_byte_identical(self, _cron):

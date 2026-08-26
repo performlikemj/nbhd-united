@@ -80,6 +80,7 @@ DETAIL_ALLOWLIST: dict[str, frozenset[str]] = {
             "guard_tracks",
             "intentional_repeat",
             "rotation_compiler_expansions",
+            "searched_before_write",
         }
     ),
     # "pattern" is the typed cron pattern (pure_reminder, ...) — it separates

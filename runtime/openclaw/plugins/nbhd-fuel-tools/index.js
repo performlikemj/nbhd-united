@@ -384,6 +384,12 @@ function fuelPath(api, suffix) {
 }
 
 export default function register(api) {
+  let searchedBeforeWrite = false;
+  const markWrite = (body) => {
+    body._searched_before_write = searchedBeforeWrite;
+    searchedBeforeWrite = false;
+  };
+
   // ── Fuel Audit ──────────────────────────────────────────────────────
   // Single tool for any "what should I do for a workout" / "deliver today's
   // plan" / "schedule a workout" question. Cross-references three sources:
@@ -471,6 +477,7 @@ export default function register(api) {
             method: "GET",
             query,
           });
+          searchedBeforeWrite = true;
           return renderExerciseSearch(payload);
         } catch (error) {
           return renderCaughtError(error);
@@ -700,6 +707,7 @@ export default function register(api) {
           if (input.notes) body.notes = asTrimmedString(input.notes);
           if (input.detail_json) body.detail_json = input.detail_json;
 
+          markWrite(body);
           const payload = await callRuntime(api, {
             path: fuelPath(api, "/log/"),
             method: "POST",
@@ -768,6 +776,7 @@ export default function register(api) {
           if (input.notes !== undefined) body.notes = asTrimmedString(input.notes);
           if (input.detail_json) body.detail_json = input.detail_json;
 
+          markWrite(body);
           const payload = await callRuntime(api, {
             path: fuelPath(api, `/workouts/${encodeURIComponent(workoutId)}/`),
             method: "PATCH",
@@ -1202,6 +1211,7 @@ export default function register(api) {
 
           const compiled = compileAccessoryRotations(body, input.accessory_rotations);
           if (compiled.expandedCount > 0) compiled.body._compiled_rotations = compiled.expandedCount;
+          markWrite(compiled.body);
           const payload = await callRuntime(api, {
             path: fuelPath(api, "/plans/"),
             method: "POST",
@@ -1367,6 +1377,7 @@ export default function register(api) {
             : {};
           const compiled = compileAccessoryRotations(body, input.accessory_rotations, storedPlan);
           if (compiled.expandedCount > 0) compiled.body._compiled_rotations = compiled.expandedCount;
+          markWrite(compiled.body);
           const payload = await callRuntime(api, {
             path: fuelPath(api, `/plans/${encodeURIComponent(planId)}/`),
             method: "PATCH",
