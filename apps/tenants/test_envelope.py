@@ -47,6 +47,22 @@ class SafeUserMdRenderTests(TestCase):
         self.assertNotIn("Yokohama", content)
         self.assertNotIn("Priya Nair", content)
 
+    def test_first_seen_profile_values_are_placeholdered_from_empty_entity_map(self):
+        tenant = create_tenant(display_name="Alex Rivera", telegram_chat_id=789998)
+        tenant.user.location_city = "Yokohama"
+        tenant.user.preferences = {"onboarding_interests": "Plan training with Priya Nair"}
+        tenant.user.save(update_fields=["location_city", "preferences"])
+        self.assertEqual(tenant.pii_entity_map, {})
+
+        content = render_safe_user_md(tenant)
+
+        self.assertIsNotNone(content)
+        self.assertIn("[PERSON_", content)
+        self.assertIn("[LOCATION_", content)
+        self.assertNotIn("Alex Rivera", content)
+        self.assertNotIn("Yokohama", content)
+        self.assertNotIn("Priya Nair", content)
+
     @patch("apps.pii.redactor.redact_user_message_checked")
     def test_first_pass_uses_minting_policy_and_failure_skips_render(self, redact):
         tenant = self._tenant()
