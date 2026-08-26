@@ -264,6 +264,7 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
   await chmod(configPath, 0o600);
 
   let gatewayLogs = "";
+  let enforcementRegistered = false;
   const childEnv = {
     ...process.env,
     NODE_OPTIONS: "",
@@ -287,7 +288,11 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
     stdio: ["ignore", "pipe", "pipe"],
   });
   const appendLogs = (chunk) => {
-    gatewayLogs = `${gatewayLogs}${chunk}`.slice(-40_000);
+    const appendedLogs = `${gatewayLogs}${chunk}`;
+    if (appendedLogs.includes("nbhd-cron-enforcement: registered")) {
+      enforcementRegistered = true;
+    }
+    gatewayLogs = appendedLogs.slice(-40_000);
   };
   child.stdout.on("data", appendLogs);
   child.stderr.on("data", appendLogs);
@@ -330,7 +335,7 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
       "30s",
       ...cliConnection,
     ], { env: childEnv });
-    return { observations, gatewayLogs: () => gatewayLogs, job };
+    return { observations, enforcementRegistered, gatewayLogs: () => gatewayLogs, job };
   }
   const response = await fetch(`${gatewayUrl}/v1/chat/completions`, {
     method: "POST",
@@ -347,7 +352,7 @@ async function runPinnedFlow(t, { includeEnforcement = false, messageChannel = "
   });
   const responseBody = await response.text();
   assert.equal(response.status, 200, `${responseBody}\n${gatewayLogs}`);
-  return { observations, responseBody, gatewayLogs };
+  return { observations, enforcementRegistered, responseBody, gatewayLogs };
 }
 
 test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugin", {
@@ -371,7 +376,7 @@ test("pinned OpenClaw carries an iOS turn through the real loaded datebook plugi
 test("pinned OpenClaw executes the enforcement null override without forwarding origin", {
   timeout: 60_000,
 }, async (t) => {
-  const { observations, gatewayLogs } = await runPinnedFlow(t, {
+  const { observations, enforcementRegistered } = await runPinnedFlow(t, {
     includeEnforcement: true,
     // Use a native channel in this second regression so it exercises only the
     // before_tool_call merge seam; the first test retains the iOS fallback pin.
@@ -379,19 +384,19 @@ test("pinned OpenClaw executes the enforcement null override without forwarding 
   });
   assert.equal(observations.datebookBody?.command_type, "reminder_create");
   assert.equal(Object.hasOwn(observations.datebookBody, "origin"), false, "null override must not be forwarded");
-  assert.match(gatewayLogs, /nbhd-cron-enforcement: registered/, "the null assertion must exercise the loaded hook");
+  assert.equal(enforcementRegistered, true, "the null assertion must exercise the loaded hook");
 });
 
 test("pinned OpenClaw signs origin on a real cron-triggered agent run", {
   timeout: 60_000,
 }, async (t) => {
-  const { observations, gatewayLogs, job } = await runPinnedFlow(t, {
+  const { observations, enforcementRegistered, gatewayLogs, job } = await runPinnedFlow(t, {
     includeEnforcement: true,
     messageChannel: "telegram",
     trigger: "cron",
   });
   const origin = observations.datebookBody?.origin;
-  assert.match(gatewayLogs(), /nbhd-cron-enforcement: registered/);
+  assert.equal(enforcementRegistered, true);
   assert.equal(
     origin?.v,
     1,

@@ -203,7 +203,7 @@ export default function register(api) {
   if (!api || typeof api.on !== "function") {
     return;
   }
-  api.logger.info("NBHD routing context plugin registered (output-guard only)");
+  api.logger.warn("NBHD routing context plugin registered (output-guard only)");
 
   api.on("before_agent_finalize", (event) => {
     const lastReply = asTrimmedString(event && event.lastAssistantMessage);

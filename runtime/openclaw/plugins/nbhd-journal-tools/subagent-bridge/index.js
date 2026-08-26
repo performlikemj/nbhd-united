@@ -283,7 +283,7 @@ export default function register(api) {
   const runtime = getRuntimeConfig(api);
   const markedRuns = new Map();
   const successfulSendRuns = new Set();
-  safeLog(api, "info", "nbhd-subagent-bridge: registered");
+  safeLog(api, "warn", "nbhd-subagent-bridge: registered");
 
   api.on("before_tool_call", (event, ctx) => {
     let realToolId = "";

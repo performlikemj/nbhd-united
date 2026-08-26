@@ -37,6 +37,14 @@ class DocTaintGuardPluginGatingTest(TestCase):
         entry = config["plugins"]["entries"][PLUGIN_ID]
         self.assertEqual(entry.get("config"), {"mode": "log_only"})
 
+    def test_conversation_hooks_are_explicitly_allowed(self):
+        config = generate_openclaw_config(self.tenant)
+        entry = config["plugins"]["entries"][PLUGIN_ID]
+        self.assertEqual(
+            entry.get("hooks"),
+            {"allowConversationAccess": True, "timeoutMs": 30000},
+        )
+
     @override_settings(DOC_TAINT_GATE_MODE="enforce")
     def test_mode_flips_to_enforce_via_single_settings_override(self):
         # Fleet-wide flip is one settings/env var, no per-tenant migration.

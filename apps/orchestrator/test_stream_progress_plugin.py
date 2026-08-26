@@ -33,5 +33,11 @@ class StreamProgressPluginGatingTest(TestCase):
         config = generate_openclaw_config(self.tenant)
         plugins = config.get("plugins", {})
         self.assertIn(PLUGIN_ID, plugins.get("entries", {}))
-        self.assertEqual(plugins["entries"][PLUGIN_ID], {"enabled": True})
+        self.assertEqual(
+            plugins["entries"][PLUGIN_ID],
+            {
+                "enabled": True,
+                "hooks": {"allowConversationAccess": True, "timeoutMs": 30000},
+            },
+        )
         self.assertIn(PLUGIN_ID, plugins.get("allow", []))

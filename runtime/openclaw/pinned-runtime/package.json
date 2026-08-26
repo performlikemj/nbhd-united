@@ -1,0 +1,7 @@
+{
+  "name": "nbhd-openclaw-pinned-runtime",
+  "private": true,
+  "dependencies": {
+    "openclaw": "2026.5.28"
+  }
+}

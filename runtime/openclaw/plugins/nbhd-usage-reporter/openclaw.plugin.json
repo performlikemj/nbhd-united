@@ -2,6 +2,9 @@
   "id": "nbhd-usage-reporter",
   "name": "NBHD Usage Reporter",
   "description": "Reports LLM usage from agent turns back to the NBHD control-plane for token and message counter synchronization.",
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

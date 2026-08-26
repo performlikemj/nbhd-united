@@ -2,6 +2,9 @@
   "id": "nbhd-activity-stream",
   "name": "NBHD Activity Stream",
   "description": "Narrates agent activity (tool use, composing) back to the NBHD control-plane so polling clients and the iOS Siri Live Activity can show what the assistant is doing instead of an opaque spinner.",
+  "activation": {
+    "onCapabilities": ["hook"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
