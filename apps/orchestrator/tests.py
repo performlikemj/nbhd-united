@@ -70,6 +70,11 @@ class ConfigGeneratorTest(TestCase):
             providers.get("openrouter", {}).get("baseUrl"),
             "https://openrouter.ai/api/v1",
         )
+        self.assertEqual(
+            providers["openrouter"]["params"]["provider"],
+            {"zdr": True, "data_collection": "deny"},
+        )
+        self.assertNotIn('"provider": "openai"', json.dumps(config))
 
     def test_starter_tier_has_active_models(self):
         self.tenant.model_tier = "starter"
@@ -104,8 +109,18 @@ class ConfigGeneratorTest(TestCase):
         self.assertEqual(len(models), 1)
         self.assertEqual(
             models[0],
-            {"provider": "openai", "model": "gpt-4o-mini-transcribe"},
+            {"provider": "openrouter", "model": "openai/whisper-large-v3-turbo"},
         )
+
+    @override_settings(
+        OPENCLAW_IMAGE_GEN_PLUGIN_ID="nbhd-image-gen",
+        OPENCLAW_IMAGE_GEN_PLUGIN_PATH="/opt/nbhd/plugins/nbhd-image-gen",
+    )
+    def test_deleted_image_plugin_is_never_emitted(self):
+        config = generate_openclaw_config(self.tenant)
+        plugins = config.get("plugins", {})
+        self.assertNotIn("nbhd-image-gen", plugins.get("allow", []))
+        self.assertNotIn("nbhd-image-gen", plugins.get("entries", {}))
 
     def test_plugin_wiring_enabled_when_plugin_id_configured(self):
         with override_settings(
