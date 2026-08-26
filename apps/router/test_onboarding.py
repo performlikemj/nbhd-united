@@ -196,7 +196,11 @@ class OnboardingFlowTest(TestCase):
         self.assertEqual(self.tenant.user.timezone, "America/Los_Angeles")
 
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
-    def test_step_4_completes_onboarding(self, mock_upload):
+    @patch(
+        "apps.tenants.envelope.render_safe_user_md",
+        return_value="<!-- BEGIN -->\n[PERSON_1] [LOCATION_1] [PERSON_2]\n<!-- END -->",
+    )
+    def test_step_4_completes_onboarding(self, _render, mock_upload):
         """Interests captured, onboarding complete, USER.md written."""
         self.tenant.onboarding_step = 4
         self.tenant.user.display_name = "Alex"
@@ -213,14 +217,30 @@ class OnboardingFlowTest(TestCase):
 
         mock_upload.assert_called_once()
         content = mock_upload.call_args[0][2]
-        self.assertIn("Alex", content)
-        self.assertIn("Los_Angeles", content)
+        self.assertNotIn("Alex", content)
+        self.assertNotIn("Los_Angeles", content)
+        self.assertNotIn("Help me with work stuff", content)
 
         self.tenant.user.refresh_from_db()
         self.assertEqual(
             self.tenant.user.preferences["onboarding_interests"],
             "Help me with work stuff",
         )
+
+    @patch("apps.orchestrator.azure_client.upload_workspace_file")
+    @patch("apps.tenants.envelope.render_safe_user_md", return_value=None)
+    def test_step_4_skips_user_md_write_when_redaction_is_unconfirmed(self, _render, mock_upload):
+        self.tenant.onboarding_step = 4
+        self.tenant.save(update_fields=["onboarding_step"])
+
+        with self.assertLogs("apps.router.onboarding", level="WARNING") as logs:
+            reply = get_onboarding_response(self.tenant, "Sensitive onboarding interests")
+
+        self.assertIsNotNone(reply)
+        mock_upload.assert_not_called()
+        log_output = "\n".join(logs.output)
+        self.assertIn("reason=redaction_unconfirmed", log_output)
+        self.assertNotIn("Sensitive onboarding interests", log_output)
 
     def test_completed_returns_none(self):
         """After onboarding, returns None for agent handoff."""
@@ -232,7 +252,8 @@ class OnboardingFlowTest(TestCase):
         self.assertIsNone(reply)
 
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
-    def test_full_flow_english(self, mock_upload):
+    @patch("apps.tenants.envelope.render_safe_user_md", return_value="safe envelope")
+    def test_full_flow_english(self, _render, mock_upload):
         """Walk through full onboarding flow for English user."""
         # Message 1: triggers welcome
         r1 = get_onboarding_response(self.tenant, "hi")
@@ -271,7 +292,8 @@ class OnboardingFlowTest(TestCase):
         self.assertIsNone(r6)
 
     @patch("apps.orchestrator.azure_client.upload_workspace_file")
-    def test_full_flow_japanese_auto_detect(self, mock_upload):
+    @patch("apps.tenants.envelope.render_safe_user_md", return_value="safe envelope")
+    def test_full_flow_japanese_auto_detect(self, _render, mock_upload):
         """Japanese user: language auto-detected, skips language question."""
         # Message 1: welcome in Japanese
         r1 = get_onboarding_response(self.tenant, "こんにちは", telegram_lang="ja")
@@ -434,6 +456,7 @@ class OnboardingLogHygieneTest(TestCase):
         secret = "trainforazephyrmarathon"
         with (
             patch("apps.orchestrator.azure_client.upload_workspace_file"),
+            patch("apps.tenants.envelope.render_safe_user_md", return_value="safe envelope"),
             self.assertLogs(self._LOGGER, level="INFO") as cm,
         ):
             get_onboarding_response(self.tenant, secret)

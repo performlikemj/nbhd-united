@@ -597,31 +597,17 @@ def needs_reintroduction(tenant: Tenant) -> bool:
 
 
 def _write_user_md(tenant: Tenant, interests: str) -> None:
-    """Write USER.md to the tenant's file share with onboarding data."""
+    """Write a mint-redacted managed USER.md, failing closed on redaction."""
+    del interests  # Persisted preferences are rendered by apps.tenants.envelope.
     try:
         from apps.orchestrator.azure_client import upload_workspace_file  # noqa: F811
+        from apps.tenants.envelope import render_safe_user_md
 
-        name = tenant.user.display_name or "Friend"
-        tz = tenant.user.timezone or "UTC"
-        lang = tenant.user.language or "en"
-
-        city = getattr(tenant.user, "location_city", "") or ""
-        location_line = f"\n- **Location:** {city}" if city else ""
-
-        content = f"""# About You
-
-- **Name:** {name}
-- **Language:** {lang}
-- **Timezone:** {tz}{location_line}
-
-## What you're looking for
-
-{interests}
-
----
-*This file was created during onboarding. Your assistant will update it as it learns more about you.*
-"""
+        content = render_safe_user_md(tenant)
+        if content is None:
+            logger.warning("onboarding_user_md_skipped tenant=%s reason=redaction_unconfirmed", tenant.id)
+            return
         upload_workspace_file(str(tenant.id), "workspace/USER.md", content)
-        logger.info("Wrote USER.md for tenant %s", tenant.id)
+        logger.info("onboarding_user_md_written tenant=%s chars=%d", tenant.id, len(content))
     except Exception:
-        logger.exception("Failed to write USER.md for tenant %s", tenant.id)
+        logger.exception("onboarding_user_md_failed tenant=%s", tenant.id)
