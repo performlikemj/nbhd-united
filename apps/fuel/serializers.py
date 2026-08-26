@@ -160,6 +160,17 @@ class WorkoutPlanSerializer(_FuelPiiSerializerMixin, serializers.ModelSerializer
     def get_current_week(self, obj):
         return self._progress(obj)["current_week"]
 
+    def to_representation(self, instance):
+        represented = super().to_representation(instance)
+        schedule = represented.get("schedule_json")
+        if not isinstance(schedule, dict):
+            return represented
+        policy = schedule.get("_plan_policy")
+        represented["schedule_json"] = {key: value for key, value in schedule.items() if key != "_plan_policy"}
+        if isinstance(policy, dict):
+            represented.update(policy)
+        return represented
+
     def create(self, validated_data):
         validated_data["tenant"] = self.context["tenant"]
         return super().create(validated_data)

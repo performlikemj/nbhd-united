@@ -28,6 +28,130 @@ function parseInteger(value, { defaultValue, min, max }) {
   return Math.max(min, Math.min(max, parsed));
 }
 
+const WEEKDAY_ALIASES = new Map([
+  ["monday", 0], ["mon", 0], ["0", 0],
+  ["tuesday", 1], ["tue", 1], ["tues", 1], ["1", 1],
+  ["wednesday", 2], ["wed", 2], ["2", 2],
+  ["thursday", 3], ["thu", 3], ["thur", 3], ["thurs", 3], ["3", 3],
+  ["friday", 4], ["fri", 4], ["4", 4],
+  ["saturday", 5], ["sat", 5], ["5", 5],
+  ["sunday", 6], ["sun", 6], ["6", 6],
+]);
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function weekdayIndex(value) {
+  return WEEKDAY_ALIASES.get(String(value).trim().toLowerCase());
+}
+
+function matchingWeekdayKey(schedule, weekday) {
+  const wanted = weekdayIndex(weekday);
+  if (wanted === undefined) return undefined;
+  return Object.keys(asObject(schedule)).find((key) => weekdayIndex(key) === wanted);
+}
+
+function validateRotation(rotation, index) {
+  const normalized = asObject(rotation);
+  if (weekdayIndex(normalized.weekday) === undefined) {
+    throw new Error(`accessory_rotations[${index}].weekday must be a weekday name`);
+  }
+  if (![1, 2].includes(normalized.every_weeks)) {
+    throw new Error(`accessory_rotations[${index}].every_weeks must be 1 or 2`);
+  }
+  if (!Array.isArray(normalized.choices) || normalized.choices.length === 0) {
+    throw new Error(`accessory_rotations[${index}].choices must be a non-empty array`);
+  }
+  for (const [choiceIndex, choice] of normalized.choices.entries()) {
+    if (!asTrimmedString(choice?.name) || !Array.isArray(choice?.sets)) {
+      throw new Error(`accessory_rotations[${index}].choices[${choiceIndex}] requires name and sets`);
+    }
+  }
+  const slot = asObject(normalized.slot);
+  const byIndex = Number.isInteger(slot.exercise_index) && slot.exercise_index >= 0;
+  const byRole = slot.role === "accessory" && Number.isInteger(slot.nth) && slot.nth >= 0;
+  if (byIndex === byRole) {
+    throw new Error(
+      `accessory_rotations[${index}].slot must use exactly one of exercise_index or role accessory + zero-based nth`,
+    );
+  }
+  return { ...normalized, slot, byIndex };
+}
+
+function prospectiveBaseSchedule(body, storedPlan = {}) {
+  const incoming = asObject(body.schedule_json);
+  if (body.replace_schedule === true) return cloneJson(incoming);
+  const base = cloneJson(asObject(storedPlan.schedule_json));
+  for (const [key, day] of Object.entries(incoming)) {
+    const existingKey = matchingWeekdayKey(base, key);
+    const targetKey = existingKey ?? key;
+    const existing = asObject(base[targetKey]);
+    base[targetKey] = { ...existing, ...cloneJson(day) };
+  }
+  for (const removed of Array.isArray(body.remove_days) ? body.remove_days : []) {
+    const key = matchingWeekdayKey(base, removed);
+    if (key !== undefined) delete base[key];
+  }
+  return base;
+}
+
+function compileAccessoryRotations(body, rotations, storedPlan = {}) {
+  if (!Array.isArray(rotations) || rotations.length === 0) return { body, expandedCount: 0 };
+  const compiled = cloneJson(body);
+  const weeks = Number.isInteger(compiled.weeks) ? compiled.weeks : Number(storedPlan.weeks);
+  if (!Number.isInteger(weeks) || weeks < 1) {
+    throw new Error("weeks is required to compile accessory_rotations");
+  }
+  const base = prospectiveBaseSchedule(compiled, storedPlan);
+  compiled.week_overrides = cloneJson(
+    compiled.week_overrides !== undefined ? asObject(compiled.week_overrides) : asObject(storedPlan.week_overrides),
+  );
+  let expandedCount = 0;
+
+  rotations.map(validateRotation).forEach((rotation, rotationIndex) => {
+    const baseKey = matchingWeekdayKey(base, rotation.weekday);
+    if (baseKey === undefined) {
+      throw new Error(`accessory_rotations[${rotationIndex}] weekday has no base schedule day`);
+    }
+    for (let week = 0; week < weeks; week += 1) {
+      const weekKey = String(week);
+      const weekOverride = asObject(compiled.week_overrides[weekKey]);
+      const overrideKey = matchingWeekdayKey(weekOverride, rotation.weekday);
+      if (overrideKey !== undefined && weekOverride[overrideKey] === null) continue;
+      const dayKey = overrideKey ?? baseKey;
+      const sourceDay = overrideKey === undefined ? base[baseKey] : weekOverride[overrideKey];
+      const day = cloneJson(sourceDay);
+      const exercises = day?.detail_json?.exercises;
+      if (!Array.isArray(exercises)) {
+        throw new Error(`accessory_rotations[${rotationIndex}] ${rotation.weekday} has no exercises array`);
+      }
+      let exerciseIndex;
+      if (rotation.byIndex) {
+        exerciseIndex = rotation.slot.exercise_index;
+      } else {
+        const matching = exercises
+          .map((item, index) => ({ item, index }))
+          .filter(({ item }) => item?.role === "accessory");
+        exerciseIndex = matching[rotation.slot.nth]?.index;
+      }
+      if (!Number.isInteger(exerciseIndex) || exerciseIndex >= exercises.length) {
+        throw new Error(`accessory_rotations[${rotationIndex}] slot is out of range for ${rotation.weekday}`);
+      }
+      const choiceIndex = Math.floor(week / rotation.every_weeks) % rotation.choices.length;
+      const replacement = cloneJson(rotation.choices[choiceIndex]);
+      if (replacement.role === undefined && exercises[exerciseIndex]?.role !== undefined) {
+        replacement.role = exercises[exerciseIndex].role;
+      }
+      exercises[exerciseIndex] = replacement;
+      weekOverride[dayKey] = day;
+      compiled.week_overrides[weekKey] = weekOverride;
+      expandedCount += 1;
+    }
+  });
+  return { body: compiled, expandedCount };
+}
+
 function getRuntimeConfig(api) {
   const pluginConfig = asObject(api.pluginConfig);
   const apiBaseUrl = asTrimmedString(
@@ -71,13 +195,40 @@ function renderTextPayload(payload, text) {
   };
 }
 
-function renderWritePayload(payload) {
+function renderCaughtError(error) {
+  if (error?.runtimePayload && typeof error.runtimePayload === "object") {
+    return renderTextPayload(error.runtimePayload, JSON.stringify(error.runtimePayload));
+  }
+  return renderPayload({ error: error?.message || String(error) });
+}
+
+function valueAtLoc(payload, loc) {
+  let current = payload;
+  for (const part of Array.isArray(loc) ? loc : []) {
+    if (current === null || current === undefined) return undefined;
+    current = current[part];
+  }
+  return current;
+}
+
+function renderWritePayload(payload, localRequest = {}) {
   const unmatched = Array.isArray(payload?.unmatched_exercises)
     ? payload.unmatched_exercises.map(String).filter(Boolean)
     : [];
-  if (unmatched.length === 0) return renderPayload(payload);
-  const warning = `No figure for: ${unmatched.join(", ")} — for movements you chose, use exact catalog names (nbhd_fuel_search_exercises); never swap a user-requested movement without asking`;
-  return renderTextPayload(payload, `${JSON.stringify(payload, null, 2)}\n${warning}`);
+  const matches = Array.isArray(payload?.catalog_matches) ? payload.catalog_matches : [];
+  if (unmatched.length === 0 && matches.length === 0) return renderPayload(payload);
+  const lines = [JSON.stringify(payload, null, 2)];
+  for (const match of matches) {
+    const received = valueAtLoc(localRequest, match?.loc);
+    const catalogName = asTrimmedString(match?.catalog_name) || asTrimmedString(match?.slug);
+    if (catalogName && typeof received === "string") {
+      lines.push(`figure: ${catalogName} ← ${JSON.stringify(received)}`);
+    }
+  }
+  if (unmatched.length > 0) {
+    lines.push(`No figure for: ${unmatched.join(", ")} — for movements you chose, use exact catalog names (nbhd_fuel_search_exercises); never swap a user-requested movement without asking`);
+  }
+  return renderTextPayload(payload, lines.join("\n"));
 }
 
 const PRESCRIPTION_LEGEND =
@@ -203,6 +354,11 @@ async function callRuntime(api, { path, method = "GET", query, body }) {
     if (!response.ok) {
       const normalized = asObject(payload);
       const code = asTrimmedString(normalized.error) || "runtime_request_failed";
+      if (code === "plan_rotation_required" || code.startsWith("catalog_")) {
+        const structuredError = new Error(`NBHD runtime error ${response.status}: ${code}`);
+        structuredError.runtimePayload = normalized;
+        throw structuredError;
+      }
       // DRF commonly returns field errors at the top level, e.g.
       // {week_rating: ["..."]}, rather than under `detail`. Preserve that
       // compact validation payload so the model can correct and retry.
@@ -228,6 +384,12 @@ function fuelPath(api, suffix) {
 }
 
 export default function register(api) {
+  let searchedBeforeWrite = false;
+  const markWrite = (body) => {
+    body._searched_before_write = searchedBeforeWrite;
+    searchedBeforeWrite = false;
+  };
+
   // ── Fuel Audit ──────────────────────────────────────────────────────
   // Single tool for any "what should I do for a workout" / "deliver today's
   // plan" / "schedule a workout" question. Cross-references three sources:
@@ -253,7 +415,7 @@ export default function register(api) {
           });
           return renderAudit(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -278,7 +440,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -315,9 +477,10 @@ export default function register(api) {
             method: "GET",
             query,
           });
+          searchedBeforeWrite = true;
           return renderExerciseSearch(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -347,7 +510,7 @@ export default function register(api) {
           });
           return renderPlan(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -382,7 +545,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -544,14 +707,15 @@ export default function register(api) {
           if (input.notes) body.notes = asTrimmedString(input.notes);
           if (input.detail_json) body.detail_json = input.detail_json;
 
+          markWrite(body);
           const payload = await callRuntime(api, {
             path: fuelPath(api, "/log/"),
             method: "POST",
             body,
           });
-          return renderWritePayload(payload);
+          return renderWritePayload(payload, body);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -612,14 +776,15 @@ export default function register(api) {
           if (input.notes !== undefined) body.notes = asTrimmedString(input.notes);
           if (input.detail_json) body.detail_json = input.detail_json;
 
+          markWrite(body);
           const payload = await callRuntime(api, {
             path: fuelPath(api, `/workouts/${encodeURIComponent(workoutId)}/`),
             method: "PATCH",
             body,
           });
-          return renderWritePayload(payload);
+          return renderWritePayload(payload, body);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -654,7 +819,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -696,7 +861,7 @@ export default function register(api) {
         });
         return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -732,7 +897,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -787,7 +952,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -884,7 +1049,7 @@ export default function register(api) {
           });
           return renderPayload(payload);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -895,7 +1060,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_create_plan",
       description:
-        "Create a structured, multi-week workout plan. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: provide the WEEKLY CADENCE and let the backend assign calendar dates in the user's timezone. ALWAYS pass the user's tenant-local start anchor as start_date. For 'today' / 'I am at the gym now', start_date is today and schedule_json MUST include today's weekday — rotate the split so today is day 1; the server hard-rejects a plan that starts today with no session on today's weekday (400). Never design a cadence that excludes the requested first training day. The response's first_workout_date is the date to use when describing the first session; honor start_date_note and never assume start_date has a session. Design from the user's profile, journal context, sleep trends, lessons, and goals. schedule_json is keyed by weekday NAME — \"monday\", \"tuesday\", \"wednesday\", \"thursday\", \"friday\", \"saturday\", \"sunday\" — mapping each training day to a workout definition. Write the name, never a number: numeric indices are legacy-only and the numbering conventions disagree (Python Mon=0, ISO Mon=1, cron Sun=0), which is how a Wednesday session gets scheduled on Thursday. Set target_rpe per day, objective for the plan's through-line, and week_overrides for progression/deload. Check nbhd_fuel_summary for an existing active plan first.",
+        "Create a structured, multi-week workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. USE THIS whenever the user asks to make / build / design / lay out / fill out / map out / write up a plan, program, routine, or schedule — including phrasings like 'fill out my workout plan for the rest of the month'. NEVER present a dated plan as a chat message: provide the WEEKLY CADENCE and let the backend assign calendar dates in the user's timezone. ALWAYS pass the user's tenant-local start anchor as start_date. For 'today' / 'I am at the gym now', start_date is today and schedule_json MUST include today's weekday — rotate the split so today is day 1; the server hard-rejects a plan that starts today with no session on today's weekday (400). Never design a cadence that excludes the requested first training day. The response's first_workout_date is the date to use when describing the first session; honor start_date_note and never assume start_date has a session. Design from the user's profile, journal context, sleep trends, lessons, and goals. schedule_json is keyed by weekday NAME — \"monday\", \"tuesday\", \"wednesday\", \"thursday\", \"friday\", \"saturday\", \"sunday\" — mapping each training day to a workout definition. Write the name, never a number: numeric indices are legacy-only and the numbering conventions disagree (Python Mon=0, ISO Mon=1, cron Sun=0), which is how a Wednesday session gets scheduled on Thursday. Set target_rpe per day, objective for the plan's through-line, and week_overrides for progression/deload. For accessory_rotations, you pick the pool; the plugin builds the weeks. Check nbhd_fuel_summary for an existing active plan first.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -936,7 +1101,7 @@ export default function register(api) {
                 detail_json: {
                   type: "object",
                   description:
-                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: REQUIRED — {"exercises": [{"name": "...", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is one of weighted_reps | bodyweight_reps | hold_time). The backend validates every planned category and rejects malformed sets or an empty prescription with a 400 carrying the offending weekday, so design the real programming and self-correct. Cardio: {"distance_km": 5, "pace": "5:30"}. HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility uses skills with hold times, e.g. {"skills":[{"name":"Hip flexor stretch","sets":[{"type":"hold_time","hold_s":45}]}]}. Every planned day needs a prescription.',
+                    'Category-specific prescription. Populate every training day, not just strength. Strength/calisthenics: REQUIRED — {"exercises": [{"name": "...", "role":"accessory", "sets": [{"type": "weighted_reps", "reps": 5, "weight": 80}, ...]}]} (set type is weighted_reps | bodyweight_reps | hold_time; optional role is primary | accessory | warmup | mobility). The backend validates every planned category and rejects malformed sets or an empty prescription with a 400 carrying the offending weekday. Cardio: {"distance_km": 5, "pace": "5:30"}. HIIT: {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility uses skills with hold times and optional roles. Every planned day needs a prescription.',
                 },
                 target_rpe: {
                   type: "integer",
@@ -959,6 +1124,66 @@ export default function register(api) {
             description:
               'Optional per-week progression/deload. Keys are 0-indexed week offsets ("0"=first week). Each overridden weekday must be a complete day object with full detail_json because it replaces the base day wholesale. Example: {"3":{"monday":{"category":"strength","activity":"Deload","target_rpe":5,"detail_json":{"exercises":[{"name":"Bench Press","sets":[{"type":"weighted_reps","reps":5,"weight":50}]}]}}}}.',
           },
+          variation_policy: {
+            type: "string",
+            enum: ["progression_only"],
+            description: "Allow a fixed exercise recipe only when at least one dose field changes across that session track.",
+          },
+          repeat_policy: {
+            type: "string",
+            enum: ["intentional"],
+            description: "Declare a deliberate repeated block; requires a non-empty repeat_reason.",
+          },
+          repeat_reason: {
+            type: "string",
+            description: "Required rationale when repeat_policy is intentional, e.g. a fixed rehab or technique block.",
+          },
+          accessory_rotations: {
+            type: "array",
+            description: "You pick the pool; the plugin builds the weeks. Each rotation replaces one exercise slot every one or two weeks with complete-day overrides.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["weekday", "slot", "every_weeks", "choices"],
+              properties: {
+                weekday: { type: "string", description: "Weekday name from schedule_json." },
+                slot: {
+                  oneOf: [
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["exercise_index"],
+                      properties: { exercise_index: { type: "integer", minimum: 0 } },
+                    },
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["role", "nth"],
+                      properties: {
+                        role: { const: "accessory" },
+                        nth: { type: "integer", minimum: 0, description: "Zero-based accessory occurrence." },
+                      },
+                    },
+                  ],
+                },
+                every_weeks: { type: "integer", enum: [1, 2] },
+                choices: {
+                  type: "array",
+                  minItems: 1,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["name", "sets"],
+                    properties: {
+                      name: { type: "string" },
+                      sets: { type: "array", items: { type: "object" } },
+                      role: { type: "string", enum: ["primary", "accessory", "warmup", "mobility"] },
+                    },
+                  },
+                },
+              },
+            },
+          },
           notes: {
             type: "string",
             description:
@@ -980,15 +1205,21 @@ export default function register(api) {
           if (input.notes) body.notes = asTrimmedString(input.notes);
           if (input.objective) body.objective = asTrimmedString(input.objective);
           if (input.week_overrides) body.week_overrides = asObject(input.week_overrides);
+          if (input.variation_policy) body.variation_policy = asTrimmedString(input.variation_policy);
+          if (input.repeat_policy) body.repeat_policy = asTrimmedString(input.repeat_policy);
+          if (input.repeat_reason) body.repeat_reason = asTrimmedString(input.repeat_reason);
 
+          const compiled = compileAccessoryRotations(body, input.accessory_rotations);
+          if (compiled.expandedCount > 0) compiled.body._compiled_rotations = compiled.expandedCount;
+          markWrite(compiled.body);
           const payload = await callRuntime(api, {
             path: fuelPath(api, "/plans/"),
             method: "POST",
-            body,
+            body: compiled.body,
           });
-          return renderWritePayload(payload);
+          return renderWritePayload(payload, compiled.body);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -999,7 +1230,7 @@ export default function register(api) {
   api.registerTool(wrap({
       name: "nbhd_fuel_update_plan",
       description:
-        'Update an existing workout plan. schedule_json MERGES by default: send only the days you want to add or change, and days you omit stay untouched. Example: add weekend mobility without touching weekdays by sending schedule_json: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Omit detail_json from an updated day to keep that day\'s existing exercises. Remove days only with remove_days; use replace_schedule:true only when intentionally replacing the entire weekly template. Legacy integer weekday keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls because numbering conventions disagree. If you send strength/calisthenics detail_json, it must contain a non-empty exercises list. Schedule or weeks changes reconcile future planned workouts.',
+        'Update an existing workout plan. First call nbhd_fuel_search_exercises for each accessory/mobility group. schedule_json MERGES by default: send only the days you want to add or change, and days you omit stay untouched. Example: add weekend mobility without touching weekdays by sending schedule_json: {"saturday":{"category":"mobility","activity":"Mobility"},"sunday":{"category":"mobility","activity":"Recovery Flow"}}. Omit detail_json from an updated day to keep that day\'s existing exercises. Remove days only with remove_days; use replace_schedule:true only when intentionally replacing the entire weekly template. Legacy integer weekday keys ("0"=Mon..."6"=Sun) still work but must not be used in new calls because numbering conventions disagree. Item role is optional: primary | accessory | warmup | mobility. For accessory_rotations, you pick the pool; the plugin builds the weeks. If you send strength/calisthenics detail_json, it must contain a non-empty exercises list. Schedule or weeks changes reconcile future planned workouts.',
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -1054,6 +1285,66 @@ export default function register(api) {
             description:
               'Replace the plan\'s whole per-week progression/deload map. Keys are 0-indexed ABSOLUTE plan weeks ("0" is always the plan\'s FIRST week) and must be within the plan\'s length. Each overridden weekday must be a complete day object with full detail_json because the override replaces that base day wholesale; null makes it a rest day. Sent as a whole map: it REPLACES the stored one, so include every week you want to keep. Triggers workout regeneration.',
           },
+          variation_policy: {
+            type: "string",
+            enum: ["progression_only"],
+            description: "Allow a fixed recipe only when dose fields change across each repeated session track.",
+          },
+          repeat_policy: {
+            type: "string",
+            enum: ["intentional"],
+            description: "Declare a deliberate repeated block; requires repeat_reason.",
+          },
+          repeat_reason: {
+            type: "string",
+            description: "Required rationale for repeat_policy intentional.",
+          },
+          accessory_rotations: {
+            type: "array",
+            description: "You pick the pool; the plugin builds the weeks. Uses the stored plan plus this PATCH to produce complete-day overrides.",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["weekday", "slot", "every_weeks", "choices"],
+              properties: {
+                weekday: { type: "string" },
+                slot: {
+                  oneOf: [
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["exercise_index"],
+                      properties: { exercise_index: { type: "integer", minimum: 0 } },
+                    },
+                    {
+                      type: "object",
+                      additionalProperties: false,
+                      required: ["role", "nth"],
+                      properties: {
+                        role: { const: "accessory" },
+                        nth: { type: "integer", minimum: 0, description: "Zero-based accessory occurrence." },
+                      },
+                    },
+                  ],
+                },
+                every_weeks: { type: "integer", enum: [1, 2] },
+                choices: {
+                  type: "array",
+                  minItems: 1,
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    required: ["name", "sets"],
+                    properties: {
+                      name: { type: "string" },
+                      sets: { type: "array", items: { type: "object" } },
+                      role: { type: "string", enum: ["primary", "accessory", "warmup", "mobility"] },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
         required: ["plan_id"],
       },
@@ -1075,15 +1366,26 @@ export default function register(api) {
           if (Array.isArray(input.remove_days)) body.remove_days = input.remove_days;
           if (input.replace_schedule !== undefined) body.replace_schedule = input.replace_schedule === true;
           if (input.week_overrides) body.week_overrides = asObject(input.week_overrides);
+          if (input.variation_policy) body.variation_policy = asTrimmedString(input.variation_policy);
+          if (input.repeat_policy) body.repeat_policy = asTrimmedString(input.repeat_policy);
+          if (input.repeat_reason !== undefined) body.repeat_reason = asTrimmedString(input.repeat_reason);
 
+          const storedPlan = Array.isArray(input.accessory_rotations) && input.accessory_rotations.length > 0
+            ? await callRuntime(api, {
+              path: fuelPath(api, `/plans/${encodeURIComponent(planId)}/`),
+            })
+            : {};
+          const compiled = compileAccessoryRotations(body, input.accessory_rotations, storedPlan);
+          if (compiled.expandedCount > 0) compiled.body._compiled_rotations = compiled.expandedCount;
+          markWrite(compiled.body);
           const payload = await callRuntime(api, {
             path: fuelPath(api, `/plans/${encodeURIComponent(planId)}/`),
             method: "PATCH",
-            body,
+            body: compiled.body,
           });
-          return renderWritePayload(payload);
+          return renderWritePayload(payload, compiled.body);
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),
@@ -1118,7 +1420,7 @@ export default function register(api) {
           });
           return renderPayload({ deleted: true, plan_id: planId });
         } catch (error) {
-          return renderPayload({ error: error.message });
+          return renderCaughtError(error);
         }
       },
     }),

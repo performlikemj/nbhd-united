@@ -448,6 +448,7 @@ def apply_reconciliation(
 
     from apps.pii.store_authoring import author_store_fields
 
+    from .catalog_annotation import reinsert_catalog_refs
     from .models import PlanSlot, Workout, WorkoutSource, WorkoutStatus
 
     now = timezone.now()
@@ -474,6 +475,8 @@ def apply_reconciliation(
             writer=writer,
             defer_detection=writer == "runtime",
         )
+        if "detail_json" in authored:
+            authored["detail_json"] = reinsert_catalog_refs(authored["detail_json"], patch["detail_json"])
         return authored, receipts
 
     authored_adoptions = [
@@ -490,6 +493,7 @@ def apply_reconciliation(
             writer=writer,
             defer_detection=writer == "runtime",
         )
+        authored["detail_json"] = reinsert_catalog_refs(authored["detail_json"], spec.detail_json)
         authored_creations.append((spec, authored, receipts))
 
     # Every locked refetch below deliberately reasserts the diff-time state.

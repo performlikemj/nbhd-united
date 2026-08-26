@@ -35,6 +35,12 @@ class Entry:
         return f"wg-{self.slug}-{frame}"
 
 
+@dataclass(frozen=True, slots=True)
+class Resolution:
+    entry: Entry
+    matched_by: str
+
+
 def normalize(name: str) -> str:
     """Return the exact ASCII-alphanumeric key used by the iOS catalog."""
     out: list[str] = []
@@ -80,6 +86,28 @@ class Catalog:
         self._index = index
         self._alias_keys_by_slug = {slug: tuple(keys) for slug, keys in alias_keys_by_slug.items()}
 
+        def grouped_index(pairs: list[tuple[str, Entry]]) -> dict[str, tuple[Entry, ...]]:
+            grouped: dict[str, list[Entry]] = {}
+            for key, entry in pairs:
+                bucket = grouped.setdefault(key, [])
+                if entry not in bucket:
+                    bucket.append(entry)
+            return {key: tuple(bucket) for key, bucket in grouped.items()}
+
+        self._canonical_index = grouped_index([(normalize(entry.name), entry) for entry in self.entries])
+        self._slug_index = grouped_index([(normalize(entry.slug), entry) for entry in self.entries])
+        self._alias_index = grouped_index(
+            [
+                (normalize(alias), entry)
+                for alias, slug in self.aliases.items()
+                if (entry := by_slug.get(slug)) is not None
+            ]
+        )
+        self._equipment_prefixes = sorted(
+            ((normalize(equipment), equipment) for equipment in self.equipment_types()),
+            key=lambda item: (-len(item[0].split("-")), -len(item[0]), item[0]),
+        )
+
     @classmethod
     def from_document(cls, document: dict[str, Any]) -> Catalog:
         entries = [Entry(**raw) for raw in document.get("entries", [])]
@@ -99,6 +127,55 @@ class Catalog:
                 return hit
         if key.endswith("es"):
             return self._index.get(key[:-2])
+        return None
+
+    def _resolve_direct(self, key: str) -> Resolution | None:
+        for matched_by, index in (
+            ("canonical", self._canonical_index),
+            ("slug", self._slug_index),
+            ("alias", self._alias_index),
+        ):
+            candidates = index.get(key, ())
+            if len(candidates) == 1:
+                return Resolution(candidates[0], matched_by)
+            if candidates:
+                return None
+
+        for suffix in ("s", "es"):
+            if not key.endswith(suffix):
+                continue
+            singular = key[: -len(suffix)]
+            for index in (self._canonical_index, self._slug_index, self._alias_index):
+                candidates = index.get(singular, ())
+                if len(candidates) == 1:
+                    return Resolution(candidates[0], "plural")
+                if candidates:
+                    return None
+        return None
+
+    def resolve_name(self, name: str) -> Resolution | None:
+        """Resolve a catalog identity without rewriting the caller's name."""
+        key = normalize(name)
+        if not key:
+            return None
+
+        direct = self._resolve_direct(key)
+        if direct is not None:
+            return direct
+
+        for prefix, equipment in self._equipment_prefixes:
+            marker = f"{prefix}-"
+            if not key.startswith(marker):
+                continue
+            remainder = key[len(marker) :]
+            if not remainder:
+                return None
+            resolved = self._resolve_direct(remainder)
+            if resolved is None:
+                return None
+            if resolved.entry.equipment.casefold() != equipment.casefold():
+                return None
+            return Resolution(resolved.entry, "equipment_prefix")
         return None
 
     def search(
@@ -157,6 +234,10 @@ def _catalog() -> Catalog:
 
 def match(name: str) -> Entry | None:
     return _catalog().match(name)
+
+
+def resolve_name(name: str) -> Resolution | None:
+    return _catalog().resolve_name(name)
 
 
 def search(

@@ -270,6 +270,7 @@ TypedSet = Annotated[
 class _Exercise(_SetModel):
     name: str = ""
     sets: list[TypedSet] = Field(default_factory=list)
+    role: Literal["primary", "accessory", "warmup", "mobility"] | None = None
 
 
 class _WorkoutDetail(_SetModel):
@@ -315,15 +316,34 @@ def validate_detail(detail: Any, category: str) -> tuple[Any, Any]:
     coerced detail preserves every original key (extras, ``_normalized``,
     cardio fields), so it is always safe to persist.
     """
-    if not isinstance(detail, dict) or category not in ("strength", "calisthenics"):
+    if not isinstance(detail, dict):
         return detail, None
-
-    coerced = _coerce_container(detail)
 
     # Local import keeps this module free of an import-time Django
     # dependency (llm_contracts pulls django.utils.timezone) and is
     # used immediately, so the lint-autofix can't reap it.
     from apps.common.llm_contracts import LLMValidationError
+
+    allowed_roles = {"primary", "accessory", "warmup", "mobility"}
+    for container in ("exercises", "skills"):
+        for index, item in enumerate(detail.get(container, [])):
+            if isinstance(item, dict) and "role" in item and item.get("role") not in allowed_roles:
+                return detail, LLMValidationError(
+                    message="Exercise roles must use the documented plan-programming vocabulary.",
+                    details=[
+                        {
+                            "loc": [container, index, "role"],
+                            "msg": "role must be one of: primary, accessory, warmup, mobility",
+                            "type": "invalid_role",
+                            "allowed": sorted(allowed_roles),
+                        }
+                    ],
+                )
+
+    if category not in ("strength", "calisthenics"):
+        return detail, None
+
+    coerced = _coerce_container(detail)
 
     try:
         _WorkoutDetail.model_validate(coerced)

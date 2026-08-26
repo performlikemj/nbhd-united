@@ -71,6 +71,15 @@ class RenderWorkspaceRulesTest(TestCase):
         self.assertIn("use the returned name verbatim", fuel)
         self.assertIn("complete day object", fuel)
         self.assertIn("replaces the whole overrides map", fuel)
+        self.assertIn("accessory_rotations", fuel)
+        self.assertIn('role: "primary" | "accessory" | "warmup" | "mobility"', fuel)
+
+    def test_rendered_agents_has_always_loaded_fuel_search_gate(self):
+        agents = render_workspace_files("neighbor")["NBHD_AGENTS_MD"]
+        self.assertIn(
+            "For any workout plan or fill-in, first `tool_search` for `nbhd_fuel_search_exercises`",
+            agents,
+        )
 
 
 class SubagentWorkspaceRulesTest(TestCase):

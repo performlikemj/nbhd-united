@@ -349,7 +349,12 @@ class WeekOverrideBoundsTests(_RuntimeFuelCase):
         plan_id = created.data["id"]
         resp = self.client.patch(
             self.base(f"plans/{plan_id}/"),
-            {"weeks": 8, "week_overrides": {"6": {"monday": None}}},
+            {
+                "weeks": 8,
+                "week_overrides": {"6": {"monday": None}},
+                "repeat_policy": "intentional",
+                "repeat_reason": "Bounds test keeps the legacy recipe intentionally",
+            },
             format="json",
             **self.headers,
         )

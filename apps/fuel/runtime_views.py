@@ -21,6 +21,7 @@ from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
 from . import catalog
+from .catalog_annotation import IncomingPath, annotate_incoming, incoming_name_paths, reinsert_catalog_refs
 from .models import (
     BodyWeightLog,
     FuelProfile,
@@ -55,9 +56,36 @@ class _FuelResponseGuard(KnownValueResponseGuardMixin):
             "unmatched_exercises",
             "skip_reason",
             "reason",
+            "repeat_reason",
             "summary",
         }
     )
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        """Keep server-owned catalog refs outside tenant substitution."""
+        refs: list[tuple[tuple[str | int, ...], dict]] = []
+
+        def collect(value, path=()):
+            if isinstance(value, dict):
+                if isinstance(value.get("catalog_ref"), dict):
+                    refs.append(((*path, "catalog_ref"), value["catalog_ref"]))
+                for key, child in value.items():
+                    if key != "catalog_ref":
+                        collect(child, (*path, key))
+            elif isinstance(value, list):
+                for index, child in enumerate(value):
+                    collect(child, (*path, index))
+
+        if hasattr(response, "data"):
+            collect(response.data)
+        guarded = super().finalize_response(request, response, *args, **kwargs)
+        if hasattr(guarded, "data"):
+            for path, ref in refs:
+                current = guarded.data
+                for part in path[:-1]:
+                    current = current[part]
+                current[path[-1]] = ref
+        return guarded
 
 
 _PROFILE_FIELDS = (
@@ -162,37 +190,123 @@ def _known_facet(value: str, legal_values: list[str]) -> bool:
     return any(_facet_key(candidate) == wanted for candidate in legal_values)
 
 
-def _unmatched_exercise_names(*values) -> list[str]:
-    """Find prescribed exercise/skill names without an exact catalog match."""
-    unmatched: list[str] = []
-    seen: set[str] = set()
-
-    def walk(value):
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if key in {"exercises", "skills"} and isinstance(child, list):
-                    for item in child:
-                        if not isinstance(item, dict):
-                            continue
-                        name = str(item.get("name") or "").strip()
-                        if name and name not in seen and catalog.match(name) is None:
-                            seen.add(name)
-                            unmatched.append(name)
-                walk(child)
-        elif isinstance(value, list):
-            for child in value:
-                walk(child)
-
-    for value in values:
-        walk(value)
-    return unmatched
-
-
-def _add_unmatched_exercises(payload: dict, *written_values) -> dict:
-    unmatched = _unmatched_exercise_names(*written_values)
+def _add_catalog_feedback(payload: dict, matches: list[dict], unmatched: list[str]) -> dict:
+    if matches:
+        payload["catalog_matches"] = matches
     if unmatched:
         payload["unmatched_exercises"] = unmatched
     return payload
+
+
+def _compiled_rotation_count(data) -> int:
+    try:
+        return max(0, min(1000, int(data.get("_compiled_rotations", 0))))
+    except (AttributeError, TypeError, ValueError):
+        return 0
+
+
+def _strip_search_marker(data):
+    """Remove the plugin-only funnel marker before validation/persistence."""
+    searched_before_write = data.get("_searched_before_write") is True if "_searched_before_write" in data else None
+    cleaned = data.copy()
+    cleaned.pop("_searched_before_write", None)
+    return cleaned, searched_before_write
+
+
+def _emit_catalog_write_event(
+    tenant,
+    *,
+    tool_name: str,
+    matches: list[dict],
+    total: int,
+    compiled_rotations: int = 0,
+    searched_before_write: bool | None = None,
+) -> None:
+    if total <= 0 and compiled_rotations <= 0 and searched_before_write is None:
+        return
+    counts = {matched_by: 0 for matched_by in ("canonical", "slug", "alias", "plural", "equipment_prefix")}
+    for match in matches:
+        matched_by = str(match.get("matched_by") or "")
+        if matched_by in counts:
+            counts[matched_by] += 1
+    detail = {
+        "catalog_total": total,
+        "catalog_matched": len(matches),
+        "catalog_unmatched": max(0, total - len(matches)),
+        "catalog_coverage": round(len(matches) / total, 4) if total else 1.0,
+        **{f"matched_{matched_by}": count for matched_by, count in counts.items()},
+        "rotation_compiler_expansions": compiled_rotations,
+    }
+    if searched_before_write is not None:
+        detail["searched_before_write"] = searched_before_write
+    _emit_fuel_event(
+        tenant,
+        tool_name=tool_name,
+        outcome="accepted",
+        reason_code="catalog_annotation",
+        detail=detail,
+    )
+
+
+def _guard_policy_code(policy: dict) -> str:
+    if policy.get("repeat_policy") == "intentional":
+        return "intentional"
+    return str(policy.get("variation_policy") or "default")
+
+
+def _mapped_detail_paths(
+    raw_value,
+    *,
+    payload_prefix: tuple[str | int, ...],
+    loc_prefix: tuple[str | int, ...],
+) -> list[IncomingPath]:
+    return [
+        IncomingPath((*payload_prefix, *relative), (*loc_prefix, *relative))
+        for relative in incoming_name_paths(raw_value)
+    ]
+
+
+def _mapped_schedule_paths(raw_schedule, *, payload_root: str, loc_root: str) -> list[IncomingPath]:
+    paths: list[IncomingPath] = []
+    if not isinstance(raw_schedule, dict):
+        return paths
+    for raw_day, day_def in raw_schedule.items():
+        day_int, key_err = _normalize_weekday_key(raw_day)
+        if key_err is not None or day_int is None or not isinstance(day_def, dict):
+            continue
+        paths.extend(
+            _mapped_detail_paths(
+                day_def,
+                payload_prefix=(payload_root, str(day_int)),
+                loc_prefix=(loc_root, raw_day),
+            )
+        )
+    return paths
+
+
+def _mapped_override_paths(raw_overrides) -> list[IncomingPath]:
+    paths: list[IncomingPath] = []
+    if not isinstance(raw_overrides, dict):
+        return paths
+    for raw_week, raw_schedule in raw_overrides.items():
+        try:
+            week = str(int(raw_week))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(raw_schedule, dict):
+            continue
+        for raw_day, day_def in raw_schedule.items():
+            day_int, key_err = _normalize_weekday_key(raw_day)
+            if key_err is not None or day_int is None or not isinstance(day_def, dict):
+                continue
+            paths.extend(
+                _mapped_detail_paths(
+                    day_def,
+                    payload_prefix=("week_overrides", week, str(day_int)),
+                    loc_prefix=("week_overrides", raw_week, raw_day),
+                )
+            )
+    return paths
 
 
 def _emit_fuel_event(tenant, *, tool_name, outcome, reason_code="", detail=None):
@@ -315,7 +429,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         if blocked is not None:
             return blocked
 
-        data = request.data
+        data, searched_before_write = _strip_search_marker(request.data)
         category = data.get("category", "other")
         if category not in WorkoutCategory.values:
             category = "other"
@@ -385,6 +499,17 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             )
             return Response(flat_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
+        incoming_catalog_paths = _mapped_detail_paths(
+            data.get("detail_json", {}) or {},
+            payload_prefix=("detail_json",),
+            loc_prefix=("detail_json",),
+        )
+        catalog_payload, catalog_matches, unmatched_exercises = annotate_incoming(
+            {"detail_json": detail_json},
+            incoming_catalog_paths,
+        )
+        detail_json = catalog_payload["detail_json"]
+
         # Strength/calisthenics logs represent performed sets even when DONE, so
         # preserve the wave2 guard against the assistant logging an empty list.
         # Other categories are guarded only while PLANNED; their completed logs
@@ -434,6 +559,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             writer="runtime",
             defer_detection=True,
         )
+        authored["detail_json"] = reinsert_catalog_refs(authored["detail_json"], detail_json)
 
         try:
             workout = Workout.objects.create(
@@ -481,7 +607,14 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         }
         if rpe_clamped:
             payload["rpe_clamped"] = True
-        _add_unmatched_exercises(payload, workout.detail_json)
+        _emit_catalog_write_event(
+            tenant,
+            tool_name="runtime-fuel-log",
+            matches=catalog_matches,
+            total=len(incoming_catalog_paths),
+            searched_before_write=searched_before_write,
+        )
+        _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
         return Response(payload, status=status.HTTP_201_CREATED)
 
 
@@ -533,9 +666,13 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             logger.info("runtime.patch.edit_locked workout=%s", workout_id)
             return lock_resp
 
-        data = request.data
+        data, searched_before_write = _strip_search_marker(request.data)
         original_date = workout.date
         updated_fields = []
+        catalog_matches: list[dict] = []
+        unmatched_exercises: list[str] = []
+        server_owned_detail = None
+        incoming_catalog_paths: list[IncomingPath] = []
 
         if "activity" in data:
             workout.activity = str(data["activity"]).strip()
@@ -626,6 +763,17 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 )
                 return Response(pres_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
             workout.detail_json = nd
+            incoming_catalog_paths = _mapped_detail_paths(
+                data["detail_json"],
+                payload_prefix=("detail_json",),
+                loc_prefix=("detail_json",),
+            )
+            catalog_payload, catalog_matches, unmatched_exercises = annotate_incoming(
+                {"detail_json": workout.detail_json},
+                incoming_catalog_paths,
+            )
+            workout.detail_json = catalog_payload["detail_json"]
+            server_owned_detail = workout.detail_json
             updated_fields.append("detail_json")
             if ncat != workout.category:
                 workout.category = ncat
@@ -649,6 +797,8 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 receipts=workout.pii_receipts,
                 defer_detection=True,
             )
+            if "detail_json" in authored and server_owned_detail is not None:
+                authored["detail_json"] = reinsert_catalog_refs(authored["detail_json"], server_owned_detail)
             for field, value in authored.items():
                 setattr(workout, field, value)
             if pii_values:
@@ -685,8 +835,15 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
             "duration_minutes": workout.duration_minutes,
             "rpe": workout.rpe,
         }
+        _emit_catalog_write_event(
+            tenant,
+            tool_name="runtime-fuel-workout-detail",
+            matches=catalog_matches,
+            total=len(incoming_catalog_paths),
+            searched_before_write=searched_before_write,
+        )
         if "detail_json" in data:
-            _add_unmatched_exercises(payload, workout.detail_json)
+            _add_catalog_feedback(payload, catalog_matches, unmatched_exercises)
         return Response(payload)
 
     def delete(self, request, tenant_id, workout_id):
@@ -1445,6 +1602,60 @@ class RuntimeSleepView(APIView):
 
 # ── Workout Plan CRUD ────────────────────────────────────────────────
 
+_PLAN_POLICY_KEY = "_plan_policy"
+
+
+def _stored_plan_policy(schedule_json) -> dict:
+    if not isinstance(schedule_json, dict):
+        return {}
+    policy = schedule_json.get(_PLAN_POLICY_KEY)
+    return dict(policy) if isinstance(policy, dict) else {}
+
+
+def _public_schedule(schedule_json) -> dict:
+    return {key: value for key, value in (schedule_json or {}).items() if key != _PLAN_POLICY_KEY}
+
+
+def _attach_plan_policy(schedule_json, policy: dict) -> dict:
+    attached = _public_schedule(schedule_json)
+    if policy:
+        attached[_PLAN_POLICY_KEY] = dict(policy)
+    return attached
+
+
+def _resolve_plan_policy(data, current=None):
+    policy = dict(current or {})
+    for key in ("variation_policy", "repeat_policy", "repeat_reason"):
+        if key not in data:
+            continue
+        value = str(data.get(key) or "").strip()
+        if value:
+            policy[key] = value
+        else:
+            policy.pop(key, None)
+
+    variation = str(policy.get("variation_policy") or "")
+    repeat = str(policy.get("repeat_policy") or "")
+    reason = str(policy.get("repeat_reason") or "").strip()
+    if variation not in {"", "progression_only"}:
+        return None, Response(
+            {"error": "invalid_variation_policy", "allowed": ["progression_only"]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if repeat not in {"", "intentional"}:
+        return None, Response(
+            {"error": "invalid_repeat_policy", "allowed": ["intentional"]},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if repeat == "intentional" and not reason:
+        return None, Response(
+            {"error": "invalid_repeat_policy", "message": "repeat_reason is required for an intentional repeat"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if repeat != "intentional":
+        policy.pop("repeat_reason", None)
+    return policy, None
+
 
 def _serialize_plan(plan, include_workouts=False, *, today=None):
     """Serialize a WorkoutPlan with optional workout list.
@@ -1460,6 +1671,7 @@ def _serialize_plan(plan, include_workouts=False, *, today=None):
         today = today_in_tenant_tz(plan.tenant)
     total = Workout.objects.filter(plan=plan).count()
     done = Workout.objects.filter(plan=plan, status=WorkoutStatus.DONE).count()
+    policy = _stored_plan_policy(plan.schedule_json)
     data = {
         "id": str(plan.id),
         "name": plan.name,
@@ -1467,7 +1679,7 @@ def _serialize_plan(plan, include_workouts=False, *, today=None):
         "start_date": str(plan.start_date),
         "weeks": plan.weeks,
         "days_per_week": plan.days_per_week,
-        "schedule_json": plan.schedule_json,
+        "schedule_json": _public_schedule(plan.schedule_json),
         "objective": plan.objective,
         "week_overrides": plan.week_overrides,
         "notes": plan.notes,
@@ -1477,6 +1689,7 @@ def _serialize_plan(plan, include_workouts=False, *, today=None):
         # (0 once over), current_week (1-based). All off the tenant-local today.
         **plan_progress_fields(plan, today),
     }
+    data.update(policy)
     if include_workouts:
         workouts = Workout.objects.filter(plan=plan).order_by("date", "created_at")
         data["workouts"] = [
@@ -1710,6 +1923,8 @@ def _normalize_stored_schedule_keys(schedule_json, *, plan_id):
     """Canonicalize legacy stored weekday names before merge/reconciliation."""
     normalized = {}
     for raw_key, day_def in (schedule_json or {}).items():
+        if raw_key == _PLAN_POLICY_KEY:
+            continue
         day_int, key_err = _normalize_weekday_key(raw_key)
         if key_err is not None or day_int is None:
             logger.warning("Plan %s schedule_json has invalid stored weekday key %r; ignoring it", plan_id, raw_key)
@@ -2010,7 +2225,7 @@ def _author_plan_expansion_inputs(
             category = workout_def.get("category", "other")
             if category not in WorkoutCategory.values:
                 category = "other"
-            authored_workouts[(week_idx, day_int)] = author_store_fields(
+            authored, receipts = author_store_fields(
                 tenant,
                 {
                     "activity": str(workout_def.get("activity", WorkoutCategory(category).label)).strip(),
@@ -2021,6 +2236,11 @@ def _author_plan_expansion_inputs(
                 writer=writer,
                 defer_detection=writer == "runtime",
             )
+            authored["detail_json"] = reinsert_catalog_refs(
+                authored["detail_json"],
+                workout_def.get("detail_json", {}),
+            )
+            authored_workouts[(week_idx, day_int)] = authored, receipts
     return authored_workouts
 
 
@@ -2386,7 +2606,7 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         if blocked is not None:
             return blocked
 
-        data = request.data
+        data, searched_before_write = _strip_search_marker(request.data)
         name = str(data.get("name", "")).strip()
         if not name:
             return Response({"error": "name is required"}, status=status.HTTP_400_BAD_REQUEST)
@@ -2485,7 +2705,53 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             result["deduped"] = True
             if superseded:
                 result["superseded_plans"] = superseded
+            _emit_catalog_write_event(
+                tenant,
+                tool_name="runtime-fuel-plans",
+                matches=[],
+                total=0,
+                searched_before_write=searched_before_write,
+            )
             return Response(result, status=status.HTTP_200_OK)
+
+        plan_policy, policy_err = _resolve_plan_policy(data)
+        if policy_err is not None:
+            return policy_err
+
+        incoming_catalog_paths = [
+            *_mapped_schedule_paths(schedule_json, payload_root="schedule_json", loc_root="schedule_json"),
+            *_mapped_override_paths(data.get("week_overrides")),
+        ]
+        catalog_payload, catalog_matches, unmatched_exercises = annotate_incoming(
+            {
+                "schedule_json": normalized_schedule,
+                "week_overrides": normalized_overrides,
+            },
+            incoming_catalog_paths,
+        )
+        normalized_schedule = catalog_payload["schedule_json"]
+        normalized_overrides = catalog_payload["week_overrides"]
+
+        from .plan_variety import validate_plan_variety
+
+        rotation_error = validate_plan_variety(
+            normalized_schedule,
+            weeks,
+            normalized_overrides,
+            variation_policy=plan_policy.get("variation_policy", ""),
+            repeat_policy=plan_policy.get("repeat_policy", ""),
+            repeat_reason=plan_policy.get("repeat_reason", ""),
+        )
+        if rotation_error is not None:
+            _emit_fuel_event(
+                tenant,
+                tool_name="runtime-fuel-plans",
+                outcome="rejected",
+                reason_code="plan_rotation_required",
+                detail={"guard_policy": _guard_policy_code(plan_policy), "guard_tracks": len(rotation_error["tracks"])},
+            )
+            return Response(rotation_error, status=status.HTTP_400_BAD_REQUEST)
+        normalized_schedule = _attach_plan_policy(normalized_schedule, plan_policy)
 
         from apps.pii.store_authoring import author_store_fields
 
@@ -2502,6 +2768,14 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
             seam="fuel.runtime.plan.create",
             writer="runtime",
             defer_detection=True,
+        )
+        authored_plan["schedule_json"] = reinsert_catalog_refs(
+            authored_plan["schedule_json"],
+            normalized_schedule,
+        )
+        authored_plan["week_overrides"] = reinsert_catalog_refs(
+            authored_plan["week_overrides"],
+            normalized_overrides,
         )
         authored_workouts = _author_plan_expansion_inputs(
             tenant,
@@ -2559,7 +2833,24 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         result["workouts_created"] = workouts_created
         if superseded:
             result["superseded_plans"] = superseded
-        _add_unmatched_exercises(result, authored_plan["schedule_json"], authored_plan["week_overrides"])
+        compiled_rotations = _compiled_rotation_count(data)
+        _emit_catalog_write_event(
+            tenant,
+            tool_name="runtime-fuel-plans",
+            matches=catalog_matches,
+            total=len(incoming_catalog_paths),
+            compiled_rotations=compiled_rotations,
+            searched_before_write=searched_before_write,
+        )
+        if plan_policy.get("repeat_policy") == "intentional":
+            _emit_fuel_event(
+                tenant,
+                tool_name="runtime-fuel-plans",
+                outcome="accepted",
+                reason_code="intentional_repeat",
+                detail={"guard_policy": "intentional", "intentional_repeat": True},
+            )
+        _add_catalog_feedback(result, catalog_matches, unmatched_exercises)
         return Response(result, status=status.HTTP_201_CREATED)
 
 
@@ -2603,9 +2894,12 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         if not plan:
             return Response({"error": "plan_not_found"}, status=status.HTTP_404_NOT_FOUND)
 
-        data = request.data
+        data, searched_before_write = _strip_search_marker(request.data)
+        stored_plan_policy = _stored_plan_policy(plan.schedule_json)
         updated_fields = []
         needs_regeneration = False
+        catalog_matches: list[dict] = []
+        unmatched_exercises: list[str] = []
 
         if "name" in data:
             plan.name = str(data["name"]).strip()
@@ -2793,6 +3087,62 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             except (TypeError, ValueError):
                 pass
 
+        plan_policy, policy_err = _resolve_plan_policy(data, stored_plan_policy)
+        if policy_err is not None:
+            return policy_err
+        if (
+            schedule_supplied
+            or normalized_remove_days
+            or any(key in data for key in ("variation_policy", "repeat_policy", "repeat_reason"))
+        ):
+            plan.schedule_json = _attach_plan_policy(plan.schedule_json, plan_policy)
+            if "schedule_json" not in updated_fields:
+                updated_fields.append("schedule_json")
+
+        catalog_paths: list[IncomingPath] = []
+        if schedule_supplied:
+            catalog_paths.extend(
+                _mapped_schedule_paths(data["schedule_json"], payload_root="schedule_json", loc_root="schedule_json")
+            )
+        if "week_overrides" in data:
+            catalog_paths.extend(_mapped_override_paths(data["week_overrides"]))
+        server_owned_plan_json = None
+        if schedule_supplied or "week_overrides" in data:
+            catalog_payload, catalog_matches, unmatched_exercises = annotate_incoming(
+                {
+                    "schedule_json": plan.schedule_json,
+                    "week_overrides": plan.week_overrides,
+                },
+                catalog_paths,
+            )
+            plan.schedule_json = catalog_payload["schedule_json"]
+            plan.week_overrides = catalog_payload["week_overrides"]
+            server_owned_plan_json = catalog_payload
+
+        if normalized_remove_days or any(key in data for key in ("schedule_json", "weeks", "week_overrides")):
+            from .plan_variety import validate_plan_variety
+
+            rotation_error = validate_plan_variety(
+                plan.schedule_json,
+                plan.weeks,
+                plan.week_overrides,
+                variation_policy=plan_policy.get("variation_policy", ""),
+                repeat_policy=plan_policy.get("repeat_policy", ""),
+                repeat_reason=plan_policy.get("repeat_reason", ""),
+            )
+            if rotation_error is not None:
+                _emit_fuel_event(
+                    tenant,
+                    tool_name="runtime-fuel-plan-detail",
+                    outcome="rejected",
+                    reason_code="plan_rotation_required",
+                    detail={
+                        "guard_policy": _guard_policy_code(plan_policy),
+                        "guard_tracks": len(rotation_error["tracks"]),
+                    },
+                )
+                return Response(rotation_error, status=status.HTTP_400_BAD_REQUEST)
+
         if updated_fields:
             from apps.pii.store_authoring import author_store_fields
 
@@ -2810,6 +3160,10 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
                 receipts=plan.pii_receipts,
                 defer_detection=True,
             )
+            if server_owned_plan_json is not None:
+                for field in ("schedule_json", "week_overrides"):
+                    if field in authored:
+                        authored[field] = reinsert_catalog_refs(authored[field], server_owned_plan_json[field])
             for field, value in authored.items():
                 setattr(plan, field, value)
             if pii_values:
@@ -2896,11 +3250,25 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         resp = _serialize_plan(plan, include_workouts=True, today=today_in_tenant_tz(tenant))
         if superseded:
             resp["superseded_plans"] = superseded
-        _add_unmatched_exercises(
-            resp,
-            plan.schedule_json,
-            plan.week_overrides,
+        _emit_catalog_write_event(
+            tenant,
+            tool_name="runtime-fuel-plan-detail",
+            matches=catalog_matches,
+            total=len(catalog_paths),
+            compiled_rotations=_compiled_rotation_count(data),
+            searched_before_write=searched_before_write,
         )
+        if plan_policy.get("repeat_policy") == "intentional" and any(
+            key in data for key in ("schedule_json", "weeks", "week_overrides", "repeat_policy", "repeat_reason")
+        ):
+            _emit_fuel_event(
+                tenant,
+                tool_name="runtime-fuel-plan-detail",
+                outcome="accepted",
+                reason_code="intentional_repeat",
+                detail={"guard_policy": "intentional", "intentional_repeat": True},
+            )
+        _add_catalog_feedback(resp, catalog_matches, unmatched_exercises)
         return Response(resp)
 
     def delete(self, request, tenant_id, plan_id):

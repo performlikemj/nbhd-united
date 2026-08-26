@@ -190,6 +190,200 @@ test("both new tools preserve compact 4xx errors", async (t) => {
   assert.equal(plan.details.json.error, "NBHD runtime error 400: invalid_filter (bad value)");
 });
 
+test("plan rotation and catalog errors stay structured instead of flattening", async (t) => {
+  setRuntimeEnv(t);
+  const payload = {
+    error: "plan_rotation_required",
+    message: "Rotate recipes",
+    tracks: [{ weekday: "monday", category: "strength", weeks: [1, 2, 3], max_consecutive_same: 3 }],
+    week_overrides_semantics: "whole_map_replacement",
+    catalog_candidates: [],
+  };
+  t.mock.method(globalThis, "fetch", async () => response(400, JSON.stringify(payload)));
+  const result = await collectTools({ apiBaseUrl: "https://nbhd.example" })
+    .nbhd_fuel_create_plan.execute("call", {
+      name: "Plan",
+      weeks: 8,
+      days_per_week: 1,
+      schedule_json: { monday: {} },
+    });
+  assert.deepEqual(result.details.json, payload);
+  assert.equal(result.content[0].text, JSON.stringify(payload));
+  assert.doesNotMatch(result.content[0].text, /NBHD runtime error/);
+});
+
+test("plan tools expose roles and forward explicit repeat policies", async (t) => {
+  setRuntimeEnv(t);
+  let body;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    body = JSON.parse(options.body);
+    return response(200, JSON.stringify({ id: "plan-1" }));
+  });
+  const tools = collectTools({ apiBaseUrl: "https://nbhd.example" });
+  assert.match(
+    tools.nbhd_fuel_create_plan.parameters.properties.schedule_json.additionalProperties.properties.detail_json.description,
+    /primary \| accessory \| warmup \| mobility/,
+  );
+  await tools.nbhd_fuel_create_plan.execute("call", {
+    name: "Rehab",
+    weeks: 8,
+    days_per_week: 1,
+    schedule_json: { monday: {} },
+    repeat_policy: "intentional",
+    repeat_reason: "Fixed rehab block",
+  });
+  assert.equal(body.repeat_policy, "intentional");
+  assert.equal(body.repeat_reason, "Fixed rehab block");
+});
+
+function rotationDay(activity = "Upper", accessories = ["Base Curl"]) {
+  return {
+    activity,
+    category: "strength",
+    detail_json: {
+      exercises: [
+        { name: "Bench Press", role: "primary", sets: [{ type: "weighted_reps", reps: 5, weight: 60 }] },
+        ...accessories.map((name) => ({
+          name,
+          role: "accessory",
+          sets: [{ type: "weighted_reps", reps: 10, weight: 10 }],
+        })),
+      ],
+    },
+  };
+}
+
+test("create_plan compiles rotations across plural weeks, existing overrides, and rest weeks", async (t) => {
+  setRuntimeEnv(t);
+  let captured;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    captured = JSON.parse(options.body);
+    return response(201, JSON.stringify({ id: "plan-1" }));
+  });
+  await collectTools({ apiBaseUrl: "https://nbhd.example" }).nbhd_fuel_create_plan.execute("call", {
+    name: "Rotating",
+    weeks: 5,
+    days_per_week: 1,
+    schedule_json: { monday: rotationDay() },
+    week_overrides: {
+      1: { monday: rotationDay("Custom Monday"), tuesday: rotationDay("Keep Tuesday") },
+      2: { monday: null },
+    },
+    accessory_rotations: [{
+      weekday: "monday",
+      slot: { exercise_index: 1 },
+      every_weeks: 2,
+      choices: [
+        { name: "Hammer Curl", sets: [{ type: "weighted_reps", reps: 10, weight: 12 }] },
+        { name: "Front Raise", sets: [{ type: "weighted_reps", reps: 12, weight: 8 }] },
+      ],
+    }],
+  });
+
+  assert.equal(Object.hasOwn(captured, "accessory_rotations"), false);
+  assert.equal(captured._compiled_rotations, 4);
+  assert.equal(captured.schedule_json.monday.detail_json.exercises[1].name, "Base Curl");
+  assert.equal(captured.week_overrides["0"].monday.detail_json.exercises[1].name, "Hammer Curl");
+  assert.equal(captured.week_overrides["1"].monday.activity, "Custom Monday");
+  assert.equal(captured.week_overrides["1"].monday.detail_json.exercises[1].name, "Hammer Curl");
+  assert.equal(captured.week_overrides["1"].tuesday.activity, "Keep Tuesday");
+  assert.equal(captured.week_overrides["2"].monday, null);
+  assert.equal(captured.week_overrides["3"].monday.detail_json.exercises[1].name, "Front Raise");
+  assert.equal(captured.week_overrides["4"].monday.detail_json.exercises[1].name, "Hammer Curl");
+  assert.equal(captured.week_overrides["0"].monday.detail_json.exercises[1].role, "accessory");
+});
+
+test("two role-addressed rotations compose on one day", async (t) => {
+  setRuntimeEnv(t);
+  let captured;
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    captured = JSON.parse(options.body);
+    return response(201, JSON.stringify({ id: "plan-1" }));
+  });
+  await collectTools({ apiBaseUrl: "https://nbhd.example" }).nbhd_fuel_create_plan.execute("call", {
+    name: "Two slots",
+    weeks: 2,
+    days_per_week: 1,
+    schedule_json: { monday: rotationDay("Upper", ["Curl", "Raise"]) },
+    accessory_rotations: [
+      {
+        weekday: "monday",
+        slot: { role: "accessory", nth: 0 },
+        every_weeks: 1,
+        choices: [{ name: "Hammer Curl", sets: [] }, { name: "Cable Curl", sets: [] }],
+      },
+      {
+        weekday: "monday",
+        slot: { role: "accessory", nth: 1 },
+        every_weeks: 1,
+        choices: [{ name: "Front Raise", sets: [] }, { name: "Face Pull", sets: [] }],
+      },
+    ],
+  });
+  assert.deepEqual(
+    captured.week_overrides["0"].monday.detail_json.exercises.slice(1).map((item) => item.name),
+    ["Hammer Curl", "Front Raise"],
+  );
+  assert.deepEqual(
+    captured.week_overrides["1"].monday.detail_json.exercises.slice(1).map((item) => item.name),
+    ["Cable Curl", "Face Pull"],
+  );
+});
+
+test("update_plan compiles from the stored plan and sends one complete override map", async (t) => {
+  setRuntimeEnv(t);
+  const calls = [];
+  t.mock.method(globalThis, "fetch", async (_url, options) => {
+    calls.push(options);
+    if (options.method === "GET") {
+      return response(200, JSON.stringify({
+        weeks: 3,
+        schedule_json: { monday: rotationDay() },
+        week_overrides: { 1: { tuesday: rotationDay("Keep") } },
+      }));
+    }
+    return response(200, JSON.stringify({ id: "plan-1" }));
+  });
+  await collectTools({ apiBaseUrl: "https://nbhd.example" }).nbhd_fuel_update_plan.execute("call", {
+    plan_id: "plan-1",
+    accessory_rotations: [{
+      weekday: "monday",
+      slot: { role: "accessory", nth: 0 },
+      every_weeks: 1,
+      choices: [{ name: "Hammer Curl", sets: [] }, { name: "Cable Curl", sets: [] }],
+    }],
+  });
+  assert.equal(calls.length, 2);
+  const patchBody = JSON.parse(calls[1].body);
+  assert.equal(Object.hasOwn(patchBody, "accessory_rotations"), false);
+  assert.equal(patchBody.week_overrides["1"].tuesday.activity, "Keep");
+  assert.equal(patchBody.week_overrides["2"].monday.detail_json.exercises[1].name, "Hammer Curl");
+});
+
+test("rotation slot out of range returns a clear error without calling runtime", async (t) => {
+  setRuntimeEnv(t);
+  let calls = 0;
+  t.mock.method(globalThis, "fetch", async () => {
+    calls += 1;
+    return response(201, "{}");
+  });
+  const result = await collectTools({ apiBaseUrl: "https://nbhd.example" })
+    .nbhd_fuel_create_plan.execute("call", {
+      name: "Bad slot",
+      weeks: 2,
+      days_per_week: 1,
+      schedule_json: { monday: rotationDay() },
+      accessory_rotations: [{
+        weekday: "monday",
+        slot: { exercise_index: 99 },
+        every_weeks: 1,
+        choices: [{ name: "Hammer Curl", sets: [] }],
+      }],
+    });
+  assert.equal(calls, 0);
+  assert.match(result.details.json.error, /slot is out of range for monday/);
+});
+
 test("all four write tools render the unmatched exercise warning line", async (t) => {
   setRuntimeEnv(t);
   t.mock.method(globalThis, "fetch", async () =>
@@ -210,6 +404,57 @@ test("all four write tools render the unmatched exercise warning line", async (t
       name,
     );
   }
+});
+
+test("successful search marks only the next plan or workout write", async (t) => {
+  setRuntimeEnv(t);
+  const writes = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/exercises/")) {
+      return response(200, JSON.stringify({ results: [], total: 0 }));
+    }
+    writes.push(JSON.parse(options.body));
+    return response(200, JSON.stringify({ id: "row-1" }));
+  });
+  const tools = collectTools({ apiBaseUrl: "https://nbhd.example" });
+
+  await tools.nbhd_fuel_search_exercises.execute("search-1", { query: "curl" });
+  await tools.nbhd_fuel_log_workout.execute("write-1", { activity: "Arms" });
+  await tools.nbhd_fuel_update_workout.execute("write-2", { workout_id: "workout-1", notes: "done" });
+  await tools.nbhd_fuel_search_exercises.execute("search-2", { muscle: "Hips" });
+  await tools.nbhd_fuel_create_plan.execute("write-3", {
+    name: "Plan",
+    weeks: 1,
+    days_per_week: 1,
+    schedule_json: { monday: {} },
+  });
+  await tools.nbhd_fuel_update_plan.execute("write-4", { plan_id: "plan-1", notes: "updated" });
+
+  assert.deepEqual(writes.map((body) => body._searched_before_write), [true, false, true, false]);
+});
+
+test("write tools render catalog matches from their own local request", async (t) => {
+  setRuntimeEnv(t);
+  t.mock.method(globalThis, "fetch", async () =>
+    response(200, JSON.stringify({
+      id: "row-1",
+      catalog_matches: [{
+        loc: ["detail_json", "exercises", 0, "name"],
+        slug: "hammer-curl",
+        matched_by: "equipment_prefix",
+        catalog_name: "Hammer Curl",
+      }],
+    })),
+  );
+  const result = await collectTools({ apiBaseUrl: "https://nbhd.example" })
+    .nbhd_fuel_log_workout.execute("call", {
+      activity: "Arms",
+      category: "strength",
+      detail_json: { exercises: [{ name: "Dumbbell Hammer Curls", sets: [] }] },
+    });
+  assert.match(result.content[0].text, /figure: Hammer Curl ← "Dumbbell Hammer Curls"/);
+  assert.equal(result.details.json.catalog_matches[0].slug, "hammer-curl");
 });
 
 test("nbhd_fuel_update_plan exposes explicit schedule removal fields", () => {
@@ -266,6 +511,7 @@ test("nbhd_fuel_update_plan forwards remove_days and replace_schedule", async (t
     },
     remove_days: ["friday", 3],
     replace_schedule: true,
+    _searched_before_write: false,
   });
   assert.deepEqual(result.details.json, { updated: true });
 });
