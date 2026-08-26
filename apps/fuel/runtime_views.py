@@ -174,6 +174,11 @@ def _emit_fuel_event(tenant, *, tool_name, outcome, reason_code="", detail=None)
 
 _STATUS_HINT = ", ".join(WorkoutStatus.values)
 
+# Statuses describing a session that did not happen. Nothing was performed and
+# nothing is prescribed, so the strength/calisthenics empty-prescription guard
+# does not apply to them.
+_NO_PRESCRIPTION_STATUSES = frozenset({WorkoutStatus.SKIPPED, WorkoutStatus.RESCHEDULED, WorkoutStatus.REST})
+
 
 def _reject_unknown_status(tenant, value, *, tool_name):
     """400 for a workout status outside :class:`WorkoutStatus`.
@@ -335,10 +340,14 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             )
             return Response(flat_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
-        # Only assistant-authored PLANNED rows need a prescription. Completed,
-        # skipped, rescheduled, and rest logs describe what happened rather than
-        # what the user should open and follow, so they are deliberately untouched.
-        if workout_status == WorkoutStatus.PLANNED and not _has_prescription(
+        # Strength/calisthenics logs represent performed sets even when DONE, so
+        # preserve the wave2 guard against the assistant logging an empty list.
+        # Other categories are guarded only while PLANNED; their completed logs
+        # may validly describe what happened without structured detail.
+        requires_prescription = (
+            category in ("strength", "calisthenics") and workout_status not in _NO_PRESCRIPTION_STATUSES
+        ) or workout_status == WorkoutStatus.PLANNED
+        if requires_prescription and not _has_prescription(
             detail_json,
             category,
             duration_minutes=duration,
@@ -353,7 +362,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
             pres_err = _missing_prescription_error(
                 category,
                 loc_prefix=["detail_json"],
-                subject="planned workouts",
+                subject="workouts",
             )
             return Response(pres_err.as_tool_result(), status=status.HTTP_400_BAD_REQUEST)
 
