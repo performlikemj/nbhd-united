@@ -404,12 +404,21 @@ function makeFakeApi(pluginConfig) {
 }
 
 describe("register() wires up the jobId/runId seam", () => {
-  it("registers all three hooks", () => {
+  it("declares hook activation in the manifest so the pinned lazy loader imports it", () => {
+    const manifest = JSON.parse(readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"));
+    assert.deepEqual(manifest.activation?.onCapabilities, ["hook"]);
+  });
+
+  it("registers all four hooks and emits a boot-visible warning", () => {
     const api = makeFakeApi();
+    let registrationLog = "";
+    api.logger.warn = (message) => { registrationLog = message; };
     register(api);
     assert.equal(typeof api._handlers["cron_changed"], "function");
     assert.equal(typeof api._handlers["before_prompt_build"], "function");
+    assert.equal(typeof api._handlers["subagent_spawned"], "function");
     assert.equal(typeof api._handlers["before_tool_call"], "function");
+    assert.match(registrationLog, /registered .*subagent_spawned/);
   });
 
   it("does nothing (no throw) when api.on is absent", () => {
@@ -577,6 +586,70 @@ describe("register() wires up the jobId/runId seam", () => {
 
     const result = beforeToolCall({ runId: "run-8", toolName: "nbhd_send_to_user", params: { message: "wrong" } });
     assert.deepEqual(result, { params: { message: "Drink water" } });
+  });
+
+  it("recovers the pinned runtime's omitted jobId from its isolated cron session key", () => {
+    const api = makeFakeApi({ tenantId: "tenant-pinned-context", internalApiKey: "key-pinned-context" });
+    register(api);
+    api._handlers["before_prompt_build"]({}, {
+      trigger: "cron",
+      runId: "run-pinned-context",
+      sessionKey: "agent:main:cron:job-pinned-context:run:run-pinned-context",
+    });
+    const result = api._handlers["before_tool_call"]({
+      runId: "run-pinned-context",
+      toolName: "nbhd_datebook_add_apple_reminder",
+      params: { items: [] },
+    });
+    assert.equal(result.params._nbhd_origin.run_id, "run-pinned-context");
+    assert.equal(result.params._nbhd_origin.job_id, "job-pinned-context");
+  });
+
+  it("does not trust a cron session key whose run segment disagrees with ctx.runId", () => {
+    const api = makeFakeApi({ tenantId: "tenant-pinned-context", internalApiKey: "key-pinned-context" });
+    register(api);
+    api._handlers["before_prompt_build"]({}, {
+      trigger: "cron",
+      runId: "run-actual",
+      sessionKey: "agent:main:cron:job-forged:run:run-other",
+    });
+    const result = api._handlers["before_tool_call"]({
+      runId: "run-actual",
+      toolName: "nbhd_datebook_add_apple_reminder",
+      params: { items: [] },
+    });
+    assert.equal(result.params._nbhd_origin, null);
+  });
+
+  it("joins a spawned helper runId to its requester cron run", () => {
+    const api = makeFakeApi({ tenantId: "tenant-helper-origin", internalApiKey: "key-helper-origin" });
+    register(api);
+    api._handlers["before_prompt_build"]({}, {
+      trigger: "cron",
+      jobId: "job-helper-origin",
+      runId: "run-helper-parent",
+      sessionKey: "agent:main:cron:job-helper-origin:run:run-helper-parent",
+    });
+    api._handlers["subagent_spawned"]({
+      runId: "run-helper-child",
+      childSessionKey: "agent:main:subagent:child",
+      agentId: "main",
+      mode: "run",
+      threadRequested: false,
+    }, {
+      runId: "run-helper-child",
+      childSessionKey: "agent:main:subagent:child",
+      requesterSessionKey: "agent:main:cron:job-helper-origin:run:run-helper-parent",
+    });
+
+    const result = api._handlers["before_tool_call"]({
+      runId: "run-helper-child",
+      toolName: "nbhd_datebook_add_apple_reminder",
+      params: { items: [], _nbhd_origin: { sig: "forged" } },
+    });
+    assert.equal(result.params._nbhd_origin.kind, "cron");
+    assert.equal(result.params._nbhd_origin.run_id, "run-helper-child");
+    assert.equal(result.params._nbhd_origin.job_id, "job-helper-origin");
   });
 
   it("prunes expired cache entries on the next cron_changed call", () => {
