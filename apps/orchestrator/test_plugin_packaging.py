@@ -83,3 +83,6 @@ class PluginPackagingRepoStateTests(SimpleTestCase):
         self.assertIn("nbhd-datebook-tools", copied)
         self.assertIn("nbhd-datebook-tools", guard.shippable_plugins())
         self.assertIn("nbhd-datebook-tools", guard.config_emittable_plugins())
+
+    def test_deleted_image_plugin_is_absent_from_dockerfile(self):
+        self.assertNotIn("image-gen", guard.DOCKERFILE.read_text())

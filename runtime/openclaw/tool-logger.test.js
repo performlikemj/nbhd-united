@@ -335,7 +335,7 @@ test("required guard: no required array → never blocks", async () => {
 
 // ── Guard arg-position robustness (adversarial finding 2026-06-13) ────────────
 // OpenClaw calls execute(toolCallId, params, signal, onUpdate) → params=args[1],
-// but legacy tools (image-gen, finance gravity_query) destructure args[0]. The
+// but the legacy finance gravity_query tool destructures args[0]. The
 // guard must read the real params object from either position and never grab
 // the AbortSignal at args[2].
 

@@ -68,7 +68,7 @@ function requiredList(parameters) {
  * Resolve the params object from an execute(...) call's args, tolerant of both
  * argument conventions present in this codebase:
  *   - canonical OpenClaw: execute(toolCallId, params, signal, onUpdate) → args[1]
- *   - a few legacy nbhd tools (nbhd-image-gen, finance gravity_query):
+ *   - a legacy finance tool (gravity_query):
  *     execute(params) / execute({...}) → args[0]
  * We check args[1] first, then args[0], and NEVER fall through to args[2]+
  * (those hold the AbortSignal / onUpdate callback, never params). This makes

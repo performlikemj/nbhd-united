@@ -62,7 +62,7 @@ PLUGIN_DIRS = [
 # the NBHD control-plane runtime (a different auth/error shape entirely — the
 # compactErrorDetail helper is written for the DRF envelope the NBHD runtime
 # returns, and doesn't fit anything else). Being here is not a blanket safety
-# claim; see the nbhd-image-gen entry.
+# claim; each exception below documents only why this transport guard does not apply.
 NON_HTTP_PLUGINS = {
     # Hook-only (api.on), never api.registerTool — no HTTP call anywhere in
     # the file, so there is no runtime response to mishandle.
@@ -91,21 +91,6 @@ NON_HTTP_PLUGINS = {
     # a raw parsed HTTP response body — a materially different, much narrower
     # risk than what this guard polices.
     "nbhd-site-publishing": "publishes via Azure SDK clients (not the NBHD runtime); errors are SDK .message text",
-    # registerTool present AND calls a real upstream (OpenAI) directly via
-    # Node's `https` module — no "fetch(" token, which is exactly why the old
-    # discovery predicate missed it. Outside this guard's scope for the same
-    # reason as nbhd-site-publishing: this guard's helper is written for the
-    # NBHD-runtime DRF envelope, and OpenAI's `{error:{message,type}}` shape
-    # isn't that. FIXED (2026-08-05, own regression test in
-    # error-transport.test.js): callOpenAIImagesAPI's JSON-parse-failure
-    # fallback used to do `reject(new Error(\`HTTP ${status}:
-    # ${data.slice(0, 200)}\`))`, forwarding up to 200 raw upstream bytes on a
-    # non-JSON OpenAI error. It now keeps only the status code and a
-    # content-free marker, same spirit as CANONICAL_PARSE_FALLBACK above. The
-    # JSON-parse SUCCESS path forwards OpenAI's own `error.message` — that's
-    # provider-authored prose about the request, not raw bytes or user data —
-    # left as-is, and covered by its own passing test case.
-    "nbhd-image-gen": "calls OpenAI directly via https.request(), not the NBHD runtime; own client, own error shape",
 }
 
 # The pattern the fix removed. Its reappearance anywhere in a plugin means the
@@ -363,14 +348,9 @@ class PluginErrorTransportDriftTests(SimpleTestCase):
         # own, so this cross-checks it against the tree.
         #
         # The tree-derived set used to be source-token detection ("registerTool"
-        # AND "fetch(" both present) — a DEFAULT-EXCLUDE design. That missed
-        # nbhd-image-gen, which reaches OpenAI's Images API through Node's
-        # `https` module (no "fetch(" token in the file) yet still forwards a
-        # non-JSON-body slice to a model-visible tool result (see
-        # NON_HTTP_PLUGINS below) — a plugin using an imported/aliased HTTP
-        # client, or any client that never spells "fetch(", would have been
-        # silently excluded forever, no matter how it handled the runtime
-        # response.
+        # AND "fetch(" both present) — a DEFAULT-EXCLUDE design. A plugin using
+        # an imported or aliased HTTP client could then be silently excluded,
+        # no matter how it handled the runtime response.
         #
         # DEFAULT-INCLUDE instead: every nbhd-* plugin directory is presumed
         # in scope and must carry the canonical helper, unless explicitly
