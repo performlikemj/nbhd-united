@@ -65,6 +65,7 @@ class EmptyPrescriptionGuardTests(_RuntimeFuelCase):
     def test_empty_skills_container_rejected(self):
         resp = self.log(
             {
+                "status": "planned",
                 "category": "calisthenics",
                 "activity": "Skills Session",
                 "detail_json": {"skills": []},
@@ -80,7 +81,7 @@ class EmptyPrescriptionGuardTests(_RuntimeFuelCase):
     def test_absent_detail_json_rejected_on_strength(self):
         # The create path is strict in the same way the PLAN create path is:
         # silence is not "leave it alone" here, there is nothing to leave.
-        resp = self.log({"category": "strength", "activity": "Push Day"})
+        resp = self.log({"status": "planned", "category": "strength", "activity": "Push Day"})
         self.assertEqual(resp.status_code, 400, resp.data)
         self.assertEqual(resp.data["details"][0]["type"], "missing_prescription")
         self.assertEqual(Workout.objects.filter(tenant=self.tenant).count(), 0)
@@ -98,8 +99,8 @@ class EmptyPrescriptionGuardTests(_RuntimeFuelCase):
         self.assertEqual(Workout.objects.get(tenant=self.tenant).status, "skipped")
 
     def test_cardio_without_prescription_unaffected(self):
-        # The guard is scoped to the two categories that carry exercises. A run
-        # has no "exercises" and must keep logging in one shot.
+        # Completed logs describe what happened rather than a prescription the
+        # user should open and follow, so they remain outside the planned guard.
         resp = self.log({"category": "cardio", "activity": "Morning Run", "duration_minutes": 30})
         self.assertEqual(resp.status_code, 201, resp.data)
 
