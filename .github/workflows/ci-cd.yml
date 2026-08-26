@@ -638,6 +638,7 @@ jobs:
 
       - name: Alert on OpenRouter ZDR route drift
         if: steps.freshness.outputs.superseded != 'true'
+        # Live API failures stay visible on this step but never fail the deploy job.
         continue-on-error: true
         run: |
           # Run inside the deployed app so OPENROUTER_API_KEY comes from its
