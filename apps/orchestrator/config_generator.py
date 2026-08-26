@@ -1540,10 +1540,12 @@ def effective_primary_model(tenant: Tenant) -> str:
     return resolve_tenant_models(tenant)[0]["primary"]
 
 
-# OpenRouter ignores chat-style provider routing for STT, so privacy is pinned by
-# model choice: this slug has only DeepInfra and Groq endpoints, both on
-# OpenRouter's ZDR endpoint list. Keep aligned with Django's OPENROUTER_STT_MODEL.
-OPENROUTER_STT_MODEL = {"provider": "openrouter", "model": "openai/whisper-large-v3-turbo"}
+TRANSCRIBE_CLI_MODEL = {
+    "type": "cli",
+    "command": "nbhd-transcribe",
+    "args": ["{{MediaPath}}"],
+    "timeoutSeconds": 60,
+}
 
 # Heartbeat model — the heartbeat is the one routine cron that's pure judgment
 # ("is anything genuinely new?" — it cross-references the daily note + heartbeat
@@ -2191,7 +2193,7 @@ def _build_tools_section(
     tools["media"] = {
         "audio": {
             "enabled": True,
-            "models": [OPENROUTER_STT_MODEL],
+            "models": [TRANSCRIBE_CLI_MODEL],
         },
     }
     # Tool-call loop detection. Off by default upstream — we turn it on as
@@ -2598,10 +2600,6 @@ def generate_openclaw_config(tenant: Tenant) -> dict[str, Any]:
         # Auth — provider tokens read from env vars automatically
         "auth": {
             "profiles": {
-                "anthropic:default": {
-                    "provider": "anthropic",
-                    "mode": "token",
-                },
                 "openrouter:default": {
                     "provider": "openrouter",
                     "mode": "token",
