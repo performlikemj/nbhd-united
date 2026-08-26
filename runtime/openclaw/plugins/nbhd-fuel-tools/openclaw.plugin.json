@@ -6,6 +6,8 @@
     "tools": [
       "nbhd_fuel_audit",
       "nbhd_fuel_summary",
+      "nbhd_fuel_search_exercises",
+      "nbhd_fuel_get_plan",
       "nbhd_fuel_get_workout",
       "nbhd_fuel_log_workout",
       "nbhd_fuel_update_workout",

@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import secrets
 from io import StringIO
+from unittest.mock import patch
 
 from django.core.management import call_command
 from django.test import SimpleTestCase, TestCase
 
 from apps.pii.management.commands.retire_stoplisted_bindings import _retire_stoplisted
-from apps.pii.redactor import is_never_a_name
+from apps.pii.redactor import _CATALOG_FITNESS_PHRASES, _span_tokens, is_never_a_name
 from apps.tenants.models import Tenant, User
 
 
@@ -86,6 +87,46 @@ class IsNeverANameTests(SimpleTestCase):
         # swept by a Latin vocabulary rule.
         for text in ["田中太郎", "マイケル", "佐々木"]:
             self.assertFalse(is_never_a_name(text))
+
+    def test_catalog_phrases_and_new_safe_tokens_are_retirable(self):
+        for text in [
+            "Tricep",
+            "Calf",
+            "Pushdowns",
+            "Arnold Press",
+            "Pendlay Row",
+            "Zercher Squat",
+            "Kroc Row",
+            "Meadows Row",
+            "Hindu Push-up",
+            "Copenhagen Plank",
+            "Cossack Squat",
+            "Farmers Walk",
+        ]:
+            self.assertTrue(is_never_a_name(text), text)
+
+    def test_catalog_phrase_set_excludes_single_token_aliases(self):
+        self.assertFalse([phrase for phrase in _CATALOG_FITNESS_PHRASES if len(_span_tokens(phrase)) == 1])
+        for text in ["Pallof", "Bridge", "Clam", "Bench"]:
+            self.assertFalse(is_never_a_name(text), text)
+        self.assertTrue(is_never_a_name("Pallof Press"))
+        self.assertTrue(is_never_a_name("Tricep"))
+
+    def test_catalog_surname_and_place_tokens_are_never_retired_bare(self):
+        for text in [
+            "Arnold",
+            "Farmer",
+            "Jefferson",
+            "Hindu",
+            "Copenhagen",
+            "Cossack",
+            "Hack",
+            "Meadows",
+            "Pendlay",
+            "Zercher",
+            "Kroc",
+        ]:
+            self.assertFalse(is_never_a_name(text), text)
 
 
 class RetireStoplistedMapTests(SimpleTestCase):
@@ -228,3 +269,41 @@ class RetireStoplistedBindingsCommandTests(TestCase):
             call_command("retire_stoplisted_bindings", stdout=StringIO())
         with self.assertRaises(CommandError):
             call_command("retire_stoplisted_bindings", "--all", str(_make_tenant(entity_map={}).id))
+
+    def test_commit_retires_exercise_bindings_and_stops_ingress_and_egress_substitution(self):
+        from apps.pii.authoring import author_text
+        from apps.pii.egress import redact_known_values
+        from apps.pii.redactor import redact_user_message
+
+        tenant = _make_tenant(
+            entity_map={
+                "[PERSON_710]": {"name": "Tricep"},
+                "[PERSON_695]": {"name": "Calf"},
+            }
+        )
+        tenant.layer1_placeholder_writes = True
+        tenant.save(update_fields=["layer1_placeholder_writes"])
+        self.assertEqual(
+            redact_known_values(tenant, "Tricep and Calf", seam="test.before"),
+            "[PERSON_710] and [PERSON_695]",
+        )
+
+        call_command("retire_stoplisted_bindings", str(tenant.id), "--commit", stdout=StringIO())
+
+        tenant.refresh_from_db()
+        self.assertTrue(tenant.pii_entity_map["[PERSON_710]"]["retired"])
+        self.assertTrue(tenant.pii_entity_map["[PERSON_695]"]["retired"])
+        with (
+            patch("apps.pii.redactor._detect_pii", return_value=[]),
+            patch("apps.pii.authoring._detect_pii", return_value=[]),
+        ):
+            self.assertEqual(redact_user_message("Tricep and Calf", tenant), "Tricep and Calf")
+            authored = author_text(
+                tenant,
+                "Tricep and Calf",
+                seam="test.exercise-retire",
+                writer="owner",
+                field="title",
+            )
+        self.assertEqual(authored.text, "Tricep and Calf")
+        self.assertEqual(redact_known_values(tenant, "Tricep and Calf", seam="test.after"), "Tricep and Calf")

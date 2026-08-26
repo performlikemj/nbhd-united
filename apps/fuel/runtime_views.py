@@ -20,6 +20,7 @@ from apps.router.document_write_guard import assert_write_allowed_for_document_t
 from apps.tenants.middleware import set_rls_context
 from apps.tenants.models import Tenant
 
+from . import catalog
 from .models import (
     BodyWeightLog,
     FuelProfile,
@@ -51,6 +52,7 @@ class _FuelResponseGuard(KnownValueResponseGuardMixin):
             "detail_json",
             "activity",
             "exercise",
+            "unmatched_exercises",
             "skip_reason",
             "reason",
             "summary",
@@ -148,6 +150,49 @@ def _get_tenant_or_404(tenant_id: UUID) -> Tenant | Response:
             {"error": "tenant_not_found"},
             status=status.HTTP_404_NOT_FOUND,
         )
+
+
+def _facet_key(value: str) -> str:
+    value = value.strip().casefold()
+    return value[:-1] if value.endswith("s") else value
+
+
+def _known_facet(value: str, legal_values: list[str]) -> bool:
+    wanted = _facet_key(value)
+    return any(_facet_key(candidate) == wanted for candidate in legal_values)
+
+
+def _unmatched_exercise_names(*values) -> list[str]:
+    """Find prescribed exercise/skill names without an exact catalog match."""
+    unmatched: list[str] = []
+    seen: set[str] = set()
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in {"exercises", "skills"} and isinstance(child, list):
+                    for item in child:
+                        if not isinstance(item, dict):
+                            continue
+                        name = str(item.get("name") or "").strip()
+                        if name and name not in seen and catalog.match(name) is None:
+                            seen.add(name)
+                            unmatched.append(name)
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    for value in values:
+        walk(value)
+    return unmatched
+
+
+def _add_unmatched_exercises(payload: dict, *written_values) -> dict:
+    unmatched = _unmatched_exercise_names(*written_values)
+    if unmatched:
+        payload["unmatched_exercises"] = unmatched
+    return payload
 
 
 def _emit_fuel_event(tenant, *, tool_name, outcome, reason_code="", detail=None):
@@ -436,6 +481,7 @@ class RuntimeLogWorkoutView(_FuelResponseGuard, APIView):
         }
         if rpe_clamped:
             payload["rpe_clamped"] = True
+        _add_unmatched_exercises(payload, workout.detail_json)
         return Response(payload, status=status.HTTP_201_CREATED)
 
 
@@ -630,17 +676,18 @@ class RuntimeWorkoutDetailView(_FuelResponseGuard, APIView):
                 except Exception:
                     logger.exception("PR detection failed for workout %s", workout.id)
 
-        return Response(
-            {
-                "id": str(workout.id),
-                "date": str(workout.date),
-                "category": workout.category,
-                "activity": workout.activity,
-                "status": workout.status,
-                "duration_minutes": workout.duration_minutes,
-                "rpe": workout.rpe,
-            }
-        )
+        payload = {
+            "id": str(workout.id),
+            "date": str(workout.date),
+            "category": workout.category,
+            "activity": workout.activity,
+            "status": workout.status,
+            "duration_minutes": workout.duration_minutes,
+            "rpe": workout.rpe,
+        }
+        if "detail_json" in data:
+            _add_unmatched_exercises(payload, workout.detail_json)
+        return Response(payload)
 
     def delete(self, request, tenant_id, workout_id):
         tenant, workout, err = self._get_workout(request, tenant_id, workout_id)
@@ -967,6 +1014,67 @@ class RuntimeFuelSummaryView(_FuelResponseGuard, APIView):
                 "profile": profile_data,
             }
         )
+
+
+class RuntimeFuelExerciseCatalogView(APIView):
+    """GET the public illustrated-exercise names without tenant PII egress."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, tenant_id):
+        err = _internal_auth_or_401(request, tenant_id)
+        if err:
+            return err
+        tenant_or_resp = _get_tenant_or_404(tenant_id)
+        if isinstance(tenant_or_resp, Response):
+            return tenant_or_resp
+
+        query = str(request.query_params.get("q", ""))[:80]
+        muscle = str(request.query_params.get("muscle", "")).strip()
+        equipment = str(request.query_params.get("equipment", "")).strip()
+        try:
+            limit = int(request.query_params.get("limit", 50))
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(100, limit))
+
+        legal_muscles = catalog.muscles()
+        legal_equipment = catalog.equipment_types()
+        unknown: list[str] = []
+        if muscle and not _known_facet(muscle, legal_muscles):
+            unknown.append("muscle")
+        if equipment and not _known_facet(equipment, legal_equipment):
+            unknown.append("equipment")
+
+        if unknown:
+            matches = []
+            guidance = f"Unknown {' and '.join(unknown)} filter; choose from the returned legal values."
+        else:
+            matches = catalog.search(
+                query,
+                muscle=muscle or None,
+                equipment=equipment or None,
+                limit=len(catalog._catalog().entries),
+            )
+            guidance = "Use returned exercise names verbatim so the app can show the illustrated figure."
+
+        payload = {
+            "results": [
+                {
+                    "name": entry.name,
+                    "muscle": entry.primaryMuscle,
+                    "equipment": entry.equipment,
+                    "stretch": entry.isStretch,
+                }
+                for entry in matches[:limit]
+            ],
+            "total": len(matches),
+            "guidance": guidance,
+        }
+        if not query or unknown:
+            payload["muscles"] = legal_muscles
+            payload["equipment_types"] = legal_equipment
+        return Response(payload)
 
 
 _PREFERRED_DAYS_HINT = (
@@ -1380,6 +1488,11 @@ def _serialize_plan(plan, include_workouts=False, *, today=None):
                 "activity": w.activity,
                 "duration_minutes": w.duration_minutes,
                 "rpe": w.rpe,
+                "has_prescription": _has_prescription(
+                    w.detail_json,
+                    w.category,
+                    duration_minutes=w.duration_minutes,
+                ),
             }
             for w in workouts
         ]
@@ -2446,6 +2559,7 @@ class RuntimeWorkoutPlanListCreateView(_FuelResponseGuard, APIView):
         result["workouts_created"] = workouts_created
         if superseded:
             result["superseded_plans"] = superseded
+        _add_unmatched_exercises(result, authored_plan["schedule_json"], authored_plan["week_overrides"])
         return Response(result, status=status.HTTP_201_CREATED)
 
 
@@ -2782,6 +2896,11 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         resp = _serialize_plan(plan, include_workouts=True, today=today_in_tenant_tz(tenant))
         if superseded:
             resp["superseded_plans"] = superseded
+        _add_unmatched_exercises(
+            resp,
+            plan.schedule_json,
+            plan.week_overrides,
+        )
         return Response(resp)
 
     def delete(self, request, tenant_id, plan_id):
@@ -2916,6 +3035,11 @@ class RuntimeFuelAuditView(APIView):
                 # RPE. The prep cron reads audit, so surfacing it is also the
                 # first rung toward recovery-aware re-tuning. null = unset.
                 "rpe": w.rpe,
+                "has_prescription": _has_prescription(
+                    w.detail_json,
+                    w.category,
+                    duration_minutes=w.duration_minutes,
+                ),
             }
             for w in next_14d_qs
         ]
@@ -2935,7 +3059,14 @@ class RuntimeFuelAuditView(APIView):
         for rd in sorted(rest_dates_for_window(tenant, today, horizon_14d_end, plans=active_plan_objs)):
             if str(rd) in real_horizon_dates:
                 continue
-            next_14d.append({"date": str(rd), "status": "rest", "activity": "Rest day"})
+            next_14d.append(
+                {
+                    "date": str(rd),
+                    "status": "rest",
+                    "activity": "Rest day",
+                    "has_prescription": None,
+                }
+            )
         next_14d.sort(key=lambda w: w["date"])
 
         # today_plan fallback — the daily-note Fuel section is authored only by

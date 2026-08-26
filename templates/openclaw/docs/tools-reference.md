@@ -180,11 +180,15 @@ Rules:
 
 ## Fuel Tools (`nbhd-fuel-tools` plugin — only loaded when Fuel is enabled)
 
+Catalog illustrations: Workout Guide by Bryl Lim (bryllim/workout-guide), CC BY-SA 4.0.
+
 ### Read / context
 | Tool | Required params | Purpose |
 |------|----------------|---------|
 | `nbhd_fuel_summary` | none | Fitness context in one call: recent workouts, planned workouts, latest body weight, fitness profile, **all-time PRs, 12-month monthly volume, and the user's open Fuel goals**. PR rows include `metric` and a server-authored `display`. `est_1rm` is an **estimate derived from a rep set**, never weight actually lifted: use `display`, say "estimated 1RM", and congratulate the actual `weight × reps` source set. Call at the start of fitness conversations. **Trigger:** any general "how's my training going", goal, or PR question. |
 | `nbhd_fuel_audit` | none | **Prefer over `nbhd_fuel_summary`** when the user asks for a workout, asks what's planned, wants to schedule, or signals they're training right now ("I'm at the gym", "about to lift", "between sets"). Adds today's plan, next-14-day workouts, live cron state, and duplicate/orphan conflict detection. If `conflicts.duplicate_fires` is non-empty, surface and STOP. |
+| `nbhd_fuel_search_exercises` | none | Search the 302 illustrated exercises; use the returned name verbatim so the app shows the figure. Call while choosing accessories or mobility movements. Filters are exact. |
+| `nbhd_fuel_get_plan` | `plan_id` | Fetch the full plan with every workout row and `has_prescription`; use it to find and fill every empty session. |
 
 ### Logging
 | Tool | Required params | Purpose |
@@ -205,13 +209,15 @@ Rules:
 | Tool | Required params | Purpose |
 |------|----------------|---------|
 | `nbhd_fuel_create_plan` | `name`, `weeks`, `days_per_week`, `schedule_json` | **Use whenever the user asks to make / build / design / lay out / fill out a plan, program, routine, or schedule.** `schedule_json` is keyed by weekday **name** (`"monday"`..`"sunday"`); numeric indices are legacy-only and are the classic source of off-by-one days. Always pass the user's tenant-local start anchor as `start_date`. For "today" / "I'm at the gym now", use today and `schedule_json` MUST include today's weekday — rotate the split so today is day 1; the server 400s otherwise. Omitting `start_date` falls back to next Monday only as backend fallback behavior, not a recommendation. Check `nbhd_fuel_summary` for an existing active plan first. |
-| `nbhd_fuel_update_plan` | `plan_id` | Change a plan's name, status (active/paused/completed/archived), notes, or schedule. Schedule/weeks changes regenerate future planned workouts; per-workout customizations are preserved when (date, activity) still matches. |
+| `nbhd_fuel_update_plan` | `plan_id` | Change a plan's name, status (active/paused/completed/archived), notes, or schedule. An override weekday is a complete day object because it replaces the base day wholesale. `week_overrides` replaces the whole map, so include every week to keep. |
 | `nbhd_fuel_delete_plan` | `plan_id` | Delete a plan and all future planned workouts (completed workouts are preserved, unlinked). **Always confirm first.** |
 
 Rules:
 - When logging from natural language, infer as much as possible — don't interrogate
 - "deadlift 75kg 3x5" → single call with `category=strength`, `detail_json` with exercises/sets
 - Always confirm what was logged with a brief message
+- Mobility uses catalog-named skills with hold_time sets; blocks only for non-movement work such as breathing or foam rolling.
+- If a write reports an unmatched exercise you chose, search for an exact catalog name; never swap a user-requested movement without asking.
 - Never present a dated plan as prose. Use `nbhd_fuel_create_plan`, then use its `first_workout_date` (and heed `start_date_note`) for the first session; never assume `start_date` has a session
 - `nbhd_fuel_summary` now carries a **full year** of history (all-time PRs, 12-month volume) plus the user's **typed goals** — reference them instead of asking the user to restate; see `rules/fuel.md`
 - See `rules/fuel.md` for onboarding flow and profile-aware recommendations

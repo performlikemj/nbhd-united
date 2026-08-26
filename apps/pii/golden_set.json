@@ -42,6 +42,109 @@
     "expect": "clean"
   },
   {
+    "id": "fuel-catalog-001",
+    "pillar": "fuel",
+    "text": "Tricep pushdowns",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-catalog-002",
+    "pillar": "fuel",
+    "text": "Standing calf raises",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-catalog-003",
+    "pillar": "fuel",
+    "text": "Arnold press",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-catalog-004",
+    "pillar": "fuel",
+    "text": "Romanian deadlift",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-catalog-005",
+    "pillar": "fuel",
+    "text": "Bulgarian split squat",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-catalog-006",
+    "pillar": "fuel",
+    "text": "Nordic hamstring curl",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-catalog-007",
+    "pillar": "fuel",
+    "text": "Copenhagen plank",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-catalog-008",
+    "pillar": "fuel",
+    "text": "Pendlay row",
+    "expect": "clean"
+  },
+  {
+    "id": "fuel-catalog-control-001",
+    "pillar": "control",
+    "text": "Dinner with Arnold Schwarzenegger tonight",
+    "expect": [
+      {
+        "span": "Arnold Schwarzenegger",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "id": "fuel-catalog-control-002",
+    "pillar": "control",
+    "text": "Flight to Copenhagen Airport",
+    "expect": [
+      {
+        "span": "Copenhagen",
+        "type": "LOCATION"
+      }
+    ]
+  },
+  {
+    "id": "fuel-catalog-control-003",
+    "pillar": "control",
+    "text": "Dinner with the Meadows family",
+    "expect": [
+      {
+        "span": "Meadows",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "id": "fuel-catalog-control-004",
+    "pillar": "control",
+    "text": "Run with Alice",
+    "expect": [
+      {
+        "span": "Alice",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
+    "id": "fuel-catalog-control-005",
+    "pillar": "control",
+    "text": "Tricep pushdowns with John",
+    "expect": [
+      {
+        "span": "John",
+        "type": "PERSON"
+      }
+    ]
+  },
+  {
     "id": "tasks-001",
     "pillar": "tasks",
     "text": "Mark the task \"What task are there\" as done.",
