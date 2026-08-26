@@ -37,6 +37,11 @@ _STRIP_FIELDS = {
     "runningAtMs",
 }
 
+# Gateway-only jobs have no durable ``source`` field. These reserved names let
+# legacy list/cache paths recover the source without treating an arbitrary user
+# name such as ``_x`` as internal.
+_SYSTEM_GENERATED_PREFIXES = ("_congrats-", "_core:", "_finance:")
+
 
 def _row_to_job_dict(row: CronJob) -> dict:
     """Render a ``CronJob`` row in the gateway-shape dict the dashboard expects.
@@ -77,6 +82,8 @@ def _classify_source(name: str) -> str:
         return CronJobSource.SYSTEM
     if name.startswith("_sync:"):
         return CronJobSource.AGENT
+    if name.startswith(_SYSTEM_GENERATED_PREFIXES):
+        return CronJobSource.SYSTEM
     # Bare system cron names (Morning Briefing, Evening Check-in, etc.) —
     # assume system. Any user-created cron will be USER, not these.
     if name in {
@@ -101,7 +108,7 @@ def list_visible_jobs(tenant: Tenant) -> dict:
     from .tenant_views import _is_hidden_cron
 
     rows = CronJob.objects.filter(tenant=tenant).order_by("name")
-    jobs = [_row_to_job_dict(row) for row in rows if not _is_hidden_cron(row.name)]
+    jobs = [_row_to_job_dict(row) for row in rows if not _is_hidden_cron(row.name, row.source)]
     return {"jobs": jobs}
 
 
@@ -131,16 +138,14 @@ def create_job(tenant: Tenant, data: dict, *, max_visible: int = 10) -> tuple[di
     except ScheduleValidationError as exc:
         return {"detail": str(exc)}, status.HTTP_400_BAD_REQUEST
 
-    # Derive the visible-count exclusion from tenant_views.HIDDEN_SYSTEM_CRONS
-    # so additions to the hidden set (e.g. core unearthing crons like Personal
-    # Question, Evening Check-in) automatically stop counting toward the cap.
+    # Keep the quota predicate identical to the tenant-list visibility rule:
+    # named hidden templates are excluded, as are underscore-prefixed rows not
+    # owned by the user. A user-owned ``_x`` still consumes a visible slot.
     from django.db.models import Q
 
-    from .tenant_views import HIDDEN_SYSTEM_CRON_PREFIXES, HIDDEN_SYSTEM_CRONS
+    from .tenant_views import HIDDEN_SYSTEM_CRONS
 
-    hidden_q = Q(name__in=HIDDEN_SYSTEM_CRONS)
-    for prefix in HIDDEN_SYSTEM_CRON_PREFIXES:
-        hidden_q |= Q(name__startswith=prefix)
+    hidden_q = Q(name__in=HIDDEN_SYSTEM_CRONS) | (Q(name__startswith="_") & ~Q(source=CronJobSource.USER))
     visible_count = CronJob.objects.filter(tenant=tenant).exclude(hidden_q).count()
     if visible_count >= max_visible:
         return (
@@ -171,7 +176,9 @@ def create_job(tenant: Tenant, data: dict, *, max_visible: int = 10) -> tuple[di
         tenant=tenant,
         name=name,
         data=job_data,
-        source=_classify_source(name),
+        # This helper is called only by the authenticated tenant dashboard.
+        # User ownership wins even when the chosen name starts with ``_``.
+        source=CronJobSource.USER,
         managed=True,
         enabled=enabled,
     )

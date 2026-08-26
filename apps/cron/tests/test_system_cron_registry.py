@@ -287,6 +287,19 @@ class SystemCronsWellFormednessTests(TestCase):
             "apps.cron.tasks.expire_finished_at_crons_task",
         )
 
+    def test_internal_at_cron_cleanup_is_scheduled_every_five_minutes(self):
+        from apps.cron.views import TASK_MAP
+
+        by_name = {name: (cron_expr, path, retries) for name, cron_expr, path, retries in reg_cmd.iter_system_crons()}
+        self.assertEqual(
+            by_name["cleanup-internal-crons"],
+            ("*/5 * * * *", "/api/cron/trigger/cleanup_internal_crons/", None),
+        )
+        self.assertEqual(
+            TASK_MAP["cleanup_internal_crons"],
+            "apps.cron.tasks.cleanup_internal_crons_task",
+        )
+
     def test_wave_b_eval_probes_are_scheduled(self):
         """The five Wave B eval probes (PR-B6) are wired with the planned exprs.
 

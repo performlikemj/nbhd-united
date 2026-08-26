@@ -15,7 +15,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from apps.cron.models import CronJob
+from apps.cron.models import CronJob, CronJobSource
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +276,7 @@ def republish_apple_revocation_outbox_task() -> dict:
 # the fire time may run the job late on wake, so a generous grace keeps a
 # same-hour wake honest without leaving the name squatted for long.
 AT_CRON_GRACE = timedelta(hours=1)
+INTERNAL_AT_CRON_RETENTION = timedelta(hours=24)
 
 
 def expire_finished_at_crons_task() -> dict:
@@ -356,3 +357,42 @@ def expire_finished_at_crons_task() -> dict:
     expired = CronJob.objects.filter(id__in=expired_ids, enabled=True).update(enabled=False, updated_at=now)
     logger.info("expire_finished_at_crons: retired %s spent at-cron(s) %s", expired, expired_ids)
     return {"expired": expired, "ids": expired_ids}
+
+
+def cleanup_internal_crons_task() -> dict:
+    """Delete stale, disabled internal one-shot rows after a 24-hour buffer.
+
+    The gateway auto-deletes ``kind:"at"`` jobs after they fire, while the
+    hourly retirement sweep above disables the corresponding Postgres rows.
+    Internal transients have no user-facing audit value, so retain them for one
+    day and then remove them. Recurring, enabled, and user-owned rows are never
+    eligible.
+    """
+    cutoff = timezone.now() - INTERNAL_AT_CRON_RETENTION
+    stale_internal = CronJob.objects.filter(
+        name__startswith="_",
+        enabled=False,
+        updated_at__lt=cutoff,
+        data__schedule__kind="at",
+    ).exclude(source=CronJobSource.USER)
+    stale_ids = list(stale_internal.values_list("id", flat=True))
+    if not stale_ids:
+        logger.info("cleanup_internal_crons: nothing to delete")
+        return {"deleted": 0, "ids": []}
+
+    # Reapply the safety predicate for the delete so a concurrent re-enable
+    # between the read and write cannot be removed.
+    _, deleted_by_model = (
+        CronJob.objects.filter(
+            id__in=stale_ids,
+            name__startswith="_",
+            enabled=False,
+            updated_at__lt=cutoff,
+            data__schedule__kind="at",
+        )
+        .exclude(source=CronJobSource.USER)
+        .delete()
+    )
+    deleted = deleted_by_model.get("cron.CronJob", 0)
+    logger.info("cleanup_internal_crons: deleted %s stale internal at-cron(s) %s", deleted, stale_ids)
+    return {"deleted": deleted, "ids": stale_ids}
