@@ -263,6 +263,16 @@ CRON_GATE_TENANT_IDS = env("CRON_GATE_TENANT_IDS", default="")
 # gate fleet-wide. Empty/unset means nobody so the reporter ships dark.
 USAGE_HOOKS_TENANT_IDS = env("USAGE_HOOKS_TENANT_IDS", default="")
 
+# Proactive calendar / Apple Reminder / recurring-task suggestions in the
+# Morning Briefing and Week Ahead Review. Comma-separated tenant UUIDs open
+# individual tenants; the literal "*" opens the feature fleet-wide. Empty or
+# unset means nobody. MJ's row carries a manual
+# `[PROACTIVE SUGGESTIONS TRIAL 2026-08-17]` prepend. Before enabling MJ,
+# manually strip that prepend, refresh the system cron rows, and verify the new
+# block is on the row. Until then, refresh classifies the row as custom and
+# preserves it.
+PROACTIVE_SUGGESTIONS_TENANT_IDS = env("PROACTIVE_SUGGESTIONS_TENANT_IDS", default="")
+
 # Silently-dropped app-turn retry canary gate. Comma-separated tenant UUIDs;
 # empty means nobody so the retry ships dark and opens one tenant at a time.
 RETRY_DROPPED_TENANT_IDS = env("RETRY_DROPPED_TENANT_IDS", default="")

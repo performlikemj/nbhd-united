@@ -1916,6 +1916,10 @@ def refresh_system_cron_rows_from_seed(tenant: Tenant | str) -> dict:
 # match as "default" and get rolled forward. Old entries can be pruned
 # once the fleet has converged.
 _KNOWN_DEFAULT_PREFIXES = (
+    # Current shared preamble after the reconcile-time date line. Added when
+    # ``_prepare_cron_prompt`` gained explicit fire-time clock priority; without
+    # this, freshly seeded rows are misclassified as user customizations.
+    "**Time-source priority:**",
     # Shared preamble injected by ``_prepare_cron_prompt`` before every
     # prompt-template body. This is what stored cron messages actually
     # start with after ``strip_date_line``, since the preamble comes AFTER

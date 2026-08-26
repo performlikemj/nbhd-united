@@ -317,9 +317,13 @@ async function loadTools(target) {
   const tools = new Map();
   const api = {
     pluginConfig: { apiBaseUrl: API_BASE_URL, ...(target.pluginConfig || {}) },
-    // Some plugins pass (def), some (def, { optional: true }) — accept both.
+    // Some plugins pass a static definition; channel-aware tools pass an
+    // OpenClaw tool factory. Resolve either shape before collecting tools.
     registerTool(def) {
-      if (def && typeof def.name === "string") tools.set(def.name, def);
+      const resolved = typeof def === "function"
+        ? def({ messageChannel: "telegram" })
+        : def;
+      if (resolved && typeof resolved.name === "string") tools.set(resolved.name, resolved);
     },
     on() {},
     logger: { info() {}, warn() {}, error() {}, debug() {} },

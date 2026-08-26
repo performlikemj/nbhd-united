@@ -25,11 +25,14 @@ after(() => {
   }
 });
 
-function registeredTools() {
+function registeredTools(toolContext = {}) {
   const tools = new Map();
   register({
     pluginConfig: {},
-    registerTool(tool) {
+    registerTool(definition) {
+      const tool = typeof definition === "function"
+        ? definition(toolContext)
+        : definition;
       tools.set(tool.name, tool);
     },
   });
@@ -109,6 +112,28 @@ test("202 pending approval result is explicit that the task does not exist", asy
   assert.match(result.content[0].text, /pending the user's approval/i);
   assert.match(result.content[0].text, /does not exist yet/i);
   assert.equal(result.details.json.action_id, 42);
+});
+
+test("202 pending approval guidance is channel-aware", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    state: "pending_approval",
+    action_id: 42,
+    summary: "Every Friday at 5pm",
+  }), { status: 202 });
+
+  const expectedByChannel = new Map([
+    ["ios", "This scheduled task is pending your approval and does not exist yet. Approve it via the card in the app."],
+    ["telegram", "This scheduled task is pending the user's approval and does not exist yet; the approval prompt was sent to their Telegram — they tap Approve there."],
+    ["line", "This scheduled task is pending the user's approval and does not exist yet; the approval prompt was sent to their LINE — they tap Approve there."],
+    [undefined, "This scheduled task is pending the user's approval and does not exist yet; the approval prompt was sent to their linked messaging channel — they tap Approve there."],
+  ]);
+
+  for (const [messageChannel, expected] of expectedByChannel) {
+    const tool = registeredTools({ messageChannel }).get("nbhd_cron_create_pure_reminder");
+    const result = await tool.execute(`call-${messageChannel ?? "unknown"}-pending`, cases[0][1]);
+    assert.equal(result.content[0].text, expected);
+    assert.doesNotMatch(result.content[0].text, /\/approve/i);
+  }
 });
 
 test("409 request-id and name conflicts return clear, non-creation text", async () => {
