@@ -113,11 +113,9 @@ class ByoFleetMigrationTest(TestCase):
 
 
 class ByoFleetMigrationDefaultTest(TestCase):
-    """Schema-default coverage: ``create_tenant`` after this PR ships
-    rows with ``byo_models_enabled=True`` so newly provisioned tenants
-    don't need a one-shot data migration."""
+    """Current schema-default coverage after the BYO surface was parked."""
 
-    def test_new_tenant_has_byo_enabled_by_default(self):
+    def test_new_tenant_has_byo_disabled_by_default(self):
         new_tenant = create_tenant(display_name="NewTenant", telegram_chat_id=820010)
         new_tenant.refresh_from_db()
-        self.assertTrue(new_tenant.byo_models_enabled)
+        self.assertFalse(new_tenant.byo_models_enabled)

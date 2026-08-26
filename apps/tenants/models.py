@@ -960,12 +960,11 @@ class Tenant(models.Model):
         help_text="Cached LLM cluster names keyed by hash of sorted member lesson ids.",
     )
 
-    # BYO subscription mode — Phase 1 gates Anthropic Claude Pro/Max CLI
-    # behind this flag. After fleet rollout (PR #434, 2026-05-02) the default
-    # is True; existing rows are flipped via migration 0051. Newly provisioned
-    # tenants are auto-enabled and can connect from day one.
+    # Parked BYO subscription scaffold. Anthropic Claude Pro/Max CLI traffic is
+    # non-ZDR, so the product surface is disabled by default. Migration 0159
+    # also turns the flag off for every non-deleted tenant.
     byo_models_enabled = models.BooleanField(
-        default=True,
+        default=False,
         help_text="Enable bring-your-own Anthropic/OpenAI subscription mode for this tenant",
     )
 
