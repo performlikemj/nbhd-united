@@ -52,6 +52,7 @@ class _FuelResponseGuard(KnownValueResponseGuardMixin):
             "detail_json",
             "activity",
             "exercise",
+            "unmatched_exercises",
             "skip_reason",
             "reason",
             "summary",
@@ -2897,8 +2898,8 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             resp["superseded_plans"] = superseded
         _add_unmatched_exercises(
             resp,
-            data.get("schedule_json"),
-            data.get("week_overrides"),
+            plan.schedule_json,
+            plan.week_overrides,
         )
         return Response(resp)
 
@@ -3063,7 +3064,7 @@ class RuntimeFuelAuditView(APIView):
                     "date": str(rd),
                     "status": "rest",
                     "activity": "Rest day",
-                    "has_prescription": True,
+                    "has_prescription": None,
                 }
             )
         next_14d.sort(key=lambda w: w["date"])

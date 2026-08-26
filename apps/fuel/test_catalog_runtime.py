@@ -237,3 +237,41 @@ class UnmatchedExerciseFeedbackTests(CatalogRuntimeCase):
         )
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(response.data["unmatched_exercises"], [self.unknown])
+
+    @patch("apps.fuel.runtime_views._manage_fuel_cron")
+    def test_update_plan_warns_from_authored_values_and_guards_egress(self, _cron):
+        self.tenant.pii_entity_map = {"[PERSON_1]": {"name": "Alice"}}
+        self.tenant.layer1_placeholder_writes = True
+        self.tenant.save(update_fields=["pii_entity_map", "layer1_placeholder_writes"])
+        plan = WorkoutPlan.objects.create(
+            tenant=self.tenant,
+            name="Authored warning",
+            start_date=date.today() + timedelta(days=7),
+            weeks=1,
+            days_per_week=1,
+            schedule_json={},
+        )
+        detail = {
+            "exercises": [
+                {
+                    "name": "Alice special",
+                    "sets": [{"type": "bodyweight_reps", "reps": 8}],
+                }
+            ]
+        }
+
+        response = self.client.patch(
+            self.url(f"plans/{plan.id}/"),
+            {"schedule_json": {"monday": {"activity": "Push", "category": "strength", "detail_json": detail}}},
+            format="json",
+            **self.headers,
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data["unmatched_exercises"], ["[PERSON_1] special"])
+        self.assertNotIn("Alice", repr(response.data["unmatched_exercises"]))
+        plan.refresh_from_db()
+        self.assertEqual(
+            plan.schedule_json["0"]["detail_json"]["exercises"][0]["name"],
+            "[PERSON_1] special",
+        )

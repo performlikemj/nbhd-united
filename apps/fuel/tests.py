@@ -6804,6 +6804,7 @@ class RestDaysRuntimeTests(TestCase):
         rest_entries = [w for w in resp.data["next_14d_workouts"] if w.get("status") == "rest"]
         self.assertTrue(rest_entries)
         self.assertEqual(rest_entries[0]["activity"], "Rest day")
+        self.assertIsNone(rest_entries[0]["has_prescription"])
         # today is a programmed rest day → the rest entry flows into today_plan.workouts.
         self.assertIn("rest", [w.get("status") for w in resp.data["today_plan"]["workouts"]])
         # active_plans carry the progress fields too.

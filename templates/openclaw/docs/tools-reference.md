@@ -216,6 +216,8 @@ Rules:
 - When logging from natural language, infer as much as possible — don't interrogate
 - "deadlift 75kg 3x5" → single call with `category=strength`, `detail_json` with exercises/sets
 - Always confirm what was logged with a brief message
+- Mobility uses catalog-named skills with hold_time sets; blocks only for non-movement work such as breathing or foam rolling.
+- If a write reports an unmatched exercise you chose, search for an exact catalog name; never swap a user-requested movement without asking.
 - Never present a dated plan as prose. Use `nbhd_fuel_create_plan`, then use its `first_workout_date` (and heed `start_date_note`) for the first session; never assume `start_date` has a session
 - `nbhd_fuel_summary` now carries a **full year** of history (all-time PRs, 12-month volume) plus the user's **typed goals** — reference them instead of asking the user to restate; see `rules/fuel.md`
 - See `rules/fuel.md` for onboarding flow and profile-aware recommendations

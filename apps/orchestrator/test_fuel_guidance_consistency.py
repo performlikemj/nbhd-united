@@ -19,6 +19,9 @@ _LOAD_BEARING_PHRASES = (
     "nbhd_fuel_search_exercises",
     "use the returned name verbatim",
     "complete day object",
+    "catalog-named skills with hold_time sets",
+    "blocks only for non-movement work",
+    "never swap a user-requested movement without asking",
 )
 
 

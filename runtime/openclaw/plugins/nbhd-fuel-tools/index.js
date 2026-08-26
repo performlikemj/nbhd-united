@@ -76,8 +76,29 @@ function renderWritePayload(payload) {
     ? payload.unmatched_exercises.map(String).filter(Boolean)
     : [];
   if (unmatched.length === 0) return renderPayload(payload);
-  const warning = `No figure for: ${unmatched.join(", ")} — use exact catalog names (nbhd_fuel_search_exercises)`;
+  const warning = `No figure for: ${unmatched.join(", ")} — for movements you chose, use exact catalog names (nbhd_fuel_search_exercises); never swap a user-requested movement without asking`;
   return renderTextPayload(payload, `${JSON.stringify(payload, null, 2)}\n${warning}`);
+}
+
+const PRESCRIPTION_LEGEND =
+  "prescription legend: yes (has_prescription true) = filled · no (false) = needs filling · rest (null) = skip";
+
+function prescriptionLabel(workout) {
+  if (workout?.status === "rest" || workout?.has_prescription === null) return "rest";
+  return workout?.has_prescription ? "yes" : "no";
+}
+
+function renderWorkoutLine(workout) {
+  return `${workout?.date || ""} · ${workout?.activity || "Workout"} · ${workout?.status || "unknown"} · prescription ${prescriptionLabel(workout)}`;
+}
+
+function renderAudit(payload) {
+  const workouts = Array.isArray(payload?.next_14d_workouts) ? payload.next_14d_workouts : [];
+  const lines = [PRESCRIPTION_LEGEND, "next_14d_workouts:"];
+  if (workouts.length === 0) lines.push("(none)");
+  else lines.push(...workouts.map(renderWorkoutLine));
+  lines.push("", JSON.stringify(payload, null, 2));
+  return renderTextPayload(payload, lines.join("\n"));
 }
 
 function renderExerciseSearch(payload) {
@@ -98,7 +119,10 @@ function renderExerciseSearch(payload) {
 function renderPlan(payload) {
   const workouts = Array.isArray(payload?.workouts) ? payload.workouts : [];
   const start = new Date(`${payload?.start_date || ""}T00:00:00Z`);
-  const lines = [`${payload?.name || "Plan"} · ${payload?.status || "unknown"}`];
+  const lines = [
+    `${payload?.name || "Plan"} · ${payload?.status || "unknown"}`,
+    PRESCRIPTION_LEGEND,
+  ];
   let currentWeek = null;
   for (const workout of workouts) {
     const workoutDate = new Date(`${workout?.date || ""}T00:00:00Z`);
@@ -109,9 +133,7 @@ function renderPlan(payload) {
       currentWeek = week;
       lines.push(`Week ${week}`);
     }
-    lines.push(
-      `${workout?.date || ""} · ${workout?.activity || "Workout"} · ${workout?.status || "unknown"} · prescription ${workout?.has_prescription ? "yes" : "no"}`,
-    );
+    lines.push(renderWorkoutLine(workout));
   }
   return renderTextPayload(payload, lines.join("\n"));
 }
@@ -229,7 +251,7 @@ export default function register(api) {
             path: fuelPath(api, "/audit/"),
             method: "GET",
           });
-          return renderPayload(payload);
+          return renderAudit(payload);
         } catch (error) {
           return renderPayload({ error: error.message });
         }
@@ -567,7 +589,7 @@ export default function register(api) {
           detail_json: {
             type: "object",
             description:
-              'Updated category-specific structured data. For strength/calisthenics, every set in exercises[] must include its `type` (weighted_reps | bodyweight_reps | hold_time), same contract as nbhd_fuel_log_workout. For cardio, populate at least one of {distance_km, pace ("M:SS"), avg_hr, elevation, avg_power} — e.g. {"distance_km": 5, "pace": "5:30"}. For HIIT, set {rounds, work_s, rest_s} — e.g. {"rounds": 8, "work_s": 30, "rest_s": 30}. For mobility, set {"blocks": ["hip openers", "thoracic rotation"]}. Use this to fill in target prescriptions on planned workouts — do not leave a planned workout\'s detail_json empty.',
+              'Updated category-specific structured data. For strength/calisthenics, every set in exercises[] must include its `type` (weighted_reps | bodyweight_reps | hold_time), same contract as nbhd_fuel_log_workout. For cardio, populate at least one of {distance_km, pace ("M:SS"), avg_hr, elevation, avg_power} — e.g. {"distance_km": 5, "pace": "5:30"}. For HIIT, set {rounds, work_s, rest_s} — e.g. {"rounds": 8, "work_s": 30, "rest_s": 30}. Mobility uses catalog-named skills with hold_time sets, e.g. {"skills":[{"name":"Kneeling Hip Flexor Stretch","sets":[{"type":"hold_time","hold_s":45}]}]}; blocks only for non-movement work such as breathing or foam rolling. Use this to fill in target prescriptions on planned workouts — do not leave a planned workout\'s detail_json empty.',
           },
         },
         required: ["workout_id"],

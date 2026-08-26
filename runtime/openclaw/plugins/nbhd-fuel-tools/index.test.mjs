@@ -103,6 +103,7 @@ test("get_plan encodes id and renders compact rows grouped by week", async (t) =
     workouts: [
       { date: "2026-04-27", activity: "Push", status: "planned", has_prescription: true },
       { date: "2026-05-04", activity: "Push", status: "planned", has_prescription: false },
+      { date: "2026-05-05", activity: "Rest day", status: "rest", has_prescription: null },
     ],
   };
   t.mock.method(globalThis, "fetch", async (url, options) => {
@@ -116,8 +117,43 @@ test("get_plan encodes id and renders compact rows grouped by week", async (t) =
   assert.equal(captured.url.pathname, "/api/v1/fuel/runtime/tenant-123/plans/plan%2Fid/");
   assert.equal(captured.options.method, "GET");
   assert.deepEqual(result.details.json, payload);
+  assert.match(
+    result.content[0].text,
+    /prescription legend: yes \(has_prescription true\) = filled · no \(false\) = needs filling · rest \(null\) = skip/,
+  );
   assert.match(result.content[0].text, /Week 1\n2026-04-27 · Push · planned · prescription yes/);
   assert.match(result.content[0].text, /Week 2\n2026-05-04 · Push · planned · prescription no/);
+  assert.match(result.content[0].text, /2026-05-05 · Rest day · rest · prescription rest/);
+});
+
+test("audit renders null prescription rest rows as rest with the tri-state legend", async (t) => {
+  setRuntimeEnv(t);
+  const payload = {
+    today_plan: { exists: false, workouts: [] },
+    next_14d_workouts: [
+      { date: "2026-05-05", activity: "Rest day", status: "rest", has_prescription: null },
+      { date: "2026-05-06", activity: "Pull", status: "planned", has_prescription: false },
+    ],
+    conflicts: { duplicate_fires: [], orphan_crons: [], orphan_workouts: [] },
+    guidance: "Keep the programmed rest day.",
+  };
+  t.mock.method(globalThis, "fetch", async () => response(200, JSON.stringify(payload)));
+
+  const result = await collectTools({ apiBaseUrl: "https://nbhd.example" })
+    .nbhd_fuel_audit.execute("call-audit", {});
+
+  assert.deepEqual(result.details.json, payload);
+  assert.match(result.content[0].text, /rest \(null\) = skip/);
+  assert.match(result.content[0].text, /2026-05-05 · Rest day · rest · prescription rest/);
+  assert.match(result.content[0].text, /2026-05-06 · Pull · planned · prescription no/);
+});
+
+test("update_workout mobility guidance uses catalog skills and reserves blocks", () => {
+  const description = collectTools()
+    .nbhd_fuel_update_workout.parameters.properties.detail_json.description;
+  assert.match(description, /catalog-named skills with hold_time sets/);
+  assert.match(description, /blocks only for non-movement work/);
+  assert.doesNotMatch(description, /For mobility, set \{"blocks"/);
 });
 
 test("both new tools surface transport failures", async (t) => {
@@ -170,7 +206,7 @@ test("all four write tools render the unmatched exercise warning line", async (t
     const result = await tools[name].execute("call", params);
     assert.match(
       result.content[0].text,
-      /No figure for: Mystery Curl, Odd Press — use exact catalog names \(nbhd_fuel_search_exercises\)/,
+      /No figure for: Mystery Curl, Odd Press — for movements you chose, use exact catalog names \(nbhd_fuel_search_exercises\); never swap a user-requested movement without asking/,
       name,
     );
   }
