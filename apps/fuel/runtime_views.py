@@ -1909,6 +1909,8 @@ def _normalize_stored_schedule_keys(schedule_json, *, plan_id):
     """Canonicalize legacy stored weekday names before merge/reconciliation."""
     normalized = {}
     for raw_key, day_def in (schedule_json or {}).items():
+        if raw_key == _PLAN_POLICY_KEY:
+            continue
         day_int, key_err = _normalize_weekday_key(raw_key)
         if key_err is not None or day_int is None:
             logger.warning("Plan %s schedule_json has invalid stored weekday key %r; ignoring it", plan_id, raw_key)
@@ -3066,7 +3068,11 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
         plan_policy, policy_err = _resolve_plan_policy(data, stored_plan_policy)
         if policy_err is not None:
             return policy_err
-        if schedule_supplied or any(key in data for key in ("variation_policy", "repeat_policy", "repeat_reason")):
+        if (
+            schedule_supplied
+            or normalized_remove_days
+            or any(key in data for key in ("variation_policy", "repeat_policy", "repeat_reason"))
+        ):
             plan.schedule_json = _attach_plan_policy(plan.schedule_json, plan_policy)
             if "schedule_json" not in updated_fields:
                 updated_fields.append("schedule_json")
@@ -3091,7 +3097,7 @@ class RuntimeWorkoutPlanDetailView(_FuelResponseGuard, APIView):
             plan.week_overrides = catalog_payload["week_overrides"]
             server_owned_plan_json = catalog_payload
 
-        if any(key in data for key in ("schedule_json", "weeks", "week_overrides")):
+        if normalized_remove_days or any(key in data for key in ("schedule_json", "weeks", "week_overrides")):
             from .plan_variety import validate_plan_variety
 
             rotation_error = validate_plan_variety(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from math import ceil
 from typing import Any
 
 from apps.common.llm_contracts import WEEKDAY_NAMES
@@ -65,8 +66,11 @@ def _items(day: dict[str, Any]) -> tuple[str, list[dict[str, Any]]]:
 
 def _recipe(day: dict[str, Any]) -> tuple[str, ...]:
     _container, items = _items(day)
-    if any("role" in item for item in items):
+    has_roles = any("role" in item for item in items)
+    if has_roles:
         items = [item for item in items if item.get("role") == "accessory"]
+        if not items:
+            return ("__no_accessory__",)
     recipe = []
     for item in items:
         ref = item.get("catalog_ref")
@@ -114,7 +118,7 @@ def _catalog_candidates(offending: list[tuple[tuple[int, str], list[_WeekRecipe]
     seen_slots: set[tuple[int, str, int]] = set()
     seen_names: set[str] = set()
     total = 0
-    for (_day, _activity), recipes in offending:
+    for (_day, _category), recipes in offending:
         for recipe in recipes:
             container, items = _items(recipe.day)
             for index, item in enumerate(items):
@@ -174,8 +178,8 @@ def validate_plan_variety(
             if not recipe:
                 continue
             day_int = int(day_key)
-            activity = str(day.get("activity") or day.get("category") or "other").strip()
-            track_key = (day_int, " ".join(activity.casefold().split()))
+            category = str(day.get("category") or "other").strip().casefold()
+            track_key = (day_int, category)
             tracks[track_key].append(
                 _WeekRecipe(
                     week=week,
@@ -193,7 +197,8 @@ def validate_plan_variety(
         if len(recipes) < 4:
             continue
         run = _longest_run(recipes)
-        if len(run) <= 2:
+        distinct_recipes = len({recipe.recipe for recipe in recipes})
+        if len(run) <= 2 and distinct_recipes >= ceil(len(recipes) / 2):
             continue
         if variation_policy == "progression_only" and len({recipe.dose for recipe in recipes}) > 1:
             continue
@@ -201,11 +206,8 @@ def validate_plan_variety(
         track_payloads.append(
             {
                 "weekday": WEEKDAY_NAMES[track_key[0]],
-                # ``activity`` is free-form tenant text. Return its public
-                # category label while retaining the real activity only in the
-                # in-memory grouping key.
-                "activity": str(run[0].day.get("category") or "other"),
-                "weeks": [recipe.week + 1 for recipe in run],
+                "category": track_key[1],
+                "weeks": [recipe.week + 1 for recipe in (run if len(run) > 2 else recipes)],
                 "max_consecutive_same": len(run),
             }
         )
